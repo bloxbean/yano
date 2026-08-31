@@ -12,15 +12,18 @@ import com.bloxbean.cardano.yaci.core.model.certs.StakeCredential;
 import com.bloxbean.cardano.yaci.core.model.certs.StakeDelegation;
 import com.bloxbean.cardano.yaci.core.model.certs.StakePoolId;
 import com.bloxbean.cardano.yaci.core.model.certs.StakeRegistration;
+import com.bloxbean.cardano.yaci.core.model.certs.VoteDelegCert;
+import com.bloxbean.cardano.yaci.core.model.governance.Drep;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.rocksdb.RocksIterator;
+import org.rocksdb.WriteBatch;
+import org.rocksdb.WriteOptions;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
@@ -34,6 +37,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DefaultAccountStateStorePoolLifecycleTest {
 
@@ -167,7 +171,6 @@ class DefaultAccountStateStorePoolLifecycleTest {
     }
 
     @Test
-    @Disabled("ADR-050: enabled at Phase 2 gate")
     void effectivePoolReapRemovesLivePoolRetirementAndStakeDelegations() throws Exception {
         List<Certificate> setupCertificates = new ArrayList<>();
         setupCertificates.add(poolRegistration());
@@ -181,25 +184,137 @@ class DefaultAccountStateStorePoolLifecycleTest {
                     .stakePoolId(StakePoolId.builder().poolKeyHash(POOL_HASH).build())
                     .build());
         }
+        setupCertificates.add(VoteDelegCert.builder()
+                .stakeCredential(stakeCredential(CREDENTIAL_HASHES.getFirst()))
+                .drep(Drep.abstain())
+                .build());
         applyBlockWithCerts(1, epochStartSlot(10),
                 setupCertificates.toArray(Certificate[]::new));
         applyBlockWithCerts(2, epochStartSlot(11),
                 PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(12).build());
 
-        var calculator = new EpochRewardCalculator(
-                rocks.db(), rocks.cfState(), rocks.cfSnapshot(), true);
-        calculator.setLedgerStateProvider(store);
-        calculator.setAccountStateStore(store);
-        calculator.beginRewardBatch(12, "pool-reap");
-        calculator.processPoolDepositRefunds(12);
-        calculator.commitRewardBatch(epochStartSlot(12),
-                DefaultAccountStateStore.PHASE_POOLREAP);
+        EpochRewardCalculator calculator = rewardCalculator();
+        PoolReapProcessor.Result result = store.processPoolReap(
+                12, epochStartSlot(12), calculator);
 
         assertThat(store.isPoolRegistered(POOL_HASH)).isFalse();
         assertThat(store.getPoolRetirementEpoch(POOL_HASH)).isEmpty();
+        assertThat(store.getPoolParams(POOL_HASH, 12)).isPresent();
         for (String credentialHash : CREDENTIAL_HASHES) {
             assertThat(store.getDelegatedPool(0, credentialHash)).isEmpty();
         }
+        assertThat(store.getDRepDelegation(0, CREDENTIAL_HASHES.getFirst()))
+                .isPresent();
+        BigInteger expectedRefund = epochParams().getPoolDeposit(10);
+        assertThat(result.retiringPools()).isEqualTo(1);
+        assertThat(result.delegationRowsExamined()).isEqualTo(5);
+        assertThat(result.delegationsRemoved()).isEqualTo(5);
+        assertThat(result.poolRowsRemoved()).isEqualTo(3);
+        assertThat(result.registeredRefundAmount()).isEqualTo(expectedRefund);
+        assertThat(result.unclaimedDepositAmount()).isZero();
+        assertThat(store.getRewardBalance(0, CREDENTIAL_HASHES.getFirst()))
+                .contains(expectedRefund);
+        assertThat(store.isPoolReapInProgress(epochStartSlot(12))).isFalse();
+        assertThat(store.getCommittedBoundaryPhases(epochStartSlot(12)))
+                .contains(DefaultAccountStateStore.PHASE_POOLREAP);
+
+        store.processPoolReap(12, epochStartSlot(12), calculator);
+        assertThat(store.getRewardBalance(0, CREDENTIAL_HASHES.getFirst()))
+                .contains(expectedRefund);
+    }
+
+    @Test
+    void unregisteredPoolRewardCredentialIsReportedWithoutSyntheticRefund() {
+        applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
+        applyBlockWithCerts(2, epochStartSlot(11),
+                PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(12).build());
+
+        PoolReapProcessor.Result result = store.processPoolReap(
+                12, epochStartSlot(12), rewardCalculator());
+
+        BigInteger deposit = epochParams().getPoolDeposit(10);
+        assertThat(result.registeredRefunds()).isZero();
+        assertThat(result.registeredRefundAmount()).isZero();
+        assertThat(result.unclaimedDepositAmount()).isEqualTo(deposit);
+        assertThat(store.getRewardBalance(0, CREDENTIAL_HASHES.getFirst()))
+                .isEmpty();
+        assertThat(store.isPoolRegistered(POOL_HASH)).isFalse();
+    }
+
+    @Test
+    void poolReapFailsClosedWhenRetirementHasNoLivePool() throws Exception {
+        rocks.db().put(rocks.cfState(),
+                DefaultAccountStateStore.poolRetireKey(POOL_HASH),
+                AccountStateCborCodec.encodePoolRetirement(12));
+
+        EpochRewardCalculator calculator = rewardCalculator();
+        assertThatThrownBy(() -> store.processPoolReap(
+                12, epochStartSlot(12), calculator))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("has no live pool registration");
+        assertThat(store.getCommittedBoundaryPhases(epochStartSlot(12)))
+                .doesNotContain(DefaultAccountStateStore.PHASE_POOLREAP);
+    }
+
+    @Test
+    void poolReapFailsClosedWhenMonetaryProcessorIsUnavailable() {
+        applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
+        applyBlockWithCerts(2, epochStartSlot(11),
+                PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(12).build());
+
+        assertThatThrownBy(() -> store.processPoolReap(
+                12, epochStartSlot(12), null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires the monetary reward/refund processor");
+        assertThat(store.isPoolRegistered(POOL_HASH)).isTrue();
+        assertThat(store.getPoolRetirementEpoch(POOL_HASH)).contains(12L);
+    }
+
+    @Test
+    void poolReapFailsClosedOnMalformedLivePool() throws Exception {
+        applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
+        applyBlockWithCerts(2, epochStartSlot(11),
+                PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(12).build());
+        rocks.db().put(rocks.cfState(),
+                DefaultAccountStateStore.poolDepositKey(POOL_HASH), new byte[]{1});
+
+        assertThatThrownBy(() -> store.processPoolReap(
+                12, epochStartSlot(12), rewardCalculator()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Malformed live pool registration");
+        assertThat(store.isPoolRegistered(POOL_HASH)).isTrue();
+        assertThat(store.getPoolRetirementEpoch(POOL_HASH)).contains(12L);
+    }
+
+    @Test
+    void poolReapProgressMakesCommittedPhaseIncomplete() throws Exception {
+        long boundarySlot = epochStartSlot(12);
+        var progress = new PoolReapProcessor.Progress(
+                12, boundarySlot, PoolReapProcessor.STAGE_DELEGATIONS,
+                null, null, 1);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            List<DefaultAccountStateStore.DeltaOp> deltaOps = new ArrayList<>();
+            store.putStateWithDelta(PoolReapProcessor.META_POOL_REAP_PROGRESS,
+                    PoolReapProcessor.encodeProgress(progress), batch, deltaOps);
+            store.commitBoundaryDelta(boundarySlot,
+                    DefaultAccountStateStore.PHASE_POOLREAP, 0, batch, deltaOps);
+            rocks.db().write(options, batch);
+        }
+
+        assertThat(store.getCommittedBoundaryPhases(boundarySlot))
+                .doesNotContain(DefaultAccountStateStore.PHASE_POOLREAP);
+
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            List<DefaultAccountStateStore.DeltaOp> deltaOps = new ArrayList<>();
+            store.deleteStateWithDelta(PoolReapProcessor.META_POOL_REAP_PROGRESS,
+                    batch, deltaOps);
+            store.commitBoundaryDelta(boundarySlot,
+                    DefaultAccountStateStore.PHASE_POOLREAP, 1, batch, deltaOps);
+            rocks.db().write(options, batch);
+        }
+
+        assertThat(store.getCommittedBoundaryPhases(boundarySlot))
+                .contains(DefaultAccountStateStore.PHASE_POOLREAP);
     }
 
     private static EpochParamProvider epochParams() {
@@ -214,6 +329,14 @@ class DefaultAccountStateStorePoolLifecycleTest {
                 return BigInteger.valueOf(500_000_000L + epoch);
             }
         };
+    }
+
+    private EpochRewardCalculator rewardCalculator() {
+        var calculator = new EpochRewardCalculator(
+                rocks.db(), rocks.cfState(), rocks.cfSnapshot(), true);
+        calculator.setLedgerStateProvider(store);
+        calculator.setAccountStateStore(store);
+        return calculator;
     }
 
     private static StakeCredential stakeCredential(String hash) {

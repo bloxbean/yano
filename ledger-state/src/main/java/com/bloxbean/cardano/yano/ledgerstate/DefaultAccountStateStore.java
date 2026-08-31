@@ -583,6 +583,24 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return rewardCalculator;
     }
 
+    PoolReapProcessor.Result processPoolReap(int epoch, long boundarySlot,
+                                             EpochRewardCalculator calculator) {
+        return new PoolReapProcessor(db, cfState, this, calculator, log,
+                snapshotMaxBatchOperations, snapshotMaxBatchBytes)
+                .process(epoch, boundarySlot);
+    }
+
+    boolean isPoolReapInProgress(long boundarySlot) {
+        PoolReapProcessor.Progress progress =
+                PoolReapProcessor.readProgress(db, cfState);
+        if (progress == null) return false;
+        if (progress.boundarySlot() != boundarySlot) {
+            throw new IllegalStateException("Unfinished POOLREAP belongs to boundary slot "
+                    + progress.boundarySlot() + " while inspecting slot " + boundarySlot);
+        }
+        return true;
+    }
+
     /**
      * Set the protocol parameter tracker.
      */
@@ -5775,8 +5793,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (db.get(cfState, META_REWARD_PROGRESS) != null) {
                 phases.remove(PHASE_REWARDS);
             }
+            PoolReapProcessor.Progress poolReapProgress =
+                    PoolReapProcessor.readProgress(db, cfState);
+            if (poolReapProgress != null) {
+                if (poolReapProgress.boundarySlot() != boundarySlot) {
+                    throw new IllegalStateException("Unfinished POOLREAP belongs to boundary slot "
+                            + poolReapProgress.boundarySlot() + " while inspecting slot "
+                            + boundarySlot);
+                }
+                phases.remove(PHASE_POOLREAP);
+            }
         } catch (RocksDBException e) {
-            throw new IllegalStateException("Failed to inspect reward phase progress", e);
+            throw new IllegalStateException("Failed to inspect boundary phase progress", e);
         }
         return phases;
     }

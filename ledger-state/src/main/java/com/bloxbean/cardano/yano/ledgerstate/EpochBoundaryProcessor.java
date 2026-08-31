@@ -459,26 +459,22 @@ public class EpochBoundaryProcessor {
             closeBoundaryStakeInput(utxoBalancesFuture, boundaryStakeInput);
         }
 
-        // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
-        //     Delta-journaled via boundary delta for rollback safety.
+        // 4b. POOLREAP: exact pool refunds plus bounded live-state cleanup
+        //     (after snapshot, before governance). The store-owned seam uses one
+        //     deterministic plan for the monetary and lifecycle mutations.
         try (var ignored = telemetry.phase("pool-reap")) {
             if (resumeFromStep <= STEP_POOLREAP) {
-                if (rewardCalculator != null && rewardCalculator.isEnabled()) {
-                    long boundarySlot = snapshotCreator != null ? snapshotCreator.slotForEpochStart(newEpoch) : 0;
-                    rewardCalculator.beginRewardBatch(newEpoch, "pool-reap");
-                    rewardCalculator.processPoolDepositRefunds(newEpoch);
-                    try {
-                        rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_POOLREAP);
-                    } catch (org.rocksdb.RocksDBException e) {
-                        throw new RuntimeException("Failed to commit pool refund boundary delta for epoch " + newEpoch, e);
-                    }
+                if (snapshotCreator != null) {
+                    long boundarySlot = snapshotCreator.slotForEpochStart(newEpoch);
+                    snapshotCreator.processPoolReap(newEpoch, boundarySlot,
+                            rewardCalculator);
                 }
-                // Step marker AFTER pool refund commits are durable
+                // Step marker AFTER all refund and live cleanup chunks are durable.
                 if (snapshotCreator != null) {
                     snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
                 }
             } else {
-                log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
+                log.info("Skipping POOLREAP for epoch {} (already committed in previous run)", newEpoch);
             }
         }
 
