@@ -255,7 +255,9 @@ arguments. Before correction commit `c1d5cf53`, Yano had zero assertions for
 the execution-unit-limit mapping inside that constructor. The class-wide
 `everyProtocolParameterMapsToItsOwnField` guard now supplies distinct source
 values and asserts all 31 target fields, including every nested component, so
-future argument transpositions fail locally.
+future argument transpositions fail locally. Its expected values also differ
+from the bridge's hardcoded defaults, usually by one, so a source field that
+silently falls back to a default fails the same guard.
 
 ### 5. Use layered, serialized acceptance gates
 
