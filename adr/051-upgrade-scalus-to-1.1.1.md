@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Proposed
 
 ## Date
 
@@ -571,7 +571,7 @@ After merge, use the same atomic version/adapter revert if a production-blocking
 regression appears. No chainstate rollback or migration is required because
 this ADR changes transaction validation and evaluation code only.
 
-## Accepted review decisions
+## Review decisions requested
 
 1. Accept the atomic `1.1.1` pin and narrow bridge-only migration boundary.
 2. Accept retaining and re-deriving the pool-deposit override for Scalus 1.1.1.
