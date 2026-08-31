@@ -37,7 +37,9 @@ Yano's initial goal is to fill three roles:
 ## Highlights
 
 - **Real ledger state** — UTxO, account state (stakes / delegations / rewards), epoch snapshots,
-  Conway-era governance (DReps, proposals, votes, committee), with full rollback support.
+  Conway-era governance (DReps, proposals, votes, committee), with full rollback support,
+  including bounded epoch-boundary pool retirement and refund recovery. See
+  [account state and rollback](docs/ACCOUNT_STATE_AND_ROLLBACK.md).
 - **Devnet block producer** — produce blocks from a configured genesis and serve them to
   downstream nodes (Haskell `cardano-node`, Dingo, your own indexer) via the n2n protocol on port 13337.
 - **Past-time-travel mode** — start a fresh devnet "in the past", produce blocks deterministically

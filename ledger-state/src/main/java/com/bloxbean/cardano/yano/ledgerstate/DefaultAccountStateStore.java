@@ -187,6 +187,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final byte[] META_REWARD_EVENT_INDEX_VERSION =
             "meta.reward_event_index_version".getBytes(StandardCharsets.UTF_8);
     private static final byte[] REWARD_EVENT_INDEX_VERSION = {1};
+    private static final byte[] META_POOL_LIFECYCLE_STATE_VERSION =
+            "meta.pool_lifecycle_state_version".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] POOL_LIFECYCLE_STATE_VERSION = {1};
     private static final byte[] META_REWARD_PROGRESS =
             "meta.reward.progress.v1".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_ROLLBACK_TARGET_SLOT =
@@ -434,6 +437,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                         SNAPSHOT_DEREG_INDEX_VERSION);
                 batch.put(cfState, META_REWARD_EVENT_INDEX_VERSION,
                         REWARD_EVENT_INDEX_VERSION);
+                batch.put(cfState, META_POOL_LIFECYCLE_STATE_VERSION,
+                        POOL_LIFECYCLE_STATE_VERSION);
                 db.write(options, batch);
             }
         } catch (RocksDBException e) {
@@ -452,6 +457,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 REWARD_EVENT_INDEX_VERSION)) {
             throw new IncompatibleChainStateException(
                     "Epoch-boundary state is missing its reward event index marker; resync is required.");
+        }
+        byte[] poolLifecycleVersion = db.get(cfState, META_POOL_LIFECYCLE_STATE_VERSION);
+        if (!Arrays.equals(poolLifecycleVersion, POOL_LIFECYCLE_STATE_VERSION)) {
+            String reason = poolLifecycleVersion == null
+                    ? "is missing its pool-lifecycle-state-v1 readiness marker"
+                    : "has an unsupported pool lifecycle state version";
+            throw new IncompatibleChainStateException(
+                    "Epoch-boundary state " + reason
+                            + "; retain a backup and resync into a new chainstate directory.");
         }
     }
 
