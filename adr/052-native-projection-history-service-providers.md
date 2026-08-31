@@ -21,14 +21,18 @@ Proposed
   backed by the completed projection archive.
 - [ADR-047](047-remove-residual-legacy-history-machinery.md) removes the old
   replay-worker archive and leaves projection as the only history writer.
+- ADR-053 is the proposed stacked follow-up that binds staged facts after the
+  boundary block becomes canonical. It removes this ADR's three producer-mode
+  exclusions without changing native provider reachability; its document ships
+  on that separate lifecycle branch.
 - [ADR-051 Phase 1/2 evidence](reports/adr-051-phase-1-2-2026-08-31.md)
   records the failed native devnet launch and the projection-disabled deviation.
 - [`application-projection.yml`](../app/config/application-projection.yml)
   selects all four block projections and all five epoch-level projections when
   the `projection` profile is composed after a network profile.
 - The embedded [preprod AdaPot oracle](../ledger-state/src/main/resources/expected_ada_pots_preprod.json)
-  covers epochs 5 through 280, including the fixed 186 through 188 comparison
-  range selected by this ADR.
+  covers epochs 5 through 280, including the epoch-192 baseline and the epoch
+  193/194 boundaries selected for the executed comparison.
 
 ## Decision summary
 
@@ -57,14 +61,17 @@ native CI gate.
 4. The `native-core` CI job will run that smoke against the same binary already
    used for distribution and plugin-catalog verification. A native build that
    starts only after projection is disabled is a failure.
-5. Native and JVM binaries will project the same fixed preprod range, epochs 186
-   through 188, from equivalent starting state. Their block-section rows,
-   epoch-artifact rows, coverage and coordinates must match; AdaPot values must
-   additionally match the embedded preprod oracle.
+5. Native and JVM binaries will project the same preprod range from a
+   byte-identical stopped epoch-192 baseline, crossing epoch 193 and optionally
+   epoch 194. Their block-section rows, epoch-artifact rows, coverage and
+   coordinates must match; AdaPot values must additionally match the embedded
+   preprod oracle. Per-dataset row counts prove generation independently of
+   cross-leg equality.
 6. Only after the preprod differential passes, JVM and native binaries will run
    mainnet epochs 0 through 100 as an explicitly bounded Byron-genesis parity
-   check. This final gate proves JVM/native equivalence only; it is not an
-   absolute Byron-correctness or performance validation.
+   check. This final gate asserts genesis capture against the configured genesis
+   file and requires JVM/native equivalence for the remaining bounded rows. It
+   is not a broader Byron-correctness or performance validation.
 
 This decision does not replace ServiceLoader, make the archive module an
 application compile-time dependency, alter projection schemas, change history
@@ -184,11 +191,17 @@ projection profile from working in native mode.
 12. `transaction`, `utxo_history`, `account_event`, and
     `address_transaction` block sections are populated and queryable in native
     mode.
-13. For fixed preprod epochs 186 through 188, native and JVM projection rows,
-    coverage intervals and committed coordinates are identical after
-    normalization of explicitly non-semantic values such as run-local paths.
-14. Native preprod AdaPot rows for epochs 186 through 188 equal the embedded
-    treasury, reserves, fees, deposits and UTXO values exactly.
+13. For the recorded preprod epoch-192 baseline window, native and JVM
+    projection rows, coverage intervals and committed coordinates are identical
+    after normalization of explicitly non-semantic values such as run-local
+    paths. Each of the nine datasets also reports a per-epoch row count. Every
+    count expected to be non-zero must be non-zero; a zero is accepted only when
+    predicted before comparison, justified from chain activity and matched by
+    the JVM leg.
+14. Native preprod AdaPot rows for every selected boundary equal the embedded
+    treasury, reserves, fees, deposits and UTXO values exactly. This is an
+    absolute oracle for one dataset; the other eight rely on generation checks
+    plus exact JVM/native semantic equality.
 15. Mainnet is not started before the preprod differential passes and is never
     run beyond epoch 100 for this issue. The bounded mainnet run is the final
     gate and exists only to exercise Byron genesis with JVM/native parity.
@@ -460,32 +473,34 @@ issue remains subject to maintainer approval and is not fixed in issue #105.
 
 ### 4. Compare native and JVM projection output on preprod
 
-The fixed preprod acceptance window is epochs 186, 187 and 188
-because it crosses two boundaries, has previously exercised Conway epoch
-processing in this repository, and is fully covered by the embedded AdaPot
-oracle.
+The executed preprod acceptance window starts from a stopped common baseline in
+epoch 192 and crosses the boundary into epoch 193. It may continue through the
+boundary into epoch 194 when the second boundary is inexpensive. The evidence
+root retains `preprod-186-188` in its name because that was the originally
+planned window; renaming a retained multi-gigabyte tree would add risk without
+changing the recorded coordinates. Satya explicitly accepted one or two epochs
+on 2026-09-01. The selected window remains Conway, exercises real governance
+content and is fully covered by the embedded AdaPot oracle.
 
 Create the comparison input once; do not perform two independent genesis syncs:
 
-1. Before starting, estimate history growth from preprod genesis through epoch
-   188 with all projections enabled. Record the source measurements and margin
-   to the shipped 8 GiB soft budget. If the estimate reaches or exceeds the soft
-   budget, obtain a maintainer decision before launch; do not change the budget
-   during a run.
-2. Start one JVM process from empty state with `preprod,projection` and the
-   complete default selection from `application-projection.yml`. Use explicit
-   absolute chainstate and history paths under the evidence root.
-3. Stop gracefully at the start of epoch 186 only after the projection outbox is
-   drained to its expected finality window, the archive is healthy, and its
-   committed coordinate is recorded. This genesis sync establishes
-   `genesisCaptured=true` for both later legs.
-4. With no Yano process running, snapshot chainstate and history together as one
+1. Record the stopped seed's chain tip, projection coordinate, history size and
+   margin to the shipped 8 GiB soft budget. If projection has not converged to
+   the exact `tip - 2 * securityParam` frontier, resume only under a guarded
+   stop condition that cannot overshoot the required coordinate unnoticed.
+2. Before copying, require one stable projection identity, all nine configured
+   datasets reachable, zero gaps, a healthy archive and an exact committed
+   frontier. This genesis-built seed establishes `genesisCaptured=true` for
+   both later legs.
+3. With no Yano process running, snapshot chainstate and history together as one
    seed and record their manifests/digests. Make two byte-identical copies named
-   `jvm` and `native`; verify the copied manifests before either is opened.
-5. Run the JVM copy forward through the end of epoch 188, then stop it
-   gracefully. Only after it exits, run the Oracle GraalVM 25.3 native copy over
-   the same window. Never open either copy concurrently or reuse one leg's
-   mutated state for the other.
+   `jvm` and `native`; verify the copied manifests before either is opened. Each
+   leg receives a freshly extracted matching distribution.
+4. Run the JVM copy across the epoch-193 boundary and to an exact finalized
+   projection frontier; continue through epoch 194 only when the first boundary
+   is cheap. Stop it gracefully. Only after it exits, run the Oracle GraalVM
+   25.3 native copy across the identical coordinate range. Never open either
+   copy concurrently or reuse one leg's mutated state for the other.
 
 Run only one Yano process at a time and record the effective profile, projection
 selection, sink, paths, disk budgets, binary/JAR identity and toolchain before
@@ -505,10 +520,11 @@ identity or coordinate changed.
 Export deterministic evidence for each run:
 
 - all rows in `transaction`, `utxo_history`, `account_event`, and
-  `address_transaction` whose canonical coordinates fall within the fixed
-  comparison window;
-- every complete `reward`, `epoch_stake`, `ada_pot`, `drep_distribution`, and
-  `governance_proposal_status` generation for epochs 186 through 188;
+  `address_transaction` whose canonical coordinates fall within the recorded
+  baseline-to-final comparison window;
+- every newly complete `reward`, `epoch_stake`, `ada_pot`,
+  `drep_distribution`, and `governance_proposal_status` generation produced by
+  the selected epoch-193 and optional epoch-194 boundaries;
 - coverage intervals, gaps, projection identities, receipts and committed
   coordinates; and
 - history-directory size at each boundary and at the end of the window; and
@@ -517,10 +533,15 @@ Export deterministic evidence for each run:
 
 Sort by each dataset's canonical key, normalize only documented run-local
 fields, and compare row counts, canonical keys and serialized semantic values.
-Every dataset must be populated and native must match JVM exactly. For AdaPot,
-also compare treasury, reserves, fees, deposits and UTXO to
-`expected_ada_pots_preprod.json`; the oracle contains all three selected epochs.
-Evidence is retained below an issue-specific path such as
+For each of the nine datasets, the comparison report records the actual row
+count per semantic epoch. Every count expected to be non-zero must be non-zero.
+A legitimate zero is accepted only when its expected epoch and chain-derived
+reason were written down before the comparison and the JVM leg has the same
+zero-row complete generation; an unpredicted zero fails the gate. Native must
+match JVM exactly. For AdaPot, also compare treasury, reserves, fees, deposits
+and UTXO to `expected_ada_pots_preprod.json` for every selected epoch. AdaPot is
+the one absolute dataset oracle; the other eight are protected by explicit
+generation assertions plus cross-leg equality. Evidence is retained below
 `/Users/satya/Downloads/yano-issue105-native-projection/preprod-186-188/`, with
 separate `jvm/`, `native/`, and `comparison/` leaves.
 
@@ -529,16 +550,14 @@ low-water 4 GiB. Record history size at every boundary. If actual growth departs
 materially from the approved estimate or approaches a threshold, stop and
 report rather than silently raising a budget.
 
-The pre-sync estimate recorded on 2026-08-31 is below, but close enough to the
-soft limit to require monitoring. ADR-039 measured a four-block-section fresh
-preprod sync to tip at 4.50 GB logical size. Its later projection-only validation
-with all four block sections and all five epoch artifacts reached block
-5,087,259 with 7.3 GB on disk. Epoch 188 is earlier than that retained full-tip
-measurement, so 7.3 GB decimal (6.80 GiB) is the conservative genesis-to-188
-estimate. It consumes 85.0% of the 8 GiB soft budget and leaves 1.29 GB decimal
-of margin. The two offline comparison copies multiply host storage, but do not
-change the per-history-directory budget. Treat 7.5 GB observed usage as an early
-warning and obtain a maintainer decision before the soft threshold is reached.
+The stopped epoch-192 seed measured 5,984,876 KiB (5.71 GiB) in its history
+directory, 71.4% of the 8 GiB soft budget and below the 7.5 GB decimal early
+warning. Its 11,751,496 KiB chainstate is host-capacity information, not part of
+the archive ingest-gate budget. The two offline comparison copies multiply host
+storage, but do not change the per-history-directory budget. Record actual free
+space and per-leg usage before launch. Treat 7.5 GB observed history usage as
+an early warning and obtain a maintainer decision before the soft threshold is
+reached.
 
 ### 5. Exercise mainnet Byron genesis last, with known limitations
 
@@ -552,22 +571,21 @@ separate seed, JVM, native, and comparison leaves.
 
 Epochs 0 through 100 exercise Byron genesis bootstrap and the mainnet Byron
 genesis UTXO/AVVM distributions, which the Shelley-era preprod window does not.
-The acceptance criterion is exact JVM/native semantic equivalence for the
-bounded window, including genesis capture, projected rows, coverage, receipts,
-identities and coordinates. It deliberately does not claim that those balances
-or rows are correct in absolute terms.
+This is also the only gate whose genesis input exercises the full mainnet AVVM
+distribution rather than preprod's single genesis row. As soon as genesis
+capture completes, before waiting for epoch 100, the gate independently parses
+`app/config/network/mainnet/byron-genesis.json`, derives the expected AVVM row
+count and lovelace total, and compares both with the projection. For the current
+file those derived values are 14,505 rows and 31,112,484,745,000,000 lovelace.
+The assertion must not hardcode them. It records the genesis digest and later
+requires the JVM and native legs to produce that same digest.
 
-Two existing open issues are pre-declared limitations, not failures introduced
-by native-image support:
-
-- Issue #87 records that Byron transactions are not applied to the UTXO set,
-  producing wrong balances and phantom genesis UTXOs. A green Gate F proves
-  only that native matches JVM behavior; it must never be cited as Byron
-  correctness validation.
-- Issue #88 records the per-block durable-write bottleneck of approximately 121
-  blocks per second. Epochs 0 through 100 may therefore take roughly five
-  hours. Do not tune, bypass, or fix that performance path in issue #105, and do
-  not classify its known cost as a native-image regression.
+The remainder of the bounded run requires exact JVM/native semantic
+equivalence for projected rows, coverage, receipts, identities and coordinates.
+Report the observed blocks per second, including any material change by era.
+Issue #88 may help interpret a measured slow rate, but the gate does not
+pre-declare a bottleneck or a completion time and does not tune production code
+as part of issue #105.
 
 ### 6. Run the devnet smoke in native CI and release workflows
 
@@ -678,15 +696,23 @@ did not invoke another native build or add workflow wiring.
 
 ### Gate D — preprod JVM/native differential
 
-- Use preprod only and the fixed epoch 186-through-188 window.
-- Perform one projection-enabled genesis sync to the start of epoch 186,
-  snapshot chainstate and history together, verify byte-identical copies, then
-  run JVM and native serially through epoch 188 with the full `projection`
-  profile and unchanged disk budgets.
+- Use preprod only and the recorded epoch-192 common baseline. Cross the
+  epoch-193 boundary and optionally epoch 194 when the second boundary is
+  inexpensive.
+- Require the stopped seed to be healthy and exactly converged to its derived
+  finalized frontier. Snapshot chainstate and history together, verify
+  byte-identical `jvm` and `native` copies, then run the two legs serially over
+  the same coordinate window with the full `projection` profile and unchanged
+  disk budgets.
 - Require exact semantic equality for every row of all four block sections and
   all five epoch artifacts, plus coverage and coordinate equality.
-- Require native AdaPot fields to match the embedded oracle for epochs 186,
-  187 and 188.
+- Record the actual row count per semantic epoch for each of the nine datasets.
+  Require non-zero counts wherever content is expected. Accept zero only when
+  the epoch and chain-derived reason were predicted before comparison and the
+  JVM leg has the same complete zero-row generation; any unpredicted zero fails.
+- Require native AdaPot fields to match the embedded oracle for every selected
+  epoch. This is an absolute check for one dataset; the other eight rely on
+  explicit generation assertions plus exact cross-leg equality.
 - Retain exports, comparison reports, logs, identities and per-boundary disk
   usage under the named issue evidence root.
 
@@ -711,15 +737,18 @@ short is necessary, but it must complete before ADR-052 is accepted.
 - Start only after Gate D has passed; preserve the one-process-at-a-time rule.
 - Run mainnet from genesis through epoch 100 and stop there. A full mainnet sync
   or any epoch beyond 100 is outside this authorization.
+- Fail fast after genesis capture: derive the expected row count and lovelace
+  total from `app/config/network/mainnet/byron-genesis.json`, then require the
+  projection to contain exactly that set. With the current file the derived
+  values are 14,505 rows and 31,112,484,745,000,000 lovelace; neither value is
+  hardcoded in the assertion. Record the digest and require it to match between
+  the JVM and native legs.
 - Use equivalent isolated JVM/native inputs and require exact semantic parity
-  for genesis capture, projected rows, coverage, receipts, identities and
+  for the remaining projected rows, coverage, receipts, identities and
   coordinates within the bounded window.
-- Treat balance or phantom-genesis-UTXO errors covered by issue #87 as known JVM
-  behavior, not proof of native correctness or a new native defect. This gate
-  must not be cited as Byron correctness validation.
-- Pre-declare issue #88's approximately 121-block/second throughput and roughly
-  five-hour expectation. Do not tune or work around it in this issue and do not
-  report the known cost as a native regression.
+- Report measured blocks per second rather than assuming issue #88's historical
+  rate. Record any material rate change by era; do not tune or work around it in
+  this issue.
 - Retain manifests, logs, exports and comparison output under the dedicated
   `mainnet-0-100` evidence root.
 
@@ -762,10 +791,11 @@ projection write and history read prove the closed-world runtime surface.
 ### Validate only devnet
 
 Rejected. Devnet is the fast closed-world path and can exercise epoch writers,
-but its tiny synthetic data is not a correctness oracle. The fixed preprod
+but its tiny synthetic data is not a correctness oracle. The recorded preprod
 JVM/native differential is required. A bounded mainnet 0-through-100 parity
-gate then runs last solely to exercise Byron genesis under the known issue #87
-correctness limitation and issue #88 performance cost.
+gate then runs last to exercise the much larger Byron genesis distribution,
+assert that initial capture against the genesis file, and measure the bounded
+JVM/native path including its observed throughput.
 
 ## Consequences
 
@@ -816,12 +846,11 @@ an accepted release state for this ADR.
    lifecycle to the acceptance surface. Exempting it must be explicit and leaves
    Windows native projection as a recorded coverage gap; the existing Windows
    plugin-catalog smoke alone is not projection evidence.
-4. If the preprod genesis-to-188 history estimate reaches the 8 GiB soft budget,
-   decide whether the test budget may be raised before launch or whether the
-   fixed comparison range must change. No agent may alter the shipped budget
-   silently or during the run.
-5. Ratify ADR-052, then separately authorize commit, push and creation of the
-   stacked PR. ADR ratification does not authorize merge.
+4. Review the measured preprod history usage and decide whether the shipped
+   8 GiB soft budget remains appropriate. No agent may alter it silently or
+   during a run.
+5. Ratify ADR-052. Commit, push and creation of the reviewed, tested stacked PR
+   are already authorized; ADR ratification does not authorize merge.
 
 ## Acceptance
 
