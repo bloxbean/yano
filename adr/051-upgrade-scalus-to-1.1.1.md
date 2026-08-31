@@ -262,6 +262,29 @@ owns every node start, stop and restart. The coordinator runs only module tests
 from a detached worktree at Codex's exact commit and never starts a node. Every
 running-node gate records its explicit data directory.
 
+Baseline and candidate node-backed comparisons must use the stock
+`app/config/network/devnet/` genesis set used by the retained off-chain
+baselines, not the separate `devnet/pv10/` set. The effective protocol major
+version must be `11`, and the Plutus V1, V2, and V3 cost models must contain
+`332`, `332`, and `350` entries respectively. The genesis root, protocol major
+version, and all three cost-model cardinalities are must-not-change values
+across the baseline and candidate runs. A profile with the same network magic,
+epoch length, slot length, and active-slots coefficient is not equivalent when
+its protocol version or cost models differ.
+
+Before every node start, run a repository-wide process check with
+`pgrep -fl "yano.jar|/yano( |$)"` in addition to the gate's port and lock
+checks. Every long-running node must start in its own POSIX session under
+`nohup`, redirect to an identified log, write an identified pidfile, and remain
+alive after an unrelated tool call.
+
+Before baseline or candidate throughput measurement, record `uptime` and the
+top five CPU consumers and verify that no competing build or other heavy job is
+running. Record the same evidence at the end. A contended run may provide
+functional and CPU-independent evaluator evidence, but its throughput, latency
+and wall-clock figures are not valid comparison data. Baseline and candidate
+must use this identical quiet-machine precondition.
+
 #### Gate A — bridge and application JVM tests
 
 1. `./gradlew :scalus-bridge:test`
@@ -290,6 +313,11 @@ Build with Oracle GraalVM 25.3 and `--gc=G1`, using the repository's documented
 release-parity native build configuration. Record the builder image digest,
 candidate commit, native binary path and SHA-256, effective GC and all runtime
 settings.
+
+Before the native smoke submits or evaluates a script, verify from the native
+node's runtime log or API that the effective protocol major version is `11`
+and the Plutus V3 cost model contains `350` entries. Record both observed
+values in the gate report; naming an intended genesis path is not sufficient.
 
 The native smoke must start the built binary, reach readiness and execute both:
 
@@ -328,9 +356,13 @@ identified by path and SHA-256, for `test-native-haskell-sync` and the Gate C
 BLS probe.
 The app-chain skills are outside this ADR's scope.
 
-For issue #106, the committed PV10 genesis is authoritative over stale values
-in the local skill text: `epochLength=1200` and `slotLength=0.2`, so the
-two-full-epoch sync threshold is past slot 2400. Oracle GraalVM 25.3 with
+For issue #106, the stock devnet genesis set is authoritative over any PV10
+selection in the local skill text. If `test-native-haskell-sync` selects PV10,
+override it to stock devnet and record the override. Before accepting the
+skill result, verify from the running node's log or API and record that the
+effective protocol major version is `11` and the Plutus V3 cost model contains
+`350` entries. Stock `epochLength=1200` and `slotLength=0.2` make the
+two-full-epoch sync threshold past slot 2400. Oracle GraalVM 25.3 with
 `--gc=G1` likewise supersedes the native skills' older GraalVM 24 prerequisite
 for every native gate in this ADR.
 

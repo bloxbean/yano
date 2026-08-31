@@ -84,6 +84,17 @@ class YanoValueNotConservedUTxOValidatorTest:
       result.left.exists(_.isInstanceOf[TransactionException.ValueNotConservedUTxOException])
     )
 
+  @Test
+  def noCertificatesHaveZeroExcessAndMatchUpstreamValidation(): Unit =
+    val (context, state, tx) = validationFixture(Value.ada(1_000), Seq.empty)
+
+    assertEquals(0L, excess(tx.body.value.certificates.toSeq, state.certState.pstate))
+    assertEquals(
+      ValueNotConservedUTxOValidator.validate(context, state, tx),
+      YanoValueNotConservedUTxOValidator.validate(context, state, tx)
+    )
+    assertEquals(Right(()), YanoValueNotConservedUTxOValidator.validate(context, state, tx))
+
   private def excess(certificates: Iterable[Certificate], state: PoolsState): Long =
     YanoValueNotConservedUTxOValidator.excessPoolRegistrationDeposit(
       certificates, state, poolDeposit)
@@ -109,19 +120,29 @@ class YanoValueNotConservedUTxOValidatorTest:
       poolMetadata = None
     )
 
-  private def validationFixture(outputValue: Value): (Context, State, Transaction) =
+  private def validationFixture(
+      outputValue: Value,
+      certificates: Seq[Certificate] = Seq(registration(poolA))
+  ): (Context, State, Transaction) =
     val input = TransactionInput(TransactionHash.fromHex("05" * 32), 0)
     val inputValue = Value.ada(1_000)
     val address = Address(Network.Mainnet, Credential.KeyHash(AddrKeyHash.fromHex("06" * 28)))
     val certState = CertState(pstate = pools(poolA))
-    val tx = Transaction(
-      TransactionBody(
-        inputs = TaggedSortedSet(input),
-        outputs = IndexedSeq(Sized(TransactionOutput(address, outputValue))),
-        fee = Coin.zero,
-        certificates = TaggedOrderedStrictSet(registration(poolA))
-      )
-    )
+    val body =
+      if certificates.isEmpty then
+        TransactionBody(
+          inputs = TaggedSortedSet(input),
+          outputs = IndexedSeq(Sized(TransactionOutput(address, outputValue))),
+          fee = Coin.zero
+        )
+      else
+        TransactionBody(
+          inputs = TaggedSortedSet(input),
+          outputs = IndexedSeq(Sized(TransactionOutput(address, outputValue))),
+          fee = Coin.zero,
+          certificates = TaggedOrderedStrictSet(certificates*)
+        )
+    val tx = Transaction(body)
     val state = State(
       utxos = Map(input -> TransactionOutput(address, inputValue)),
       certState = certState
