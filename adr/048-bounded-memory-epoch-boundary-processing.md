@@ -1021,7 +1021,7 @@ Introduce temporary rollout controls:
 yano:
   epoch-boundary:
     stake-source: auto       # auto | index | scan
-    reward-mode: legacy      # legacy | streaming
+    reward-mode: streaming   # legacy | streaming
     max-batch-operations: 10000
     max-batch-bytes: 4194304
 ```
@@ -1046,8 +1046,8 @@ Semantics:
 The current `yano.account.stake-balance-index-enabled` default remains `true`.
 Changing the epoch source does not bypass `isStakeBalanceIndexReady()`.
 
-Once mainnet acceptance passes, `reward-mode` defaults to `streaming` and
-`stake-source: auto` remains the network-neutral default. Legacy code is removed
+Mainnet acceptance passed on 2026-08-31, so `reward-mode` now defaults to
+`streaming` and `stake-source: auto` remains the network-neutral default. Legacy code is removed
 only after at least two released versions or the project's normal compatibility
 window, with retained golden fixtures capable of detecting later drift.
 
@@ -1715,8 +1715,8 @@ history gaps.
 
 ## Rollback and disable plan
 
-- Before the default cutover, set `stake-source: scan` and
-  `reward-mode: legacy` to restore the old algorithms.
+- To roll back the accepted algorithm defaults, set `stake-source: scan` and
+  `reward-mode: legacy` at a complete boundary.
 - A deployment may disable the new path only at a complete boundary. When
   journal-v1 is enabled, startup first resumes any `rollback-v1 IN_PROGRESS`
   state; only when no rollback is in progress may it reconcile

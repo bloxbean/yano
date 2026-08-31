@@ -356,7 +356,7 @@ public class YanoProducer {
             defaultValue = "4194304")
     int epochBoundaryMaxBatchBytes;
     @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE,
-            defaultValue = "legacy")
+            defaultValue = "streaming")
     String epochRewardMode;
     // Epoch subsystem config
     @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")

@@ -258,7 +258,7 @@ yano:
   account:
     stake-balance-index-enabled: true
   epoch-boundary:
-    reward-mode: legacy
+    reward-mode: streaming
     max-batch-operations: 10000
     max-batch-bytes: 4194304
   # History is written by the canonical projection outbox. The replay-worker
