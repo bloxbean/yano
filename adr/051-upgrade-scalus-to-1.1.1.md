@@ -91,6 +91,15 @@ without it. Its certificate deposit calculation consequently charges
 already active pool. Cardano charges a deposit only for a distinct pool ID not
 active at transaction start.
 
+The `1.1.1` bytecode makes the asymmetry precise. Consumed-side staking and
+DRep refunds call private helpers `lookupStakingDeposit$1(CertState,
+Credential)` and `lookupDRepDeposit$1(CertState, Credential)`. Produced-side
+certificate deposits call private
+`conwayTotalDepositsTxCerts(Transaction, ProtocolParams)`, which receives no
+certificate or pool state. The upstream repair is therefore to thread the
+transaction-start pool set into `conwayTotalDepositsTxCerts` and its
+`produced` caller, matching the state-aware refund design.
+
 Yano currently corrects the excess produced value by subtracting one pool
 deposit for:
 
@@ -320,6 +329,12 @@ this order:
 Build the Oracle GraalVM 25.3 G1 native binary once. Reuse that exact binary,
 identified by path and SHA-256, for both native skills and the Gate C BLS probe.
 The app-chain skills are outside this ADR's scope.
+
+For issue #106, the committed PV10 genesis is authoritative over stale values
+in the local skill text: `epochLength=1200` and `slotLength=0.2`, so the
+two-full-epoch sync threshold is past slot 2400. Oracle GraalVM 25.3 with
+`--gc=G1` likewise supersedes the native skills' older GraalVM 24 prerequisite
+for every native gate in this ADR.
 
 Then run all five steps of
 `/Users/satya/Downloads/yano-ccl-test/run-suite.sh <label> <api-url> <node-pid>`:

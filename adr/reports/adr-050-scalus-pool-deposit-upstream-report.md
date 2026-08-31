@@ -14,6 +14,15 @@ the transaction and protocol parameters. Its `conwayTotalDepositsTxCerts` calls
 `Certificate.shelleyTotalDeposits`, which adds `stakePoolDeposit` for every
 `PoolRegistration` certificate.
 
+Scalus `1.1.1` bytecode narrows the missing state to one private function.
+Consumed-side staking and DRep refunds use
+`lookupStakingDeposit$1(CertState, Credential)` and
+`lookupDRepDeposit$1(CertState, Credential)`, while produced-side certificate
+deposits use `conwayTotalDepositsTxCerts(Transaction, ProtocolParams)` with no
+state parameter. Threading the transaction-start pool set through that method
+and `produced` would make pool deposits state-aware in the same way refunds
+already are.
+
 The Cardano ledger charges that deposit only for a pool ID absent from the
 transaction-start `psStakePools` map. Re-registering an active pool is an update
 and must not pay another deposit. Duplicate registrations for one new pool in a

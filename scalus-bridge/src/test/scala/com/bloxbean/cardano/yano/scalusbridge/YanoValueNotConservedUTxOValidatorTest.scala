@@ -15,11 +15,15 @@ class YanoValueNotConservedUTxOValidatorTest:
   def swapsExactlyOneScalusDefaultValidator(): Unit =
     val defaultValidators = CardanoMutator.defaultSTSs.values.collect {
       case validator: STS.Validator => validator
-    }.toSet
-    val actualValidators = YanoCardanoMutator.validators.toSet
+    }.toSeq
+    val actualValidators = YanoCardanoMutator.validators.toSeq
 
-    assertEquals(Set(ValueNotConservedUTxOValidator), defaultValidators.diff(actualValidators))
-    assertEquals(Set(YanoValueNotConservedUTxOValidator), actualValidators.diff(defaultValidators))
+    assertEquals(1, defaultValidators.count(_ eq ValueNotConservedUTxOValidator))
+    assertEquals(0, actualValidators.count(_ eq ValueNotConservedUTxOValidator))
+    assertEquals(1, actualValidators.count(_ eq YanoValueNotConservedUTxOValidator))
+
+    assertEquals(Set(ValueNotConservedUTxOValidator), defaultValidators.toSet.diff(actualValidators.toSet))
+    assertEquals(Set(YanoValueNotConservedUTxOValidator), actualValidators.toSet.diff(defaultValidators.toSet))
     assertEquals(defaultValidators.size, actualValidators.size)
     assertEquals(defaultValidators.toSeq.map(_.name).sorted, YanoCardanoMutator.validators.map(_.name))
     assertEquals(
