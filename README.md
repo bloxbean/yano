@@ -52,7 +52,7 @@ Yano's initial goal is to fill three roles:
 
 ### Requirements
 
-- **JDK 25** (Temurin or Oracle GraalVM 25; GraalVM is required only for native image builds)
+- **JDK 25** (Temurin or Oracle GraalVM); native image builds require **Oracle GraalVM 25.3**
 - Gradle 9.4.1 (use the bundled `./gradlew`)
 
 ### Build
@@ -160,7 +160,7 @@ binary (`app/build/yano`).
 ## Native image (GraalVM)
 
 ```bash
-# JAVA_HOME must point at GraalVM Java 25
+# JAVA_HOME must point at Oracle GraalVM 25.3
 ./gradlew :app:build -Dquarkus.profile=native
 ./app/build/yano -Dquarkus.profile=devnet -Dquarkus.http.port=7070
 ```
