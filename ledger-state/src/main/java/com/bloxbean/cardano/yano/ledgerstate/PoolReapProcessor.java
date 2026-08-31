@@ -68,6 +68,7 @@ final class PoolReapProcessor {
     Result process(int epoch, long boundarySlot) {
         long started = System.currentTimeMillis();
         Progress progress = readProgress();
+        boolean resuming = progress != null;
         if (progress != null) {
             validateProgress(progress, epoch, boundarySlot);
         }
@@ -93,6 +94,10 @@ final class PoolReapProcessor {
 
         MutableMetrics metrics = new MutableMetrics(
                 plan.entries().size(), progress.nextSequence());
+        log.info("POOLREAP epoch {} {}: retiringPools={}, stage={}, nextSequence={}",
+                epoch, resuming ? "resuming" : "started", plan.entries().size(),
+                progress.stage() == STAGE_DELEGATIONS ? "delegations" : "pools",
+                progress.nextSequence());
         if (progress.stage() == STAGE_DELEGATIONS) {
             progress = reapDelegations(plan, progress, metrics);
         }

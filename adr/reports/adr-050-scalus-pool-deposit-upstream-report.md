@@ -3,7 +3,9 @@
 ## Affected version
 
 `org.scalus:scalus-cardano-ledger_3:0.18.2`. The same implementation is present
-on Scalus `master` as checked on 2026-08-31.
+on Scalus `master` as checked on 2026-08-31. Bytecode inspection of the latest
+Maven Central release, `1.1.1`, also confirms that `produced` still has no
+`CertState` parameter.
 
 ## Problem
 
@@ -37,4 +39,3 @@ deposits from the distinct pool IDs registered by the transaction that are not
 already present in `pstate.stakePools`. Add tests for active update, new pool,
 duplicate new registration, mixed active/new registrations and both retirement
 orders.
-
