@@ -2,7 +2,9 @@ package com.bloxbean.cardano.yano.runtime.apply;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.runtime.config.ResourceProfile;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -116,6 +118,10 @@ public final class LedgerApplyProcessor implements AutoCloseable {
      * @param reservedControlSlots capacity reserved for rollback, disconnect, and recovery barriers
      */
     public record Policy(int maxQueuedItems, long maxQueuedDecodedBytes, int reservedControlSlots) {
+        private static final int DEFAULT_MAX_QUEUED_ITEMS = 10_000;
+        private static final long DEFAULT_MAX_QUEUED_DECODED_BYTES = 64L * 1024L * 1024L;
+        private static final int DEFAULT_RESERVED_CONTROL_SLOTS = 64;
+
         public Policy {
             if (maxQueuedItems < 1) {
                 throw new IllegalArgumentException("maxQueuedItems must be positive");
@@ -130,9 +136,32 @@ public final class LedgerApplyProcessor implements AutoCloseable {
 
         /**
          * Default queue policy sized for mainnet sync while keeping control events available.
+         *
+         * <p>The byte estimate is the encoded CBOR length, while queued work retains the
+         * larger decoded block graph. Keep the default encoded-byte budget conservative
+         * and allow operators to override it through system properties when profiling a
+         * specific deployment.</p>
          */
         public static Policy defaults() {
-            return new Policy(10_000, 256L * 1024L * 1024L, 64);
+            ResourceProfile profile = ResourceProfile.current();
+            return new Policy(
+                    positiveIntProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_ITEMS,
+                            DEFAULT_MAX_QUEUED_ITEMS),
+                    positiveLongProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES,
+                            profile.isLowMemory() ? 32L * 1024L * 1024L
+                                    : DEFAULT_MAX_QUEUED_DECODED_BYTES),
+                    positiveIntProperty(YanoPropertyKeys.LedgerApply.RESERVED_CONTROL_SLOTS,
+                            DEFAULT_RESERVED_CONTROL_SLOTS));
+        }
+
+        private static int positiveIntProperty(String name, int defaultValue) {
+            int value = Integer.getInteger(name, defaultValue);
+            return value > 0 ? value : defaultValue;
+        }
+
+        private static long positiveLongProperty(String name, long defaultValue) {
+            long value = Long.getLong(name, defaultValue);
+            return value > 0 ? value : defaultValue;
         }
     }
 
@@ -317,7 +346,38 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                                                         String description,
                                                         long estimatedBytes,
                                                         ApplyWork work) {
-        WorkItem item = new WorkItem(
+        return enqueueApplyBlock(generation, description, estimatedBytes, work, false);
+    }
+
+    /**
+     * Enqueues block application work, waiting for queue capacity instead of failing
+     * the peer generation when the normal catch-up producer reaches the memory budget.
+     *
+     * <p>The wait applies backpressure to body decoding while the independent ledger
+     * worker drains earlier blocks. Generation close, processor shutdown, and thread
+     * interruption all release the waiter.</p>
+     */
+    public CompletableFuture<Outcome> enqueueApplyBlockBackpressured(long generation,
+                                                                     String description,
+                                                                     long estimatedBytes,
+                                                                     ApplyWork work) {
+        return enqueueApplyBlock(generation, description, estimatedBytes, work, true);
+    }
+
+    private CompletableFuture<Outcome> enqueueApplyBlock(long generation,
+                                                         String description,
+                                                         long estimatedBytes,
+                                                         ApplyWork work,
+                                                         boolean waitForCapacity) {
+        WorkItem item = applyBlockItem(generation, description, estimatedBytes, work);
+        return waitForCapacity ? enqueueDataBackpressured(item) : enqueueData(item);
+    }
+
+    private WorkItem applyBlockItem(long generation,
+                                    String description,
+                                    long estimatedBytes,
+                                    ApplyWork work) {
+        return new WorkItem(
                 WorkKind.APPLY_BLOCK,
                 generation,
                 description,
@@ -326,7 +386,6 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                 false,
                 Objects.requireNonNull(work, "work"),
                 new CompletableFuture<>());
-        return enqueueData(item);
     }
 
     /**
@@ -578,6 +637,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                 dataQueue.forEach(item -> item.future().cancel(false));
                 dataQueue.clear();
                 queuedDecodedBytes = 0;
+                accountingLock.notifyAll();
             }
         }
         Thread worker = workerThread;
@@ -620,6 +680,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                 dataQueue.forEach(item -> item.future().cancel(false));
                 dataQueue.clear();
                 queuedDecodedBytes = 0;
+                accountingLock.notifyAll();
             }
             cancelQueue(dataQueue, true);
             cancelQueue(controlQueue, false);
@@ -685,6 +746,57 @@ public final class LedgerApplyProcessor implements AutoCloseable {
         }
     }
 
+    private CompletableFuture<Outcome> enqueueDataBackpressured(WorkItem item) {
+        long waitStartedNanos = 0;
+        synchronized (accountingLock) {
+            if (item.estimatedBytes() > policy.maxQueuedDecodedBytes()) {
+                rejectDataItem(item, "Ledger apply item exceeds decoded-byte queue limit");
+                return item.future();
+            }
+            while (true) {
+                if (closing.get() || generations.get(item.generation()) != GenerationState.OPEN) {
+                    item.future().cancel(false);
+                    return item.future();
+                }
+                if (hasDataCapacityLocked(item.estimatedBytes())) {
+                    queuedDecodedBytes += item.estimatedBytes();
+                    if (dataQueue.offer(item)) {
+                        if (waitStartedNanos != 0) {
+                            long waitedMillis = TimeUnit.NANOSECONDS.toMillis(
+                                    System.nanoTime() - waitStartedNanos);
+                            if (waitedMillis >= 1_000) {
+                                log.info("Ledger apply producer backpressure released: waitedMs={}, "
+                                                + "queueDepth={}, queuedDecodedBytes={}",
+                                        waitedMillis, dataQueue.size(), queuedDecodedBytes);
+                            }
+                        }
+                        return item.future();
+                    }
+                    queuedDecodedBytes -= item.estimatedBytes();
+                }
+                if (waitStartedNanos == 0) {
+                    waitStartedNanos = System.nanoTime();
+                }
+                try {
+                    accountingLock.wait(1_000L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    if (closing.get() || generations.get(item.generation()) != GenerationState.OPEN) {
+                        item.future().cancel(false);
+                    } else {
+                        rejectDataItem(item, "Interrupted while waiting for ledger apply queue capacity");
+                    }
+                    return item.future();
+                }
+            }
+        }
+    }
+
+    private boolean hasDataCapacityLocked(long estimatedBytes) {
+        return dataQueue.remainingCapacity() > 0
+                && estimatedBytes <= policy.maxQueuedDecodedBytes() - queuedDecodedBytes;
+    }
+
     private void rejectDataItem(WorkItem item, String message) {
         RejectedExecutionException rejection = new RejectedExecutionException(message);
         item.future().completeExceptionally(rejection);
@@ -732,6 +844,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                 if (queuedDecodedBytes < 0) {
                     queuedDecodedBytes = 0;
                 }
+                accountingLock.notifyAll();
             }
             return item;
         }
@@ -1085,6 +1198,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
         if (queuedDecodedBytes < 0) {
             queuedDecodedBytes = 0;
         }
+        accountingLock.notifyAll();
         return rollbacks;
     }
 
@@ -1115,6 +1229,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
             if (queuedDecodedBytes < 0) {
                 queuedDecodedBytes = 0;
             }
+            accountingLock.notifyAll();
         }
     }
 

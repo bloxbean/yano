@@ -228,6 +228,11 @@ public interface LedgerStateProvider extends OpCertCounterProvider {
         return java.util.Set.of();
     }
 
+    /** Point lookup used by bounded reward-input assembly. */
+    default boolean isStakeCredentialRegistered(String credential) {
+        return getAllRegisteredCredentials().contains(credential);
+    }
+
     /**
      * Get credentials whose last stake event in [startSlot, endSlot) is DEREGISTRATION.
      * Used for reward calculation to identify deregistered accounts within an epoch.
@@ -238,6 +243,18 @@ public interface LedgerStateProvider extends OpCertCounterProvider {
      */
     default java.util.Set<String> getDeregisteredAccountsInSlotRange(long startSlot, long endSlot) {
         return java.util.Set.of();
+    }
+
+    /**
+     * Filtered form that may avoid retaining event state for credentials irrelevant
+     * to the reward snapshot.
+     */
+    default java.util.Set<String> getDeregisteredAccountsInSlotRange(
+            long startSlot, long endSlot, java.util.Set<String> relevantCredentials) {
+        java.util.Set<String> result = new java.util.HashSet<>(
+                getDeregisteredAccountsInSlotRange(startSlot, endSlot));
+        result.retainAll(relevantCredentials);
+        return result;
     }
 
     /**

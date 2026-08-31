@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
+import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
@@ -48,6 +49,16 @@ import java.util.function.Supplier;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SyncSubsystemTest {
+
+    @Test
+    void reconnectAheadOfBodySeedsEpochFromDurableBodyTip() {
+        var bodyTip = new ChainTip(23_172_445L, new byte[32], 726_489L);
+
+        assertThat(SyncSubsystem.durableEpochResumeSlot(24_477_664L, bodyTip))
+                .isEqualTo(23_172_445L);
+        assertThat(SyncSubsystem.durableEpochResumeSlot(24_477_664L, null))
+                .isEqualTo(24_477_664L);
+    }
 
     @Test
     void ownsProgressCountersAndCloseHealth() {

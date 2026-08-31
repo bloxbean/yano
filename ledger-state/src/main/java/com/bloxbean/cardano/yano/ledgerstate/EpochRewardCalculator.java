@@ -2,8 +2,10 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.account.RewardType;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import org.cardanofoundation.rewards.calculation.EpochCalculation;
 import org.cardanofoundation.rewards.calculation.config.NetworkConfig;
@@ -13,6 +15,10 @@ import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
+import org.rocksdb.ReadOptions;
+import org.rocksdb.Snapshot;
+import org.rocksdb.WriteBatch;
+import org.rocksdb.WriteOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,6 +26,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
@@ -45,7 +52,10 @@ public class EpochRewardCalculator {
     private volatile boolean enabled;
 
     // Optional reference for querying retired pools and registered credentials
-    private volatile com.bloxbean.cardano.yano.api.account.LedgerStateProvider ledgerStateProvider;
+    private volatile LedgerStateProvider ledgerStateProvider;
+    // Reward calculation is serialized on the boundary thread, so this invocation-local map
+    // deliberately needs no synchronization and must never survive a boundary or restore.
+    private Map<PoolParamsAtEpochKey, Optional<LedgerStateProvider.PoolParams>> boundaryPoolParamsMemo;
 
     // Optional reference to the account state store for slot/epoch helpers and event queries
     private volatile DefaultAccountStateStore accountStateStore;
@@ -53,13 +63,14 @@ public class EpochRewardCalculator {
     // Optional era metadata for reward-rule decisions. NetworkConfig hardfork epochs are fallback only.
     private volatile EraProvider eraProvider;
     private volatile Integer loggedEffectiveVasilHardforkEpoch;
+    private volatile String rewardMode = "legacy";
 
     // CF NetworkConfig — built once from genesis at startup, or resolved per-magic (legacy)
     private volatile NetworkConfig cfNetworkConfig;
 
     // Per-invocation batch for delta-aware reward distribution.
     // Set by beginRewardBatch(), committed by commitRewardBatch().
-    private org.rocksdb.WriteBatch rewardBatch;
+    private WriteBatch rewardBatch;
     private List<DefaultAccountStateStore.DeltaOp> rewardDeltaOps;
     private DefaultAccountStateStore.BatchStateOverlay rewardStateOverlay;
     private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
@@ -67,6 +78,21 @@ public class EpochRewardCalculator {
     private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary archiveBoundary;
     private com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
             com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact> rewardArchiveWriter;
+    private static final byte[] REWARD_PROGRESS_KEY =
+            "meta.reward.progress.v1".getBytes(StandardCharsets.UTF_8);
+    private static final byte REWARD_FLAGS_PREFIX = (byte) 0xFE;
+    static final int REWARD_FLAG_DEREGISTERED_AT_STABILITY = 1;
+    static final int REWARD_FLAG_DEREGISTERED_AT_BOUNDARY = 1 << 1;
+    static final int REWARD_FLAG_REGISTERED_SINCE = 1 << 2;
+    static final int REWARD_FLAG_REGISTERED_UNTIL = 1 << 3;
+    static final int REWARD_FLAG_REGISTERED_NOW = 1 << 4;
+    private int rewardArchiveEpoch;
+    private int rewardChunkSequence;
+    private String rewardResumeAfterPool;
+    private BigInteger rewardResumeDistributed = BigInteger.ZERO;
+    private BigInteger rewardResumeUnspendable = BigInteger.ZERO;
+    private int maxBatchOperations = 10_000;
+    private int maxBatchBytes = 4 * 1024 * 1024;
 
     public EpochRewardCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot, boolean enabled) {
@@ -93,6 +119,7 @@ public class EpochRewardCalculator {
             rewardStateOverlay.clear();
             rewardStateOverlay = null;
         }
+        clearBoundaryPoolParamsMemo();
         log.info("EpochRewardCalculator reinitialized after snapshot restore");
     }
 
@@ -104,7 +131,7 @@ public class EpochRewardCalculator {
         this.cfNetworkConfig = config;
     }
 
-    public void setLedgerStateProvider(com.bloxbean.cardano.yano.api.account.LedgerStateProvider provider) {
+    public void setLedgerStateProvider(LedgerStateProvider provider) {
         this.ledgerStateProvider = provider;
     }
 
@@ -127,6 +154,32 @@ public class EpochRewardCalculator {
         this.eraProvider = eraProvider;
     }
 
+    public void setRewardMode(String rewardMode) {
+        String normalized = rewardMode == null ? "legacy"
+                : rewardMode.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.equals("legacy") && !normalized.equals("streaming")) {
+            throw new IllegalArgumentException("Unsupported epoch reward mode: " + rewardMode);
+        }
+        this.rewardMode = normalized;
+    }
+
+    String rewardMode() {
+        return rewardMode;
+    }
+
+    String executionModeForEpoch(int epoch) {
+        return "streaming".equals(rewardMode) && hasCompletePoolMajorSnapshot(epoch - 4)
+                ? "streaming" : "legacy";
+    }
+
+    public void setBatchLimits(int maxOperations, int maxBytes) {
+        if (maxOperations <= 0 || maxBytes <= 0) {
+            throw new IllegalArgumentException("Reward batch limits must be positive");
+        }
+        this.maxBatchOperations = maxOperations;
+        this.maxBatchBytes = maxBytes;
+    }
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -136,12 +189,14 @@ public class EpochRewardCalculator {
      * Must be called before calculateAndDistribute() and paired with commitRewardBatch().
      */
     void beginRewardBatch(int archiveEpoch, String part) {
-        this.rewardBatch = new org.rocksdb.WriteBatch();
+        this.rewardArchiveEpoch = archiveEpoch;
+        this.rewardBatch = new WriteBatch();
         this.rewardDeltaOps = new ArrayList<>();
         this.rewardStateOverlay = new DefaultAccountStateStore.BatchStateOverlay();
         this.rewardArchiveWriter = archiveStaging.enabled(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
                 ? archiveStaging.openRewards(archiveEpoch, part) : null;
+        loadRewardProgress(archiveEpoch);
     }
 
     /**
@@ -165,10 +220,13 @@ public class EpochRewardCalculator {
     void commitRewardBatch(long boundarySlot, byte phase) throws RocksDBException {
         if (rewardBatch == null) return;
         var archiveWriter = rewardArchiveWriter;
-        try (var wo = new org.rocksdb.WriteOptions()) {
-            accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardBatch, rewardDeltaOps);
-            db.write(wo, rewardBatch);
+        try (var wo = new WriteOptions()) {
+            accountStateStore.deleteStateWithDelta(REWARD_PROGRESS_KEY, rewardBatch,
+                    rewardDeltaOps, rewardStateOverlay);
+            accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardChunkSequence,
+                    rewardBatch, rewardDeltaOps);
             if (archiveWriter != null) archiveWriter.commit();
+            db.write(wo, rewardBatch);
         } finally {
             if (archiveWriter != null) archiveWriter.close();
             rewardBatch.close();
@@ -179,7 +237,116 @@ public class EpochRewardCalculator {
                 rewardStateOverlay.clear();
             }
             rewardStateOverlay = null;
+            rewardResumeAfterPool = null;
+            rewardResumeDistributed = BigInteger.ZERO;
+            rewardResumeUnspendable = BigInteger.ZERO;
         }
+    }
+
+    private void maybeFlushRewardChunk(String poolId,
+                                       StreamingEpochRewardOrchestrator.RunningTotals totals) {
+        if (rewardDeltaOps.size() < maxBatchOperations
+                && estimatedRewardDeltaBytes() < maxBatchBytes) {
+            return;
+        }
+        flushRewardChunk(poolId, totals);
+    }
+
+    private int estimatedRewardDeltaBytes() {
+        int total = 0;
+        for (DefaultAccountStateStore.DeltaOp operation : rewardDeltaOps) {
+            total += operation.key().length + 16;
+            if (operation.prevValue() != null) total += operation.prevValue().length;
+        }
+        return total;
+    }
+
+    private void flushRewardChunk(String poolId,
+                                  StreamingEpochRewardOrchestrator.RunningTotals totals) {
+        try {
+            byte[] progress = encodeRewardProgress(rewardArchiveEpoch, rewardChunkSequence,
+                    poolId, totals.distributed(), totals.unspendable());
+            accountStateStore.putStateWithDelta(REWARD_PROGRESS_KEY, progress, rewardBatch,
+                    rewardDeltaOps, rewardStateOverlay);
+            long boundarySlot = accountStateStore.slotForEpochStart(rewardArchiveEpoch);
+            accountStateStore.commitBoundaryDelta(boundarySlot,
+                    DefaultAccountStateStore.PHASE_REWARDS, rewardChunkSequence,
+                    rewardBatch, rewardDeltaOps);
+            try (var options = new WriteOptions()) {
+                db.write(options, rewardBatch);
+            }
+            rewardBatch.close();
+            rewardBatch = new WriteBatch();
+            rewardDeltaOps = new ArrayList<>();
+            rewardStateOverlay.clear();
+            rewardChunkSequence++;
+            rewardResumeAfterPool = poolId;
+            rewardResumeDistributed = totals.distributed();
+            rewardResumeUnspendable = totals.unspendable();
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to commit bounded reward chunk for pool " + poolId, e);
+        }
+    }
+
+    private void loadRewardProgress(int epoch) {
+        rewardChunkSequence = 0;
+        rewardResumeAfterPool = null;
+        rewardResumeDistributed = BigInteger.ZERO;
+        rewardResumeUnspendable = BigInteger.ZERO;
+        if (db == null || cfState == null) return;
+        try {
+            byte[] value = db.get(cfState, REWARD_PROGRESS_KEY);
+            if (value == null) return;
+            RewardProgress progress = decodeRewardProgress(value);
+            if (progress.epoch() != epoch) {
+                throw new IllegalStateException("Reward progress belongs to epoch "
+                        + progress.epoch() + " while starting epoch " + epoch);
+            }
+            rewardChunkSequence = progress.sequence() + 1;
+            rewardResumeAfterPool = progress.poolId();
+            rewardResumeDistributed = progress.distributed();
+            rewardResumeUnspendable = progress.unspendable();
+            log.info("Resuming bounded rewards for epoch {} after pool {} at chunk {}",
+                    epoch, rewardResumeAfterPool, rewardChunkSequence);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read reward progress", e);
+        }
+    }
+
+    private static byte[] encodeRewardProgress(int epoch, int sequence, String poolId,
+                                               BigInteger distributed,
+                                               BigInteger unspendable) {
+        byte[] pool = HexUtil.decodeHexString(poolId);
+        byte[] distributedBytes = distributed.toByteArray();
+        byte[] unspendableBytes = unspendable.toByteArray();
+        if (pool.length != 28 || distributedBytes.length > 0xFFFF
+                || unspendableBytes.length > 0xFFFF) {
+            throw new IllegalArgumentException("Invalid reward progress value");
+        }
+        return ByteBuffer.allocate(4 + 4 + 28 + 2 + distributedBytes.length
+                        + 2 + unspendableBytes.length).order(ByteOrder.BIG_ENDIAN)
+                .putInt(epoch).putInt(sequence).put(pool)
+                .putShort((short) distributedBytes.length).put(distributedBytes)
+                .putShort((short) unspendableBytes.length).put(unspendableBytes).array();
+    }
+
+    private static RewardProgress decodeRewardProgress(byte[] value) {
+        ByteBuffer buffer = ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN);
+        int epoch = buffer.getInt();
+        int sequence = buffer.getInt();
+        byte[] pool = new byte[28];
+        buffer.get(pool);
+        byte[] distributed = new byte[buffer.getShort() & 0xFFFF];
+        buffer.get(distributed);
+        byte[] unspendable = new byte[buffer.getShort() & 0xFFFF];
+        buffer.get(unspendable);
+        if (buffer.hasRemaining()) throw new IllegalStateException("Malformed reward progress");
+        return new RewardProgress(epoch, sequence, HexUtil.encodeHexString(pool),
+                new BigInteger(distributed), new BigInteger(unspendable));
+    }
+
+    private record RewardProgress(int epoch, int sequence, String poolId,
+                                  BigInteger distributed, BigInteger unspendable) {
     }
 
     /**
@@ -200,6 +367,22 @@ public class EpochRewardCalculator {
             long networkMagic) {
 
         if (!enabled) return Optional.empty();
+
+        beginBoundaryPoolParamsMemo();
+        try {
+            return calculateAndDistributeInternal(
+                    epoch, prevTreasury, prevReserves, paramProvider, networkMagic);
+        } finally {
+            clearBoundaryPoolParamsMemo();
+        }
+    }
+
+    private Optional<EpochCalculationResult> calculateAndDistributeInternal(
+            int epoch,
+            BigInteger prevTreasury,
+            BigInteger prevReserves,
+            EpochParamProvider paramProvider,
+            long networkMagic) {
 
         int stakeEpoch = epoch - 2; // snapshot epoch (N-2)
         int feeEpoch = epoch - 1;   // fee collection epoch (N-1), used for deregistration slot ranges
@@ -231,6 +414,18 @@ public class EpochRewardCalculator {
         // Fees collected during epoch N-2 (stored in epoch fees for stakeEpoch)
         var fees = getEpochFees(stakeEpoch);
 
+        boolean streamingSnapshotAvailable = hasCompletePoolMajorSnapshot(snapshotKey);
+        validateRewardResumePath(epoch, streamingSnapshotAvailable);
+        if ("streaming".equals(rewardMode) && streamingSnapshotAvailable) {
+            return Optional.of(calculateAndDistributeStreaming(
+                    epoch, stakeEpoch, feeEpoch, snapshotKey, prevTreasury, prevReserves,
+                    paramProvider, networkMagic, networkConfig, protocolParams,
+                    paramEpoch, blockCounts, totalBlocks, fees, start));
+        }
+        if ("streaming".equals(rewardMode)) {
+            log.info("Pool-major snapshot {} is unavailable; using legacy reward path", snapshotKey);
+        }
+
         // Stake snapshot: key=snapshotKey captures delegation/stake state at end of that epoch
         var stakeSnapshot = getStakeSnapshot(snapshotKey);
         if (stakeSnapshot.isEmpty()) {
@@ -252,10 +447,7 @@ public class EpochRewardCalculator {
         var rewardRules = resolveRewardRuleContext(epoch, stakeEpoch, protocolParams,
                 blockCounts, totalBlocks, networkConfig);
         protocolParams = rewardRules.protocolParameters();
-        if (rewardRules.postVasilRewardRules()) {
-            log.info("Epoch {} post-Vasil reward rules: rawBlocks={}, poolBlocks={}, paramEpoch={}",
-                    epoch, totalBlocks, rewardRules.blockCount(), paramEpoch);
-        }
+        logPostVasilRewardRules(epoch, totalBlocks, rewardRules, paramEpoch);
 
         var epochInfo = Epoch.builder()
                 .number(stakeEpoch)
@@ -368,6 +560,181 @@ public class EpochRewardCalculator {
         distributeRewards(epoch, result);
 
         return Optional.of(result);
+    }
+
+    private boolean hasCompletePoolMajorSnapshot(int snapshotEpoch) {
+        return accountStateStore != null
+                && accountStateStore.isPoolMajorSnapshotComplete(snapshotEpoch);
+    }
+
+    void validateRewardResumePath(int epoch, boolean streamingSnapshotAvailable) {
+        if (rewardResumeAfterPool != null
+                && (!"streaming".equals(rewardMode) || !streamingSnapshotAvailable)) {
+            throw new IllegalStateException("A bounded streaming reward calculation is in progress for epoch "
+                    + epoch + "; reward-mode must remain streaming and its pool-major snapshot must remain available");
+        }
+    }
+
+    private EpochCalculationResult calculateAndDistributeStreaming(
+            int epoch, int stakeEpoch, int feeEpoch, int snapshotKey,
+            BigInteger previousTreasury, BigInteger previousReserves,
+            EpochParamProvider paramProvider, long networkMagic,
+            NetworkConfig networkConfig, ProtocolParameters protocolParameters,
+            int paramEpoch, Map<String, Long> blockCounts, long totalBlocks, BigInteger fees,
+            long startMillis) {
+        BigInteger totalActiveStake = totalPoolMajorStake(snapshotKey);
+        var rewardRules = resolveRewardRuleContext(epoch, stakeEpoch, protocolParameters,
+                blockCounts, totalBlocks, networkConfig);
+        protocolParameters = rewardRules.protocolParameters();
+        logPostVasilRewardRules(epoch, totalBlocks, rewardRules, paramEpoch);
+        var epochInfo = Epoch.builder()
+                .number(stakeEpoch)
+                .fees(fees)
+                .blockCount((int) rewardRules.blockCount())
+                .activeStake(totalActiveStake)
+                .nonOBFTBlockCount((int) rewardRules.nonOBFTBlockCount())
+                .build();
+        Set<RetiredPool> retiredPools = buildRetiredPools(epoch);
+        StreamingAccountContext accounts = buildStreamingAccountContext(
+                epoch, stakeEpoch, feeEpoch, paramProvider, networkMagic,
+                snapshotKey, retiredPools);
+        HashSet<String> sharedPoolRewardAddresses = new HashSet<>(
+                SharedPoolRewardAddresses.getSharedAddressesWithoutReward(epoch, networkMagic));
+        List<MirCertificate> mirCertificates = buildMirCertificates(feeEpoch);
+
+        try (PreparedRewardFlags rewardFlags = prepareRewardCredentialFlags(snapshotKey, accounts);
+             PoolMajorCursor pools = new PoolMajorCursor(snapshotKey, stakeEpoch, blockCounts,
+                     accounts, rewardFlags)) {
+            EpochCalculationResult result = StreamingEpochRewardOrchestrator.calculate(
+                    epoch, previousReserves, previousTreasury, protocolParameters, epochInfo,
+                    retiredPools, accounts.deregistered(), mirCertificates, pools,
+                    accounts.lateDeregistered(), accounts.registeredSinceLast(),
+                    accounts.registeredUntilNow(), sharedPoolRewardAddresses,
+                    accounts.deregisteredOnBoundary(), networkConfig,
+                    rewardResumeAfterPool, rewardResumeDistributed,
+                    rewardResumeUnspendable,
+                    (poolInput, poolResult, totals, replayed) -> {
+                        if (replayed) {
+                            stagePoolRewardFacts(epoch, poolResult);
+                        } else {
+                            distributePrefetchedPoolReward(
+                                    epoch, poolInput, poolResult);
+                            maybeFlushRewardChunk(poolResult.getPoolId(), totals);
+                        }
+                    });
+            log.info("Streaming reward calculation for epoch {} complete in {}ms: distributed={}, "
+                            + "undistributed={}, rewardsPot={}, poolRewardsPot={}, treasury={}, reserves={}",
+                    epoch, System.currentTimeMillis() - startMillis,
+                    result.getTotalDistributedRewards(), result.getTotalUndistributedRewards(),
+                    result.getTotalRewardsPot(), result.getTotalPoolRewardsPot(),
+                    result.getTreasury(), result.getReserves());
+            return result;
+        }
+    }
+
+    private BigInteger totalPoolMajorStake(int epoch) {
+        BigInteger total = BigInteger.ZERO;
+        byte[] prefix = poolMajorPrefix(epoch);
+        try (ReadOptions options = new ReadOptions().setFillCache(false);
+             RocksIterator iterator = db.newIterator(cfEpochSnapshot, options)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix);
+                 iterator.next()) {
+                total = total.add(AccountStateCborCodec.decodePoolMajorStake(iterator.value()));
+            }
+        }
+        return total;
+    }
+
+    private void logPostVasilRewardRules(int epoch, long totalBlocks,
+                                         RewardRuleContext rewardRules, int paramEpoch) {
+        if (rewardRules.postVasilRewardRules()) {
+            log.info("Epoch {} post-Vasil reward rules: rawBlocks={}, poolBlocks={}, paramEpoch={}",
+                    epoch, totalBlocks, rewardRules.blockCount(), paramEpoch);
+        }
+    }
+
+    private StreamingAccountContext buildStreamingAccountContext(
+            int epoch, int stakeEpoch, int feeEpoch, EpochParamProvider paramProvider,
+            long networkMagic, int snapshotKey, Set<RetiredPool> retiredPools) {
+        long feeEpochStart = accountStateStore.slotForEpochStart(feeEpoch);
+        long feeEpochEnd = accountStateStore.slotForEpochStart(feeEpoch + 1);
+        boolean postBabbage = isPostBabbage(stakeEpoch, getNetworkConfig(networkMagic));
+        long stabilityCutoff = postBabbage ? feeEpochEnd
+                : feeEpochStart + paramProvider.getRandomnessStabilisationWindow();
+        long registeredSinceCutoff = feeEpochStart + (postBabbage
+                ? paramProvider.getEpochLength()
+                : paramProvider.getRandomnessStabilisationWindow());
+        long registeredUntilCutoff = accountStateStore.slotForEpochStart(epoch);
+
+        Set<String> rewardAddresses = poolRewardAddresses(snapshotKey, stakeEpoch);
+        for (RetiredPool retiredPool : retiredPools) {
+            if (retiredPool.getRewardAddress() != null) {
+                rewardAddresses.add(retiredPool.getRewardAddress());
+            }
+        }
+        HashSet<String> deregistered = new HashSet<>();
+        HashSet<String> deregisteredOnBoundary = new HashSet<>();
+        HashSet<String> lateDeregistered = new HashSet<>();
+        HashSet<String> registeredSinceLast = new HashSet<>();
+        HashSet<String> registeredUntilNow = new HashSet<>();
+        for (String address : rewardAddresses) {
+            var summary = accountStateStore.getCredentialEventSummary(address,
+                    stabilityCutoff, feeEpochEnd, registeredSinceCutoff,
+                    registeredUntilCutoff);
+            if (summary.deregisteredAtStability()) deregistered.add(address);
+            if (summary.deregisteredAtBoundary()) deregisteredOnBoundary.add(address);
+            if (!postBabbage && summary.deregisteredAtBoundary()
+                    && !summary.deregisteredAtStability()) lateDeregistered.add(address);
+            if (summary.registeredSince()) registeredSinceLast.add(address);
+            if (summary.registeredUntil()) registeredUntilNow.add(address);
+        }
+        if (postBabbage) {
+            deregistered.addAll(deregisteredOnBoundary);
+            lateDeregistered.clear();
+        }
+        return new StreamingAccountContext(
+                deregistered, lateDeregistered, deregisteredOnBoundary,
+                registeredSinceLast, registeredUntilNow, postBabbage,
+                stabilityCutoff, feeEpochEnd, registeredSinceCutoff,
+                registeredUntilCutoff);
+    }
+
+    private Set<String> poolRewardAddresses(int snapshotEpoch, int poolParamsEpoch) {
+        HashSet<String> result = new HashSet<>();
+        byte[] prefix = poolMajorPrefix(snapshotEpoch);
+        byte[] previousPool = null;
+        try (ReadOptions options = new ReadOptions().setFillCache(false);
+             RocksIterator iterator = db.newIterator(cfEpochSnapshot, options)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix);
+                 iterator.next()) {
+                byte[] key = iterator.key();
+                byte[] pool = Arrays.copyOfRange(key, 5, 33);
+                if (previousPool != null && Arrays.equals(previousPool, pool)) continue;
+                previousPool = pool;
+                String poolHash = HexUtil.encodeHexString(pool);
+                String rewardAddress = ledgerStateProvider != null
+                        ? getPoolParamsAtEpoch(poolHash, poolParamsEpoch)
+                        .map(params -> extractCredKeyFromRewardAddress(
+                                params.rewardAccount(), poolHash))
+                        .orElse(poolHash)
+                        : poolHash;
+                result.add(rewardAddress);
+            }
+        }
+        return result;
+    }
+
+    private static byte[] poolMajorPrefix(int epoch) {
+        return ByteBuffer.allocate(5).order(ByteOrder.BIG_ENDIAN)
+                .putInt(epoch).put((byte) 0xFF).array();
+    }
+
+    private static boolean startsWith(byte[] key, byte[] prefix) {
+        if (key.length < prefix.length) return false;
+        for (int i = 0; i < prefix.length; i++) {
+            if (key[i] != prefix[i]) return false;
+        }
+        return true;
     }
 
     /**
@@ -504,7 +871,7 @@ public class EpochRewardCalculator {
 
         long count = 0;
         for (var entry : blockCounts.entrySet()) {
-            if (ledgerStateProvider.getPoolParams(entry.getKey(), stakeEpoch).isPresent()) {
+            if (getPoolParamsAtEpoch(entry.getKey(), stakeEpoch).isPresent()) {
                 count += entry.getValue();
             }
         }
@@ -532,7 +899,7 @@ public class EpochRewardCalculator {
             long count = 0;
             for (var entry : blockCounts.entrySet()) {
                 if (ledgerStateProvider != null
-                        && ledgerStateProvider.getPoolParams(entry.getKey(), stakeEpoch).isPresent()) {
+                        && getPoolParamsAtEpoch(entry.getKey(), stakeEpoch).isPresent()) {
                     count += entry.getValue();
                 }
             }
@@ -549,7 +916,7 @@ public class EpochRewardCalculator {
             int epoch) {
 
         // Group delegators by pool
-        Map<String, List<Delegator>> poolDelegators = new HashMap<>();
+        Map<String, HashSet<Delegator>> poolDelegators = new HashMap<>();
         Map<String, BigInteger> poolActiveStake = new HashMap<>();
 
         for (var entry : snapshot.entrySet()) {
@@ -559,7 +926,7 @@ public class EpochRewardCalculator {
 
             String stakeAddr = entry.getKey(); // "credType:credHash"
 
-            poolDelegators.computeIfAbsent(poolHash, _ -> new ArrayList<>())
+            poolDelegators.computeIfAbsent(poolHash, _ -> new HashSet<>())
                     .add(Delegator.builder()
                             .stakeAddress(stakeAddr)
                             .activeStake(amount)
@@ -572,65 +939,439 @@ public class EpochRewardCalculator {
         List<PoolState> states = new ArrayList<>();
         for (var poolEntry : poolDelegators.entrySet()) {
             String poolHash = poolEntry.getKey();
-            int blocks = blockCounts.getOrDefault(poolHash, 0L).intValue();
-
-            // Resolve pool registration parameters
-            String rewardAddress = poolHash;
-            double margin = 0.0;
-            BigInteger fixedCost = BigInteger.ZERO;
-            BigInteger pledge = BigInteger.ZERO;
-            Set<String> owners = new HashSet<>();
-
-            if (ledgerStateProvider != null) {
-                var poolParamsOpt = ledgerStateProvider.getPoolParams(poolHash, epoch);
-                if (poolParamsOpt.isPresent()) {
-                    var pp = poolParamsOpt.get();
-                    rewardAddress = extractCredKeyFromRewardAddress(pp.rewardAccount(), poolHash);
-                    margin = pp.margin();
-                    fixedCost = pp.cost();
-                    pledge = pp.pledge();
-                    // Convert owner hashes to "credType:credHash" format to match delegator stakeAddress.
-                    // cf-rewards checks poolOwnerStakeAddresses.contains(stakeAddress) to exclude
-                    // pool owners from member rewards — formats must match.
-                    if (pp.owners() != null) {
-                        for (String ownerHash : pp.owners()) {
-                            owners.add("0:" + ownerHash); // pool owners are always key hash (credType=0)
-                        }
-                    }
-                } else if (blocks > 0) {
-                    log.warn("Pool {} produced {} blocks but has no registration params", poolHash, blocks);
-                }
-            }
-
-            // Calculate owner active stake: sum of delegator stakes whose credKey is in owners set.
-            // Both owners and stakeAddress use "credType:credHash" format.
-            BigInteger ownerActiveStake = BigInteger.ZERO;
-            for (Delegator d : poolEntry.getValue()) {
-                if (owners.contains(d.getStakeAddress())) {
-                    ownerActiveStake = ownerActiveStake.add(d.getActiveStake());
-                }
-            }
-
-            if (blocks > 0) {
-                log.debug("buildPoolState: pool={} blocks={} margin={} cost={} pledge={} rewardAddr={} owners={} ownerStake={}",
-                        poolHash, blocks, margin, fixedCost, pledge, rewardAddress, owners.size(), ownerActiveStake);
-            }
-            states.add(PoolState.builder()
-                    .poolId(poolHash)
-                    .blockCount(blocks)
-                    .activeStake(poolActiveStake.getOrDefault(poolHash, BigInteger.ZERO))
-                    .delegators(new HashSet<>(poolEntry.getValue()))
-                    .epoch(epoch)
-                    .rewardAddress(rewardAddress)
-                    .owners(new HashSet<>(owners))
-                    .ownerActiveStake(ownerActiveStake)
-                    .poolFees(BigInteger.ZERO)
-                    .margin(BigDecimal.valueOf(margin))
-                    .fixedCost(fixedCost)
-                    .pledge(pledge)
-                    .build());
+            states.add(buildPoolState(poolHash, poolEntry.getValue(),
+                    poolActiveStake.getOrDefault(poolHash, BigInteger.ZERO),
+                    blockCounts, epoch));
         }
         return states;
+    }
+
+    private PoolState buildPoolState(String poolHash, HashSet<Delegator> delegators,
+                                     BigInteger activeStake, Map<String, Long> blockCounts,
+                                     int epoch) {
+        int blocks = blockCounts.getOrDefault(poolHash, 0L).intValue();
+        String rewardAddress = poolHash;
+        double margin = 0.0;
+        BigInteger fixedCost = BigInteger.ZERO;
+        BigInteger pledge = BigInteger.ZERO;
+        HashSet<String> owners = new HashSet<>();
+
+        if (ledgerStateProvider != null) {
+            var poolParamsOpt = getPoolParamsAtEpoch(poolHash, epoch);
+            if (poolParamsOpt.isPresent()) {
+                var params = poolParamsOpt.get();
+                rewardAddress = extractCredKeyFromRewardAddress(params.rewardAccount(), poolHash);
+                margin = params.margin();
+                fixedCost = params.cost();
+                pledge = params.pledge();
+                if (params.owners() != null) {
+                    for (String ownerHash : params.owners()) owners.add("0:" + ownerHash);
+                }
+            } else if (blocks > 0) {
+                log.warn("Pool {} produced {} blocks but has no registration params", poolHash, blocks);
+            }
+        }
+
+        BigInteger ownerActiveStake = BigInteger.ZERO;
+        for (Delegator delegator : delegators) {
+            if (owners.contains(delegator.getStakeAddress())) {
+                ownerActiveStake = ownerActiveStake.add(delegator.getActiveStake());
+            }
+        }
+        return PoolState.builder()
+                .poolId(poolHash)
+                .blockCount(blocks)
+                .activeStake(activeStake)
+                .delegators(delegators)
+                .epoch(epoch)
+                .rewardAddress(rewardAddress)
+                .owners(owners)
+                .ownerActiveStake(ownerActiveStake)
+                .poolFees(BigInteger.ZERO)
+                .margin(BigDecimal.valueOf(margin))
+                .fixedCost(fixedCost)
+                .pledge(pledge)
+                .build();
+    }
+
+    private final class PoolMajorCursor implements Iterator<StreamingEpochRewardOrchestrator.PoolRewardInput>,
+            AutoCloseable {
+        private final int poolParamsEpoch;
+        private final Map<String, Long> blockCounts;
+        private final StreamingAccountContext accounts;
+        private final byte[] prefix;
+        private final ReadOptions options = new ReadOptions().setFillCache(false);
+        private final RocksIterator iterator;
+        private final RocksIterator flagsIterator;
+        private final byte[] flagsPrefix;
+        private StreamingEpochRewardOrchestrator.PoolRewardInput next;
+
+        private PoolMajorCursor(int snapshotEpoch, int poolParamsEpoch,
+                                Map<String, Long> blockCounts,
+                                StreamingAccountContext accounts,
+                                PreparedRewardFlags rewardFlags) {
+            this.poolParamsEpoch = poolParamsEpoch;
+            this.blockCounts = blockCounts;
+            this.accounts = accounts;
+            this.prefix = poolMajorPrefix(snapshotEpoch);
+            this.flagsPrefix = rewardFlags.prefix();
+            this.iterator = db.newIterator(cfEpochSnapshot, options);
+            this.flagsIterator = db.newIterator(cfEpochSnapshot, options);
+            iterator.seek(prefix);
+            flagsIterator.seek(flagsPrefix);
+            try {
+                advance();
+            } catch (RuntimeException failure) {
+                flagsIterator.close();
+                iterator.close();
+                options.close();
+                throw failure;
+            }
+        }
+
+        @Override
+        public boolean hasNext() {
+            return next != null;
+        }
+
+        @Override
+        public StreamingEpochRewardOrchestrator.PoolRewardInput next() {
+            if (next == null) throw new NoSuchElementException();
+            var current = next;
+            advance();
+            return current;
+        }
+
+        private void advance() {
+            if (!iterator.isValid() || !startsWith(iterator.key(), prefix)) {
+                if (flagsIterator.isValid() && startsWith(flagsIterator.key(), flagsPrefix)) {
+                    throw new IllegalStateException(
+                            "Reward credential flags contain rows without pool-major stake rows");
+                }
+                next = null;
+                return;
+            }
+            byte[] poolBytes = Arrays.copyOfRange(iterator.key(), 5, 33);
+            String poolHash = HexUtil.encodeHexString(poolBytes);
+            HashSet<Delegator> delegators = new HashSet<>();
+            HashSet<String> deregistered = new HashSet<>();
+            HashSet<String> lateDeregistered = new HashSet<>();
+            Map<String, BoundaryCredentialKey> credentialKeys = new HashMap<>();
+            BigInteger activeStake = BigInteger.ZERO;
+
+            while (iterator.isValid() && startsWith(iterator.key(), prefix)
+                    && Arrays.equals(iterator.key(), 5, 33,
+                    poolBytes, 0, BoundaryCredentialKey.HASH_LENGTH)) {
+                byte[] key = iterator.key();
+                BoundaryCredentialKey credentialKey =
+                        BoundaryCredentialKey.fromKey(key, 33);
+                String credential = credentialKey.address();
+                credentialKeys.put(credential, credentialKey);
+                BigInteger amount = AccountStateCborCodec.decodePoolMajorStake(iterator.value());
+                delegators.add(Delegator.builder()
+                        .stakeAddress(credential).activeStake(amount).build());
+                activeStake = activeStake.add(amount);
+
+                int flags = rewardFlagsFor(key);
+                boolean atStability = (flags & REWARD_FLAG_DEREGISTERED_AT_STABILITY) != 0;
+                boolean atBoundary = (flags & REWARD_FLAG_DEREGISTERED_AT_BOUNDARY) != 0;
+                if (atStability || (accounts.postBabbage() && atBoundary)) {
+                    deregistered.add(credential);
+                }
+                if (!accounts.postBabbage() && atBoundary && !atStability) {
+                    lateDeregistered.add(credential);
+                }
+                iterator.next();
+            }
+
+            PoolState pool = buildPoolState(poolHash, delegators, activeStake,
+                    blockCounts, poolParamsEpoch);
+            credentialKeys.computeIfAbsent(pool.getRewardAddress(),
+                    BoundaryCredentialKey::fromAddress);
+            if (accounts.deregistered().contains(pool.getRewardAddress())) {
+                deregistered.add(pool.getRewardAddress());
+            }
+            if (accounts.lateDeregistered().contains(pool.getRewardAddress())) {
+                lateDeregistered.add(pool.getRewardAddress());
+            }
+            next = new StreamingEpochRewardOrchestrator.PoolRewardInput(
+                    pool, deregistered, lateDeregistered, credentialKeys);
+        }
+
+        private int rewardFlagsFor(byte[] poolMajorKey) {
+            if (!flagsIterator.isValid() || !startsWith(flagsIterator.key(), flagsPrefix)) {
+                throw new IllegalStateException("Missing reward credential flags for pool-major snapshot row");
+            }
+            byte[] flagsKey = flagsIterator.key();
+            if (poolMajorKey.length != 62 || flagsKey.length != 62
+                    || !Arrays.equals(poolMajorKey, 0, 4, flagsKey, 0, 4)
+                    || !Arrays.equals(poolMajorKey, 5, 62, flagsKey, 5, 62)) {
+                throw new IllegalStateException("Reward credential flags are not aligned with pool-major snapshot");
+            }
+            byte[] value = flagsIterator.value();
+            if (value.length != 1) {
+                throw new IllegalStateException("Malformed reward credential flags value");
+            }
+            flagsIterator.next();
+            return value[0] & 0xFF;
+        }
+
+        @Override
+        public void close() {
+            flagsIterator.close();
+            iterator.close();
+            options.close();
+        }
+    }
+
+    private PreparedRewardFlags prepareRewardCredentialFlags(
+            int snapshotEpoch, StreamingAccountContext accounts) {
+        return prepareRewardCredentialFlags(snapshotEpoch,
+                accounts.stabilityCutoff(), accounts.boundaryCutoff(),
+                accounts.registeredSinceCutoff(), accounts.registeredUntilCutoff());
+    }
+
+    PreparedRewardFlags prepareRewardCredentialFlags(
+            int snapshotEpoch, long stabilityCutoff, long boundaryCutoff,
+            long registeredSinceCutoff, long registeredUntilCutoff) {
+        byte[] flagsPrefix = rewardFlagsPrefix(snapshotEpoch);
+        deleteRewardCredentialFlags(flagsPrefix);
+        long started = System.currentTimeMillis();
+        long maximumCutoff = Math.max(Math.max(stabilityCutoff, boundaryCutoff),
+                Math.max(registeredSinceCutoff, registeredUntilCutoff));
+        int rows = 0;
+        int events = 0;
+        int chunks = 0;
+        Snapshot snapshot = db.getSnapshot();
+        try (ReadOptions snapshotReadOptions = new ReadOptions()
+                     .setFillCache(false).setSnapshot(snapshot);
+             ReadOptions accountReadOptions = new ReadOptions()
+                     .setFillCache(true).setSnapshot(snapshot);
+             RocksIterator snapshotRows = db.newIterator(cfEpochSnapshot, snapshotReadOptions);
+             RocksIterator credentialEvents = db.newIterator(cfState, accountReadOptions);
+             RocksIterator accounts = db.newIterator(cfState, accountReadOptions);
+             WriteOptions writeOptions = new WriteOptions();
+             WriteBatch batch = new WriteBatch()) {
+            byte[] snapshotPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                    .putInt(snapshotEpoch).array();
+            snapshotRows.seek(snapshotPrefix);
+            credentialEvents.seek(new byte[]{DefaultAccountStateStore.PREFIX_STAKE_EVENT_BY_CREDENTIAL});
+            accounts.seek(new byte[]{DefaultAccountStateStore.PREFIX_ACCT});
+            int batchBytes = 0;
+            while (isCredentialMajorSnapshotRow(snapshotRows, snapshotPrefix)) {
+                byte[] snapshotKey = snapshotRows.key();
+                byte[] credentialSuffix = Arrays.copyOfRange(snapshotKey, 4, 33);
+                EventFlags eventFlags = consumeCredentialEvents(
+                        credentialEvents, credentialSuffix, stabilityCutoff, boundaryCutoff,
+                        registeredSinceCutoff, registeredUntilCutoff, maximumCutoff);
+                events += eventFlags.events();
+                boolean registeredNow = consumeRegisteredAccount(accounts, credentialSuffix);
+                int flags = eventFlags.flags();
+                if (registeredNow) flags |= REWARD_FLAG_REGISTERED_NOW;
+                if (!registeredNow
+                        && (flags & (REWARD_FLAG_DEREGISTERED_AT_STABILITY
+                        | REWARD_FLAG_DEREGISTERED_AT_BOUNDARY)) == 0) {
+                    flags |= REWARD_FLAG_DEREGISTERED_AT_STABILITY
+                            | REWARD_FLAG_DEREGISTERED_AT_BOUNDARY;
+                }
+
+                byte[] poolHash = AccountStateCborCodec.decodeEpochDelegSnapshotPoolHash(
+                        snapshotRows.value());
+                if (poolHash.length != 28) {
+                    throw new IllegalStateException(
+                            "Invalid pool hash length in reward snapshot: " + poolHash.length);
+                }
+                byte[] flagsKey = rewardFlagsKey(
+                        snapshotEpoch, poolHash, credentialSuffix);
+                batch.put(cfEpochSnapshot, flagsKey, new byte[]{(byte) flags});
+                rows++;
+                batchBytes += flagsKey.length + 1;
+                if (batch.count() >= maxBatchOperations || batchBytes >= maxBatchBytes) {
+                    db.write(writeOptions, batch);
+                    batch.clear();
+                    batchBytes = 0;
+                    chunks++;
+                }
+                snapshotRows.next();
+            }
+            if (batch.count() > 0) {
+                db.write(writeOptions, batch);
+                chunks++;
+            }
+            log.info("Prepared reward credential flags for snapshot {}: rows={}, events={}, "
+                            + "chunks={}, elapsedMs={}",
+                    snapshotEpoch, rows, events, chunks,
+                    System.currentTimeMillis() - started);
+            return new PreparedRewardFlags(flagsPrefix, rows);
+        } catch (Exception failure) {
+            try {
+                deleteRewardCredentialFlags(flagsPrefix);
+            } catch (RuntimeException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure instanceof RuntimeException runtimeException
+                    ? runtimeException
+                    : new IllegalStateException(
+                    "Failed to prepare reward credential flags for snapshot " + snapshotEpoch,
+                    failure);
+        } finally {
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    private boolean isCredentialMajorSnapshotRow(
+            RocksIterator iterator, byte[] snapshotPrefix) {
+        if (!iterator.isValid()) return false;
+        byte[] key = iterator.key();
+        return key.length == 33 && startsWith(key, snapshotPrefix)
+                && key[4] != REWARD_FLAGS_PREFIX && key[4] != (byte) 0xFF;
+    }
+
+    private EventFlags consumeCredentialEvents(
+            RocksIterator iterator, byte[] credentialSuffix,
+            long stabilityCutoff, long boundaryCutoff,
+            long registeredSinceCutoff, long registeredUntilCutoff,
+            long maximumCutoff) {
+        while (isCredentialEvent(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) < 0) {
+            iterator.next();
+        }
+        int lastAtStability = -1;
+        int lastAtBoundary = -1;
+        boolean registeredSince = false;
+        boolean registeredUntil = false;
+        int events = 0;
+        while (isCredentialEvent(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) == 0) {
+            byte[] key = iterator.key();
+            long slot = ByteBuffer.wrap(key, 30, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+            if (slot < maximumCutoff) {
+                int event = AccountStateCborCodec.decodeStakeEvent(iterator.value());
+                if (slot < stabilityCutoff) lastAtStability = event;
+                if (slot < boundaryCutoff) lastAtBoundary = event;
+                if (event == AccountStateCborCodec.EVENT_REGISTRATION) {
+                    if (slot < registeredSinceCutoff) registeredSince = true;
+                    if (slot < registeredUntilCutoff) registeredUntil = true;
+                }
+                events++;
+            }
+            iterator.next();
+        }
+        int flags = 0;
+        if (lastAtStability == AccountStateCborCodec.EVENT_DEREGISTRATION) {
+            flags |= REWARD_FLAG_DEREGISTERED_AT_STABILITY;
+        }
+        if (lastAtBoundary == AccountStateCborCodec.EVENT_DEREGISTRATION) {
+            flags |= REWARD_FLAG_DEREGISTERED_AT_BOUNDARY;
+        }
+        if (registeredSince) flags |= REWARD_FLAG_REGISTERED_SINCE;
+        if (registeredUntil) flags |= REWARD_FLAG_REGISTERED_UNTIL;
+        return new EventFlags(flags, events);
+    }
+
+    private boolean consumeRegisteredAccount(
+            RocksIterator iterator, byte[] credentialSuffix) {
+        while (isAccount(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) < 0) {
+            iterator.next();
+        }
+        return isAccount(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) == 0;
+    }
+
+    private static boolean isCredentialEvent(RocksIterator iterator) {
+        return iterator.isValid() && iterator.key().length == 42
+                && iterator.key()[0] == DefaultAccountStateStore.PREFIX_STAKE_EVENT_BY_CREDENTIAL;
+    }
+
+    private static boolean isAccount(RocksIterator iterator) {
+        return iterator.isValid() && iterator.key().length == 30
+                && iterator.key()[0] == DefaultAccountStateStore.PREFIX_ACCT;
+    }
+
+    private void deleteRewardCredentialFlags(byte[] flagsPrefix) {
+        byte[] end = flagsPrefix.clone();
+        end[4] = (byte) 0xFF;
+        try (WriteOptions options = new WriteOptions();
+             WriteBatch batch = new WriteBatch()) {
+            batch.deleteRange(cfEpochSnapshot, flagsPrefix, end);
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to clear temporary reward credential flags", e);
+        }
+    }
+
+    static byte[] rewardFlagsPrefix(int snapshotEpoch) {
+        return ByteBuffer.allocate(5).order(ByteOrder.BIG_ENDIAN)
+                .putInt(snapshotEpoch).put(REWARD_FLAGS_PREFIX).array();
+    }
+
+    static byte[] rewardFlagsKey(
+            int snapshotEpoch, byte[] poolHash, byte[] credentialSuffix) {
+        if (poolHash.length != 28 || credentialSuffix.length != 29) {
+            throw new IllegalArgumentException("Invalid reward credential flags key component");
+        }
+        return ByteBuffer.allocate(62).order(ByteOrder.BIG_ENDIAN)
+                .putInt(snapshotEpoch).put(REWARD_FLAGS_PREFIX).put(poolHash)
+                .put(credentialSuffix).array();
+    }
+
+    private static int compareUnsigned(
+            byte[] left, int leftOffset, byte[] right, int rightOffset, int length) {
+        for (int index = 0; index < length; index++) {
+            int comparison = Integer.compare(
+                    left[leftOffset + index] & 0xFF,
+                    right[rightOffset + index] & 0xFF);
+            if (comparison != 0) return comparison;
+        }
+        return 0;
+    }
+
+    private record EventFlags(int flags, int events) {
+    }
+
+    final class PreparedRewardFlags implements AutoCloseable {
+        private final byte[] prefix;
+        private final int rows;
+        private boolean closed;
+
+        private PreparedRewardFlags(byte[] prefix, int rows) {
+            this.prefix = prefix;
+            this.rows = rows;
+        }
+
+        byte[] prefix() {
+            return prefix;
+        }
+
+        int rows() {
+            return rows;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            try {
+                deleteRewardCredentialFlags(prefix);
+            } catch (RuntimeException cleanupFailure) {
+                log.warn("Could not remove temporary reward credential flags: {}",
+                        cleanupFailure.toString());
+            }
+        }
+    }
+
+    private record StreamingAccountContext(
+            HashSet<String> deregistered,
+            HashSet<String> lateDeregistered,
+            HashSet<String> deregisteredOnBoundary,
+            HashSet<String> registeredSinceLast,
+            HashSet<String> registeredUntilNow,
+            boolean postBabbage,
+            long stabilityCutoff,
+            long boundaryCutoff,
+            long registeredSinceCutoff,
+            long registeredUntilCutoff) {
     }
 
     /**
@@ -677,41 +1418,213 @@ public class EpochRewardCalculator {
         int leaderCount = 0;
 
         for (var poolResult : poolResults) {
-            String poolId = poolResult.getPoolId();
-
-            // Leader reward
-            BigInteger leaderReward = poolResult.getOperatorReward();
-            if (leaderReward != null && leaderReward.signum() > 0) {
-                String rewardAddr = poolResult.getRewardAddress();
-                if (rewardAddr != null) {
-                    try {
-                        creditRewardByAddress(rewardAddr, leaderReward, earnedEpoch, RewardType.LEADER, poolId);
-                        leaderCount++;
-                    } catch (RocksDBException e) {
-                        log.warn("Failed to credit leader reward for pool {}: {}", poolId, e.getMessage());
-                        throw new RuntimeException("Failed to credit leader reward for pool " + poolId, e);
-                    }
-                }
-            }
-
-            // Member rewards
-            var memberRewards = poolResult.getMemberRewards();
-            if (memberRewards != null) {
-                for (var reward : memberRewards) {
-                    if (reward.getAmount() == null || reward.getAmount().signum() <= 0) continue;
-                    try {
-                        creditRewardByAddress(reward.getStakeAddress(), reward.getAmount(),
-                                earnedEpoch, RewardType.MEMBER, poolId);
-                        memberCount++;
-                    } catch (RocksDBException e) {
-                        log.warn("Failed to credit member reward: {}", e.getMessage());
-                        throw new RuntimeException("Failed to credit member reward", e);
-                    }
-                }
-            }
+            int[] counts = distributePoolReward(epoch, poolResult);
+            leaderCount += counts[0];
+            memberCount += counts[1];
         }
 
         log.info("Distributed rewards for epoch {}: {} leader, {} member", epoch, leaderCount, memberCount);
+    }
+
+    private int[] distributePoolReward(int epoch,
+                                       org.cardanofoundation.rewards.calculation.domain.PoolRewardCalculationResult poolResult) {
+        return distributePoolReward(epoch, poolResult, null);
+    }
+
+    private int[] distributePoolReward(
+            int epoch,
+            org.cardanofoundation.rewards.calculation.domain.PoolRewardCalculationResult poolResult,
+            PrefetchedPoolRewardState prefetched) {
+        int earnedEpoch = epoch - 2;
+        String poolId = poolResult.getPoolId();
+        int leaderCount = 0;
+        int memberCount = 0;
+        BigInteger leaderReward = poolResult.getOperatorReward();
+        if (leaderReward != null && leaderReward.signum() > 0
+                && poolResult.getRewardAddress() != null) {
+            try {
+                if (prefetched != null) {
+                    creditPrefetchedReward(poolResult.getRewardAddress(), leaderReward,
+                            earnedEpoch, RewardType.LEADER, poolId, prefetched);
+                } else {
+                    creditRewardByAddress(poolResult.getRewardAddress(), leaderReward,
+                            earnedEpoch, RewardType.LEADER, poolId);
+                }
+                leaderCount++;
+            } catch (RocksDBException e) {
+                throw new RuntimeException("Failed to credit leader reward for pool " + poolId, e);
+            }
+        }
+        if (poolResult.getMemberRewards() != null) {
+            for (var reward : poolResult.getMemberRewards()) {
+                if (reward.getAmount() == null || reward.getAmount().signum() <= 0) continue;
+                try {
+                    if (prefetched != null) {
+                        creditPrefetchedReward(reward.getStakeAddress(), reward.getAmount(),
+                                earnedEpoch, RewardType.MEMBER, poolId, prefetched);
+                    } else {
+                        creditRewardByAddress(reward.getStakeAddress(), reward.getAmount(),
+                                earnedEpoch, RewardType.MEMBER, poolId);
+                    }
+                    memberCount++;
+                } catch (RocksDBException e) {
+                    throw new RuntimeException("Failed to credit member reward for pool " + poolId, e);
+                }
+            }
+        }
+        return new int[]{leaderCount, memberCount};
+    }
+
+    int[] distributePrefetchedPoolReward(
+            int epoch,
+            StreamingEpochRewardOrchestrator.PoolRewardInput poolInput,
+            PoolRewardCalculationResult poolResult) {
+        PrefetchedPoolRewardState prefetched =
+                prefetchPoolRewardState(poolInput, poolResult);
+        return distributePoolReward(epoch, poolResult, prefetched);
+    }
+
+    private PrefetchedPoolRewardState prefetchPoolRewardState(
+            StreamingEpochRewardOrchestrator.PoolRewardInput poolInput,
+            PoolRewardCalculationResult poolResult) {
+        if (rewardStateOverlay == null) {
+            throw new IllegalStateException("Reward state prefetch requires an active reward batch");
+        }
+
+        byte[] poolHash = HexUtil.decodeHexString(poolResult.getPoolId());
+        if (poolHash.length != BoundaryCredentialKey.HASH_LENGTH) {
+            throw new IllegalStateException(
+                    "Invalid reward pool hash length: " + poolHash.length);
+        }
+        Map<BoundaryCredentialKey, AccountStateCborCodec.StakeAccount> accounts =
+                new HashMap<>();
+        Map<String, BoundaryCredentialKey> credentialKeys =
+                poolInput.credentialKeys();
+        List<RewardPrefetchKey> keys = new ArrayList<>();
+        HashSet<BoundaryCredentialKey> credentials = new HashSet<>();
+        BigInteger leaderReward = poolResult.getOperatorReward();
+        if (leaderReward != null && leaderReward.signum() > 0
+                && poolResult.getRewardAddress() != null) {
+            addRewardStatePrefetchKeys(
+                    poolResult.getRewardAddress(), credentialKeys,
+                    credentials, keys, accounts);
+        }
+        if (poolResult.getMemberRewards() != null) {
+            for (var reward : poolResult.getMemberRewards()) {
+                if (reward.getAmount() != null && reward.getAmount().signum() > 0) {
+                    addRewardStatePrefetchKeys(
+                            reward.getStakeAddress(), credentialKeys,
+                            credentials, keys, accounts);
+                }
+            }
+        }
+        PrefetchedPoolRewardState prefetched = new PrefetchedPoolRewardState(
+                credentialKeys, accounts, poolHash);
+        if (keys.isEmpty()) return prefetched;
+
+        List<ColumnFamilyHandle> columnFamilies = new ArrayList<>(keys.size());
+        List<byte[]> storageKeys = new ArrayList<>(keys.size());
+        for (int index = 0; index < keys.size(); index++) {
+            columnFamilies.add(cfState);
+            storageKeys.add(keys.get(index).storageKey());
+        }
+        try {
+            List<byte[]> values = db.multiGetAsList(columnFamilies, storageKeys);
+            if (values.size() != keys.size()) {
+                throw new IllegalStateException(
+                        "Reward state MultiGet returned an unexpected value count");
+            }
+            for (int index = 0; index < keys.size(); index++) {
+                RewardPrefetchKey key = keys.get(index);
+                byte[] value = values.get(index);
+                rewardStateOverlay.put(key.storageKey(), value);
+                if (key.account() && value != null) {
+                    accounts.put(key.credential(),
+                            AccountStateCborCodec.decodeStakeAccount(value));
+                }
+            }
+        } catch (RocksDBException failure) {
+            throw new IllegalStateException(
+                    "Failed to prefetch reward account state for pool "
+                            + poolResult.getPoolId(), failure);
+        }
+        return prefetched;
+    }
+
+    private void addRewardStatePrefetchKeys(
+            String address,
+            Map<String, BoundaryCredentialKey> poolCredentialKeys,
+            Set<BoundaryCredentialKey> credentials,
+            List<RewardPrefetchKey> keys,
+            Map<BoundaryCredentialKey, AccountStateCborCodec.StakeAccount> accounts) {
+        BoundaryCredentialKey credential = poolCredentialKeys.get(address);
+        if (credential == null) {
+            throw new IllegalStateException(
+                    "Missing byte credential for reward address " + address);
+        }
+        if (!credentials.add(credential)) return;
+
+        byte[] accountKey = DefaultAccountStateStore.accountKey(credential);
+        if (rewardStateOverlay.contains(accountKey)) {
+            byte[] value = rewardStateOverlay.get(accountKey);
+            if (value != null) {
+                accounts.put(credential, AccountStateCborCodec.decodeStakeAccount(value));
+            }
+        } else {
+            keys.add(new RewardPrefetchKey(accountKey, credential, true));
+        }
+        byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(credential);
+        if (!rewardStateOverlay.contains(rewardKey)) {
+            keys.add(new RewardPrefetchKey(rewardKey, credential, false));
+        }
+    }
+
+    private record RewardPrefetchKey(
+            byte[] storageKey, BoundaryCredentialKey credential, boolean account) {
+    }
+
+    private record PrefetchedPoolRewardState(
+            Map<String, BoundaryCredentialKey> credentialKeys,
+            Map<BoundaryCredentialKey, AccountStateCborCodec.StakeAccount> accounts,
+            byte[] poolHash) {
+    }
+
+    private void stagePoolRewardFacts(int epoch,
+                                      org.cardanofoundation.rewards.calculation.domain.PoolRewardCalculationResult result) {
+        if (rewardArchiveWriter == null) return;
+        int earnedEpoch = epoch - 2;
+        BigInteger leaderReward = result.getOperatorReward();
+        if (leaderReward != null && leaderReward.signum() > 0
+                && result.getRewardAddress() != null) {
+            appendRewardFact(result.getRewardAddress(), leaderReward, earnedEpoch,
+                    RewardType.LEADER, result.getPoolId());
+        }
+        if (result.getMemberRewards() != null) {
+            for (var reward : result.getMemberRewards()) {
+                if (reward.getAmount() != null && reward.getAmount().signum() > 0) {
+                    appendRewardFact(reward.getStakeAddress(), reward.getAmount(), earnedEpoch,
+                            RewardType.MEMBER, result.getPoolId());
+                }
+            }
+        }
+    }
+
+    private void appendRewardFact(String address, BigInteger amount, int earnedEpoch,
+                                  RewardType rewardType, String poolHash) {
+        int credentialType = 0;
+        String credentialHash = address;
+        int separator = address.indexOf(':');
+        if (separator >= 0) {
+            credentialType = Integer.parseInt(address.substring(0, separator));
+            credentialHash = address.substring(separator + 1);
+        }
+        int spendableEpoch = archiveBoundary != null
+                ? archiveBoundary.newEpoch() : earnedEpoch + 2;
+        String sourceId = poolHash != null && !poolHash.isBlank() ? poolHash : "ledger";
+        rewardArchiveWriter.append(
+                new EpochArchiveStagingSink.RewardFact(
+                        credentialType, credentialHash, poolHash, rewardType.name(), earnedEpoch,
+                        spendableEpoch, amount, sourceId));
     }
 
     /**
@@ -731,6 +1644,54 @@ public class EpochRewardCalculator {
         }
 
         creditReward(credType, credHash, amount, earnedEpoch, type, poolId);
+    }
+
+    private void creditPrefetchedReward(
+            String address, BigInteger amount, int earnedEpoch,
+            RewardType rewardType, String poolHash,
+            PrefetchedPoolRewardState prefetched) throws RocksDBException {
+        if (amount == null || amount.signum() <= 0) return;
+        if (rewardBatch == null) {
+            throw new IllegalStateException(
+                    "creditReward called without an active reward batch — call beginRewardBatch() first");
+        }
+
+        BoundaryCredentialKey credential = prefetched.credentialKeys().get(address);
+        if (credential == null) {
+            throw new IllegalStateException(
+                    "Missing byte credential for reward address " + address);
+        }
+        byte[] accountKey = DefaultAccountStateStore.accountKey(credential);
+        AccountStateCborCodec.StakeAccount account =
+                prefetched.accounts().get(credential);
+        if (account != null) {
+            BigInteger newReward = account.reward().add(amount);
+            byte[] newValue = AccountStateCborCodec.encodeStakeAccount(
+                    newReward, account.deposit());
+            accountStateStore.putStateWithDelta(accountKey, newValue,
+                    rewardBatch, rewardDeltaOps, rewardStateOverlay);
+            prefetched.accounts().put(credential,
+                    new AccountStateCborCodec.StakeAccount(newReward, account.deposit()));
+        }
+
+        byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(credential);
+        byte[] rewardValue = AccountStateCborCodec.encodeAccumulatedReward(
+                earnedEpoch, rewardType.ordinal(), amount, prefetched.poolHash());
+        accountStateStore.putStateWithDelta(rewardKey, rewardValue,
+                rewardBatch, rewardDeltaOps, rewardStateOverlay);
+
+        if (rewardArchiveWriter != null) {
+            int separator = address.indexOf(':');
+            String credentialHash = separator >= 0
+                    ? address.substring(separator + 1) : address;
+            int spendableEpoch = archiveBoundary != null
+                    ? archiveBoundary.newEpoch() : earnedEpoch + 2;
+            String sourceId = poolHash != null && !poolHash.isBlank()
+                    ? poolHash : "ledger";
+            rewardArchiveWriter.append(new EpochArchiveStagingSink.RewardFact(
+                    credential.credentialType(), credentialHash, poolHash,
+                    rewardType.name(), earnedEpoch, spendableEpoch, amount, sourceId));
+        }
     }
 
     /**
@@ -867,6 +1828,41 @@ public class EpochRewardCalculator {
             HashSet<String> registeredUntilNow
     ) {}
 
+    /** Read-only union view; avoids copying every snapshot credential into another set. */
+    private static final class RelevantCredentialsView extends AbstractSet<String> {
+        private final Set<String> snapshotCredentials;
+        private final Set<String> poolRewardAddresses;
+
+        private RelevantCredentialsView(Set<String> snapshotCredentials,
+                                        Set<String> poolRewardAddresses) {
+            this.snapshotCredentials = snapshotCredentials;
+            this.poolRewardAddresses = poolRewardAddresses;
+        }
+
+        @Override
+        public boolean contains(Object value) {
+            return snapshotCredentials.contains(value) || poolRewardAddresses.contains(value);
+        }
+
+        @Override
+        public Iterator<String> iterator() {
+            return java.util.stream.Stream.concat(
+                            snapshotCredentials.stream(),
+                            poolRewardAddresses.stream()
+                                    .filter(value -> !snapshotCredentials.contains(value)))
+                    .iterator();
+        }
+
+        @Override
+        public int size() {
+            int uniquePoolAddresses = 0;
+            for (String value : poolRewardAddresses) {
+                if (!snapshotCredentials.contains(value)) uniquePoolAddresses++;
+            }
+            return snapshotCredentials.size() + uniquePoolAddresses;
+        }
+    }
+
     /**
      * Build MIR certificates for the cf-rewards library by aggregating per-epoch per-pot totals.
      * Uses feeEpoch (epoch - 1) matching Yaci Store's convention:
@@ -911,14 +1907,13 @@ public class EpochRewardCalculator {
                                           List<PoolState> poolStates,
                                           Set<RetiredPool> retiredPools) {
 
-        var registeredNow = ledgerStateProvider != null
-                ? ledgerStateProvider.getAllRegisteredCredentials()
-                : Set.<String>of();
-
         // Check if event-based queries are available
         boolean hasEventQueries = ledgerStateProvider != null && accountStateStore != null;
 
         if (!hasEventQueries) {
+            var registeredNow = ledgerStateProvider != null
+                    ? ledgerStateProvider.getAllRegisteredCredentials()
+                    : Set.<String>of();
             // Fallback: snapshot diff (no temporal precision)
             var deregistered = new HashSet<String>();
             for (String credKey : stakeSnapshot.keySet()) {
@@ -953,22 +1948,6 @@ public class EpochRewardCalculator {
         HashSet<String> lateDeregistered;
         HashSet<String> deregisteredOnBoundary;
 
-        if (postBabbage) {
-            // Post-Babbage: all deregistrations from snapshot epoch to epoch boundary
-            deregistered = new HashSet<>(
-                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(deregScanStartSlot, feeEpochEndSlot));
-            lateDeregistered = new HashSet<>();
-            deregisteredOnBoundary = new HashSet<>(deregistered);
-        } else {
-            // Pre-Babbage: split by stability window
-            deregistered = new HashSet<>(
-                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(deregScanStartSlot, stabilityWindowSlot));
-            deregisteredOnBoundary = new HashSet<>(
-                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(deregScanStartSlot, feeEpochEndSlot));
-            lateDeregistered = new HashSet<>(deregisteredOnBoundary);
-            lateDeregistered.removeAll(deregistered);
-        }
-
         // Pool reward addresses for registered since last / until now
         // Build early so we can include them in the deregistered fallback check
         Set<String> poolRewardAddresses = new HashSet<>();
@@ -983,12 +1962,34 @@ public class EpochRewardCalculator {
             }
         }
 
+        Set<String> relevantCredentials = new RelevantCredentialsView(
+                stakeSnapshot.keySet(), poolRewardAddresses);
+
+        if (postBabbage) {
+            deregistered = new HashSet<>(
+                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(
+                            deregScanStartSlot, feeEpochEndSlot, relevantCredentials));
+            lateDeregistered = new HashSet<>();
+            // These sets are semantically identical post-Babbage and read-only in
+            // cf-rewards; sharing avoids a network-sized duplicate HashSet.
+            deregisteredOnBoundary = deregistered;
+        } else {
+            deregistered = new HashSet<>(
+                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(
+                            deregScanStartSlot, stabilityWindowSlot, relevantCredentials));
+            deregisteredOnBoundary = new HashSet<>(
+                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(
+                            deregScanStartSlot, feeEpochEndSlot, relevantCredentials));
+            lateDeregistered = new HashSet<>(deregisteredOnBoundary);
+            lateDeregistered.removeAll(deregistered);
+        }
+
         // Fallback: credentials in snapshot or pool reward addresses that are not currently
         // registered but were not caught by the event scan (e.g., deregistered before the
         // event retention window, or genesis accounts without events).
         // This matches yaci-store's behavior of checking all history up to the epoch boundary.
         for (String credKey : stakeSnapshot.keySet()) {
-            if (!registeredNow.contains(credKey)
+            if (!ledgerStateProvider.isStakeCredentialRegistered(credKey)
                     && !deregistered.contains(credKey)
                     && !deregisteredOnBoundary.contains(credKey)) {
                 deregisteredOnBoundary.add(credKey);
@@ -1079,6 +2080,7 @@ public class EpochRewardCalculator {
 
     public Map<String, AccountStateCborCodec.EpochDelegSnapshot> getStakeSnapshot(int epoch) {
         Map<String, AccountStateCborCodec.EpochDelegSnapshot> snapshot = new HashMap<>();
+        Map<String, String> canonicalPoolHashes = new HashMap<>();
         byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
 
         try (var it = db.newIterator(cfEpochSnapshot)) {
@@ -1088,11 +2090,19 @@ public class EpochRewardCalculator {
                 if (key.length < 5) break;
                 int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (keyEpoch != epoch) break;
+                if (key.length != 33) {
+                    it.next();
+                    continue;
+                }
 
                 int credType = key[4] & 0xFF;
                 String credHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 5, key.length));
+                var decoded = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
+                String poolHash = canonicalPoolHashes.computeIfAbsent(
+                        decoded.poolHash(), keyValue -> keyValue);
                 snapshot.put(credType + ":" + credHash,
-                        AccountStateCborCodec.decodeEpochDelegSnapshot(it.value()));
+                        new AccountStateCborCodec.EpochDelegSnapshot(
+                                poolHash, decoded.amount()));
                 it.next();
             }
         }
@@ -1210,9 +2220,38 @@ public class EpochRewardCalculator {
      * Get pool registration parameters for a specific pool.
      * Delegates to the LedgerStateProvider.
      */
-    public Optional<com.bloxbean.cardano.yano.api.account.LedgerStateProvider.PoolParams> getPoolParams(String poolHash) {
+    public Optional<LedgerStateProvider.PoolParams> getPoolParams(String poolHash) {
         if (ledgerStateProvider == null) return Optional.empty();
         return ledgerStateProvider.getPoolParams(poolHash);
+    }
+
+    void beginBoundaryPoolParamsMemo() {
+        if (boundaryPoolParamsMemo != null) {
+            throw new IllegalStateException("Boundary pool-parameter memo is already active");
+        }
+        boundaryPoolParamsMemo = new HashMap<>();
+    }
+
+    void clearBoundaryPoolParamsMemo() {
+        if (boundaryPoolParamsMemo != null) {
+            boundaryPoolParamsMemo.clear();
+            boundaryPoolParamsMemo = null;
+        }
+    }
+
+    Optional<LedgerStateProvider.PoolParams> getPoolParamsAtEpoch(String poolHash, int epoch) {
+        var provider = ledgerStateProvider;
+        if (provider == null) return Optional.empty();
+        if (boundaryPoolParamsMemo == null) {
+            return provider.getPoolParams(poolHash, epoch);
+        }
+        var key = new PoolParamsAtEpochKey(poolHash, epoch);
+        return boundaryPoolParamsMemo.computeIfAbsent(key,
+                ignored -> Objects.requireNonNull(provider.getPoolParams(poolHash, epoch),
+                        "LedgerStateProvider.getPoolParams must return Optional.empty(), not null"));
+    }
+
+    private record PoolParamsAtEpochKey(String poolHash, int epoch) {
     }
 
     /**

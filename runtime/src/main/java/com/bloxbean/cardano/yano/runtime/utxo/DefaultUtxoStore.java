@@ -16,8 +16,18 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.utxo.PointerAddressId;
+import com.bloxbean.cardano.yano.api.utxo.PointerIndexPreparation;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxoView;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialExtractor;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
@@ -47,6 +57,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
@@ -73,6 +84,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private ColumnFamilyHandle cfMeta;
     private ColumnFamilyHandle cfScriptRef;
     private ColumnFamilyHandle cfStakeBalance;
+    private ColumnFamilyHandle cfPointer;
 
     private final int pruneDepth;
     private final int rollbackWindow;
@@ -159,6 +171,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.cfMeta = supplier.rocks().handle(UtxoCfNames.UTXO_META);
         this.cfScriptRef = supplier.rocks().handle(UtxoCfNames.SCRIPT_REF);
         this.cfStakeBalance = supplier.rocks().handle(UtxoCfNames.UTXO_STAKE_BALANCE);
+        this.cfPointer = supplier.rocks().handle(UtxoCfNames.UTXO_POINTER);
 
         this.pruneDepth = getInt(config, YanoPropertyKeys.Utxo.PRUNE_DEPTH, 2160);
         // Default 2 epochs (864000 slots) to support incremental balance aggregation at epoch boundaries.
@@ -237,6 +250,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.cfMeta = ctx.handle(UtxoCfNames.UTXO_META);
         this.cfScriptRef = ctx.handle(UtxoCfNames.SCRIPT_REF);
         this.cfStakeBalance = ctx.handle(UtxoCfNames.UTXO_STAKE_BALANCE);
+        this.cfPointer = ctx.handle(UtxoCfNames.UTXO_POINTER);
         if (this.metadataHandle != null) {
             // Chain metadata CF is passed in for Allegra bootstrap marker writes.
             this.metadataHandle = ctx.handle("metadata");
@@ -514,17 +528,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     @Override
     public void forEachUtxoAtSlot(long maxSlot, java.util.function.BiConsumer<String, BigInteger> consumer) {
         if (!enabled || db == null) return;
-        // Use a RocksDB snapshot for a consistent point-in-time view.
-        // This is cheap (just a reference count increment) and guarantees we don't see
-        // UTXOs being added/removed by concurrent block processing.
         org.rocksdb.Snapshot snapshot = db.getSnapshot();
-        try (org.rocksdb.ReadOptions readOptions = new org.rocksdb.ReadOptions().setSnapshot(snapshot);
+        try (org.rocksdb.ReadOptions readOptions = new org.rocksdb.ReadOptions()
+                .setSnapshot(snapshot).setFillCache(false);
              RocksIterator it = db.newIterator(cfUnspent, readOptions)) {
+            long latestSlot = readLastAppliedSlot(readOptions);
             it.seekToFirst();
             while (it.isValid()) {
                 try {
                     var stored = UtxoCborCodec.decodeUtxoRecord(it.value());
-                    // Only include UTXOs created at or before the epoch's last slot
                     if (stored.slot <= maxSlot) {
                         consumer.accept(stored.address, stored.lovelace);
                     }
@@ -533,9 +545,65 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 }
                 it.next();
             }
+
+            // A historical caller can observe a UTXO tip newer than its target boundary.
+            // Creation-slot filtering removes future outputs, but the live set alone cannot
+            // recover an output that existed at the boundary and was spent afterward. Replay
+            // retained post-boundary spend deltas into this read-only view. The normal
+            // boundary path has latestSlot <= maxSlot and pays no delta-scan cost.
+            if (latestSlot > maxSlot) {
+                restorePostTargetSpends(maxSlot, latestSlot, readOptions, consumer);
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read UTXO view at slot " + maxSlot, e);
         } finally {
             db.releaseSnapshot(snapshot);
         }
+    }
+
+    private void restorePostTargetSpends(long maxSlot,
+                                         long latestSlot,
+                                         ReadOptions readOptions,
+                                         java.util.function.BiConsumer<String, BigInteger> consumer)
+            throws RocksDBException {
+        try (RocksIterator deltas = db.newIterator(cfDelta, readOptions)) {
+            deltas.seekToFirst();
+            if (!deltas.isValid()) {
+                throw historicalUtxoViewUnavailable(maxSlot, latestSlot, "delta log is empty");
+            }
+            UtxoDeltaCodec.Decoded first = UtxoDeltaCodec.decode(deltas.value());
+            long historyFloor = first.slot();
+            if (maxSlot < historyFloor) {
+                throw historicalUtxoViewUnavailable(maxSlot, latestSlot,
+                        "history floor is slot " + historyFloor);
+            }
+
+            for (; deltas.isValid(); deltas.next()) {
+                UtxoDeltaCodec.Decoded delta = UtxoDeltaCodec.decode(deltas.value());
+                if (delta.slot() <= maxSlot) continue;
+                for (UtxoDeltaCodec.OutRef ref : delta.spent()) {
+                    byte[] outpoint = UtxoKeyUtil.outpointKey(ref.txHash(), ref.index());
+                    byte[] spentValue = db.get(cfSpent, readOptions, outpoint);
+                    if (spentValue == null) {
+                        throw historicalUtxoViewUnavailable(maxSlot, latestSlot,
+                                "missing spent record " + ref.txHash() + "#" + ref.index()
+                                        + " from block " + delta.blockNumber());
+                    }
+                    UtxoCborCodec.StoredUtxo stored =
+                            UtxoCborCodec.decodeSpentUtxoRecord(spentValue);
+                    if (stored.slot <= maxSlot) {
+                        consumer.accept(stored.address, stored.lovelace);
+                    }
+                }
+            }
+        }
+    }
+
+    private static IllegalStateException historicalUtxoViewUnavailable(long maxSlot,
+                                                                         long latestSlot,
+                                                                         String reason) {
+        return new IllegalStateException("Cannot reconstruct UTXO view at slot " + maxSlot
+                + " from current slot " + latestSlot + ": " + reason);
     }
 
     @Override
@@ -610,6 +678,165 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
+    @Override
+    public Optional<StakeBalanceView> openStakeBalanceView(CanonicalBlockReference expectedCoordinate) {
+        Objects.requireNonNull(expectedCoordinate, "expectedCoordinate");
+        if (!enabled || !stakeBalanceIndexEnabled || !hasCompleteStakeBalanceSource()
+                || db == null || cfMeta == null || cfStakeBalance == null) {
+            return Optional.empty();
+        }
+
+        Snapshot snapshot = db.getSnapshot();
+        ReadOptions readOptions = new ReadOptions().setSnapshot(snapshot).setFillCache(false);
+        RocksIterator iterator = null;
+        try {
+            if (!StakeBalanceIndexKeys.isCurrent(db.get(cfMeta, readOptions,
+                    StakeBalanceIndexKeys.READY_MARKER))) {
+                readOptions.close();
+                db.releaseSnapshot(snapshot);
+                return Optional.empty();
+            }
+
+            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
+            requireSameCoordinate(expectedCoordinate, actual);
+            PointerIndexMarker pointerMarker = PointerIndexMarker.decode(
+                    db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            boolean pointerIndexReady = pointerMarker != null
+                    && pointerMarker.isUsableAt(actual);
+            iterator = db.newIterator(cfStakeBalance, readOptions);
+            return Optional.of(new RocksStakeBalanceView(
+                    db, snapshot, readOptions, iterator, cfPointer,
+                    actual, pointerIndexReady));
+        } catch (StakeBalanceConsistencyException e) {
+            if (iterator != null) iterator.close();
+            readOptions.close();
+            db.releaseSnapshot(snapshot);
+            throw e;
+        } catch (Exception e) {
+            if (iterator != null) iterator.close();
+            readOptions.close();
+            db.releaseSnapshot(snapshot);
+            throw new StakeBalanceConsistencyException(
+                    "Failed to open coordinate-bound stake balance view", e);
+        }
+    }
+
+    @Override
+    public PointerIndexPreparation preparePointerIndex(
+            CanonicalBlockReference expectedCoordinate, long maxCreationSlot) {
+        Objects.requireNonNull(expectedCoordinate, "expectedCoordinate");
+        if (expectedCoordinate.slot() > maxCreationSlot) {
+            log.warn("Pointer UTXO index cannot serve a historical cutoff: "
+                            + "coordinateSlot={}, maxCreationSlot={}; using pointer scan",
+                    expectedCoordinate.slot(), maxCreationSlot);
+            return PointerIndexPreparation.unavailable();
+        }
+        if (!enabled || db == null || cfMeta == null || cfPointer == null
+                || !hasCompleteStakeBalanceSource()) {
+            return PointerIndexPreparation.unavailable();
+        }
+
+        try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
+            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
+            requireSameCoordinate(expectedCoordinate, actual);
+            PointerIndexMarker marker = PointerIndexMarker.decode(
+                    db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            if (marker != null && marker.isUsableAt(actual)) {
+                return PointerIndexPreparation.available();
+            }
+        } catch (RocksDBException e) {
+            throw new StakeBalanceConsistencyException(
+                    "Failed to inspect pointer index marker", e);
+        }
+        return PointerIndexPreparation.unavailable();
+    }
+
+    @Override
+    public boolean isPointerIndexApplicable() {
+        if (!enabled || cfPointer == null || !hasCompleteStakeBalanceSource()) {
+            return false;
+        }
+        return !isCompletelyUninitialized();
+    }
+
+    private boolean isCompletelyUninitialized() {
+        if (db == null || cfMeta == null || cfUnspent == null || cfDelta == null) {
+            return false;
+        }
+        try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
+            if (db.get(cfMeta, readOptions, META_LAST_APPLIED_BLOCK) != null
+                    || db.get(cfMeta, readOptions, META_LAST_APPLIED_SLOT) != null
+                    || db.get(cfMeta, readOptions, META_LAST_APPLIED_HASH) != null
+                    || db.get(cfMeta, readOptions, PointerIndexMarker.KEY) != null) {
+                return false;
+            }
+            return isColumnFamilyEmpty(cfUnspent, readOptions)
+                    && isColumnFamilyEmpty(cfDelta, readOptions);
+        } catch (RocksDBException e) {
+            throw new StakeBalanceConsistencyException(
+                    "Failed to inspect pointer index initialization state", e);
+        }
+    }
+
+    private boolean isColumnFamilyEmpty(ColumnFamilyHandle handle, ReadOptions readOptions) {
+        try (RocksIterator iterator = db.newIterator(handle, readOptions)) {
+            iterator.seekToFirst();
+            return !iterator.isValid();
+        }
+    }
+
+    @Override
+    public boolean isPointerIndexReadyAtCurrentCoordinate() {
+        if (!isPointerIndexApplicable() || db == null || cfMeta == null) {
+            return false;
+        }
+        try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
+            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
+            PointerIndexMarker marker = PointerIndexMarker.decode(
+                    db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            return marker != null && marker.isUsableAt(actual);
+        } catch (RocksDBException e) {
+            throw new StakeBalanceConsistencyException(
+                    "Failed to inspect pointer index marker", e);
+        }
+    }
+
+    private CanonicalBlockReference readStakeBalanceCoordinate(ReadOptions readOptions)
+            throws RocksDBException {
+        byte[] blockBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_BLOCK);
+        byte[] slotBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_SLOT);
+        byte[] hashBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_HASH);
+        if (blockBytes == null && slotBytes == null && hashBytes == null) {
+            PointerIndexMarker genesisMarker = PointerIndexMarker.decode(
+                    db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            if (genesisMarker != null && isColumnFamilyEmpty(cfDelta, readOptions)) {
+                return new CanonicalBlockReference(
+                        genesisMarker.blockNumber(), genesisMarker.slot(), genesisMarker.blockHash());
+            }
+        }
+        if (blockBytes == null || blockBytes.length != Long.BYTES
+                || slotBytes == null || slotBytes.length != Long.BYTES
+                || hashBytes == null || hashBytes.length != 32) {
+            throw new StakeBalanceConsistencyException(
+                    "UTXO stake index coordinate metadata is missing or malformed");
+        }
+        long block = ByteBuffer.wrap(blockBytes).order(ByteOrder.BIG_ENDIAN).getLong();
+        long slot = ByteBuffer.wrap(slotBytes).order(ByteOrder.BIG_ENDIAN).getLong();
+        return new CanonicalBlockReference(block, slot, hashBytes);
+    }
+
+    private static void requireSameCoordinate(CanonicalBlockReference expected,
+                                              CanonicalBlockReference actual) {
+        if (expected.blockNumber() != actual.blockNumber()
+                || expected.slot() != actual.slot()
+                || !Arrays.equals(expected.blockHash(), actual.blockHash())) {
+            throw new StakeBalanceConsistencyException(
+                    "UTXO stake index coordinate mismatch: expected block="
+                            + expected.blockNumber() + " slot=" + expected.slot()
+                            + ", actual block=" + actual.blockNumber() + " slot=" + actual.slot());
+        }
+    }
+
     private boolean isUnfilteredUtxoStore() {
         StorageFilterChain fc = this.filterChain;
         return fc == null || fc.isEmpty();
@@ -627,13 +854,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 return;
             }
 
-            if (db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER) != null) {
+            if (StakeBalanceIndexKeys.isCurrent(
+                    db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER))) {
                 stakeBalanceIndexReady = true;
                 return;
             }
 
             if (isColumnFamilyEmpty(cfUnspent) && isColumnFamilyEmpty(cfDelta)) {
-                db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER, new byte[]{1});
+                db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER,
+                        StakeBalanceIndexKeys.READY_VERSION);
                 stakeBalanceIndexReady = true;
                 return;
             }
@@ -655,21 +884,23 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     private void markStakeBalanceIndexReady(WriteBatch batch) throws RocksDBException {
         if (stakeBalanceIndexEnabled && cfMeta != null && hasCompleteStakeBalanceSource()) {
-            batch.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER, new byte[]{1});
+            batch.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER,
+                    StakeBalanceIndexKeys.READY_VERSION);
         }
     }
 
     private void markStakeBalanceIndexReadyNow() {
         if (!stakeBalanceIndexEnabled || cfMeta == null || !hasCompleteStakeBalanceSource()) return;
         try {
-            db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER, new byte[]{1});
+            db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER,
+                    StakeBalanceIndexKeys.READY_VERSION);
             stakeBalanceIndexReady = true;
         } catch (RocksDBException e) {
             log.warn("Failed to mark stake balance index ready: {}", e.toString());
         }
     }
 
-    private java.util.Map<StakeCredentialKey, BigInteger> newStakeBalanceDeltaMap() {
+    private java.util.Map<StakeCredentialId, BigInteger> newStakeBalanceDeltaMap() {
         return shouldMaintainStakeBalanceIndex() ? new HashMap<>() : null;
     }
 
@@ -677,16 +908,67 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         return enabled && stakeBalanceIndexEnabled && cfStakeBalance != null && hasCompleteStakeBalanceSource();
     }
 
-    private void addStakeBalanceDelta(java.util.Map<StakeCredentialKey, BigInteger> deltas,
-                                      String address, BigInteger delta) {
-        if (deltas == null || address == null || delta == null || delta.signum() == 0) return;
-        StakeCredentialKey key = stakeCredentialKey(address);
-        if (key == null) return;
-        deltas.merge(key, delta, BigInteger::add);
+    private PointerAddressExtraction addStakeBalanceDelta(
+            java.util.Map<StakeCredentialId, BigInteger> deltas,
+            String address, BigInteger delta) {
+        if (address == null) return PointerAddressExtraction.NOT_POINTER;
+        Address parsed = StakeCredentialExtractor.parseAddressOrNull(address);
+        if (parsed != null && parsed.getAddressType() == AddressType.Ptr) {
+            return new PointerAddressExtraction(
+                    true, StakeCredentialExtractor.extractPointer(parsed));
+        }
+        if (deltas == null || delta == null || delta.signum() == 0) {
+            return PointerAddressExtraction.NOT_POINTER;
+        }
+        StakeCredentialId key = StakeCredentialExtractor.extractNonPointer(parsed);
+        if (key != null) deltas.merge(key, delta, BigInteger::add);
+        return PointerAddressExtraction.NOT_POINTER;
+    }
+
+    private void stagePointerPut(WriteBatch batch, byte[] outpoint,
+                                 long creationSlot, BigInteger lovelace,
+                                 PointerAddressExtraction extraction) throws RocksDBException {
+        if (!extraction.pointerAddress() || cfPointer == null) return;
+        // Preserve exact UTXO membership even for zero-lovelace or
+        // unresolvable pointer rows; aggregation ignores zero and counts an
+        // undecodable payload as failed, matching the historical scan.
+        batch.put(cfPointer, outpoint,
+                PointerUtxoCodec.encode(new PointerUtxo(
+                        creationSlot, lovelace, extraction.pointer())));
+    }
+
+    private void stagePointerDelete(WriteBatch batch, byte[] outpoint,
+                                    PointerAddressExtraction extraction) throws RocksDBException {
+        if (!extraction.pointerAddress() || cfPointer == null) return;
+        batch.delete(cfPointer, outpoint);
+    }
+
+    private record PointerAddressExtraction(
+            boolean pointerAddress, PointerAddressId pointer) {
+        private static final PointerAddressExtraction NOT_POINTER =
+                new PointerAddressExtraction(false, null);
+    }
+
+    private void stagePointerIndexMarker(WriteBatch batch, long blockNumber,
+                                         long slot, String blockHash) throws RocksDBException {
+        if (cfMeta == null || cfPointer == null) return;
+        CanonicalBlockReference coordinate = new CanonicalBlockReference(
+                blockNumber, slot, decodeCanonicalHash(blockHash));
+        batch.put(cfMeta, PointerIndexMarker.KEY,
+                PointerIndexMarker.encode(PointerIndexMarker.at(coordinate)));
+    }
+
+    private void markPointerIndexReadyNow(long blockNumber, long slot, String blockHash) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to mark pointer UTXO index ready", e);
+        }
     }
 
     private void applyStakeBalanceDeltas(WriteBatch batch,
-                                         java.util.Map<StakeCredentialKey, BigInteger> deltas) throws RocksDBException {
+                                         java.util.Map<StakeCredentialId, BigInteger> deltas) throws RocksDBException {
         if (!shouldMaintainStakeBalanceIndex()) {
             invalidateStakeBalanceIndex(batch);
             return;
@@ -702,7 +984,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             BigInteger updated = current.add(delta);
             if (updated.signum() < 0) {
                 log.warn("Stake balance index underflow for {}:{}, current={}, delta={}; clamping to zero",
-                        entry.getKey().credType(), entry.getKey().credHash(), current, delta);
+                        entry.getKey().credentialType(),
+                        HexUtil.encodeHexString(entry.getKey().credentialHash()), current, delta);
                 updated = BigInteger.ZERO;
             }
 
@@ -741,33 +1024,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         return val != null ? decodeStakeBalance(val) : BigInteger.ZERO;
     }
 
-    private static StakeCredentialKey stakeCredentialKey(String addressStr) {
-        try {
-            Address address = new Address(addressStr);
-            if (address.getAddressType() == AddressType.Ptr) {
-                return null;
-            }
-            byte[] stakeHash = address.getDelegationCredentialHash().orElse(null);
-            if (stakeHash == null || stakeHash.length != 28) {
-                return null;
-            }
-            return new StakeCredentialKey(stakeCredentialType(address), HexUtil.encodeHexString(stakeHash));
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static int stakeCredentialType(Address address) {
-        int typeNibble = ((address.getBytes()[0] & 0xFF) >> 4) & 0x0F;
-        return switch (typeNibble) {
-            case 0, 1 -> 0;
-            case 2, 3 -> 1;
-            default -> 0;
-        };
-    }
-
-    private static byte[] stakeBalanceKey(StakeCredentialKey key) {
-        return stakeBalanceKey(key.credType(), key.credHash());
+    private static byte[] stakeBalanceKey(StakeCredentialId key) {
+        byte[] result = new byte[1 + StakeCredentialId.HASH_LENGTH];
+        result[0] = (byte) key.credentialType();
+        System.arraycopy(key.credentialHash(), 0, result, 1, StakeCredentialId.HASH_LENGTH);
+        return result;
     }
 
     private static byte[] stakeBalanceKey(int credType, String credentialHash) {
@@ -792,7 +1053,188 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         return CborSerializationUtil.toBigInteger(CborSerializationUtil.deserializeOne(bytes));
     }
 
-    private record StakeCredentialKey(int credType, String credHash) {}
+    private static final class RocksStakeBalanceView implements StakeBalanceView {
+        private final RocksDB db;
+        private final Snapshot snapshot;
+        private final ReadOptions readOptions;
+        private final RocksIterator iterator;
+        private final CanonicalBlockReference coordinate;
+        private final ColumnFamilyHandle pointerColumnFamily;
+        private final boolean pointerIndexReady;
+        private StakeCredentialBalance current;
+        private boolean started;
+        private boolean closed;
+
+        private RocksStakeBalanceView(RocksDB db,
+                                      Snapshot snapshot,
+                                      ReadOptions readOptions,
+                                      RocksIterator iterator,
+                                      ColumnFamilyHandle pointerColumnFamily,
+                                      CanonicalBlockReference coordinate,
+                                      boolean pointerIndexReady) {
+            this.db = db;
+            this.snapshot = snapshot;
+            this.readOptions = readOptions;
+            this.iterator = iterator;
+            this.pointerColumnFamily = pointerColumnFamily;
+            this.coordinate = coordinate;
+            this.pointerIndexReady = pointerIndexReady;
+        }
+
+        @Override
+        public CanonicalBlockReference coordinate() {
+            return coordinate;
+        }
+
+        @Override
+        public boolean advance() {
+            requireOpen();
+            if (!started) {
+                iterator.seekToFirst();
+                started = true;
+            } else {
+                iterator.next();
+            }
+            if (!iterator.isValid()) {
+                try {
+                    iterator.status();
+                } catch (RocksDBException e) {
+                    throw new StakeBalanceConsistencyException(
+                            "Stake balance index iteration failed", e);
+                }
+                current = null;
+                return false;
+            }
+
+            byte[] key = iterator.key();
+            if (key.length != 1 + StakeCredentialId.HASH_LENGTH) {
+                throw new StakeBalanceConsistencyException(
+                        "Malformed stake balance key length: " + key.length);
+            }
+            int credentialType = key[0] & 0xFF;
+            byte[] credentialHash = Arrays.copyOfRange(key, 1, key.length);
+            BigInteger lovelace;
+            try {
+                lovelace = decodeStakeBalance(iterator.value());
+            } catch (Exception e) {
+                throw new StakeBalanceConsistencyException(
+                        "Malformed stake balance value", e);
+            }
+            if (lovelace.signum() <= 0) {
+                throw new StakeBalanceConsistencyException(
+                        "Stake balance index contains a non-positive row");
+            }
+            current = new StakeCredentialBalance(
+                    new StakeCredentialId(credentialType, credentialHash), lovelace);
+            return true;
+        }
+
+        @Override
+        public StakeCredentialBalance current() {
+            requireOpen();
+            if (current == null) {
+                throw new IllegalStateException("advance() has not produced a row");
+            }
+            return current;
+        }
+
+        @Override
+        public Optional<PointerUtxoView> openPointerUtxoView(long maxCreationSlot) {
+            requireOpen();
+            if (!pointerIndexReady || pointerColumnFamily == null
+                    || coordinate.slot() > maxCreationSlot) {
+                return Optional.empty();
+            }
+            return Optional.of(new RocksPointerUtxoView(
+                    db.newIterator(pointerColumnFamily, readOptions), maxCreationSlot));
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            current = null;
+            iterator.close();
+            readOptions.close();
+            db.releaseSnapshot(snapshot);
+        }
+
+        private void requireOpen() {
+            if (closed) throw new IllegalStateException("stake balance view is closed");
+        }
+    }
+
+    private static final class RocksPointerUtxoView implements PointerUtxoView {
+        private final RocksIterator iterator;
+        private final long maxCreationSlot;
+        private PointerUtxo current;
+        private boolean started;
+        private boolean closed;
+
+        private RocksPointerUtxoView(RocksIterator iterator, long maxCreationSlot) {
+            this.iterator = iterator;
+            this.maxCreationSlot = maxCreationSlot;
+        }
+
+        @Override
+        public boolean advance() {
+            requireOpen();
+            if (!started) {
+                iterator.seekToFirst();
+                started = true;
+            } else {
+                iterator.next();
+            }
+            while (iterator.isValid()) {
+                byte[] key = iterator.key();
+                if (key.length != 34) {
+                    throw new StakeBalanceConsistencyException(
+                            "Malformed pointer UTXO outpoint key length: " + key.length);
+                }
+                PointerUtxo decoded;
+                try {
+                    decoded = PointerUtxoCodec.decode(iterator.value());
+                } catch (RuntimeException malformed) {
+                    throw new StakeBalanceConsistencyException(
+                            "Malformed pointer UTXO index value", malformed);
+                }
+                if (decoded.creationSlot() <= maxCreationSlot) {
+                    current = decoded;
+                    return true;
+                }
+                iterator.next();
+            }
+            try {
+                iterator.status();
+            } catch (RocksDBException e) {
+                throw new StakeBalanceConsistencyException(
+                        "Pointer UTXO index iteration failed", e);
+            }
+            current = null;
+            return false;
+        }
+
+        @Override
+        public PointerUtxo current() {
+            requireOpen();
+            if (current == null) {
+                throw new IllegalStateException("advance() has not produced a pointer UTXO");
+            }
+            return current;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            current = null;
+            iterator.close();
+        }
+
+        private void requireOpen() {
+            if (closed) throw new IllegalStateException("pointer UTXO view is closed");
+        }
+    }
 
     @Override
     public synchronized void applyByronBlock(ByronMainBlockAppliedEvent event) {
@@ -906,7 +1348,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             List<TransactionBody> txs = block.getTransactionBodies();
             List<UtxoDeltaCodec.OutRef> createdRefs = new ArrayList<>();
             List<UtxoDeltaCodec.OutRef> spentRefs = new ArrayList<>();
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             int filteredOutputs = 0;
 
             // Write Allegra bootstrap removals into this block's WriteBatch (atomic with delta)
@@ -973,7 +1415,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                     }
                                 }
                                 spentRefs.add(new UtxoDeltaCodec.OutRef(in.getTransactionId(), in.getIndex()));
-                                addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
+                                PointerAddressExtraction pointer = addStakeBalanceDelta(
+                                        stakeBalanceDeltas, stored.address, stored.lovelace.negate());
+                                stagePointerDelete(batch, key, pointer);
                             }
                         }
                     }
@@ -1031,7 +1475,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 }
                             }
                             createdRefs.add(new UtxoDeltaCodec.OutRef(tx.getTxHash(), outIdx));
-                            addStakeBalanceDelta(stakeBalanceDeltas, out.getAddress(), lovelace);
+                            PointerAddressExtraction pointer = addStakeBalanceDelta(
+                                    stakeBalanceDeltas, out.getAddress(), lovelace);
+                            stagePointerPut(batch, outKey, slot, lovelace, pointer);
                         }
                     }
                 } else {
@@ -1076,7 +1522,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                     }
                                 }
                                 spentRefs.add(new UtxoDeltaCodec.OutRef(in.getTransactionId(), in.getIndex()));
-                                addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
+                                PointerAddressExtraction pointer = addStakeBalanceDelta(
+                                        stakeBalanceDeltas, stored.address, stored.lovelace.negate());
+                                stagePointerDelete(batch, key, pointer);
                             }
                         }
                     }
@@ -1117,7 +1565,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                             }
                         }
                         createdRefs.add(new UtxoDeltaCodec.OutRef(tx.getTxHash(), outIdx));
-                        addStakeBalanceDelta(stakeBalanceDeltas, out.getAddress(), lovelace);
+                        PointerAddressExtraction pointer = addStakeBalanceDelta(
+                                stakeBalanceDeltas, out.getAddress(), lovelace);
+                        stagePointerPut(batch, outKey, slot, lovelace, pointer);
                     }
                 }
             }
@@ -1192,6 +1642,18 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array());
         batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
                 ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array());
+        batch.put(cfMeta, META_LAST_APPLIED_HASH, decodeCanonicalHash(blockHash));
+    }
+
+    private static byte[] decodeCanonicalHash(String blockHash) {
+        if (blockHash == null || blockHash.isBlank()) {
+            throw new IllegalArgumentException("Canonical block hash is required");
+        }
+        byte[] hash = HexUtil.decodeHexString(blockHash);
+        if (hash.length != 32) {
+            throw new IllegalArgumentException("Canonical block hash must be exactly 32 bytes");
+        }
+        return hash;
     }
 
     private void observeApplyContinuity(long blockNumber, long slot, String blockHash, String eraLabel) {
@@ -1278,6 +1740,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (!enabled) return;
         if (shelleyFunds == null || shelleyFunds.isEmpty()) {
             markStakeBalanceIndexReadyNow();
+            markPointerIndexReadyNow(blockNumber, slot, blockHash);
             return;
         }
 
@@ -1286,7 +1749,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         int stored = 0;
 
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             for (var entry : shelleyFunds.entrySet()) {
                 String hexAddr = entry.getKey();
                 BigInteger lovelace = entry.getValue();
@@ -1321,11 +1784,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                         batch.put(cfAddr, pIdx, new byte[0]);
                     }
                 }
-                addStakeBalanceDelta(stakeBalanceDeltas, bech32Addr, lovelace);
+                PointerAddressExtraction pointer = addStakeBalanceDelta(
+                        stakeBalanceDeltas, bech32Addr, lovelace);
+                stagePointerPut(batch, outKey, slot, lovelace, pointer);
                 stored++;
             }
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             markStakeBalanceIndexReady(batch);
+            stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
             db.write(wo, batch);
             if (stakeBalanceIndexEnabled) stakeBalanceIndexReady = true;
             log.info("Stored {} Shelley genesis UTXOs (tx_hash = blake2b(address), outputIndex=0)", stored);
@@ -1389,7 +1855,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
         if (!isColumnFamilyEmpty(cfUnspent) || !isColumnFamilyEmpty(cfSpent)
                 || !isColumnFamilyEmpty(cfAddr) || !isColumnFamilyEmpty(cfDelta)
-                || !isColumnFamilyEmpty(cfScriptRef) || !isColumnFamilyEmpty(cfStakeBalance)) {
+                || !isColumnFamilyEmpty(cfScriptRef) || !isColumnFamilyEmpty(cfStakeBalance)
+                || !isColumnFamilyEmpty(cfPointer)) {
             throw new IllegalStateException("Cannot establish Byron UTXO capability on non-empty unmarked state; "
                     + "use the explicit rebuild operation");
         }
@@ -1397,7 +1864,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         java.util.Map<String, BigInteger> shelley = shelleyFunds != null
                 ? shelleyFunds : java.util.Map.of();
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             for (var entry : shelley.entrySet()) {
                 var output = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.shelley(
                         entry.getKey(), entry.getValue(), networkMagic, blockNumber, slot, blockHash);
@@ -1417,7 +1884,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 credential, slot, output.txHash(), output.outputIndex()), new byte[0]);
                     }
                 }
-                addStakeBalanceDelta(stakeBalanceDeltas, output.address(), output.amount());
+                PointerAddressExtraction pointer = addStakeBalanceDelta(
+                        stakeBalanceDeltas, output.address(), output.amount());
+                stagePointerPut(batch, outpoint, slot, output.amount(), pointer);
             }
 
             ByronUtxoApplier.GenesisResult byron = byronUtxoApplier.stageGenesisOutputs(
@@ -1426,6 +1895,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     encodeOutpointKeys(byron.avvmOutpointKeys()));
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             markStakeBalanceIndexReady(batch);
+            stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
             batch.put(cfMeta, META_BYRON_MAIN_APPLY_CAPABILITY, new byte[]{1});
             db.write(options, batch);
             invalidateContinuityCache();
@@ -1495,6 +1965,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         clearColumnFamilyForRebuild(cfMeta);
         clearColumnFamilyForRebuild(cfScriptRef);
         clearColumnFamilyForRebuild(cfStakeBalance);
+        clearColumnFamilyForRebuild(cfPointer);
         invalidateContinuityCache();
         stakeBalanceIndexReady = false;
 
@@ -1533,6 +2004,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (!enabled) return;
         if (nonAvvmBalances == null || nonAvvmBalances.isEmpty()) {
             markStakeBalanceIndexReadyNow();
+            markPointerIndexReadyNow(blockNumber, slot, blockHash);
             return;
         }
 
@@ -1541,6 +2013,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     nonAvvmBalances, java.util.Map.of(), slot, blockNumber, blockHash, batch);
             byronGenesisOutpointKeys.addAll(staged.allOutpointKeys());
             markStakeBalanceIndexReady(batch);
+            stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
             db.write(wo, batch);
             if (stakeBalanceIndexEnabled) stakeBalanceIndexReady = true;
             log.info("Stored {} Byron genesis UTXOs (tx_hash = blake2b(Base58.decode(address)), outputIndex=0)",
@@ -1712,7 +2185,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             WriteBatch batch,
             java.util.List<byte[]> previousValues) throws RocksDBException {
         BigInteger removedTotal = BigInteger.ZERO;
-        java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+        java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
         for (byte[] outKey : outpointKeys) {
             byte[] val = db.get(cfUnspent, outKey);
             if (val == null) continue; // already spent/removed
@@ -1729,7 +2202,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
             batch.delete(cfUnspent, outKey);
             if (utxo != null && utxo.lovelace != null) {
-                addStakeBalanceDelta(stakeBalanceDeltas, utxo.address, utxo.lovelace.negate());
+                PointerAddressExtraction pointer = addStakeBalanceDelta(
+                        stakeBalanceDeltas, utxo.address, utxo.lovelace.negate());
+                stagePointerDelete(batch, outKey, pointer);
             }
 
             // Remove address index entry if applicable
@@ -1785,8 +2260,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     batch.put(cfAddr, pIdx, new byte[0]);
                 }
             }
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
-            addStakeBalanceDelta(stakeBalanceDeltas, address, BigInteger.valueOf(lovelace));
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            PointerAddressExtraction pointer = addStakeBalanceDelta(
+                    stakeBalanceDeltas, address, BigInteger.valueOf(lovelace));
+            stagePointerPut(batch, outKey, slot, BigInteger.valueOf(lovelace), pointer);
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
 
             db.write(wo, batch);
@@ -1805,7 +2282,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<UtxoDeltaCodec.OutRef> created = new ArrayList<>();
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
 
             for (var utxo : utxos) {
                 // Convert BootstrapAsset list to Amount list for encoding
@@ -1851,7 +2328,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 }
 
                 created.add(new UtxoDeltaCodec.OutRef(utxo.txHash(), utxo.outputIndex()));
-                addStakeBalanceDelta(stakeBalanceDeltas, utxo.address(), utxo.lovelace());
+                PointerAddressExtraction pointer = addStakeBalanceDelta(
+                        stakeBalanceDeltas, utxo.address(), utxo.lovelace());
+                stagePointerPut(batch, outKey, slot, utxo.lovelace(), pointer);
             }
 
             // Write delta for rollback support
@@ -1865,6 +2344,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array());
             batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array());
+            batch.put(cfMeta, META_LAST_APPLIED_HASH, decodeCanonicalHash(blockHash));
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
 
             db.write(wo, batch);
@@ -2096,6 +2576,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     private static final byte[] META_LAST_APPLIED_SLOT = "meta.last_applied_slot".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_applied_block".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_LAST_APPLIED_HASH = "meta.last_applied_hash".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_PRUNE_DELTA_CURSOR = "prune.delta.cursor".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_PRUNE_SPENT_CURSOR = "prune.spent.cursor".getBytes(StandardCharsets.UTF_8);
 
@@ -2104,7 +2585,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         try (WriteBatch batch = new WriteBatch();
              WriteOptions wo = new WriteOptions();
              RocksIterator it = db.newIterator(cfDelta)) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             UtxoDeltaCodec.Decoded retained = null;
             it.seekToLast();
             while (it.isValid()) {
@@ -2138,7 +2619,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                         }
                     }
                     batch.delete(cfSpent, outpoint);
-                    addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
+                    PointerAddressExtraction pointer = addStakeBalanceDelta(
+                            stakeBalanceDeltas, stored.address, stored.lovelace);
+                    stagePointerPut(batch, outpoint, stored.slot, stored.lovelace, pointer);
                 }
 
                 for (UtxoDeltaCodec.OutRef ref : dec.created()) {
@@ -2166,7 +2649,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                         }
                         batch.delete(cfUnspent, outpoint);
                         batch.delete(cfSpent, outpoint);
-                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
+                        PointerAddressExtraction pointer = addStakeBalanceDelta(
+                                stakeBalanceDeltas, stored.address, stored.lovelace.negate());
+                        stagePointerDelete(batch, outpoint, pointer);
                     }
                 }
                 batch.delete(cfDelta, Arrays.copyOf(it.key(), it.key().length));
@@ -2178,7 +2663,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             }
             updateRollbackMetadata(batch,
                     retained != null ? retained.blockNumber() : null,
-                    retained != null ? retained.slot() : null);
+                    retained != null ? retained.slot() : null,
+                    retained != null ? retained.blockHash() : null);
+            invalidatePointerMarkerAfterRollback(batch, retained);
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             db.write(wo, batch);
             rememberRollbackContinuity(retained);
@@ -2187,6 +2674,27 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         } catch (Exception ex) {
             log.error("UTXO {} rollback failed: {}", operation, ex.toString(), ex);
             throw new RuntimeException("UTXO " + operation + " rollback failed", ex);
+        }
+    }
+
+    private void invalidatePointerMarkerAfterRollback(
+            WriteBatch batch, UtxoDeltaCodec.Decoded retained) throws RocksDBException {
+        PointerIndexMarker marker = PointerIndexMarker.decode(
+                db.get(cfMeta, PointerIndexMarker.KEY));
+        if (marker == null) return;
+        if (retained == null) {
+            batch.delete(cfMeta, PointerIndexMarker.KEY);
+            log.warn("Pointer UTXO index marker cleared by rollback to origin");
+            return;
+        }
+        CanonicalBlockReference coordinate = new CanonicalBlockReference(
+                retained.blockNumber(), retained.slot(), decodeCanonicalHash(retained.blockHash()));
+        if (marker.isAfter(coordinate)) {
+            batch.delete(cfMeta, PointerIndexMarker.KEY);
+            log.warn("Pointer UTXO index marker cleared by rollback below marker: "
+                            + "targetBlock={}, targetSlot={}, markerBlock={}, markerSlot={}",
+                    coordinate.blockNumber(), coordinate.slot(),
+                    marker.blockNumber(), marker.slot());
         }
     }
 
@@ -2226,15 +2734,18 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
-    private void updateRollbackMetadata(WriteBatch batch, Long retainedBlock, Long retainedSlot) throws RocksDBException {
-        if (retainedBlock != null && retainedSlot != null) {
+    private void updateRollbackMetadata(WriteBatch batch, Long retainedBlock, Long retainedSlot,
+                                        String retainedHash) throws RocksDBException {
+        if (retainedBlock != null && retainedSlot != null && retainedHash != null) {
             batch.put(cfMeta, META_LAST_APPLIED_SLOT,
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(retainedSlot).array());
             batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(retainedBlock).array());
+            batch.put(cfMeta, META_LAST_APPLIED_HASH, decodeCanonicalHash(retainedHash));
         } else {
             batch.delete(cfMeta, META_LAST_APPLIED_SLOT);
             batch.delete(cfMeta, META_LAST_APPLIED_BLOCK);
+            batch.delete(cfMeta, META_LAST_APPLIED_HASH);
         }
     }
 
@@ -2287,8 +2798,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     private long readLastAppliedSlot() {
+        try (ReadOptions readOptions = new ReadOptions()) {
+            return readLastAppliedSlot(readOptions);
+        }
+    }
+
+    private long readLastAppliedSlot(ReadOptions readOptions) {
         try {
-            byte[] v = db.get(cfMeta, META_LAST_APPLIED_SLOT);
+            byte[] v = db.get(cfMeta, readOptions, META_LAST_APPLIED_SLOT);
             if (v == null) return 0L;
             if (v.length != 8) {
                 throw new IllegalStateException("Malformed UTXO last applied slot metadata length: " + v.length);
@@ -2450,6 +2967,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             m.put("utxo_spent.estimateNumKeys", parseEstimate(cfSpent));
             m.put("utxo_addr.estimateNumKeys", parseEstimate(cfAddr));
             m.put("utxo_block_delta.estimateNumKeys", parseEstimate(cfDelta));
+            m.put("utxo_pointer.estimateNumKeys", parseEstimate(cfPointer));
             cfEstimates.set(Collections.unmodifiableMap(m));
         } catch (Throwable ignored) {
         }

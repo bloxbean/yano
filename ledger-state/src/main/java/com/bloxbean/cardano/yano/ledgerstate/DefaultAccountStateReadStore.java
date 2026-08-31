@@ -34,15 +34,18 @@ import java.util.function.Supplier;
  */
 class DefaultAccountStateReadStore implements AccountStateReadStore {
     private final RocksDB db;
+    private final ColumnFamilyHandle cfState;
     private final ColumnFamilyHandle cfEpochSnapshot;
     private final Supplier<GovernanceBlockProcessor> governanceProcessorSupplier;
     private final Logger log;
 
     DefaultAccountStateReadStore(RocksDB db,
+                                 ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot,
                                  Supplier<GovernanceBlockProcessor> governanceProcessorSupplier,
                                  Logger log) {
         this.db = db;
+        this.cfState = cfState;
         this.cfEpochSnapshot = cfEpochSnapshot;
         this.governanceProcessorSupplier = governanceProcessorSupplier;
         this.log = log;
@@ -50,6 +53,7 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
 
     @Override
     public Optional<EpochStake> getEpochStake(int epoch, int credType, String credentialHash) {
+        requireReadableSnapshot(epoch);
         try {
             byte[] key = snapshotKey(epoch, credType, credentialHash);
             byte[] val = db.get(cfEpochSnapshot, key);
@@ -65,6 +69,7 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
 
     @Override
     public Optional<BigInteger> getTotalActiveStake(int epoch) {
+        requireReadableSnapshot(epoch);
         try {
             SnapshotScanResult scan = scanSnapshot(epoch, null);
             return scan.seenAny() ? Optional.of(scan.total()) : Optional.empty();
@@ -76,6 +81,7 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
 
     @Override
     public Optional<PoolStake> getPoolActiveStake(int epoch, String poolHash) {
+        requireReadableSnapshot(epoch);
         try {
             SnapshotScanResult scan = scanSnapshot(epoch, poolHash);
             if (!scan.seenAny() || !scan.seenPool()) return Optional.empty();
@@ -89,6 +95,7 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
     @Override
     public List<PoolStakeDelegator> listPoolStakeDelegators(int epoch, String poolHash, int page, int count,
                                                            String order) {
+        requireReadableSnapshot(epoch);
         try {
             List<PoolStakeDelegator> delegators = new ArrayList<>();
             byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
@@ -100,6 +107,10 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
                     if (key.length < 5) break;
                     int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                     if (keyEpoch != epoch) break;
+                    if (key.length != 33) {
+                        it.next();
+                        continue;
+                    }
 
                     var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
                     if (poolHash.equals(snapshot.poolHash())) {
@@ -258,6 +269,10 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
                 if (key.length < 5) break;
                 int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (keyEpoch != epoch) break;
+                if (key.length != 33) {
+                    it.next();
+                    continue;
+                }
 
                 seenAny = true;
                 var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
@@ -269,6 +284,19 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
             }
         }
         return new SnapshotScanResult(seenAny, seenPool, total);
+    }
+
+    private void requireReadableSnapshot(int epoch) {
+        try {
+            byte[] marker = db.get(cfState,
+                    DefaultAccountStateStore.snapshotGenerationKey(epoch));
+            if (marker != null && (marker.length < 2 || marker[1] != 1)) {
+                throw new IllegalStateException(
+                        "Epoch snapshot " + epoch + " is still BUILDING");
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read snapshot generation status", e);
+        }
     }
 
     private Optional<GovernanceStateStore> governanceStore() {

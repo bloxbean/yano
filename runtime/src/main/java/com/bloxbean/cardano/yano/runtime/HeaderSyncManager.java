@@ -18,6 +18,7 @@ import com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 /**
  * HeaderSyncManager handles header-only synchronization using ChainSyncAgent with intelligent backpressure.
@@ -63,8 +64,9 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      * Optional external hold on canonical ingestion (ADR-039 disk backpressure).
      * Defaults to "never pause", so a node without projection history is unaffected.
      */
-    private volatile java.util.function.BooleanSupplier ingestHold = () -> false;
+    private volatile BooleanSupplier ingestHold = () -> false;
     private volatile String ingestHoldReason = null;
+    private volatile BooleanSupplier epochBoundaryHold = () -> false;
 
     // Progress logging
     private static final int PROGRESS_LOG_INTERVAL = 1000;
@@ -355,7 +357,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
             // An external hold (archive-retained disk at its configured limit) pauses
             // ingestion regardless of the header/body gap, and the same check governs
             // resume, so cleanup releasing disk automatically lets sync continue.
-            if (ingestHold.getAsBoolean()) return true;
+            if (ingestHold.getAsBoolean() || epochBoundaryHold.getAsBoolean()) return true;
 
             if (maxGapThreshold == -1)
                 return false; // Backpressure disabled
@@ -472,9 +474,14 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      * the configured aggregate archive-retained budget or the filesystem free-space reserve
      * is reached, and the same predicate governs resume once cleanup frees space.
      */
-    public void setIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+    public void setIngestHold(BooleanSupplier hold, String reason) {
         this.ingestHold = hold == null ? () -> false : hold;
         this.ingestHoldReason = reason;
+    }
+
+    /** Pause header ingestion while a body range is fenced at an epoch transition. */
+    public void setEpochBoundaryHold(BooleanSupplier hold) {
+        this.epochBoundaryHold = hold == null ? () -> false : hold;
     }
 
     /** Reason for an externally held ingestion pause, when one is installed. */

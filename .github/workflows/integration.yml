@@ -67,12 +67,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: 'true'
-      - name: Set up GraalVM 25
+      - name: Set up Oracle GraalVM 25.3
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '25'
+          version: '25.3'
           distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: 'gradle'
+      - name: Verify Oracle GraalVM release
+        run: native-image --version | grep -F 'Oracle GraalVM 25.3'
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build, verify, and smoke-test the native core distribution
@@ -84,3 +87,5 @@ jobs:
           -Dquarkus.package.jar.enabled=false
           -PskipSigning=true
           --stacktrace
+      - name: Verify native image uses G1
+        run: grep -F '"garbage_collector":"G1 GC"' app/build/yano-native-image-source-jar/yano-build-output-stats.json

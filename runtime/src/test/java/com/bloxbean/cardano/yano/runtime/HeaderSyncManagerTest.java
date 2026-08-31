@@ -31,6 +31,7 @@ import java.math.BigInteger;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -81,6 +82,26 @@ class HeaderSyncManagerTest {
         assertEquals(500L, headerTip.getBlockNumber());
         assertEquals(1, headerSyncManager.getHeadersReceived());
         assertEquals(1, headerSyncManager.getHeaderMetrics().shelleyHeaders);
+    }
+
+    @Test
+    void epochBoundaryHoldPausesAndResumesHeaderSync() throws Exception {
+        AtomicBoolean boundaryHold = new AtomicBoolean(true);
+        headerSyncManager.setEpochBoundaryHold(boundaryHold::get);
+        Tip tip = new Tip(new Point(1000,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 500L);
+        BlockHeader blockHeader = createMockShelleyHeader(1000L, 500L,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        headerSyncManager.rollforward(tip, blockHeader, new byte[]{1, 2, 3});
+
+        assertTrue(peerClient.chainSyncPaused);
+        boundaryHold.set(false);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (!peerClient.chainSyncResumed && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(peerClient.chainSyncResumed);
     }
 
     @Test
@@ -450,6 +471,8 @@ class HeaderSyncManagerTest {
     // Simple mock PeerClient for testing
     private static class MockPeerClient extends PeerClient {
         private boolean running = false;
+        private volatile boolean chainSyncPaused;
+        private volatile boolean chainSyncResumed;
 
         public MockPeerClient() {
             super("mock-host", 3001, 1, Point.ORIGIN);
@@ -477,6 +500,16 @@ class HeaderSyncManagerTest {
         @Override
         public void startHeaderSync(Point from, boolean isPipelined) {
             // Mock implementation - no-op for HeaderSyncManager tests
+        }
+
+        @Override
+        public void pauseChainSync() {
+            chainSyncPaused = true;
+        }
+
+        @Override
+        public void resumeChainSync() {
+            chainSyncResumed = true;
         }
     }
 }

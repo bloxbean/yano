@@ -211,7 +211,7 @@ For a Linux native binary from macOS, use Quarkus container native build. This i
   -Dquarkus.native.enabled=true \
   -Dquarkus.package.jar.enabled=false \
   -Dquarkus.native.container-build=true \
-  -Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25 \
+  -Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25i3 \
   -PskipSigning=true
 ```
 

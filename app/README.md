@@ -7,7 +7,7 @@ Quarkus-based wrapper for Yano with two built-in profiles:
 
 ## Prerequisites
 
-- Java 25 (Temurin or Oracle GraalVM 25; GraalVM is required only for native image builds)
+- Java 25 (Temurin for JVM builds or Oracle GraalVM 25.3 for native image builds)
 
 ## Build
 

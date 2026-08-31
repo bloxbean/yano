@@ -1,10 +1,9 @@
 package com.bloxbean.cardano.yano.runtime.utxo;
 
 import co.nstant.in.cbor.model.UnsignedInteger;
-import com.bloxbean.cardano.client.address.Address;
-import com.bloxbean.cardano.client.address.AddressType;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
-import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialExtractor;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import org.rocksdb.ColumnFamilyHandle;
@@ -40,7 +39,8 @@ public final class StakeBalanceIndexRebuilder {
         ColumnFamilyHandle cfMeta = requireCf(ctx.handle(UtxoCfNames.UTXO_META), UtxoCfNames.UTXO_META);
 
         try {
-            if (!force && db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER) != null) {
+            if (!force && StakeBalanceIndexKeys.isCurrent(
+                    db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER))) {
                 log.info("Stake balance index is already ready; use force=true to rebuild");
                 return new RebuildResult(false, 0, 0, 0, 0, BigInteger.ZERO);
             }
@@ -49,7 +49,8 @@ public final class StakeBalanceIndexRebuilder {
             long cleared = clearStakeBalanceIndex(db, cfStakeBalance, cfMeta);
             AggregateResult aggregate = aggregateCurrentUnspent(db, cfUnspent);
             long written = writeBalances(db, cfStakeBalance, aggregate.balances());
-            db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER, new byte[]{1});
+            db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER,
+                    StakeBalanceIndexKeys.READY_VERSION);
 
             BigInteger total = aggregate.balances().values().stream().reduce(BigInteger.ZERO, BigInteger::add);
             long elapsed = System.currentTimeMillis() - start;
@@ -71,7 +72,8 @@ public final class StakeBalanceIndexRebuilder {
         RocksDB db = ctx.db();
         ColumnFamilyHandle cfMeta = requireCf(ctx.handle(UtxoCfNames.UTXO_META), UtxoCfNames.UTXO_META);
         try {
-            return db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER) != null;
+            return StakeBalanceIndexKeys.isCurrent(
+                    db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to read stake balance index ready marker", e);
         }
@@ -122,7 +124,7 @@ public final class StakeBalanceIndexRebuilder {
 
     private static AggregateResult aggregateCurrentUnspent(RocksDB db,
                                                            ColumnFamilyHandle cfUnspent) {
-        Map<StakeCredentialKey, BigInteger> balances = new HashMap<>();
+        Map<StakeCredentialId, BigInteger> balances = new HashMap<>();
         long scanned = 0;
         long skipped = 0;
         long nextLogAt = System.currentTimeMillis() + PROGRESS_LOG_MILLIS;
@@ -133,7 +135,7 @@ public final class StakeBalanceIndexRebuilder {
                 scanned++;
                 try {
                     var utxo = UtxoCborCodec.decodeUtxoRecord(it.value());
-                    StakeCredentialKey key = stakeCredentialKey(utxo.address);
+                    StakeCredentialId key = StakeCredentialExtractor.extractNonPointer(utxo.address);
                     if (key == null || utxo.lovelace == null || utxo.lovelace.signum() <= 0) {
                         skipped++;
                     } else {
@@ -159,7 +161,7 @@ public final class StakeBalanceIndexRebuilder {
 
     private static long writeBalances(RocksDB db,
                                       ColumnFamilyHandle cfStakeBalance,
-                                      Map<StakeCredentialKey, BigInteger> balances) throws Exception {
+                                      Map<StakeCredentialId, BigInteger> balances) throws Exception {
         long written = 0;
         long nextLogAt = System.currentTimeMillis() + PROGRESS_LOG_MILLIS;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
@@ -186,34 +188,11 @@ public final class StakeBalanceIndexRebuilder {
         return written;
     }
 
-    private static StakeCredentialKey stakeCredentialKey(String addressStr) {
-        try {
-            Address address = new Address(addressStr);
-            if (address.getAddressType() == AddressType.Ptr) return null;
-
-            byte[] stakeHash = address.getDelegationCredentialHash().orElse(null);
-            if (stakeHash == null || stakeHash.length != 28) return null;
-
-            return new StakeCredentialKey(stakeCredentialType(address), HexUtil.encodeHexString(stakeHash));
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static int stakeCredentialType(Address address) {
-        int typeNibble = ((address.getBytes()[0] & 0xFF) >> 4) & 0x0F;
-        return switch (typeNibble) {
-            case 0, 1 -> 0;
-            case 2, 3 -> 1;
-            default -> 0;
-        };
-    }
-
-    private static byte[] stakeBalanceKey(StakeCredentialKey key) {
-        byte[] hash = HexUtil.decodeHexString(key.credHash());
-        ByteBuffer bb = ByteBuffer.allocate(29).order(ByteOrder.BIG_ENDIAN);
-        bb.put((byte) key.credType());
-        bb.put(hash);
+    private static byte[] stakeBalanceKey(StakeCredentialId key) {
+        ByteBuffer bb = ByteBuffer.allocate(1 + StakeCredentialId.HASH_LENGTH)
+                .order(ByteOrder.BIG_ENDIAN);
+        bb.put((byte) key.credentialType());
+        bb.put(key.credentialHash());
         return bb.array();
     }
 
@@ -221,9 +200,7 @@ public final class StakeBalanceIndexRebuilder {
         return CborSerializationUtil.serialize(new UnsignedInteger(balance), true);
     }
 
-    private record StakeCredentialKey(int credType, String credHash) {}
-
-    private record AggregateResult(Map<StakeCredentialKey, BigInteger> balances,
+    private record AggregateResult(Map<StakeCredentialId, BigInteger> balances,
                                    long scannedUtxos,
                                    long skippedUtxos) {}
 

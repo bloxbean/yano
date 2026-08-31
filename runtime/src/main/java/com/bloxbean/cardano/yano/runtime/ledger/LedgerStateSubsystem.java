@@ -58,6 +58,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -196,19 +197,9 @@ public final class LedgerStateSubsystem implements Subsystem {
         if (epochBoundaryProcessor == null) {
             return null;
         }
-        var err = epochBoundaryProcessor.getLastVerificationError();
-        if (err == null) {
-            return null;
-        }
-        return Map.of(
-                "status", "ERROR",
-                "epoch", err.epoch(),
-                "expectedTreasury", err.expectedTreasury().toString(),
-                "actualTreasury", err.actualTreasury().toString(),
-                "treasuryDiff", err.treasuryDiff().toString(),
-                "expectedReserves", err.expectedReserves().toString(),
-                "actualReserves", err.actualReserves().toString(),
-                "reservesDiff", err.reservesDiff().toString());
+        return EpochCalcStatusMapper.map(
+                epochBoundaryProcessor.getLastVerificationError(),
+                epochBoundaryProcessor.getLastBoundaryTelemetry());
     }
 
     public void refreshGenesisBootstrapData(NetworkGenesisConfig networkGenesisConfig) {
@@ -239,6 +230,14 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
 
         try {
+            // A block body is durably stored before its epoch-transition events run. If the
+            // process dies inside the boundary, UTXO/account reconciliation would otherwise
+            // apply that first new-epoch block before SNAP resumes. Finish the journaled
+            // boundary against the still-canonical pre-block derived state first.
+            if (epochBoundaryProcessor != null) {
+                epochBoundaryProcessor.recoverInterruptedBoundary();
+            }
+
             if (utxoRecovery != null) {
                 utxoRecovery.run();
             }
@@ -247,8 +246,10 @@ public final class LedgerStateSubsystem implements Subsystem {
                 reconcileAccountStateStore();
                 accountStateReconcilePending = false;
             }
-            if (epochBoundaryProcessor != null) {
-                epochBoundaryProcessor.recoverInterruptedBoundary();
+
+            if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
+                requirePointerIndexReadyIfApplicable(
+                        utxoStateSupplier.get(), defaultStore::requirePointerIndexReady, log);
             }
 
             publishDirectStartGenesisBootstrapIfNeeded();
@@ -256,6 +257,28 @@ public final class LedgerStateSubsystem implements Subsystem {
         } catch (Throwable t) {
             throw new IllegalStateException("Startup ledger-state recovery failed", t);
         }
+    }
+
+    static void requirePointerIndexReadyIfApplicable(
+            UtxoState utxoState, Consumer<Boolean> readinessCheck, Logger log) {
+        Objects.requireNonNull(readinessCheck, "readinessCheck");
+        Objects.requireNonNull(log, "log");
+        if (utxoState == null) {
+            log.info("Pointer-index readiness check not applicable: UTXO state is unavailable");
+            return;
+        }
+        if (!utxoState.isPointerIndexApplicable()) {
+            log.info("Pointer-index readiness check not applicable: "
+                    + "UTXO state is disabled, filtered, or lacks a complete stake source");
+            return;
+        }
+
+        boolean ready = utxoState.isPointerIndexReadyAtCurrentCoordinate();
+        if (!ready) {
+            log.error("Pointer-index readiness check failed: "
+                    + "no usable completeness marker at the current UTXO coordinate");
+        }
+        readinessCheck.accept(ready);
     }
 
     public void completeStartupRecovery() {
@@ -382,12 +405,8 @@ public final class LedgerStateSubsystem implements Subsystem {
                 chainBlockReader, rocksAccess, runtimeOptions.globals(), log, epochParamProvider);
         this.accountStateStore = AccountStateStoreDiscovery.discover(
                 storeContext, Thread.currentThread().getContextClassLoader());
-        if (config.isEnableClient()) {
-            this.accountStateReconcilePending = true;
-            log.info("Account state store initialized; reconciliation deferred until startup recovery");
-        } else {
-            reconcileAccountStateStore();
-        }
+        this.accountStateReconcilePending = true;
+        log.info("Account state store initialized; reconciliation deferred until startup recovery");
 
         if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
             wireDefaultAccountStateStore(defaultStore, networkGenesisConfig);
@@ -396,13 +415,11 @@ public final class LedgerStateSubsystem implements Subsystem {
         this.accountStateEventHandler = new AccountStateEventHandler(eventBus, accountStateStore);
         log.info("Account state store initialized ({}); event handler registered",
                 accountStateStore.getClass().getSimpleName());
-        if (!config.isEnableClient()) {
-            publishDirectStartGenesisBootstrapIfNeeded();
-        }
     }
 
     private void wireDefaultAccountStateStore(DefaultAccountStateStore defaultStore,
                                               NetworkGenesisConfig networkGenesisConfig) {
+        defaultStore.setChainBlockReader(chainBlockReader);
         UtxoState utxoState = utxoStateSupplier.get();
         if (utxoState != null) {
             defaultStore.setUtxoState(utxoState);
@@ -413,7 +430,7 @@ public final class LedgerStateSubsystem implements Subsystem {
         if (snapshotAmountsEnabled) {
             defaultStore.setStakeSnapshotService(new EpochStakeSnapshotService(true));
             String balMode = String.valueOf(runtimeOptions.globals()
-                    .getOrDefault(YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, "full-scan"));
+                    .getOrDefault(YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, "auto"));
             defaultStore.setBalanceMode(balMode);
             log.info("Epoch stake snapshot amounts enabled (balance-mode={})", balMode);
         }
@@ -504,8 +521,17 @@ public final class LedgerStateSubsystem implements Subsystem {
         rewardCalcInstance.setLedgerStateProvider(defaultStore);
         rewardCalcInstance.setAccountStateStore(defaultStore);
         rewardCalcInstance.setEraProvider(eraService);
+        Object rewardMode = runtimeOptions.globals().get(
+                YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE);
+        rewardCalcInstance.setRewardMode(rewardMode != null ? String.valueOf(rewardMode) : "legacy");
+        rewardCalcInstance.setBatchLimits(
+                resolveInt(runtimeOptions.globals(),
+                        YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS, 10_000),
+                resolveInt(runtimeOptions.globals(),
+                        YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES, 4 * 1024 * 1024));
         defaultStore.setRewardCalculator(rewardCalcInstance);
-        log.info("Epoch reward calculator enabled");
+        log.info("Epoch reward calculator enabled (mode={})",
+                rewardMode != null ? rewardMode : "legacy");
         return rewardCalcInstance;
     }
 
@@ -617,6 +643,7 @@ public final class LedgerStateSubsystem implements Subsystem {
             var dropService = new com.bloxbean.cardano.yano.ledgerstate.governance.ratification.ProposalDropService();
             var drepDistCalc = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepDistributionCalculator(
                     rocksDb, cfState, cfSnapshot, govStore);
+            drepDistCalc.setStakeBalanceViewSupplier(defaultStore::openBoundaryStakeBalanceView);
             var drepExpiryCalc = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepExpiryCalculator();
 
             var govEpochProcessor = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor(
@@ -834,6 +861,18 @@ public final class LedgerStateSubsystem implements Subsystem {
             return Boolean.parseBoolean(String.valueOf(value));
         }
         return def;
+    }
+
+    private static int resolveInt(Map<String, Object> globals, String key, int defaultValue) {
+        Object value = globals.get(key);
+        if (value instanceof Number number) return number.intValue();
+        if (value != null) {
+            try {
+                return Integer.parseInt(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return defaultValue;
     }
 
     private static long parseLong(Object obj, long def) {

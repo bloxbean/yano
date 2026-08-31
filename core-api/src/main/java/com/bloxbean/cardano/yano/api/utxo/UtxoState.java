@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.api.utxo;
 
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 
@@ -79,14 +80,16 @@ public interface UtxoState {
     }
 
     /**
-     * Iterate over unspent UTXOs created at or before {@code maxSlot},
-     * using a consistent point-in-time snapshot of the UTXO store.
+     * Iterate over UTXOs that were unspent at {@code maxSlot}, using a
+     * consistent point-in-time snapshot of the UTXO store.
      * <p>
      * This provides a deterministic view even if other threads are
-     * concurrently modifying the UTXO store (e.g., during fast-sync).
-     * Only UTXOs whose creation slot is ≤ maxSlot are included.
+     * concurrently modifying the UTXO store (e.g., during fast-sync or
+     * epoch-boundary crash recovery). Implementations whose durable tip is
+     * newer than {@code maxSlot} must restore outputs spent after the target
+     * slot, or fail closed when the required history is unavailable.
      *
-     * @param maxSlot  only include UTXOs created at or before this slot
+     * @param maxSlot  ledger slot at which each returned output must be unspent
      * @param consumer receives (bech32 address, lovelace amount) per UTXO
      */
     default void forEachUtxoAtSlot(long maxSlot, java.util.function.BiConsumer<String, java.math.BigInteger> consumer) {
@@ -144,5 +147,48 @@ public interface UtxoState {
      */
     default Optional<BigInteger> getUtxoBalanceByStakeCredential(int credType, String credentialHash) {
         return Optional.empty();
+    }
+
+    /**
+     * Open the complete live stake-balance index at an exact canonical
+     * coordinate. Disabled, filtered or unready stores return empty. A store
+     * that is ready but cannot prove the coordinate fails closed with
+     * {@link StakeBalanceConsistencyException}.
+     */
+    default Optional<StakeBalanceView> openStakeBalanceView(CanonicalBlockReference expectedCoordinate) {
+        return Optional.empty();
+    }
+
+    /**
+     * Check the optional pointer-address UTXO index at an exact boundary
+     * coordinate. Unavailable indexes must remain fail-closed and use the
+     * historical scan.
+     */
+    default PointerIndexPreparation preparePointerIndex(
+            CanonicalBlockReference expectedCoordinate, long maxCreationSlot) {
+        return PointerIndexPreparation.unavailable();
+    }
+
+    /**
+     * Whether this store configuration can use the pointer UTXO index for
+     * epoch-boundary stake input. Disabled, filtered, and incomplete UTXO
+     * stores return false and must not be subjected to the pointer-index
+     * chainstate version gate. A completely uninitialized store also returns
+     * false until genesis establishes its canonical coordinate and readiness
+     * marker.
+     */
+    default boolean isPointerIndexApplicable() {
+        return false;
+    }
+
+    /**
+     * Whether the pointer index has a valid completeness marker at the UTXO
+     * store's current coordinate. Startup uses this to reject chainstates that
+     * predate the index; boundary reads still fail closed to the historical
+     * scan if a later rollback clears the marker. A restart after such a deep
+     * rollback rejects an applicable preview chainstate until it is rebuilt.
+     */
+    default boolean isPointerIndexReadyAtCurrentCoordinate() {
+        return false;
     }
 }

@@ -8,8 +8,10 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.PipelineConfig;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
+import com.bloxbean.cardano.yano.runtime.config.ResourceProfile;
 import com.bloxbean.cardano.yano.runtime.BodyFetchManager;
 import com.bloxbean.cardano.yano.runtime.HeaderSyncManager;
 import com.bloxbean.cardano.yano.runtime.PipelineDataListener;
@@ -327,8 +329,10 @@ public class PeerSession {
         long gapThreshold = Math.max(pipelineConfig.getBodyBatchSize() / 10, 100);
         int maxBatchSize = pipelineConfig.getBodyBatchSize();
 
-        // Preserve current Yano behavior while the lifecycle is being extracted.
-        maxBatchSize = 5000;
+        // Preserve the current throughput default while allowing the explicit
+        // low-memory profile to retain fewer decoded blocks per range.
+        ResourceProfile resourceProfile = ResourceProfile.current();
+        maxBatchSize = configuredBodyFetchBatchSize(resourceProfile);
 
         bodyFetchManager = new BodyFetchManager(
                 peerClient,
@@ -343,12 +347,13 @@ public class PeerSession {
         );
         bodyFetchManager.setPeerHealth(peerHealth);
         bodyFetchManager.setGenesisBootstrapDataSupplier(genesisBootstrapDataSupplier);
-        log.info("📦 BodyFetchManager created with gapThreshold={}, maxBatchSize={}",
-                gapThreshold, maxBatchSize);
+        log.info("📦 BodyFetchManager created with resourceProfile={}, gapThreshold={}, maxBatchSize={}",
+                resourceProfile.externalName(), gapThreshold, maxBatchSize);
 
         headerAppliedEventPublisher = new HeaderAppliedEventPublisher(eventBus);
         headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext,
                 bodyFetchManager, headerAppliedEventPublisher, headerValidator);
+        headerSyncManager.setEpochBoundaryHold(bodyFetchManager::isEpochBoundaryFenceActive);
         log.info("📋 HeaderSyncManager created");
 
         if (epochParamProvider != null) {
@@ -369,10 +374,38 @@ public class PeerSession {
         if (!closeExistingLedgerApplyProcessor(Duration.ofSeconds(5))) {
             throw new IllegalStateException("Previous LedgerApplyProcessor did not reach a safe stop");
         }
-        ledgerApplyProcessor = new LedgerApplyProcessor(chainState, callbacks::requestPeerRecovery);
+        LedgerApplyProcessor.Policy policy = LedgerApplyProcessor.Policy.defaults();
+        ledgerApplyProcessor = new LedgerApplyProcessor(chainState, callbacks::requestPeerRecovery, policy);
         ledgerGeneration = ledgerApplyProcessor.openGeneration();
         ledgerApplyProcessor.start();
-        log.info("🧾 LedgerApplyProcessor started for generation {}", ledgerGeneration);
+        log.info("🧾 LedgerApplyProcessor started for generation {} "
+                        + "(maxQueuedItems={}, maxQueuedDecodedBytes={}, reservedControlSlots={})",
+                ledgerGeneration,
+                policy.maxQueuedItems(),
+                policy.maxQueuedDecodedBytes(),
+                policy.reservedControlSlots());
+    }
+
+    private static int positiveIntProperty(String property, String environment, int defaultValue) {
+        String value = System.getProperty(property);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(environment);
+        }
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        int parsed = Integer.parseInt(value);
+        if (parsed < 1) {
+            throw new IllegalArgumentException(property + " must be positive");
+        }
+        return parsed;
+    }
+
+    static int configuredBodyFetchBatchSize(ResourceProfile profile) {
+        return positiveIntProperty(
+                YanoPropertyKeys.BodyFetch.MAX_BATCH_SIZE,
+                "YANO_BODY_FETCH_MAX_BATCH_SIZE",
+                profile.isLowMemory() ? 1000 : 5000);
     }
 
     private void stopExistingBodyFetchManager() {

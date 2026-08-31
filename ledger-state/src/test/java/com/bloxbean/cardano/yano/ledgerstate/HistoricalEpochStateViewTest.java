@@ -69,6 +69,8 @@ class HistoricalEpochStateViewTest {
     @Test
     void exposesCanonicalGovernanceSnapshotsIncludingExplicitEmptyPresence() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(getClass()), true);
             var governance = rocks.governanceStore();
             var delta = new ArrayList<DefaultAccountStateStore.DeltaOp>();
             var proposals = new LinkedHashMap<GovActionId, ProposalLifecycleRecord>();
@@ -79,8 +81,6 @@ class HistoricalEpochStateViewTest {
                 governance.storeDRepDistributionSnapshotMarker(42, batch, delta);
                 rocks.db().write(options, batch);
             }
-            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
-                    LoggerFactory.getLogger(getClass()), true);
             List<String> seen = new ArrayList<>();
             try (HistoricalEpochStateView view = store.openHistoricalEpochStateView()) {
                 assertThat(view.hasProposalStatusSnapshot(42)).isTrue();

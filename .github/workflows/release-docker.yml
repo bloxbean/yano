@@ -255,12 +255,15 @@ jobs:
           ref: ${{ inputs.git_tag }}
           persist-credentials: false
 
-      - name: Set up GraalVM 25
+      - name: Set up Oracle GraalVM 25.3
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '25'
+          version: '25.3'
           distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: gradle
+      - name: Verify Oracle GraalVM release
+        run: native-image --version | grep -F 'Oracle GraalVM 25.3'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -270,6 +273,9 @@ jobs:
 
       - name: Prepare native Docker context
         run: ./gradlew :app:prepareYanoDockerNativeContext -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
+
+      - name: Verify native image uses G1
+        run: grep -F '"garbage_collector":"G1 GC"' app/build/yano-native-image-source-jar/yano-build-output-stats.json
 
       - name: Smoke test native plugin catalog
         run: ./gradlew :app:nativePluginCatalogSmoke -PskipSigning=true

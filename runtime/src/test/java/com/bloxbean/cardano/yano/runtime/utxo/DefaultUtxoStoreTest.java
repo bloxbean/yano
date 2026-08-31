@@ -8,6 +8,9 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
@@ -34,6 +37,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class DefaultUtxoStoreTest {
     private static final String BASE_ADDR_WITH_STAKE =
             "addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp";
+    private static final String POINTER_ADDRESS =
+            "addr1gxrgsz5tkx0vsapdhyrk09w9zplhllr94zy70vycpll2egsvpsxqgnmy5k";
 
     private File tempDir;
     private DirectRocksDBChainState chain;
@@ -139,6 +144,242 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void orderedStakeBalanceViewIsCoordinateBoundAndRollbackRestoresHash() {
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("d1".repeat(32))
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1_234))).build()))
+                .build();
+        Block block1 = Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(tx1)).invalidTransactions(List.of()).build();
+        String hash1 = "e1".repeat(32);
+        publishBlock(100, 1, hash1, block1);
+
+        var expected1 = new CanonicalBlockReference(1, 100, HexUtil.decodeHexString(hash1));
+        try (var view = store.openStakeBalanceView(expected1).orElseThrow()) {
+            assertEquals(expected1.blockNumber(), view.coordinate().blockNumber());
+            assertEquals(expected1.slot(), view.coordinate().slot());
+            assertArrayEquals(expected1.blockHash(), view.coordinate().blockHash());
+            assertTrue(view.advance());
+            assertEquals(BigInteger.valueOf(1_234), view.current().lovelace());
+            assertEquals(28, view.current().credential().credentialHash().length);
+            assertFalse(view.advance());
+        }
+
+        var wrongHash = new CanonicalBlockReference(1, 100,
+                HexUtil.decodeHexString("ef".repeat(32)));
+        assertThrows(StakeBalanceConsistencyException.class,
+                () -> store.openStakeBalanceView(wrongHash));
+
+        Block block2 = Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of()).invalidTransactions(List.of()).build();
+        publishBlock(102, 2, "e2".repeat(32), block2);
+        store.rollbackToPoint(new Point(100, hash1));
+
+        try (var view = store.openStakeBalanceView(expected1).orElseThrow()) {
+            assertArrayEquals(expected1.blockHash(), view.coordinate().blockHash());
+            assertTrue(view.advance());
+            assertEquals(BigInteger.valueOf(1_234), view.current().lovelace());
+        }
+    }
+
+    @Test
+    void pointerIndexTracksCreateSpendAndRollbackInUtxoBatch() throws Exception {
+        String txHash = "91".repeat(32);
+        TransactionBody create = TransactionBody.builder()
+                .txHash(txHash)
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(POINTER_ADDRESS)
+                        .amounts(List.of(lovelaceAmount(42_000_000L)))
+                        .build()))
+                .build();
+        String hash1 = "92".repeat(32);
+        publishBlock(100, 1, hash1, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(create)).invalidTransactions(List.of()).build());
+
+        ColumnFamilyHandle pointerCf = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        byte[] outpoint = UtxoKeyUtil.outpointKey(txHash, 0);
+        var indexed = PointerUtxoCodec.decode(chain.rocks().db().get(pointerCf, outpoint));
+        assertEquals(100, indexed.creationSlot());
+        assertEquals(BigInteger.valueOf(42_000_000L), indexed.lovelace());
+
+        TransactionBody spend = TransactionBody.builder()
+                .txHash("93".repeat(32))
+                .inputs(Set.of(TransactionInput.builder()
+                        .transactionId(txHash).index(0).build()))
+                .outputs(List.of())
+                .build();
+        publishBlock(101, 2, "94".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spend)).invalidTransactions(List.of()).build());
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+
+        store.rollbackToPoint(new Point(100, hash1));
+        var restored = PointerUtxoCodec.decode(chain.rocks().db().get(pointerCf, outpoint));
+        assertEquals(indexed, restored);
+
+        store.rollbackToPoint(Point.ORIGIN);
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+    }
+
+    @Test
+    void unresolvablePointerPayloadDoesNotAbortApplyAndMirrorsSpendRollback() throws Exception {
+        String address = unresolvablePointerAddress();
+        String txHash = "95".repeat(32);
+        TransactionBody create = TransactionBody.builder()
+                .txHash(txHash)
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(address)
+                        .amounts(List.of(lovelaceAmount(43_000_000L)))
+                        .build()))
+                .build();
+        String createHash = "96".repeat(32);
+
+        assertDoesNotThrow(() -> publishBlock(100, 1, createHash,
+                Block.builder().era(Era.Babbage)
+                        .transactionBodies(List.of(create))
+                        .invalidTransactions(List.of()).build()));
+
+        ColumnFamilyHandle pointerCf = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        byte[] outpoint = UtxoKeyUtil.outpointKey(txHash, 0);
+        PointerUtxo indexed = PointerUtxoCodec.decode(
+                chain.rocks().db().get(pointerCf, outpoint));
+        assertFalse(indexed.resolvable());
+
+        TransactionBody spend = TransactionBody.builder()
+                .txHash("97".repeat(32))
+                .inputs(Set.of(TransactionInput.builder()
+                        .transactionId(txHash).index(0).build()))
+                .outputs(List.of())
+                .build();
+        publishBlock(101, 2, "98".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spend)).invalidTransactions(List.of()).build());
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+
+        store.rollbackToPoint(new Point(100, createHash));
+        PointerUtxo restored = PointerUtxoCodec.decode(
+                chain.rocks().db().get(pointerCf, outpoint));
+        assertFalse(restored.resolvable());
+        assertEquals(indexed, restored);
+
+        store.rollbackToPoint(Point.ORIGIN);
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+    }
+
+    @Test
+    void missingPointerMarkerFallsBackToHistoricalScan() throws Exception {
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "00".repeat(32));
+        TransactionBody create = TransactionBody.builder()
+                .txHash("b1".repeat(32))
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(POINTER_ADDRESS)
+                        .amounts(List.of(lovelaceAmount(11_000_000L)))
+                        .build()))
+                .build();
+        String blockHash = "b2".repeat(32);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(create)).invalidTransactions(List.of()).build());
+        var expected = new CanonicalBlockReference(
+                1, 100, HexUtil.decodeHexString(blockHash));
+
+        assertTrue(store.isPointerIndexApplicable());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+        chain.rocks().db().delete(
+                chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY);
+        var preparation = store.preparePointerIndex(expected, 100);
+
+        assertFalse(preparation.ready());
+        assertFalse(store.isPointerIndexReadyAtCurrentCoordinate());
+        try (var view = store.openStakeBalanceView(expected).orElseThrow()) {
+            assertTrue(view.openPointerUtxoView(100).isEmpty());
+        }
+    }
+
+    @Test
+    void emptyGenesisEstablishesPointerMarkerAndCanonicalCoordinate() throws Exception {
+        String genesisHash = "a9".repeat(32);
+        assertFalse(store.isPointerIndexApplicable());
+
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, genesisHash);
+
+        assertTrue(store.isPointerIndexApplicable());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+        assertEquals(0, store.readLastAppliedBlock());
+        assertEquals(-1, store.getLatestAppliedSlot());
+    }
+
+    @Test
+    void malformedOrFuturePointerMarkerFallsBackWithoutExposingIndex() throws Exception {
+        String blockHash = "b3".repeat(32);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        "b4".repeat(32), 12_000_000L)))
+                .invalidTransactions(List.of()).build());
+        var expected = new CanonicalBlockReference(
+                1, 100, HexUtil.decodeHexString(blockHash));
+        ColumnFamilyHandle metaCf = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        List<byte[]> unusableMarkers = List.of(
+                new byte[]{1, 2, 3},
+                PointerIndexMarker.encode(PointerIndexMarker.at(
+                        new CanonicalBlockReference(2, 200, new byte[32]))));
+
+        for (byte[] marker : unusableMarkers) {
+            chain.rocks().db().put(metaCf, PointerIndexMarker.KEY, marker);
+            assertFalse(store.preparePointerIndex(expected, 100).ready());
+            try (var view = store.openStakeBalanceView(expected).orElseThrow()) {
+                assertTrue(view.openPointerUtxoView(100).isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void pointerIndexRefusesCoordinateAfterHistoricalCutoff() throws Exception {
+        String oldTxHash = "ba".repeat(32);
+        String newTxHash = "bb".repeat(32);
+        publishBlock(100, 1, "bc".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(oldTxHash, 10_000_000L)))
+                .invalidTransactions(List.of()).build());
+        String currentHash = "bd".repeat(32);
+        publishBlock(200, 2, currentHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(newTxHash, 20_000_000L)))
+                .invalidTransactions(List.of()).build());
+
+        ColumnFamilyHandle metaCf = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        var coordinate = new CanonicalBlockReference(
+                2, 200, HexUtil.decodeHexString(currentHash));
+        chain.rocks().db().put(metaCf, PointerIndexMarker.KEY,
+                PointerIndexMarker.encode(PointerIndexMarker.at(coordinate)));
+        try (var stakeView = store.openStakeBalanceView(coordinate).orElseThrow()) {
+            assertTrue(stakeView.openPointerUtxoView(100).isEmpty(),
+                    "the current index cannot reconstruct UTXOs spent after a historical cutoff");
+        }
+
+        var preparation = store.preparePointerIndex(coordinate, 100);
+
+        assertFalse(preparation.ready());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate(),
+                "a historical cutoff must not invalidate the current completeness marker");
+    }
+
+    private TransactionBody pointerOutputTransaction(String txHash, long lovelace) {
+        return TransactionBody.builder()
+                .txHash(txHash)
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(POINTER_ADDRESS)
+                        .amounts(List.of(lovelaceAmount(lovelace)))
+                        .build()))
+                .build();
+    }
+
+    private static String unresolvablePointerAddress() {
+        byte[] bytes = new byte[1 + 28 + 10];
+        bytes[0] = 0x41;
+        Arrays.fill(bytes, 1, 29, (byte) 0x11);
+        Arrays.fill(bytes, 29, bytes.length, (byte) 0xFF);
+        return new Address(bytes).toBech32();
+    }
+
+    @Test
     void computeTotalUtxoLovelaceFailsClosedOnMalformedRecord() throws Exception {
         store.getDb().put(store.getCfUnspent(), new byte[]{1, 2, 3}, new byte[]{1});
 
@@ -148,7 +389,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void applyValidBlock_thenQueryByAddress_andByOutpoint() {
-        String addr = "addr_test1vpxvalid0000000000000000000000000000000000000000"; // pseudo address
+        String addr = UtxoTestAddresses.enterprise(10);
         TransactionOutput out0 = TransactionOutput.builder()
                 .address(addr)
                 .amounts(List.of(lovelaceAmount(1000)))
@@ -176,9 +417,81 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void forEachUtxoAtSlotRestoresOutputSpentAfterTarget() throws Exception {
+        String boundaryAddress = BASE_ADDR_WITH_STAKE;
+        String futureAddress = UtxoTestAddresses.enterprise(11);
+        String createdHash = "31".repeat(32);
+        TransactionBody created = TransactionBody.builder()
+                .txHash(createdHash)
+                .outputs(List.of(TransactionOutput.builder().address(boundaryAddress)
+                        .amounts(List.of(lovelaceAmount(2_471_796_694L))).build()))
+                .build();
+        publishBlock(100, 1, "41".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(created)).invalidTransactions(List.of()).build());
+
+        TransactionBody spent = TransactionBody.builder()
+                .txHash("32".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(createdHash).index(0).build()))
+                .outputs(List.of(TransactionOutput.builder().address(futureAddress)
+                        .amounts(List.of(lovelaceAmount(2_471_500_000L))).build()))
+                .build();
+        publishBlock(102, 2, "42".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spent)).invalidTransactions(List.of()).build());
+
+        Map<String, BigInteger> balances = new HashMap<>();
+        store.forEachUtxoAtSlot(100,
+                (address, lovelace) -> balances.merge(address, lovelace, BigInteger::add));
+
+        assertEquals(BigInteger.valueOf(2_471_796_694L), balances.get(boundaryAddress));
+        assertFalse(balances.containsKey(futureAddress),
+                "an output created after the target slot must not enter the historical view");
+    }
+
+    @Test
+    void forEachUtxoAtSlotFailsClosedWhenSpentHistoryIsMissing() throws Exception {
+        String createdHash = "51".repeat(32);
+        TransactionBody created = TransactionBody.builder()
+                .txHash(createdHash)
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1_000_000))).build()))
+                .build();
+        publishBlock(100, 1, "61".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(created)).invalidTransactions(List.of()).build());
+
+        TransactionBody spent = TransactionBody.builder()
+                .txHash("52".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(createdHash).index(0).build()))
+                .outputs(List.of())
+                .build();
+        publishBlock(102, 2, "62".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spent)).invalidTransactions(List.of()).build());
+        chain.rocks().db().delete(chain.rocks().handle(UtxoCfNames.UTXO_SPENT),
+                UtxoKeyUtil.outpointKey(createdHash, 0));
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> store.forEachUtxoAtSlot(100, (address, lovelace) -> { }));
+        assertTrue(failure.getMessage().contains("missing spent record"));
+    }
+
+    @Test
+    void forEachUtxoAtSlotFailsClosedBeforeOldestRetainedDelta() {
+        TransactionBody created = TransactionBody.builder()
+                .txHash("71".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1_000_000))).build()))
+                .build();
+        publishBlock(100, 1, "72".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(created)).invalidTransactions(List.of()).build());
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> store.forEachUtxoAtSlot(99, (address, lovelace) -> { }));
+        assertTrue(failure.getMessage().contains("history floor is slot 100"));
+    }
+
+    @Test
     void applyInvalidBlock_usesCollateralAndReturn_only() {
-        String addrA = "addr_test1vpxcollat000000000000000000000000000000000000";
-        String addrRet = "addr_test1vpxreturn0000000000000000000000000000000000";
+        String addrA = UtxoTestAddresses.enterprise(12);
+        String addrRet = UtxoTestAddresses.enterprise(13);
 
         TransactionOutput seedOut = TransactionOutput.builder()
                 .address(addrA)
@@ -217,7 +530,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void rollbackRevertsCreatedAndRestoresSpent() {
-        String addr = "addr_test1vpxrollback00000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(14);
 
         TransactionBody tx1 = TransactionBody.builder()
                 .txHash("01".repeat(32))
@@ -428,7 +741,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void pruneRespectsRollbackWindowForSpent() {
-        String addr = "addr_test1vpxprune00000000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(15);
         TransactionBody tx1 = TransactionBody.builder()
                 .txHash("f1".repeat(32))
                 .outputs(List.of(TransactionOutput.builder().address(addr)
@@ -606,7 +919,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void rollbackCapableStore_rollbackToSlot() {
-        String addr = "addr_test1vpxrollback00000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(16);
         TransactionBody tx1 = TransactionBody.builder()
                 .txHash("01".repeat(32))
                 .outputs(List.of(TransactionOutput.builder().address(addr)
@@ -784,7 +1097,7 @@ class DefaultUtxoStoreTest {
                 .inputs(Set.of(TransactionInput.builder()
                         .transactionId(bootstrapTxHash).index(0).build()))
                 .outputs(List.of(TransactionOutput.builder()
-                        .address("addr_test1vpxsteal00000000000000000000000000000000000000")
+                        .address(UtxoTestAddresses.enterprise(17))
                         .amounts(List.of(lovelaceAmount(500_000_000))).build()))
                 .build();
         Block allegraBlock = Block.builder().era(Era.Allegra)
@@ -800,8 +1113,7 @@ class DefaultUtxoStoreTest {
 
         // The "steal" output should NOT exist — the spend should have been rejected
         // because the input was filtered as a removed bootstrap outpoint
-        var stealUtxos = store.getUtxosByAddress(
-                "addr_test1vpxsteal00000000000000000000000000000000000000", 1, 10);
+        var stealUtxos = store.getUtxosByAddress(UtxoTestAddresses.enterprise(17), 1, 10);
         // The tx output may still be created (outputs are processed independently of inputs),
         // but the input spend was treated as prev=null, so no spentRef was recorded for it
         // through the normal spend path. The bootstrap UTXO was removed via Allegra path.
@@ -947,9 +1259,9 @@ class DefaultUtxoStoreTest {
         // added to intraBlockOutputs, so a spend of it later in the same block resolved to
         // nothing and was skipped — leaving a phantom unspent output, a stale address index and
         // an overstated stake balance. Observed on preprod block 1,809,762.
-        String collateralAddr = "addr_test1vpxcollateral000000000000000000000000000000000";
+        String collateralAddr = UtxoTestAddresses.enterprise(18);
         String returnAddr = BASE_ADDR_WITH_STAKE;   // has a stake part, so the balance is checked
-        String spentToAddr = "addr_test1vpxspentto00000000000000000000000000000000000";
+        String spentToAddr = UtxoTestAddresses.enterprise(19);
         StakeCred stakeCred = stakeCred(returnAddr);
         String fundingTxHash = "aa".repeat(32);
 
@@ -990,9 +1302,9 @@ class DefaultUtxoStoreTest {
     void collateralReturnSpentByAnInvalidTransactionIsAlsoAccountedFor() {
         // The consuming transaction can itself be invalid, which routes the spend through the
         // collateral-input branch instead of the ordinary-input branch. Both must resolve.
-        String collateralAddr = "addr_test1vpxcollateral2000000000000000000000000000000";
+        String collateralAddr = UtxoTestAddresses.enterprise(20);
         String returnAddr = BASE_ADDR_WITH_STAKE;
-        String spentToAddr = "addr_test1vpxspentto20000000000000000000000000000000000";
+        String spentToAddr = UtxoTestAddresses.enterprise(21);
         StakeCred stakeCred = stakeCred(returnAddr);
         String fundingTxHash = "a1".repeat(32);
 
@@ -1013,9 +1325,9 @@ class DefaultUtxoStoreTest {
         // The fix adds state inside the block's write batch, so it must survive the rollback and
         // replay path unchanged — otherwise a fork near such a block would leave the store in a
         // different place depending on how it got there.
-        String collateralAddr = "addr_test1vpxcollateral3000000000000000000000000000000";
+        String collateralAddr = UtxoTestAddresses.enterprise(22);
         String returnAddr = BASE_ADDR_WITH_STAKE;
-        String spentToAddr = "addr_test1vpxspentto30000000000000000000000000000000000";
+        String spentToAddr = UtxoTestAddresses.enterprise(23);
         StakeCred stakeCred = stakeCred(returnAddr);
         String fundingTxHash = "a2".repeat(32);
 

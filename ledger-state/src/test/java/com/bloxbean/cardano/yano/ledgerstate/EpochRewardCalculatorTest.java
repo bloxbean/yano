@@ -1,22 +1,64 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
-import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import org.cardanofoundation.rewards.calculation.config.NetworkConfig;
 import org.cardanofoundation.rewards.calculation.domain.ProtocolParameters;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EpochRewardCalculatorTest {
+    private static final int SNAPSHOT_EPOCH = 9;
+
+    @TempDir
+    Path tempDir;
+
+    @Test
+    void exposesNormalizedRewardModeForBoundaryTelemetry() {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+
+        assertThat(calculator.rewardMode()).isEqualTo("legacy");
+
+        calculator.setRewardMode(" LEGACY ");
+
+        assertThat(calculator.rewardMode()).isEqualTo("legacy");
+    }
+
+    @Test
+    void legacyModeFailsClosedWhenStreamingProgressExists() throws Exception {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+        Field progress = EpochRewardCalculator.class.getDeclaredField("rewardResumeAfterPool");
+        progress.setAccessible(true);
+        progress.set(calculator, "42".repeat(28));
+
+        assertThatThrownBy(() -> calculator.validateRewardResumePath(177, true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must remain streaming");
+
+        calculator.setRewardMode("streaming");
+        assertThatThrownBy(() -> calculator.validateRewardResumePath(177, false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pool-major snapshot");
+    }
 
     @Test
     void rewardProtocolParamsNormalizeRemovedDecentralizationToZero() {
@@ -148,6 +190,98 @@ class EpochRewardCalculatorTest {
     }
 
     @Test
+    void boundaryPoolParamsMemoCachesHitsAndMissesByPoolAndEpoch() {
+        var provider = new PoolParamsProvider(Set.of("pool1"));
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+        calculator.setLedgerStateProvider(provider);
+
+        calculator.beginBoundaryPoolParamsMemo();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 10)).isPresent();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 10)).isPresent();
+        assertThat(calculator.getPoolParamsAtEpoch("missing", 10)).isEmpty();
+        assertThat(calculator.getPoolParamsAtEpoch("missing", 10)).isEmpty();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 11)).isPresent();
+
+        assertThat(provider.historicalCalls).isEqualTo(3);
+
+        assertThat(calculator.getPoolParams("pool1")).isPresent();
+        assertThat(calculator.getPoolParams("pool1")).isPresent();
+        assertThat(provider.currentCalls).isEqualTo(2);
+        assertThat(provider.historicalCalls).isEqualTo(3);
+
+        calculator.clearBoundaryPoolParamsMemo();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 10)).isPresent();
+        assertThat(provider.historicalCalls).isEqualTo(4);
+    }
+
+    @Test
+    void calculateAndDistributeClearsPoolParamsMemoAfterEarlyReturnAndFailure() {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+        calculator.setCfNetworkConfig(NetworkConfig.builder()
+                .networkMagic(42)
+                .shelleyStartEpoch(10)
+                .vasilHardforkEpoch(999)
+                .build());
+
+        EpochParamProvider parameters = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+        };
+
+        assertThat(calculator.calculateAndDistribute(
+                10, BigInteger.ZERO, BigInteger.ZERO, parameters, 42)).isEmpty();
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.clearBoundaryPoolParamsMemo();
+
+        calculator.setCfNetworkConfig(NetworkConfig.builder()
+                .networkMagic(42)
+                .shelleyStartEpoch(0)
+                .vasilHardforkEpoch(999)
+                .build());
+        EpochParamProvider failingParameters = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigDecimal getDecentralization(long epoch) {
+                throw new IllegalStateException("parameter lookup failed");
+            }
+        };
+
+        assertThatThrownBy(() -> calculator.calculateAndDistribute(
+                12, BigInteger.ZERO, BigInteger.ZERO, failingParameters, 42))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("parameter lookup failed");
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.clearBoundaryPoolParamsMemo();
+    }
+
+    @Test
+    void snapshotRestoreClearsBoundaryPoolParamsMemo() {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.reinitialize(null, null, null);
+
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.clearBoundaryPoolParamsMemo();
+    }
+
+    @Test
     void postVasilRewardRulesIgnoreObsoleteDecentralizationAndUsePoolBlockCount() {
         var calculator = new EpochRewardCalculator(null, null, null, true);
         calculator.setEraProvider(firstBabbageEpoch(2));
@@ -180,6 +314,133 @@ class EpochRewardCalculatorTest {
         assertThat(postVasil.nonOBFTBlockCount()).isEqualTo(1L);
     }
 
+    @Test
+    void sequentialRewardFlagsMatchLegacyCutoffAndRegistrationSemantics() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(getClass()), true);
+            var calculator = new EpochRewardCalculator(
+                    rocks.db(), rocks.cfState(), rocks.cfSnapshot(), true);
+            calculator.setBatchLimits(2, 256);
+
+            List<CredentialFixture> fixtures = List.of(
+                    new CredentialFixture(0, "11".repeat(28), "a1".repeat(28), false,
+                            List.of(event(10, 0, 0, true), event(30, 0, 0, false))),
+                    new CredentialFixture(0, "22".repeat(28), "a2".repeat(28), false,
+                            List.of(event(10, 0, 0, true), event(20, 0, 0, false))),
+                    new CredentialFixture(0, "33".repeat(28), "a3".repeat(28), false,
+                            List.of()),
+                    new CredentialFixture(0, "44".repeat(28), "a4".repeat(28), true,
+                            List.of()),
+                    new CredentialFixture(0, "55".repeat(28), "a5".repeat(28), false,
+                            List.of(event(10, 0, 0, true))),
+                    new CredentialFixture(0, "66".repeat(28), "a6".repeat(28), false,
+                            List.of(event(20, 0, 0, true), event(20, 1, 0, false))),
+                    new CredentialFixture(1, "11".repeat(28), "a7".repeat(28), true,
+                            List.of(event(10, 0, 0, true))));
+            for (CredentialFixture fixture : fixtures) {
+                putCredentialSnapshot(rocks, fixture);
+                if (fixture.registeredNow()) {
+                    rocks.db().put(rocks.cfState(),
+                            DefaultAccountStateStore.accountKey(
+                                    fixture.credentialType(), fixture.credentialHash()),
+                            AccountStateCborCodec.encodeStakeAccount(
+                                    BigInteger.ZERO, BigInteger.valueOf(2_000_000)));
+                }
+                for (StakeEvent event : fixture.events()) {
+                    rocks.db().put(rocks.cfState(),
+                            DefaultAccountStateStore.credentialStakeEventKey(
+                                    fixture.credentialType(), fixture.credentialHash(), event.slot(),
+                                    event.txIndex(), event.certIndex()),
+                            AccountStateCborCodec.encodeStakeEvent(event.registration()
+                                    ? AccountStateCborCodec.EVENT_REGISTRATION
+                                    : AccountStateCborCodec.EVENT_DEREGISTRATION));
+                }
+            }
+
+            try (var prepared = calculator.prepareRewardCredentialFlags(
+                    SNAPSHOT_EPOCH, 25, 35, 15, 35)) {
+                assertThat(prepared.rows()).isEqualTo(fixtures.size());
+                for (CredentialFixture fixture : fixtures) {
+                    var summary = store.getCredentialEventSummary(
+                            fixture.credentialType() + ":" + fixture.credentialHash(),
+                            25, 35, 15, 35);
+                    int expected = legacyFlags(summary, fixture.registeredNow());
+                    byte[] actual = rocks.db().get(rocks.cfSnapshot(),
+                            EpochRewardCalculator.rewardFlagsKey(
+                                    SNAPSHOT_EPOCH,
+                                    HexUtil.decodeHexString(fixture.poolHash()),
+                                    credentialSuffix(
+                                            fixture.credentialType(), fixture.credentialHash())));
+                    assertThat(actual)
+                            .as("flags for %s", fixture.credentialHash())
+                            .containsExactly((byte) expected);
+                }
+            }
+
+            byte[] prefix = EpochRewardCalculator.rewardFlagsPrefix(SNAPSHOT_EPOCH);
+            try (var iterator = rocks.db().newIterator(rocks.cfSnapshot())) {
+                iterator.seek(prefix);
+                assertThat(iterator.isValid() && startsWith(iterator.key(), prefix)).isFalse();
+            }
+        }
+    }
+
+    private static int legacyFlags(
+            DefaultAccountStateStore.CredentialEventSummary summary,
+            boolean registeredNow) {
+        boolean atStability = summary.deregisteredAtStability();
+        boolean atBoundary = summary.deregisteredAtBoundary();
+        if (!registeredNow && !atStability && !atBoundary) {
+            atStability = true;
+            atBoundary = true;
+        }
+        int flags = 0;
+        if (atStability) flags |= EpochRewardCalculator.REWARD_FLAG_DEREGISTERED_AT_STABILITY;
+        if (atBoundary) flags |= EpochRewardCalculator.REWARD_FLAG_DEREGISTERED_AT_BOUNDARY;
+        if (summary.registeredSince()) flags |= EpochRewardCalculator.REWARD_FLAG_REGISTERED_SINCE;
+        if (summary.registeredUntil()) flags |= EpochRewardCalculator.REWARD_FLAG_REGISTERED_UNTIL;
+        if (registeredNow) flags |= EpochRewardCalculator.REWARD_FLAG_REGISTERED_NOW;
+        return flags;
+    }
+
+    private static void putCredentialSnapshot(
+            TestRocksDBHelper rocks, CredentialFixture fixture) throws Exception {
+        byte[] key = ByteBuffer.allocate(33).order(ByteOrder.BIG_ENDIAN)
+                .putInt(SNAPSHOT_EPOCH).put((byte) fixture.credentialType())
+                .put(HexUtil.decodeHexString(fixture.credentialHash())).array();
+        rocks.db().put(rocks.cfSnapshot(), key,
+                AccountStateCborCodec.encodeEpochDelegSnapshot(
+                        fixture.poolHash(), BigInteger.valueOf(1_000)));
+    }
+
+    private static byte[] credentialSuffix(int credentialType, String credentialHash) {
+        return ByteBuffer.allocate(29).put((byte) credentialType)
+                .put(HexUtil.decodeHexString(credentialHash)).array();
+    }
+
+    private static StakeEvent event(
+            long slot, int txIndex, int certIndex, boolean registration) {
+        return new StakeEvent(slot, txIndex, certIndex, registration);
+    }
+
+    private static boolean startsWith(byte[] key, byte[] prefix) {
+        if (key.length < prefix.length) return false;
+        for (int index = 0; index < prefix.length; index++) {
+            if (key[index] != prefix[index]) return false;
+        }
+        return true;
+    }
+
+    private record CredentialFixture(
+            int credentialType, String credentialHash, String poolHash, boolean registeredNow,
+            List<StakeEvent> events) {
+    }
+
+    private record StakeEvent(
+            long slot, int txIndex, int certIndex, boolean registration) {
+    }
+
     private static EraProvider firstBabbageEpoch(int epoch) {
         return new EraProvider() {
             @Override
@@ -196,6 +457,8 @@ class EpochRewardCalculatorTest {
 
     private static final class PoolParamsProvider implements LedgerStateProvider {
         private final Set<String> registeredPools;
+        private int currentCalls;
+        private int historicalCalls;
 
         private PoolParamsProvider(Set<String> registeredPools) {
             this.registeredPools = registeredPools;
@@ -247,7 +510,18 @@ class EpochRewardCalculatorTest {
         }
 
         @Override
+        public Optional<PoolParams> getPoolParams(String poolHash) {
+            currentCalls++;
+            return poolParams(poolHash);
+        }
+
+        @Override
         public Optional<PoolParams> getPoolParams(String poolHash, int epoch) {
+            historicalCalls++;
+            return poolParams(poolHash);
+        }
+
+        private Optional<PoolParams> poolParams(String poolHash) {
             if (!registeredPools.contains(poolHash)) {
                 return Optional.empty();
             }

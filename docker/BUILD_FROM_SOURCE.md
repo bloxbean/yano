@@ -69,7 +69,7 @@ For release-parity local testing with Oracle GraalVM and G1 GC:
   -Dquarkus.native.enabled=true \
   -Dquarkus.package.jar.enabled=false \
   -Dquarkus.native.container-build=true \
-  -Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25 \
+  -Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25i3 \
   -PskipSigning=true
 ```
 
@@ -215,7 +215,10 @@ Then restart:
 ./yano.sh restart
 ```
 
-`JAVA_OPTS` applies only to the JVM image. For native-image runtime flags, use `YANO_EXTRA_ARGS`.
+`JAVA_OPTS` is honored by both image flavors. The native image defaults to a
+1536 MiB maximum heap; set `YANO_NATIVE_MAX_HEAP`, or provide `-Xmx` in
+`JAVA_OPTS`, to override it. `YANO_EXTRA_ARGS` remains available for additional
+runtime arguments.
 
 ## Useful Cleanup
 

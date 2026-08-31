@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.apply;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +32,20 @@ class LedgerApplyProcessorTest {
         if (processor != null) {
             processor.close();
         }
+        System.clearProperty(YanoPropertyKeys.RESOURCE_PROFILE);
+        System.clearProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES);
+    }
+
+    @Test
+    void lowMemoryProfileReducesDecodedQueueDefaultAndAllowsOverride() {
+        System.setProperty(YanoPropertyKeys.RESOURCE_PROFILE, "low-memory");
+
+        assertEquals(32L * 1024 * 1024,
+                LedgerApplyProcessor.Policy.defaults().maxQueuedDecodedBytes());
+
+        System.setProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES, "16777216");
+        assertEquals(16L * 1024 * 1024,
+                LedgerApplyProcessor.Policy.defaults().maxQueuedDecodedBytes());
     }
 
     @Test
@@ -531,6 +546,84 @@ class LedgerApplyProcessorTest {
         assertTrue(rejected.isCompletedExceptionally());
         waitUntilRecoveryReasons(1);
         assertEquals(List.of(PeerRecoveryReason.APPLY_FAILED), recoveryReasons);
+    }
+
+    @Test
+    void backpressuredEnqueueWaitsForDecodedByteCapacityWithoutFailingGeneration() throws Exception {
+        processor = newProcessor(10, 10, 1);
+        long generation = processor.openGeneration();
+        CountDownLatch admissionStarted = new CountDownLatch(1);
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> first = processor.enqueueApplyBlock(
+                generation, "B1", 8, () -> LedgerApplyProcessor.Outcome.APPLIED);
+        CompletableFuture<CompletableFuture<LedgerApplyProcessor.Outcome>> admission =
+                CompletableFuture.supplyAsync(() -> {
+                    admissionStarted.countDown();
+                    return processor.enqueueApplyBlockBackpressured(
+                            generation, "B2", 5, () -> LedgerApplyProcessor.Outcome.APPLIED);
+                });
+
+        assertTrue(admissionStarted.await(5, TimeUnit.SECONDS));
+        Thread.sleep(Duration.ofMillis(100));
+        assertFalse(admission.isDone(), "producer should wait while the decoded-byte budget is full");
+
+        processor.start();
+        CompletableFuture<LedgerApplyProcessor.Outcome> second = admission.get(5, TimeUnit.SECONDS);
+
+        assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(first));
+        assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(second));
+        assertTrue(recoveryReasons.isEmpty());
+    }
+
+    @Test
+    void closeReleasesProducerWaitingForBackpressureCapacity() throws Exception {
+        processor = newProcessor(10, 10, 1);
+        long generation = processor.openGeneration();
+        CountDownLatch admissionStarted = new CountDownLatch(1);
+
+        processor.enqueueApplyBlock(generation, "B1", 8,
+                () -> LedgerApplyProcessor.Outcome.APPLIED);
+        CompletableFuture<CompletableFuture<LedgerApplyProcessor.Outcome>> admission =
+                CompletableFuture.supplyAsync(() -> {
+                    admissionStarted.countDown();
+                    return processor.enqueueApplyBlockBackpressured(
+                            generation, "B2", 5, () -> LedgerApplyProcessor.Outcome.APPLIED);
+                });
+
+        assertTrue(admissionStarted.await(5, TimeUnit.SECONDS));
+        Thread.sleep(Duration.ofMillis(100));
+        assertFalse(admission.isDone());
+
+        processor.close();
+
+        assertTrue(admission.get(5, TimeUnit.SECONDS).isCancelled());
+        assertTrue(recoveryReasons.isEmpty());
+        processor = null;
+    }
+
+    @Test
+    void generationCloseReleasesProducerWaitingForBackpressureCapacity() throws Exception {
+        processor = newProcessor(10, 10, 1);
+        long generation = processor.openGeneration();
+        CountDownLatch admissionStarted = new CountDownLatch(1);
+
+        processor.enqueueApplyBlock(generation, "B1", 8,
+                () -> LedgerApplyProcessor.Outcome.APPLIED);
+        CompletableFuture<CompletableFuture<LedgerApplyProcessor.Outcome>> admission =
+                CompletableFuture.supplyAsync(() -> {
+                    admissionStarted.countDown();
+                    return processor.enqueueApplyBlockBackpressured(
+                            generation, "B2", 5, () -> LedgerApplyProcessor.Outcome.APPLIED);
+                });
+
+        assertTrue(admissionStarted.await(5, TimeUnit.SECONDS));
+        Thread.sleep(Duration.ofMillis(100));
+        assertFalse(admission.isDone());
+
+        processor.closeGeneration(generation);
+
+        assertTrue(admission.get(5, TimeUnit.SECONDS).isCancelled());
+        assertTrue(recoveryReasons.isEmpty());
     }
 
     @Test

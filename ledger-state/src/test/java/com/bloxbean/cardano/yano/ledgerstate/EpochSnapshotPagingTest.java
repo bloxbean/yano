@@ -16,6 +16,7 @@ import java.util.HashSet;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The ADR-039 epoch-stake artifact streams the delegation snapshot page by page, and the sink
@@ -60,6 +61,11 @@ class EpochSnapshotPagingTest {
                 batch.put(rocks.cfSupplier().handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT),
                         snapshotKey(EPOCH + 1, 0),
                         AccountStateCborCodec.encodeEpochDelegSnapshot("cd".repeat(28), BigInteger.ONE));
+                byte[] poolMajorKey = ByteBuffer.allocate(62).order(ByteOrder.BIG_ENDIAN)
+                        .putInt(EPOCH).put((byte) 0xFF).put(new byte[28])
+                        .put((byte) 0).put(new byte[28]).array();
+                batch.put(rocks.cfSupplier().handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT),
+                        poolMajorKey, AccountStateCborCodec.encodePoolMajorStake(BigInteger.TEN));
                 rocks.db().write(options, batch);
             }
 
@@ -87,6 +93,30 @@ class EpochSnapshotPagingTest {
             // Values prove ordering and identity, not just the count.
             assertThat(amounts.get(0)).isEqualTo(BigInteger.valueOf(1_000));
             assertThat(amounts.get(total - 1)).isEqualTo(BigInteger.valueOf(1_000 + total - 1));
+        }
+    }
+
+    @Test
+    void buildingGenerationIsPendingAndCannotBeReadAsComplete() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(EpochSnapshotPagingTest.class), true, null);
+            rocks.db().put(rocks.cfSnapshot(), snapshotKey(EPOCH, 1),
+                    AccountStateCborCodec.encodeEpochDelegSnapshot(
+                            "ab".repeat(28), BigInteger.ONE));
+            rocks.db().put(rocks.cfState(),
+                    DefaultAccountStateStore.snapshotGenerationKey(EPOCH),
+                    new byte[]{1, 0});
+
+            assertThatThrownBy(() -> store.readEpochDelegSnapshotPage(EPOCH, null, 10))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("BUILDING");
+
+            rocks.db().put(rocks.cfState(),
+                    DefaultAccountStateStore.snapshotGenerationKey(EPOCH),
+                    new byte[]{1, 1});
+            assertThat(store.readEpochDelegSnapshotPage(EPOCH, null, 10).rows())
+                    .hasSize(1);
         }
     }
 }

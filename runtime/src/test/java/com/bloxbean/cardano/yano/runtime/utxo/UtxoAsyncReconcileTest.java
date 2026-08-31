@@ -75,7 +75,7 @@ class UtxoAsyncReconcileTest {
         EventBus bus = new SimpleEventBus();
         try (UtxoEventHandlerAsync handler = new UtxoEventHandlerAsync(bus, store)) {
             // Seed block creates a UTXO
-            String addr = "addr_test1vpxasync000000000000000000000000000000000000";
+            String addr = UtxoTestAddresses.enterprise(2);
             TransactionBody tx1 = TransactionBody.builder()
                     .txHash("a1".repeat(32))
                     .outputs(List.of(TransactionOutput.builder().address(addr).amounts(List.of(lovelaceAmount(100))).build()))
@@ -167,7 +167,7 @@ class UtxoAsyncReconcileTest {
     @Test
     void reconcile_forward_then_rollback_handles_crash_scenarios() throws Exception {
         // Build two blocks (b1 creates, b2 spends)
-        String addr = "addr_test1vpxrecon000000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(3);
         TransactionBody tx1 = TransactionBody.builder()
                 .txHash("b1".repeat(32))
                 .outputs(List.of(TransactionOutput.builder().address(addr).amounts(List.of(lovelaceAmount(50))).build()))

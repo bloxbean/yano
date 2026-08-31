@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
@@ -87,6 +88,41 @@ class DefaultAccountStateStoreProtocolParamsTest {
             RuntimeException snapshotEx = assertThrows(RuntimeException.class, () -> store.rollbackToSlot(50));
             assertThat(snapshotEx).hasMessageContaining("Account state rollback to slot 50 failed");
             assertThat(snapshotEx.getCause()).hasMessageContaining("Failed to read last snapshot epoch metadata");
+        }
+    }
+
+    @Test
+    void boundaryStartPersistsExactRecoveryCoordinatesAtomically() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(DefaultAccountStateStoreProtocolParamsTest.class),
+                    true, provider());
+            var boundary = new EpochArchiveStagingSink.Boundary(
+                    176, 177, 74_822_412L, 2_844_154L);
+
+            store.setBoundaryStarted(boundary);
+
+            assertThat(store.getBoundaryStep(177)).isEqualTo(EpochBoundaryProcessor.STEP_STARTED);
+            assertThat(store.getBoundaryCoordinates(177)).contains(boundary);
+            assertThat(store.getBoundaryCoordinates(178)).isEmpty();
+        }
+    }
+
+    @Test
+    void boundaryStartPreservesCollapsedDevnetEpochCoordinates() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(DefaultAccountStateStoreProtocolParamsTest.class),
+                    true, provider());
+            var boundary = new EpochArchiveStagingSink.Boundary(
+                    0, 25, 129L, 2L);
+
+            store.setBoundaryStarted(boundary);
+
+            assertThat(store.getBoundaryStep(25)).isEqualTo(EpochBoundaryProcessor.STEP_STARTED);
+            assertThat(store.getBoundaryCoordinates(25)).contains(boundary);
         }
     }
 

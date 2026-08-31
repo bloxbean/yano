@@ -40,6 +40,7 @@ import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionGenesisValues;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionPlanner;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionSettings;
+import com.bloxbean.cardano.yano.runtime.config.ResourceProfile;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
@@ -204,7 +205,6 @@ public class YanoProducer {
     boolean utxoApplyAsync;
     @ConfigProperty(name = YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS, defaultValue = "false")
     boolean utxoRebuildUnmarkedFromGenesis;
-
     @ConfigProperty(name = YanoPropertyKeys.Metrics.ENABLED, defaultValue = "true")
     boolean metricsEnabled;
     @ConfigProperty(name = YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, defaultValue = "0")
@@ -349,10 +349,19 @@ public class YanoProducer {
     int accountStateSnapshotRetentionEpochs;
     @ConfigProperty(name = YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, defaultValue = "true")
     boolean stakeBalanceIndexEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS,
+            defaultValue = "10000")
+    int epochBoundaryMaxBatchOperations;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES,
+            defaultValue = "4194304")
+    int epochBoundaryMaxBatchBytes;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE,
+            defaultValue = "streaming")
+    String epochRewardMode;
     // Epoch subsystem config
     @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")
     boolean epochSnapshotAmountsEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, defaultValue = "full-scan")
+    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, defaultValue = "auto")
     String balanceMode; // "full-scan" or "incremental"
     @ConfigProperty(name = YanoPropertyKeys.Ledger.ADAPOT_ENABLED, defaultValue = "false")
     boolean adapotEnabled;
@@ -513,7 +522,9 @@ public class YanoProducer {
         if (yano != null) {
             return yano;
         }
-        log.info("Creating Yano with network: {}", network);
+        bridgeRuntimeResourceProperties();
+        log.info("Creating Yano with network: {}, resourceProfile={}",
+                network, ResourceProfile.current().externalName());
 
         YanoConfig yaciConfig = YanoConfig.defaultForNetwork(network);
 
@@ -622,6 +633,7 @@ public class YanoProducer {
 
         // Globals: UTXO options
         Map<String, Object> globals = new HashMap<>();
+        globals.put(YanoPropertyKeys.RESOURCE_PROFILE, ResourceProfile.current().externalName());
         putRollbackRetentionGlobals(globals, rollbackRetentionSettings);
         globals.put(YanoPropertyKeys.Utxo.ENABLED, utxoEnabled);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_DEPTH, utxoPruneDepth);
@@ -719,6 +731,11 @@ public class YanoProducer {
         // Account state
         globals.put(YanoPropertyKeys.AccountState.ENABLED, accountStateEnabled);
         globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, stakeBalanceIndexEnabled);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS,
+                epochBoundaryMaxBatchOperations);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES,
+                epochBoundaryMaxBatchBytes);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE, epochRewardMode);
 
         // Epoch subsystems
         globals.put(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, epochSnapshotAmountsEnabled);
@@ -769,6 +786,28 @@ public class YanoProducer {
         log.info("Yano created successfully");
 
         return yano;
+    }
+
+    private void bridgeRuntimeResourceProperties() {
+        if (appConfig == null) return;
+        List<String> properties = List.of(
+                YanoPropertyKeys.RESOURCE_PROFILE,
+                YanoPropertyKeys.BodyFetch.MAX_BATCH_SIZE,
+                YanoPropertyKeys.LedgerApply.MAX_QUEUED_ITEMS,
+                YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES,
+                YanoPropertyKeys.LedgerApply.RESERVED_CONTROL_SLOTS,
+                YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES,
+                YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
+                YanoPropertyKeys.RocksDb.WRITE_BUFFER_ALLOW_STALL,
+                YanoPropertyKeys.RocksDb.MAX_BACKGROUND_JOBS,
+                YanoPropertyKeys.RocksDb.MAX_OPEN_FILES,
+                YanoPropertyKeys.RocksDb.TARGET_FILE_SIZE_BYTES);
+        for (String property : properties) {
+            if (System.getProperty(property) != null) continue;
+            appConfig.getOptionalValue(property, String.class)
+                    .filter(value -> !value.isBlank())
+                    .ifPresent(value -> System.setProperty(property, value));
+        }
     }
 
     @Produces

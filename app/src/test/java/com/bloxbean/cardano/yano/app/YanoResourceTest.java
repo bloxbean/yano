@@ -2,14 +2,27 @@ package com.bloxbean.cardano.yano.app;
 
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @QuarkusTest
 @TestProfile(NoAutoStartTestProfile.class)
 public class YanoResourceTest {
+
+    @Inject
+    Config config;
+
+    @Test
+    public void testStreamingRewardsAreTheAcceptedDefault() {
+        assertEquals(
+                "streaming",
+                config.getValue("yano.epoch-boundary.reward-mode", String.class));
+    }
 
     @Test
     public void testGetStatus() {

@@ -257,6 +257,10 @@ yano:
   # rollback-retention-epochs: 20
   account:
     stake-balance-index-enabled: true
+  epoch-boundary:
+    reward-mode: streaming
+    max-batch-operations: 10000
+    max-batch-bytes: 4194304
   # History is written by the canonical projection outbox. The replay-worker
   # archive was removed in Phase 7a, and with it the backfill workers, per-dataset
   # start modes, hot store and dataset toggles that tuned it. Those keys are now

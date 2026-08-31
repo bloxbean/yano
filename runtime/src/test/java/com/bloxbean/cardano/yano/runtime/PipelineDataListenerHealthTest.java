@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.events.BlockConsensusEvent;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
@@ -26,8 +27,10 @@ import com.bloxbean.cardano.yaci.helper.model.Transaction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -590,6 +593,292 @@ class PipelineDataListenerHealthTest {
             assertEquals(1001L, applied.lastBodyAppliedSlot());
             assertEquals(501L, applied.lastBodyAppliedBlockNumber());
         } finally {
+            processor.close();
+        }
+    }
+
+    @Test
+    void queuedBlocksDrainBeforeEpochBoundaryAndProducerWaitsForBoundaryCompletion() throws Exception {
+        CountDownLatch firstApplyStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstApply = new CountDownLatch(1);
+        CountDownLatch boundaryStarted = new CountDownLatch(1);
+        CountDownLatch releaseBoundary = new CountDownLatch(1);
+        BodyFetchManager epochBodyFetchManager = epochBoundaryTestManager(
+                firstApplyStarted,
+                releaseFirstApply,
+                boundaryStarted,
+                releaseBoundary);
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    epochBodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    90L,
+                    500L,
+                    "a5001234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+            assertTrue(firstApplyStarted.await(5, TimeUnit.SECONDS));
+
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    91L,
+                    501L,
+                    "a5011234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+            waitForDataQueueDepthAtLeast(processor, 1);
+
+            Thread producer = Thread.ofPlatform().unstarted(() -> asyncListener.onBlock(
+                    Era.Shelley,
+                    createTestBlock(
+                            100L,
+                            502L,
+                            "a5021234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList()));
+            producer.start();
+            waitForThreadWaiting(producer);
+            assertEquals(2, processor.status().dataQueueDepth());
+            assertTrue(producer.isAlive());
+
+            releaseFirstApply.countDown();
+            assertTrue(boundaryStarted.await(5, TimeUnit.SECONDS));
+            assertEquals(0, processor.status().dataQueueDepth());
+            assertEquals(0, processor.status().queuedDecodedBytes());
+            assertTrue(producer.isAlive());
+
+            releaseBoundary.countDown();
+            producer.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(producer.isAlive());
+            assertTrue(processor.isGenerationOpen(generation));
+        } finally {
+            releaseFirstApply.countDown();
+            releaseBoundary.countDown();
+            processor.close();
+        }
+    }
+
+    @Test
+    void fencedBoundaryReturnsProducerBeforeEpochCalculationCompletes() throws Exception {
+        CountDownLatch firstApplyStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstApply = new CountDownLatch(1);
+        CountDownLatch boundaryStarted = new CountDownLatch(1);
+        CountDownLatch releaseBoundary = new CountDownLatch(1);
+        BodyFetchManager epochBodyFetchManager = epochBoundaryTestManager(
+                firstApplyStarted,
+                releaseFirstApply,
+                boundaryStarted,
+                releaseBoundary,
+                true);
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    epochBodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    90L,
+                    500L,
+                    "a5001234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+            assertTrue(firstApplyStarted.await(5, TimeUnit.SECONDS));
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    91L,
+                    501L,
+                    "a5011234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+
+            Thread producer = Thread.ofPlatform().start(() -> asyncListener.onBlock(
+                    Era.Shelley,
+                    createTestBlock(
+                            100L,
+                            502L,
+                            "a5021234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList()));
+            producer.join(TimeUnit.SECONDS.toMillis(2));
+
+            assertFalse(producer.isAlive());
+            assertEquals(2, processor.status().dataQueueDepth());
+            assertEquals(1L, boundaryStarted.getCount());
+
+            releaseFirstApply.countDown();
+            assertTrue(boundaryStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(producer.isAlive());
+            assertEquals(0, processor.status().dataQueueDepth());
+            assertEquals(0, processor.status().queuedDecodedBytes());
+        } finally {
+            releaseFirstApply.countDown();
+            releaseBoundary.countDown();
+            processor.close();
+        }
+    }
+
+    @Test
+    void emptyQueueDoesNotHoldEpochBoundaryProducer() throws Exception {
+        CountDownLatch boundaryStarted = new CountDownLatch(1);
+        CountDownLatch releaseBoundary = new CountDownLatch(1);
+        BodyFetchManager epochBodyFetchManager = epochBoundaryTestManager(
+                null,
+                null,
+                boundaryStarted,
+                releaseBoundary);
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    epochBodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    100L,
+                    500L,
+                    "a5001234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+
+            assertTrue(boundaryStarted.await(5, TimeUnit.SECONDS));
+            assertEquals("Shelley block 500", processor.status().currentItem());
+        } finally {
+            releaseBoundary.countDown();
+            processor.close();
+        }
+    }
+
+    @Test
+    void followingBlockDoesNotRepeatHoldForAlreadyAdmittedTransitionEpoch() throws Exception {
+        CountDownLatch firstApplyStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstApply = new CountDownLatch(1);
+        CountDownLatch boundaryStarted = new CountDownLatch(1);
+        CountDownLatch releaseBoundary = new CountDownLatch(1);
+        BodyFetchManager epochBodyFetchManager = epochBoundaryTestManager(
+                firstApplyStarted,
+                releaseFirstApply,
+                boundaryStarted,
+                releaseBoundary);
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    epochBodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    90L,
+                    500L,
+                    "a5001234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+            assertTrue(firstApplyStarted.await(5, TimeUnit.SECONDS));
+            assertEquals(0, processor.status().dataQueueDepth());
+
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    100L,
+                    501L,
+                    "a5011234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+            assertEquals(1, processor.status().dataQueueDepth());
+
+            Thread followingProducer = Thread.ofPlatform().unstarted(() -> asyncListener.onBlock(
+                    Era.Shelley,
+                    createTestBlock(
+                            101L,
+                            502L,
+                            "a5021234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList()));
+            followingProducer.start();
+            followingProducer.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertFalse(followingProducer.isAlive());
+            assertEquals(2, processor.status().dataQueueDepth());
+        } finally {
+            releaseFirstApply.countDown();
+            releaseBoundary.countDown();
+            processor.close();
+        }
+    }
+
+    @Test
+    void generationCloseReleasesEpochBoundaryQueueHold() throws Exception {
+        CountDownLatch firstApplyStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstApply = new CountDownLatch(1);
+        CountDownLatch boundaryStarted = new CountDownLatch(1);
+        CountDownLatch releaseBoundary = new CountDownLatch(1);
+        BodyFetchManager epochBodyFetchManager = epochBoundaryTestManager(
+                firstApplyStarted,
+                releaseFirstApply,
+                boundaryStarted,
+                releaseBoundary);
+        LedgerApplyProcessor processor = new LedgerApplyProcessor(chainState, ignored -> {
+        });
+        long generation = processor.openGeneration();
+        processor.start();
+        try {
+            PipelineDataListener asyncListener = new PipelineDataListener(
+                    headerSyncManager,
+                    epochBodyFetchManager,
+                    new NoopCallbacks(),
+                    peerHealth,
+                    processor,
+                    generation);
+
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    90L,
+                    500L,
+                    "a5001234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+            assertTrue(firstApplyStarted.await(5, TimeUnit.SECONDS));
+            asyncListener.onBlock(Era.Shelley, createTestBlock(
+                    91L,
+                    501L,
+                    "a5011234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList());
+            waitForDataQueueDepthAtLeast(processor, 1);
+
+            Thread producer = Thread.ofPlatform().unstarted(() -> asyncListener.onBlock(
+                    Era.Shelley,
+                    createTestBlock(
+                            100L,
+                            502L,
+                            "a5021234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"),
+                    Collections.emptyList()));
+            producer.start();
+            waitForThreadWaiting(producer);
+            assertEquals(2, processor.status().dataQueueDepth());
+
+            processor.closeGeneration(generation);
+            producer.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertFalse(producer.isAlive());
+            assertFalse(processor.isGenerationOpen(generation));
+            assertEquals(0, processor.status().dataQueueDepth());
+            assertEquals(0, processor.status().queuedDecodedBytes());
+            assertEquals(1L, boundaryStarted.getCount());
+        } finally {
+            releaseFirstApply.countDown();
+            releaseBoundary.countDown();
             processor.close();
         }
     }
@@ -1188,6 +1477,107 @@ class PipelineDataListenerHealthTest {
         }
         assertEquals(expectedDepth, processor.status().dataQueueDepth());
         assertNull(processor.status().currentItem());
+    }
+
+    private void waitForDataQueueDepthAtLeast(LedgerApplyProcessor processor, int minimumDepth) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (processor.status().dataQueueDepth() < minimumDepth && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(processor.status().dataQueueDepth() >= minimumDepth);
+    }
+
+    private void waitForThreadWaiting(Thread thread) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (thread.getState() != Thread.State.WAITING
+                && thread.getState() != Thread.State.TIMED_WAITING
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(thread.getState() == Thread.State.WAITING
+                || thread.getState() == Thread.State.TIMED_WAITING);
+    }
+
+    private BodyFetchManager epochBoundaryTestManager(CountDownLatch firstApplyStarted,
+                                                       CountDownLatch releaseFirstApply,
+                                                       CountDownLatch boundaryStarted,
+                                                       CountDownLatch releaseBoundary) {
+        return epochBoundaryTestManager(
+                firstApplyStarted,
+                releaseFirstApply,
+                boundaryStarted,
+                releaseBoundary,
+                false);
+    }
+
+    private BodyFetchManager epochBoundaryTestManager(CountDownLatch firstApplyStarted,
+                                                       CountDownLatch releaseFirstApply,
+                                                       CountDownLatch boundaryStarted,
+                                                       CountDownLatch releaseBoundary,
+                                                       boolean fencedBatch) {
+        BodyFetchManager manager = new BodyFetchManager(
+                new MockPeerClient(),
+                chainState,
+                new SimpleEventBus(),
+                3,
+                5,
+                100,
+                1000,
+                new SyncTipContext()) {
+            @Override
+            boolean isCurrentBatchFencedAtEpoch(int epoch, long slot) {
+                return fencedBatch && epoch == 1 && slot == 100L;
+            }
+
+            @Override
+            public BlockApplyResult applyBlock(Era era, Block block, List<Transaction> transactions) {
+                long slot = block.getHeader().getHeaderBody().getSlot();
+                if (slot == 90L && firstApplyStarted != null && releaseFirstApply != null) {
+                    firstApplyStarted.countDown();
+                    awaitLatch(releaseFirstApply);
+                }
+                if (slot == 100L) {
+                    boundaryStarted.countDown();
+                    awaitLatch(releaseBoundary);
+                    initializePreviousEpoch(1);
+                }
+                return BlockApplyResult.APPLIED;
+            }
+        };
+        manager.setEpochParamProvider(new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public long getEpochLength() {
+                return 100L;
+            }
+
+            @Override
+            public long getByronSlotsPerEpoch() {
+                return 10L;
+            }
+        });
+        manager.initializePreviousEpoch(0);
+        return manager;
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Timed out waiting for test latch");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for test latch", e);
+        }
     }
 
     private void waitForBodyFetchInProgress(boolean expected) throws Exception {

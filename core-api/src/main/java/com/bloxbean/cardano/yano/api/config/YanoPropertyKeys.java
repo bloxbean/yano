@@ -12,6 +12,7 @@ public final class YanoPropertyKeys {
     public static final String AUTO_SYNC_START = "yano.auto-sync-start";
     public static final String API_PREFIX = "yano.api-prefix";
     public static final String DEV_MODE = "yano.dev-mode";
+    public static final String RESOURCE_PROFILE = "yano.resource-profile";
 
     private YanoPropertyKeys() {
     }
@@ -207,7 +208,6 @@ public final class YanoPropertyKeys {
          */
         public static final String REBUILD_UNMARKED_FROM_GENESIS =
                 "yano.utxo.rebuild-unmarked-from-genesis";
-
         private Utxo() {
         }
     }
@@ -267,6 +267,12 @@ public final class YanoPropertyKeys {
                 "yano.account-state.snapshot-retention-epochs";
         public static final String STAKE_BALANCE_INDEX_ENABLED =
                 "yano.account.stake-balance-index-enabled";
+        public static final String EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS =
+                "yano.epoch-boundary.max-batch-operations";
+        public static final String EPOCH_SNAPSHOT_MAX_BATCH_BYTES =
+                "yano.epoch-boundary.max-batch-bytes";
+        public static final String EPOCH_REWARD_MODE =
+                "yano.epoch-boundary.reward-mode";
 
         private AccountState() {
         }
@@ -419,6 +425,20 @@ public final class YanoPropertyKeys {
     }
 
     /**
+     * Ordered ledger-apply queue limits.
+     */
+    public static final class LedgerApply {
+        public static final String MAX_QUEUED_ITEMS = "yano.ledger-apply.max-queued-items";
+        public static final String MAX_QUEUED_DECODED_BYTES =
+                "yano.ledger-apply.max-queued-decoded-bytes";
+        public static final String RESERVED_CONTROL_SLOTS =
+                "yano.ledger-apply.reserved-control-slots";
+
+        private LedgerApply() {
+        }
+    }
+
+    /**
      * Chain storage recovery and block-body pruning settings.
      */
     public static final class Chain {
@@ -543,6 +563,8 @@ public final class YanoPropertyKeys {
                 "yano.pipeline.slowBodyCallbackWarnMs";
         public static final String NON_RECOVERING_ROLLBACK_WAIT_MS =
                 "yano.pipeline.nonRecoveringRollbackWaitMs";
+        public static final String EPOCH_BOUNDARY_FALLBACK_WAIT_MS =
+                "yano.pipeline.epochBoundaryFallbackWaitMs";
         public static final String HEADER_CONTINUITY_VALIDATION_BLOCKS =
                 "yano.pipeline.headerContinuityValidationBlocks";
 
@@ -554,6 +576,7 @@ public final class YanoPropertyKeys {
      * Body-fetch timing and fallback settings.
      */
     public static final class BodyFetch {
+        public static final String MAX_BATCH_SIZE = "yano.bodyFetch.maxBatchSize";
         public static final String SLOW_EPOCH_TRANSITION_WARN_MS =
                 "yano.bodyFetch.slowEpochTransitionWarnMs";
         public static final String REALTIME_FALLBACK_POLL_MS =
@@ -581,6 +604,13 @@ public final class YanoPropertyKeys {
         public static final String PIPELINED_WRITE = "yano.rocksdb.pipelined_write";
         public static final String ATOMIC_FLUSH = "yano.rocksdb.atomic_flush";
         public static final String TUNING_ENABLED = "yano.rocksdb.tuning.enabled";
+        public static final String BLOCK_CACHE_BYTES = "yano.rocksdb.block-cache-bytes";
+        public static final String WRITE_BUFFER_BYTES = "yano.rocksdb.write-buffer-bytes";
+        public static final String WRITE_BUFFER_ALLOW_STALL =
+                "yano.rocksdb.write-buffer-allow-stall";
+        public static final String MAX_BACKGROUND_JOBS = "yano.rocksdb.max-background-jobs";
+        public static final String MAX_OPEN_FILES = "yano.rocksdb.max-open-files";
+        public static final String TARGET_FILE_SIZE_BYTES = "yano.rocksdb.target-file-size-bytes";
 
         private RocksDb() {
         }

@@ -38,18 +38,32 @@ jobs:
             label: linux-x64
           - os: ubuntu-22.04-arm
             label: linux-arm64
-          - os: macos-14
+          - os: macos-15
             label: macos-arm64
           - os: windows-latest
             label: windows-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up GraalVM 25
+      - name: Set up Oracle GraalVM 25.3
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '25'
+          version: '25.3'
           distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify Oracle GraalVM release
+        if: runner.os != 'Windows'
+        shell: bash
+        run: native-image --version | grep -F 'Oracle GraalVM 25.3'
+      - name: Verify Oracle GraalVM release on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $nativeImageVersion = native-image --version 2>&1 | Out-String
+          if ($nativeImageVersion -notmatch 'Oracle GraalVM 25\.3') {
+            throw "Expected Oracle GraalVM 25.3, got: $nativeImageVersion"
+          }
+          Write-Output $nativeImageVersion
       - name: Grant execute permission for gradlew
         if: runner.os != 'Windows'
         run: chmod +x gradlew
@@ -59,6 +73,10 @@ jobs:
       - name: Build native binary on Windows
         if: runner.os == 'Windows'
         run: .\gradlew.bat :app:quarkusBuild "-Dquarkus.native.enabled=true" "-Dquarkus.package.jar.enabled=false" "-PskipSigning=true"
+      - name: Verify native image uses G1
+        if: runner.os != 'Windows'
+        shell: bash
+        run: grep -F '"garbage_collector":"G1 GC"' app/build/yano-native-image-source-jar/yano-build-output-stats.json
       - name: Package native distribution
         if: runner.os != 'Windows'
         run: ./gradlew :app:yanoNativeDistZip -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true

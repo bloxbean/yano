@@ -64,6 +64,9 @@ Environment:
                    -XX: options; run '<binary> -XX:PrintFlags=' to list them.
                    JVM agents and module-system flags cannot exist in a native
                    image and are dropped with a warning.
+  YANO_NATIVE_MAX_HEAP
+                   Native default maximum heap (default: 1536m). An explicit
+                   -Xmx in JAVA_OPTS overrides this value.
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
 
 Advanced:
@@ -323,10 +326,10 @@ fi
 NATIVE_JAVA_OPTS=()
 collect_native_java_opts() {
     NATIVE_JAVA_OPTS=()
-    [ -n "${JAVA_OPTS:-}" ] || return 0
 
     local dropped=""
     local unverified=""
+    local has_max_heap="false"
     local opt
     # shellcheck disable=SC2086
     set -- $JAVA_OPTS
@@ -337,6 +340,9 @@ collect_native_java_opts() {
                 ;;
             -D*|-Xmx*|-Xms*|-Xss*|-XX:*|-verbose*)
                 NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="$opt"
+                case "$opt" in
+                    -Xmx*) has_max_heap="true" ;;
+                esac
                 ;;
             -X*)
                 # Forwarded so a newer GraalVM keeps working, but flagged: the
@@ -349,6 +355,10 @@ collect_native_java_opts() {
                 ;;
         esac
     done
+
+    if [ "$has_max_heap" = "false" ]; then
+        NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="-Xmx${YANO_NATIVE_MAX_HEAP:-1536m}"
+    fi
 
     if [ -n "$dropped" ]; then
         echo "Warning: dropping JAVA_OPTS entries a native image cannot implement:" >&2
