@@ -222,13 +222,36 @@ public class EpochBoundaryProcessor {
     public void recoverInterruptedBoundary() {
         if (snapshotCreator == null) return;
         int[] lastState = snapshotCreator.getLastBoundaryState();
-        if (lastState == null) return;
+        PoolReapProcessor.Progress poolReapProgress =
+                snapshotCreator.getPoolReapProgress();
+        if (lastState == null) {
+            if (poolReapProgress != null) {
+                throw new IllegalStateException("Unfinished POOLREAP for epoch "
+                        + poolReapProgress.epoch()
+                        + " has no boundary-step state; startup cannot continue");
+            }
+            return;
+        }
         int epoch = lastState[0];
         int step = lastState[1];
+        if (poolReapProgress != null) {
+            long expectedBoundarySlot = snapshotCreator.slotForEpochStart(epoch);
+            if (poolReapProgress.epoch() != epoch
+                    || poolReapProgress.boundarySlot() != expectedBoundarySlot
+                    || step != STEP_SNAPSHOT) {
+                throw new IllegalStateException("Unfinished POOLREAP does not match durable "
+                        + "boundary state for epoch " + epoch + " at step " + step);
+            }
+            snapshotCreator.isPoolReapInProgress(expectedBoundarySlot);
+        }
         if (step >= STEP_STARTED && step < STEP_COMPLETE) {
             log.info("Recovering interrupted epoch boundary for epoch {} (stopped at step {})", epoch, step);
             restorePersistedBoundaryCoordinates(epoch);
             processEpochBoundary(epoch - 1, epoch);
+        }
+        if (snapshotCreator.getPoolReapProgress() != null) {
+            throw new IllegalStateException("POOLREAP recovery for epoch " + epoch
+                    + " did not clear its progress marker");
         }
 
         // Repair missed PostEpochTransition: credit any uncredited reward_rest entries

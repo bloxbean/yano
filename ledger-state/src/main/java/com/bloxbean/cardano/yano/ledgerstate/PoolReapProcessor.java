@@ -38,11 +38,21 @@ final class PoolReapProcessor {
     private final int maxBatchOperations;
     private final int maxBatchBytes;
     private final int maxScanRows;
+    private final CommitHook commitHook;
 
     PoolReapProcessor(RocksDB db, ColumnFamilyHandle cfState,
                       DefaultAccountStateStore store,
                       EpochRewardCalculator rewardCalculator,
                       Logger log, int maxBatchOperations, int maxBatchBytes) {
+        this(db, cfState, store, rewardCalculator, log,
+                maxBatchOperations, maxBatchBytes, checkpoint -> { });
+    }
+
+    PoolReapProcessor(RocksDB db, ColumnFamilyHandle cfState,
+                      DefaultAccountStateStore store,
+                      EpochRewardCalculator rewardCalculator,
+                      Logger log, int maxBatchOperations, int maxBatchBytes,
+                      CommitHook commitHook) {
         this.db = db;
         this.cfState = cfState;
         this.store = store;
@@ -52,6 +62,7 @@ final class PoolReapProcessor {
         this.maxBatchBytes = maxBatchBytes;
         this.maxScanRows = Math.max(maxBatchOperations,
                 (int) Math.min(100_000L, (long) maxBatchOperations * 10));
+        this.commitHook = commitHook != null ? commitHook : checkpoint -> { };
     }
 
     Result process(int epoch, long boundarySlot) {
@@ -119,7 +130,9 @@ final class PoolReapProcessor {
                         batch, deltaOps);
                 store.commitBoundaryDelta(progress.boundarySlot(),
                         DefaultAccountStateStore.PHASE_POOLREAP, sequence, batch, deltaOps);
+                checkpoint(sequence, next.stage(), false, CommitMoment.BEFORE);
                 db.write(options, batch);
+                checkpoint(sequence, next.stage(), false, CommitMoment.AFTER);
             } catch (RocksDBException e) {
                 throw new IllegalStateException("Failed to commit POOLREAP delegation chunk "
                         + sequence + " for epoch " + progress.epoch(), e);
@@ -276,9 +289,11 @@ final class PoolReapProcessor {
                         store.putStateWithDelta(META_POOL_REAP_PROGRESS, encodeProgress(next),
                                 batch, deltaOps, overlay);
                     }
+                    checkpoint(sequence, STAGE_POOLS, finalChunk, CommitMoment.BEFORE);
                     rewardCalculator.commitRewardBatch(progress.boundarySlot(),
                             DefaultAccountStateStore.PHASE_POOLREAP, sequence);
                     batchCommitted = true;
+                    checkpoint(sequence, STAGE_POOLS, finalChunk, CommitMoment.AFTER);
                 } catch (RocksDBException e) {
                     throw new IllegalStateException("Failed to commit POOLREAP pool chunk "
                             + sequence + " for epoch " + epoch, e);
@@ -414,7 +429,9 @@ final class PoolReapProcessor {
                     batch, deltaOps);
             store.commitBoundaryDelta(progress.boundarySlot(),
                     DefaultAccountStateStore.PHASE_POOLREAP, sequence, batch, deltaOps);
+            checkpoint(sequence, progress.stage(), false, CommitMoment.BEFORE);
             db.write(options, batch);
+            checkpoint(sequence, progress.stage(), false, CommitMoment.AFTER);
         } catch (RocksDBException e) {
             throw new IllegalStateException("Failed to start POOLREAP for epoch "
                     + progress.epoch(), e);
@@ -513,6 +530,24 @@ final class PoolReapProcessor {
             if (operation.prevValue() != null) bytes += operation.prevValue().length;
         }
         return bytes;
+    }
+
+    private void checkpoint(int sequence, byte stage, boolean finalChunk,
+                            CommitMoment moment) {
+        commitHook.checkpoint(new CommitCheckpoint(sequence,
+                stage == STAGE_DELEGATIONS ? "delegations" : "pools",
+                finalChunk, moment));
+    }
+
+    @FunctionalInterface
+    interface CommitHook {
+        void checkpoint(CommitCheckpoint checkpoint);
+    }
+
+    enum CommitMoment { BEFORE, AFTER }
+
+    record CommitCheckpoint(int sequence, String stage, boolean finalChunk,
+                            CommitMoment moment) {
     }
 
     record Progress(int epoch, long boundarySlot, byte stage,

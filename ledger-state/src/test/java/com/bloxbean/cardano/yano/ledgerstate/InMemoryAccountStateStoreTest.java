@@ -205,6 +205,84 @@ class InMemoryAccountStateStoreTest {
     }
 
     @Test
+    void poolRegistrationUsesCurrentEpochDepositAndReregistrationPreservesIt() {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.ZERO; }
+            @Override public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.valueOf(500_000_000L + epoch);
+            }
+        };
+        store = new InMemoryAccountStateStore(true, provider);
+
+        applyBlockWithCerts(1, 10 * 432_000L,
+                PoolRegistration.builder()
+                        .poolParams(PoolParams.builder().operator(POOL_HASH_1).build())
+                        .build());
+        assertThat(store.getPoolDeposit(POOL_HASH_1))
+                .contains(BigInteger.valueOf(500_000_010L));
+
+        applyBlockWithCerts(2, 11 * 432_000L,
+                PoolRegistration.builder()
+                        .poolParams(PoolParams.builder().operator(POOL_HASH_1).build())
+                        .build());
+        assertThat(store.getPoolDeposit(POOL_HASH_1))
+                .contains(BigInteger.valueOf(500_000_010L));
+    }
+
+    @Test
+    void epochTransitionReapsLivePoolAndPoolDelegationsButPreservesDRepDelegation() {
+        EpochParamProvider provider = new EpochParamProvider() {
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.ZERO; }
+            @Override public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.valueOf(500_000_000L + epoch);
+            }
+        };
+        store = new InMemoryAccountStateStore(true, provider);
+        StakeCredential credential = StakeCredential.builder()
+                .type(StakeCredType.ADDR_KEYHASH)
+                .hash(CRED_HASH_1)
+                .build();
+
+        applyBlockWithCerts(1, 10 * 432_000L,
+                PoolRegistration.builder()
+                        .poolParams(PoolParams.builder().operator(POOL_HASH_1).build())
+                        .build(),
+                StakeRegistration.builder().stakeCredential(credential).build(),
+                StakeDelegation.builder()
+                        .stakeCredential(credential)
+                        .stakePoolId(StakePoolId.builder().poolKeyHash(POOL_HASH_1).build())
+                        .build(),
+                VoteDelegCert.builder()
+                        .stakeCredential(credential)
+                        .drep(Drep.abstain())
+                        .build());
+        applyBlockWithCerts(2, 11 * 432_000L,
+                PoolRetirement.builder()
+                        .poolKeyHash(POOL_HASH_1)
+                        .epoch(12)
+                        .build());
+
+        applyBlockWithCerts(3, 12 * 432_000L);
+
+        assertThat(store.isPoolRegistered(POOL_HASH_1)).isFalse();
+        assertThat(store.getPoolRetirementEpoch(POOL_HASH_1)).isEmpty();
+        assertThat(store.getDelegatedPool(0, CRED_HASH_1)).isEmpty();
+        assertThat(store.getDRepDelegation(0, CRED_HASH_1)).isPresent();
+        assertThat(store.isStakeCredentialRegistered(0, CRED_HASH_1)).isTrue();
+
+        applyBlockWithCerts(4, 12 * 432_000L + 1,
+                PoolRegistration.builder()
+                        .poolParams(PoolParams.builder().operator(POOL_HASH_1).build())
+                        .build());
+
+        assertThat(store.isPoolRegistered(POOL_HASH_1)).isTrue();
+        assertThat(store.getPoolDeposit(POOL_HASH_1))
+                .contains(BigInteger.valueOf(500_000_012L));
+        assertThat(store.getDelegatedPool(0, CRED_HASH_1)).isEmpty();
+        assertThat(store.getDRepDelegation(0, CRED_HASH_1)).isPresent();
+    }
+
+    @Test
     void rollback_restoresState() {
         // Block 1: register
         applyBlockWithCerts(1, 100,

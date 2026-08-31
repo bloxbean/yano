@@ -326,6 +326,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private HashMap<String, byte[]> batchForwardDeleg;          // "ct:hash" -> encoded delegation (null=deleted)
     private HashMap<String, HashSet<String>> batchReverseAdded;    // "drepType:drepHash" -> set of "ct:hash"
     private HashMap<String, HashSet<String>> batchReverseRemoved;  // "drepType:drepHash" -> set of "ct:hash"
+    private volatile PoolReapProcessor.CommitHook poolReapCommitHook = checkpoint -> { };
 
     private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
             com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
@@ -586,19 +587,27 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     PoolReapProcessor.Result processPoolReap(int epoch, long boundarySlot,
                                              EpochRewardCalculator calculator) {
         return new PoolReapProcessor(db, cfState, this, calculator, log,
-                snapshotMaxBatchOperations, snapshotMaxBatchBytes)
+                snapshotMaxBatchOperations, snapshotMaxBatchBytes,
+                poolReapCommitHook)
                 .process(epoch, boundarySlot);
     }
 
+    PoolReapProcessor.Progress getPoolReapProgress() {
+        return PoolReapProcessor.readProgress(db, cfState);
+    }
+
     boolean isPoolReapInProgress(long boundarySlot) {
-        PoolReapProcessor.Progress progress =
-                PoolReapProcessor.readProgress(db, cfState);
+        PoolReapProcessor.Progress progress = getPoolReapProgress();
         if (progress == null) return false;
         if (progress.boundarySlot() != boundarySlot) {
             throw new IllegalStateException("Unfinished POOLREAP belongs to boundary slot "
                     + progress.boundarySlot() + " while inspecting slot " + boundarySlot);
         }
         return true;
+    }
+
+    void setPoolReapCommitHook(PoolReapProcessor.CommitHook hook) {
+        poolReapCommitHook = hook != null ? hook : checkpoint -> { };
     }
 
     /**
