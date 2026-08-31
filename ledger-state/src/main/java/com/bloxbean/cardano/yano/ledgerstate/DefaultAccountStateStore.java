@@ -25,6 +25,7 @@ import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.account.OpCertCounterState;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.db.IncompatibleChainStateException;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.CostModelUtil;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -420,7 +421,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 return;
             }
             if (version != null || !isAccountStateEmpty()) {
-                throw new IllegalStateException(
+                throw new IncompatibleChainStateException(
                         "This preview build requires epoch-boundary state v1. The existing non-empty "
                                 + "account chainstate is not compatible; retain a backup and resync into "
                                 + "a new chainstate directory.");
@@ -442,13 +443,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private void requireEpochBoundaryIndexes() throws RocksDBException {
         if (!Arrays.equals(db.get(cfState, META_SNAPSHOT_DEREG_INDEX_VERSION),
                 SNAPSHOT_DEREG_INDEX_VERSION)) {
-            throw new IllegalStateException(
-                    "epoch-boundary state is missing its snapshot deregistration index marker");
+            throw new IncompatibleChainStateException(
+                    "Epoch-boundary state is missing its snapshot deregistration index marker; "
+                            + "resync is required.");
         }
         if (!Arrays.equals(db.get(cfState, META_REWARD_EVENT_INDEX_VERSION),
                 REWARD_EVENT_INDEX_VERSION)) {
-            throw new IllegalStateException(
-                    "epoch-boundary state is missing its reward event index marker; resync is required");
+            throw new IncompatibleChainStateException(
+                    "Epoch-boundary state is missing its reward event index marker; resync is required.");
         }
     }
 
@@ -460,7 +462,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public void requirePointerIndexReady(boolean pointerIndexReady) {
         if (!enabled || db == null || cfState == null) return;
         if (!pointerIndexReady) {
-            throw new IllegalStateException(
+            throw new IncompatibleChainStateException(
                     "This preview build requires a complete pointer UTXO index. "
                             + "The existing chainstate is not compatible; retain a backup and resync into "
                             + "a new chainstate directory.");

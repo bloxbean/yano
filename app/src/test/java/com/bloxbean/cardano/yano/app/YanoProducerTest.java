@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.app;
 import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.db.IncompatibleChainStateException;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
@@ -128,6 +129,34 @@ class YanoProducerTest {
     void startupBuildsPluginRuntimeEvenWhenAutoSyncIsDisabled() {
         var producer = new StartupProbeProducer(null);
         producer.autoSyncStart = false;
+
+        producer.onStart(null);
+
+        assertEquals(1, producer.ensureCalls);
+    }
+
+    @Test
+    void startupRejectsWrappedIncompatibleChainStateWhenBootstrapIsDisabled() {
+        var incompatible = new IncompatibleChainStateException(
+                "Existing chainstate is not compatible; resync is required.");
+        var producer = new StartupProbeProducer(
+                new IllegalStateException("Failed to initialize ledger-state subsystem", incompatible));
+        producer.autoSyncStart = false;
+        producer.bootstrapEnabled = false;
+
+        IncompatibleChainStateException thrown = assertThrows(
+                IncompatibleChainStateException.class, () -> producer.onStart(null));
+
+        assertSame(incompatible, thrown);
+        assertEquals(1, producer.ensureCalls);
+    }
+
+    @Test
+    void startupKeepsOrdinaryRuntimeFailureRecoverableWhenBootstrapIsDisabled() {
+        var producer = new StartupProbeProducer(
+                new IllegalStateException("Temporary runtime initialization failure"));
+        producer.autoSyncStart = false;
+        producer.bootstrapEnabled = false;
 
         producer.onStart(null);
 
