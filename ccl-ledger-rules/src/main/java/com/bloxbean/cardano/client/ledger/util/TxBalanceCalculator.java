@@ -1,14 +1,18 @@
 package com.bloxbean.cardano.client.ledger.util;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.ledger.slice.PoolsSlice;
 import com.bloxbean.cardano.client.ledger.slice.UtxoSlice;
 import com.bloxbean.cardano.client.transaction.spec.*;
 import com.bloxbean.cardano.client.transaction.spec.cert.*;
 import com.bloxbean.cardano.client.transaction.spec.governance.ProposalProcedure;
+import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Computes the consumed and produced values for the value conservation check.
@@ -82,6 +86,19 @@ public class TxBalanceCalculator {
      * @return the produced value
      */
     public static Value produced(Transaction tx, ProtocolParams pp) {
+        return produced(tx, pp, null);
+    }
+
+    /**
+     * Compute the total produced value using the current pool state to distinguish
+     * a new pool lifecycle from an update to an already registered pool.
+     *
+     * @param tx         the transaction
+     * @param pp         protocol parameters
+     * @param poolsSlice current pool state, or {@code null} when unavailable
+     * @return the produced value
+     */
+    public static Value produced(Transaction tx, ProtocolParams pp, PoolsSlice poolsSlice) {
         TransactionBody body = tx.getBody();
         Value result = Value.builder().coin(BigInteger.ZERO).multiAssets(new ArrayList<>()).build();
 
@@ -123,7 +140,7 @@ public class TxBalanceCalculator {
         }
 
         // 4. Certificate deposits (stake + pool + DRep registrations)
-        BigInteger deposits = computeTotalDeposits(body.getCerts(), pp);
+        BigInteger deposits = computeTotalDeposits(body.getCerts(), pp, poolsSlice);
         if (deposits.signum() > 0) {
             result = result.plus(new Value(deposits, null));
         }
@@ -156,12 +173,18 @@ public class TxBalanceCalculator {
      * RegDRepCert (explicit deposit).
      */
     static BigInteger computeTotalDeposits(List<Certificate> certs, ProtocolParams pp) {
+        return computeTotalDeposits(certs, pp, null);
+    }
+
+    static BigInteger computeTotalDeposits(List<Certificate> certs, ProtocolParams pp,
+                                           PoolsSlice poolsSlice) {
         if (certs == null || certs.isEmpty()) return BigInteger.ZERO;
 
         BigInteger keyDeposit = pp.getKeyDeposit() != null ? new BigInteger(pp.getKeyDeposit()) : BigInteger.ZERO;
         BigInteger poolDeposit = pp.getPoolDeposit() != null ? new BigInteger(pp.getPoolDeposit()) : BigInteger.ZERO;
 
         BigInteger total = BigInteger.ZERO;
+        Set<String> poolsRegisteredInTransaction = new HashSet<>();
 
         for (Certificate cert : certs) {
             if (cert instanceof StakeRegistration) {
@@ -176,8 +199,17 @@ public class TxBalanceCalculator {
                 total = total.add(voteRegDeleg.getCoin() != null ? voteRegDeleg.getCoin() : keyDeposit);
             } else if (cert instanceof StakeVoteRegDelegCert stakeVoteRegDeleg) {
                 total = total.add(stakeVoteRegDeleg.getCoin() != null ? stakeVoteRegDeleg.getCoin() : keyDeposit);
-            } else if (cert instanceof PoolRegistration) {
-                total = total.add(poolDeposit);
+            } else if (cert instanceof PoolRegistration poolRegistration) {
+                byte[] operator = poolRegistration.getOperator();
+                String poolId = operator == null ? null : HexUtil.encodeHexString(operator);
+                boolean alreadyRegistered = poolId != null
+                        && poolsSlice != null
+                        && poolsSlice.isRegistered(poolId);
+                boolean alreadyRegisteredInTransaction = poolId != null
+                        && !poolsRegisteredInTransaction.add(poolId);
+                if (!alreadyRegistered && !alreadyRegisteredInTransaction) {
+                    total = total.add(poolDeposit);
+                }
             } else if (cert instanceof RegDRepCert regDRep) {
                 // DRep registration uses explicit deposit from cert
                 total = total.add(regDRep.getCoin() != null ? regDRep.getCoin() : BigInteger.ZERO);

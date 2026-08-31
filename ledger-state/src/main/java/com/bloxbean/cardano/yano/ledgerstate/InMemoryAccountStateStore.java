@@ -18,8 +18,10 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * In-memory account state store for testing and non-RocksDB configurations.
+ * In-memory account state store for deterministic unit tests only.
  * Uses ConcurrentHashMap with hex string keys (same pattern as InMemoryChainState).
+ * It does not provide durable epoch recovery or boundary rollback and must not be
+ * used as a production fallback when the RocksDB account store cannot open.
  */
 public class InMemoryAccountStateStore implements AccountStateStore {
 
@@ -256,6 +258,7 @@ public class InMemoryAccountStateStore implements AccountStateStore {
         } else if (currentEpoch > lastSnapshotEpoch) {
             // Snapshot labeled as previous epoch (end-of-epoch state), matching yaci-store convention
             createDelegationSnapshot(currentEpoch - 1);
+            reapRetiredPools(currentEpoch);
             pruneOldSnapshots(currentEpoch - 1 - SNAPSHOT_RETENTION_EPOCHS);
         }
 
@@ -271,7 +274,8 @@ public class InMemoryAccountStateStore implements AccountStateStore {
                 List<Certificate> certs = tx.getCertificates();
                 if (certs != null) {
                     for (int certIdx = 0; certIdx < certs.size(); certIdx++) {
-                        processCertificate(certs.get(certIdx), slot, txIdx, certIdx, delta);
+                        processCertificate(certs.get(certIdx), slot, currentEpoch,
+                                txIdx, certIdx, delta);
                     }
                 }
 
@@ -287,7 +291,8 @@ public class InMemoryAccountStateStore implements AccountStateStore {
         deltaStack.push(delta);
     }
 
-    private void processCertificate(Certificate cert, long slot, int txIdx, int certIdx, BlockDelta delta) {
+    private void processCertificate(Certificate cert, long slot, int currentEpoch,
+                                    int txIdx, int certIdx, BlockDelta delta) {
         switch (cert) {
             case StakeRegistration sr ->
                     registerStake(sr.getStakeCredential(),
@@ -333,15 +338,25 @@ public class InMemoryAccountStateStore implements AccountStateStore {
             }
             case PoolRegistration pr -> {
                 String poolHash = pr.getPoolParams().getOperator();
-                delta.prevPoolDeposits.put(poolHash, poolDeposits.get(poolHash));
-                poolDeposits.put(poolHash, epochParamProvider.getPoolDeposit(0));
+                if (!delta.prevPoolDeposits.containsKey(poolHash)) {
+                    delta.prevPoolDeposits.put(poolHash, poolDeposits.get(poolHash));
+                }
+                if (!poolDeposits.containsKey(poolHash)) {
+                    poolDeposits.put(poolHash,
+                            epochParamProvider.getPoolDeposit(currentEpoch));
+                }
                 if (poolRetirements.containsKey(poolHash)) {
-                    delta.prevPoolRetirements.put(poolHash, poolRetirements.get(poolHash));
+                    if (!delta.prevPoolRetirements.containsKey(poolHash)) {
+                        delta.prevPoolRetirements.put(poolHash, poolRetirements.get(poolHash));
+                    }
                     poolRetirements.remove(poolHash);
                 }
             }
             case PoolRetirement pr -> {
-                delta.prevPoolRetirements.put(pr.getPoolKeyHash(), poolRetirements.get(pr.getPoolKeyHash()));
+                if (!delta.prevPoolRetirements.containsKey(pr.getPoolKeyHash())) {
+                    delta.prevPoolRetirements.put(
+                            pr.getPoolKeyHash(), poolRetirements.get(pr.getPoolKeyHash()));
+                }
                 poolRetirements.put(pr.getPoolKeyHash(), pr.getEpoch());
             }
             case RegDrepCert rd -> {
@@ -502,6 +517,23 @@ public class InMemoryAccountStateStore implements AccountStateStore {
             int epoch = Integer.parseInt(key.substring(0, key.indexOf(':')));
             return epoch < oldestToKeep;
         });
+    }
+
+    void reapRetiredPools(int epoch) {
+        Set<String> retiredPools = new HashSet<>();
+        for (var retirement : poolRetirements.entrySet()) {
+            if (retirement.getValue() <= epoch) {
+                retiredPools.add(retirement.getKey());
+            }
+        }
+        if (retiredPools.isEmpty()) return;
+
+        for (String poolHash : retiredPools) {
+            poolDeposits.remove(poolHash);
+            poolRetirements.remove(poolHash);
+        }
+        poolDelegations.entrySet().removeIf(
+                entry -> retiredPools.contains(entry.getValue().poolHash()));
     }
 
     // --- Rollback ---

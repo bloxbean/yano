@@ -1,5 +1,21 @@
 # Upgrading preview releases
 
+## ADR-050 pool-lifecycle correctness
+
+ADR-050 adds ordered same-block pool lifecycle handling and complete live-state
+POOLREAP. It also adds the `pool-lifecycle-state-v1` readiness marker. Every
+chainstate created before this change is intentionally incompatible, including
+the retained mainnet tip and the e447/e505/e610/e628 checkpoint ladder.
+
+Keep or archive an old chainstate if it is still useful for comparison, then
+sync mainnet from a clean directory and rebuild the checkpoint ladder from that
+accepted replay. Startup rejects a populated pre-marker store without changing
+it and reports that a resync is required. No boundary-v2, rollback-v2 or
+automatic promotion path is provided.
+
+See [Account state and rollback](ACCOUNT_STATE_AND_ROLLBACK.md) for the boundary
+semantics, compatibility contract and one-shot manual rollback guidance.
+
 ## ADR-047 history cleanup
 
 The legacy replay-worker history implementation and its public Java write-session API have

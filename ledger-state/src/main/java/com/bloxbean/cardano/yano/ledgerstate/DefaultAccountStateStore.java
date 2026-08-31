@@ -187,6 +187,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final byte[] META_REWARD_EVENT_INDEX_VERSION =
             "meta.reward_event_index_version".getBytes(StandardCharsets.UTF_8);
     private static final byte[] REWARD_EVENT_INDEX_VERSION = {1};
+    private static final byte[] META_POOL_LIFECYCLE_STATE_VERSION =
+            "meta.pool_lifecycle_state_version".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] POOL_LIFECYCLE_STATE_VERSION = {1};
     private static final byte[] META_REWARD_PROGRESS =
             "meta.reward.progress.v1".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_ROLLBACK_TARGET_SLOT =
@@ -326,6 +329,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private HashMap<String, byte[]> batchForwardDeleg;          // "ct:hash" -> encoded delegation (null=deleted)
     private HashMap<String, HashSet<String>> batchReverseAdded;    // "drepType:drepHash" -> set of "ct:hash"
     private HashMap<String, HashSet<String>> batchReverseRemoved;  // "drepType:drepHash" -> set of "ct:hash"
+    private volatile PoolReapProcessor.CommitHook poolReapCommitHook = checkpoint -> { };
 
     private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
             com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
@@ -433,6 +437,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                         SNAPSHOT_DEREG_INDEX_VERSION);
                 batch.put(cfState, META_REWARD_EVENT_INDEX_VERSION,
                         REWARD_EVENT_INDEX_VERSION);
+                batch.put(cfState, META_POOL_LIFECYCLE_STATE_VERSION,
+                        POOL_LIFECYCLE_STATE_VERSION);
                 db.write(options, batch);
             }
         } catch (RocksDBException e) {
@@ -451,6 +457,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 REWARD_EVENT_INDEX_VERSION)) {
             throw new IncompatibleChainStateException(
                     "Epoch-boundary state is missing its reward event index marker; resync is required.");
+        }
+        byte[] poolLifecycleVersion = db.get(cfState, META_POOL_LIFECYCLE_STATE_VERSION);
+        if (!Arrays.equals(poolLifecycleVersion, POOL_LIFECYCLE_STATE_VERSION)) {
+            String reason = poolLifecycleVersion == null
+                    ? "is missing its pool-lifecycle-state-v1 readiness marker"
+                    : "has an unsupported pool lifecycle state version";
+            throw new IncompatibleChainStateException(
+                    "Epoch-boundary state " + reason
+                            + "; retain a backup and resync into a new chainstate directory.");
         }
     }
 
@@ -581,6 +596,32 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      */
     public EpochRewardCalculator getRewardCalculator() {
         return rewardCalculator;
+    }
+
+    PoolReapProcessor.Result processPoolReap(int epoch, long boundarySlot,
+                                             EpochRewardCalculator calculator) {
+        return new PoolReapProcessor(db, cfState, this, calculator, log,
+                snapshotMaxBatchOperations, snapshotMaxBatchBytes,
+                poolReapCommitHook)
+                .process(epoch, boundarySlot);
+    }
+
+    PoolReapProcessor.Progress getPoolReapProgress() {
+        return PoolReapProcessor.readProgress(db, cfState);
+    }
+
+    boolean isPoolReapInProgress(long boundarySlot) {
+        PoolReapProcessor.Progress progress = getPoolReapProgress();
+        if (progress == null) return false;
+        if (progress.boundarySlot() != boundarySlot) {
+            throw new IllegalStateException("Unfinished POOLREAP belongs to boundary slot "
+                    + progress.boundarySlot() + " while inspecting slot " + boundarySlot);
+        }
+        return true;
+    }
+
+    void setPoolReapCommitHook(PoolReapProcessor.CommitHook hook) {
+        poolReapCommitHook = hook != null ? hook : checkpoint -> { };
     }
 
     /**
@@ -2995,6 +3036,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
             List<DeltaOp> deltaOps = new ArrayList<>();
             BigInteger totalDepositedDelta = BigInteger.ZERO;
+            BatchStateOverlay poolStateOverlay = new BatchStateOverlay();
 
             // Identify invalid transactions
             List<Integer> invList = block.getInvalidTransactions();
@@ -3031,7 +3073,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                         for (int certIdx = 0; certIdx < certs.size(); certIdx++) {
                             totalDepositedDelta = totalDepositedDelta.add(
                                     processCertificate(certs.get(certIdx), slot, currentEpoch,
-                                            txIdx, certIdx, event.era(), batch, deltaOps));
+                                            txIdx, certIdx, event.era(), batch, deltaOps,
+                                            poolStateOverlay));
                         }
                     }
 
@@ -3096,7 +3139,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private BigInteger processCertificate(Certificate cert, long slot, int currentEpoch,
                                           int txIdx, int certIdx, Era era,
-                                          WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                          WriteBatch batch, List<DeltaOp> deltaOps,
+                                          BatchStateOverlay poolStateOverlay) throws RocksDBException {
         BigInteger depositDelta = BigInteger.ZERO;
 
         switch (cert) {
@@ -3158,7 +3202,23 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 var params = pr.getPoolParams();
                 String poolHash = params.getOperator();
                 byte[] key = poolDepositKey(poolHash);
-                byte[] prev = db.get(cfState, key);
+                byte[] prev = getStateWithOverlay(key, poolStateOverlay);
+
+                // A WriteBatch is not visible to db.get(). Read all pool lifecycle state through
+                // the per-block overlay so certificates retain ledger order across transactions.
+                byte[] retKey = poolRetireKey(poolHash);
+                byte[] retPrev = getStateWithOverlay(retKey, poolStateOverlay);
+                boolean reRegisteredAfterRetirement = false;
+                if (retPrev != null) {
+                    long retireEpoch = AccountStateCborCodec.decodePoolRetirement(retPrev);
+                    reRegisteredAfterRetirement = retireEpoch <= currentEpoch;
+                }
+
+                boolean isNewPool = prev == null;
+                boolean treatAsFreshRegistration = isNewPool || reRegisteredAfterRetirement;
+                BigInteger lifecycleDeposit = treatAsFreshRegistration
+                        ? epochParamProvider.getPoolDeposit(currentEpoch)
+                        : AccountStateCborCodec.decodePoolRegistration(prev).deposit();
 
                 var margin = params.getMargin();
                 BigInteger marginNum = margin != null ? margin.getNumerator() : BigInteger.ZERO;
@@ -3170,54 +3230,35 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 String vrfKeyHash = params.getVrfKeyHash();
 
                 var data = new AccountStateCborCodec.PoolRegistrationData(
-                        epochParamProvider.getPoolDeposit(0),
+                        lifecycleDeposit,
                         marginNum, marginDen, cost, pledge, rewardAccount, owners, vrfKeyHash);
                 byte[] val = AccountStateCborCodec.encodePoolRegistration(data);
-                batch.put(cfState, key, val);
-                deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+                putStateWithDelta(key, val, batch, deltaOps, poolStateOverlay);
 
                 // Cancel any pending retirement
-                byte[] retKey = poolRetireKey(poolHash);
-                byte[] retPrev = db.get(cfState, retKey);
-                boolean reRegisteredAfterRetirement = false;
-                if (retPrev != null) {
-                    long retireEpoch = AccountStateCborCodec.decodePoolRetirement(retPrev);
-                    reRegisteredAfterRetirement = (retireEpoch <= currentEpoch);
-                }
-                if (retPrev != null) {
-                    batch.delete(cfState, retKey);
-                    deltaOps.add(new DeltaOp(OP_DELETE, retKey, retPrev));
-                }
+                deleteStateWithDelta(retKey, batch, deltaOps, poolStateOverlay);
 
                 // Write pool params history keyed by ACTIVE epoch.
                 // On Cardano, a new pool registration takes effect at epoch + 2.
                 // A normal pool update takes effect at epoch + 3.
                 // Re-registration after retirement starts a fresh pool lifecycle, so its params
                 // should become active on the same cadence as a fresh registration (+2), not +3.
-                boolean isNewPool = (prev == null); // no existing pool deposit entry = first registration
-                boolean treatAsFreshRegistration = isNewPool || reRegisteredAfterRetirement;
                 int activeEpoch = treatAsFreshRegistration ? currentEpoch + 2 : currentEpoch + 3;
                 byte[] histKey = poolParamsHistKey(poolHash, activeEpoch);
-                byte[] histPrev = db.get(cfState, histKey);
-                batch.put(cfState, histKey, val);
-                deltaOps.add(new DeltaOp(OP_PUT, histKey, histPrev));
+                putStateWithDelta(histKey, val, batch, deltaOps, poolStateOverlay);
 
                 // Track pool registration slot: set on first registration or re-registration after retirement.
                 // Used by snapshot creation to exclude stale delegations (delegated before pool's current lifecycle).
                 if (treatAsFreshRegistration) {
                     byte[] regSlotKey = poolRegSlotKey(poolHash);
-                    byte[] regSlotPrev = db.get(cfState, regSlotKey);
                     byte[] regSlotVal = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array();
-                    batch.put(cfState, regSlotKey, regSlotVal);
-                    deltaOps.add(new DeltaOp(OP_PUT, regSlotKey, regSlotPrev));
+                    putStateWithDelta(regSlotKey, regSlotVal, batch, deltaOps, poolStateOverlay);
                 }
             }
             case PoolRetirement pr -> {
                 byte[] key = poolRetireKey(pr.getPoolKeyHash());
-                byte[] prev = db.get(cfState, key);
                 byte[] val = AccountStateCborCodec.encodePoolRetirement(pr.getEpoch());
-                batch.put(cfState, key, val);
-                deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+                putStateWithDelta(key, val, batch, deltaOps, poolStateOverlay);
             }
             case RegDrepCert rd -> {
                 int ct = credTypeFromModel(rd.getDrepCredential());
@@ -5775,8 +5816,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (db.get(cfState, META_REWARD_PROGRESS) != null) {
                 phases.remove(PHASE_REWARDS);
             }
+            PoolReapProcessor.Progress poolReapProgress =
+                    PoolReapProcessor.readProgress(db, cfState);
+            if (poolReapProgress != null) {
+                if (poolReapProgress.boundarySlot() != boundarySlot) {
+                    throw new IllegalStateException("Unfinished POOLREAP belongs to boundary slot "
+                            + poolReapProgress.boundarySlot() + " while inspecting slot "
+                            + boundarySlot);
+                }
+                phases.remove(PHASE_POOLREAP);
+            }
         } catch (RocksDBException e) {
-            throw new IllegalStateException("Failed to inspect reward phase progress", e);
+            throw new IllegalStateException("Failed to inspect boundary phase progress", e);
         }
         return phases;
     }

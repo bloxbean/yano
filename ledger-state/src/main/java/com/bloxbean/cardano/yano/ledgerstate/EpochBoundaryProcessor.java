@@ -222,13 +222,36 @@ public class EpochBoundaryProcessor {
     public void recoverInterruptedBoundary() {
         if (snapshotCreator == null) return;
         int[] lastState = snapshotCreator.getLastBoundaryState();
-        if (lastState == null) return;
+        PoolReapProcessor.Progress poolReapProgress =
+                snapshotCreator.getPoolReapProgress();
+        if (lastState == null) {
+            if (poolReapProgress != null) {
+                throw new IllegalStateException("Unfinished POOLREAP for epoch "
+                        + poolReapProgress.epoch()
+                        + " has no boundary-step state; startup cannot continue");
+            }
+            return;
+        }
         int epoch = lastState[0];
         int step = lastState[1];
+        if (poolReapProgress != null) {
+            long expectedBoundarySlot = snapshotCreator.slotForEpochStart(epoch);
+            if (poolReapProgress.epoch() != epoch
+                    || poolReapProgress.boundarySlot() != expectedBoundarySlot
+                    || step != STEP_SNAPSHOT) {
+                throw new IllegalStateException("Unfinished POOLREAP does not match durable "
+                        + "boundary state for epoch " + epoch + " at step " + step);
+            }
+            snapshotCreator.isPoolReapInProgress(expectedBoundarySlot);
+        }
         if (step >= STEP_STARTED && step < STEP_COMPLETE) {
             log.info("Recovering interrupted epoch boundary for epoch {} (stopped at step {})", epoch, step);
             restorePersistedBoundaryCoordinates(epoch);
             processEpochBoundary(epoch - 1, epoch);
+        }
+        if (snapshotCreator.getPoolReapProgress() != null) {
+            throw new IllegalStateException("POOLREAP recovery for epoch " + epoch
+                    + " did not clear its progress marker");
         }
 
         // Repair missed PostEpochTransition: credit any uncredited reward_rest entries
@@ -459,26 +482,22 @@ public class EpochBoundaryProcessor {
             closeBoundaryStakeInput(utxoBalancesFuture, boundaryStakeInput);
         }
 
-        // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
-        //     Delta-journaled via boundary delta for rollback safety.
+        // 4b. POOLREAP: exact pool refunds plus bounded live-state cleanup
+        //     (after snapshot, before governance). The store-owned seam uses one
+        //     deterministic plan for the monetary and lifecycle mutations.
         try (var ignored = telemetry.phase("pool-reap")) {
             if (resumeFromStep <= STEP_POOLREAP) {
-                if (rewardCalculator != null && rewardCalculator.isEnabled()) {
-                    long boundarySlot = snapshotCreator != null ? snapshotCreator.slotForEpochStart(newEpoch) : 0;
-                    rewardCalculator.beginRewardBatch(newEpoch, "pool-reap");
-                    rewardCalculator.processPoolDepositRefunds(newEpoch);
-                    try {
-                        rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_POOLREAP);
-                    } catch (org.rocksdb.RocksDBException e) {
-                        throw new RuntimeException("Failed to commit pool refund boundary delta for epoch " + newEpoch, e);
-                    }
+                if (snapshotCreator != null) {
+                    long boundarySlot = snapshotCreator.slotForEpochStart(newEpoch);
+                    snapshotCreator.processPoolReap(newEpoch, boundarySlot,
+                            rewardCalculator);
                 }
-                // Step marker AFTER pool refund commits are durable
+                // Step marker AFTER all refund and live cleanup chunks are durable.
                 if (snapshotCreator != null) {
                     snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
                 }
             } else {
-                log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
+                log.info("Skipping POOLREAP for epoch {} (already committed in previous run)", newEpoch);
             }
         }
 

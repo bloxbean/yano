@@ -189,6 +189,21 @@ public class EpochRewardCalculator {
      * Must be called before calculateAndDistribute() and paired with commitRewardBatch().
      */
     void beginRewardBatch(int archiveEpoch, String part) {
+        beginRewardBatch(archiveEpoch, part, true);
+    }
+
+    void beginPoolReapBatch(int archiveEpoch, String part) {
+        try {
+            if (db.get(cfState, REWARD_PROGRESS_KEY) != null) {
+                throw new IllegalStateException("Cannot start POOLREAP while bounded reward progress exists");
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to inspect bounded reward progress", e);
+        }
+        beginRewardBatch(archiveEpoch, part, false);
+    }
+
+    private void beginRewardBatch(int archiveEpoch, String part, boolean loadProgress) {
         this.rewardArchiveEpoch = archiveEpoch;
         this.rewardBatch = new WriteBatch();
         this.rewardDeltaOps = new ArrayList<>();
@@ -196,19 +211,30 @@ public class EpochRewardCalculator {
         this.rewardArchiveWriter = archiveStaging.enabled(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
                 ? archiveStaging.openRewards(archiveEpoch, part) : null;
-        loadRewardProgress(archiveEpoch);
+        if (loadProgress) {
+            loadRewardProgress(archiveEpoch);
+        } else {
+            rewardChunkSequence = 0;
+            rewardResumeAfterPool = null;
+            rewardResumeDistributed = BigInteger.ZERO;
+            rewardResumeUnspendable = BigInteger.ZERO;
+        }
     }
 
     /**
      * Get the active reward batch for adding additional writes (e.g., AdaPot) before commit.
      * Returns null if no batch is active.
      */
-    org.rocksdb.WriteBatch getRewardBatch() { return rewardBatch; }
+    WriteBatch getRewardBatch() { return rewardBatch; }
 
     /**
      * Get the active reward delta ops list for adding additional delta-aware writes before commit.
      */
     List<DefaultAccountStateStore.DeltaOp> getRewardDeltaOps() { return rewardDeltaOps; }
+
+    DefaultAccountStateStore.BatchStateOverlay getRewardStateOverlay() {
+        return rewardStateOverlay;
+    }
 
     /**
      * Commit the reward batch and persist its boundary delta journal entry.
@@ -218,12 +244,16 @@ public class EpochRewardCalculator {
      * @param phase        the boundary delta phase constant (PHASE_REWARDS or PHASE_POOLREAP)
      */
     void commitRewardBatch(long boundarySlot, byte phase) throws RocksDBException {
+        commitRewardBatch(boundarySlot, phase, rewardChunkSequence);
+    }
+
+    void commitRewardBatch(long boundarySlot, byte phase, int sequence) throws RocksDBException {
         if (rewardBatch == null) return;
         var archiveWriter = rewardArchiveWriter;
         try (var wo = new WriteOptions()) {
             accountStateStore.deleteStateWithDelta(REWARD_PROGRESS_KEY, rewardBatch,
                     rewardDeltaOps, rewardStateOverlay);
-            accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardChunkSequence,
+            accountStateStore.commitBoundaryDelta(boundarySlot, phase, sequence,
                     rewardBatch, rewardDeltaOps);
             if (archiveWriter != null) archiveWriter.commit();
             db.write(wo, rewardBatch);
@@ -236,6 +266,22 @@ public class EpochRewardCalculator {
             if (rewardStateOverlay != null) {
                 rewardStateOverlay.clear();
             }
+            rewardStateOverlay = null;
+            rewardResumeAfterPool = null;
+            rewardResumeDistributed = BigInteger.ZERO;
+            rewardResumeUnspendable = BigInteger.ZERO;
+        }
+    }
+
+    void abortRewardBatch() {
+        try {
+            if (rewardArchiveWriter != null) rewardArchiveWriter.close();
+        } finally {
+            if (rewardBatch != null) rewardBatch.close();
+            rewardBatch = null;
+            rewardDeltaOps = null;
+            rewardArchiveWriter = null;
+            if (rewardStateOverlay != null) rewardStateOverlay.clear();
             rewardStateOverlay = null;
             rewardResumeAfterPool = null;
             rewardResumeDistributed = BigInteger.ZERO;
@@ -459,8 +505,8 @@ public class EpochRewardCalculator {
 
         // 4. Retired pools — pass real set to cf-rewards library.
         // The library adds unclaimed deposits (unregistered reward address) to treasury.
-        // Individual account credits for registered reward addresses are handled separately
-        // by processPoolDepositRefunds() in EpochBoundaryProcessor.
+        // PoolReapProcessor later credits registered reward addresses from its validated
+        // plan and atomically removes the corresponding live pool lifecycle state.
         Set<RetiredPool> retiredPools = buildRetiredPools(epoch);
 
         // 5. Deregistered and registered account sets — event-based tracking
@@ -1755,67 +1801,6 @@ public class EpochRewardCalculator {
             log.info("Found {} pools retiring at epoch {}", result.size(), epoch);
         }
         return result;
-    }
-
-    /**
-     * Process pool deposit refunds for pools retiring at this epoch.
-     * The cf-rewards library handles the treasury side (unclaimed deposits from unregistered
-     * reward addresses go to treasury). This method handles the other side: crediting deposits
-     * to registered reward addresses. Per the Cardano ledger spec (POOLREAP), if the pool's
-     * reward address is a registered stake credential, the deposit is refunded to that address.
-     *
-     * @param epoch the epoch at which pools retire
-     * @return total amount refunded to individual accounts
-     */
-    public BigInteger processPoolDepositRefunds(int epoch) {
-        if (ledgerStateProvider == null) return BigInteger.ZERO;
-
-        var retiring = ledgerStateProvider.getPoolsRetiringAtEpoch(epoch);
-        BigInteger totalRefunded = BigInteger.ZERO;
-
-        for (var pool : retiring) {
-            var poolParamsOpt = ledgerStateProvider.getPoolParams(pool.poolHash());
-            if (poolParamsOpt.isEmpty()) continue;
-
-            String rewardAccountHex = poolParamsOpt.get().rewardAccount();
-            String credKey = extractCredKeyFromRewardAddress(rewardAccountHex, null);
-            if (credKey == null) continue;
-
-            // Check if the reward address is registered
-            int credType = 0;
-            String credHash = credKey;
-            int colonIdx = credKey.indexOf(':');
-            if (colonIdx >= 0) {
-                credType = Integer.parseInt(credKey.substring(0, colonIdx));
-                credHash = credKey.substring(colonIdx + 1);
-            }
-
-            if (!ledgerStateProvider.isStakeCredentialRegistered(credType, credHash)) {
-                log.debug("Pool {} reward address {} not registered, deposit stays in treasury",
-                        pool.poolHash(), credKey);
-                continue;
-            }
-
-            BigInteger deposit = pool.deposit();
-            if (deposit == null || deposit.signum() <= 0) {
-                deposit = BigInteger.valueOf(500_000_000); // default pool deposit
-            }
-
-            try {
-                // A deposit refund is not leader income — type it as REFUND so
-                // reward history (and the accumulated-reward record) label it correctly.
-                creditReward(credType, credHash, deposit, epoch,
-                        com.bloxbean.cardano.yano.api.account.RewardType.REFUND, pool.poolHash());
-                totalRefunded = totalRefunded.add(deposit);
-                log.info("Pool {} deposit refund {} credited to {} at epoch {}",
-                        pool.poolHash(), deposit, credKey, epoch);
-            } catch (RocksDBException e) {
-                log.warn("Failed to credit pool deposit refund for {}: {}", pool.poolHash(), e.getMessage());
-                throw new RuntimeException("Failed to credit pool deposit refund for " + pool.poolHash(), e);
-            }
-        }
-
-        return totalRefunded;
     }
 
     // --- Account set construction ---
