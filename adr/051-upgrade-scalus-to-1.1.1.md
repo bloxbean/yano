@@ -274,9 +274,20 @@ its protocol version or cost models differ.
 
 Before every node start, run a repository-wide process check with
 `pgrep -fl "yano.jar|/yano( |$)"` in addition to the gate's port and lock
-checks. Every long-running node must start in its own POSIX session under
-`nohup`, redirect to an identified log, write an identified pidfile, and remain
-alive after an unrelated tool call.
+checks. Every long-running node must start detached in its own process group,
+either under a launch supervisor or a `setsid`/`nohup` equivalent, redirect to
+an identified log, write an identified pidfile, and remain alive after an
+unrelated tool call. Its working directory must be explicitly set to the
+pinned gate working directory and verified with `lsof -a -p <pid> -d cwd -Fn`.
+This requirement applies to baseline, candidate, Gate C, and Gate E launches.
+Do not rely on the agent or supervisor's inherited working directory.
+
+Treat the relative `history/` archive as run state alongside `chainstate/`.
+The configured chainstate leaf and the working-directory-relative archive path
+must both be absent before a baseline or candidate start, and both must be
+independently fresh for the two comparison runs. Record their absence in
+preflight evidence; carried-over chainstate or archive state invalidates
+parity.
 
 Before baseline or candidate throughput measurement, record `uptime` and the
 top five CPU consumers and verify that no competing build or other heavy job is
@@ -371,9 +382,15 @@ Then run all five steps of
 CCL load, MeshJS load, MeshJS vesting, Evolution load and Evolution vesting.
 Retain the `results-<label>/` directory with per-step logs, `timing.txt`,
 `process.txt` and mempool metric snapshots. Record submitted and confirmed
-counts, error rate and throughput, and compare them with a same-rig `0.18.2`
-baseline at `main` commit `e2566ade`. Any regression must be explained before
-acceptance.
+counts, error rate and throughput. Compare the candidate only with the clean
+same-rig `0.18.2` baseline at `e2566ade` in
+`results-issue106-baseline-e2566ade-clean`; historical runs corroborate that
+the baseline is sane but do not define the candidate comparison band. The
+clean baseline accepted 45,645/45,645 regular CCL transactions at 253.0 tx/s
+and 9,504/9,504 chained transactions with 100% full-depth chains. A candidate
+drop below 100% CCL full depth or any other regression must be explained before
+acceptance. MeshJS chained-input failures remain a documented SDK limitation
+and are reported separately rather than treated as the CCL parity signal.
 
 ## Implementation plan
 
