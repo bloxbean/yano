@@ -641,19 +641,22 @@ and no epoch-boundary or rollback v2 identifier exists.
 2. Sync preprod from a clean store with fail-fast epoch calculation enabled and
    validate selected effective retirements against ledger/db-sync or Koios
    evidence where the external API exposes equivalent state.
-3. Sync mainnet from a clean store because the readiness marker intentionally
-   rejects the old account chainstate.
-   Schedule this as a multi-day run and rebuild the useful checkpoint ladder
-   from the accepted clean sync.
-4. Keep `yano.exit-on-epoch-calc-error=true` and compare treasury/reserves with
+3. Keep `yano.exit-on-epoch-calc-error=true` and compare treasury/reserves with
    the accepted oracle fixture and Koios through tip.
-5. Sample POOLREAP time, boundary time, heap, physical footprint/RSS and RocksDB
+4. Sample POOLREAP time, boundary time, heap, physical footprint/RSS and RocksDB
    memory at retirement boundaries.
-6. Exercise graceful restart, kill/restart and manual rollback across at least
+5. Exercise graceful restart, kill/restart and manual rollback across at least
    one effective retirement.
 
 Exit gate: correctness gates pass through tip, typical/max boundary targets hold
 and no unexplained live pool/delegation discrepancy remains.
+
+The clean mainnet replay is a post-merge rollout step rather than a Phase-5 test
+gate. The readiness marker intentionally rejects the old account chainstate, so
+the rollout must schedule a multi-day clean sync and rebuild the useful
+checkpoint ladder from that accepted replay. Mainnet-scale POOLREAP scan
+performance is already gated by Phase 2's read-only measurement on the retained
+epoch-652 store.
 
 ## Test plan
 
