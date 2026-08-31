@@ -111,7 +111,7 @@ object LedgerBridge:
         Coin.zero    // donation
       )
 
-      val result = CardanoMutator.transit(context, state, scalusTx)
+      val result = YanoCardanoMutator.transit(context, state, scalusTx)
 
       result match
         case Right(_) =>
