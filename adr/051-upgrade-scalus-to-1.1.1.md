@@ -224,6 +224,16 @@ verify the exactly-one-entry difference, verify counts, verify name order and
 verify that the replacement retains the upstream rule name for stable
 diagnostics.
 
+The effective rule set is derived lazily from
+`CardanoMutator.defaultSTSs()`, so an unguarded incompatibility could otherwise
+surface only as a transaction validation error. The exact-count requirement
+and `swapsExactlyOneScalusDefaultValidator` are therefore the build-time safety
+net: if a future Scalus release removes, renames or duplicates
+`ValueNotConservedUTxOValidator`, a red `:scalus-bridge:test` is the intended
+migration signal, not a flaky obstacle. Re-derive the override for the new
+defaults, or retire it only after the existing produced/`CertState` removal
+criteria are satisfied.
+
 The semantic tests must cover active update, one new pool, duplicate new-pool
 registration, mixed active/new registrations and both retirement orders. At
 least one test must exercise complete value-conservation validation rather
