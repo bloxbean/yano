@@ -10,6 +10,7 @@ import com.bloxbean.cardano.client.quicktx.Tx;
 import com.bloxbean.cardano.client.spec.UnitInterval;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.cert.PoolRegistration;
+import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.util.HexUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,6 +26,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -113,6 +116,11 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
         awaitTransactions(delegationHashes);
         awaitState("five live delegations per test pool",
                 () -> pools.values().stream().allMatch(pool -> liveDelegationCount(pool) == DELEGATORS_PER_POOL));
+
+        Account retainedDRepDelegator = pools.get("E").delegators().getFirst();
+        submitAndAwait(buildDRepDelegationOnly(retainedDRepDelegator));
+        awaitState("scenario E DRep delegation visible",
+                () -> hasDRepDelegation(retainedDRepDelegator));
     }
 
     @Test
@@ -200,6 +208,7 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
     void scenarioE_sameTransactionRegistrationThenRetirementStaysScheduled() throws Exception {
         PoolFixture pool = pools.get("E");
         int retirementEpoch = currentEpoch() + 2;
+        BigInteger rewardBefore = rewardBalance(pool.owner());
         Tx tx = new Tx()
                 .updatePool(pool.registration())
                 .retirePool(pool.poolId(), retirementEpoch)
@@ -208,6 +217,8 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
         submitAndAwait(buildSigned(tx, pool.owner(), pool.owner()));
         awaitState("scenario E retirement visible", () -> retirementEpoch(pool) == retirementEpoch);
         assertEquals(DELEGATORS_PER_POOL, liveDelegationCount(pool));
+        assertTrue(hasDRepDelegation(pool.delegators().getFirst()));
+        writeRecoveryDescriptor(pool, rewardBefore, retirementEpoch);
     }
 
     @Test
@@ -316,6 +327,13 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
         return buildSigned(tx, delegator, delegator);
     }
 
+    private Transaction buildDRepDelegationOnly(Account delegator) {
+        Tx tx = new Tx()
+                .delegateVotingPowerTo(delegator.baseAddress(), DRep.abstain())
+                .from(delegator.baseAddress());
+        return buildSigned(tx, delegator, delegator);
+    }
+
     private Transaction buildSigned(Tx tx, Account paymentSigner, Account stakeSigner) {
         var context = quickTxBuilder.compose(tx).withSigner(SignerProviders.signerFrom(paymentSigner));
         if (stakeSigner != null) {
@@ -381,6 +399,11 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
                 .count();
     }
 
+    private boolean hasDRepDelegation(Account delegator) {
+        return stream(getJson("accounts/drep-delegations?page=1&count=100"))
+                .anyMatch(entry -> delegator.stakeAddress().equals(entry.path("stake_address").asText()));
+    }
+
     private BigInteger rewardBalance(Account account) {
         JsonNode state = getJson("accounts/" + account.stakeAddress());
         return new BigInteger(state.path("withdrawable_amount").asText());
@@ -404,6 +427,24 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
                 () -> !poolIsRegistered(pool) && retirementEpoch(pool) == -1 && liveDelegationCount(pool) == 0);
         assertEquals(rewardBefore.add(POOL_DEPOSIT), rewardBalance(pool.owner()),
                 "effective retirement must refund the stored pool deposit once");
+    }
+
+    private void writeRecoveryDescriptor(PoolFixture pool, BigInteger rewardBefore,
+                                         int retirementEpoch) throws Exception {
+        String descriptorPath = System.getenv("YANO_POOL_RECOVERY_DESCRIPTOR");
+        if (descriptorPath == null || descriptorPath.isBlank()) {
+            return;
+        }
+
+        var descriptor = mapper.createObjectNode();
+        descriptor.put("poolHash", pool.poolHash());
+        descriptor.put("ownerStakeAddress", pool.owner().stakeAddress());
+        descriptor.put("drepStakeAddress", pool.delegators().getFirst().stakeAddress());
+        descriptor.put("rewardBefore", rewardBefore.toString());
+        descriptor.put("poolDeposit", POOL_DEPOSIT.toString());
+        descriptor.put("retirementEpoch", retirementEpoch);
+        mapper.writerWithDefaultPrettyPrinter().writeValue(Path.of(descriptorPath).toFile(), descriptor);
+        assertTrue(Files.isRegularFile(Path.of(descriptorPath)), "recovery descriptor must be written");
     }
 
     private JsonNode txInfo(String hash) {

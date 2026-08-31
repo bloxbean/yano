@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted for phased implementation after independent review; review amendments
-incorporated
+Accepted and implemented; deterministic devnet recovery and clean native
+preprod validation completed through tip
 
 ## Date
 
