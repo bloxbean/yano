@@ -3724,7 +3724,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 }
 
                 clearDelegationIfNotAfter(delegatorCredType, delegatorHash, delegatorId,
-                        drepType, drepHash, deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
+                        deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
                 processed.add(delegatorId);
 
                 byte[] revPrev = it.value();
@@ -3753,7 +3753,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     String delegatorHash = parts[1];
 
                     clearDelegationIfNotAfter(delegatorCredType, delegatorHash, delegatorId,
-                            drepType, drepHash, deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
+                            deregSlot, deregTxIdx, deregCertIdx, batch, deltaOps);
 
                     byte[] revKey = drepDelegReverseKey(drepType, drepHash, delegatorCredType, delegatorHash);
                     byte[] revPrev = db.get(cfState, revKey);
@@ -3765,9 +3765,17 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         }
     }
 
-    /** Check forward delegation and clear it if its pointer is not strictly after the deregistration pointer. */
+    /**
+     * Clear the forward delegation named by the deregistering DRep's reverse set unless the
+     * delegation was written strictly after the deregistration certificate.
+     * <p>
+     * The current forward target is deliberately not checked. In Conway PV9, a credential-DRep
+     * re-delegation leaves the credential in the old DRep's reverse set. Haskell's
+     * {@code ConwayUnRegDRep} clears every account in that stale set, including accounts whose
+     * current target is another DRep. PV10 rebuilds the reverse sets, so this is behavior-neutral
+     * after the hard fork.
+     */
     private void clearDelegationIfNotAfter(int delegatorCredType, String delegatorHash, String delegatorId,
-                                            int deregDrepType, String deregDrepHash,
                                             long deregSlot, int deregTxIdx, int deregCertIdx,
                                             WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         byte[] fwdKey = drepDelegKey(delegatorCredType, delegatorHash);
@@ -3779,9 +3787,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         }
         if (fwdVal != null) {
             var deleg = AccountStateCborCodec.decodeDRepDelegation(fwdVal);
-            if (deleg.drepType() != deregDrepType || !Objects.equals(deleg.drepHash(), deregDrepHash)) {
-                return;
-            }
             boolean delegAfterDereg = deleg.slot() > deregSlot
                     || (deleg.slot() == deregSlot && deleg.txIdx() > deregTxIdx)
                     || (deleg.slot() == deregSlot && deleg.txIdx() == deregTxIdx

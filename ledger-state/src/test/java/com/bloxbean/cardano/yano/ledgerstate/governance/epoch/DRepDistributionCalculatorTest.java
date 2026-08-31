@@ -465,17 +465,14 @@ class DRepDistributionCalculatorTest {
     }
 
     /**
-     * Verifies that after credential X re-delegates from DRep A to DRep B, and DRep A
-     * deregisters, X's stake is correctly counted toward DRep B.
-     * <p>
-     * This is the root cause scenario of the 15 PV10 mismatches: in PV9, the stale
-     * reverse entry A→{X} caused cleanup to clear X→B on A's deregistration. After the
-     * PV10 hardfork reverse-index rebuild, the stale entry is removed (X now delegates
-     * to B, not A), so A's cleanup does not touch X→B.
+     * Verifies the distribution calculator's behavior for a valid current delegation after
+     * the PV10 reverse-index repair. PV9 lifecycle compatibility is covered by
+     * {@code DefaultAccountStateStoreDRepDelegationTest}: before the repair, unregistering an
+     * old DRep can deliberately clear a newer forward delegation through its stale reverse set.
      */
     @Test
-    @DisplayName("Re-delegated credential counted toward new DRep after old DRep deregisters")
-    void reDelegatedCredential_countedTowardNewDRep_afterOldDRepDeregisters() throws Exception {
+    @DisplayName("PV10 current delegation is counted after unrelated old DRep deregistration")
+    void pv10CurrentDelegation_countedAfterOldDRepDeregistration() throws Exception {
         // DRep A: deregistered (prevDeregSlot > registeredAtSlot)
         var deregisteredA = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
