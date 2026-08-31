@@ -1,0 +1,10 @@
+[
+  {
+    "name": "com.bloxbean.cardano.yano.archive.ducklake.DuckLakeProjectionSinkProvider",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.archive.ducklake.DuckLakeArchiveBackendProvider",
+    "allDeclaredConstructors": true
+  }
+]

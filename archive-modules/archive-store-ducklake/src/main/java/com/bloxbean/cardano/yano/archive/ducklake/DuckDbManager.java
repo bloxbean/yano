@@ -5,7 +5,9 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveResourceGate;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStuckOperationException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveWaitPolicy;
+import org.duckdb.DuckDBDriver;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.sql.Connection;
@@ -16,6 +18,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Properties;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -25,9 +28,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class DuckDbManager implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(DuckDbManager.class.getName());
+    private static final String JDBC_URL = "jdbc:duckdb:";
 
     private final DuckDbManagerConfig config;
     private final DuckDbExtensionLoader extensionLoader;
+    private final DuckDBDriver driver;
     // The fair semaphores remain the FIFO mechanism; the gates only add wait
     // diagnostics and the warn-versus-stuck distinction around them.
     private final Semaphore totalPermits;
@@ -43,20 +48,21 @@ public final class DuckDbManager implements AutoCloseable {
 
     public DuckDbManager(DuckDbManagerConfig config, DuckDbExtensionLoader extensionLoader,
                          ArchiveWaitPolicy waitPolicy) {
+        this(config, extensionLoader, waitPolicy, loadDriver());
+    }
+
+    DuckDbManager(DuckDbManagerConfig config, DuckDbExtensionLoader extensionLoader,
+                  ArchiveWaitPolicy waitPolicy, DuckDBDriver driver) {
         this.config = Objects.requireNonNull(config, "config");
         this.extensionLoader = Objects.requireNonNull(extensionLoader, "extensionLoader");
         this.waitPolicy = Objects.requireNonNull(waitPolicy, "waitPolicy");
+        this.driver = Objects.requireNonNull(driver, "driver");
         this.totalPermits = new Semaphore(config.maxConcurrentQueries(), true);
         this.bulkPermits = new Semaphore(config.maxConcurrentBulkJobs(), true);
         this.totalGate = new ArchiveResourceGate("duckdb-total", config.maxConcurrentQueries(),
                 totalPermits, waitPolicy, DuckDbManager::logWait);
         this.bulkGate = new ArchiveResourceGate("duckdb-bulk", config.maxConcurrentBulkJobs(),
                 bulkPermits, waitPolicy, DuckDbManager::logWait);
-        try {
-            Class.forName("org.duckdb.DuckDBDriver");
-        } catch (ClassNotFoundException e) {
-            throw new ArchiveStoreException("DuckDB driver unavailable", e);
-        }
         try {
             Files.createDirectories(config.tempDirectory());
         } catch (IOException e) {
@@ -113,7 +119,28 @@ public final class DuckDbManager implements AutoCloseable {
             totalTicket = totalGate.acquire(operation, remainingPolicy(policy, deadline, operation));
             if (closed.get()) throw new IllegalStateException("DuckDbManager is closed");
 
-            Connection connection = DriverManager.getConnection("jdbc:duckdb:");
+            if (LOG.isLoggable(System.Logger.Level.DEBUG)) {
+                long registeredDriverCount = DriverManager.drivers().count();
+                LOG.log(System.Logger.Level.DEBUG,
+                        "Opening DuckDB connection through explicit DuckDBDriver.connect; "
+                                + "DriverManager registered-driver count={0}",
+                        registeredDriverCount);
+            }
+            Connection connection;
+            try {
+                connection = driver.connect(JDBC_URL, new Properties());
+            } catch (LinkageError failure) {
+                FileNotFoundException missingLibrary = missingNativeLibrary(failure);
+                if (missingLibrary == null) throw failure;
+                throw new ArchiveStoreException(
+                        "DuckDB native library unavailable. Start Yano from the complete native "
+                                + "distribution so its platform JNI sidecar is beside the executable; "
+                                + missingLibrary.getMessage(),
+                        failure);
+            }
+            if (connection == null) {
+                throw new SQLException("DuckDB driver declined JDBC URL: " + JDBC_URL);
+            }
             try {
                 configure(connection, workload);
                 extensionLoader.load(connection);
@@ -169,6 +196,25 @@ public final class DuckDbManager implements AutoCloseable {
         LOG.log(System.Logger.Level.WARNING,
                 "Archive still waiting for {0} after {1}s while running {2}; {3}",
                 gate, waited.toSeconds(), operation, holderDetail);
+    }
+
+    private static DuckDBDriver loadDriver() {
+        try {
+            return new DuckDBDriver();
+        } catch (RuntimeException | LinkageError e) {
+            throw new ArchiveStoreException("DuckDB driver unavailable", e);
+        }
+    }
+
+    private static FileNotFoundException missingNativeLibrary(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof FileNotFoundException missing) return missing;
+            Throwable cause = current.getCause();
+            if (cause == current) return null;
+            current = cause;
+        }
+        return null;
     }
 
     private void configure(Connection connection, DuckDbWorkload workload) throws SQLException {

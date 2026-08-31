@@ -1,12 +1,19 @@
 package com.bloxbean.cardano.yano.archive.ducklake;
 
+import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
+import com.bloxbean.cardano.yano.archive.api.ArchiveWaitPolicy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.duckdb.DuckDBDriver;
 
+import java.io.FileNotFoundException;
 import java.nio.file.Path;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.Properties;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,6 +58,64 @@ class DuckDbManagerTest {
             assertThat(result.next()).isTrue();
             assertThat(result.getString(1)).isEqualTo("sqlite_scanner");
             assertThat(result.next()).isFalse();
+        }
+    }
+
+    @Test
+    void acquisitionUsesTheManagersExplicitDriverInstance() throws Exception {
+        AtomicInteger directConnectCalls = new AtomicInteger();
+        DuckDBDriver driver = new DuckDBDriver() {
+            @Override
+            public Connection connect(String url, Properties properties) throws SQLException {
+                directConnectCalls.incrementAndGet();
+                return super.connect(url, properties);
+            }
+        };
+
+        try (var manager = new DuckDbManager(DuckDbManagerConfig.defaults(temp.resolve("direct")),
+                DuckDbExtensionLoader.none(), ArchiveWaitPolicy.defaults(), driver);
+             var lease = manager.acquire(DuckDbWorkload.STEADY, Duration.ofSeconds(2))) {
+            assertThat(lease.connection()).isNotNull();
+            assertThat(directConnectCalls).hasValue(1);
+        }
+    }
+
+    @Test
+    void driverDecliningTheDuckDbUrlFailsExplicitly() {
+        DuckDBDriver decliningDriver = new DuckDBDriver() {
+            @Override
+            public Connection connect(String url, Properties properties) {
+                return null;
+            }
+        };
+        try (var manager = new DuckDbManager(DuckDbManagerConfig.defaults(temp.resolve("declined")),
+                DuckDbExtensionLoader.none(), ArchiveWaitPolicy.defaults(), decliningDriver)) {
+            assertThatThrownBy(() -> manager.acquire(DuckDbWorkload.STEADY,
+                    Duration.ofSeconds(2)))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessage("DuckDB driver declined JDBC URL: jdbc:duckdb:");
+        }
+    }
+
+    @Test
+    void missingNativeSidecarNamesTheExpectedFileAndCompleteDistributionRemedy() {
+        Path expected = temp.resolve("distribution/libduckdb_java.so_osx_universal")
+                .toAbsolutePath();
+        DuckDBDriver missingSidecarDriver = new DuckDBDriver() {
+            @Override
+            public Connection connect(String url, Properties properties) {
+                FileNotFoundException missing = new FileNotFoundException(
+                        "DuckDB JNI library not found, path: '" + expected + "'");
+                throw new ExceptionInInitializerError(new RuntimeException(missing));
+            }
+        };
+        try (var manager = new DuckDbManager(DuckDbManagerConfig.defaults(temp.resolve("missing")),
+                DuckDbExtensionLoader.none(), ArchiveWaitPolicy.defaults(), missingSidecarDriver)) {
+            assertThatThrownBy(() -> manager.acquire(DuckDbWorkload.STEADY,
+                    Duration.ofSeconds(2)))
+                    .isInstanceOf(ArchiveStoreException.class)
+                    .hasMessageContaining("Start Yano from the complete native distribution")
+                    .hasMessageContaining(expected.toString());
         }
     }
 

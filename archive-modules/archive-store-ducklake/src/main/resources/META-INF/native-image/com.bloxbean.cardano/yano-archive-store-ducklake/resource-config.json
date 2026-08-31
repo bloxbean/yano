@@ -1,0 +1,12 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.archive.api.projection.ProjectionSinkProvider\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.archive.api.ArchiveBackendProvider\\E"
+      }
+    ]
+  }
+}

@@ -1,10 +1,21 @@
 package com.bloxbean.cardano.yano.archive.ducklake;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
+import org.sqlite.JDBC;
 
 import java.nio.file.Path;
-import java.sql.*;
-import java.util.*;
+import java.sql.Connection;
+import java.sql.Driver;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.Collection;
+import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.Properties;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -30,13 +41,17 @@ final class DuckLakeTransactionLocator implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(DuckLakeTransactionLocator.class.getName());
 
     private final String jdbcUrl;
+    private final Driver driver;
     private final AtomicLong fullRebuilds = new AtomicLong();
 
     DuckLakeTransactionLocator(Path catalogPath) {
+        this(catalogPath, loadDriver());
+    }
+
+    DuckLakeTransactionLocator(Path catalogPath, Driver driver) {
         Path path = catalogPath.resolveSibling(catalogPath.getFileName() + ".tx-locator.sqlite");
         jdbcUrl = "jdbc:sqlite:" + path.toAbsolutePath().normalize();
-        try { Class.forName("org.sqlite.JDBC"); }
-        catch (ClassNotFoundException e) { throw new ArchiveStoreException("SQLite locator driver unavailable", e); }
+        this.driver = Objects.requireNonNull(driver, "driver");
         try (Connection connection = open(); Statement sql = connection.createStatement()) {
             sql.execute("CREATE TABLE IF NOT EXISTS tx_locator(tx_hash BLOB PRIMARY KEY, block_number INTEGER NOT NULL, job_id TEXT NOT NULL)");
             sql.execute("CREATE INDEX IF NOT EXISTS idx_tx_locator_job ON tx_locator(job_id)");
@@ -180,12 +195,30 @@ final class DuckLakeTransactionLocator implements AutoCloseable {
     }
 
     private Connection open() throws SQLException {
-        Connection connection = DriverManager.getConnection(jdbcUrl);
+        if (LOG.isLoggable(System.Logger.Level.DEBUG)) {
+            long registeredDriverCount = DriverManager.drivers().count();
+            LOG.log(System.Logger.Level.DEBUG,
+                    "Opening SQLite locator connection through explicit JDBC.connect; "
+                            + "DriverManager registered-driver count={0}",
+                    registeredDriverCount);
+        }
+        Connection connection = driver.connect(jdbcUrl, new Properties());
+        if (connection == null) {
+            throw new SQLException("SQLite driver declined JDBC URL: " + jdbcUrl);
+        }
         try (Statement sql = connection.createStatement()) {
             sql.execute("PRAGMA journal_mode=WAL"); sql.execute("PRAGMA synchronous=FULL");
             sql.execute("PRAGMA busy_timeout=5000");
         }
         return connection;
+    }
+
+    private static JDBC loadDriver() {
+        try {
+            return new JDBC();
+        } catch (RuntimeException | LinkageError e) {
+            throw new ArchiveStoreException("SQLite locator driver unavailable", e);
+        }
     }
     private long generation(Connection connection) throws SQLException {
         try (Statement sql = connection.createStatement(); ResultSet row = sql.executeQuery(
