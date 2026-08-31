@@ -238,7 +238,7 @@ public class DRepDistributionCalculator {
                 new DRepDistKey(DREP_NO_CONF, NO_CONFIDENCE_HASH), BigInteger.ZERO);
         log.info("Computed DRep distribution for snapshot epoch {}: {} DReps, {} total delegations",
                 snapshotEpoch, distribution.size(), totalDist);
-        log.info("  DRep virtual distribution for epoch {}: abstain={}, noConfidence={}",
+        log.debug("  DRep virtual distribution for epoch {}: abstain={}, noConfidence={}",
                 snapshotEpoch + 1, abstain, noConfidence);
         log.info("  DRep dist breakdown: utxo={}, rewards={}, rewardRest={}, proposalDeposits={}",
                 totalUtxo, totalRewards, totalRewardRest, totalPropDeposits);
