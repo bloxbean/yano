@@ -20,13 +20,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.RocksIterator;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,7 +69,6 @@ class DefaultAccountStateStorePoolLifecycleTest {
     }
 
     @Test
-    @Disabled("ADR-050: enabled at Phase 1 gate")
     void retirementThenRegistrationInSameTransactionCancelsRetirement() {
         applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
 
@@ -77,7 +80,6 @@ class DefaultAccountStateStorePoolLifecycleTest {
     }
 
     @Test
-    @Disabled("ADR-050: enabled at Phase 1 gate")
     void retirementThenRegistrationInLaterTransactionOfSameBlockCancelsRetirement() {
         applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
 
@@ -85,6 +87,16 @@ class DefaultAccountStateStorePoolLifecycleTest {
                 transaction(PoolRetirement.builder()
                         .poolKeyHash(POOL_HASH).epoch(12).build()),
                 transaction(poolRegistration())));
+
+        assertThat(store.getPoolRetirementEpoch(POOL_HASH)).isEmpty();
+    }
+
+    @Test
+    void retirementThenRegistrationInLaterBlockCancelsRetirement() {
+        applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
+        applyBlockWithCerts(2, epochStartSlot(11),
+                PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(12).build());
+        applyBlockWithCerts(3, epochStartSlot(11) + 1, poolRegistration());
 
         assertThat(store.getPoolRetirementEpoch(POOL_HASH)).isEmpty();
     }
@@ -101,7 +113,16 @@ class DefaultAccountStateStorePoolLifecycleTest {
     }
 
     @Test
-    @Disabled("ADR-050: enabled at Phase 1 gate")
+    void registrationThenRetirementInLaterBlockKeepsRetirement() {
+        applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
+        applyBlockWithCerts(2, epochStartSlot(11), poolRegistration());
+        applyBlockWithCerts(3, epochStartSlot(11) + 1,
+                PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(12).build());
+
+        assertThat(store.getPoolRetirementEpoch(POOL_HASH)).contains(12L);
+    }
+
+    @Test
     void repeatedRegistrationInSameBlockUsesFreshThenUpdateActivationCadence() {
         BigInteger firstPledge = BigInteger.valueOf(1_000_000_000L);
         BigInteger secondPledge = BigInteger.valueOf(2_000_000_000L);
@@ -116,7 +137,6 @@ class DefaultAccountStateStorePoolLifecycleTest {
     }
 
     @Test
-    @Disabled("ADR-050: enabled at Phase 1 gate")
     void freshRegistrationUsesRegistrationEpochDepositAndReregistrationPreservesIt() {
         applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
 
@@ -126,6 +146,24 @@ class DefaultAccountStateStorePoolLifecycleTest {
         applyBlockWithCerts(2, epochStartSlot(11), poolRegistration());
 
         assertThat(store.getPoolDeposit(POOL_HASH)).contains(registrationDeposit);
+    }
+
+    @Test
+    void rollbackRestoresPoolLifecycleStateByteForByte() {
+        applyBlockWithCerts(1, epochStartSlot(10), poolRegistration());
+        Map<String, String> before = poolLifecycleState();
+
+        applyBlock(2, epochStartSlot(11), List.of(
+                transaction(PoolRetirement.builder()
+                        .poolKeyHash(POOL_HASH).epoch(12).build()),
+                transaction(poolRegistration(BigInteger.valueOf(2_000_000_000L)))));
+        applyBlockWithCerts(3, epochStartSlot(11) + 1,
+                poolRegistration(BigInteger.valueOf(3_000_000_000L)),
+                PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(13).build());
+
+        store.rollbackToSlot(epochStartSlot(10));
+
+        assertThat(poolLifecycleState()).isEqualTo(before);
     }
 
     @Test
@@ -224,5 +262,28 @@ class DefaultAccountStateStorePoolLifecycleTest {
 
     private static long epochStartSlot(int epoch) {
         return epoch * EPOCH_LENGTH;
+    }
+
+    private Map<String, String> poolLifecycleState() {
+        Map<String, String> state = new LinkedHashMap<>();
+        try (RocksIterator iterator = rocks.db().newIterator(rocks.cfState())) {
+            iterator.seekToFirst();
+            while (iterator.isValid()) {
+                byte[] key = iterator.key();
+                if (key.length > 0 && isPoolLifecyclePrefix(key[0])) {
+                    state.put(HexFormat.of().formatHex(key),
+                            HexFormat.of().formatHex(iterator.value()));
+                }
+                iterator.next();
+            }
+        }
+        return state;
+    }
+
+    private static boolean isPoolLifecyclePrefix(byte prefix) {
+        return prefix == DefaultAccountStateStore.PREFIX_POOL_DEPOSIT
+                || prefix == DefaultAccountStateStore.PREFIX_POOL_RETIRE
+                || prefix == DefaultAccountStateStore.PREFIX_POOL_PARAMS_HIST
+                || prefix == DefaultAccountStateStore.PREFIX_POOL_REG_SLOT;
     }
 }
