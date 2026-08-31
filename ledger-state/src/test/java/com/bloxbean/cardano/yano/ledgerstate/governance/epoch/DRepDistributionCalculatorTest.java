@@ -270,7 +270,7 @@ class DRepDistributionCalculatorTest {
     }
 
     @Test
-    void orderedAccountMergeMatchesPointLookupOracleForRegisteredAndSkippedCredentials()
+    void orderedAccountMergeHandlesRegisteredAndSkippedCredentials()
             throws Exception {
         registerDRep(0, DREP_A, 200, 84974395L);
         var deregisteredDRep = new DRepStateRecord(
@@ -296,19 +296,15 @@ class DRepDistributionCalculatorTest {
                 BigInteger.valueOf(300));
         var rewardRest = Map.of("0:" + CRED1, BigInteger.valueOf(5));
 
-        var pointLookup = calculator.calculateWithPointLookupsForParity(
-                230, balances, rewardRest);
         var orderedMerge = calculator.calculate(230, balances, rewardRest);
 
-        assertThat(orderedMerge).isEqualTo(pointLookup);
-        assertThat(orderedMerge.get(new DRepDistributionCalculator.DRepDistKey(0, DREP_A)))
-                .isEqualTo(BigInteger.valueOf(112));
-        assertThat(orderedMerge).doesNotContainKey(
-                new DRepDistributionCalculator.DRepDistKey(0, DREP_B));
+        assertThat(orderedMerge).containsExactly(
+                Map.entry(new DRepDistributionCalculator.DRepDistKey(0, DREP_A),
+                        BigInteger.valueOf(112)));
     }
 
     @Test
-    void orderedAccountMergeMatchesPointLookupAcrossCredentialTypesAndVirtualDReps()
+    void orderedAccountMergeHandlesCredentialTypesAndVirtualDReps()
             throws Exception {
         registerDRep(0, DREP_A, 200, 84974395L);
         registerDRep(1, DREP_B, 200, 84974396L);
@@ -332,23 +328,19 @@ class DRepDistributionCalculatorTest {
                 BigInteger.valueOf(40));
         var rewardRest = Map.of("1:" + CRED1, BigInteger.ONE);
 
-        var pointLookup = calculator.calculateWithPointLookupsForParity(
-                230, balances, rewardRest);
         var orderedMerge = calculator.calculate(230, balances, rewardRest);
 
-        assertThat(orderedMerge).isEqualTo(pointLookup);
-        assertThat(orderedMerge)
-                .containsEntry(new DRepDistributionCalculator.DRepDistKey(2, "abstain"),
-                        BigInteger.valueOf(11))
-                .containsEntry(new DRepDistributionCalculator.DRepDistKey(3, "no_confidence"),
-                        BigInteger.valueOf(33))
-                .containsEntry(new DRepDistributionCalculator.DRepDistKey(1, DREP_B),
-                        BigInteger.valueOf(44))
-                .doesNotContainKey(new DRepDistributionCalculator.DRepDistKey(0, DREP_A));
+        assertThat(orderedMerge).containsExactlyInAnyOrderEntriesOf(Map.of(
+                new DRepDistributionCalculator.DRepDistKey(2, "abstain"),
+                BigInteger.valueOf(11),
+                new DRepDistributionCalculator.DRepDistKey(3, "no_confidence"),
+                BigInteger.valueOf(33),
+                new DRepDistributionCalculator.DRepDistKey(1, DREP_B),
+                BigInteger.valueOf(44)));
     }
 
     @Test
-    void orderedAccountMergeSkipsAccountsWithoutDRepDelegations() throws Exception {
+    void orderedAccountMergeSkipsAccountsWithoutDelegationsAndHandlesKeyGaps() throws Exception {
         String delegationBeforeFirstAccount = "00".repeat(27) + "01";
         String accountBeforeRegisteredDelegation = "00".repeat(27) + "02";
         String accountBetweenDelegations = "80".repeat(28);
@@ -375,15 +367,11 @@ class DRepDistributionCalculatorTest {
                 new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(
                         0, CRED1), BigInteger.valueOf(100));
 
-        var pointLookup = calculator.calculateWithPointLookupsForParity(
-                230, balances, Map.of());
         var orderedMerge = calculator.calculate(230, balances, Map.of());
 
-        assertThat(orderedMerge).isEqualTo(pointLookup);
-        assertThat(orderedMerge)
-                .containsOnlyKeys(new DRepDistributionCalculator.DRepDistKey(0, DREP_A))
-                .containsEntry(new DRepDistributionCalculator.DRepDistKey(0, DREP_A),
-                        BigInteger.valueOf(129));
+        assertThat(orderedMerge).containsExactly(
+                Map.entry(new DRepDistributionCalculator.DRepDistKey(0, DREP_A),
+                        BigInteger.valueOf(129)));
     }
 
     @Test
