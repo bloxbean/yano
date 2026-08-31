@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.yano.api.db.IncompatibleChainStateException;
 import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,7 +28,7 @@ class EpochBoundaryStateVersionTest {
 
             assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(1);
             assertThatThrownBy(() -> store.requirePointerIndexReady(false))
-                    .isInstanceOf(IllegalStateException.class)
+                    .isInstanceOf(IncompatibleChainStateException.class)
                     .hasMessageContaining("complete pointer UTXO index")
                     .hasMessageContaining("resync");
             assertThatCode(() -> store.requirePointerIndexReady(true))
@@ -45,7 +46,7 @@ class EpochBoundaryStateVersionTest {
             var restarted = new DefaultAccountStateStore(
                     rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true);
             assertThatThrownBy(() -> restarted.requirePointerIndexReady(false))
-                    .isInstanceOf(IllegalStateException.class)
+                    .isInstanceOf(IncompatibleChainStateException.class)
                     .hasMessageContaining("resync");
             assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(1);
 
@@ -67,7 +68,7 @@ class EpochBoundaryStateVersionTest {
 
             assertThatThrownBy(() -> new DefaultAccountStateStore(
                     rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true))
-                    .isInstanceOf(IllegalStateException.class)
+                    .isInstanceOf(IncompatibleChainStateException.class)
                     .hasMessageContaining("requires epoch-boundary state v1")
                     .hasMessageContaining("resync");
             assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(2);
@@ -83,7 +84,7 @@ class EpochBoundaryStateVersionTest {
 
             assertThatThrownBy(() -> new DefaultAccountStateStore(
                     rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true))
-                    .isInstanceOf(IllegalStateException.class)
+                    .isInstanceOf(IncompatibleChainStateException.class)
                     .hasMessageContaining("existing non-empty account chainstate is not compatible")
                     .hasMessageContaining("resync");
             assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).isNull();

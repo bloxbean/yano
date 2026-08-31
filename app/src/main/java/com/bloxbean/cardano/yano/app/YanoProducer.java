@@ -25,6 +25,7 @@ import com.bloxbean.cardano.yano.api.config.UpstreamValidationConfig;
 import com.bloxbean.cardano.yano.api.config.UpstreamValidationStartConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.db.IncompatibleChainStateException;
 import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
@@ -1048,6 +1049,13 @@ public class YanoProducer {
                 log.error(sanitized.getMessage());
                 throw sanitized;
             }
+            IncompatibleChainStateException incompatibleChainState =
+                    incompatibleChainStateFailure(e);
+            if (incompatibleChainState != null) {
+                log.error("YANO_STARTUP_FAILURE code=INCOMPATIBLE_CHAINSTATE");
+                log.error(incompatibleChainState.getMessage());
+                throw incompatibleChainState;
+            }
             if (e instanceof Error error) {
                 throw error;
             }
@@ -1064,6 +1072,18 @@ public class YanoProducer {
 
     static boolean isPluginStartupFailure(Throwable failure) {
         return pluginStartupFailure(failure) != null;
+    }
+
+    private static IncompatibleChainStateException incompatibleChainStateFailure(
+            Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof IncompatibleChainStateException incompatible) {
+                return incompatible;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     private static Throwable pluginStartupFailure(Throwable failure) {

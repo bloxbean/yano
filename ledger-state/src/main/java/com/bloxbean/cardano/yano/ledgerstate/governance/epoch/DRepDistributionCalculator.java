@@ -108,24 +108,13 @@ public class DRepDistributionCalculator {
                                                    Map<com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey,
                                                            BigInteger> utxoBalances,
                                                    Map<String, BigInteger> spendableRewardRest) throws RocksDBException {
-        return calculateInternal(snapshotEpoch, utxoBalances, spendableRewardRest, true);
-    }
-
-    /**
-     * Point-lookup implementation retained as a test oracle for the ordered merge.
-     */
-    Map<DRepDistKey, BigInteger> calculateWithPointLookupsForParity(int snapshotEpoch,
-            Map<com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey,
-                    BigInteger> utxoBalances,
-            Map<String, BigInteger> spendableRewardRest) throws RocksDBException {
-        return calculateInternal(snapshotEpoch, utxoBalances, spendableRewardRest, false);
+        return calculateInternal(snapshotEpoch, utxoBalances, spendableRewardRest);
     }
 
     private Map<DRepDistKey, BigInteger> calculateInternal(int snapshotEpoch,
             Map<com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey,
                     BigInteger> utxoBalances,
-            Map<String, BigInteger> spendableRewardRest,
-            boolean useOrderedAccountMerge) throws RocksDBException {
+            Map<String, BigInteger> spendableRewardRest) throws RocksDBException {
         Map<DRepDistKey, BigInteger> distribution = new HashMap<>();
         StakeBalanceView stakeBalanceView = null;
         if (utxoBalances == null && stakeBalanceViewSupplier != null) {
@@ -170,8 +159,7 @@ public class DRepDistributionCalculator {
 
         // Iterate all DRep delegations
         try (StakeBalanceView closeableView = stakeBalanceView;
-             AccountLookup accountLookup = useOrderedAccountMerge
-                     ? new OrderedAccountLookup() : new PointAccountLookup()) {
+             OrderedAccountLookup accountLookup = new OrderedAccountLookup()) {
             RocksIterator it = accountLookup.delegations();
             while (it.isValid()) {
                 byte[] key = it.key();
@@ -194,7 +182,7 @@ public class DRepDistributionCalculator {
                 }
 
                 // Check if the stake credential is registered
-                byte[] acctVal = accountLookup.accountValue(key, credType, credHash);
+                byte[] acctVal = accountLookup.accountValue(key);
                 if (acctVal == null) {
                     skippedAcct++;
                     it.next();
@@ -250,7 +238,7 @@ public class DRepDistributionCalculator {
                 new DRepDistKey(DREP_NO_CONF, NO_CONFIDENCE_HASH), BigInteger.ZERO);
         log.info("Computed DRep distribution for snapshot epoch {}: {} DReps, {} total delegations",
                 snapshotEpoch, distribution.size(), totalDist);
-        log.info("  DRep virtual distribution for epoch {}: abstain={}, noConfidence={}",
+        log.debug("  DRep virtual distribution for epoch {}: abstain={}, noConfidence={}",
                 snapshotEpoch + 1, abstain, noConfidence);
         log.info("  DRep dist breakdown: utxo={}, rewards={}, rewardRest={}, proposalDeposits={}",
                 totalUtxo, totalRewards, totalRewardRest, totalPropDeposits);
@@ -260,19 +248,7 @@ public class DRepDistributionCalculator {
         return distribution;
     }
 
-    private interface AccountLookup extends AutoCloseable {
-        RocksIterator delegations();
-
-        byte[] accountValue(byte[] delegationKey, int credentialType,
-                            String credentialHash) throws RocksDBException;
-
-        void verifyHealthy() throws RocksDBException;
-
-        @Override
-        void close();
-    }
-
-    private final class OrderedAccountLookup implements AccountLookup {
+    private final class OrderedAccountLookup implements AutoCloseable {
         private final Snapshot snapshot = db.getSnapshot();
         private final ReadOptions options = new ReadOptions()
                 .setFillCache(false)
@@ -285,14 +261,11 @@ public class DRepDistributionCalculator {
             accounts.seek(new byte[]{DefaultAccountStateStore.PREFIX_ACCT});
         }
 
-        @Override
-        public RocksIterator delegations() {
+        private RocksIterator delegations() {
             return delegations;
         }
 
-        @Override
-        public byte[] accountValue(byte[] delegationKey, int credentialType,
-                                   String credentialHash) {
+        private byte[] accountValue(byte[] delegationKey) {
             while (accounts.isValid()) {
                 byte[] accountKey = accounts.key();
                 if (accountKey.length < 2
@@ -310,8 +283,7 @@ public class DRepDistributionCalculator {
             return null;
         }
 
-        @Override
-        public void verifyHealthy() throws RocksDBException {
+        private void verifyHealthy() throws RocksDBException {
             delegations.status();
             accounts.status();
         }
@@ -322,35 +294,6 @@ public class DRepDistributionCalculator {
             delegations.close();
             options.close();
             db.releaseSnapshot(snapshot);
-        }
-    }
-
-    private final class PointAccountLookup implements AccountLookup {
-        private final RocksIterator delegations = db.newIterator(cfState);
-
-        private PointAccountLookup() {
-            delegations.seek(new byte[]{DefaultAccountStateStore.PREFIX_DREP_DELEG});
-        }
-
-        @Override
-        public RocksIterator delegations() {
-            return delegations;
-        }
-
-        @Override
-        public byte[] accountValue(byte[] delegationKey, int credentialType,
-                                   String credentialHash) throws RocksDBException {
-            return db.get(cfState, accountKey(credentialType, credentialHash));
-        }
-
-        @Override
-        public void verifyHealthy() throws RocksDBException {
-            delegations.status();
-        }
-
-        @Override
-        public void close() {
-            delegations.close();
         }
     }
 
@@ -510,16 +453,6 @@ public class DRepDistributionCalculator {
             throw new RuntimeException("Failed to read DRep snapshot stake for epoch "
                     + epoch + ", credType=" + credType + ", credHash=" + credHash, e);
         }
-    }
-
-    /** Build account key matching PREFIX_ACCT pattern in DefaultAccountStateStore */
-    private static byte[] accountKey(int credType, String credHash) {
-        byte[] hash = HexUtil.decodeHexString(credHash);
-        byte[] key = new byte[1 + 1 + hash.length];
-        key[0] = DefaultAccountStateStore.PREFIX_ACCT;
-        key[1] = (byte) credType;
-        System.arraycopy(hash, 0, key, 2, hash.length);
-        return key;
     }
 
     /**
