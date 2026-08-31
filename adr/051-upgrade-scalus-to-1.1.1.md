@@ -250,6 +250,13 @@ Where 1.x adds fields, defaults must be justified from the Cardano protocol
 model or the existing Yano contract. Nulls, zero values and placeholder casts
 must not be introduced merely to satisfy a constructor.
 
+`scalus.cardano.ledger.ProtocolParams` is constructed with 31 positional
+arguments. Before correction commit `c1d5cf53`, Yano had zero assertions for
+the execution-unit-limit mapping inside that constructor. The class-wide
+`everyProtocolParameterMapsToItsOwnField` guard now supplies distinct source
+values and asserts all 31 target fields, including every nested component, so
+future argument transpositions fail locally.
+
 ### 5. Use layered, serialized acceptance gates
 
 Run the following gates serially from a fresh worktree at the exact candidate
@@ -513,7 +520,10 @@ attribute when a semantic or native regression appears.
 - Pool update admission remains aligned with Cardano ledger semantics.
 - Rule-set drift becomes a visible test failure.
 - Scalus 1.1.1's dimensional execution-unit limit check surfaced a latent Yano
-  memory/steps mapping defect that the 0.18.2 total ordering had hidden. The
+  memory/steps mapping defect that the 0.18.2 total ordering had hidden. That
+  ordering was lexicographic: it compared memory first and compared steps only
+  when memory was equal, so the shipped swapped values could over-accept a
+  transaction whose true memory budget exceeded the limit. The
   over-acceptance defect affects releases `v0.1.0-pre10` through
   `v0.1.0-pre13` and is corrected by unreleased commit `c1d5cf53`.
 - Native and off-chain evaluation compatibility are demonstrated with executed
