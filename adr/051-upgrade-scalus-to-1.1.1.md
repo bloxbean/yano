@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
@@ -19,9 +19,9 @@ Proposed
 - [The ADR-050 upstream report](reports/adr-050-scalus-pool-deposit-upstream-report.md)
   records the value-conservation gap and the expected reference-ledger
   behavior for active pool updates and duplicate registrations.
-- `gradle/libs.versions.toml` currently pins both
+- `gradle/libs.versions.toml` pins both
   `scalus-cardano-ledger_3` and
-  `scalus-bloxbean-cardano-client-lib_3` to `0.18.2`.
+  `scalus-bloxbean-cardano-client-lib_3` to `1.1.1`.
 - `YanoCardanoMutator` replaces Scalus's
   `ValueNotConservedUTxOValidator` while retaining the remainder of
   `CardanoMutator.defaultSTSs()` in deterministic name order.
@@ -364,29 +364,9 @@ result, execution units, submission hash and confirmation evidence. Compare
 execution units with the `0.18.2` baseline; any difference must be explained
 before acceptance, even when both transactions succeed.
 
-#### Gate E — devnet skills and off-chain SDK load suite
+#### Gate E — off-chain SDK load suite
 
-Before the load suite, run only the `test-native-haskell-sync` devnet skill.
-Satya trimmed Gate E to this single skill at 17:38 +08 on 2026-08-31 because
-issue #106 does not change mainnet/preprod synchronization or the epoch-shift
-and slot-zero catch-up paths exercised by the other three skills.
-
-Build the Oracle GraalVM 25.3 G1 native binary once. Reuse that exact binary,
-identified by path and SHA-256, for `test-native-haskell-sync` and the Gate C
-BLS probe.
-The app-chain skills are outside this ADR's scope.
-
-For issue #106, the stock devnet genesis set is authoritative over any PV10
-selection in the local skill text. If `test-native-haskell-sync` selects PV10,
-override it to stock devnet and record the override. Before accepting the
-skill result, verify from the running node's log or API and record that the
-effective protocol major version is `11` and the Plutus V3 cost model contains
-`350` entries. Stock `epochLength=1200` and `slotLength=0.2` make the
-two-full-epoch sync threshold past slot 2400. Oracle GraalVM 25.3 with
-`--gc=G1` likewise supersedes the native skills' older GraalVM 24 prerequisite
-for every native gate in this ADR.
-
-Then run all five steps of
+Run all five steps of
 `/Users/satya/Downloads/yano-ccl-test/run-suite.sh <label> <api-url> <node-pid>`:
 CCL load, MeshJS load, MeshJS vesting, Evolution load and Evolution vesting.
 Retain the `results-<label>/` directory with per-step logs, `timing.txt`,
@@ -400,6 +380,31 @@ and 9,504/9,504 chained transactions with 100% full-depth chains. A candidate
 drop below 100% CCL full depth or any other regression must be explained before
 acceptance. MeshJS chained-input failures remain a documented SDK limitation
 and are reported separately rather than treated as the CCL parity signal.
+
+The load suite passed. Satya decided at 20:50 +08 on 2026-08-31 to skip
+`test-native-haskell-sync` for this PR. This is an explicit scope decision, not
+an unexecuted acceptance item:
+
+1. the issue-106 product diff changes the Scalus bridge and dependency pin,
+   not block production, block CBOR, network synchronization or consensus;
+2. the sync skill's blocks contain simple payments, so it has low power to
+   detect a Scalus-specific evaluator regression;
+3. Gate C exercises the same native binary more directly by evaluating,
+   submitting and confirming a BLS transaction with exact JVM/native execution-
+   unit parity;
+4. the sync skill would require the same projection-disabled deviation as Gate
+   C because of the pre-existing native provider reachability defect; and
+5. a realistic Haskell takeover with the expanded cost models requires a
+   separate governance-action bootstrap scenario rather than substituting the
+   pre-release cardano-node 11.1.0 configuration.
+
+The execution-unit correction also does not require mainnet or preprod replay
+for this PR. It replaces an incorrectly permissive swapped limit with the true
+dimensional limits. Transactions already admitted to a real Cardano chain were
+validated against those true limits by cardano-node, so the correction cannot
+reject a previously valid on-chain transaction. It can only reject the
+over-budget transactions that affected Yano versions could previously
+over-accept.
 
 ## Implementation plan
 
@@ -441,8 +446,7 @@ and are reported separately rather than treated as the CCL parity signal.
 ### Phase 4 — Native and Plutus validation
 
 - Produce the Oracle GraalVM 25.3 G1 native image from the candidate commit.
-- Reuse that exact binary for the native devnet skill and the BLS
-  lock/evaluate/submit/confirm probe.
+- Execute the BLS lock/evaluate/submit/confirm probe with that exact binary.
 - Run Mesh and Evolution vesting datum/redeemer suites.
 - Compare JVM/native results and pre-/post-upgrade execution units.
 
@@ -473,8 +477,8 @@ and are reported separately rather than treated as the CCL parity signal.
 - Native BLS evaluation and submission both pass with transaction/log evidence.
 - Mesh and Evolution vesting datum/redeemer regressions both pass against
   devnet, with execution-unit comparison evidence.
-- `test-native-haskell-sync` passes, reusing one identified native binary for
-  that skill and the BLS probe.
+- The decision to skip `test-native-haskell-sync` is recorded with its scope
+  rationale and is not represented as executed coverage.
 - The five-step off-chain SDK suite passes with submitted/confirmed counts,
   error rate and throughput compared with the same-rig `0.18.2` baseline.
 - No unexplained semantic, execution-budget, native linkage or dependency-graph
@@ -567,9 +571,10 @@ After merge, use the same atomic version/adapter revert if a production-blocking
 regression appears. No chainstate rollback or migration is required because
 this ADR changes transaction validation and evaluation code only.
 
-## Review decisions requested
+## Accepted review decisions
 
 1. Accept the atomic `1.1.1` pin and narrow bridge-only migration boundary.
 2. Accept retaining and re-deriving the pool-deposit override for Scalus 1.1.1.
-3. Accept the serialized JVM, A-F devnet, one devnet-skill, Oracle GraalVM
-   native/BLS and five-step off-chain SDK gates as mandatory before merge.
+3. Accept the serialized JVM, A-F devnet, Oracle GraalVM native/BLS and
+   five-step off-chain SDK gates, with native Haskell sync explicitly deferred
+   as recorded above.
