@@ -512,6 +512,8 @@ attribute when a semantic or native regression appears.
 - Yano moves to the supported Scalus 1.x line.
 - Pool update admission remains aligned with Cardano ledger semantics.
 - Rule-set drift becomes a visible test failure.
+- Scalus 1.1.1's dimensional execution-unit limit check surfaced a latent Yano
+  memory/steps mapping defect that the 0.18.2 total ordering had hidden.
 - Native and off-chain evaluation compatibility are demonstrated with executed
   transactions rather than inferred from compilation.
 
