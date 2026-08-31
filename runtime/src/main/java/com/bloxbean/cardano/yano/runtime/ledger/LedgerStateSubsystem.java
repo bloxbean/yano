@@ -248,8 +248,8 @@ public final class LedgerStateSubsystem implements Subsystem {
             }
 
             if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
-                completePointerIndexVersionGateIfApplicable(
-                        utxoStateSupplier.get(), defaultStore::completeEpochBoundaryStateV2, log);
+                requirePointerIndexReadyIfApplicable(
+                        utxoStateSupplier.get(), defaultStore::requirePointerIndexReady, log);
             }
 
             publishDirectStartGenesisBootstrapIfNeeded();
@@ -259,26 +259,26 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
     }
 
-    static void completePointerIndexVersionGateIfApplicable(
-            UtxoState utxoState, Consumer<Boolean> completion, Logger log) {
-        Objects.requireNonNull(completion, "completion");
+    static void requirePointerIndexReadyIfApplicable(
+            UtxoState utxoState, Consumer<Boolean> readinessCheck, Logger log) {
+        Objects.requireNonNull(readinessCheck, "readinessCheck");
         Objects.requireNonNull(log, "log");
         if (utxoState == null) {
-            log.info("Epoch-boundary v2 pointer-index gate not applicable: UTXO state is unavailable");
+            log.info("Pointer-index readiness check not applicable: UTXO state is unavailable");
             return;
         }
         if (!utxoState.isPointerIndexApplicable()) {
-            log.info("Epoch-boundary v2 pointer-index gate not applicable: "
+            log.info("Pointer-index readiness check not applicable: "
                     + "UTXO state is disabled, filtered, or lacks a complete stake source");
             return;
         }
 
         boolean ready = utxoState.isPointerIndexReadyAtCurrentCoordinate();
         if (!ready) {
-            log.error("Epoch-boundary v2 pointer-index gate failed: "
+            log.error("Pointer-index readiness check failed: "
                     + "no usable completeness marker at the current UTXO coordinate");
         }
-        completion.accept(ready);
+        readinessCheck.accept(ready);
     }
 
     public void completeStartupRecovery() {

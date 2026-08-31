@@ -140,7 +140,7 @@ nonce state.
 The pointer-index differential gate passed across retained pre-Conway clones,
 including rebuild and scan-shadow comparisons. The ordered DRep merge produced
 the same 866/866 per-DRep rows as the point-lookup baseline on the same Conway
-state before promotion. Trial-only oracle removal and the independently tracked
+state before final rollout. Trial-only oracle removal and the independently tracked
 DBSync DRep-lifecycle discrepancy remain follow-up work in issues #100 and #99;
 neither changes the accepted AdaPot or same-state mechanism parity evidence.
 A deliberate live Conway crash-after-SNAP drill was performed on a disposable
@@ -193,6 +193,15 @@ normal startup. Existing chainstate may be retained read-only for differential
 fixtures, but running the accepted ADR-048 format requires syncing a new store
 from genesis. This permission removes the compatibility decoder and makes the
 clean journal format `v1`, not `v2`.
+
+The marker is a fail-closed format check, not an automatic migration system.
+The current preview format has only version `v1`: unsupported marker values are
+rejected, and startup has no speculative `v2` constants, promotion branches or
+compatibility decoder. If a future change genuinely requires a new chainstate
+format, that change must make an explicit migrate-versus-resync decision and add
+only the transition logic it needs. Stake-balance and pointer-index readiness
+markers remain independent integrity evidence; their startup checks do not
+modify the epoch-boundary format marker.
 
 ## Context
 

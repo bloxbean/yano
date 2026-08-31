@@ -20,41 +20,73 @@ class EpochBoundaryStateVersionTest {
     Path tempDir;
 
     @Test
-    void freshV2StateStillRequiresPointerIndexReadinessAtStartup() throws Exception {
+    void freshV1StateRequiresPointerIndexReadinessWithoutChangingVersion() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             var store = new DefaultAccountStateStore(
                     rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true);
 
-            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(2);
-            assertThatThrownBy(() -> store.completeEpochBoundaryStateV2(false))
+            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(1);
+            assertThatThrownBy(() -> store.requirePointerIndexReady(false))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("complete pointer UTXO index")
                     .hasMessageContaining("resync");
-            assertThatCode(() -> store.completeEpochBoundaryStateV2(true))
+            assertThatCode(() -> store.requirePointerIndexReady(true))
+                    .doesNotThrowAnyException();
+            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(1);
+        }
+    }
+
+    @Test
+    void existingV1StateReopensWithoutPromotion() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true);
+
+            var restarted = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true);
+            assertThatThrownBy(() -> restarted.requirePointerIndexReady(false))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("resync");
+            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(1);
+
+            restarted.requirePointerIndexReady(true);
+
+            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(1);
+            assertThatCode(() -> new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true))
                     .doesNotThrowAnyException();
         }
     }
 
     @Test
-    void existingV1StatePromotesOnlyAfterPointerIndexValidation() throws Exception {
+    void unknownVersionIsRejectedWithoutMigration() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             new DefaultAccountStateStore(
                     rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true);
-            rocks.db().put(rocks.cfState(), VERSION_KEY, new byte[]{1});
+            rocks.db().put(rocks.cfState(), VERSION_KEY, new byte[]{2});
 
-            var restarted = new DefaultAccountStateStore(
-                    rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true);
-            assertThatThrownBy(() -> restarted.completeEpochBoundaryStateV2(false))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("resync");
-            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(1);
-
-            restarted.completeEpochBoundaryStateV2(true);
-
-            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(2);
-            assertThatCode(() -> new DefaultAccountStateStore(
+            assertThatThrownBy(() -> new DefaultAccountStateStore(
                     rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true))
-                    .doesNotThrowAnyException();
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("requires epoch-boundary state v1")
+                    .hasMessageContaining("resync");
+            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).containsExactly(2);
+        }
+    }
+
+    @Test
+    void nonEmptyUnversionedStateIsRejectedWithoutWritingVersion() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true);
+            rocks.db().delete(rocks.cfState(), VERSION_KEY);
+
+            assertThatThrownBy(() -> new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(), LoggerFactory.getLogger(getClass()), true))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("existing non-empty account chainstate is not compatible")
+                    .hasMessageContaining("resync");
+            assertThat(rocks.db().get(rocks.cfState(), VERSION_KEY)).isNull();
         }
     }
 }

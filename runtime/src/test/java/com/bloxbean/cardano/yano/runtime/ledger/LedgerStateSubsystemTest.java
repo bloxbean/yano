@@ -108,37 +108,37 @@ class LedgerStateSubsystemTest {
     }
 
     @Test
-    void pointerIndexVersionGateSkipsStoresWhereIndexIsNotApplicable() {
-        AtomicReference<Boolean> completion = new AtomicReference<>();
+    void pointerIndexReadinessCheckSkipsStoresWhereIndexIsNotApplicable() {
+        AtomicReference<Boolean> readiness = new AtomicReference<>();
 
-        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
-                pointerState(false, false), completion::set,
+        LedgerStateSubsystem.requirePointerIndexReadyIfApplicable(
+                pointerState(false, false), readiness::set,
                 LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
 
-        assertThat(completion.get()).isNull();
+        assertThat(readiness.get()).isNull();
 
-        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
-                null, completion::set,
+        LedgerStateSubsystem.requirePointerIndexReadyIfApplicable(
+                null, readiness::set,
                 LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
 
-        assertThat(completion.get()).isNull();
+        assertThat(readiness.get()).isNull();
     }
 
     @Test
-    void pointerIndexVersionGatePassesApplicableStoreReadinessToAccountStore() {
-        AtomicReference<Boolean> completion = new AtomicReference<>();
+    void pointerIndexReadinessCheckPassesApplicableStoreReadinessToAccountStore() {
+        AtomicReference<Boolean> readiness = new AtomicReference<>();
 
-        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
-                pointerState(true, false), completion::set,
+        LedgerStateSubsystem.requirePointerIndexReadyIfApplicable(
+                pointerState(true, false), readiness::set,
                 LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
 
-        assertThat(completion.get()).isFalse();
+        assertThat(readiness.get()).isFalse();
 
-        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
-                pointerState(true, true), completion::set,
+        LedgerStateSubsystem.requirePointerIndexReadyIfApplicable(
+                pointerState(true, true), readiness::set,
                 LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
 
-        assertThat(completion.get()).isTrue();
+        assertThat(readiness.get()).isTrue();
     }
 
     private static UtxoState pointerState(boolean applicable, boolean ready) {
