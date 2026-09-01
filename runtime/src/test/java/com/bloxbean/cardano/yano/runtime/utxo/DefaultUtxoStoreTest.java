@@ -296,6 +296,87 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void originRollbackPreservesUsablePointerProofAcrossRestart() throws Exception {
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "00".repeat(32));
+
+        store.rollbackToPoint(Point.ORIGIN);
+
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+        byte[] marker = chain.rocks().db().get(
+                chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY);
+        assertNotNull(marker);
+        chain.close();
+        chain = new DirectRocksDBChainState(tempDir.getAbsolutePath());
+        store = new DefaultUtxoStore(
+                chain, LoggerFactory.getLogger(DefaultUtxoStoreTest.class),
+                Map.of("yano.utxo.enabled", true));
+
+        assertTrue(store.isPointerIndexApplicable());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+    }
+
+    @Test
+    void retainedPointRollbackRestoresPointerRowsAndRebindsProof() throws Exception {
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "00".repeat(32));
+        String transactionHash = "c1".repeat(32);
+        String blockHash = "c2".repeat(32);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        transactionHash, 13_000_000L)))
+                .invalidTransactions(List.of()).build());
+        publishBlock(101, 2, "c3".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(TransactionBody.builder()
+                        .txHash("c4".repeat(32))
+                        .inputs(Set.of(TransactionInput.builder()
+                                .transactionId(transactionHash).index(0).build()))
+                        .outputs(List.of()).build()))
+                .invalidTransactions(List.of()).build());
+
+        store.rollbackToPoint(new Point(100, blockHash));
+
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+        byte[] outpoint = UtxoKeyUtil.outpointKey(transactionHash, 0);
+        assertNotNull(chain.rocks().db().get(
+                chain.rocks().handle(UtxoCfNames.UTXO_POINTER), outpoint));
+        PointerIndexMarker marker = PointerIndexMarker.decode(chain.rocks().db().get(
+                chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+        assertNotNull(marker);
+        assertEquals(1, marker.blockNumber());
+        assertEquals(100, marker.slot());
+    }
+
+    @Test
+    void advancedOriginRollbackDoesNotClaimUnprovableGenesisCoverage() throws Exception {
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "00".repeat(32));
+        publishBlock(100, 1, "c5".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        "c6".repeat(32), 15_000_000L)))
+                .invalidTransactions(List.of()).build());
+
+        store.rollbackToPoint(Point.ORIGIN);
+
+        assertNull(chain.rocks().db().get(
+                chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+        assertFalse(store.isPointerIndexReadyAtCurrentCoordinate());
+    }
+
+    @Test
+    void originRollbackDoesNotInventMissingPointerProof() throws Exception {
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "00".repeat(32));
+        ColumnFamilyHandle meta = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        chain.rocks().db().delete(meta, PointerIndexMarker.KEY);
+        publishBlock(100, 1, "c3".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        "c4".repeat(32), 14_000_000L)))
+                .invalidTransactions(List.of()).build());
+
+        store.rollbackToPoint(Point.ORIGIN);
+
+        assertNull(chain.rocks().db().get(meta, PointerIndexMarker.KEY));
+        assertFalse(store.isPointerIndexReadyAtCurrentCoordinate());
+    }
+
+    @Test
     void emptyGenesisEstablishesPointerMarkerAndCanonicalCoordinate() throws Exception {
         String genesisHash = "a9".repeat(32);
         assertFalse(store.isPointerIndexApplicable());

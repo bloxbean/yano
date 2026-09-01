@@ -9,6 +9,8 @@
 #   ./yano.sh start:preprod,projection # Preprod with the optional history archive
 #   ./yano.sh start:mainnet        # Mainnet relay alias
 #   ./yano.sh start:<profiles>     # Custom comma-separated Quarkus profiles
+#   ./yano.sh repair pointer-index --database ./chainstate \
+#       --confirm REPAIR_POINTER_INDEX
 #   ./yano.sh appchain config ...  # App-chain configuration tooling
 #   ./yano.sh appchain cluster ... # Local cluster launcher
 #   ./yano.sh observability start  # Optional persistent metrics history
@@ -32,7 +34,7 @@ cd "$YANO_ROOT"
 
 usage() {
     cat <<EOF
-Usage: ./yano.sh [start|start:<profiles>|appchain|observability|help] [args...]
+Usage: ./yano.sh [start|start:<profiles>|repair|appchain|observability|help] [args...]
 
 Examples:
   ./yano.sh start
@@ -45,6 +47,8 @@ Examples:
   ./yano.sh start:sanchonet
   ./yano.sh start:devnet
   ./yano.sh start:mydevnet
+  ./yano.sh repair pointer-index --database ./chainstate \
+      --confirm REPAIR_POINTER_INDEX
   ./yano.sh appchain config validate --mode template \\
       --template-contract builtin:cluster config/application-appchain.yml
   ./yano.sh appchain config explain block.max-bytes
@@ -249,7 +253,18 @@ fi
 # Parse profile from arguments
 PROFILE=""
 PASSTHROUGH_ARGS=()
+MAINTENANCE_COMMAND=""
 
+if [ "${1:-}" = "repair" ]; then
+    if [ "${2:-}" != "pointer-index" ]; then
+        echo "Error: supported repair command: pointer-index" >&2
+        exit 2
+    fi
+    MAINTENANCE_COMMAND="pointer-index repair"
+    PASSTHROUGH_ARGS=("$@")
+fi
+
+if [ -z "$MAINTENANCE_COMMAND" ]; then
 for arg in "$@"; do
     case "$arg" in
         help|-h|--help)
@@ -297,6 +312,7 @@ for arg in "$@"; do
             ;;
     esac
 done
+fi
 
 # Build profile system property if set
 PROFILE_PROP=""
@@ -378,7 +394,11 @@ collect_native_java_opts() {
 # Auto-detect mode: native binary or JAR
 if [ -f "$YANO_ROOT/yano" ]; then
     # Native binary mode
-    echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    if [ -n "$MAINTENANCE_COMMAND" ]; then
+        echo "Running Yano $MAINTENANCE_COMMAND (native)..."
+    else
+        echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    fi
     collect_native_java_opts
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
@@ -388,13 +408,21 @@ if [ -f "$YANO_ROOT/yano" ]; then
         "${NATIVE_JAVA_OPTS[@]}" $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -f "$YANO_ROOT/yano.jar" ]; then
     # Uber-jar mode
-    echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    if [ -n "$MAINTENANCE_COMMAND" ]; then
+        echo "Running Yano $MAINTENANCE_COMMAND (JVM)..."
+    else
+        echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    fi
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
     exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$YANO_ROOT/yano.jar" ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano" ]; then
-    echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    if [ -n "$MAINTENANCE_COMMAND" ]; then
+        echo "Running Yano $MAINTENANCE_COMMAND (native)..."
+    else
+        echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    fi
     collect_native_java_opts
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
@@ -403,7 +431,11 @@ elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano" ]; then
         -Dyano.block-producer.script-evaluator=scalus \
         "${NATIVE_JAVA_OPTS[@]}" $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano.jar" ]; then
-    echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    if [ -n "$MAINTENANCE_COMMAND" ]; then
+        echo "Running Yano $MAINTENANCE_COMMAND (JVM)..."
+    else
+        echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    fi
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086

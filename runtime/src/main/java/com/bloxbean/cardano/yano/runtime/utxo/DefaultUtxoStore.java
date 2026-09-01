@@ -2665,7 +2665,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     retained != null ? retained.blockNumber() : null,
                     retained != null ? retained.slot() : null,
                     retained != null ? retained.blockHash() : null);
-            invalidatePointerMarkerAfterRollback(batch, retained);
+            restorePointerMarkerAfterRollback(batch, retained);
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             db.write(wo, batch);
             rememberRollbackContinuity(retained);
@@ -2677,25 +2677,46 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
-    private void invalidatePointerMarkerAfterRollback(
+    private void restorePointerMarkerAfterRollback(
             WriteBatch batch, UtxoDeltaCodec.Decoded retained) throws RocksDBException {
-        PointerIndexMarker marker = PointerIndexMarker.decode(
-                db.get(cfMeta, PointerIndexMarker.KEY));
-        if (marker == null) return;
-        if (retained == null) {
+        PointerIndexMarker marker;
+        CanonicalBlockReference current;
+        try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
+            marker = PointerIndexMarker.decode(
+                    db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            if (marker == null) return;
+            current = readStakeBalanceCoordinate(readOptions);
+        }
+        if (!marker.isUsableAt(current)) {
             batch.delete(cfMeta, PointerIndexMarker.KEY);
-            log.warn("Pointer UTXO index marker cleared by rollback to origin");
+            log.warn("Pointer UTXO index marker cleared during rollback because its "
+                            + "pre-rollback proof was unusable: currentBlock={}, currentSlot={}, "
+                            + "markerBlock={}, markerSlot={}",
+                    current.blockNumber(), current.slot(),
+                    marker.blockNumber(), marker.slot());
             return;
         }
-        CanonicalBlockReference coordinate = new CanonicalBlockReference(
-                retained.blockNumber(), retained.slot(), decodeCanonicalHash(retained.blockHash()));
-        if (marker.isAfter(coordinate)) {
-            batch.delete(cfMeta, PointerIndexMarker.KEY);
-            log.warn("Pointer UTXO index marker cleared by rollback below marker: "
-                            + "targetBlock={}, targetSlot={}, markerBlock={}, markerSlot={}",
-                    coordinate.blockNumber(), coordinate.slot(),
-                    marker.blockNumber(), marker.slot());
+
+        CanonicalBlockReference restored;
+        if (retained == null) {
+            if (current.blockNumber() != 0 || current.slot() != 0) {
+                batch.delete(cfMeta, PointerIndexMarker.KEY);
+                log.warn("Pointer UTXO index marker not preserved for rollback to origin "
+                                + "from advanced state: currentBlock={}, currentSlot={}",
+                        current.blockNumber(), current.slot());
+                return;
+            }
+            restored = new CanonicalBlockReference(0, 0, new byte[32]);
+        } else {
+            restored = new CanonicalBlockReference(
+                    retained.blockNumber(), retained.slot(),
+                    decodeCanonicalHash(retained.blockHash()));
         }
+        batch.put(cfMeta, PointerIndexMarker.KEY,
+                PointerIndexMarker.encode(PointerIndexMarker.at(restored)));
+        log.info("Pointer UTXO index readiness proof restored after rollback: "
+                        + "block={}, slot={}",
+                restored.blockNumber(), restored.slot());
     }
 
     private record UtxoRollbackTarget(long slot, String hash, boolean origin, boolean exact) {
