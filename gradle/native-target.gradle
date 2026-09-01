@@ -1,0 +1,73 @@
+import java.util.Locale
+
+def normalizeNativeCpuArch = { String value ->
+    def arch = value.toLowerCase(Locale.ROOT).trim()
+    if (arch in ['x86_64', 'amd64']) return 'amd64'
+    if (arch in ['aarch64', 'arm64']) return 'arm64'
+    throw new GradleException("Unsupported native CPU architecture: ${value}")
+}
+
+def nativeContainerPlatform = {
+    def options = System.getProperty('quarkus.native.container-runtime-options', '')
+            .split(',')
+            .collect { it.trim() }
+            .findAll { !it.isBlank() }
+    for (int i = 0; i < options.size(); i++) {
+        if (options[i].startsWith('--platform=')) {
+            return options[i].substring('--platform='.length())
+        }
+        if (options[i] == '--platform' && i + 1 < options.size()) {
+            return options[i + 1]
+        }
+    }
+    return null
+}
+
+def nativeContainerBuildRequested = {
+    System.getProperty('quarkus.native.container-build', '').equalsIgnoreCase('true') ||
+            System.getProperty('quarkus.native.remote-container-build', '')
+                    .equalsIgnoreCase('true')
+}
+
+ext.yanoNativeContainerBuildRequested = nativeContainerBuildRequested
+
+ext.yanoNativeTarget = {
+    def hostCpuArch = normalizeNativeCpuArch(System.getProperty('os.arch', ''))
+
+    String targetOs
+    if (nativeContainerBuildRequested()) {
+        targetOs = 'linux'
+        def requestedPlatform = nativeContainerPlatform()
+        if (requestedPlatform != null) {
+            def parts = requestedPlatform.toLowerCase(Locale.ROOT).split('/')
+            if (parts.length != 2 || parts[0] != 'linux') {
+                throw new GradleException(
+                        "Unsupported native container platform: ${requestedPlatform}")
+            }
+            def requestedCpuArch = normalizeNativeCpuArch(parts[1])
+            if (requestedCpuArch != hostCpuArch) {
+                throw new GradleException(
+                        "Cross-CPU native builds are not supported: host is ${hostCpuArch}, " +
+                                "requested ${requestedPlatform}")
+            }
+        }
+    } else {
+        def hostOs = System.getProperty('os.name', '').toLowerCase(Locale.ROOT)
+        if (hostOs.contains('linux')) targetOs = 'linux'
+        else if (hostOs.contains('mac') || hostOs.contains('darwin')) targetOs = 'macos'
+        else if (hostOs.contains('windows')) targetOs = 'windows'
+        else throw new GradleException("Unsupported native operating system: ${hostOs}")
+    }
+
+    def extensionOs = targetOs == 'macos' ? 'osx' : targetOs
+    [
+            os: targetOs,
+            cpuArch: hostCpuArch,
+            distributionArch: hostCpuArch == 'amd64' ? 'x64' : 'arm64',
+            extensionPlatform: "${extensionOs}_${hostCpuArch}",
+            sidecarName: targetOs == 'macos'
+                    ? 'libduckdb_java.so_osx_universal'
+                    : "libduckdb_java.so_${targetOs}_${hostCpuArch}",
+            binaryFileName: targetOs == 'windows' ? 'yano.exe' : 'yano'
+    ]
+}

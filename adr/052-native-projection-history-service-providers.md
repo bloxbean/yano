@@ -321,14 +321,14 @@ DuckDB change to its current-jar-directory behavior can therefore surface as a
 missing-sidecar packaging failure and must be checked when upgrading the JDBC
 driver.
 
-Sidecar selection follows the built native executable, not the Gradle host.
-The distribution task runs after `quarkusBuild`, identifies the target from the
-ELF, Mach-O or PE header and extracts only that target's entry from the pinned
-DuckDB JDBC JAR. Packaging and verification both fail closed for an unsupported
-format, architecture or mismatched sidecar. This preserves the documented
-macOS-hosted Linux container build instead of pairing its ELF binary with the
-host's macOS library. `prepareYanoDockerNativeContext` strips only the ZIP's top
-directory, leaving the sidecar beside `yano` under `yano/`; the native
+Sidecar selection follows the supported native-build contract. A local build
+targets the Gradle host operating system and CPU; a Quarkus container build
+targets Linux on the host CPU. Unknown operating systems and CPUs fail closed,
+as does an explicit Docker `--platform` whose CPU differs from the host. The
+distribution task extracts only that target's entry from the pinned DuckDB JDBC
+JAR. This preserves the normal macOS-hosted Linux container build without a
+low-level executable parser. `prepareYanoDockerNativeContext` strips only the
+ZIP's top directory, leaving the sidecar beside `yano` under `yano/`; the native
 Dockerfile's `COPY yano/ /app/` consequently installs both at `/app` without a
 second packaging path.
 
@@ -338,11 +338,10 @@ generated resource tree contains exactly `ducklake.duckdb_extension`,
 `sqlite_scanner.sha256` under one
 `duckdb-extensions/<duckdb-version>/<target-platform>/` directory, plus native
 resource metadata naming exactly those four paths. A native container build
-selects Linux extensions even on a macOS host and honors an explicit Docker
-`--platform=linux/amd64` or `--platform=linux/arm64`. The post-build verifier
-derives the extension target and JNI sidecar separately from the same native
-binary header and rejects a module JAR containing another or additional
-platform. This distinction is required on macOS: DuckDB's JNI JAR uses
+selects Linux extensions even on a macOS host. The packaging verifier derives
+the extension target and JNI sidecar from the same build-target helper and
+rejects a module JAR containing another or additional platform. This
+distinction is required on macOS: DuckDB's JNI JAR uses
 `osx_universal`, while the extension repository uses `osx_arm64` or
 `osx_amd64`. No `duckdb-extensions/**` catch-all is retained in the image.
 

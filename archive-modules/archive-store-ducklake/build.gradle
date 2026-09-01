@@ -7,6 +7,8 @@ plugins {
     id 'java-library'
 }
 
+apply from: rootProject.file('gradle/native-target.gradle')
+
 dependencies {
     api project(':archive-modules:archive-api')
     implementation libs.duckdb.jdbc
@@ -24,68 +26,9 @@ def duckDbExtensionNames = ['ducklake', 'sqlite_scanner']
 def duckDbExtensionMetadataPath =
         'META-INF/native-image/com.bloxbean.cardano/yano-archive-store-ducklake-extensions/resource-config.json'
 
-def normalizedDuckDbCpuArch = { String arch ->
-    def normalized = arch.toLowerCase(Locale.ROOT).trim()
-    if (normalized in ['x86_64', 'amd64']) return 'amd64'
-    if (normalized in ['aarch64', 'arm64']) return 'arm64'
-    throw new GradleException("Unsupported DuckDB CPU architecture: ${arch}")
-}
-
-def duckDbExtensionPlatform = providers.provider {
-    def osName = System.getProperty('os.name').toLowerCase(Locale.ROOT).trim()
-    def cpuArch = normalizedDuckDbCpuArch(System.getProperty('os.arch'))
-    boolean containerBuild =
-            System.getProperty('quarkus.native.container-build', '').equalsIgnoreCase('true') ||
-                    System.getProperty('quarkus.native.remote-container-build', '')
-                            .equalsIgnoreCase('true')
-
-    if (containerBuild) {
-        def options = System.getProperty('quarkus.native.container-runtime-options', '')
-                .split(',')
-                .collect { it.trim() }
-                .findAll { !it.isBlank() }
-        String platformOption = null
-        for (int i = 0; i < options.size(); i++) {
-            if (options[i].startsWith('--platform=')) {
-                platformOption = options[i].substring('--platform='.length())
-                break
-            }
-            if (options[i] == '--platform' && i + 1 < options.size()) {
-                platformOption = options[i + 1]
-                break
-            }
-        }
-        if (platformOption != null) {
-            def target = platformOption.toLowerCase(Locale.ROOT).split('/')
-            if (target.length != 2 || target[0] != 'linux') {
-                throw new GradleException(
-                        "Unsupported DuckDB native container platform: ${platformOption}")
-            }
-            cpuArch = normalizedDuckDbCpuArch(target[1])
-        }
-        return "linux_${cpuArch}"
-    }
-
-    if (osName.startsWith('mac')) return "osx_${cpuArch}"
-    if (osName.startsWith('linux')) return "linux_${cpuArch}"
-    if (osName.startsWith('windows')) return "windows_${cpuArch}"
-    throw new GradleException("Unsupported DuckDB extension operating system: ${osName}")
-}
-def duckDbNativeLibraryName = providers.provider {
-    def osName = System.getProperty('os.name').toLowerCase(Locale.ROOT).trim()
-    def arch = System.getProperty('os.arch').toLowerCase(Locale.ROOT).trim()
-    def cpuArch
-    if (arch in ['x86_64', 'amd64']) cpuArch = 'amd64'
-    else if (arch in ['aarch64', 'arm64']) cpuArch = 'arm64'
-    else cpuArch = arch.replaceAll('[^a-z0-9_\\-.]', '')
-
-    def suffix
-    if (osName.startsWith('mac')) suffix = 'osx_universal'
-    else if (osName.startsWith('linux')) suffix = "linux_${cpuArch}"
-    else if (osName.startsWith('windows')) suffix = "windows_${cpuArch}"
-    else suffix = "${osName.replaceAll('[^a-z0-9_\\-.]', '')}_${cpuArch}"
-    "libduckdb_java.so_${suffix}"
-}
+def nativeBuildTarget = providers.provider { yanoNativeTarget() }
+def duckDbExtensionPlatform = nativeBuildTarget.map { it.extensionPlatform }
+def duckDbNativeLibraryName = nativeBuildTarget.map { it.sidecarName }
 
 sourceSets.main.resources.srcDir(generatedExtensions)
 
@@ -138,7 +81,7 @@ tasks.register('bundleDuckDbExtensions') {
 }
 
 tasks.register('bundleDuckDbNativeSidecar', Sync) {
-    description = 'Extracts the build-platform DuckDB JNI library for native distribution packaging.'
+    description = 'Extracts the native-build-target DuckDB JNI library for distribution packaging.'
     inputs.files(configurations.runtimeClasspath)
     inputs.property('nativeLibraryName', duckDbNativeLibraryName)
     outputs.dir(generatedNativeSidecar)
