@@ -364,7 +364,7 @@ public class ProjectionHistoryService implements AutoCloseable {
             throw new IllegalStateException("projection history requires readable genesis configuration", e);
         }
         var network = new ArchiveNetworkIdentity(Math.toIntExact(genesis.getNetworkMagic()),
-                genesisHash(nodeConfig));
+                ProjectionGenesisIdentity.resolve(nodeConfig));
         firstCanonicalBlock = genesis.hasByronGenesis() ? 1L : 0L;
         int firstPostByronEpoch = resolveFirstPostByronEpoch(genesis, nodeConfig);
         ArtifactSelectionPlan artifactPlan = resolveArtifactSelection(
@@ -1599,23 +1599,6 @@ public class ProjectionHistoryService implements AutoCloseable {
             throw e;
         } catch (Exception e) {
             throw new IllegalArgumentException("Invalid rollback hash: " + hash, e);
-        }
-    }
-
-    private static String genesisHash(YanoConfig nodeConfig) {
-        if (nodeConfig.getShelleyGenesisHash() != null && !nodeConfig.getShelleyGenesisHash().isBlank()) {
-            return nodeConfig.getShelleyGenesisHash().toLowerCase(java.util.Locale.ROOT);
-        }
-        if (nodeConfig.getShelleyGenesisFile() == null || nodeConfig.getShelleyGenesisFile().isBlank()) {
-            throw new IllegalArgumentException("Shelley genesis hash or file is required for projection identity");
-        }
-        try {
-            return com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(
-                    com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash256(
-                            java.nio.file.Files.readAllBytes(
-                                    java.nio.file.Path.of(nodeConfig.getShelleyGenesisFile()))));
-        } catch (Exception e) {
-            throw new IllegalStateException("cannot compute Shelley genesis hash for projection identity", e);
         }
     }
 

@@ -35,6 +35,12 @@ governance artifact capture on devnet with `canonical boundary is unavailable`.
 Epoch stake and Ada pots are unaffected because their contributor uses the
 canonical block batch directly.
 
+Local producer startup also replaces the configured Shelley `systemStart` on
+the first boot. That established behavior happens after projection history is
+initialized. An archive identity made from the complete file would therefore
+describe the pre-launch file on the first boot and reject the same devnet after
+its normal restart.
+
 ## Decision
 
 Preserve the existing fetched-block lifecycle. Add one conditional bridge for
@@ -58,6 +64,11 @@ the local-producer ordering:
 7. Sink acknowledgement removes both the final manifest and its provisional
    source. Rollback removes provisional and bound files above the retained
    point.
+8. For a local dev-mode block producer only, derive the archive's Shelley
+   identity with the root `systemStart` field removed. The producer owns that
+   mutable launch value. Every other genesis field remains identity-protected.
+   Public networks and explicitly configured genesis hashes retain their exact
+   existing identity behavior.
 
 The final job ID uses the same deterministic inputs as the existing path. The
 sink sees the same final staged-file representation, row codec, checksums,
@@ -90,7 +101,7 @@ This decision does not change:
 
 - fetched mainnet or preprod epoch capture;
 - archive tables, row schemas or codecs;
-- projection identity or versions;
+- public-network projection identity or versions;
 - finality, rollback or receipt semantics;
 - DuckLake behavior or query APIs;
 - ledger epoch-transition order; or
