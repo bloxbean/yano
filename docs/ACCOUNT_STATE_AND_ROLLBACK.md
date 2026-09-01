@@ -48,31 +48,11 @@ a transient cursor says that a journaled operation must be resumed.
 | `meta.snapshot_dereg_index_version` | Permanent semantic-readiness guard | In the same empty-store initialization batch | Missing or incompatible means the credential-major SNAP deregistration input is not trustworthy; startup rejects the store and requires resync. |
 | `meta.reward_event_index_version` | Permanent semantic-readiness guard | In the same empty-store initialization batch | Missing or incompatible means bounded reward event input is not trustworthy; startup rejects the store and requires resync. |
 | `meta.pool_lifecycle_state_version` (`pool-lifecycle-state-v1`) | Permanent semantic-readiness guard | In the same empty-store initialization batch as the epoch-boundary markers | Missing on a populated store or any value other than v1 is rejected without writes; retain a backup and resync. |
-| `meta.utxo_pointer.ready.v1` | Permanent, coordinate-pinned UTXO pointer-index completeness marker | Updated atomically with pointer-index changes after the full index is available | When the pointer index is applicable, a missing, malformed, stale or wrong-coordinate marker makes it not ready and startup fails closed. A missing marker can be restored only by the verified offline repair below; malformed or unusable markers are not replaced automatically. |
+| `meta.utxo_pointer.ready.v1` | Permanent, coordinate-pinned UTXO pointer-index completeness marker | Updated atomically with pointer-index changes after the full index is available | When the pointer index is applicable, a missing, malformed, stale or wrong-coordinate marker makes it not ready and startup fails closed with resync guidance. |
 | `meta.genesis_staking_bootstrap` | Permanent idempotence and genesis-identity guard | Atomically with Shelley genesis pools, delegations, deposits and initial derived facts | Absence permits the one-time bootstrap. A marker for a different genesis identity fails closed; verify genesis configuration rather than overwriting it. |
 | `meta.rollback.v1.target-slot` | Transient crash-recovery cursor | Before the first bounded account rollback chunk; removed after all phases are reversed | Absence is normal. Presence makes startup resume rollback-v1. A malformed value fails startup and requires restoring a sound checkpoint or resyncing. |
 | `meta.reward.progress.v1` | Transient epoch-boundary crash cursor | With each committed bounded streaming-reward chunk; deleted by the final reward commit | Absence is normal. Presence makes reward processing resume after the last durable pool and prevents POOLREAP from starting. An epoch mismatch or malformed value fails the boundary closed. |
 | `meta.pool.reap.progress.v1` | Transient epoch-boundary crash cursor | Before the first POOLREAP chunk, advanced with each chunk and deleted by the final pool/refund commit | Absence is normal. Presence keeps the boundary and application unready; startup resumes a matching boundary or fails closed if its epoch, slot or step is inconsistent. |
-
-## Offline pointer-index recovery
-
-Stop every process using the chainstate and retain a backup. A chainstate whose
-pointer marker is missing can then be verified and repaired with:
-
-```text
-./yano.sh repair pointer-index \
-  --database /absolute/path/to/chainstate \
-  --confirm REPAIR_POINTER_INDEX
-```
-
-This is not a marker override. The command opens RocksDB with its exclusive
-process lock, requires the chain tip, UTXO coordinate and account-state proof
-to agree, and merge-walks every live UTXO against the pointer index. Pointer
-addresses must have an exact row; non-pointer addresses must not; mismatched
-and orphan rows fail the repair. Only a successful complete scan followed by
-an unchanged-coordinate check writes the marker, using a synchronous write.
-An error or interruption before that write leaves the chainstate unmarked and
-startup continues to fail closed.
 
 ## Manual debugging rollback
 
