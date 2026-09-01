@@ -3,10 +3,18 @@ import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 
+import java.security.MessageDigest
+
 plugins {
     id 'application'
     id 'io.quarkus' version "${quarkusPluginVersion}"
 }
+
+apply from: rootProject.file('gradle/native-target.gradle')
+
+def duckDbJdbcVersion = libs.duckdb.jdbc.get().version.toString()
+def duckDbNativeSidecarDir = layout.buildDirectory.dir('generated/duckdb-native-sidecar')
+def nativeBuildTarget = providers.provider { yanoNativeTarget() }
 
 def jacksonPatchVersion = libs.versions.jackson.get()
 def jacksonAnnotationsVersion = jacksonPatchVersion.replaceFirst(/\.\d+$/, '')
@@ -454,31 +462,9 @@ tasks.register('cleanupLegacyAccountHistory', JavaExec) {
 
 // --- Distribution packaging tasks ---
 
-def detectPlatform() {
-    def osName = System.getProperty('os.name').toLowerCase()
-    def osArch = System.getProperty('os.arch').toLowerCase()
-
-    def os
-    if (osName.contains('linux')) {
-        os = 'linux'
-    } else if (osName.contains('mac') || osName.contains('darwin')) {
-        os = 'macos'
-    } else if (osName.contains('windows')) {
-        os = 'windows'
-    } else {
-        os = osName.replaceAll('[^a-z0-9]', '')
-    }
-
-    def arch
-    if (osArch == 'amd64' || osArch == 'x86_64') {
-        arch = 'x64'
-    } else if (osArch == 'aarch64' || osArch == 'arm64') {
-        arch = 'arm64'
-    } else {
-        arch = osArch.replaceAll('[^a-z0-9]', '')
-    }
-
-    return "${os}-${arch}"
+def detectPlatform = {
+    def target = nativeBuildTarget.get()
+    "${target.os}-${target.distributionArch}"
 }
 
 def distVersion = rootProject.version.toString().replaceAll('-SNAPSHOT', '')
@@ -697,8 +683,7 @@ def isNativeBuildRequested = {
 }
 
 def isNativeContainerBuildRequested = {
-    System.getProperty('quarkus.native.container-build', '').equalsIgnoreCase('true') ||
-            System.getProperty('quarkus.native.remote-container-build', '').equalsIgnoreCase('true')
+    yanoNativeContainerBuildRequested()
 }
 
 def isLinuxHost = {
@@ -710,7 +695,122 @@ def isWindowsHost = {
 }
 
 def nativeBinaryFileName = {
-    isWindowsHost() ? 'yano.exe' : 'yano'
+    nativeBuildTarget.get().binaryFileName
+}
+
+def isWindowsNativeTarget = {
+    nativeBuildTarget.get().os == 'windows'
+}
+
+def duckDbExtensionArchive = {
+    def artifact = configurations.runtimeClasspath.incoming.artifactView { }
+            .artifacts.artifacts.find { candidate ->
+        candidate.id.componentIdentifier instanceof ProjectComponentIdentifier &&
+                candidate.id.componentIdentifier.projectPath ==
+                ':archive-modules:archive-store-ducklake'
+    }
+    if (artifact == null || !artifact.file.isFile()) {
+        throw new GradleException(
+                'DuckLake archive-store artifact is absent from app runtimeClasspath')
+    }
+    artifact.file
+}
+
+def verifyDuckDbExtensionsMatchNativeTarget = {
+    def expectedPlatform = nativeBuildTarget.get().extensionPlatform
+    def extensionVersion = duckDbJdbcVersion.endsWith('.0')
+            ? duckDbJdbcVersion.substring(0, duckDbJdbcVersion.length() - 2)
+            : duckDbJdbcVersion
+    def extensionRoot = "duckdb-extensions/${extensionVersion}/${expectedPlatform}/"
+    def expectedEntries = ['ducklake.duckdb_extension', 'ducklake.sha256',
+                           'sqlite_scanner.duckdb_extension', 'sqlite_scanner.sha256']
+            .collect { extensionRoot + it }
+            .toSet()
+    def metadataPath = 'META-INF/native-image/com.bloxbean.cardano/' +
+            'yano-archive-store-ducklake-extensions/resource-config.json'
+
+    new java.util.zip.ZipFile(duckDbExtensionArchive()).withCloseable { archive ->
+        def packagedEntries = archive.entries().findAll { entry ->
+            !entry.isDirectory() && entry.name.startsWith('duckdb-extensions/')
+        }.collect { it.name }.toSet()
+        if (packagedEntries != expectedEntries) {
+            throw new GradleException(
+                    "DuckDB extension resources do not match native image target " +
+                            "${expectedPlatform}: expected ${expectedEntries.sort()}, " +
+                            "found ${packagedEntries.sort()}")
+        }
+        def metadataEntry = archive.getEntry(metadataPath)
+        if (metadataEntry == null) {
+            throw new GradleException(
+                    "DuckDB extension native resource metadata is missing: ${metadataPath}")
+        }
+        def metadata = archive.getInputStream(metadataEntry).withCloseable { input ->
+            new groovy.json.JsonSlurper().parse(input)
+        }
+        def actualPatterns = metadata.resources?.includes?.collect { it.pattern }?.toSet()
+        def expectedPatterns = expectedEntries.collect { "\\Q${it}\\E" }.toSet()
+        if (actualPatterns != expectedPatterns) {
+            throw new GradleException(
+                    "DuckDB extension resource metadata does not match native image target " +
+                            "${expectedPlatform}: expected ${expectedPatterns.sort()}, " +
+                            "found ${actualPatterns?.sort()}")
+        }
+    }
+    expectedPlatform
+}
+
+def verifyDuckDbSidecarMatchesNativeTarget = {
+    def expectedName = nativeBuildTarget.get().sidecarName
+    def packagedNames = duckDbNativeSidecarDir.get().asFile.listFiles()
+            .findAll { it.isFile() && !it.name.endsWith('.sha256') }
+            *.name
+    if (packagedNames != [expectedName]) {
+        throw new GradleException(
+                "DuckDB JNI sidecar does not match native build target: " +
+                        "expected ${expectedName}, found ${packagedNames}")
+    }
+    expectedName
+}
+
+def duckDbNativeSidecarTask = tasks.register('bundleDuckDbNativeSidecar', Sync) {
+    description = 'Extracts the native-build-target DuckDB JNI library for distribution packaging.'
+    inputs.files(configurations.runtimeClasspath)
+    inputs.property('nativeLibraryName', nativeBuildTarget.map { it.sidecarName })
+    outputs.dir(duckDbNativeSidecarDir)
+
+    from({
+        def jdbcJar = configurations.runtimeClasspath.files.find {
+            it.name == "duckdb_jdbc-${duckDbJdbcVersion}.jar"
+        }
+        if (jdbcJar == null) {
+            throw new GradleException("DuckDB JDBC ${duckDbJdbcVersion} jar not found")
+        }
+        zipTree(jdbcJar)
+    }) {
+        include { details ->
+            details.path == nativeBuildTarget.get().sidecarName
+        }
+    }
+    into(duckDbNativeSidecarDir)
+
+    doLast {
+        def libraryName = nativeBuildTarget.get().sidecarName
+        def library = duckDbNativeSidecarDir.get().file(libraryName).asFile
+        if (!library.isFile()) {
+            throw new GradleException(
+                    "DuckDB JDBC ${duckDbJdbcVersion} does not contain ${libraryName}")
+        }
+        def digest = MessageDigest.getInstance('SHA-256')
+        library.withInputStream { input ->
+            byte[] buffer = new byte[64 * 1024]
+            for (int read = input.read(buffer); read >= 0; read = input.read(buffer)) {
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        duckDbNativeSidecarDir.get().file("${libraryName}.sha256").asFile
+                .setText(digest.digest().encodeHex().toString() + System.lineSeparator(), 'UTF-8')
+        verifyDuckDbExtensionsMatchNativeTarget()
+    }
 }
 
 // ADR-011.2 packaged/native conformance: activate every typed fixture through
@@ -1459,6 +1559,478 @@ tasks.register('nativePluginCatalogSmoke') {
     }
 }
 
+tasks.register('nativeProjectionHistorySmoke') {
+    group = 'verification'
+    description = 'Runs projection history through the staged native distribution on devnet'
+    mustRunAfter tasks.named('yanoNativeDistZip')
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def distributionOverride = providers.gradleProperty('yanoNativeDistribution')
+                .orElse(providers.environmentVariable('YANO_NATIVE_DISTRIBUTION'))
+                .orNull
+        def distribution = distributionOverride == null || distributionOverride.isBlank()
+                ? tasks.named('yanoNativeDistZip', Zip).get().archiveFile.get().asFile
+                : rootProject.file(distributionOverride)
+        if (!distribution.isFile()) {
+            throw new GradleException(
+                    "Native distribution not found at ${distribution.absolutePath}. Build "
+                            + ':app:yanoNativeDistZip first or set '
+                            + '-PyanoNativeDistribution=/absolute/or/root-relative/path.')
+        }
+
+        def timeoutText = providers.gradleProperty('yanoNativeProjectionSmokeTimeoutSeconds')
+                .getOrElse('240')
+        int timeoutSeconds
+        try {
+            timeoutSeconds = Integer.parseInt(timeoutText)
+        } catch (NumberFormatException e) {
+            throw new GradleException(
+                    "yanoNativeProjectionSmokeTimeoutSeconds must be a positive integer: "
+                            + timeoutText, e)
+        }
+        if (timeoutSeconds <= 0) {
+            throw new GradleException(
+                    'yanoNativeProjectionSmokeTimeoutSeconds must be positive: '
+                            + timeoutSeconds)
+        }
+
+        def tempParent = layout.buildDirectory.dir('tmp').get().asFile
+        tempParent.mkdirs()
+        def smokeRoot = java.nio.file.Files.createTempDirectory(
+                tempParent.toPath(), 'native-projection-history-smoke-')
+        def stageParent = java.nio.file.Files.createDirectory(smokeRoot.resolve('distribution'))
+        def chainState = smokeRoot.resolve('chainstate')
+        def history = smokeRoot.resolve('history')
+        def logFile = smokeRoot.resolve('native.log')
+        Process process = null
+        Throwable primaryFailure = null
+
+        def logTail = {
+            if (!java.nio.file.Files.isRegularFile(logFile)) {
+                return '<native process produced no log>'
+            }
+            def lines = java.nio.file.Files.readAllLines(
+                    logFile, java.nio.charset.StandardCharsets.UTF_8)
+            return lines.takeRight(240).join(System.lineSeparator())
+        }
+
+        try {
+            project.copy {
+                from zipTree(distribution)
+                into stageParent.toFile()
+            }
+            def stagedRoots = stageParent.toFile().listFiles()?.findAll { it.isDirectory() } ?: []
+            if (stagedRoots.size() != 1) {
+                throw new GradleException(
+                        "Native distribution must contain one top-level directory; found "
+                                + stagedRoots*.name)
+            }
+            def stagedRoot = stagedRoots.first().toPath()
+            def binary = stagedRoot.resolve(nativeBinaryFileName())
+            def binaryOverride = providers.gradleProperty('yanoNativeBinary')
+                    .orElse(providers.environmentVariable('YANO_NATIVE_BINARY'))
+                    .orNull
+            if (binaryOverride != null && !binaryOverride.isBlank()) {
+                def overrideFile = rootProject.file(binaryOverride)
+                if (!overrideFile.isFile()) {
+                    throw new GradleException(
+                            "Native binary override not found at ${overrideFile.absolutePath}")
+                }
+                java.nio.file.Files.copy(overrideFile.toPath(), binary,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
+            }
+            if (!java.nio.file.Files.isRegularFile(binary)) {
+                throw new GradleException(
+                        "Native distribution is missing ${nativeBinaryFileName()}")
+            }
+            if (!isWindowsHost() && !binary.toFile().canExecute()
+                    && !binary.toFile().setExecutable(true, true)) {
+                throw new GradleException("Native binary is not executable: ${binary}")
+            }
+
+            def genesisFile = stagedRoot.resolve('config/network/devnet/shelley-genesis.json')
+            if (!java.nio.file.Files.isRegularFile(genesisFile)) {
+                throw new GradleException(
+                        "Native distribution is missing devnet Shelley genesis: ${genesisFile}")
+            }
+            def genesis = new groovy.json.JsonSlurper().parse(genesisFile.toFile())
+            long securityParam = (genesis.securityParam as Number).longValue()
+            long epochLength = (genesis.epochLength as Number).longValue()
+            long finalityBlocks = Math.multiplyExact(securityParam, 2L)
+            int genesisRows = (genesis.initialFunds as Map).size()
+            if (securityParam <= 0 || epochLength <= 0 || genesisRows <= 0) {
+                throw new GradleException(
+                        "Invalid devnet genesis smoke inputs: k=${securityParam}, "
+                                + "epochLength=${epochLength}, initialFunds=${genesisRows}")
+            }
+
+            def ports = allocateLoopbackPorts.call(2)
+            int httpPort = ports[0]
+            int nodePort = ports[1]
+            String apiPrefix = bakedApiPathPrefix()
+            def command = [
+                    binary.toAbsolutePath().toString(),
+                    '-Xmx1536m',
+                    '-Dquarkus.profile=devnet,projection',
+                    '-Dquarkus.http.host=127.0.0.1',
+                    "-Dquarkus.http.port=${httpPort}",
+                    '-Dquarkus.console.color=false',
+                    "-Dyano.server.port=${nodePort}",
+                    "-Dyano.storage.path=${chainState.toAbsolutePath()}",
+                    "-Dyano.history.dir=${history.toAbsolutePath()}",
+                    '-Dyano.block-producer.lazy=true',
+                    '-Dyano.block-producer.script-evaluator=scalus'
+            ].collect { it.toString() }
+            def processBuilder = new ProcessBuilder(command)
+                    .directory(stagedRoot.toFile())
+                    .redirectErrorStream(true)
+                    .redirectOutput(logFile.toFile())
+            processBuilder.environment().remove('YANO_API_PREFIX')
+            processBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
+            process = processBuilder.start()
+
+            def request = { String method, String path, Map body ->
+                java.net.HttpURLConnection connection = null
+                try {
+                    connection = (java.net.HttpURLConnection) new URL(
+                            "http://127.0.0.1:${httpPort}${path}").openConnection()
+                    connection.connectTimeout = 1000
+                    connection.readTimeout = Math.max(5000, timeoutSeconds * 1000)
+                    connection.requestMethod = method
+                    connection.setRequestProperty('Accept', 'application/json')
+                    if (body != null) {
+                        byte[] encoded = groovy.json.JsonOutput.toJson(body).getBytes(
+                                java.nio.charset.StandardCharsets.UTF_8)
+                        connection.doOutput = true
+                        connection.setRequestProperty('Content-Type', 'application/json')
+                        connection.setFixedLengthStreamingMode(encoded.length)
+                        connection.outputStream.withCloseable { it.write(encoded) }
+                    }
+                    int status = connection.responseCode
+                    def response = status >= 400 ? connection.errorStream : connection.inputStream
+                    String text = response == null ? '' : response.withCloseable {
+                        new String(it.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+                    }
+                    def json = text.isBlank() ? null
+                            : new groovy.json.JsonSlurper().parseText(text)
+                    return [status: status, text: text, json: json]
+                } finally {
+                    connection?.disconnect()
+                }
+            }
+            def requireResponse = { Map response, int expected, String operation ->
+                if (response.status != expected) {
+                    throw new GradleException(
+                            "${operation} returned HTTP ${response.status}: ${response.text}")
+                }
+                return response.json
+            }
+
+            long startupDeadlineMillis = System.currentTimeMillis() + timeoutSeconds * 1000L
+            boolean live = false
+            Map coverage = null
+            while (System.currentTimeMillis() < startupDeadlineMillis && process.isAlive()) {
+                try {
+                    def liveResponse = request('GET', '/q/health/live', null)
+                    live = liveResponse.status == 200
+                    if (live) {
+                        def coverageResponse = request(
+                                'GET', "${apiPrefix}/history/coverage", null)
+                        if (coverageResponse.status == 200
+                                && coverageResponse.json instanceof Map
+                                && coverageResponse.json.enabled == true
+                                && coverageResponse.json.sinkHealth == 'READY') {
+                            coverage = coverageResponse.json as Map
+                            break
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // The native HTTP listener or projection service is not ready yet.
+                }
+                Thread.sleep(250)
+            }
+            if (coverage == null) {
+                def state = process.isAlive()
+                        ? "did not become projection-ready within ${timeoutSeconds}s"
+                        : "exited with code ${process.exitValue()} before projection became ready"
+                throw new GradleException(
+                        "Native projection history smoke ${state}."
+                                + System.lineSeparator() + logTail())
+            }
+
+            def expectedSections = [
+                    'account-events:v1', 'address-transaction:v1',
+                    'transaction:v1', 'utxo-history:v1'
+            ] as Set
+            if ((coverage.sections as Collection)?.toSet() != expectedSections) {
+                throw new GradleException(
+                        "Native projection sections differ: ${coverage.sections}")
+            }
+            if (coverage.identity == null || coverage.identity.toString().isBlank()) {
+                throw new GradleException('Native projection coverage has no identity')
+            }
+            if (coverage.error != null) {
+                throw new GradleException(
+                        "Native projection coverage reports an error: ${coverage.error}")
+            }
+
+            def advance = requireResponse(
+                    request('POST', "${apiPrefix}/devnet/time/advance", [epochs: 2]),
+                    200, 'devnet 0→1→2 advance') as Map
+            if ((advance.blocks_produced as Number).longValue() < epochLength * 2L) {
+                throw new GradleException(
+                        "Devnet advance produced too few blocks: ${advance}")
+            }
+            def finalityAdvance = requireResponse(
+                    request('POST', "${apiPrefix}/devnet/time/advance",
+                            [slots: finalityBlocks]),
+                    200, 'devnet epoch-artifact finality advance') as Map
+            if ((finalityAdvance.blocks_produced as Number).longValue() != finalityBlocks) {
+                throw new GradleException(
+                        "Devnet finality advance produced an unexpected block count: "
+                                + finalityAdvance)
+            }
+
+            // Lazy production leaves the tip stable. Add one block at a time only while a
+            // finalized near-tip batch is waiting below its normal minimum. This lands on a real
+            // commit boundary without changing the production batching policy or waiting for its
+            // 15-minute linger. The correctness target itself is always derived from k.
+            long convergenceDeadlineMillis = System.currentTimeMillis() + timeoutSeconds * 1000L
+            long nudgeSlots = 0
+            long finalizedTarget = -1
+            while (System.currentTimeMillis() < convergenceDeadlineMillis && process.isAlive()) {
+                coverage = requireResponse(
+                        request('GET', "${apiPrefix}/history/coverage", null),
+                        200, 'projection coverage') as Map
+                if (coverage.sinkHealth != 'READY' || coverage.genesisCaptured != true) {
+                    throw new GradleException(
+                            "Projection became unhealthy while converging: ${coverage}")
+                }
+                long tip = (coverage.tipBlock as Number).longValue()
+                long queryable = (coverage.queryableThroughBlock as Number).longValue()
+                finalizedTarget = Math.max(-1L, tip - finalityBlocks)
+                if (queryable > finalizedTarget) {
+                    throw new GradleException(
+                            "Projection committed beyond finalized target: tip=${tip}, "
+                                    + "k=${securityParam}, finality=${finalityBlocks}, "
+                                    + "queryable=${queryable}, target=${finalizedTarget}")
+                }
+                if (queryable == finalizedTarget && finalizedTarget >= 0) {
+                    break
+                }
+                if (nudgeSlots >= epochLength - 1L) {
+                    throw new GradleException(
+                            "Projection did not converge before the next epoch boundary: "
+                                    + "tip=${tip}, queryable=${queryable}, "
+                                    + "target=${finalizedTarget}, nudges=${nudgeSlots}")
+                }
+                requireResponse(request('POST', "${apiPrefix}/devnet/time/advance", [slots: 1]),
+                        200, 'devnet convergence nudge')
+                nudgeSlots++
+                Thread.sleep(250)
+            }
+            if (!process.isAlive()) {
+                throw new GradleException(
+                        "Native process exited with code ${process.exitValue()} during convergence."
+                                + System.lineSeparator() + logTail())
+            }
+            long convergedTip = (coverage.tipBlock as Number).longValue()
+            long convergedThrough = (coverage.queryableThroughBlock as Number).longValue()
+            if (convergedThrough != finalizedTarget) {
+                throw new GradleException(
+                        "Projection did not converge within ${timeoutSeconds}s: tip=${convergedTip}, "
+                                + "k=${securityParam}, finality=${finalityBlocks}, "
+                                + "queryable=${convergedThrough}, target=${finalizedTarget}")
+            }
+
+            def rangeCovers = { Map artifact, long epoch ->
+                (artifact.completeRanges as Collection)?.any { range ->
+                    (range.from as Number).longValue() <= epoch
+                            && (range.through as Number).longValue() >= epoch
+                } == true
+            }
+            def artifactEntries = (coverage.epochArtifacts as Collection).collectEntries {
+                [(it.dataset.toString()): it as Map]
+            }
+            def expectedArtifacts = [
+                    'ada_pot', 'drep_distribution', 'epoch_stake',
+                    'governance_proposal_status', 'reward'
+            ] as Set
+            if (artifactEntries.keySet() != expectedArtifacts
+                    || artifactEntries.values().any { it.selected != true }) {
+                throw new GradleException(
+                        "Native epoch-artifact selection differs: ${artifactEntries}")
+            }
+            long artifactDeadlineMillis = System.currentTimeMillis() + timeoutSeconds * 1000L
+            while (System.currentTimeMillis() < artifactDeadlineMillis
+                    && process.isAlive()
+                    && (!rangeCovers(artifactEntries.epoch_stake, 0L)
+                    || !rangeCovers(artifactEntries.epoch_stake, 1L)
+                    || !rangeCovers(artifactEntries.ada_pot, 2L))) {
+                Thread.sleep(250)
+                coverage = requireResponse(
+                        request('GET', "${apiPrefix}/history/coverage", null),
+                        200, 'epoch-artifact coverage') as Map
+                artifactEntries = (coverage.epochArtifacts as Collection).collectEntries {
+                    [(it.dataset.toString()): it as Map]
+                }
+            }
+            if (!rangeCovers(artifactEntries.epoch_stake, 0L)
+                    || !rangeCovers(artifactEntries.epoch_stake, 1L)
+                    || !rangeCovers(artifactEntries.ada_pot, 2L)) {
+                throw new GradleException(
+                        'Native producer-mode epoch artifacts did not complete the supported '
+                                + "devnet ranges: ${artifactEntries}")
+            }
+            ['epoch_stake', 'ada_pot'].each { dataset ->
+                def artifact = artifactEntries[dataset]
+                if (!(artifact.gapRanges as Collection).isEmpty()
+                        || !(artifact.pendingEpochs as Collection).isEmpty()
+                        || artifact.coverageState != 'ACTIVE') {
+                    throw new GradleException(
+                            "Native ${dataset} coverage is incomplete: ${artifact}")
+                }
+            }
+            def excludedArtifacts = [
+                    'reward', 'drep_distribution', 'governance_proposal_status'
+            ]
+            if (coverage.epochStagingFailureActive == true
+                    && !(coverage.epochStagingError?.toString()
+                    ?.contains('canonical boundary is unavailable'))) {
+                throw new GradleException(
+                        "Unexpected producer-mode staging failure: ${coverage.epochStagingError}")
+            }
+            logger.lifecycle(
+                    'Native devnet producer-mode exclusions (pre-existing boundary ordering '
+                            + "defect; fetched-block Gate D owns coverage): ${excludedArtifacts}")
+
+            requireResponse(request('POST', "${apiPrefix}/node/stop", null),
+                    200, 'node stop')
+            coverage = requireResponse(
+                    request('GET', "${apiPrefix}/history/coverage", null),
+                    200, 'post-stop projection coverage') as Map
+            long stoppedTip = (coverage.tipBlock as Number).longValue()
+            long stoppedThrough = (coverage.queryableThroughBlock as Number).longValue()
+            long stoppedTarget = Math.max(-1L, stoppedTip - finalityBlocks)
+            if (stoppedTip != convergedTip || stoppedThrough != stoppedTarget) {
+                throw new GradleException(
+                        "Projection did not retain finalized convergence after production stopped: "
+                                + "beforeTip=${convergedTip}, stoppedTip=${stoppedTip}, "
+                                + "queryable=${stoppedThrough}, target=${stoppedTarget}")
+            }
+
+            def expectedVersions = [
+                    account_event: 1, address_transaction: 1,
+                    transaction: 1, utxo_history: 1
+            ]
+            expectedVersions.keySet().each { dataset ->
+                def watermark = requireResponse(request('GET',
+                        "${apiPrefix}/history/watermark?datasets=${dataset}", null),
+                        200, "${dataset} watermark") as Map
+                if (watermark.available != true
+                        || (watermark.fromBlock as Number).longValue() != 0L
+                        || (watermark.toBlock as Number).longValue() != stoppedTarget
+                        || watermark.projectionVersions != expectedVersions) {
+                    throw new GradleException(
+                            "Native ${dataset} is not queryable through the finalized target: "
+                                    + watermark)
+                }
+            }
+
+            String unusedAddress = ('addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydz'
+                    + 'er3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp')
+            def readSide = requireResponse(request('GET',
+                    "${apiPrefix}/addresses/${unusedAddress}/transactions", null),
+                    200, 'projection-backed address-transaction lookup')
+            if (!(readSide instanceof Collection) || !readSide.isEmpty()) {
+                throw new GradleException(
+                        "Projection-backed address-transaction lookup returned unexpected data: "
+                                + readSide)
+            }
+
+            String output = java.nio.file.Files.readString(
+                    logFile, java.nio.charset.StandardCharsets.UTF_8)
+            def genesisMatch = output =~ /ADR-039 genesis captured: (\d+) rows, .* digest ([0-9a-f]{64})/
+            if (!genesisMatch.find()
+                    || Integer.parseInt(genesisMatch.group(1)) != genesisRows) {
+                throw new GradleException(
+                        "Native log has no matching genesis row-count/digest evidence."
+                                + System.lineSeparator() + logTail())
+            }
+            def forbidden = [
+                    'ServiceConfigurationError', 'UnsatisfiedLinkError',
+                    'No suitable driver', 'projection sink initialization failed',
+                    'packaged DuckDB extension resource is missing',
+                    'DuckDB extension checksum mismatch'
+            ]
+            def observedForbidden = forbidden.findAll { output.contains(it) }
+            if (!observedForbidden.isEmpty()) {
+                throw new GradleException(
+                        "Native projection smoke observed startup/runtime failures "
+                                + observedForbidden + System.lineSeparator() + logTail())
+            }
+
+            def digest = MessageDigest.getInstance('SHA-256')
+            java.nio.file.Files.newInputStream(binary).withCloseable { input ->
+                byte[] buffer = new byte[64 * 1024]
+                for (int read = input.read(buffer); read >= 0; read = input.read(buffer)) {
+                    if (read > 0) digest.update(buffer, 0, read)
+                }
+            }
+            logger.lifecycle(
+                    "Native projection history smoke passed: binary=${binary}, "
+                            + "sha256=${digest.digest().encodeHex()}, tip=${stoppedTip}, "
+                            + "k=${securityParam}, finality=${finalityBlocks}, "
+                            + "queryableThrough=${stoppedThrough}, nudges=${nudgeSlots}, "
+                            + "includedEpochArtifacts=[epoch_stake:0..1, ada_pot:2], "
+                            + "excludedEpochArtifacts=${excludedArtifacts}")
+        } catch (Throwable failure) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            try {
+                if (process != null && process.isAlive()) {
+                    process.destroy()
+                    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                        process.destroyForcibly()
+                        if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new GradleException(
+                                    "Native projection smoke process did not terminate: "
+                                            + process.pid())
+                        }
+                        throw new GradleException(
+                                "Native projection smoke process required forcible termination: "
+                                        + process.pid())
+                    }
+                }
+            } catch (Throwable cleanupFailure) {
+                if (primaryFailure != null) {
+                    primaryFailure.addSuppressed(cleanupFailure)
+                } else {
+                    throw cleanupFailure
+                }
+            } finally {
+                try {
+                    if (primaryFailure == null) {
+                        project.delete(smokeRoot.toFile())
+                    } else {
+                        logger.lifecycle(
+                                "Preserved failed native projection smoke at ${smokeRoot}")
+                    }
+                } catch (Throwable cleanupFailure) {
+                    if (primaryFailure != null) {
+                        primaryFailure.addSuppressed(cleanupFailure)
+                    } else {
+                        throw cleanupFailure
+                    }
+                }
+            }
+        }
+    }
+}
+
 def getNativeBuilderImage = {
     def raw = System.getProperty('quarkus.native.builder-image')
     if (raw == null || raw.isBlank()) {
@@ -2126,7 +2698,7 @@ gradle.taskGraph.whenReady { graph ->
 
 tasks.register('yanoNativeDistZip', Zip) {
     dependsOn 'quarkusBuild', 'generateCoreDistributionManifests',
-            tasks.named('normalizeYanoReleaseSbom')
+            tasks.named('normalizeYanoReleaseSbom'), duckDbNativeSidecarTask
     group = 'distribution'
     description = 'Builds the native binary and creates a distributable zip'
 
@@ -2141,6 +2713,7 @@ tasks.register('yanoNativeDistZip', Zip) {
                 "Native binary not found at ${binary.path}. The native build may have failed."
             )
         }
+        verifyDuckDbSidecarMatchesNativeTarget()
     }
 
     into("yano-native-${distVersion}-${platform}") {
@@ -2149,12 +2722,13 @@ tasks.register('yanoNativeDistZip', Zip) {
             into 'sbom'
         }
         from(layout.buildDirectory.file(nativeBinaryFileName())) {
-            if (!isWindowsHost()) {
+            if (!isWindowsNativeTarget()) {
                 filePermissions { unix('755') }
             }
         }
+        from(duckDbNativeSidecarDir)
         from(nativeDistributionManifest)
-        if (!isWindowsHost()) {
+        if (!isWindowsNativeTarget()) {
             from('bin/yano.sh') {
                 filePermissions { unix('755') }
             }
@@ -2189,6 +2763,27 @@ tasks.register('verifyCoreNativeDistribution') {
                 .archiveFile.get().asFile
         def root = distribution.name.replaceFirst(/\.zip$/, '')
         def expectedSbom = new groovy.json.JsonSlurper().parse(releaseSbom.get().asFile)
+        def expectedSidecarName = verifyDuckDbSidecarMatchesNativeTarget()
+        def sidecarFiles = duckDbNativeSidecarDir.get().asFile.listFiles()
+                .findAll { it.isFile() }
+        def sidecarLibraries = sidecarFiles.findAll { !it.name.endsWith('.sha256') }
+        if (sidecarLibraries.size() != 1) {
+            throw new GradleException(
+                    "Expected exactly one platform DuckDB JNI sidecar, found ${sidecarLibraries*.name}")
+        }
+        def sidecarLibrary = sidecarLibraries[0]
+        if (sidecarLibrary.name != expectedSidecarName) {
+            throw new GradleException(
+                    "DuckDB JNI sidecar ${sidecarLibrary.name} does not match native image " +
+                            "target ${expectedSidecarName}")
+        }
+        def sidecarChecksum = new File(
+                sidecarLibrary.parentFile, "${sidecarLibrary.name}.sha256")
+        if (!sidecarChecksum.isFile()) {
+            throw new GradleException(
+                    "DuckDB JNI sidecar checksum is missing for ${sidecarLibrary.name}")
+        }
+        def expectedSidecarSha256 = sidecarChecksum.getText('UTF-8').trim()
         new java.util.zip.ZipFile(distribution).withCloseable { archive ->
             def manifestEntry = archive.getEntry("${root}/yano-distribution-v1.json")
             if (manifestEntry == null) {
@@ -2212,6 +2807,43 @@ tasks.register('verifyCoreNativeDistribution') {
             }
             if (archive.getEntry("${root}/LICENSE") == null) {
                 throw new GradleException('Yano native distribution is missing LICENSE')
+            }
+            def packagedSidecars = archive.entries().findAll {
+                it.name.startsWith("${root}/libduckdb_java") && !it.isDirectory()
+            }
+            def expectedSidecarEntries = [
+                    "${root}/${sidecarLibrary.name}",
+                    "${root}/${sidecarChecksum.name}"
+            ]
+            if (packagedSidecars*.name.toSet() != expectedSidecarEntries.toSet()) {
+                throw new GradleException(
+                        "Yano native distribution DuckDB JNI sidecar mismatch: "
+                                + packagedSidecars*.name)
+            }
+            def packagedLibrary = archive.getEntry("${root}/${sidecarLibrary.name}")
+            if (packagedLibrary.size != sidecarLibrary.length()) {
+                throw new GradleException(
+                        "Packaged DuckDB JNI sidecar size mismatch for ${sidecarLibrary.name}")
+            }
+            def digest = MessageDigest.getInstance('SHA-256')
+            archive.getInputStream(packagedLibrary).withCloseable { input ->
+                byte[] buffer = new byte[64 * 1024]
+                for (int read = input.read(buffer); read >= 0; read = input.read(buffer)) {
+                    if (read > 0) digest.update(buffer, 0, read)
+                }
+            }
+            def packagedSidecarSha256 = digest.digest().encodeHex().toString()
+            if (packagedSidecarSha256 != expectedSidecarSha256) {
+                throw new GradleException(
+                        "Packaged DuckDB JNI sidecar checksum mismatch for ${sidecarLibrary.name}")
+            }
+            def packagedChecksum = archive.getInputStream(
+                    archive.getEntry("${root}/${sidecarChecksum.name}")).withCloseable { stream ->
+                stream.getText('UTF-8').trim()
+            }
+            if (packagedChecksum != expectedSidecarSha256) {
+                throw new GradleException(
+                        "Packaged DuckDB JNI checksum record mismatch for ${sidecarLibrary.name}")
             }
             def sbomEntry = archive.getEntry("${root}/sbom/yano.cdx.json")
             def packagedSbom = sbomEntry == null ? null

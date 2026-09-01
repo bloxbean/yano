@@ -1,11 +1,19 @@
+import java.security.MessageDigest
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.zip.GZIPInputStream
+
 plugins {
     id 'java-library'
 }
+
+apply from: rootProject.file('gradle/native-target.gradle')
 
 dependencies {
     api project(':archive-modules:archive-api')
     implementation libs.duckdb.jdbc
     implementation libs.sqlite.jdbc
+    testImplementation libs.jackson.databind
 }
 
 def duckDbJdbcVersion = libs.duckdb.jdbc.get().version.toString()
@@ -13,51 +21,113 @@ def duckDbVersion = duckDbJdbcVersion.endsWith('.0')
         ? duckDbJdbcVersion.substring(0, duckDbJdbcVersion.length() - 2)
         : duckDbJdbcVersion
 def generatedExtensions = layout.buildDirectory.dir('generated/duckdb-extensions')
+def generatedNativeSidecar = layout.buildDirectory.dir('generated/duckdb-native-sidecar')
+def duckDbExtensionNames = ['ducklake', 'sqlite_scanner']
+def duckDbExtensionMetadataPath =
+        'META-INF/native-image/com.bloxbean.cardano/yano-archive-store-ducklake-extensions/resource-config.json'
+
+def nativeBuildTarget = providers.provider { yanoNativeTarget() }
+def duckDbExtensionPlatform = nativeBuildTarget.map { it.extensionPlatform }
+def duckDbNativeLibraryName = nativeBuildTarget.map { it.sidecarName }
 
 sourceSets.main.resources.srcDir(generatedExtensions)
 
 tasks.register('bundleDuckDbExtensions') {
-    description = 'Bundles signed DuckLake/SQLite extensions for the build host; runtime never downloads extensions.'
+    description = 'Bundles exact DuckLake/SQLite resources for the native-image target; runtime never downloads extensions.'
+    inputs.property('duckDbVersion', duckDbVersion)
+    inputs.property('extensionPlatform', duckDbExtensionPlatform)
     outputs.dir(generatedExtensions)
     doLast {
-        def osName = System.getProperty('os.name').toLowerCase(Locale.ROOT)
-        def arch = System.getProperty('os.arch').toLowerCase(Locale.ROOT)
-        def arm = arch in ['aarch64', 'arm64']
-        def platform
-        if (osName.contains('mac')) platform = arm ? 'osx_arm64' : 'osx_amd64'
-        else if (osName.contains('linux')) platform = arm ? 'linux_arm64' : 'linux_amd64'
-        else if (osName.contains('win')) platform = arm ? 'windows_arm64' : 'windows_amd64'
-        else throw new GradleException("Unsupported DuckDB extension platform: ${osName}/${arch}")
+        def platform = duckDbExtensionPlatform.get()
+        project.delete(generatedExtensions)
 
         def cacheRoot = new File(gradle.gradleUserHomeDir, "caches/yano-duckdb-extensions/${duckDbVersion}/${platform}")
         cacheRoot.mkdirs()
         def targetRoot = generatedExtensions.get().dir("duckdb-extensions/${duckDbVersion}/${platform}").asFile
         targetRoot.mkdirs()
-        ['ducklake', 'sqlite_scanner'].each { extensionName ->
+        duckDbExtensionNames.each { extensionName ->
             def cached = new File(cacheRoot, "${extensionName}.duckdb_extension")
             if (!cached.exists()) {
                 def download = new URL("https://extensions.duckdb.org/v${duckDbVersion}/${platform}/${extensionName}.duckdb_extension.gz")
                 def temporary = new File(cacheRoot, "${extensionName}.download")
                 download.openStream().withCloseable { input ->
-                    new java.util.zip.GZIPInputStream(input).withCloseable { gzip ->
+                    new GZIPInputStream(input).withCloseable { gzip ->
                         temporary.withOutputStream { output -> gzip.transferTo(output) }
                     }
                 }
-                java.nio.file.Files.move(temporary.toPath(), cached.toPath(),
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                        java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                Files.move(temporary.toPath(), cached.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE)
             }
             def target = new File(targetRoot, cached.name)
-            java.nio.file.Files.copy(cached.toPath(), target.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-            def digest = java.security.MessageDigest.getInstance('SHA-256').digest(target.bytes).encodeHex().toString()
+            Files.copy(cached.toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING)
+            def digest = MessageDigest.getInstance('SHA-256').digest(target.bytes)
+                    .encodeHex().toString()
             new File(targetRoot, "${extensionName}.sha256").text = digest + System.lineSeparator()
         }
+
+        def includes = duckDbExtensionNames.collectMany { extensionName ->
+            ["${extensionName}.duckdb_extension", "${extensionName}.sha256"]
+        }.collect { fileName ->
+            [pattern: "\\Qduckdb-extensions/${duckDbVersion}/${platform}/${fileName}\\E"]
+        }
+        def metadata = generatedExtensions.get().file(duckDbExtensionMetadataPath).asFile
+        metadata.parentFile.mkdirs()
+        metadata.setText(groovy.json.JsonOutput.prettyPrint(
+                groovy.json.JsonOutput.toJson([resources: [includes: includes]]))
+                + System.lineSeparator(), 'UTF-8')
+    }
+}
+
+tasks.register('bundleDuckDbNativeSidecar', Sync) {
+    description = 'Extracts the native-build-target DuckDB JNI library for distribution packaging.'
+    inputs.files(configurations.runtimeClasspath)
+    inputs.property('nativeLibraryName', duckDbNativeLibraryName)
+    outputs.dir(generatedNativeSidecar)
+
+    from({
+        def jdbcJar = configurations.runtimeClasspath.files.find {
+            it.name == "duckdb_jdbc-${duckDbJdbcVersion}.jar"
+        }
+        if (jdbcJar == null) {
+            throw new GradleException("DuckDB JDBC ${duckDbJdbcVersion} jar not found")
+        }
+        zipTree(jdbcJar)
+    }) {
+        include { details -> details.path == duckDbNativeLibraryName.get() }
+    }
+    into(generatedNativeSidecar)
+
+    doLast {
+        def libraryName = duckDbNativeLibraryName.get()
+        def library = generatedNativeSidecar.get().file(libraryName).asFile
+        if (!library.isFile()) {
+            throw new GradleException(
+                    "DuckDB JDBC ${duckDbJdbcVersion} does not contain ${libraryName}")
+        }
+        def digest = MessageDigest.getInstance('SHA-256')
+        library.withInputStream { input ->
+            byte[] buffer = new byte[64 * 1024]
+            for (int read = input.read(buffer); read >= 0; read = input.read(buffer)) {
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        generatedNativeSidecar.get().file("${libraryName}.sha256").asFile
+                .setText(digest.digest().encodeHex().toString() + System.lineSeparator(), 'UTF-8')
     }
 }
 
 tasks.named('processResources') {
     dependsOn tasks.named('bundleDuckDbExtensions')
+}
+
+tasks.named('test') {
+    dependsOn tasks.named('bundleDuckDbNativeSidecar')
+    systemProperty 'yano.duckdb.native-sidecar-dir',
+            generatedNativeSidecar.get().asFile.absolutePath
+    systemProperty 'yano.duckdb.extension-platform', duckDbExtensionPlatform.get()
+    systemProperty 'yano.duckdb.version', duckDbVersion
 }
 
 publishing {

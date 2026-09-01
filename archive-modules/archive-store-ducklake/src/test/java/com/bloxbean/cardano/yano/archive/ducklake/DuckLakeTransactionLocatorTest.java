@@ -3,20 +3,24 @@ package com.bloxbean.cardano.yano.archive.ducklake;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.sqlite.JDBC;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,6 +41,16 @@ class DuckLakeTransactionLocatorTest {
     private Connection duckLake;
     private DuckLakeTransactionLocator locator;
     private Path catalog;
+
+    private static final class CountingSqliteDriver extends JDBC {
+        private final AtomicInteger connections = new AtomicInteger();
+
+        @Override
+        public Connection connect(String url, Properties properties) throws SQLException {
+            connections.incrementAndGet();
+            return super.connect(url, properties);
+        }
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -64,6 +78,17 @@ class DuckLakeTransactionLocatorTest {
         byte[] value = new byte[32];
         value[0] = (byte) id; value[1] = (byte) (id >>> 8);
         return value;
+    }
+
+    @Test
+    void locatorConnectsThroughItsExplicitSqliteDriver() {
+        CountingSqliteDriver driver = new CountingSqliteDriver();
+        try (DuckLakeTransactionLocator direct = new DuckLakeTransactionLocator(
+                temp.resolve("explicit-catalog.sqlite"), driver)) {
+            assertThat(driver.connections).hasValue(1);
+            assertThat(direct.currentGeneration()).isEqualTo(-1);
+            assertThat(driver.connections).hasValue(2);
+        }
     }
 
     /** Inserts into the authoritative table, as a TRANSACTION commit would. */
