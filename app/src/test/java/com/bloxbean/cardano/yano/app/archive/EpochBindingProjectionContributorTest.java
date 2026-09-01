@@ -1,11 +1,13 @@
 package com.bloxbean.cardano.yano.app.archive;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
 import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
+import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import org.junit.jupiter.api.Test;
@@ -15,6 +17,7 @@ import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -29,7 +32,10 @@ class EpochBindingProjectionContributorTest {
     void bindsLocalEvidenceInTheDelegatesCanonicalBatch() {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
-        when(ledger.slotToUnixTime(250)).thenReturn(1_700_000_250L);
+        when(chain.getCanonicalBlockReference(24)).thenReturn(Optional.of(
+                new CanonicalBlockReference(
+                        24, 240, new byte[] {1, 2, 3})));
+        when(ledger.slotToUnixTime(240)).thenReturn(1_700_000_240L);
         var staging = new EpochArchiveStagingService(chain, ledger,
                 new ArchiveNetworkIdentity(1, "genesis"), temp,
                 EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD), 0);
@@ -45,35 +51,59 @@ class EpochBindingProjectionContributorTest {
         CanonicalProjectionContributor delegate = mock(CanonicalProjectionContributor.class);
         var staged = new ArrayList<EpochArchiveStagingService.BoundArtifact>();
         var contributor = new EpochBindingProjectionContributor(
-                delegate, staging, (writer, artifact) -> staged.add(artifact));
+                delegate, staging, (writer, carrier, artifact) -> {
+                    assertThat(carrier).isEqualTo(25);
+                    staged.add(artifact);
+                }, (writer, carrier) -> assertThat(carrier).isEqualTo(25),
+                (block, failure) -> { });
         var event = new BlockAppliedEvent(null, 250, 25, "02".repeat(32), mock(Block.class));
         ConsumedOutputAddresses consumed = ConsumedOutputAddresses.NONE;
-        com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter writer =
+        ProjectionStagingWriter writer =
                 (columnFamily, key, value) -> { };
 
         contributor.contributeBlock(event, consumed, writer);
 
         assertThat(staged).singleElement().satisfies(artifact -> {
-            assertThat(artifact.job().boundaryBlockHash()).containsOnly(2);
+            assertThat(artifact.job().boundaryBlockHash()).containsExactly(1, 2, 3);
+            assertThat(artifact.job().boundaryBlockNumber()).isEqualTo(24);
             assertThat(artifact.evidence().rowCount()).isEqualTo(1);
         });
         verify(delegate).contributeBlock(event, consumed, writer);
     }
 
     @Test
-    void ordinaryFetchedBlocksDoNotEnterProvisionalBinding() {
+    void ordinaryBlocksCheckPendingIntentsWithoutScanningStagedFiles() {
         CanonicalProjectionContributor delegate = mock(CanonicalProjectionContributor.class);
         EpochArchiveStagingService staging = mock(EpochArchiveStagingService.class);
         var contributor = new EpochBindingProjectionContributor(
-                delegate, staging, (writer, artifact) -> { });
+                delegate, staging, (writer, carrier, artifact) -> { },
+                (writer, carrier) -> assertThat(carrier).isEqualTo(26),
+                (block, failure) -> { });
         var event = new BlockAppliedEvent(null, 251, 26, "not-decoded", mock(Block.class));
-        com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter writer =
+        ProjectionStagingWriter writer =
                 (columnFamily, key, value) -> { };
 
         contributor.contributeBlock(event, writer);
 
         verify(delegate).contributeBlock(event, writer);
-        verify(staging).hasProvisionalBoundary(26);
+        verify(staging).hasCompletedCarrier(26);
         verifyNoMoreInteractions(staging);
+    }
+
+    @Test
+    void reportsAContributionFailureToTheHistoryService() {
+        CanonicalProjectionContributor delegate = mock(CanonicalProjectionContributor.class);
+        var failures = new ArrayList<RuntimeException>();
+        var contributor = new EpochBindingProjectionContributor(
+                delegate, null, (writer, carrier, artifact) -> { },
+                (writer, carrier) -> { }, (block, failure) -> {
+                    assertThat(block).isEqualTo(27);
+                    failures.add(failure);
+                });
+        var failure = new IllegalStateException("anchor is no longer canonical");
+
+        contributor.contributionFailed(27, failure);
+
+        assertThat(failures).containsExactly(failure);
     }
 }

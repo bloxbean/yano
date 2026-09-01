@@ -1251,15 +1251,16 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     result.created(), result.spent());
             if (projectionContributor.enabled()) {
                 long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
-                projectionContributor.contributeByronMainBlock(event, result.consumedAddresses(),
-                        (cf, key, value) -> {
-                            try {
-                                batch.put(rocksContext.handle(cf), key, value);
-                            } catch (RocksDBException rex) {
-                                throw new RuntimeException(
-                                        "Failed to stage Byron projection record in UTXO batch", rex);
-                            }
-                        });
+                contributeProjection(batch, event.blockNumber(), () ->
+                        projectionContributor.contributeByronMainBlock(
+                                event, result.consumedAddresses(), (cf, key, value) -> {
+                                    try {
+                                        batch.put(rocksContext.handle(cf), key, value);
+                                    } catch (RocksDBException rex) {
+                                        throw new RuntimeException(
+                                                "Failed to stage Byron projection record in UTXO batch", rex);
+                                    }
+                                }));
                 if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
             }
             db.write(options, batch);
@@ -1581,13 +1582,16 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             // disabled this is one predictable false check.
             if (projectionContributor.enabled()) {
                 long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
-                projectionContributor.contributeBlock(e, consumedAddresses.view(), (cf, key, value) -> {
-                    try {
-                        batch.put(rocksContext.handle(cf), key, value);
-                    } catch (RocksDBException rex) {
-                        throw new RuntimeException("Failed to stage projection record in UTXO batch", rex);
-                    }
-                });
+                contributeProjection(batch, e.blockNumber(), () ->
+                        projectionContributor.contributeBlock(e, consumedAddresses.view(),
+                                (cf, key, value) -> {
+                                    try {
+                                        batch.put(rocksContext.handle(cf), key, value);
+                                    } catch (RocksDBException rex) {
+                                        throw new RuntimeException(
+                                                "Failed to stage projection record in UTXO batch", rex);
+                                    }
+                                }));
                 if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
             }
             db.write(wo, batch);
@@ -1626,6 +1630,32 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         } catch (Exception ex) {
             log.error("UTXO apply failed for block {}: {}", e.blockNumber(), ex.toString(), ex);
             throw new RuntimeException("UTXO apply failed for block " + e.blockNumber(), ex);
+        }
+    }
+
+    /**
+     * Isolate projection construction from canonical UTXO application.
+     *
+     * <p>Projection records share the UTXO write batch for atomicity. A savepoint lets a failed
+     * contributor discard every projection write it staged without discarding the L1 state that
+     * preceded it. Failure reporting is best-effort and is never allowed to fail block apply.
+     */
+    private void contributeProjection(WriteBatch batch, long blockNumber,
+                                      Runnable contribution) throws RocksDBException {
+        batch.setSavePoint();
+        try {
+            contribution.run();
+            batch.popSavePoint();
+        } catch (RuntimeException projectionFailure) {
+            batch.rollbackToSavePoint();
+            log.error("Projection contribution failed at block {}; L1 application will continue: {}",
+                    blockNumber, projectionFailure.toString(), projectionFailure);
+            try {
+                projectionContributor.contributionFailed(blockNumber, projectionFailure);
+            } catch (RuntimeException reportingFailure) {
+                log.warn("Projection failure reporter also failed at block {}: {}",
+                        blockNumber, reportingFailure.toString(), reportingFailure);
+            }
         }
     }
 

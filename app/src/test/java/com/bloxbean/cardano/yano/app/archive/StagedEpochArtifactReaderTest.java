@@ -31,7 +31,7 @@ class StagedEpochArtifactReaderTest {
     private static final UUID JOB = UUID.nameUUIDFromBytes("reward-42".getBytes());
 
     private static ProjectionArtifactRef ref(ArchiveDatasetId dataset, long rows) {
-        return new ProjectionArtifactRef(dataset, 42, 4_800_000L, 100_000L,
+        return new ProjectionArtifactRef(dataset, 42, 4_800_000L, 100_000L, new byte[] {4, 2},
                 ProjectionArtifactRepresentation.STAGED_FILE, JOB.toString(), 1,
                 "ledger-boundary-v1/reward", OptionalLong.of(rows), "ab".repeat(32), -1L);
     }

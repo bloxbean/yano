@@ -15,6 +15,8 @@ package com.bloxbean.cardano.yano.api.archive;
  */
 public interface EpochArtifactContributor {
 
+    enum Dataset { EPOCH_STAKE, ADA_POT }
+
     /** False for a history-disabled node; callers skip all artifact work. */
     boolean enabled();
 
@@ -23,11 +25,14 @@ public interface EpochArtifactContributor {
      * batch.
      *
      * @param epoch              the epoch the snapshot describes
-     * @param boundarySlot       slot of the transition that produced it
-     * @param boundaryBlockNumber block of that transition, the coordinate finality is judged on
+     * @param anchorSlot          slot of the last block of the source epoch
+     * @param anchorBlockNumber   last block of the source epoch
+     * @param anchorBlockHash     hash of the last block of the source epoch
+     * @param carrierBlockNumber  first applying block of the new epoch; finality is judged on it
      * @param rowCount           rows the snapshot contains, for receipt accounting
      */
-    void contributeEpochStake(int epoch, long boundarySlot, long boundaryBlockNumber,
+    void contributeEpochStake(int epoch, long anchorSlot, long anchorBlockNumber,
+                              byte[] anchorBlockHash, long carrierBlockNumber,
                               long rowCount, ProjectionStagingWriter writer);
 
     /**
@@ -39,18 +44,27 @@ public interface EpochArtifactContributor {
      * instead. It is eight numbers; copying them is cheaper than any protection scheme.
      *
      * @param epoch               the epoch the pot describes
-     * @param boundarySlot        slot of the transition that finalised it
-     * @param boundaryBlockNumber block of that transition, the coordinate finality is judged on
+     * @param anchorSlot          slot of the last block of the source epoch
+     * @param anchorBlockNumber   last block of the source epoch
+     * @param anchorBlockHash     hash of the last block of the source epoch
+     * @param carrierBlockNumber  first applying block of the new epoch; finality is judged on it
      * @param values              the pot's columns, in {@code ada_pots} schema order
      */
-    void contributeAdaPot(int epoch, long boundarySlot, long boundaryBlockNumber,
+    void contributeAdaPot(int epoch, long anchorSlot, long anchorBlockNumber,
+                          byte[] anchorBlockHash, long carrierBlockNumber,
                           long[] values, ProjectionStagingWriter writer);
+
+    /** Report an archive-only capture failure after the ledger has chosen to continue. */
+    default void captureFailed(Dataset dataset, int epoch, long carrierBlockNumber,
+                               RuntimeException failure) { }
 
     EpochArtifactContributor NOOP = new EpochArtifactContributor() {
         @Override public boolean enabled() { return false; }
-        @Override public void contributeEpochStake(int epoch, long boundarySlot, long boundaryBlockNumber,
+        @Override public void contributeEpochStake(int epoch, long anchorSlot, long anchorBlockNumber,
+                                                   byte[] anchorBlockHash, long carrierBlockNumber,
                                                    long rowCount, ProjectionStagingWriter writer) { }
-        @Override public void contributeAdaPot(int epoch, long boundarySlot, long boundaryBlockNumber,
+        @Override public void contributeAdaPot(int epoch, long anchorSlot, long anchorBlockNumber,
+                                               byte[] anchorBlockHash, long carrierBlockNumber,
                                                long[] values, ProjectionStagingWriter writer) { }
     };
 }

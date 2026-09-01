@@ -24,6 +24,7 @@ import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.account.OpCertCounterState;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
+import com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.IncompatibleChainStateException;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
@@ -540,13 +541,21 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             throw new IllegalStateException("Boundary coordinates belong to previous epoch "
                     + archiveBoundary.previousEpoch() + " while opening snapshot epoch " + snapshotEpoch);
         }
+        return Optional.of(epochArtifactAnchor());
+    }
+
+    private CanonicalBlockReference epochArtifactAnchor() {
+        if (chainBlockReader == null || archiveBoundary == null) {
+            throw new IllegalStateException("Chain reader and epoch boundary are required for epoch artifacts");
+        }
         long expectedBlockNumber = archiveBoundary.blockNumber() - 1;
-        if (expectedBlockNumber < 0) return Optional.empty();
-        return Optional.of(chainBlockReader
-                .getCanonicalBlockReference(expectedBlockNumber)
+        if (expectedBlockNumber < 0) {
+            throw new IllegalStateException("Epoch boundary block has no canonical predecessor");
+        }
+        return chainBlockReader.getCanonicalBlockReference(expectedBlockNumber)
                 .orElseThrow(() -> new IllegalStateException(
                         "Canonical predecessor is unavailable for epoch boundary block "
-                                + archiveBoundary.blockNumber())));
+                                + archiveBoundary.blockNumber()));
     }
 
     /**
@@ -4745,18 +4754,29 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                  WriteOptions options = new WriteOptions().setSync(true)) {
                 if (epochArtifacts.enabled()) {
                     var boundary = archiveBoundary;
-                    if (boundary == null) {
-                        throw new IllegalStateException("epoch boundary was not prepared before the delegation"
-                                + " snapshot for epoch " + epoch + "; the artifact would have no coordinate");
+                    try {
+                        if (boundary == null) {
+                            throw new IllegalStateException("epoch boundary was not prepared before the delegation"
+                                    + " snapshot for epoch " + epoch + "; the artifact would have no coordinate");
+                        }
+                        var anchor = epochArtifactAnchor();
+                        var archiveWrites = new ArrayList<ArchiveWrite>();
+                        epochArtifacts.contributeEpochStake(epoch, anchor.slot(), anchor.blockNumber(),
+                                anchor.blockHash(), boundary.blockNumber(), rowCount,
+                                (cfName, key, value) -> archiveWrites.add(
+                                        new ArchiveWrite(cfName, key, value)));
+                        for (var write : archiveWrites) {
+                            finalBatch.put(rocksHandles.handle(write.columnFamily()),
+                                    write.key(), write.value());
+                        }
+                    } catch (RuntimeException archiveFailure) {
+                        reportEpochArtifactFailure(EpochArtifactContributor.Dataset.EPOCH_STAKE,
+                                epoch, boundary == null ? -1 : boundary.blockNumber(), archiveFailure);
+                    } catch (RocksDBException archiveFailure) {
+                        reportEpochArtifactFailure(EpochArtifactContributor.Dataset.EPOCH_STAKE,
+                                epoch, boundary == null ? -1 : boundary.blockNumber(),
+                                new RuntimeException("failed to stage epoch artifact intent", archiveFailure));
                     }
-                    epochArtifacts.contributeEpochStake(epoch, boundary.slot(), boundary.blockNumber(),
-                            rowCount, (cfName, key, value) -> {
-                                try {
-                                    finalBatch.put(rocksHandles.handle(cfName), key, value);
-                                } catch (RocksDBException e) {
-                                    throw new RuntimeException("failed to stage epoch artifact reference", e);
-                                }
-                            });
                 }
                 byte[] completeValue = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN)
                         .put((byte) 1).put(SNAPSHOT_GENERATION_COMPLETE)
@@ -4918,17 +4938,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      *
      * <p>The pot is stored directly rather than through the boundary's batch, and it is re-stored
      * as rewards and then governance adjust it, so there is no existing batch to join. Writing the
-     * final value again alongside the reference is what makes the pair atomic: after this returns,
-     * either both the final pot and its artifact are durable or neither is. Re-writing identical
-     * bytes is a no-op semantically and costs one small record per epoch.
+     * final value again alongside the reference normally makes the pair atomic. If archive-only
+     * capture fails, the archival write is omitted and reported while the consensus pot still
+     * commits; archive availability must never determine whether L1 state advances. Re-writing
+     * identical bytes is a no-op semantically and costs one small record per epoch.
      */
     public void contributeAdaPotArtifact(int epoch, AccountStateCborCodec.AdaPot pot) {
         if (!epochArtifacts.enabled()) return;
         var boundary = archiveBoundary;
-        if (boundary == null) {
-            throw new IllegalStateException("epoch boundary was not prepared before the ada pot for"
-                    + " epoch " + epoch + "; the artifact would have no coordinate");
-        }
 
         long[] values = {
                 pot.treasury().longValueExact(), pot.reserves().longValueExact(),
@@ -4939,14 +4956,29 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         try (WriteBatch batch = new WriteBatch();
              WriteOptions options = new WriteOptions().setSync(true)) {
             batch.put(cfState, adaPotKey(epoch), AccountStateCborCodec.encodeAdaPot(pot));
-            epochArtifacts.contributeAdaPot(epoch, boundary.slot(), boundary.blockNumber(), values,
-                    (cfName, key, value) -> {
-                        try {
-                            batch.put(rocksHandles.handle(cfName), key, value);
-                        } catch (RocksDBException e) {
-                            throw new RuntimeException("failed to stage ada pot artifact", e);
-                        }
-                    });
+            try {
+                if (boundary == null) {
+                    throw new IllegalStateException("epoch boundary was not prepared before the ada pot for"
+                            + " epoch " + epoch + "; the artifact would have no coordinate");
+                }
+                var anchor = epochArtifactAnchor();
+                var archiveWrites = new ArrayList<ArchiveWrite>();
+                epochArtifacts.contributeAdaPot(epoch, anchor.slot(), anchor.blockNumber(),
+                        anchor.blockHash(), boundary.blockNumber(), values,
+                        (cfName, key, value) -> archiveWrites.add(
+                                new ArchiveWrite(cfName, key, value)));
+                for (var write : archiveWrites) {
+                    batch.put(rocksHandles.handle(write.columnFamily()),
+                            write.key(), write.value());
+                }
+            } catch (RuntimeException archiveFailure) {
+                reportEpochArtifactFailure(EpochArtifactContributor.Dataset.ADA_POT,
+                        epoch, boundary == null ? -1 : boundary.blockNumber(), archiveFailure);
+            } catch (RocksDBException archiveFailure) {
+                reportEpochArtifactFailure(EpochArtifactContributor.Dataset.ADA_POT,
+                        epoch, boundary == null ? -1 : boundary.blockNumber(),
+                        new RuntimeException("failed to stage ada pot artifact intent", archiveFailure));
+            }
             db.write(options, batch);
         } catch (RocksDBException e) {
             throw new RuntimeException("failed to commit ada pot artifact for epoch " + epoch, e);
@@ -4954,13 +4986,24 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /** ADR-039 epoch artifact hook; NOOP unless projection history is enabled. */
-    private volatile com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor epochArtifacts =
-            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor.NOOP;
+    private volatile EpochArtifactContributor epochArtifacts = EpochArtifactContributor.NOOP;
 
-    public void setEpochArtifactContributor(
-            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+    public void setEpochArtifactContributor(EpochArtifactContributor contributor) {
         this.epochArtifacts = contributor == null
-                ? com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor.NOOP : contributor;
+                ? EpochArtifactContributor.NOOP : contributor;
+    }
+
+    private void reportEpochArtifactFailure(EpochArtifactContributor.Dataset dataset, int epoch,
+                                            long carrierBlockNumber, RuntimeException failure) {
+        try {
+            epochArtifacts.captureFailed(dataset, epoch, carrierBlockNumber, failure);
+        } catch (RuntimeException ignored) {
+            // Failure reporting is archival too; it must not turn an isolated archive failure
+            // back into a ledger-state failure.
+        }
+    }
+
+    private record ArchiveWrite(String columnFamily, byte[] key, byte[] value) {
     }
 
     /** Protect snapshots from {@code epoch} upward, or pass {@code -1} to release the clamp. */

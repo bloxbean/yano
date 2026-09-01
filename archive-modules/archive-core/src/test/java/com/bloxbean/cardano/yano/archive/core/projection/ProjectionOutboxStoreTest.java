@@ -1,7 +1,11 @@
 package com.bloxbean.cardano.yano.archive.core.projection;
 
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
+import com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionBlockKind;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelope;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelopeHeader;
@@ -20,8 +24,10 @@ import org.rocksdb.WriteOptions;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -140,7 +146,7 @@ class ProjectionOutboxStoreTest {
     private void commitArtifact(long blockNumber,
             com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset, int epoch, String generation) {
         var ref = new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
-                dataset, epoch, blockNumber, blockNumber * 10,
+                dataset, epoch, blockNumber, blockNumber * 10, new byte[] {1},
                 com.bloxbean.cardano.yano.archive.api.projection
                         .ProjectionArtifactRepresentation.STAGED_FILE,
                 generation, 1, "ledger-boundary-v1/test", java.util.OptionalLong.of(0),
@@ -447,7 +453,7 @@ class ProjectionOutboxStoreTest {
         byte[] hash = new byte[] {7, 7, 7};
         var gap = new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
-                450, 9_000, 90_000, hash, "io", "disk write failed",
+                450, 9_001, 9_000, 90_000, hash, "io", "disk write failed",
                 java.time.Instant.parse("2026-08-27T00:00:00Z"));
 
         store.recordEpochArtifactGap(gap);
@@ -475,14 +481,14 @@ class ProjectionOutboxStoreTest {
     void recordingGapAtomicallyRemovesEarlierPartsForOnlyThatDataset() {
         var reward = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
         var drep = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.DREP_DISTRIBUTION;
-        commitArtifact(9_000, reward, 450, "reward-part");
-        commitArtifact(9_000, drep, 450, "drep-part");
+        commitArtifact(9_001, reward, 450, "reward-part");
+        commitArtifact(9_001, drep, 450, "drep-part");
 
         store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
-                .EpochArtifactGap(reward, 450, 9_000, 90_000, new byte[] {7}, "capture",
+                .EpochArtifactGap(reward, 450, 9_001, 9_000, 90_000, new byte[] {7}, "capture",
                 "later reward part failed", java.time.Instant.now()));
 
-        assertThat(store.readArtifacts(9_000)).singleElement()
+        assertThat(store.readArtifacts(9_001)).singleElement()
                 .extracting(com.bloxbean.cardano.yano.archive.api.projection
                         .ProjectionArtifactRef::dataset).isEqualTo(drep);
         assertThat(store.epochArtifactGaps()).extracting(
@@ -491,15 +497,88 @@ class ProjectionOutboxStoreTest {
     }
 
     @Test
+    void pendingIntentSurvivesCarrierDelayButIsRemovedWhenItsAnchorRollsBack() {
+        byte[] anchorHash = new byte[32];
+        anchorHash[0] = 1;
+        var ref = new ProjectionArtifactRef(
+                ArchiveDatasetId.REWARD,
+                5, 100, 1_000, anchorHash,
+                ProjectionArtifactRepresentation.STAGED_FILE,
+                "orphan-carrier", 1, "ledger-boundary-v1/rewards",
+                OptionalLong.of(0), "digest", -1);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            store.putPendingEpochArtifact(
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()), 101, ref);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+
+        assertThat(store.readArtifacts(101)).isEmpty();
+        assertThat(store.pendingArtifacts()).hasSize(1);
+        assertThat(store.rollbackToPoint(1_000, anchorHash, false, REQUIRED)).isZero();
+        assertThat(store.pendingArtifacts()).hasSize(1);
+        assertThat(store.rollbackToPoint(1_000, new byte[32], false, REQUIRED)).isEqualTo(1);
+        assertThat(store.pendingArtifacts()).isEmpty();
+    }
+
+    @Test
+    void carrierRollbackRetainsIntentForReattachmentAndAcknowledgementReleasesIt() {
+        byte[] anchorHash = new byte[32];
+        anchorHash[0] = 1;
+        var ref = new ProjectionArtifactRef(
+                ArchiveDatasetId.EPOCH_STAKE,
+                5, 100, 1_000, anchorHash,
+                ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
+                "epoch-deleg-snapshot:5:01", 1, "ledger-boundary-v1/snapshot",
+                OptionalLong.of(10), "", -1);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            var writer = ProjectionOutboxStore.batchWriter(batch, store.handles());
+            store.putPendingEpochArtifact(writer, 101, ref);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        restart();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            var writer = ProjectionOutboxStore.batchWriter(batch, store.handles());
+            assertThat(store.bindPendingEpochArtifacts(writer, 101)).isEqualTo(1);
+            store.putBlockIdentity(writer, identity(101, ProjectionBlockKind.SHELLEY_PLUS));
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+
+        assertThat(store.readArtifacts(101)).hasSize(1);
+        assertThat(store.rollbackToPoint(1_000, anchorHash, false, REQUIRED)).isEqualTo(1);
+        assertThat(store.readArtifacts(101)).isEmpty();
+        assertThat(store.pendingArtifacts()).hasSize(1);
+
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            store.bindPendingEpochArtifacts(
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()), 101);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        assertThat(store.readArtifacts(101)).hasSize(1);
+
+        store.acknowledgeThrough(101);
+
+        assertThat(store.readArtifacts(101)).isEmpty();
+        assertThat(store.pendingArtifacts()).isEmpty();
+    }
+
+    @Test
     void conflictingEpochGapFailsClosedAndResumeKeepsGap() {
         var original = new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
-                450, 9_000, 90_000, new byte[] {7}, "io", "first", java.time.Instant.now());
+                450, 9_001, 9_000, 90_000, new byte[] {7}, "io", "first", Instant.now());
         store.recordEpochArtifactGap(original);
 
         assertThatThrownBy(() -> store.recordEpochArtifactGap(
                 new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
-                        original.dataset(), original.semanticEpoch(), 9_001, 90_001,
+                        original.dataset(), original.semanticEpoch(), 9_002, 9_001, 90_001,
                         new byte[] {8}, "capture", "replacement", java.time.Instant.now())))
                 .isInstanceOf(ProjectionOutboxException.class)
                 .hasMessageContaining("conflicting");
@@ -517,15 +596,18 @@ class ProjectionOutboxStoreTest {
     void pausedBoundariesFormOneIntervalThatRollbackShortensAndResumeCloses() {
         var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
         store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
-                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                .EpochArtifactGap(dataset, 450, 9_001, 9_000, 90_000, new byte[] {7}, "io", "disk",
                 java.time.Instant.now()));
-        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
-        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
+        store.recordPausedEpoch(dataset, 451, 9_101, 91_000, new byte[] {8});
+        store.recordPausedEpoch(dataset, 452, 9_201, 92_000, new byte[] {9});
         assertThat(store.epochArtifactGapIntervals()).singleElement().satisfies(interval -> {
             assertThat(interval.fromEpoch()).isEqualTo(451);
             assertThat(interval.throughEpoch()).isEqualTo(452);
             assertThat(interval.open()).isTrue();
         });
+        assertThat(store.epochArtifactGapIntervals(9_100)).isEmpty();
+        assertThat(store.epochArtifactGapIntervals(9_101)).singleElement()
+                .extracting(EpochArtifactGapInterval::throughEpoch).isEqualTo(451);
 
         store.rollbackEpochArtifactGaps(91_000, new byte[] {8}, false);
         assertThat(store.epochArtifactGapIntervals()).singleElement().satisfies(interval -> {
@@ -550,13 +632,13 @@ class ProjectionOutboxStoreTest {
     void repairingInsidePausedRangePreviewsAndPersistsAnExactSplit() {
         var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
         store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
-                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                .EpochArtifactGap(dataset, 450, 9_001, 9_000, 90_000, new byte[] {7}, "io", "disk",
                 java.time.Instant.now()));
-        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
-        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
-        store.recordPausedEpoch(dataset, 453, 93_000, new byte[] {10});
+        store.recordPausedEpoch(dataset, 451, 9_101, 91_000, new byte[] {8});
+        store.recordPausedEpoch(dataset, 452, 9_201, 92_000, new byte[] {9});
+        store.recordPausedEpoch(dataset, 453, 9_301, 93_000, new byte[] {10});
         var repaired = new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
-                dataset, 452, 9_200, 92_000,
+                dataset, 452, 9_200, 92_000, new byte[] {9},
                 com.bloxbean.cardano.yano.archive.api.projection
                         .ProjectionArtifactRepresentation.STAGED_FILE,
                 "repair-452", 1, "ledger-boundary-v1/rewards",
@@ -585,15 +667,15 @@ class ProjectionOutboxStoreTest {
     void repairingTheCauseWhilePausedPreservesFutureIntervalCaptureAndRollbackState() {
         var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
         store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
-                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                .EpochArtifactGap(dataset, 450, 9_001, 9_000, 90_000, new byte[] {7}, "io", "disk",
                 java.time.Instant.now()));
-        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
+        store.recordPausedEpoch(dataset, 451, 9_101, 91_000, new byte[] {8});
 
         store.acknowledgeEpochArtifactRepair(dataset, 450);
         assertThat(store.epochArtifactGaps()).isEmpty();
         assertThat(store.epochArtifactCaptureState(dataset)).isEqualTo(
                 com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED);
-        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
+        store.recordPausedEpoch(dataset, 452, 9_201, 92_000, new byte[] {9});
         assertThat(store.epochArtifactGapIntervals()).singleElement().satisfies(interval -> {
             assertThat(interval.fromEpoch()).isEqualTo(451);
             assertThat(interval.throughEpoch()).isEqualTo(452);
@@ -609,11 +691,11 @@ class ProjectionOutboxStoreTest {
     void crashRepairReconciliationUsesEveryIntervalsExactCheckpoint() {
         var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
         store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
-                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                .EpochArtifactGap(dataset, 450, 9_001, 9_000, 90_000, new byte[] {7}, "io", "disk",
                 java.time.Instant.now()));
-        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
-        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
-        store.recordPausedEpoch(dataset, 453, 93_000, new byte[] {10});
+        store.recordPausedEpoch(dataset, 451, 9_101, 91_000, new byte[] {8});
+        store.recordPausedEpoch(dataset, 452, 9_201, 92_000, new byte[] {9});
+        store.recordPausedEpoch(dataset, 453, 9_301, 93_000, new byte[] {10});
 
         int repaired = store.acknowledgeRepairsAlreadyComplete((candidate, epoch, slot, hash) ->
                 candidate == dataset && epoch == 452 && slot == 92_000

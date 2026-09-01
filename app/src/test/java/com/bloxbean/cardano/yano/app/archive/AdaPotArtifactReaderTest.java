@@ -26,6 +26,7 @@ class AdaPotArtifactReaderTest {
 
     private static ProjectionArtifactRef ref(int epoch) {
         return new ProjectionArtifactRef(ArchiveDatasetId.ADA_POT, epoch, 4_800_000L, 100_000L,
+                new byte[] {5, 5},
                 ProjectionArtifactRepresentation.ATOMIC_EVIDENCE, "ada-pot:" + epoch, 1,
                 "ledger-boundary-v1/final", OptionalLong.of(1), "", -1L,
                 AdaPotArtifactRows.encode(VALUES));
@@ -83,6 +84,23 @@ class AdaPotArtifactReaderTest {
     }
 
     @Test
+    void aDifferentCanonicalHashRefusesEvidenceFromTheRolledBackAnchor() {
+        var reader = new AdaPotArtifactReader(1, new ArtifactBoundaryFacts() {
+            @Override public Optional<byte[]> blockHash(long blockNumber) {
+                return Optional.of(new byte[]{9, 9});
+            }
+            @Override public long blockTimeSeconds(long slot) { return 0; }
+        });
+        var artifact = ref(250);
+
+        try (var lease = reader.acquire(artifact, Instant.now().plusSeconds(60))) {
+            assertThatThrownBy(() -> reader.read(artifact, lease, Optional.empty(), 100))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("anchor is no longer canonical");
+        }
+    }
+
+    @Test
     void theRouterSendsEachDatasetToItsOwnReaderAndRefusesUnknownOnes() {
         // Each dataset has its own retention story, so serving one with another's reader would
         // silently apply the wrong contract.
@@ -93,7 +111,7 @@ class AdaPotArtifactReaderTest {
             assertThat(router.read(ref(250), lease, Optional.empty(), 10).rows()).hasSize(1);
         }
 
-        var unrouted = new ProjectionArtifactRef(ArchiveDatasetId.EPOCH_STAKE, 250, 1, 1,
+        var unrouted = new ProjectionArtifactRef(ArchiveDatasetId.EPOCH_STAKE, 250, 1, 1, new byte[] {1},
                 ProjectionArtifactRepresentation.IMMUTABLE_GENERATION, "g", 1, "s",
                 OptionalLong.of(1), "", 1);
         assertThatThrownBy(() -> router.acknowledge(unrouted))

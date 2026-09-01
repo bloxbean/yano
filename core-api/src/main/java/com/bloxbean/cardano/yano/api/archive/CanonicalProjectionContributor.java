@@ -75,6 +75,16 @@ public interface CanonicalProjectionContributor {
     default void reinitializeAfterSnapshotRestore() {
     }
 
+    /**
+     * Report a contribution failure after the caller has discarded this block's staged
+     * projection writes and chosen to continue canonical L1 application.
+     *
+     * <p>The default is deliberately inert so projection failure reporting can never become a
+     * second reason for block application to fail.
+     */
+    default void contributionFailed(long blockNumber, RuntimeException failure) {
+    }
+
     /** Drop pending envelopes at or above {@code fromBlockNumber} and rewind cursors. */
     void rollbackFrom(long fromBlockNumber);
 

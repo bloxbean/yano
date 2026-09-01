@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSectionType;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSink;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSinkProvider;
@@ -63,6 +64,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Composes projection history for the node - the only path that writes an archive.
@@ -147,8 +149,10 @@ public class ProjectionHistoryService implements AutoCloseable {
     private final DrainControl drainControl = new DrainControl();
     private final java.util.concurrent.atomic.LongAdder drainedBatches = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder drainedBlocks = new java.util.concurrent.atomic.LongAdder();
-    private final java.util.concurrent.atomic.LongAdder drainFailures = new java.util.concurrent.atomic.LongAdder();
+    private final LongAdder drainFailures = new LongAdder();
+    private final LongAdder captureFailures = new LongAdder();
     private volatile String lastDrainFailure;
+    private volatile String lastCaptureFailure;
     private volatile String sink = "none";
     private volatile ProjectionMaintenanceSchedule maintenanceSchedule = ProjectionMaintenanceSchedule.defaults();
     private volatile java.time.Duration maintenanceHousekeepingBudget = java.time.Duration.ofSeconds(30);
@@ -827,7 +831,8 @@ public class ProjectionHistoryService implements AutoCloseable {
                     .EpochArtifactCollector(outbox, clamp, direct,
                     com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas
                             .schema(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE)
-                            .projectionVersion(), "ledger-boundary-v1");
+                            .projectionVersion(), "ledger-boundary-v1",
+                    this::recordEpochArtifactCaptureFailure);
             if (!yano.installEpochArtifactContributor(directCollector)) {
                 throw new IllegalStateException("could not install the selected direct epoch artifact contributor");
             }
@@ -951,23 +956,6 @@ public class ProjectionHistoryService implements AutoCloseable {
         epochStaging = new EpochArchiveStagingService(chain, ledger, network,
                 historyDirectory.resolve("epoch-source"), pending, firstPostByronEpoch, floors);
 
-        // Durable evidence must become an outbox reference, be committed by the sink, and only
-        // then be released. This callback fires strictly after the evidence is fsynced, so a
-        // reference always implies durability.
-        epochStaging.setStagedArtifactListener((job, evidence) -> {
-            try {
-                stageStagedFileArtifact(job, evidence);
-            } catch (RuntimeException e) {
-                // Never swallow: an unreferenced staged file is invisible to the archive, which
-                // is exactly the failure mode the genesis omission had.
-                drainFailures.increment();
-                lastDrainFailure = "staged artifact reference failed: " + e;
-                log.error("ADR-039 could not reference staged evidence for {} epoch {}",
-                        job.dataset(), job.epoch(), e);
-                throw e;
-            }
-        });
-
         // ADR-045: a dataset-specific failure becomes a canonical durable GAP before ledger
         // synchronization is allowed to continue. Other staged datasets remain active.
         epochStaging.setDatasetFailureListener(new EpochArchiveStagingService.DatasetFailureListener() {
@@ -977,18 +965,15 @@ public class ProjectionHistoryService implements AutoCloseable {
                     int semanticEpoch,
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary,
                     Exception failure) {
-                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber())
+                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber() - 1)
                         .orElseThrow(() -> new IllegalStateException(
-                                "canonical boundary is unavailable while recording epoch gap at block "
+                                "canonical epoch anchor is unavailable while recording epoch gap before block "
                                         + boundary.blockNumber()));
-                if (canonical.slot() != boundary.slot()) {
-                    throw new IllegalStateException("canonical boundary slot changed while recording epoch gap");
-                }
                 var archiveDataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId
                         .valueOf(dataset.name());
                 outbox.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
                         .EpochArtifactGap(archiveDataset, semanticEpoch, boundary.blockNumber(),
-                        boundary.slot(), canonical.blockHash(), failureClass(failure),
+                        canonical.blockNumber(), canonical.slot(), canonical.blockHash(), failureClass(failure),
                         failure.getMessage(), Instant.now()));
             }
 
@@ -996,13 +981,13 @@ public class ProjectionHistoryService implements AutoCloseable {
             public void missed(
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset dataset,
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary) {
-                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber())
+                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber() - 1)
                         .orElseThrow(() -> new IllegalStateException(
-                                "canonical paused boundary is unavailable at block "
+                                "canonical paused-boundary anchor is unavailable before block "
                                         + boundary.blockNumber()));
                 outbox.recordPausedEpoch(
                         com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(dataset.name()),
-                        boundary.newEpoch(), boundary.slot(), canonical.blockHash());
+                        boundary.newEpoch(), boundary.blockNumber(), canonical.slot(), canonical.blockHash());
             }
         });
         for (var dataset : pending) {
@@ -1075,51 +1060,14 @@ public class ProjectionHistoryService implements AutoCloseable {
         return staging;
     }
 
-    /**
-     * Record a reference to durable staged evidence, in its own synced write.
-     *
-     * <p>Ordering carries the safety argument: the rows were fsynced and published before this
-     * runs, so a reference that exists implies evidence that exists. A crash in the gap leaves an
-     * orphaned staged file, which cleanup removes — never a reference to evidence that is gone.
-     *
-     * <p>The reference carries the file's own checksum, so the sink is bound to those exact
-     * bytes, and the row count, so a truncated read cannot commit as a complete epoch.
-     */
-    private void stageStagedFileArtifact(EpochArchiveJob job,
-                                         DurableEpochFileSource.StagedEvidence evidence) {
-        if (outbox == null) return;
-        var ref = stagedFileReference(job, evidence);
-        // The reference must reach the outbox while its boundary block is still pending, or the
-        // batch that carries it has already been committed and this becomes an artifact the sink
-        // will never receive. Binding artifacts into the receipt digest turns that into a loud
-        // mismatch instead of the silent deletion it used to be - but loud-and-stuck is not the
-        // outcome to aim for, so the race is refused here, before it can be created.
-        //
-        // The staged file is deliberately left on disk. It is irreproducible once the boundary
-        // has passed, so an operator needs it to still be there.
-        var sinkNow = projectionSink == null ? null : projectionSink.coordinate();
-        if (sinkNow != null && sinkNow.isPresent() && job.boundaryBlockNumber() <= sinkNow.blockNumber()) {
-            throw new IllegalStateException("staged evidence for " + job.dataset().logicalName()
-                    + " epoch " + job.epoch() + " became durable only after its boundary block "
-                    + job.boundaryBlockNumber() + " was committed to the sink (committed through "
-                    + sinkNow.blockNumber() + "); the archive cannot reference it without"
-                    + " contradicting a receipt. The staged file is preserved at generation "
-                    + job.jobId() + " and must be replayed into a fresh archive rather than dropped");
-        }
-        outbox.putArtifactDirect(job.boundaryBlockNumber(), ref);
-        stagedBytesChanged();
-        log.info("ADR-039 staged evidence referenced: {} epoch {} ({} rows, digest {})",
-                job.dataset().logicalName(), job.epoch(), evidence.rowCount(),
-                evidence.checksum().substring(0, 16));
-    }
-
-    /** Stage a locally produced artifact in the same write batch as its canonical block. */
+    /** Stage completed evidence under the block that carries it, independently of its anchor. */
     private void stageStagedFileArtifact(
             ProjectionStagingWriter writer,
+            long carrierBlockNumber,
             EpochArchiveStagingService.BoundArtifact artifact) {
         if (outbox == null) return;
         var job = artifact.job();
-        outbox.putArtifact(writer, job.boundaryBlockNumber(),
+        outbox.putArtifact(writer, carrierBlockNumber,
                 stagedFileReference(job, artifact.evidence()));
         stagedBytesChanged();
         log.info("ADR-039 local staged evidence bound: {} epoch {} ({} rows, digest {})",
@@ -1131,6 +1079,7 @@ public class ProjectionHistoryService implements AutoCloseable {
             EpochArchiveJob job, DurableEpochFileSource.StagedEvidence evidence) {
         return new ProjectionArtifactRef(
                 job.dataset(), Math.toIntExact(job.epoch()), job.boundaryBlockNumber(), job.boundarySlot(),
+                job.boundaryBlockHash(),
                 ProjectionArtifactRepresentation.STAGED_FILE,
                 job.jobId().toString(), 1, job.sourceStateVersion(),
                 OptionalLong.of(evidence.rowCount()), evidence.checksum(),
@@ -1375,7 +1324,7 @@ public class ProjectionHistoryService implements AutoCloseable {
             } catch (Throwable t) {
                 drainFailures.increment();
                 lastDrainFailure = t.toString();
-                log.error("ADR-039 projection drain failed; retrying: {}", t.toString());
+                log.error("ADR-039 projection drain failed; L1 sync continues and drain will retry", t);
                 try {
                     drainControl.await(Math.max(idleIntervalMillis, 1_000L));
                 } catch (InterruptedException interrupted) {
@@ -1394,8 +1343,10 @@ public class ProjectionHistoryService implements AutoCloseable {
         int repaired = lifecycle.use(sink -> outbox.acknowledgeRepairsAlreadyComplete(
                 sink::hasCompleteEpochArtifact));
         if (repaired > 0) drainedGapVersions.clear();
-        var outboxGaps = outbox.epochArtifactGaps();
-        var outboxIntervals = outbox.epochArtifactGapIntervals();
+        long committedThrough = outbox.acknowledgedThrough();
+        var outboxGaps = outbox.epochArtifactGaps().stream()
+                .filter(gap -> gap.carrierBlockNumber() <= committedThrough).toList();
+        var outboxIntervals = outbox.epochArtifactGapIntervals(committedThrough);
 
         for (var gap : outboxGaps) {
             String key = gap.dataset().name() + '/' + gap.semanticEpoch();
@@ -1424,7 +1375,7 @@ public class ProjectionHistoryService implements AutoCloseable {
     private static String gapVersion(
             com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap gap) {
         return gap.boundarySlot() + ":" + java.util.HexFormat.of().formatHex(gap.boundaryBlockHash())
-                + ':' + gap.failureClass();
+                + ':' + gap.carrierBlockNumber() + ':' + gap.failureClass();
     }
 
     private static String intervalVersion(
@@ -1471,11 +1422,10 @@ public class ProjectionHistoryService implements AutoCloseable {
     }
 
     private void installShelleyPlusContributor(Yano yano) {
-        CanonicalProjectionContributor contributor = collector;
-        if (epochStaging != null) {
-            contributor = new EpochBindingProjectionContributor(
-                    collector, epochStaging, this::stageStagedFileArtifact);
-        }
+        CanonicalProjectionContributor contributor = new EpochBindingProjectionContributor(
+                collector, epochStaging, this::stageStagedFileArtifact,
+                (writer, carrier) -> outbox.bindPendingEpochArtifacts(writer, carrier),
+                this::recordProjectionCaptureFailure);
         boolean installed = yano.installProjectionContributor(contributor);
         if (!installed) {
             // Failing closed matters here: a silently uninstalled contributor would produce
@@ -1535,6 +1485,9 @@ public class ProjectionHistoryService implements AutoCloseable {
             byte[] targetHash = origin ? null : decodeRollbackHash(target.getHash());
             long removed = collector.rollbackToPoint(target.getSlot(), targetHash, origin);
             int removedGaps = outbox.rollbackEpochArtifactGaps(target.getSlot(), targetHash, origin);
+            var staging = epochStaging;
+            int removedStaged = staging == null ? 0
+                    : staging.discardAfterPoint(target.getSlot(), targetHash, origin);
             drainedGapVersions.clear();
             drainedIntervalSetVersion = null;
             synchronizeStagingCaptureState();
@@ -1550,21 +1503,14 @@ public class ProjectionHistoryService implements AutoCloseable {
             // event bus behind an in-flight sink commit.
             ProjectionOutboxConsumer active = consumer;
             if (active != null) active.discardPendingBatch();
-            if (removed > 0 || removedGaps > 0) {
+            if (removed > 0 || removedGaps > 0 || removedStaged > 0) {
                 // The rollback deleted artifact references along with their envelopes. Re-derive
                 // protection from what actually survives, or the reader would keep a source pinned
                 // for an artifact that no longer exists and pruning would never resume.
                 artifactReader.reconcileAfterRestart(outbox.pendingArtifacts());
-                // Staged epoch files above the rollback point describe a discarded fork. The
-                // cutoff is derived from the surviving canonical tip.
-                var staging = epochStaging;
-                if (staging != null) {
-                    var tip = chainQuery == null ? null : chainQuery.getLocalTip();
-                    if (tip != null) staging.discardAfterBlock(tip.getBlockNumber());
-                }
                 log.info("ADR-039 rollback to point slot={}, hash={} removed {} pending projection "
-                                + "envelope(s) and {} epoch gap(s)",
-                        target.getSlot(), target.getHash(), removed, removedGaps);
+                                + "envelope/artifact record(s), {} epoch gap(s), and {} staged file(s)",
+                        target.getSlot(), target.getHash(), removed, removedGaps, removedStaged);
             }
         }, SubscriptionOptions.builder().build());
     }
@@ -1757,6 +1703,34 @@ public class ProjectionHistoryService implements AutoCloseable {
         return enabled && initializationError != null;
     }
 
+    /** Failures observed by the asynchronous archive drain; they never propagate into L1 apply. */
+    public long drainFailureCount() {
+        return drainFailures.sum();
+    }
+
+    /** Archive capture failures isolated from canonical L1 application. */
+    public long captureFailureCount() {
+        return captureFailures.sum();
+    }
+
+    private void recordEpochArtifactCaptureFailure(
+            ArchiveDatasetId dataset,
+            int epoch, long carrierBlockNumber, RuntimeException failure) {
+        String coordinate = "dataset " + dataset.logicalName() + ", epoch " + epoch
+                + ", carrier " + carrierBlockNumber;
+        recordCaptureFailure(coordinate, failure);
+    }
+
+    private void recordProjectionCaptureFailure(long blockNumber, RuntimeException failure) {
+        recordCaptureFailure("carrier block " + blockNumber, failure);
+    }
+
+    private void recordCaptureFailure(String coordinate, RuntimeException failure) {
+        captureFailures.increment();
+        lastCaptureFailure = coordinate + ": " + failure;
+        log.error("Archive capture failed at {}; canonical L1 sync continues", coordinate, failure);
+    }
+
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("enabled", enabled);
@@ -1770,6 +1744,8 @@ public class ProjectionHistoryService implements AutoCloseable {
         status.put("drainedBlocks", drainedBlocks.sum());
         status.put("drainFailures", drainFailures.sum());
         if (lastDrainFailure != null) status.put("lastDrainFailure", lastDrainFailure);
+        status.put("captureFailures", captureFailures.sum());
+        if (lastCaptureFailure != null) status.put("lastCaptureFailure", lastCaptureFailure);
         if (projectionSink != null) {
             var coordinate = projectionSink.coordinate();
             status.put("sinkCoordinate", coordinate.isPresent() ? coordinate.blockNumber() : -1);

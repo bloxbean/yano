@@ -19,6 +19,14 @@ public class ProjectionHistoryMetrics {
     private volatile Snapshot cached;
 
     void onStart(@Observes StartupEvent ignored) {
+        Gauge.builder("yano.history.projection.drain.failures", projection,
+                        service -> (double) service.drainFailureCount())
+                .description("Asynchronous projection drain failures; L1 ingestion continues")
+                .register(registry);
+        Gauge.builder("yano.history.projection.capture.failures", projection,
+                        service -> (double) service.captureFailureCount())
+                .description("Projection capture failures isolated from canonical L1 ingestion")
+                .register(registry);
         for (var contract : ProjectionArtifactContracts.shipped().contracts().values()) {
             String dataset = contract.dataset().logicalName();
             gauge("yano.history.epoch.artifact.selected", dataset, "selected");

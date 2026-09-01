@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.app.archive;
 
-import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
 import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
 import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
@@ -10,23 +9,40 @@ import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 
 import java.util.Objects;
 
-/** Binds locally captured epoch evidence inside its producing block's canonical write batch. */
+/** Attaches completed epoch evidence to its carrier block's canonical write batch. */
 final class EpochBindingProjectionContributor implements CanonicalProjectionContributor {
     @FunctionalInterface
     interface ArtifactStager {
-        void stage(ProjectionStagingWriter writer, EpochArchiveStagingService.BoundArtifact artifact);
+        void stage(ProjectionStagingWriter writer, long carrierBlockNumber,
+                   EpochArchiveStagingService.BoundArtifact artifact);
+    }
+
+    @FunctionalInterface
+    interface PendingArtifactBinder {
+        void bind(ProjectionStagingWriter writer, long carrierBlockNumber);
+    }
+
+    @FunctionalInterface
+    interface FailureReporter {
+        void report(long blockNumber, RuntimeException failure);
     }
 
     private final CanonicalProjectionContributor delegate;
     private final EpochArchiveStagingService staging;
     private final ArtifactStager artifactStager;
+    private final PendingArtifactBinder pendingArtifactBinder;
+    private final FailureReporter failureReporter;
 
     EpochBindingProjectionContributor(CanonicalProjectionContributor delegate,
                                       EpochArchiveStagingService staging,
-                                      ArtifactStager artifactStager) {
+                                      ArtifactStager artifactStager,
+                                      PendingArtifactBinder pendingArtifactBinder,
+                                      FailureReporter failureReporter) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
-        this.staging = Objects.requireNonNull(staging, "staging");
+        this.staging = staging;
         this.artifactStager = Objects.requireNonNull(artifactStager, "artifactStager");
+        this.pendingArtifactBinder = Objects.requireNonNull(pendingArtifactBinder, "pendingArtifactBinder");
+        this.failureReporter = Objects.requireNonNull(failureReporter, "failureReporter");
     }
 
     @Override
@@ -53,11 +69,12 @@ final class EpochBindingProjectionContributor implements CanonicalProjectionCont
     }
 
     private void bind(BlockAppliedEvent event, ProjectionStagingWriter writer) {
-        if (!staging.hasProvisionalBoundary(event.blockNumber())) return;
-        byte[] hash = HexUtil.decodeHexString(event.blockHash());
-        for (EpochArchiveStagingService.BoundArtifact artifact
-                : staging.bindCanonicalBoundary(event.blockNumber(), event.slot(), hash)) {
-            artifactStager.stage(writer, artifact);
+        pendingArtifactBinder.bind(writer, event.blockNumber());
+        if (staging != null && staging.hasCompletedCarrier(event.blockNumber())) {
+            for (EpochArchiveStagingService.BoundArtifact artifact
+                    : staging.completedArtifacts(event.blockNumber())) {
+                artifactStager.stage(writer, event.blockNumber(), artifact);
+            }
         }
     }
 
@@ -76,6 +93,11 @@ final class EpochBindingProjectionContributor implements CanonicalProjectionCont
     @Override
     public void reinitializeAfterSnapshotRestore() {
         delegate.reinitializeAfterSnapshotRestore();
+    }
+
+    @Override
+    public void contributionFailed(long blockNumber, RuntimeException failure) {
+        failureReporter.report(blockNumber, failure);
     }
 
     @Override

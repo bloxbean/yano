@@ -29,6 +29,7 @@ class ProjectionEnvelopeCodecTest {
                 ProjectionSectionType.UTXO_HISTORY.version(),
                 List.of(new byte[]{4, 5}, new byte[]{6}), 7);
         var artifact = new ProjectionArtifactRef(ArchiveDatasetId.EPOCH_STAKE, 42, 1000, 20000,
+                new byte[] {1, 0, 0, 0},
                 ProjectionArtifactRepresentation.IMMUTABLE_GENERATION, "epoch-deleg-snapshot/42", 1,
                 "account-state-v1", OptionalLong.of(1_300_000L), "abcdef01", 19000);
         return new ProjectionEnvelopeHeader(PREPROD, ProjectionBlockKind.SHELLEY_PLUS, 1000,
@@ -55,9 +56,9 @@ class ProjectionEnvelopeCodecTest {
      * Golden fixture. A change to this digest means the persisted outbox format changed;
      * that requires a format-version bump and a migration decision, not a test update.
      *
-     * <p>Last changed for v2, which added the inline-evidence payload to artifact references.
+     * <p>Last changed for v3, which added the producing anchor hash to artifact references.
      * The migration decision is recorded on {@code ProjectionEnvelopeCodec.FORMAT_VERSION}:
-     * none is offered, because the only outboxes v2 rejects already required a fresh sync.
+     * none is offered because projection history is still preview-only and fresh-sync-only.
      *
      * <p>The digest also moved when every dataset was renumbered to v1 before release. That is
      * not a structural change - the header still writes the same fields in the same order - but
@@ -71,7 +72,7 @@ class ProjectionEnvelopeCodecTest {
         String digest = ProjectionDigest.ofChunks(List.of(ProjectionEnvelopeCodec.encodeHeader(sampleHeader())));
         assertThat(digest)
                 .as("projection envelope header wire format v%d", ProjectionEnvelopeCodec.FORMAT_VERSION)
-                .isEqualTo("aabd2b2fe18fb594d2cc86dd138829e900844242e26445fe8ee4c96b18623ae7");
+                .isEqualTo("87c4e2a644ef5af545be19ff0ff999926655db12106c0af22cb47a7712d6c9fd");
     }
 
     @Test
