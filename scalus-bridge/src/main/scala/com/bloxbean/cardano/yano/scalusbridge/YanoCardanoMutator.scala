@@ -11,9 +11,10 @@ object YanoCardanoMutator extends STS.Mutator:
     val defaults = CardanoMutator.defaultSTSs.values.collect {
       case validator: STS.Validator => validator
     }.toSeq.sortBy(_.name)
+    val upstreamValidatorCount = defaults.count(_ eq ValueNotConservedUTxOValidator)
     require(
-      defaults.exists(_ eq ValueNotConservedUTxOValidator),
-      "Scalus default validator set no longer contains ValueNotConservedUTxOValidator"
+      upstreamValidatorCount == 1,
+      s"Scalus default validator set must contain ValueNotConservedUTxOValidator exactly once, found $upstreamValidatorCount"
     )
     defaults.map {
       case validator if validator eq ValueNotConservedUTxOValidator =>

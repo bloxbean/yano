@@ -4,7 +4,7 @@ import scalus.cardano.ledger.*
 import scalus.cardano.ledger.rules.{Context, STS, State, ValueNotConservedUTxOValidator}
 import scalus.cardano.ledger.utils.TxBalance
 
-/** Corrects Scalus 0.18.2's unconditional pool-deposit charge for pool updates. */
+/** Corrects Scalus 1.1.1's unconditional pool-deposit charge for pool updates. */
 object YanoValueNotConservedUTxOValidator extends STS.Validator:
   override final type Error = TransactionException.BadInputsUTxOException |
     TransactionException.ValueNotConservedUTxOException
@@ -39,4 +39,3 @@ object YanoValueNotConservedUTxOValidator extends STS.Validator:
     val distinctNewPools = registrations.toSet.count(poolId => !poolsState.stakePools.contains(poolId))
     val excessRegistrationCount = registrations.size - distinctNewPools
     Math.multiplyExact(excessRegistrationCount.toLong, poolDeposit)
-

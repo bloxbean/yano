@@ -23,13 +23,13 @@ private[scalusbridge] object ProtocolParamsBridge:
     )
 
     val maxBlockExUnits = ExUnits(
-      parseLong(pp.getMaxBlockExSteps),
-      parseLong(pp.getMaxBlockExMem)
+      parseLong(pp.getMaxBlockExMem),
+      parseLong(pp.getMaxBlockExSteps)
     )
 
     val maxTxExUnits = ExUnits(
-      parseLong(pp.getMaxTxExSteps),
-      parseLong(pp.getMaxTxExMem)
+      parseLong(pp.getMaxTxExMem),
+      parseLong(pp.getMaxTxExSteps)
     )
 
     val dRepVotingThresholds = DRepVotingThresholds(
