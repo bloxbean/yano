@@ -7,6 +7,7 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
@@ -15,6 +16,7 @@ import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
@@ -26,18 +28,21 @@ import java.util.Objects;
  *
  * <p>Wire format (CBOR, see {@code core-api/src/main/cddl/appchain/
  * l1-observation-v1.cddl}):
- * {@code [1, observer-id, [anchor-tag, anchor-value], slot, block-hash, claim]}.
+ * {@code [1, observer-id, [anchor-tag, anchor-value], event-ordinal, slot,
+ * block-hash, claim]}.
  * The former transaction-only six-field preview encoding is intentionally
  * unsupported.</p>
  *
  * @param observerId configured observer instance id (topic suffix)
  * @param anchor     tagged transaction or epoch boundary anchor
+ * @param eventOrdinal stable observer-defined position within the anchor
  * @param slot       L1 slot of the block identified by the anchor
  * @param blockHash  L1 block hash (32B) at that slot
  * @param claim      observer-specific canonical claim CBOR
  */
 public record L1Observation(String observerId,
                             Anchor anchor,
+                            long eventOrdinal,
                             long slot,
                             byte[] blockHash,
                             byte[] claim) {
@@ -55,9 +60,16 @@ public record L1Observation(String observerId,
     /** Reserved topic prefix for observation messages. */
     public static final String TOPIC_PREFIX = "~l1/";
 
+    /** Canonical cross-observer journal and block-prefix order. */
+    public static final Comparator<L1Observation> CANONICAL_ORDER =
+            L1Observation::compareCanonical;
+
     public L1Observation {
         observerId = requireObserverId(observerId);
         anchor = Objects.requireNonNull(anchor, "anchor");
+        if (eventOrdinal < 0) {
+            throw new IllegalArgumentException("L1 observation event ordinal must not be negative");
+        }
         if (slot < 0) {
             throw new IllegalArgumentException("L1 observation slot must not be negative");
         }
@@ -70,6 +82,15 @@ public record L1Observation(String observerId,
         claim = claim.clone();
     }
 
+    /** Source-compatible convenience for observers that emit one fact per anchor. */
+    public L1Observation(String observerId,
+                         Anchor anchor,
+                         long slot,
+                         byte[] blockHash,
+                         byte[] claim) {
+        this(observerId, anchor, 0, slot, blockHash, claim);
+    }
+
     /** Create a transaction-anchored observation. */
     public static L1Observation transaction(String observerId,
                                             byte[] transactionHash,
@@ -77,7 +98,18 @@ public record L1Observation(String observerId,
                                             byte[] blockHash,
                                             byte[] claim) {
         return new L1Observation(observerId, new TransactionAnchor(transactionHash),
-                slot, blockHash, claim);
+                0, slot, blockHash, claim);
+    }
+
+    /** Create one positionally identified transaction-anchored observation. */
+    public static L1Observation transaction(String observerId,
+                                            byte[] transactionHash,
+                                            long eventOrdinal,
+                                            long slot,
+                                            byte[] blockHash,
+                                            byte[] claim) {
+        return new L1Observation(observerId, new TransactionAnchor(transactionHash),
+                eventOrdinal, slot, blockHash, claim);
     }
 
     /** Create an epoch-boundary-anchored observation. */
@@ -87,7 +119,18 @@ public record L1Observation(String observerId,
                                       byte[] blockHash,
                                       byte[] claim) {
         return new L1Observation(observerId, new EpochAnchor(newEpoch),
-                slot, blockHash, claim);
+                0, slot, blockHash, claim);
+    }
+
+    /** Create one positionally identified epoch-anchored observation. */
+    public static L1Observation epoch(String observerId,
+                                      long newEpoch,
+                                      long eventOrdinal,
+                                      long slot,
+                                      byte[] blockHash,
+                                      byte[] claim) {
+        return new L1Observation(observerId, new EpochAnchor(newEpoch),
+                eventOrdinal, slot, blockHash, claim);
     }
 
     @Override
@@ -127,6 +170,7 @@ public record L1Observation(String observerId,
             array.add(new UnsignedInteger(WIRE_VERSION));
             array.add(new UnicodeString(observerId));
             array.add(encodeAnchor(anchor));
+            array.add(new UnsignedInteger(BigInteger.valueOf(eventOrdinal)));
             array.add(new UnsignedInteger(BigInteger.valueOf(slot)));
             array.add(new ByteString(blockHash));
             array.add(new ByteString(claim));
@@ -152,7 +196,7 @@ public record L1Observation(String observerId,
                 return null;
             }
             List<DataItem> fields = array.getDataItems();
-            if (fields.size() != 6) {
+            if (fields.size() != 7) {
                 return null;
             }
             long version = ((UnsignedInteger) fields.get(0)).getValue().longValueExact();
@@ -167,8 +211,9 @@ public record L1Observation(String observerId,
                     ((UnicodeString) fields.get(1)).getString(),
                     decodedAnchor,
                     ((UnsignedInteger) fields.get(3)).getValue().longValueExact(),
-                    ((ByteString) fields.get(4)).getBytes(),
-                    ((ByteString) fields.get(5)).getBytes());
+                    ((UnsignedInteger) fields.get(4)).getValue().longValueExact(),
+                    ((ByteString) fields.get(5)).getBytes(),
+                    ((ByteString) fields.get(6)).getBytes());
             return Arrays.equals(body, observation.encode()) ? observation : null;
         } catch (Exception e) {
             return null;
@@ -177,13 +222,50 @@ public record L1Observation(String observerId,
 
     /** Stable identity for deduplication and verification windows. */
     public String key() {
-        return observerId + '/' + anchor.key() + '/' + slot;
+        return observerId + '/' + anchor.key() + '/' + eventOrdinal + '/' + slot;
+    }
+
+    private static int compareCanonical(L1Observation left, L1Observation right) {
+        int compared = Long.compare(left.slot, right.slot);
+        if (compared != 0) return compared;
+        compared = Arrays.compareUnsigned(left.blockHash, right.blockHash);
+        if (compared != 0) return compared;
+        compared = Arrays.compareUnsigned(
+                left.observerId.getBytes(StandardCharsets.UTF_8),
+                right.observerId.getBytes(StandardCharsets.UTF_8));
+        if (compared != 0) return compared;
+        compared = Integer.compare(anchorTag(left.anchor), anchorTag(right.anchor));
+        if (compared != 0) return compared;
+        compared = compareAnchor(left.anchor, right.anchor);
+        if (compared != 0) return compared;
+        compared = Long.compare(left.eventOrdinal, right.eventOrdinal);
+        if (compared != 0) return compared;
+        return Arrays.compareUnsigned(Blake2bUtil.blake2bHash256(left.encode()),
+                Blake2bUtil.blake2bHash256(right.encode()));
+    }
+
+    private static int anchorTag(Anchor value) {
+        return value instanceof TransactionAnchor
+                ? TRANSACTION_ANCHOR_TAG : EPOCH_ANCHOR_TAG;
+    }
+
+    private static int compareAnchor(Anchor left, Anchor right) {
+        if (left instanceof TransactionAnchor leftTransaction
+                && right instanceof TransactionAnchor rightTransaction) {
+            return Arrays.compareUnsigned(leftTransaction.transactionHash(),
+                    rightTransaction.transactionHash());
+        }
+        if (left instanceof EpochAnchor leftEpoch && right instanceof EpochAnchor rightEpoch) {
+            return Long.compare(leftEpoch.newEpoch(), rightEpoch.newEpoch());
+        }
+        return 0;
     }
 
     @Override
     public boolean equals(Object other) {
         return other instanceof L1Observation that
                 && slot == that.slot
+                && eventOrdinal == that.eventOrdinal
                 && observerId.equals(that.observerId)
                 && anchor.equals(that.anchor)
                 && Arrays.equals(blockHash, that.blockHash)
@@ -192,7 +274,7 @@ public record L1Observation(String observerId,
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(observerId, anchor, slot);
+        int result = Objects.hash(observerId, anchor, eventOrdinal, slot);
         result = 31 * result + Arrays.hashCode(blockHash);
         return 31 * result + Arrays.hashCode(claim);
     }

@@ -1,0 +1,56 @@
+; ADR-036 certified consensus wire profile.
+; All arrays use canonical CBOR and all byte-string sizes are enforced by the
+; runtime preflight limits before signature verification.
+
+certified-vote = [
+  version: 2,
+  phase: prepare / commit,
+  height: uint .gt 0,
+  view: uint,
+  context-digest: bytes .size 32,
+  block-hash: bytes .size 32,
+  signature: bytes .size 64
+]
+
+quorum-certificate = [
+  version: 2,
+  phase: prepare / commit,
+  height: uint .gt 0,
+  view: uint,
+  context-digest: bytes .size 32,
+  block-hash: bytes .size 32,
+  value-hash: bytes .size 32,
+  signatures: [+ signature-entry]
+]
+
+signature-entry = [
+  signer: bytes .size 32,
+  signature: bytes .size 64
+]
+
+; finality-qc is empty or a canonical commit quorum-certificate.
+timeout = [
+  version: 2,
+  height: uint .gt 0,
+  target-view: uint .gt 0,
+  context-digest: bytes .size 32,
+  prepared-qc: bytes,
+  finality-qc: bytes,
+  signature: bytes .size 64
+]
+
+new-view-certificate = [
+  version: 2,
+  height: uint .gt 0,
+  target-view: uint .gt 0,
+  context-digest: bytes .size 32,
+  timeouts: [+ signed-timeout]
+]
+
+signed-timeout = [
+  signer: bytes .size 32,
+  encoded-timeout: bytes
+]
+
+prepare = 0
+commit = 1

@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed — protocol design and implementation plan; no implementation in this ADR.
+Accepted — implemented as a fresh-chain preview cutover on this branch; final
+graduation still depends on the Phase 5 multi-node qualification gates.
 
 The number is local to the `adr/app-layer` series. Root-level ADR numbers are a
 separate series.
@@ -52,12 +53,11 @@ The next app-chain protocol will provide:
    finalized cursors, and atomic acknowledgement;
 7. fail-closed live and recovery verification when local L1 evidence is
    unavailable; and
-8. a threshold-authorized transition for retained chains plus a new-genesis
-   path for deployments that do not need in-place activation.
+8. a fresh-chain-only activation path while Yano remains in preview.
 
-The existing `admin/unlock-stale-round` endpoint remains an authenticated,
-audited last resort for legacy protocol histories. A timeout will never delete
-a safety lock. An operator may request reconciliation of an L1 pointer but may
+The existing `admin/unlock-stale-round` endpoint is not part of protocol v2.
+A timeout will never delete a safety lock. An operator may request
+reconciliation of an L1 pointer but may
 never provide an authoritative `~l1/*` claim.
 
 Fixed sequencing remains the production default until the protocol and the
@@ -148,8 +148,7 @@ The protocol must state separately:
   consensus-visible.
 - Add no operator, indexer, replay service, or proposer as an authority for an
   L1 fact.
-- Preserve app-chain genesis and committed state when a retained chain uses the
-  explicitly authorized transition protocol.
+- Enforce a clean fresh-chain cutover with no retained preview compatibility.
 - Bound disk, CPU, memory, wire amplification, and future-view spam.
 
 ### 2.2 Non-goals
@@ -170,7 +169,7 @@ Let:
 
 ```text
 n = active member count at height h
-q = prepare, commit, timeout, and transition quorum at h
+q = prepare, commit, and timeout quorum at h
 f = configured maximum Byzantine members at h
 ```
 
@@ -187,7 +186,7 @@ permit stricter thresholds such as the incident's `n=5, q=4, f=1`.
 If a deployment claims only crash-fault tolerance, it sets `f=0`; even then
 `q > n/2` is required. A two-of-three profile is crash-safe but must not be
 advertised as tolerating one Byzantine member. Profiles that fail these checks
-may continue reading legacy history but cannot activate certified view change.
+cannot participate in the fresh protocol-v2 chain.
 
 Safety assumes honest members:
 
@@ -195,8 +194,7 @@ Safety assumes honest members:
 - follow the persistent prepare/commit/lock rules;
 - validate the consensus context and canonical encodings;
 - independently run or verify configured L1 observers; and
-- do not sign a conflicting legacy protocol transition after committing to an
-  upgrade certificate.
+- do not cross-sign another chain, profile, membership epoch, height, or view.
 
 Liveness assumes eventual message delivery among at least `q` correct and
 healthy validators. Fewer than `q` must halt safely.
@@ -221,7 +219,7 @@ phase and phase-specific payload
 
 The canonical digest of those stable fields is the `consensusContextDigest`.
 It is carried in the v3 app-block header and in every prepare, commit, timeout,
-new-view, and transition object. A signature from another chain, membership
+and new-view object. A signature from another chain, membership
 epoch, observer set, profile, phase, height, or view is invalid.
 
 Membership for height `h` is fixed by finalized history through `h-1`.
@@ -279,7 +277,7 @@ highest PreparedQC
 locked value and locked view
 original canonical proposal value
 highest known FinalityCertV2
-transition/new-view evidence needed for replay
+new-view evidence needed for replay
 ```
 
 A member signs at most one prepare and one commit per `(height, view)`. It does
@@ -364,11 +362,12 @@ member set. It never reads the local L1 tip or wall clock. The stable L1
 reference remains part of proposal validity, not leader identity.
 
 The current `SequencerMode` SPI mixes leader choice with live eligibility and
-cannot govern protocol safety. Protocol v2 replaces it with a versioned
-`LeaderPolicy` SPI that returns a single leader for the complete committed
-context. The framework—not a plugin—owns views, locks, certificates, and safe
-proposal validation. Custom legacy sequencer modes are not automatically
-eligible for protocol v2.
+cannot govern protocol safety. For the built-in fixed and rotating modes,
+protocol v2 therefore treats the configured mode only as the view-0 policy
+selector and computes the leader inside the framework. The framework—not a
+plugin—owns views, locks, certificates, and safe proposal validation. Custom
+sequencer modes remain an extension compatibility surface and are outside the
+certified built-in policy's production qualification.
 
 ### 4.7 Catch-up and evidence retention
 
@@ -376,8 +375,7 @@ Every finalized v3 block carries or references a self-contained bounded
 `ConsensusJustification`:
 
 - `GENESIS_OR_NORMAL` for view 0;
-- `NEW_VIEW` with its `NewViewCert` and selected `PreparedQC` for view > 0; or
-- `LEGACY_TRANSITION` for the first v3 block of a retained chain.
+- `NEW_VIEW` with its `NewViewCert` and selected `PreparedQC` for view > 0.
 
 The justification digest is committed by the block header. App-chain sync
 delivers the justification and `FinalityCertV2` with the block. Catch-up
@@ -394,16 +392,13 @@ may be pruned by bounded age and count.
 ### 5.1 Observations become first-class system inputs
 
 Protocol v2 does not re-inject durable observations into the ordinary expiring
-app-message pool. App block v3 contains an ordered tagged input sequence:
-
-```text
-app-input = l1-observation-v2 / ordinary-app-message
-```
-
-The input Merkle root commits tagged leaves so an observation ID cannot be
-reinterpreted as an ordinary message ID. `AppBlockExecutionContext` exposes
-the same immutable global order and structured `l1Observations()` view.
-Ordinary public submission cannot create a system input.
+app-message pool. To keep the wire model small, app block v3 retains one
+ordered envelope list and uses the reserved `~l1/<observer-id>` topic as its
+system-input tag. The messages root commits each complete message identity,
+including that topic and the observation body, so an observation cannot be
+reinterpreted as an ordinary message. `AppBlockExecutionContext` exposes the
+same immutable global order and structured `l1Observations()` view. Ordinary
+public submission cannot create a system input.
 
 For deterministic priority and simple completeness checks, every block takes
 the mandatory L1-observation prefix first and fills remaining message/byte
@@ -411,8 +406,8 @@ capacity with ordinary app messages. A capability/ABI marker is required at
 activation because a plugin that previously searched `messages()` for
 `~l1/*` must move to the structured observation API.
 
-Legacy v2 blocks and their member-signed `~l1/*` envelopes remain decodable for
-historical catch-up. New live v3 proposals cannot contain the legacy form.
+The former preview block and six-field observation encodings are intentionally
+not decoded. New v3 proposals use the revised v1 observation shape exclusively.
 
 ### 5.2 Observer profile identity
 
@@ -437,9 +432,12 @@ A retained journal whose observer-profile digest differs from the active
 profile fails startup. An observer change requires an explicit consensus
 profile activation, not a local configuration edit.
 
-### 5.3 Observation v2 identity
+### 5.3 Observation v1 identity (fresh-chain schema)
 
-`L1Observation` v2 adds an explicit `eventOrdinal`. An observer emitting more
+`L1Observation` remains wire version 1 and adds an explicit `eventOrdinal`.
+Yano is still preview software and this decision starts a fresh chain, so the
+v1 schema is changed in place and the former six-field preview encoding is not
+accepted. An observer emitting more
 than one fact for one transaction or epoch anchor assigns stable ordinals in
 canonical source order. Local collection iteration order is never an identity.
 
@@ -447,12 +445,12 @@ Two identifiers serve different purposes:
 
 ```text
 sourceKey = H(
-  "yano-l1-source-v2" || chainGenesisId || l1NetworkGenesisId ||
+  "yano-l1-source-v1" || chainGenesisId || l1NetworkGenesisId ||
   observerProfileDigest || observerId || anchor || slot || blockHash || eventOrdinal
 )
 
 observationId = H(
-  "yano-l1-observation-v2" || sourceKey || H(canonicalClaimBytes)
+  "yano-l1-observation-v1" || sourceKey || H(canonicalClaimBytes)
 )
 ```
 
@@ -617,68 +615,14 @@ threshold that cannot independently return `OK` halts.
 Historical proof formats and retained-block lookup are Phase 4. Their absence
 does not weaken the live rule and does not authorize raw replay.
 
-## 7. Retained-chain activation and compatibility
+## 7. Fresh-chain activation and compatibility
 
-### 7.1 New chains
+This decision is a preview-stage clean break. Deployment starts a fresh app
+chain using app-block v3, consensus v2, and the revised observation wire v1.
+There is no retained-chain transition certificate, legacy lock migration,
+mixed live mode, or automatic decoding of the former observation shape.
 
-New chains created after protocol graduation use app-block v3, consensus v2,
-observation v2, and the authenticated observer profile from genesis. They do
-not decode live v1 consensus messages.
-
-### 7.2 Retained chains at a clean finalized tip
-
-A retained chain may activate at `tip + 1` with a
-`ConsensusTransitionCertificate`. Each transition record binds:
-
-```text
-legacy genesis identity and tip height/hash
-activation height
-new consensus-context digest
-member's legacy vote lock at activation height, including retained proposal,
-or an explicit NONE
-highest known legacy finality certificate, if any
-```
-
-The certificate contains at least `q` current-member records. A member persists
-its transition signature before returning it and thereafter refuses legacy
-prepare/vote activity at the activation height.
-
-Transition validation treats legacy locks as immutable evidence:
-
-1. a valid legacy finality certificate is adopted;
-2. otherwise, if one candidate could still have reached the legacy threshold
-   given the reported and unreported members, that exact candidate is carried;
-3. if no candidate could have reached threshold, a fresh v3 value is allowed;
-4. if more than one candidate remains possibly certifiable, collect more
-   member records; if ambiguity remains, halt.
-
-Because as many as `f` Byzantine transition signers may lie about an earlier
-legacy vote, the conservative upper bound for candidate `X` is:
-
-```text
-reportedLocks(X) + (n - distinctTransitionSigners) + f >= legacyThreshold
-```
-
-The `f` term is deliberately conservative even when a faulty member may also
-be among the unreported members. A candidate is ruled out only when the upper
-bound is below the legacy threshold. Quorum intersection guarantees that a
-candidate behind a real legacy certificate is reported by at least one honest
-transition signer; an unseen candidate cannot be selected as fresh. More
-records reduce ambiguity, and all `n` records normally identify the only
-candidate that a legacy quorum could have certified.
-
-The first v3 block embeds the transition certificate as its justification.
-Catch-up can therefore prove why legacy per-height locks were superseded. The
-activation changes neither genesis identity, parent hash, committed state,
-membership history, nor finalized blocks.
-
-A transition is a threshold governance action, not an operator unlock. An
-operator can coordinate collection but cannot forge member records or choose a
-different locked value.
-
-### 7.3 Upgrade compatibility gates
-
-Activation requires all of the following identities to match:
+Startup requires all of the following identities to match:
 
 - app-block and consensus wire versions;
 - consensus context and runtime profile digest;
@@ -687,25 +631,18 @@ Activation requires all of the following identities to match:
 - application capability-manifest digest and required observation ABI; and
 - state commitment profile, format fingerprint, and genesis identity.
 
-Nodes that do not support the activation stop at the last legacy block. There
-is no mixed live mode. Rolling binary deployment may occur before activation;
-protocol activation itself is threshold-authorized and height-exact.
-
-### 7.4 Emergency unlock
-
-`admin/unlock-stale-round` remains available only for legacy protocol heights
-where a transition certificate cannot yet be formed. It must remain
-authenticated, explicitly confirmed, cross-node audited, and described as
-safety-degrading. Protocol-v2 code never calls it automatically and never uses
-it as view change.
+Any existing preview chainstate is incompatible and must be archived or
+discarded explicitly before creating the new chain. The protocol-v2 engine
+never invokes `admin/unlock-stale-round`; certified view change is its only
+normal recovery path.
 
 ## 8. Storage and component boundaries
 
 ### 8.1 `core-api`
 
-- app-block v3 and tagged input CDDL/API;
-- observation v2, ordinal, source key, and observation ID;
-- versioned prepare, commit, prepared-QC, timeout, new-view, transition, and
+- app-block v3 and reserved-topic system-input CDDL/API;
+- observation v1 ordinal, source key, and observation ID;
+- versioned prepare, commit, prepared-QC, timeout, new-view, and
   finality evidence types;
 - canonical codecs, domain-separated digests, bounds, and conformance vectors;
 - observer consensus identity and application capability requirements.
@@ -718,7 +655,7 @@ it as view change.
 - journal column family, cursor guard, mandatory prefix builder/validator,
   rollback/quarantine, and atomic acknowledgement;
 - live/catch-up verification mode separation;
-- protocol transition collection and validation;
+- fresh-chain protocol/profile preflight;
 - catch-up verification of all v3 evidence; and
 - removal of block-observation dependence on `pendingInjection`, ordinary pool
   capacity, and message TTL.
@@ -730,8 +667,7 @@ internal lifecycle names match.
 ### 8.3 `app`
 
 - read-only status and bounded diagnostics;
-- authenticated transition and pointer-only reconciliation endpoints;
-- retained legacy unlock with stronger audit fields;
+- authenticated pointer-only reconciliation endpoints;
 - readiness/health exposure; and
 - metrics registration without claims, customer addresses, signed
   transactions, credentials, or arbitrary plugin exception text.
@@ -751,18 +687,17 @@ default until the release passes the qualification gates in this ADR.
 Names are illustrative until implementation freezes the typed configuration:
 
 ```yaml
-yano.app-chain.consensus.protocol: legacy-v1 | certified-v2
 yano.app-chain.consensus.max-byzantine-members: 1
 yano.app-chain.consensus.round-timeout-ms: 10000
 yano.app-chain.consensus.timeout-max-exponent: 5
 yano.app-chain.consensus.max-future-view-lead: 8
 
-yano.app-chain.leader.policy: fixed | rotating
+yano.app-chain.sequencer.mode: fixed | rotating
 
 yano.app-chain.observation.max-per-block: 128
 yano.app-chain.observation.max-claim-bytes-per-block: 262144
-yano.app-chain.observation.journal.max-pending-entries: 100000
-yano.app-chain.observation.journal.max-pending-bytes: 1073741824
+yano.app-chain.observation.journal.max-entries: 100000
+yano.app-chain.observation.journal.max-bytes: 1073741824
 ```
 
 The released defaults must be derived from benchmarks and failure tests, not
@@ -779,7 +714,7 @@ Per-chain status exposes bounded values for:
 - local prepare/commit lock and highest prepared/finality evidence digests;
 - timeout records collected toward the next view;
 - last automatic recovery reason and duration;
-- legacy transition state and emergency-unlock state;
+- current view, prepare/commit locks, and recovery quarantine state;
 - observer profile digest and complete L1 observation horizon;
 - journal count/bytes by lifecycle, oldest stable-pending age, and capacity
   high-water mark;
@@ -793,28 +728,29 @@ rejection, historical verification verdicts, and rollback quarantine.
 
 Readiness fails when the node cannot durably persist consensus evidence or a
 stable observation, cannot establish a complete L1 horizon, has an ambiguous
-transition, reaches journal capacity, or enters deep-rollback quarantine.
+observer result, reaches journal capacity, or enters deep-rollback quarantine.
 
 ## 11. Implementation plan
 
 ### Phase 0 — containment and executable reproduction
 
 - Keep fixed sequencing as the documented production default.
-- Preserve the guarded legacy unlock runbook; forbid raw observation replay.
+- Forbid raw observation replay and automatic stale-lock deletion.
 - Add a deterministic five-node/four-of-five test fixture that reproduces
   competing view-0 proposals and a stable observation during the stall.
 - Capture invariants and golden wire/identity vectors before implementation.
 
-Exit: the fixture demonstrates both the split-lock stall and observation loss
-on legacy protocol without using production credentials or infrastructure.
+Exit: the fixture captures the former split-lock and observation-loss failure
+as executable invariants without production credentials or infrastructure.
 
 ### Phase 1 — protocol types, identities, and storage foundation
 
 - Freeze consensus context, fault-profile validation, tagged signature
-  digests, canonical CDDL, block v3, observation v2, and evidence bounds.
-- Add `LeaderPolicy`, observer consensus identity, and capability gates.
+  digests, canonical CDDL, block v3, revised observation v1, and evidence bounds.
+- Add framework-owned built-in leader selection, observer consensus identity,
+  and capability gates.
 - Add journal and consensus-evidence column families plus crash fault seams.
-- Implement transition-certificate types and retained-state preflight.
+- Implement fresh-chain version/profile preflight.
 
 Exit: codec/property/fuzz tests reject non-canonical, oversized, cross-domain,
 wrong-profile, wrong-membership, and replayed objects; restart restores every
@@ -840,24 +776,23 @@ reordering are rejected.
   safe proposal selection, and deterministic higher-view leaders.
 - Integrate prepared values with the observation journal prefix.
 - Validate full evidence during catch-up and snapshot restore.
-- Keep the legacy engine isolated behind its protocol version; do not add
-  conditional rules throughout one ambiguous state machine.
+- Remove the preview one-phase live path rather than mixing two consensus
+  state machines.
 
 Exit: fixed and rotating policies recover automatically under skew, proposer
 failure, partial rounds, restart, and healed partitions while safety tests
 attempt conflicting certificates.
 
-### Phase 4 — retained-chain activation and historical reconciliation
+### Phase 4 — fresh-chain activation and historical reconciliation
 
-- Implement threshold transition-record collection and ambiguity analysis.
-- Activate v3 at an exact height without changing genesis or committed state.
+- Enforce app-block v3/consensus v2/revised-observation-v1 from genesis.
+- Reject retained preview chainstate and every former observation encoding.
 - Add local historical block lookup and deterministic observer rerun.
 - Add proof-carrying historical verification only if retention is insufficient.
 - Expose authenticated pointer-only reconciliation and complete audit events.
 
-Exit: a retained legacy chain with split locks either carries the only possibly
-certified value or proves a fresh value safe; a missed historical deposit can
-be recovered only when a quorum independently verifies it.
+Exit: no mixed-version chain can start; a missed historical deposit can be
+recovered only when a quorum independently verifies a pointer-only request.
 
 ### Phase 5 — qualification and graduation
 
@@ -865,7 +800,7 @@ be recovered only when a quorum independently verifies it.
   topology.
 - Force L1-tip skew, fixed/rotating leader failure, abrupt restart, partitions,
   pool pressure, journal pressure, ordinary and deep rollback simulations,
-  catch-up, and retained activation.
+  catch-up, and fresh-chain restart.
 - Verify identity/root/certificate/cursor agreement and the settlement
   application's exactly-once reserve invariants.
 - Update the consensus guide, API docs, operator runbook, release notes, and
@@ -917,10 +852,8 @@ value-bearing chains.
 
 ### 12.4 Compatibility and cross-node agreement
 
-- Retained activation preserves genesis identity, tip parent, state root,
-  membership history, and all finalized legacy blocks.
-- Old nodes stop at activation and cannot form a legacy quorum with fewer than
-  the allowed faulty signers.
+- Former preview chainstate and wire versions fail startup/validation; the
+  chain begins with one unambiguous v3 genesis identity.
 - All members agree after failure/recovery on height, view, block/value hash,
   state root, prepared/finality/new-view evidence, membership epoch digest,
   consensus and observer profile digests, capability-manifest digest,
@@ -968,11 +901,11 @@ verifies. Rejected as an authority.
 Can strengthen completeness for a specific bridge contract but does not solve
 generic observers or consensus recovery. Deferred as a product-specific layer.
 
-### New genesis only
+### Retained-chain transition
 
-Simpler, but unnecessarily discards retained identity/state and does not help a
-stalled retained deployment. Supported as an option, not the only activation
-path.
+Rejected for the preview release. It adds ambiguity analysis and compatibility
+surface without preserving production state. A future released protocol would
+require a separate transition ADR rather than weakening this clean cutover.
 
 ## 14. Consequences
 
@@ -984,8 +917,7 @@ path.
   message TTL or pool capacity.
 - Proposer omission and reordering become voter-verifiable.
 - Historical repair does not create an operator or indexer oracle.
-- Retained histories can migrate without changing their genesis or committed
-  state when transition evidence proves the boundary safe.
+- The clean cutover avoids a retained-state ambiguity protocol during preview.
 
 ### Costs and risks
 
@@ -996,11 +928,10 @@ path.
   bounds and deduplication.
 - The observation lane and cursor rules are consensus-critical and can halt on
   plugin nondeterminism.
-- Retained activation from ambiguous legacy locks may require more than `q`
-  member reports or may halt until all ambiguity is resolved.
+- Existing preview app-chain state must be archived and restarted from genesis.
 - Historical proof support may require additional Cardano block/commitment
   retention.
-- Adversarial, crash-consistency, migration, and multi-node testing becomes a
+- Adversarial, crash-consistency, fresh-start, and multi-node testing becomes a
   release gate rather than optional soak coverage.
 
 These costs are preferred to silent loss of value-bearing L1 facts or automatic

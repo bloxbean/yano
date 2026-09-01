@@ -113,7 +113,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onConsensusMessage(proposal(signer, l1SlotWithoutHash, 6));
             engine.onConsensusMessage(proposal(signer, tooManyMessages, 7));
             verify(logger, timeout(5_000).times(4)).warn(
-                    "{} is outside the app-block v2 structural profile — rejecting", "Proposal");
+                    "{} is outside the app-block v3 structural profile — rejecting", "Proposal");
             engine.onConsensusMessage(proposal(signer, duplicateMessages, 8));
             verify(logger, timeout(5_000)).warn(
                     "{} has duplicate or malformed message identities — rejecting", "Proposal");
@@ -136,7 +136,7 @@ class AppChainEngineIdentityValidationTest {
             AppMessage oversizedReservedBody = signedMessage(signer, CHAIN,
                     "~l1/test-observer", oversizedObservationBody, 11);
             AppMessage embeddedConsensus = signedMessage(signer, CHAIN,
-                    ConsensusCodec.TOPIC_VOTE, new byte[]{1}, 12);
+                    ConsensusCodec.TOPIC_PREPARE, new byte[]{1}, 12);
             AppMessage embeddedAnchor = signedMessage(signer, CHAIN,
                     ScriptAnchorService.TOPIC_SIGN, new byte[]{1}, 13);
             List<AppBlock> invalidMessageProfiles = List.of(
@@ -166,7 +166,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onConsensusMessage(signedMessage(signer, CHAIN,
                     ConsensusCodec.TOPIC_PROPOSE, oversizedProposal, proposalSequence));
             verify(logger, timeout(5_000)).warn(
-                    "Proposal exceeds the v1 proposal byte budget ({} > {}) — rejecting",
+                    "Proposal exceeds the v3 proposal byte budget ({} > {}) — rejecting",
                     oversizedProposal.length, config.proposalMaxBytes());
 
             byte[] deeplyNestedCbor = nestedIndefiniteArrays(3_000);
@@ -202,7 +202,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(l1SlotWithoutHash)));
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(tooManyMessages)));
             verify(logger, timeout(5_000).times(4)).warn(
-                    "{} is outside the app-block v2 structural profile — rejecting",
+                "{} is outside the app-block v3 structural profile — rejecting",
                     "Catch-up block");
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(duplicateMessages)));
             verify(logger, timeout(5_000)).warn(
@@ -217,7 +217,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onCertifiedBlocks(List.of(
                     new byte[(int) config.blockMaxBytes() + 1]));
             verify(logger, timeout(5_000)).warn(
-                    "Catch-up block exceeds the configured v1 byte profile — stopping batch");
+                    "Catch-up block exceeds the configured v3 byte profile — stopping batch");
 
             engine.onCertifiedBlocks(List.of(deeplyNestedCbor));
             verify(logger, timeout(5_000)).warn(
@@ -293,7 +293,7 @@ class AppChainEngineIdentityValidationTest {
                 config, ledger, new AppMsgPool(10), new NoOpMachine(), follower,
                 new MemberGroup(members, 2), new AlwaysSequencer(), 60_000, 10,
                 config.blockMaxBytes(), (topic, body) -> {
-                    if (ConsensusCodec.TOPIC_VOTE.equals(topic)) {
+                    if (ConsensusCodec.TOPIC_PREPARE.equals(topic)) {
                         voted.countDown();
                     }
                     return null;
@@ -366,14 +366,14 @@ class AppChainEngineIdentityValidationTest {
     }
 
     private static AppBlock certify(AppBlock block, AppMessageSigner signer) {
-        byte[] hash = AppBlockCodec.blockHash(block);
+        byte[] hash = AppChainEngine.commitDigest(block);
         return block.withCert(new FinalityCert(FinalityCert.SCHEME_ED25519,
                 List.of(new FinalityCert.Signature(signer.publicKey(), signer.sign(hash)))));
     }
 
     private static List<FinalityCert> invalidCertificates(
             AppBlock block, AppMessageSigner signer, AppMessageSigner otherMember) {
-        byte[] hash = AppBlockCodec.blockHash(block);
+        byte[] hash = AppChainEngine.commitDigest(block);
         FinalityCert.Signature valid = new FinalityCert.Signature(
                 signer.publicKey(), signer.sign(hash));
         FinalityCert.Signature validOther = new FinalityCert.Signature(

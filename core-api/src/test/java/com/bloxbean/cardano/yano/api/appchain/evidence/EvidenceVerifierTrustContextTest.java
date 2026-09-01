@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusDigests;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
@@ -398,7 +399,7 @@ class EvidenceVerifierTrustContextTest {
                 0, new byte[0], 1_000 + height, AppBlockCodec.messagesRoot(messages),
                 filled(7), messages, proposer, FinalityCert.empty());
         byte[] signature = CryptoConfiguration.INSTANCE.getSigningProvider()
-                .sign(AppBlockCodec.blockHash(unsigned), seed);
+                .sign(ConsensusDigests.commit(unsigned), seed);
         return unsigned.withCert(new FinalityCert(scheme, List.of(
                 new FinalityCert.Signature(
                         KeyGenUtil.getPublicKeyFromPrivateKey(seed), signature))));

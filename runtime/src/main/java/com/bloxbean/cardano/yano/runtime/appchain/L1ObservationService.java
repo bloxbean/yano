@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yano.api.appchain.SequencedL1Observation;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
@@ -9,6 +11,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
+import org.rocksdb.WriteBatch;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -16,6 +19,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
@@ -37,7 +41,9 @@ final class L1ObservationService {
     /** Window size in L1 blocks (mirrors the recent-L1-points window). */
     private final int windowBlocks;
     private final List<L1Observer> observers;
+    private final L1ObservationJournal journal;
     private final Logger log;
+    private volatile boolean healthy = true;
 
     /** slot → (observation key → claim). Bounded to {@link #windowBlocks}. */
     private final ConcurrentSkipListMap<Long, Map<String, byte[]>> window =
@@ -56,9 +62,25 @@ final class L1ObservationService {
             new ConcurrentSkipListMap<>();
 
     L1ObservationService(List<L1Observer> observers, int windowBlocks, Logger log) {
+        this(observers, windowBlocks, null, log);
+    }
+
+    L1ObservationService(List<L1Observer> observers,
+                         int windowBlocks,
+                         L1ObservationJournal journal,
+                         Logger log) {
         this.observers = List.copyOf(observers);
         this.windowBlocks = Math.max(windowBlocks, 64);
+        this.journal = journal;
         this.log = log;
+    }
+
+    L1ObservationService withJournal(L1ObservationJournal durableJournal) {
+        if (journal != null) {
+            throw new IllegalStateException("L1 observation journal is already attached");
+        }
+        return new L1ObservationService(observers, windowBlocks,
+                Objects.requireNonNull(durableJournal, "durableJournal"), log);
     }
 
     /**
@@ -78,6 +100,14 @@ final class L1ObservationService {
     static L1ObservationService fromRegistry(Map<String, String> pluginSettings,
                                              int windowBlocks,
                                              PluginProviderRegistry providers,
+                                             Logger log) {
+        return fromRegistry(pluginSettings, windowBlocks, providers, null, log);
+    }
+
+    static L1ObservationService fromRegistry(Map<String, String> pluginSettings,
+                                             int windowBlocks,
+                                             PluginProviderRegistry providers,
+                                             L1ObservationJournal journal,
                                              Logger log) {
         Map<String, Map<String, String>> byId = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : pluginSettings.entrySet()) {
@@ -109,7 +139,7 @@ final class L1ObservationService {
             });
         }
         return observers.isEmpty() ? null
-                : new L1ObservationService(observers, windowBlocks, log);
+                : new L1ObservationService(observers, windowBlocks, journal, log);
     }
 
     private static L1Observer loadProvided(String type, String observerId,
@@ -169,7 +199,7 @@ final class L1ObservationService {
      * (drained once stable — see {@link #drainInjectable}).
      */
     void onL1Block(long slot, byte[] blockHash, Block block) {
-        byte[] stableBlockHash = java.util.Objects.requireNonNull(
+        byte[] stableBlockHash = Objects.requireNonNull(
                 blockHash, "blockHash").clone();
         if (stableBlockHash.length != 32) {
             throw new IllegalArgumentException("L1 block hash must be 32 bytes");
@@ -210,7 +240,16 @@ final class L1ObservationService {
         blockHashes.put(slot, stableBlockHash.clone());
         newestSlot = slot;
         if (!all.isEmpty()) {
-            pendingInjection.put(slot, all);
+            if (journal != null) {
+                try {
+                    journal.observe(all);
+                } catch (RuntimeException failure) {
+                    healthy = false;
+                    throw failure;
+                }
+            } else {
+                pendingInjection.put(slot, all);
+            }
         }
         while (window.size() > windowBlocks) {
             window.pollFirstEntry();
@@ -237,6 +276,14 @@ final class L1ObservationService {
      * only the currently-scheduled proposer injects the result.
      */
     List<L1Observation> drainInjectable(long stableSlot) {
+        return drainInjectable(stableSlot, AppChainConfig.MAX_BLOCK_MESSAGES,
+                AppChainConfig.MAX_BLOCK_BYTES);
+    }
+
+    List<L1Observation> drainInjectable(long stableSlot, int maxCount, long maxBytes) {
+        if (journal != null) {
+            return journal.pending(stableSlot, maxCount, maxBytes);
+        }
         List<L1Observation> ready = new ArrayList<>();
         var eligible = pendingInjection.headMap(stableSlot, true);
         for (var iterator = eligible.entrySet().iterator(); iterator.hasNext(); ) {
@@ -246,11 +293,41 @@ final class L1ObservationService {
         return ready;
     }
 
+    AppChainEngine.L1RefVerdict verifyPrefix(List<L1Observation> actual,
+                                             long stableSlot,
+                                             int maxCount,
+                                             long maxBytes) {
+        if (!healthy) {
+            return AppChainEngine.L1RefVerdict.MISMATCH;
+        }
+        if (newestSlot < stableSlot) {
+            return AppChainEngine.L1RefVerdict.AHEAD;
+        }
+        List<L1Observation> expected = drainInjectable(stableSlot, maxCount, maxBytes);
+        if (actual.size() != expected.size()) {
+            return AppChainEngine.L1RefVerdict.MISMATCH;
+        }
+        for (int index = 0; index < expected.size(); index++) {
+            if (!Arrays.equals(actual.get(index).encode(), expected.get(index).encode())) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+        }
+        return AppChainEngine.L1RefVerdict.OK;
+    }
+
     /** L1 rollback: forget observations above the rollback point. */
     void onL1Rollback(long rollbackToSlot) {
         window.tailMap(rollbackToSlot, false).clear();
         blockHashes.tailMap(rollbackToSlot, false).clear();
         pendingInjection.tailMap(rollbackToSlot, false).clear();
+        if (journal != null) {
+            try {
+                journal.rollback(rollbackToSlot);
+            } catch (RuntimeException failure) {
+                healthy = false;
+                throw failure;
+            }
+        }
         newestSlot = Math.min(newestSlot, rollbackToSlot);
     }
 
@@ -266,6 +343,9 @@ final class L1ObservationService {
         }
         Map<String, byte[]> atSlot = window.get(observation.slot());
         if (atSlot == null) {
+            if (journal != null && journal.contains(observation)) {
+                return AppChainEngine.L1RefVerdict.OK;
+            }
             // Below the window (restart/catch-up): the certified chain vouches
             return window.isEmpty() || observation.slot() < window.firstKey()
                     ? AppChainEngine.L1RefVerdict.UNKNOWN
@@ -286,6 +366,44 @@ final class L1ObservationService {
         return !observers.isEmpty();
     }
 
+    boolean healthy() {
+        return healthy;
+    }
+
+    long newestSlot() {
+        return newestSlot;
+    }
+
+    boolean acknowledge(L1Observation observation) {
+        if (journal == null) {
+            return false;
+        }
+        try {
+            return journal.acknowledge(observation);
+        } catch (RuntimeException failure) {
+            healthy = false;
+            throw failure;
+        }
+    }
+
+    void stageFinalized(AppBlock block, WriteBatch batch) {
+        if (journal != null) {
+            journal.stageFinalized(block, batch);
+        }
+    }
+
+    void markInFlight(AppBlock block) {
+        if (journal != null) {
+            journal.markInFlight(block);
+        }
+    }
+
+    void markPrepared(AppBlock block) {
+        if (journal != null) {
+            journal.markPrepared(block);
+        }
+    }
+
     Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         for (L1Observer observer : observers) {
@@ -293,6 +411,10 @@ final class L1ObservationService {
         }
         status.put("windowSlots", window.isEmpty()
                 ? "empty" : window.firstKey() + ".." + window.lastKey());
+        status.put("healthy", healthy);
+        if (journal != null) {
+            status.put("journal", journal.status());
+        }
         return status;
     }
 }

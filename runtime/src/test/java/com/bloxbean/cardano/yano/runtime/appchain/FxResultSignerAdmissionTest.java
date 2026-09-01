@@ -53,16 +53,15 @@ class FxResultSignerAdmissionTest {
     void proposerDropsUnauthorizedResult_andIncludesDesignatedSigner(@TempDir Path dir)
             throws Exception {
         String proposer = publicKey(PROPOSER_KEY);
-        String executor = publicKey(EXECUTOR_KEY);
         AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
                 .signingKeyHex(HexUtil.encodeHexString(PROPOSER_KEY))
-                .memberKeysHex(Set.of(proposer, executor))
+                .memberKeysHex(Set.of(proposer))
                 .proposerKeyHex(proposer)
                 .threshold(1)
                 .blockIntervalMs(150)
                 .pluginSettings(Map.of(
                         "effects.enabled", "true",
-                        "effects.result.signers", executor))
+                        "effects.result.signers", proposer))
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, emitter(), dir.toString(), null,
@@ -78,7 +77,7 @@ class FxResultSignerAdmissionTest {
 
         byte[] result = new FxResultBody(FxResultBody.BODY_VERSION, effectHeight, 0,
                 EffectOutcome.CONFIRMED, "tx-1".getBytes(StandardCharsets.UTF_8), null).encode();
-        AppMessage unauthorized = signedResult(PROPOSER_KEY, 4_000_000_000_000L, result);
+        AppMessage unauthorized = signedResult(EXECUTOR_KEY, 4_000_000_000_000L, result);
         node.onInboundMessages(List.of(unauthorized));
         awaitTrue("unauthorized result removed from pool",
                 () -> ((Number) node.status().get("poolSize")).intValue() == 0);
@@ -86,7 +85,7 @@ class FxResultSignerAdmissionTest {
         assertThat(node.messageHeight(unauthorized.getMessageId())).isEmpty();
         assertThat(node.stateValue(FxKeys.doneKey(effectId))).isEmpty();
 
-        AppMessage authorized = signedResult(EXECUTOR_KEY, 1, result);
+        AppMessage authorized = signedResult(PROPOSER_KEY, 4_000_000_000_001L, result);
         node.onInboundMessages(List.of(authorized));
         awaitTrue("authorized result finalized",
                 () -> node.messageHeight(authorized.getMessageId()).isPresent());

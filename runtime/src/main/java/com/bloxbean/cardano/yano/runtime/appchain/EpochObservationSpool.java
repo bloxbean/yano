@@ -98,7 +98,7 @@ final class EpochObservationSpool {
             throw new IllegalStateException("Epoch observation generation identity changed between passes");
         }
         L1Observation observation = L1Observation.epoch(
-                manifest.observerId(), boundary.newEpoch(), boundary.boundarySlot(),
+                manifest.observerId(), boundary.newEpoch(), index, boundary.boundarySlot(),
                 boundary.boundaryBlockHash(), claim);
         byte[] observationBytes = observation.encode();
         if (observationBytes.length > AppChainConfig.MAX_MESSAGE_BYTES) {
@@ -184,6 +184,41 @@ final class EpochObservationSpool {
             }
         }
         return List.copyOf(offered);
+    }
+
+    synchronized List<L1Observation> pending(long maximumBoundaryBlockNumber,
+                                             int maxMessages,
+                                             long maxPayloadBytes) {
+        if (maxMessages <= 0 || maxPayloadBytes <= 0) {
+            return List.of();
+        }
+        List<L1Observation> result = new ArrayList<>();
+        long bytes = 0;
+        for (JobEntry entry : jobs().stream()
+                .filter(value -> value.job().state() == State.READY
+                        || value.job().state() == State.OFFERED)
+                .filter(value -> value.job().boundary().boundaryBlockNumber()
+                        <= maximumBoundaryBlockNumber)
+                .sorted(Comparator.comparingLong((JobEntry value) ->
+                                value.job().boundary().boundaryBlockNumber())
+                        .thenComparing(value -> value.job().manifest().observerId()))
+                .toList()) {
+            byte[] jobDigest = digest(entry.key());
+            for (AppLedgerStore.EpochSpoolEntry encoded : ledger.epochSpoolScan(
+                    recordPrefix(jobDigest), MAX_RECORDS_PER_SCAN)) {
+                Record record = decodeRecord(encoded.value());
+                if (record.state() == State.FINALIZED) {
+                    continue;
+                }
+                int nextBytes = record.observationBytes().length;
+                if (result.size() == maxMessages || bytes > maxPayloadBytes - nextBytes) {
+                    return List.copyOf(result);
+                }
+                result.add(requireObservation(record.observationBytes()));
+                bytes += nextBytes;
+            }
+        }
+        return List.copyOf(result);
     }
 
     synchronized void offerFailed(Offered offered) {

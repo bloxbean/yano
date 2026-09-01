@@ -228,6 +228,14 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         return unhealthyReason == null;
     }
 
+    List<L1Observation> pendingForProposal(int maxMessages, long maxPayloadBytes) {
+        long latest = latestAppliedBlockNumber.get();
+        if (latest < stabilityDepth) {
+            return List.of();
+        }
+        return spool.pending(latest - stabilityDepth, maxMessages, maxPayloadBytes);
+    }
+
     private void wake() {
         wakeVersion.incrementAndGet();
         scheduleWake();
@@ -346,7 +354,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
                                 "L1 epoch observer emitted non-consecutive chunk indexes");
                     }
                     L1Observation encoded = L1Observation.epoch(
-                            manifest.observerId(), boundary.newEpoch(),
+                            manifest.observerId(), boundary.newEpoch(), index,
                             boundary.boundarySlot(), boundary.boundaryBlockHash(), claim);
                     if (encoded.encode().length > maxBytesPerOffer) {
                         throw new IllegalStateException(

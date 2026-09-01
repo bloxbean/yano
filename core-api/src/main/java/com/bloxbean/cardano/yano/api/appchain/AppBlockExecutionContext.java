@@ -148,6 +148,8 @@ public final class AppBlockExecutionContext {
                 block.version(),
                 block.chainId(),
                 block.height(),
+                block.consensusContextDigest().clone(),
+                block.view(),
                 block.prevHash().clone(),
                 block.l1Slot(),
                 block.l1BlockHash().clone(),
@@ -156,6 +158,7 @@ public final class AppBlockExecutionContext {
                 block.stateRoot().clone(),
                 messages,
                 block.proposer().clone(),
+                block.justification().clone(),
                 new FinalityCert(block.cert().scheme(), signatures));
     }
 

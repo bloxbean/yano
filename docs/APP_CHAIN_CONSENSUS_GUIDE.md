@@ -84,9 +84,11 @@ business rule is a **deterministic no-op** on every member.
 
 | Field | Notes |
 |---|---|
-| `version` | block format version (1) |
+| `version` | block format version (3) |
 | `chainId` | chain identity |
 | `height` | genesis = 1 |
+| `consensusContextDigest` | commits genesis, membership, quorum, and consensus/observer profiles |
+| `view` | certified-consensus view at this height |
 | `prevHash` | 32 zero bytes at height 1 |
 | `l1Slot`, `l1BlockHash` | the stable L1 reference (§6), 0/empty when disabled |
 | `timestamp` | proposer wall-clock millis — the ONLY time a state machine may use |
@@ -94,44 +96,38 @@ business rule is a **deterministic no-op** on every member.
 | `stateRoot` | MPF root AFTER applying this block (§7) |
 | `messages` | the full ordered message envelopes |
 | `proposer` | Ed25519 public key |
+| `justification` | empty in view 0; canonical `NewViewCertificate` in higher views |
 | `cert` | finality certificate: `(scheme=ed25519, [(signer, signature)...])` |
 
 **The block hash covers the header only** — blake2b-256 over
-`[version, chainId, height, prevHash, l1Slot, l1BlockHash, timestamp,
-messagesRoot, stateRoot]`. Messages are bound via `messagesRoot`, history via
-`prevHash`; the proposer and cert are *outside* the hash. That is deliberate:
-votes are signatures over a stable target, and the finality cert can be
-attached afterwards (`withCert`) without changing the hash the members
-signed.
+the v3 consensus identity, value fields, proposer, and justification digest.
+Messages are bound via `messagesRoot`, history via `prevHash`; only the cert is
+outside the hash, so it can be attached with `withCert`.
 
 ## 4. The consensus round
 
-Consensus messages are ordinary signed app-message envelopes on three
-reserved topics: `~consensus/propose`, `~consensus/vote`, `~consensus/cert`
-(`ConsensusCodec`). A proposal body is the full serialized block; a vote is
-CBOR `[height, block-hash, signature-over-block-hash]`; a cert notice is
-`[height, block-hash, cert-cbor]`.
+Consensus messages are ordinary signed envelopes on `propose`, `prepare`,
+`prepared`, `commit`, `timeout`, `new-view`, and `cert` topics under
+`~consensus/`. Votes and certificates use canonical, bounded CBOR and
+domain-separated signatures.
 
 ### 4.1 Proposing
 
-Every member ticks every `block.interval-ms`; the tick self-gates through
-the sequencer mode, so only the scheduled proposer proceeds:
+Every member ticks every `block.interval-ms`; the framework computes the same
+leader from committed context on every node, so only that member proceeds:
 
-1. An in-flight round blocks a new one until `round-timeout`
-   (`max(5 × interval, 10s)`); on timeout the round is discarded but its
-   **vote lock stays** (§5).
-2. If a vote lock exists at `tip+1`: re-gossip the locked proposal (partial
-   round recovery) — or, if the locked proposal is unrecoverable, propose
-   around it (§5).
-3. `sequencerMode.shouldProposeNow(height)` — is it my turn (§6)?
-4. Select messages from the pool: cap by `block.max-bytes` (primary; the
+1. If a round times out, broadcast a durable signed timeout for the next view.
+2. In view 0, the configured policy selects the initial leader. In higher
+   views, the framework selects one deterministic leader from the certified
+   context.
+3. Select the mandatory durable L1 prefix, then ordinary messages: cap by
+   `block.max-bytes` (primary; the
    serialized block is trimmed to fit) and `block.max-messages` (backstop);
    drop already-finalized ids, stale per-sender seqs, and messages the state
    machine's `validate()` rejects. Reserved `~` topics bypass application
    admission — a state machine cannot veto governance or consensus traffic.
-5. Build the candidate, **apply it locally** to compute the real
-   `stateRoot`, persist own vote lock + self-vote, broadcast the proposal,
-   and store the proposal envelope for later re-gossip.
+4. Build and **apply locally** to compute the real `stateRoot`, persist the
+   `(height, view, blockHash)` prepare lock, broadcast the proposal and PREPARE.
 
 No pending messages → no block. An idle chain produces nothing.
 
@@ -143,7 +139,7 @@ A member votes for a proposal only after ALL of:
 2. height is exactly `tip+1` (a block from the future is *deferred* and
    retried, not dropped — the transport never re-delivers);
 3. `block.proposer == envelope sender` (proposer authenticity);
-4. the sequencer mode accepts this proposer for this height/window (§6);
+4. the framework accepts this leader for the block's height and view;
 5. `prevHash` equals the local tip hash;
 6. `messagesRoot` recomputes from the message list;
 7. serialized size ≤ `block.max-bytes` (counted + rejected loudly);
@@ -155,28 +151,24 @@ A member votes for a proposal only after ALL of:
     (membership evaluated **at this height**), body ≤ `max-message-bytes`;
 11. per-sender seqs strictly increasing above the finalized floor (when
     `message.enforce-sender-seq` is on);
-12. no conflicting vote lock at this height (a different locked hash means
-    a split — counted, refused);
+12. no conflicting prepare lock in this view and no newer durable lock;
 13. **independent re-execution**: the follower applies the block itself and
     requires byte-identical `stateRoot`.
 
-Then and only then: persist the vote lock, sign the block hash, broadcast
-the vote. Check 13 is the heart of the system — *state is never trusted,
+Then and only then: persist the prepare lock and broadcast a domain-separated
+PREPARE. Check 13 is the heart of the system — *state is never trusted,
 always recomputed*. A nondeterministic state machine stalls its chain right
 here.
 
 ### 4.3 Finality
 
-Votes are aggregated by **any member holding the round** (a dead proposer
-cannot sink collected votes). Before counting, votes are re-filtered by
-membership-at-height — a member removed mid-round loses its vote. At
-`threshold` distinct valid signatures, the holder assembles the
-`FinalityCert`, commits the block, and broadcasts `~consensus/cert` so
-others can finalize immediately.
+Any member holding the round aggregates PREPARE votes. At `threshold`, it
+persists and broadcasts a `PreparedQC`; members then sign COMMIT. At a COMMIT
+quorum, the holder assembles `FinalityCert`, commits, and broadcasts `cert`.
 
 Cert verification never trusts the sender: scheme must be Ed25519, each
 signer must be a member at that height, duplicates are ignored, every
-signature is verified over the block hash, and the count must reach the
+signature is verified over the commit-domain digest, and the count must reach the
 threshold at that height.
 
 A block is **APP_FINAL** once committed with a threshold cert — via own
@@ -185,64 +177,41 @@ append-only; there is no rollback path below finality.
 
 ### 4.4 Timeouts and partial rounds
 
-A round that doesn't reach threshold within `round-timeout` is discarded —
-but the persisted vote lock and the stored proposer-signed envelope remain.
-The next tick re-gossips the original proposal and this member's vote
-(rate-limited), so a partial round converges as soon as enough members are
-reachable. A timed-out round never orphans a height.
+A timeout never deletes a lock. A quorum of signed timeout records forms a
+`NewViewCertificate`. The next leader must carry the highest valid PreparedQC
+value byte-for-byte; without one it may build a fresh deterministic value.
+Timeouts back off exponentially within configured bounds.
 
 ## 5. Vote locks — the safety core
 
-When a member votes (or proposes, which self-votes), it first persists
-`vote_lock_<height> → blockHash` plus the original proposal envelope. This
-enforces **at most one vote per member per height, across crashes and
-restarts** — the property that makes threshold certs unforgeable without
-`threshold` distinct colluding members.
+Before PREPARE, a member persists `(height, view, blockHash)`. It never prepares
+two values in one view or moves a lock backwards. PreparedQCs and their complete
+values are also durable across restart and must cross every higher view.
 
-The recovery ladder when a locked height wedges:
-
-1. **Recoverable lock** (stored envelope still TTL-valid): re-gossip it;
-   the round completes with other members' votes.
-2. **Unrecoverable lock** (envelope missing or its messages expired):
-   *propose-around* — the member proposes a FRESH block at that height
-   **without self-voting** (its vote at that height is spent). The round
-   then needs `threshold` votes from OTHER members, which self-heals for
-   thresholds ≤ n−1. Surfaced in status as `staleLockedHeight`.
-3. **Operator escape hatch**: `POST .../admin/unlock-stale-round` removes an
-   unrecoverable lock, consciously trading at-most-one-vote for liveness.
-   Only valid when the round is provably unrecoverable.
+There is no stale-lock deletion endpoint. Expired proposals recover only via a
+quorum-certified higher view; L1-invalidated prepared values quarantine rather
+than unlock.
 
 ## 6. Sequencer modes and membership
 
 ### 6.1 Fixed
 
-`sequencer.proposer` names one member; it alone proposes, everyone else
-validates and votes. Proposer death is an operational event (restart it, or
-reconfigure). Simplest to reason about; the demo cluster's `orders-chain`
-uses this.
+`sequencer.proposer` selects the view-0 leader. If it cannot complete the
+round, a quorum-certified timeout advances the view and the next member in
+canonical member order becomes leader. No configuration change or lock
+deletion is needed.
 
-### 6.2 Rotating (L1-slot-clocked)
+### 6.2 Rotating
 
-No fixed proposer — proposership rotates over **L1 slot windows**, using
-Cardano's clock as the shared scheduler:
+The view-0 leader is derived from the committed consensus context and parent
+block hash. Higher views advance through the canonically sorted member list.
+This gives every member the same leader even when their newest L1 tips differ.
+The L1 reference remains proposal data and is verified independently (§6.3);
+it is not the leader clock.
 
-```
-window(slot)   = slot / window-slots            (default 60 slots)
-proposer(w, h) = sortedMembersAt(h)[ blake2b256(chainId ‖ " " ‖ w) mod n ]
-```
-
-Every member computes the same function against its own stable L1 view, so
-"whose turn is it" needs no extra protocol. Consequences:
-
-- **No L1 clock yet → nobody proposes** and incoming proposals are deferred;
-  rotating mode refuses to start without an L1 event feed.
-- **Scheduled proposer offline → that window is simply empty.** The next
-  window (≤ `window-slots` L1 slots later) selects a different member. There
-  is no intra-window failover by design — the clock IS the failover.
-- Proposals from the last `lookback-windows` (default 64) windows are still
-  accepted, so a partial round from an earlier window can finalize late.
-- Prefer thresholds like 2-of-3 over all-of-n in rotating mode (any single
-  offline member must not block every window's round).
+Both fixed and rotating policies require a quorum to advance a failed round.
+Choose a threshold that matches the stated fault model (§4), not merely the
+number of normally-online nodes.
 
 ### 6.3 The L1 reference (both modes)
 
@@ -251,7 +220,7 @@ reference at least that many blocks below the L1 tip. Followers verify it
 against their **own** L1 view: a fabricated ref is rejected fail-closed, a
 ref slightly ahead of the local view is deferred and retried, and slots must
 be monotonic across blocks. This pins app-chain history to L1 time — it is
-what makes rotation windows, observation stability (user guide §5.5) and
+what makes observation stability (user guide §5.5) and
 anchor recency meaningful.
 
 ### 6.4 Proposer vs anchor leader (don't conflate them)
@@ -285,9 +254,11 @@ trie nodes** (Merkle Patricia Forestry — the same construction as Aiken's
 
 The split of responsibilities:
 
-- **The state machine owns the trie.** Every `writer.put(key, value)` /
+- **The state machine and framework-authenticated keys share the trie.** Every
+  `writer.put(key, value)` /
   `delete(key)` in `apply()` is an MPF entry — individually provable against
-  the resulting root. The framework never writes into the trie.
+  the resulting root. The framework additionally writes reserved observation
+  cursor keys before commit, so delivery progress is covered by the same root.
 - **The framework owns everything else**: tip metadata, per-message and
   topic/sender indexes, per-sender replay floors, vote locks, governance
   epochs — all in RocksDB CFs *outside* the state commitment.
@@ -314,8 +285,8 @@ comes back through the same verification gauntlet as live consensus, minus
 what no longer applies:
 
 - height/prev-hash chain intact, messages-root recomputed;
-- proposer must have been a **member at that height** (mode-independent —
-  a certified block's legitimacy is its cert, not the live rotation window);
+- proposer must have been the deterministic built-in leader at that height and
+  view (custom extension modes retain their own view-0 validation);
 - L1 ref monotonic + consistent with the local L1 window (a ref ahead of the
   local view pauses the batch, it does not fail it);
 - observations re-verified fail-closed; message signatures re-verified
@@ -330,10 +301,11 @@ round. If a peer is ahead but local progress stalls, an
 ### 8.2 Restart semantics
 
 Persisted (RocksDB, all atomic with their block): blocks + certs, tip
-metadata, MPF trie + root, message/query indexes, per-sender floors, **vote
-locks + locked proposal envelopes**, membership epochs and pending
-governance. In-memory (lost on restart, by design): the pending pool,
-in-flight rounds (reconstructed from the persisted vote lock), gossip
+metadata, MPF trie + root, message/query indexes, per-sender floors, per-view
+prepare locks, prepared certificates + canonical proposal envelopes,
+membership epochs and pending governance. In-memory (lost on restart, by
+design): the pending pool, active round aggregation (reconstructed from
+persisted evidence), gossip
 dedup/counters, pending anchor rounds.
 
 Startup re-verifies rather than trusts:

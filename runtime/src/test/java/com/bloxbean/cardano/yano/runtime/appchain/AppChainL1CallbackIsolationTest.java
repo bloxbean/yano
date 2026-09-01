@@ -65,8 +65,8 @@ class AppChainL1CallbackIsolationTest {
     private static final String OBSERVER_TYPE = "controlled-l1-observer";
     private static final String OBSERVER_ID = "controlled";
     private static final String ANCHOR_TX_HASH = "ab".repeat(32);
-    private static final String PHASE_WARNING =
-            "App-chain L1 {} failed (errorType={})";
+    private static final String OBSERVER_WARNING =
+            "L1 observer failed on slot {} (errorType={})";
     private static final byte[] SIGNING_KEY = fill(32, 73);
     private static final String SIGNING_KEY_HEX = HexUtil.encodeHexString(SIGNING_KEY);
     private static final String PUBLIC_KEY = HexUtil.encodeHexString(
@@ -83,7 +83,7 @@ class AppChainL1CallbackIsolationTest {
         AssertionError phaseFailure = new AssertionError("observer phase failure");
         AssertionError diagnosticFailure = new AssertionError("logger backend failure");
         doThrow(diagnosticFailure).when(logger).warn(
-                PHASE_WARNING, "observation", AssertionError.class.getName());
+                OBSERVER_WARNING, 101L, AssertionError.class.getName());
 
         try (StartedHarness harness = startHarness("recoverable", controls, logger)) {
             harness.publish(applied(100, emptyBlock()));
@@ -93,7 +93,7 @@ class AppChainL1CallbackIsolationTest {
 
             assertThat(anchorHeight(harness.subsystem)).isEqualTo(1);
             assertThat(harness.anchoredEvents()).hasSize(1);
-            verify(logger).warn(PHASE_WARNING, "observation",
+            verify(logger).warn(OBSERVER_WARNING, 101L,
                     AssertionError.class.getName());
 
             // Replaying the inclusion event must not emit a second confirmation.
@@ -137,7 +137,7 @@ class AppChainL1CallbackIsolationTest {
 
             assertThat(anchorHeight(harness.subsystem)).isZero();
             assertThat(harness.anchoredEvents()).isEmpty();
-            verify(logger, never()).warn(PHASE_WARNING, "observation",
+            verify(logger, never()).warn(OBSERVER_WARNING, 101L,
                     TestVirtualMachineError.class.getName());
 
             harness.publish(applied(101, blockWithTx(ANCHOR_TX_HASH)));
@@ -158,7 +158,7 @@ class AppChainL1CallbackIsolationTest {
                 throw fatalDiagnostic;
             }
             return null;
-        }).when(logger).warn(PHASE_WARNING, "observation",
+        }).when(logger).warn(OBSERVER_WARNING, 101L,
                 AssertionError.class.getName());
 
         try (StartedHarness harness = startHarness("fatal-logger", controls, logger)) {
@@ -440,11 +440,9 @@ class AppChainL1CallbackIsolationTest {
     }
 
     private static final class ControlledMode implements SequencerMode {
-        private final Controls controls;
         private String selfKey;
 
         private ControlledMode(Controls controls) {
-            this.controls = controls;
         }
 
         @Override public String id() { return MODE_ID; }
@@ -463,16 +461,6 @@ class AppChainL1CallbackIsolationTest {
 
         @Override
         public Map<String, Object> status() {
-            Throwable failure = controls.statusFailure.getAndSet(null);
-            if (failure instanceof Error error) {
-                throw error;
-            }
-            if (failure instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            if (failure != null) {
-                throw new IllegalStateException(failure);
-            }
             return Map.of("currentProposer", selfKey);
         }
     }
@@ -490,6 +478,16 @@ class AppChainL1CallbackIsolationTest {
 
         @Override
         public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+            Throwable failure = controls.statusFailure.getAndSet(null);
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            if (failure instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (failure != null) {
+                throw new IllegalStateException(failure);
+            }
             if (controls.suppressObservations.get()) {
                 return List.of();
             }

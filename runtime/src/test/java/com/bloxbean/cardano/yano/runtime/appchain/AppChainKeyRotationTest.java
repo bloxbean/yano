@@ -50,7 +50,7 @@ class AppChainKeyRotationTest {
 
         AppChainConfig config = AppChainConfig.builder("rotate-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
-                .memberKeysHex(Set.of(pubA, pubB))
+                .memberKeysHex(Set.of(pubA))
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
@@ -65,10 +65,11 @@ class AppChainKeyRotationTest {
         awaitTrue("pre-rotation finalized",
                 () -> node.messageHeight(HexUtil.decodeHexString(id1)).isPresent());
 
-        assertThat(node.members()).containsExactlyInAnyOrder(pubA, pubB);
+        assertThat(node.members()).containsExactly(pubA);
         assertThat(node.effectiveThreshold()).isEqualTo(1);
 
-        // Stage 1: add C (idempotent)
+        // Stage 1: add B and C (C is idempotent)
+        node.addMember(pubB);
         node.addMember(pubC);
         node.addMember(pubC);
         assertThat(node.members()).containsExactlyInAnyOrder(pubA, pubB, pubC);
@@ -102,23 +103,25 @@ class AppChainKeyRotationTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("32-byte hex");
 
-        // Back to a workable single-node setup and prove the chain still runs
+        // Back to a safe one-member setup and prove the chain still runs.
+        // The two admin calls occur before another proposal is admitted.
         node.setThreshold(1);
+        node.removeMember(pubC);
         String id2 = node.submit("t", "after".getBytes(StandardCharsets.UTF_8));
         awaitTrue("post-rotation finalized",
                 () -> node.messageHeight(HexUtil.decodeHexString(id2)).isPresent());
 
         // status reflects the rotated group
-        assertThat(node.status().get("members")).isEqualTo(2);
+        assertThat(node.status().get("members")).isEqualTo(1);
         assertThat(node.status().get("threshold")).isEqualTo(1);
 
-        // Restart: the rotated override (A, C @ threshold 1) wins over the
-        // static config (A, B @ threshold 1)
+        // Restart: the rotated override (A @ threshold 1) wins over the
+        // last multi-member epoch.
         node.stop();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
         node.start();
-        assertThat(node.members()).containsExactlyInAnyOrder(pubA, pubC);
+        assertThat(node.members()).containsExactly(pubA);
         assertThat(node.effectiveThreshold()).isEqualTo(1);
 
         // And it still finalizes after the restart

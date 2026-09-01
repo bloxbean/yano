@@ -10,6 +10,7 @@ l1-observation = [
     version     : 1,
     observer-id : tstr .size (1..128),
     anchor      : transaction-anchor / epoch-anchor,
+    event-ordinal : uint,
     slot        : uint,
     block-hash  : bstr .size 32,
     claim       : bstr,

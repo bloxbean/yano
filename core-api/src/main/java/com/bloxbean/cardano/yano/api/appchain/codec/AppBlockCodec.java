@@ -20,10 +20,10 @@ import java.util.List;
 
 /**
  * Canonical CBOR codec for app blocks on the wire and in storage (ADR
- * app-layer/005 D9). Finality signs {@link #blockHash(AppBlock)}, which hashes
- * only the canonical header. The header commits the ordered message ids through
- * {@code messagesRoot}; it does not authenticate every serialized envelope
- * field, the proposer field, or the certificate container itself.
+ * app-layer/005 D9). Certified consensus signs domain-separated digests over
+ * {@link #blockHash(AppBlock)}, which hashes only the canonical header. The
+ * header commits the ordered message ids through {@code messagesRoot}, the
+ * proposer, and the justification digest; it excludes the certificate.
  * See cddl/appchain/app-block.cddl.
  */
 public final class AppBlockCodec {
@@ -36,12 +36,31 @@ public final class AppBlockCodec {
 
     /**
      * blake2b-256 over the CBOR header
-     * {@code [version, chain-id, height, prev-hash, l1-slot, l1-block-hash,
-     * timestamp, messages-root, state-root]}. The header binds the ordered
-     * message ids via messages-root and the committed history via prev-hash.
+     * canonical v3 wire header plus proposer and the justification digest. The
+     * header binds the ordered message ids via messages-root and the committed
+     * history via prev-hash.
      */
     public static byte[] blockHash(AppBlock block) {
-        return Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(headerArray(block)));
+        Array header = wireHeaderArray(block);
+        header.add(new ByteString(block.proposer()));
+        header.add(new ByteString(Blake2bUtil.blake2bHash256(block.justification())));
+        return Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(header));
+    }
+
+    /** Hash of the deterministic application value, excluding view/proposer/evidence. */
+    public static byte[] valueHash(AppBlock block) {
+        Array value = new Array();
+        value.add(new UnsignedInteger(block.version()));
+        value.add(new UnicodeString(block.chainId()));
+        value.add(new UnsignedInteger(block.height()));
+        value.add(new ByteString(block.consensusContextDigest()));
+        value.add(new ByteString(block.prevHash()));
+        value.add(new UnsignedInteger(block.l1Slot()));
+        value.add(new ByteString(block.l1BlockHash()));
+        value.add(new UnsignedInteger(block.timestamp()));
+        value.add(new ByteString(block.messagesRoot()));
+        value.add(new ByteString(block.stateRoot()));
+        return Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(value));
     }
 
     /**
@@ -72,7 +91,7 @@ public final class AppBlockCodec {
     }
 
     public static byte[] serialize(AppBlock block) {
-        Array arr = headerArray(block);
+        Array arr = wireHeaderArray(block);
 
         Array messagesArr = new Array();
         for (AppMessage message : block.messages()) {
@@ -80,6 +99,7 @@ public final class AppBlockCodec {
         }
         arr.add(messagesArr);
         arr.add(new ByteString(block.proposer()));
+        arr.add(new ByteString(block.justification()));
         arr.add(certArray(block.cert()));
 
         return CborSerializationUtil.serialize(arr);
@@ -96,22 +116,26 @@ public final class AppBlockCodec {
         int version = ((UnsignedInteger) items.get(0)).getValue().intValue();
         String chainId = ((UnicodeString) items.get(1)).getString();
         long height = ((UnsignedInteger) items.get(2)).getValue().longValue();
-        byte[] prevHash = ((ByteString) items.get(3)).getBytes();
-        long l1Slot = ((UnsignedInteger) items.get(4)).getValue().longValue();
-        byte[] l1BlockHash = ((ByteString) items.get(5)).getBytes();
-        long timestamp = ((UnsignedInteger) items.get(6)).getValue().longValue();
-        byte[] messagesRoot = ((ByteString) items.get(7)).getBytes();
-        byte[] stateRoot = ((ByteString) items.get(8)).getBytes();
+        byte[] contextDigest = ((ByteString) items.get(3)).getBytes();
+        long view = ((UnsignedInteger) items.get(4)).getValue().longValue();
+        byte[] prevHash = ((ByteString) items.get(5)).getBytes();
+        long l1Slot = ((UnsignedInteger) items.get(6)).getValue().longValue();
+        byte[] l1BlockHash = ((ByteString) items.get(7)).getBytes();
+        long timestamp = ((UnsignedInteger) items.get(8)).getValue().longValue();
+        byte[] messagesRoot = ((ByteString) items.get(9)).getBytes();
+        byte[] stateRoot = ((ByteString) items.get(10)).getBytes();
 
         List<AppMessage> messages = new ArrayList<>();
-        for (DataItem messageDI : ((Array) items.get(9)).getDataItems()) {
+        for (DataItem messageDI : ((Array) items.get(11)).getDataItems()) {
             messages.add(AppMsgSubmissionSerializers.deserializeAppMessage((Array) messageDI));
         }
-        byte[] proposer = ((ByteString) items.get(10)).getBytes();
-        FinalityCert cert = parseCert((Array) items.get(11));
+        byte[] proposer = ((ByteString) items.get(12)).getBytes();
+        byte[] justification = ((ByteString) items.get(13)).getBytes();
+        FinalityCert cert = parseCert((Array) items.get(14));
 
-        return new AppBlock(version, chainId, height, prevHash, l1Slot, l1BlockHash,
-                timestamp, messagesRoot, stateRoot, messages, proposer, cert);
+        return new AppBlock(version, chainId, height, contextDigest, view, prevHash,
+                l1Slot, l1BlockHash, timestamp, messagesRoot, stateRoot, messages,
+                proposer, justification, cert);
     }
 
     /**
@@ -172,11 +196,13 @@ public final class AppBlockCodec {
         }
     }
 
-    private static Array headerArray(AppBlock block) {
+    private static Array wireHeaderArray(AppBlock block) {
         Array arr = new Array();
         arr.add(new UnsignedInteger(block.version()));
         arr.add(new UnicodeString(block.chainId()));
         arr.add(new UnsignedInteger(block.height()));
+        arr.add(new ByteString(block.consensusContextDigest()));
+        arr.add(new UnsignedInteger(block.view()));
         arr.add(new ByteString(block.prevHash()));
         arr.add(new UnsignedInteger(block.l1Slot()));
         arr.add(new ByteString(block.l1BlockHash() != null ? block.l1BlockHash() : new byte[0]));
