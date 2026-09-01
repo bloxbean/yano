@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -59,5 +60,54 @@ class DurableEpochFileSourceTest {
         var restarted = new DurableEpochFileSource<>(ArchiveDatasetId.EPOCH_STAKE, temp, codec);
         assertThat(restarted.pending(10)).containsExactly(retained);
         assertThat(restarted.find(orphaned.jobId())).isEmpty();
+    }
+
+    @Test
+    void provisionalCaptureBindsWithoutCopyAndRecoversAnInterruptedManifestPublish() throws Exception {
+        EpochFactCodec<String> codec = new EpochFactCodec<>() {
+            public byte[] encode(String value) { return value.getBytes(StandardCharsets.UTF_8); }
+            public String decode(byte[] value) { return new String(value, StandardCharsets.UTF_8); }
+        };
+        var network = new ArchiveNetworkIdentity(1, "genesis");
+        var capture = new ProvisionalEpochArchiveJob(UUID.randomUUID(), network,
+                ArchiveDatasetId.REWARD, 1, 20, 200, 2_000,
+                "ledger-boundary-v1/rewards", "REWARD/rewards/20", Instant.EPOCH);
+        var job = new EpochArchiveJob(UUID.randomUUID(), network, ArchiveDatasetId.REWARD,
+                1, 20, 200, 2_000, 1_700_002_000L, new byte[] {9, 8, 7},
+                capture.sourceStateVersion(), capture.sourceReference(), Instant.EPOCH);
+        Path finalDirectory = temp.resolve("final");
+        var source = new DurableEpochFileSource<>(ArchiveDatasetId.REWARD, finalDirectory, codec);
+        var provisional = new DurableProvisionalEpochFileSource<>(
+                ArchiveDatasetId.REWARD, temp.resolve("provisional"), codec);
+        try (var writer = provisional.open(capture)) {
+            writer.append("first");
+            writer.append("second");
+            writer.commit();
+        }
+
+        var restarted = new DurableEpochFileSource<>(ArchiveDatasetId.REWARD, finalDirectory, codec);
+        var restartedProvisional = new DurableProvisionalEpochFileSource<>(
+                ArchiveDatasetId.REWARD, temp.resolve("provisional"), codec);
+        assertThat(restartedProvisional.pending()).containsExactly(capture);
+        var evidence = restartedProvisional.bind(capture, restarted, job);
+        assertThat(evidence.rowCount()).isEqualTo(2);
+        assertThat(temp.resolve("provisional/" + capture.captureId() + ".rows")).exists();
+        assertThat(finalDirectory.resolve(job.jobId() + ".rows")).exists();
+
+        // Model a crash after rows were rebound but before the final manifest survived.
+        Files.delete(finalDirectory.resolve(job.jobId() + ".properties"));
+        var recovered = new DurableEpochFileSource<>(ArchiveDatasetId.REWARD, finalDirectory, codec);
+        var recoveredProvisional = new DurableProvisionalEpochFileSource<>(
+                ArchiveDatasetId.REWARD, temp.resolve("provisional"), codec);
+        assertThat(recoveredProvisional.bind(capture, recovered, job)).isEqualTo(evidence);
+        try (var lease = recovered.acquire(job, Instant.now().plusSeconds(30))) {
+            assertThat(recovered.read(job, Optional.empty(), 10, lease).rows())
+                    .containsExactly("first", "second");
+        }
+
+        recovered.acknowledge(job);
+        recoveredProvisional.acknowledgeBound(job.jobId());
+        assertThat(recoveredProvisional.pending()).isEmpty();
+        assertThat(recovered.pending(10)).isEmpty();
     }
 }

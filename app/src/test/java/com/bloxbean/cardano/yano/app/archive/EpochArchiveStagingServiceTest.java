@@ -120,6 +120,55 @@ class EpochArchiveStagingServiceTest {
     }
 
     @Test
+    void locallyProducedBoundaryIsDurableBeforeCanonicalBindingAndRestartSafe() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(25)).thenReturn(Optional.empty());
+        when(ledger.slotToUnixTime(250)).thenReturn(1_700_000_250L);
+        var network = new ArchiveNetworkIdentity(1, "genesis");
+        var enabled = EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD);
+        Path root = temp.resolve("local");
+        var staging = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        var directlyAnnounced = new java.util.ArrayList<java.util.UUID>();
+        staging.setStagedArtifactListener((job, evidence) -> directlyAnnounced.add(job.jobId()));
+        var boundary = new EpochArchiveStagingSink.Boundary(5, 6, 250, 25);
+
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openRewards(6, "rewards")) {
+            writer.append(new EpochArchiveStagingSink.RewardFact(
+                    0, "01", null, "member", 5, 6, BigInteger.TEN, "local"));
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        assertThat(directlyAnnounced).isEmpty();
+        assertThat(staging.sources().stream()
+                .flatMap(binding -> binding.provisional().pending().stream())).hasSize(1);
+        assertThat(staging.sources().stream()
+                .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())).isEmpty();
+
+        var restarted = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        byte[] hash = new byte[] {2, 5};
+        var bound = restarted.bindCanonicalBoundary(25, 250, hash);
+        assertThat(bound).singleElement().satisfies(artifact -> {
+            assertThat(artifact.job().boundaryBlockHash()).containsExactly(hash);
+            assertThat(artifact.evidence().rowCount()).isEqualTo(1);
+        });
+        var job = bound.getFirst().job();
+        // Model a crash after final evidence deletion but before its provisional pointer cleanup.
+        restarted.sources().stream()
+                .filter(binding -> binding.source().find(job.jobId()).isPresent())
+                .findFirst().orElseThrow().source().acknowledge(job);
+        restarted.release(job.dataset(), job.jobId());
+
+        assertThat(restarted.sources().stream()
+                .flatMap(binding -> binding.provisional().pending().stream())).isEmpty();
+        assertThat(restarted.sources().stream()
+                .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())).isEmpty();
+        assertThat(root.resolve("completed/25.properties")).doesNotExist();
+    }
+
+    @Test
     void rollbackDiscardsSameEpochReplacementByBoundaryBlockAndIgnoresTmpMarkers() throws Exception {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);

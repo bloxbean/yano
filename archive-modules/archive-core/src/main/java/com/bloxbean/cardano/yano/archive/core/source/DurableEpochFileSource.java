@@ -8,6 +8,7 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -242,6 +243,50 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
         }
         return new StagedEvidence(Long.parseLong(p.getProperty("rowCount", "-1")), checksum,
                 Long.parseLong(p.getProperty("rowBytes", "-1")));
+    }
+
+    /**
+     * Publish already-durable provisional rows under their final canonical job identity.
+     * The caller retains the provisional source until sink acknowledgement.
+     */
+    public StagedEvidence adopt(EpochArchiveJob job, Path sourceRows, StagedEvidence evidence) {
+        requireJob(job);
+        if (Files.exists(manifest(job.jobId()))) {
+            StagedEvidence existing = evidenceOf(job);
+            if (!existing.equals(evidence)) {
+                throw new ArchiveStoreException("bound epoch source evidence changed for " + job.jobId());
+            }
+            verifyEvidence(job);
+            return existing;
+        }
+
+        DurableFiles.verify(sourceRows, evidence.checksum(), evidence.bytes());
+        Path temporaryRows = directory.resolve(job.jobId() + ".rows.partial");
+        try {
+            Files.deleteIfExists(temporaryRows);
+            try {
+                Files.createLink(temporaryRows, sourceRows);
+            } catch (UnsupportedOperationException | IOException unsupported) {
+                Files.copy(sourceRows, temporaryRows, StandardCopyOption.REPLACE_EXISTING);
+            }
+            DurableFiles.publish(temporaryRows, rows(job.jobId()));
+
+            Properties p = properties(job);
+            p.setProperty("rowCount", Long.toString(evidence.rowCount()));
+            p.setProperty("rowBytes", Long.toString(evidence.bytes()));
+            p.setProperty("rowChecksum", evidence.checksum());
+            Path temporaryManifest = Files.createTempFile(directory, job.jobId().toString(), ".manifest.tmp");
+            try (var out = Files.newOutputStream(temporaryManifest)) {
+                p.store(out, "yano epoch source");
+            }
+            DurableFiles.publish(temporaryManifest, manifest(job.jobId()));
+            return evidence;
+        } catch (Exception e) {
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("cannot adopt provisional epoch source " + job.jobId(), e);
+        } finally {
+            try { Files.deleteIfExists(temporaryRows); } catch (Exception ignored) { }
+        }
     }
 
     /**

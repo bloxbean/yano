@@ -5,6 +5,8 @@ import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
+import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
@@ -17,6 +19,8 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveSafetyWindows;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionCoordinate;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSectionType;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSink;
@@ -38,6 +42,8 @@ import com.bloxbean.cardano.yano.archive.core.projection.ProjectionOutboxStore;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionSinkLifecycle;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionStartupGuard;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionRestartReconciler;
+import com.bloxbean.cardano.yano.archive.core.source.DurableEpochFileSource;
+import com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob;
 import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -55,6 +61,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 
 /**
@@ -137,7 +144,7 @@ public class ProjectionHistoryService implements AutoCloseable {
     private volatile ProjectionSinkLifecycle sinkLifecycle;
     private volatile ProjectionOutboxConsumer consumer;
     private volatile Thread drainThread;
-    private volatile boolean draining;
+    private final DrainControl drainControl = new DrainControl();
     private final java.util.concurrent.atomic.LongAdder drainedBatches = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder drainedBlocks = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder drainFailures = new java.util.concurrent.atomic.LongAdder();
@@ -161,6 +168,42 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     /** Held for the genesis coordinate's block time. */
     private volatile LedgerQuery ledgerQuery;
+
+    /**
+     * Stops the drain cooperatively, without interrupting a JDBC commit.
+     *
+     * <p>An interrupt is useful for waking {@link Thread#sleep(long)}, but it is also observable
+     * by a driver while the thread is inside native database work. DuckDB can then abort an
+     * otherwise clean commit during application shutdown. A monitor gives us the same prompt
+     * wake-up while leaving an in-flight sink operation alone.
+     */
+    static final class DrainControl {
+        private final Object wakeup = new Object();
+        private volatile boolean running;
+
+        void start() {
+            running = true;
+        }
+
+        boolean isRunning() {
+            return running;
+        }
+
+        void stop() {
+            running = false;
+            synchronized (wakeup) {
+                wakeup.notifyAll();
+            }
+        }
+
+        void await(long millis) throws InterruptedException {
+            synchronized (wakeup) {
+                if (running) {
+                    wakeup.wait(millis);
+                }
+            }
+        }
+    }
 
     /**
      * The identity the sink was opened with.
@@ -1042,17 +1085,10 @@ public class ProjectionHistoryService implements AutoCloseable {
      * <p>The reference carries the file's own checksum, so the sink is bound to those exact
      * bytes, and the row count, so a truncated read cannot commit as a complete epoch.
      */
-    private void stageStagedFileArtifact(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob job,
-            com.bloxbean.cardano.yano.archive.core.source.DurableEpochFileSource.StagedEvidence evidence) {
+    private void stageStagedFileArtifact(EpochArchiveJob job,
+                                         DurableEpochFileSource.StagedEvidence evidence) {
         if (outbox == null) return;
-        var ref = new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
-                job.dataset(), Math.toIntExact(job.epoch()), job.boundaryBlockNumber(), job.boundarySlot(),
-                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation.STAGED_FILE,
-                job.jobId().toString(), 1, job.sourceStateVersion(),
-                java.util.OptionalLong.of(evidence.rowCount()), evidence.checksum(),
-                // A staged file is independent of chain retention: it is its own copy, so nothing
-                // about block-body pruning can take it away.
-                -1L);
+        var ref = stagedFileReference(job, evidence);
         // The reference must reach the outbox while its boundary block is still pending, or the
         // batch that carries it has already been committed and this becomes an artifact the sink
         // will never receive. Binding artifacts into the receipt digest turns that into a loud
@@ -1075,6 +1111,32 @@ public class ProjectionHistoryService implements AutoCloseable {
         log.info("ADR-039 staged evidence referenced: {} epoch {} ({} rows, digest {})",
                 job.dataset().logicalName(), job.epoch(), evidence.rowCount(),
                 evidence.checksum().substring(0, 16));
+    }
+
+    /** Stage a locally produced artifact in the same write batch as its canonical block. */
+    private void stageStagedFileArtifact(
+            ProjectionStagingWriter writer,
+            EpochArchiveStagingService.BoundArtifact artifact) {
+        if (outbox == null) return;
+        var job = artifact.job();
+        outbox.putArtifact(writer, job.boundaryBlockNumber(),
+                stagedFileReference(job, artifact.evidence()));
+        stagedBytesChanged();
+        log.info("ADR-039 local staged evidence bound: {} epoch {} ({} rows, digest {})",
+                job.dataset().logicalName(), job.epoch(), artifact.evidence().rowCount(),
+                artifact.evidence().checksum().substring(0, 16));
+    }
+
+    private ProjectionArtifactRef stagedFileReference(
+            EpochArchiveJob job, DurableEpochFileSource.StagedEvidence evidence) {
+        return new ProjectionArtifactRef(
+                job.dataset(), Math.toIntExact(job.epoch()), job.boundaryBlockNumber(), job.boundarySlot(),
+                ProjectionArtifactRepresentation.STAGED_FILE,
+                job.jobId().toString(), 1, job.sourceStateVersion(),
+                OptionalLong.of(evidence.rowCount()), evidence.checksum(),
+                // A staged file is independent of chain retention: it is its own copy, so nothing
+                // about block-body pruning can take it away.
+                -1L);
     }
 
     /** Start the ordered drain, once the guard has accepted the sink. */
@@ -1102,7 +1164,7 @@ public class ProjectionHistoryService implements AutoCloseable {
 
         long interval = config.getOptionalValue(
                 YanoPropertyKeys.History.PROJECTION_DRAIN_INTERVAL_MILLIS, Long.class).orElse(250L);
-        draining = true;
+        drainControl.start();
         drainThread = Thread.ofVirtual().name("adr039-projection-drain").start(() -> drainLoop(interval));
         log.info("ADR-039 projection sink '{}' opened; drain loop started ({} ms idle interval)",
                 sink, interval);
@@ -1264,7 +1326,7 @@ public class ProjectionHistoryService implements AutoCloseable {
      * stopping the loop would silently freeze the archive.
      */
     private void drainLoop(long idleIntervalMillis) {
-        while (draining) {
+        while (drainControl.isRunning()) {
             try {
                 RuntimeMaintenanceGate.ReadLease readLease = runtimeYano.maintenanceGate()
                         .map(gate -> gate.enterRead("projection outbox drain"))
@@ -1306,7 +1368,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 // accumulated. Backing off mid-bootstrap because nothing was committed yet
                 // would idle the loop through the whole backlog.
                 if (workPending) continue;
-                Thread.sleep(idleIntervalMillis);
+                drainControl.await(idleIntervalMillis);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -1315,7 +1377,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 lastDrainFailure = t.toString();
                 log.error("ADR-039 projection drain failed; retrying: {}", t.toString());
                 try {
-                    Thread.sleep(Math.max(idleIntervalMillis, 1_000L));
+                    drainControl.await(Math.max(idleIntervalMillis, 1_000L));
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     return;
@@ -1409,7 +1471,12 @@ public class ProjectionHistoryService implements AutoCloseable {
     }
 
     private void installShelleyPlusContributor(Yano yano) {
-        boolean installed = yano.installProjectionContributor(collector);
+        CanonicalProjectionContributor contributor = collector;
+        if (epochStaging != null) {
+            contributor = new EpochBindingProjectionContributor(
+                    collector, epochStaging, this::stageStagedFileArtifact);
+        }
+        boolean installed = yano.installProjectionContributor(contributor);
         if (!installed) {
             // Failing closed matters here: a silently uninstalled contributor would produce
             // an archive that looks healthy while missing every Shelley+ block.
@@ -2416,15 +2483,11 @@ public class ProjectionHistoryService implements AutoCloseable {
     public void close() {
         // Stop new sink work, let an in-flight commit finish, and preserve the outbox.
         // Shutdown never deletes pending projection data.
-        draining = false;
+        drainControl.stop();
         Thread thread = drainThread;
         if (thread != null) {
-            // The interrupt breaks the idle sleep; the join is what actually matters. Closing
-            // the sink while a commit is in flight would tear down the connection mid
-            // transaction. Correctness would survive it - an unacknowledged commit is
-            // recognised by its receipt on replay - but it would turn every clean shutdown
-            // into a crash-recovery path for no reason.
-            thread.interrupt();
+            // The cooperative signal breaks an idle/retry wait without interrupting JDBC. The
+            // join is what proves an in-flight operation completed before the sink is closed.
             try {
                 thread.join(SHUTDOWN_DRAIN_WAIT.toMillis());
             } catch (InterruptedException e) {

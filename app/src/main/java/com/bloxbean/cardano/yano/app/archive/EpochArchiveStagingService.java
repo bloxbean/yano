@@ -27,6 +27,8 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     private final Map<Dataset, Integer> projectedFrom;
     private final int firstPostByronEpoch;
     private final Map<String, SourceBinding<?>> sources = new ConcurrentHashMap<>();
+    /** Fast negative check: public-network blocks never scan provisional directories. */
+    private final Set<Long> provisionalBoundaries = ConcurrentHashMap.newKeySet();
     /** Durable evidence announced during the open boundary, even if a fast sink already released it. */
     private final Set<DatasetBoundary> announcedEvidence = ConcurrentHashMap.newKeySet();
     private volatile Boundary boundary;
@@ -70,6 +72,7 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         }
         catch (Exception e) { throw new ArchiveStoreException("cannot create epoch completion directory", e); }
         registerKnownSources();
+        refreshProvisionalBoundaries();
     }
 
     public boolean enabled(Dataset dataset) {
@@ -133,8 +136,10 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
             boolean present = announcedEvidence.contains(new DatasetBoundary(dataset, value.blockNumber()))
                     || sources().stream()
                     .filter(binding -> binding.dataset() == ArchiveDatasetId.valueOf(dataset.name()))
-                    .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())
-                    .anyMatch(job -> job.boundaryBlockNumber() == value.blockNumber());
+                    .anyMatch(binding -> binding.source().pending(Integer.MAX_VALUE).stream()
+                            .anyMatch(job -> job.boundaryBlockNumber() == value.blockNumber())
+                            || binding.provisional().pending().stream()
+                            .anyMatch(job -> job.boundaryBlockNumber() == value.blockNumber()));
             if (present) continue;
 
             FactWriter<?> empty = switch (dataset) {
@@ -151,9 +156,11 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     }
 
     private boolean hasPendingAtBoundary(long blockNumber) {
-        return sources().stream().flatMap(binding ->
-                        binding.source().pending(Integer.MAX_VALUE).stream())
-                .anyMatch(job -> job.boundaryBlockNumber() == blockNumber);
+        return sources().stream().anyMatch(binding ->
+                binding.source().pending(Integer.MAX_VALUE).stream()
+                        .anyMatch(job -> job.boundaryBlockNumber() == blockNumber)
+                        || binding.provisional().pending().stream()
+                        .anyMatch(job -> job.boundaryBlockNumber() == blockNumber));
     }
     public void abortBoundary(Boundary value) {
         if (!Objects.equals(boundary, value)) return;
@@ -183,15 +190,20 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
 
     void acknowledge(SourceBinding<?> binding, EpochArchiveJob job) {
         binding.source().acknowledge(job);
-        boolean remaining = sources().stream().flatMap(source -> source.source().pending(Integer.MAX_VALUE).stream())
-                .anyMatch(candidate -> candidate.boundaryBlockNumber() == job.boundaryBlockNumber());
+        binding.provisional().acknowledgeBound(job.jobId()).stream()
+                .map(ProvisionalEpochArchiveJob::boundaryBlockNumber)
+                .forEach(this::refreshProvisionalBoundary);
+        boolean remaining = hasPendingAtBoundary(job.boundaryBlockNumber());
         if (!remaining) try { Files.deleteIfExists(completion(job.boundaryBlockNumber())); }
         catch (Exception e) { throw new ArchiveStoreException("cannot clean epoch completion marker", e); }
     }
 
     int discardAfterEpoch(long epoch) {
         int discarded = 0;
-        for (SourceBinding<?> binding : sources()) discarded += binding.source().discardAfterEpoch(epoch);
+        for (SourceBinding<?> binding : sources()) {
+            discarded += discardProvisionalAfterEpoch(binding, epoch);
+            discarded += binding.source().discardAfterEpoch(epoch);
+        }
         try (var markers = Files.list(completedDirectory())) {
             for (Path marker : markers.filter(path -> Files.isRegularFile(path)
                     && path.getFileName().toString().endsWith(".properties")).toList()) {
@@ -199,12 +211,16 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
                 if (Long.parseLong(values.getProperty("newEpoch")) > epoch) Files.deleteIfExists(marker);
             }
         } catch (Exception e) { throw new ArchiveStoreException("cannot discard epoch completion markers", e); }
+        refreshProvisionalBoundaries();
         return discarded;
     }
 
     int discardAfterBlock(long block) {
         int discarded = 0;
-        for (SourceBinding<?> binding : sources()) discarded += binding.source().discardAfterBlock(block);
+        for (SourceBinding<?> binding : sources()) {
+            discarded += discardProvisionalAfterBlock(binding, block);
+            discarded += binding.source().discardAfterBlock(block);
+        }
         try (var markers = Files.list(completedDirectory())) {
             for (Path marker : markers.filter(path -> Files.isRegularFile(path)
                     && path.getFileName().toString().endsWith(".properties")).toList()) {
@@ -212,6 +228,7 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
                 if (Long.parseLong(values.getProperty("block")) > block) Files.deleteIfExists(marker);
             }
         } catch (Exception e) { throw new ArchiveStoreException("cannot discard epoch completion markers", e); }
+        refreshProvisionalBoundaries();
         return discarded;
     }
 
@@ -261,21 +278,34 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         if (!enabled(selected) || epoch < projectedFrom.getOrDefault(selected, Integer.MAX_VALUE)) return noop();
         try {
             Boundary current = Objects.requireNonNull(boundary, "epoch boundary was not prepared");
-            var canonical = chain.getCanonicalBlockReference(current.blockNumber()).orElseThrow(() ->
-                    new ArchiveStoreException("canonical epoch boundary is unavailable at block " + current.blockNumber()));
-            if (canonical.slot() != current.slot()) throw new ArchiveStoreException("epoch boundary slot mismatch");
             String key = dataset.name() + "/" + safePart(part);
             @SuppressWarnings("unchecked")
             SourceBinding<O> binding = (SourceBinding<O>) sources.computeIfAbsent(key,
                     ignored -> binding(key, dataset, codec, projection));
             String state = "ledger-boundary-v1/" + safePart(part);
-            UUID id = UUID.nameUUIDFromBytes((network.canonicalForm() + '|' + dataset + '|' + epoch + '|'
-                    + current.blockNumber() + '|' + HexUtil.encodeHexString(canonical.blockHash()) + '|' + state)
-                    .getBytes(StandardCharsets.UTF_8));
-            var job = new EpochArchiveJob(id, network, dataset, projection.projectionVersion(), epoch,
-                    current.blockNumber(), current.slot(), ledger.slotToUnixTime(current.slot()),
-                    canonical.blockHash(), state, key + "/" + epoch, Instant.now());
-            var output = binding.source().open(job);
+            String reference = key + "/" + epoch;
+            var canonical = chain.getCanonicalBlockReference(current.blockNumber());
+            EpochArchiveJob job = null;
+            ProvisionalEpochArchiveJob provisional = null;
+            DurableEpochFileSource.StagingWriter<O> output;
+            if (canonical.isPresent()) {
+                if (canonical.orElseThrow().slot() != current.slot()) {
+                    throw new ArchiveStoreException("epoch boundary slot mismatch");
+                }
+                job = canonicalJob(dataset, projection.projectionVersion(), epoch, current,
+                        canonical.orElseThrow().blockHash(), state, reference);
+                output = binding.source().open(job);
+            } else {
+                UUID captureId = UUID.nameUUIDFromBytes(("provisional|" + network.canonicalForm() + '|'
+                        + dataset + '|' + epoch + '|' + current.blockNumber() + '|' + current.slot()
+                        + '|' + state).getBytes(StandardCharsets.UTF_8));
+                provisional = new ProvisionalEpochArchiveJob(captureId, network, dataset,
+                        projection.projectionVersion(), epoch, current.blockNumber(), current.slot(),
+                        state, reference, Instant.now());
+                output = binding.provisional().open(provisional);
+            }
+            EpochArchiveJob committedJob = job;
+            ProvisionalEpochArchiveJob committedProvisional = provisional;
             return new FactWriter<>() {
                 private boolean done;
                 private boolean failed;
@@ -296,7 +326,13 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
                     try {
                         output.commit();
                         // Only now is the evidence durable, so only now may anything reference it.
-                        announceStaged(binding, job);
+                        if (committedJob != null) {
+                            announceStaged(binding, committedJob);
+                        } else {
+                            provisionalBoundaries.add(committedProvisional.boundaryBlockNumber());
+                            announcedEvidence.add(new DatasetBoundary(selected,
+                                    committedProvisional.boundaryBlockNumber()));
+                        }
                     }
                     catch (Exception e) { output.close(); fail(selected, Math.toIntExact(epoch), e); }
                 }
@@ -305,6 +341,46 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         } catch (Exception e) {
             fail(selected, Math.toIntExact(epoch), e); return noop();
         }
+    }
+
+    /** Evidence bound to the exact block that will atomically carry its outbox reference. */
+    record BoundArtifact(EpochArchiveJob job, DurableEpochFileSource.StagedEvidence evidence) { }
+
+    boolean hasProvisionalBoundary(long blockNumber) {
+        return provisionalBoundaries.contains(blockNumber);
+    }
+
+    List<BoundArtifact> bindCanonicalBoundary(long blockNumber, long slot, byte[] blockHash) {
+        if (!hasProvisionalBoundary(blockNumber)) return List.of();
+        if (blockHash == null || blockHash.length == 0) {
+            throw new IllegalArgumentException("canonical boundary hash is required");
+        }
+        List<BoundArtifact> bound = new ArrayList<>();
+        for (SourceBinding<?> binding : sources()) {
+            for (ProvisionalEpochArchiveJob capture : binding.provisional().pending()) {
+                if (capture.boundaryBlockNumber() != blockNumber) continue;
+                if (capture.boundarySlot() != slot) {
+                    throw new ArchiveStoreException("epoch boundary slot mismatch at block " + blockNumber);
+                }
+                if (!isCompleted(capture)) continue;
+                EpochArchiveJob job = canonicalJob(capture.dataset(), capture.projectionVersion(),
+                        capture.epoch(), new Boundary(0, Math.toIntExact(capture.epoch()), slot, blockNumber),
+                        blockHash, capture.sourceStateVersion(), capture.sourceReference());
+                bound.add(bind(binding, capture, job));
+            }
+        }
+        return List.copyOf(bound);
+    }
+
+    private EpochArchiveJob canonicalJob(ArchiveDatasetId dataset, int projectionVersion, long epoch,
+                                         Boundary boundary, byte[] blockHash, String state,
+                                         String reference) {
+        UUID id = UUID.nameUUIDFromBytes((network.canonicalForm() + '|' + dataset + '|' + epoch + '|'
+                + boundary.blockNumber() + '|' + HexUtil.encodeHexString(blockHash) + '|' + state)
+                .getBytes(StandardCharsets.UTF_8));
+        return new EpochArchiveJob(id, network, dataset, projectionVersion, epoch,
+                boundary.blockNumber(), boundary.slot(), ledger.slotToUnixTime(boundary.slot()),
+                blockHash, state, reference, Instant.now());
     }
 
     /**
@@ -442,11 +518,26 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
      * exists would destroy evidence that cannot be recomputed.
      */
     void release(ArchiveDatasetId dataset, java.util.UUID jobId) {
+        Set<Long> releasedBoundaries = new HashSet<>();
         for (SourceBinding<?> binding : bindingsFor(dataset)) {
             EpochArchiveJob job = jobIn(binding, jobId);
             if (job != null) {
                 binding.source().acknowledge(job);
-                return;
+                releasedBoundaries.add(job.boundaryBlockNumber());
+            }
+            binding.provisional().acknowledgeBound(jobId).stream()
+                    .map(ProvisionalEpochArchiveJob::boundaryBlockNumber)
+                    .forEach(releasedBoundaries::add);
+            if (job != null) break;
+        }
+        for (long blockNumber : releasedBoundaries) {
+            refreshProvisionalBoundary(blockNumber);
+            if (!hasPendingAtBoundary(blockNumber)) {
+                try {
+                    Files.deleteIfExists(completion(blockNumber));
+                } catch (Exception e) {
+                    throw new ArchiveStoreException("cannot clean epoch completion marker", e);
+                }
             }
         }
         // Already released: acknowledgement is replayed after a crash, so this is not an error.
@@ -634,8 +725,11 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
 
     private <T> SourceBinding<T> binding(String key, ArchiveDatasetId dataset, EpochFactCodec<T> codec,
                                          EpochArchiveDataset<T> projection) {
-        return new SourceBinding<>(new DurableEpochFileSource<>(dataset,
-                root.resolve(key.toLowerCase(Locale.ROOT)), codec), projection);
+        Path directory = root.resolve(key.toLowerCase(Locale.ROOT));
+        return new SourceBinding<>(
+                new DurableEpochFileSource<>(dataset, directory, codec),
+                new DurableProvisionalEpochFileSource<>(dataset, directory.resolve(".provisional"), codec),
+                projection);
     }
 
     private void publishCompleted(Boundary value) throws Exception {
@@ -660,9 +754,13 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
             for (EpochArchiveJob job : binding.source().pending(Integer.MAX_VALUE)) {
                 if (job.boundaryBlockNumber() == value.blockNumber()) binding.source().acknowledge(job);
             }
+            for (ProvisionalEpochArchiveJob job : binding.provisional().pending()) {
+                if (job.boundaryBlockNumber() == value.blockNumber()) binding.provisional().acknowledge(job);
+            }
         }
         try { Files.deleteIfExists(completion(value.blockNumber())); }
         catch (Exception e) { throw new ArchiveStoreException("cannot discard epoch boundary", e); }
+        refreshProvisionalBoundary(value.blockNumber());
     }
 
     private void discardDatasetBoundary(Dataset dataset, Boundary value) {
@@ -672,10 +770,22 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
             for (EpochArchiveJob job : binding.source().pending(Integer.MAX_VALUE)) {
                 if (job.boundaryBlockNumber() == value.blockNumber()) binding.source().acknowledge(job);
             }
+            for (ProvisionalEpochArchiveJob job : binding.provisional().pending()) {
+                if (job.boundaryBlockNumber() == value.blockNumber()) binding.provisional().acknowledge(job);
+            }
         }
+        refreshProvisionalBoundary(value.blockNumber());
     }
 
     private boolean isCompleted(EpochArchiveJob job) {
+        Path marker = completion(job.boundaryBlockNumber());
+        if (!Files.exists(marker)) return false;
+        Properties values = readProperties(marker);
+        return Long.parseLong(values.getProperty("block")) == job.boundaryBlockNumber()
+                && Long.parseLong(values.getProperty("slot")) == job.boundarySlot();
+    }
+
+    private boolean isCompleted(ProvisionalEpochArchiveJob job) {
         Path marker = completion(job.boundaryBlockNumber());
         if (!Files.exists(marker)) return false;
         Properties values = readProperties(marker);
@@ -700,7 +810,40 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         }
     }
 
-    record SourceBinding<T>(DurableEpochFileSource<T> source, EpochArchiveDataset<T> projection) {
+    private static <T> BoundArtifact bind(SourceBinding<T> binding,
+                                          ProvisionalEpochArchiveJob capture,
+                                          EpochArchiveJob job) {
+        return new BoundArtifact(job,
+                binding.provisional().bind(capture, binding.source(), job));
+    }
+
+    private static <T> int discardProvisionalAfterEpoch(SourceBinding<T> binding, long epoch) {
+        return binding.provisional().discardAfterEpoch(epoch, binding.source());
+    }
+
+    private static <T> int discardProvisionalAfterBlock(SourceBinding<T> binding, long block) {
+        return binding.provisional().discardAfterBlock(block, binding.source());
+    }
+
+    private void refreshProvisionalBoundaries() {
+        provisionalBoundaries.clear();
+        for (SourceBinding<?> binding : sources()) {
+            binding.provisional().pending().stream()
+                    .map(ProvisionalEpochArchiveJob::boundaryBlockNumber)
+                    .forEach(provisionalBoundaries::add);
+        }
+    }
+
+    private void refreshProvisionalBoundary(long blockNumber) {
+        boolean present = sources().stream().anyMatch(binding -> binding.provisional().pending().stream()
+                .anyMatch(job -> job.boundaryBlockNumber() == blockNumber));
+        if (present) provisionalBoundaries.add(blockNumber);
+        else provisionalBoundaries.remove(blockNumber);
+    }
+
+    record SourceBinding<T>(DurableEpochFileSource<T> source,
+                            DurableProvisionalEpochFileSource<T> provisional,
+                            EpochArchiveDataset<T> projection) {
         ArchiveDatasetId dataset() {
             return projection.dataset();
         }
