@@ -113,7 +113,7 @@ class AppChainSenderSeqTest {
         first.submit("t", "before".getBytes(StandardCharsets.UTF_8));
         awaitTrue("pre-restart finalized", () -> first.tipHeight() >= 1);
         long seqBefore = first.recentMessages(1).get(0).senderSeq();
-        first.stop();
+        first.close();
 
         AppChainSubsystem second = new AppChainSubsystem(config("r", KEY_A, Set.of(pubA), pubA,
                 List.of(), 300, false), MAGIC, null, null, dir, null, log);
