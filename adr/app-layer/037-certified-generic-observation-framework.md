@@ -287,11 +287,12 @@ Every v1 reporter threshold must satisfy:
 so two sufficient report sets intersect in at least one non-faulty reporter.
 For an unsigned/raw source, the built-in exact active-member policy also uses
 `r = q`; the report itself is the attestation. For external signed or proven
-evidence, `r < q` is admissible only when the certificate's own canonical bytes
-prove that the accepted claim is unique for `(definitionDigest, canonical
-parameters, round)`. For example, a proof may be checked against a root fixed
-by the round, or the external signer may bind the round identifier and permit
-at most one valid claim for that identifier. Authenticity alone is
+evidence, `r < q` is admissible only when the certificate's canonical bytes,
+together with the committed definition and round records, prove that the
+accepted claim is unique for `(definitionDigest, canonical parameters, round)`.
+For example, a proof may be checked against a root fixed in the round record, or
+the external signer may bind the round identifier and permit at most one valid
+claim for that identifier. Authenticity alone is
 insufficient: if a carrier can sign several historical statuses, a single
 Byzantine relay must not choose which still-valid status wins. A verifier must
 not depend on an absent report or on knowing that a sequence was the latest one
@@ -310,7 +311,7 @@ Yano owns:
 
 - reserved observation-topic admission and canonical codecs;
 - definition and profile identity validation;
-- deterministic subscription IDs, round IDs, and result IDs;
+- deterministic subscription IDs, round identities, and result IDs;
 - committed subscription lifecycle and ordered due index;
 - reconstruction of local work after restart;
 - active membership snapshot and quorum rules for each round;
@@ -541,7 +542,7 @@ needed to verify a result:
 certificate version
 round identity and pinned membership digest
 definition/policy/source-set digests
-canonical ordered reports or bounded report commitments
+canonical ordered reports
 policy output bytes
 policy trace/metadata required for deterministic verification
 resultId
@@ -668,6 +669,8 @@ order: every `watch` emitted by `apply()`, a result callback, or an expiry
 callback must have `firstDueAnchor` strictly later than the current selected
 anchor. The same rule applies to `APP_HEIGHT` and `VERIFIED_L1_SLOT` anchors, so
 a callback can never create a round retroactively in the current kernel pass.
+For `VERIFIED_L1_SLOT`, the current selected anchor is the committed high-water
+anchor whose exact Phase 0 semantics are identified in sections 9.2 and 24.1.
 
 The runtime scans no more than configured entries and opens no more than a
 configured number of rounds per block. Remaining entries stay ordered and due;
@@ -689,9 +692,9 @@ when a node attempts I/O, never round identity, due anchor, expiry, or policy.
 ### 7.4 Certify
 
 Any validator can collect reports and assemble a certificate. Peers verify,
-persist, and gossip valid certificates. On every sender re-diffusion tick, open
-rounds re-send their retained inner reports/certificates until finalized or
-expired; the protocol does not rely on the ordinary 120-second envelope TTL.
+persist, and gossip valid certificates. On every sender re-diffusion cycle,
+open rounds re-send their retained inner reports/certificates until finalized
+or expired; the protocol does not rely on the ordinary 120-second envelope TTL.
 
 The scheduled proposer reads its durable ready-certificate journal, filters
 rounds already terminal in committed state, and constructs bounded
@@ -713,9 +716,10 @@ would fork proposal validity and harm liveness. Therefore Phase 1 guarantees:
 - safety: an included result must carry a valid certificate;
 - durability: open work, signed reports, and received certificates survive
   restart and are periodically re-diffused;
-- conditional inclusion: under eventual synchrony, a valid certificate is
-  included if it reaches an honest proposer selected before its bounded expiry;
-  otherwise the round expires; and
+- conditional inclusion: under eventual synchrony, a valid certificate may be
+  included after it reaches an honest proposer selected before its bounded
+  expiry; an honest proposer with available result capacity includes it, while
+  capacity or view timeout may defer it and the round can still expire; and
 - no stronger censorship resistance than ordinary app messages when all
   scheduled proposers are Byzantine.
 
@@ -728,7 +732,8 @@ must not be inferred from local possession alone.
 Certificate handling separates intrinsic invalidity from state-relative
 staleness:
 
-- For a canonically decoded active known round, a wrong
+- For a canonically decoded active known round, an input that exceeds a
+  profile-committed size or count bound, has a wrong
   domain/profile/definition/round/reporter set, invalid signature or evidence,
   insufficient threshold, or a policy/result mismatch rejects the proposal
   before `PREPARE`.
@@ -736,9 +741,11 @@ staleness:
   cancelled, superseded, or out-of-window round is a deterministic audit no-op.
   A second valid certificate for the same result/round in one block is also a
   no-op. Local journal contents never change that verdict.
-- Two well-formed inputs for the same `(subscriptionId, roundNumber)` but
-  different `resultId` values in one block reject the proposal; block order
-  cannot be allowed to choose between conflicting results.
+- Two valid certificates for the same active `(subscriptionId, roundNumber)`
+  but different `resultId` values in one block reject the proposal; block order
+  cannot be allowed to choose between conflicting results. A pair for a
+  terminal or unknown round follows the preceding no-op rule, while an invalid
+  certificate for an active round follows the preceding rejection rule.
 
 Phase 0 must choose one uniform rule for an oversized, noncanonical, or
 undecodable result input whose round cannot be identified. Such an input cannot
@@ -779,7 +786,7 @@ pool selection, proposal, and catch-up; it must never fall through as an opaque
 application message.
 
 The signed inner report/certificate has a stable identity. A periodic sender
-tick may wrap it in a fresh, bounded member-signed diffusion envelope so
+re-diffusion cycle may wrap it in a fresh, bounded member-signed envelope so
 first-sighting transport deduplication and its 120-second TTL cannot suppress
 recovery. The receiving handler validates the outer member, bounds the body,
 deduplicates by inner identity, and durably stores valid inner data before
@@ -894,22 +901,22 @@ budgets and are deferred beyond Phase 1.
 
 Aggregation has two independent axes:
 
-1. **validator reconciliation per source** decides what source `S` reported;
+1. **reporter reconciliation per source** decides what source `S` reported;
 2. **source aggregation** combines accepted values from distinct sources.
 
 For an ADA/USD feed, five validators querying one CEX still contribute one
-source. A robust policy might require exact or bounded agreement by a validator
-quorum for each source, then take a fixed-point median across five distinct
+source. A robust policy might require exact or bounded agreement by a reporter
+threshold for each source, then take a fixed-point median across five distinct
 accepted sources.
 
 Aggregation must use integer or fixed-point values with explicit scale,
 rounding, overflow behavior, canonical sort order, tie rules, and a round
 closure rule. If a policy allows any five of ten sources to determine a median,
 different valid subsets may yield different answers. Phase 3 must therefore
-define whether all named sources, a fixed subset, or threshold-certified
-per-source values/unavailability close the report set; it may not use the first
-responses to arrive. IEEE-754 floating point, locale parsing, implicit
-timestamps, and unordered collection iteration are forbidden.
+define the sequenced, follower-verifiable closure proof required by section 6.5
+and section 24.2; neither a locally held fixed source subset nor the first
+responses to arrive closes the report set. IEEE-754 floating point, locale
+parsing, implicit timestamps, and unordered collection iteration are forbidden.
 
 ### 8.5 Policy boundaries
 
@@ -981,6 +988,12 @@ freeze the tick body, sender eligibility and sequence rules, admission/dedup
 bounds, and the committed high-water-mark behavior before `~obs/tick/v1` is an
 accepted input.
 
+"Committed high-water anchor" refers to ADR-012's `effectiveStableSlot`
+pattern: a replicated monotonic summary of the last usable verified L1 slot,
+including when a later block carries `l1Slot = 0`. Whether this framework adopts
+that exact maximum/update rule is part of the Phase 0 decision, not node-local
+state.
+
 This adopts ADR-012's L1-slot heartbeat insight without making generic
 observations part of the `~l1/*` mandatory fact lane. It gives a cadence in
 Cardano slots, not universal wall-clock time. Chains with no verified L1
@@ -1031,7 +1044,7 @@ source requests per host/domain/definition
 worker concurrency
 retry attempts and local retained bytes
 maximum round duration and report-to-result inclusion grace
-re-diffusion cadence and reports/certificates sent per tick
+re-diffusion cadence and reports/certificates sent per cycle
 ```
 
 Deterministic emission fails identically on every validator when canonical
@@ -1275,7 +1288,9 @@ acquisition failure degrades reporting and triggers local retry, but a node
 whose deterministic verifier is healthy may still verify and vote for a valid
 certificate assembled by peers. Any certificate verification failure remains
 fail-closed for an active round; the state-staleness no-op rules in section 7.5
-apply to terminal/unknown rounds.
+apply to terminal/unknown rounds. Two different valid results reject only when
+they target the same active round in one block; terminal/unknown pairs remain
+no-ops, and an invalid certificate for an active round remains fail-closed.
 
 After `resultExpiryHeight` the kernel derives `EXPIRED` from committed round
 state without a certificate. Phase 1 does not produce `NO_RESULT`; the status
@@ -1403,6 +1418,12 @@ Phase 3 must choose either deterministic policy selection from authorized state
 at each round opening or explicit cancel-and-re-watch migration. Any selected
 policy bytes/version remain bounded by a registered schema and host profile; an
 application cannot supply executable policy code or bypass host bounds.
+
+Governed round state cannot select or change the safety envelope: reporter keys,
+`p`, `g`, `r`, minimum source threshold `s`, and the certificate-local
+uniqueness rule remain definition/profile-committed. Round-open selection is
+limited to schema-bounded feed parameters that preserve that envelope, such as
+deviation and jump limits or a choice among profile-authorized source groups.
 
 After ADR-037 exists, the oracle becomes:
 
@@ -1634,8 +1655,9 @@ Deliver:
 - canonical v1 codecs and domain-separated hashes for definition,
   subscription, round, report, certificate, and result;
 - `~yano/obs/` state keys and the exact diffusion/sequenced topic allowlist;
-- distinct `observationProfileDigest`, `ConsensusContext` binding, height-1
-  profile marker, and startup compatibility guard;
+- distinct `observationProfileDigest`, `ConsensusContext.protocolVersion`
+  increment from 2 to 3, height-1 profile marker, and startup compatibility
+  guard;
 - generalized system-input kernel order and backward-compatible default API
   methods;
 - pure certificate/policy verification interfaces and conformance vectors;
@@ -1768,10 +1790,10 @@ At minimum, implementation must cover:
 | Codec/identity | truncation, trailing bytes, duplicates, noncanonical order, cross-chain/profile/round replay |
 | Signatures | value/evidence/source/round all covered, wrong reporter set, old membership, any second report/equivocation |
 | Policy | report permutations, different sufficient subsets with identical result ID, insufficient reporter/source thresholds, selective stale attestation |
-| Scheduling | same due anchor, inclusive report/result deadlines, earlier item too large, bounded scan, L1 tick, expiry, cancel, long downtime |
+| Scheduling | same due anchor, callback-emitted non-future due rejection, inclusive report/result deadlines, earlier item too large, bounded scan, L1 tick, expiry, cancel, long downtime |
 | Persistence | copied-owner journal, crash before/after sign, before/after gossip, certificate ready, proposal, final commit |
-| Transport | diffusion topics rejected from blocks, exact result/tick allowlist and chosen sender-sequence rules, early handler queue, bounded TTL re-diffusion |
-| Consensus | stale certificate no-op versus the Phase 0 malformed-input rule, same-round conflicting results, result ordering, proposer rotation, view change, prepared recovery, catch-up, faulty omission |
+| Transport | diffusion topics rejected from blocks, exact result/tick allowlist and chosen sender-sequence rules, non-leader member result envelope accepted, non-member rejected, early handler queue, bounded TTL re-diffusion |
+| Consensus | stale certificate no-op versus the Phase 0 malformed-input rule, conflicting valid results for one active round versus terminal no-op precedence, result ordering, proposer rotation, view change, prepared recovery, catch-up, faulty omission |
 | Failures | DNS, timeout, 429, malformed/huge/compressed response, stale signature/proof, source disagreement |
 | Security | SSRF address classes, DNS rebinding, redirect escape, secret redaction, parser depth/number bounds |
 | Scale | 100k indexed subscriptions, bounded workers, disk limits, report/certificate amplification |
@@ -1821,7 +1843,9 @@ open rather than being hidden in an illustrative API or topic name.
    graduation.
 2. What bounded sequenced closure proof commits the complete eligible report
    set for Phase 3 non-monotonic aggregation? Diffusion possession and an
-   anchor-derived close transition are insufficient.
+   anchor-derived close transition are insufficient. Its exact sequenced topic
+   must be added to the section 7.6 allowlist and observation profile before
+   implementation.
 3. Should a double-signed report proof become a committed audit input in Phase
    3, or remain bounded local evidence? If committed, its exact topic must be
    added to the section 7.6 allowlist and observation profile. It cannot
