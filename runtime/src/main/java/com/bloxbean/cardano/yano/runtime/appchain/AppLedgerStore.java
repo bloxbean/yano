@@ -946,7 +946,8 @@ final class AppLedgerStore implements AutoCloseable {
 
     void putVoteLock(long height, long view, byte[] blockHash) {
         try {
-            try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            try (WriteBatch batch = new WriteBatch();
+                 WriteOptions options = new WriteOptions().setSync(true)) {
                 batch.put(metaCf, voteLockKey(height), blockHash);
                 batch.put(metaCf, voteLockViewKey(height),
                         ByteBuffer.allocate(Long.BYTES).putLong(view).array());
@@ -963,8 +964,8 @@ final class AppLedgerStore implements AutoCloseable {
      * or restarts. Stored alongside the vote-lock hash.
      */
     void putVoteLockEnvelope(long height, byte[] envelopeCbor) {
-        try {
-            db.put(metaCf, voteLockEnvelopeKey(height), envelopeCbor);
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(metaCf, options, voteLockEnvelopeKey(height), envelopeCbor);
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to persist locked proposal at height " + height, e);
         }
@@ -2174,7 +2175,7 @@ final class AppLedgerStore implements AutoCloseable {
             return;
         }
         try (WriteBatch batch = new WriteBatch();
-             WriteOptions options = new WriteOptions()) {
+             WriteOptions options = new WriteOptions().setSync(true)) {
             for (EpochSpoolMutation mutation : mutations) {
                 byte[] value = mutation.value();
                 if (value == null) {

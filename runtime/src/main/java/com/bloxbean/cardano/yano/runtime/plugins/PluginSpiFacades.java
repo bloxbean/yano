@@ -31,6 +31,7 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochState;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
@@ -1580,6 +1581,13 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public L1ObserverConsensusIdentity consensusIdentity(
+                String observerId, Map<String, String> settings) {
+            return pluginCall(callbacks, loader,
+                    () -> delegate.consensusIdentity(observerId, settings));
+        }
+
+        @Override
         public L1Observer create(String observerId, Map<String, String> settings) {
             return activation.call("create L1-observer product", () -> callbacks.call(() -> {
                 L1Observer value = PluginThreadContext.call(
@@ -1605,6 +1613,13 @@ final class PluginSpiFacades {
         @Override
         public String type() {
             return pluginCall(callbacks, loader, delegate::type);
+        }
+
+        @Override
+        public L1ObserverConsensusIdentity consensusIdentity(
+                String observerId, Map<String, String> settings) {
+            return pluginCall(callbacks, loader,
+                    () -> delegate.consensusIdentity(observerId, settings));
         }
 
         @Override

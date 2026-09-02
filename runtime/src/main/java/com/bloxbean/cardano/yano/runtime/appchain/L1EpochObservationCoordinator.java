@@ -105,6 +105,9 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         this.stabilityDepth = stabilityDepth;
         this.maxMessagesPerOffer = maxMessagesPerOffer;
         this.maxBytesPerOffer = maxBytesPerOffer;
+        if (!spool.healthy()) {
+            this.unhealthyReason = "OBSERVATION_UNENCODABLE";
+        }
         this.executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(1), runnable -> {
                     Thread thread = new Thread(runnable,
@@ -236,6 +239,11 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         return spool.pending(latest - stabilityDepth, maxMessages, maxPayloadBytes);
     }
 
+    void quarantineUnencodable(L1Observation observation) {
+        spool.quarantineObservation(observation, "OBSERVATION_UNENCODABLE");
+        unhealthyReason = "OBSERVATION_UNENCODABLE";
+    }
+
     private void wake() {
         wakeVersion.incrementAndGet();
         scheduleWake();
@@ -279,6 +287,10 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private void reconcile() {
         if (haltReason != null) {
             throw new IllegalStateException(haltReason);
+        }
+        if (!spool.healthy()) {
+            unhealthyReason = "OBSERVATION_UNENCODABLE";
+            return;
         }
         spool.reconcileFinalizedBlocks();
         long rollback = pendingRollbackSlot.getAndSet(Long.MAX_VALUE);

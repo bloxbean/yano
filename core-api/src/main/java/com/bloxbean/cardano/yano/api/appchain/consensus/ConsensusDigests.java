@@ -39,6 +39,7 @@ public final class ConsensusDigests {
                 out.writeLong(block.view());
                 out.write(block.consensusContextDigest());
                 out.write(AppBlockCodec.blockHash(block));
+                out.write(AppBlockCodec.valueHash(block));
             }
             return Blake2bUtil.blake2bHash256(bytes.toByteArray());
         } catch (IOException impossible) {

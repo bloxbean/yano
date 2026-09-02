@@ -252,20 +252,21 @@ Each `(height, view)` has two voting phases:
    justification)`.
 2. A validator performs all structural, proposer, parent, L1, observation,
    message, state-root, and safe-proposal checks. It persists its prepare vote
-   before broadcasting `PREPARE(h, v, proposalHash)`.
+   before broadcasting `PREPARE(h, v, proposalHash, valueHash)`.
 3. Any member may aggregate `q` valid prepares into `PreparedQC(h, v,
    proposalHash, valueHash)` and broadcast it.
 4. On a valid `PreparedQC`, a validator persists its lock/highest prepared
    certificate and commit vote before broadcasting `COMMIT(h, v,
-   proposalHash)`.
+   proposalHash, valueHash)`.
 5. Any member may aggregate `q` valid commits into `FinalityCertV2`. The block
    and all state changes are committed atomically, then the certificate is
    gossiped.
 
 Prepare and commit signatures cover different domain-separated digests. Both
-bind `proposalHash`; the prepared certificate additionally exposes the
-corresponding `valueHash` so a later view can carry the same value without
-reusing a signature from the old view.
+bind `proposalHash` and `valueHash`; the prepared certificate exposes that
+certified `valueHash` so a later view can carry the same value without reusing
+a signature from the old view. Certificates at the same view conflict if
+either hash differs.
 
 The persisted state per active height includes at least:
 
@@ -421,6 +422,7 @@ observer ABI version
 canonical normalized deterministic settings
 claim schema/version
 ordering version
+L1 network genesis identity
 ```
 
 Providers expose canonical consensus identity bytes. Secrets, endpoints,
@@ -504,6 +506,9 @@ any state -> QUARANTINED on conflicting evidence or deep rollback
 
 Required semantics:
 
+- treat all observer callbacks for one L1 block as one result: a callback
+  failure publishes no partial/empty result, durably records the failed slot,
+  and blocks voting until that exact slot replays successfully;
 - journal the observer result idempotently when its L1 block is applied;
 - fsync/WAL-persist `STABLE_PENDING` before it becomes proposal-eligible;
 - never remove an entry because it was drained, offered, relayed, prepared,
@@ -517,6 +522,9 @@ Required semantics:
   reject duplicate re-import after compaction; and
 - rebuild only delivery metadata from canonical L1 plus finalized cursors.
   The journal never replaces committed app state.
+
+Any retained quarantine or failed-callback marker makes the node unhealthy on
+restart. It is never cleared merely by reopening the database.
 
 ### 5.6 Mandatory prefix validation
 
@@ -696,6 +704,7 @@ yano.app-chain.sequencer.mode: fixed | rotating
 
 yano.app-chain.observation.max-per-block: 128
 yano.app-chain.observation.max-claim-bytes-per-block: 262144
+yano.app-chain.observation.l1-network-genesis-id: <32-byte hex>
 yano.app-chain.observation.journal.max-entries: 100000
 yano.app-chain.observation.journal.max-bytes: 1073741824
 ```

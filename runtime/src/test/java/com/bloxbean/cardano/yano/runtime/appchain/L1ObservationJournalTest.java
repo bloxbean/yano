@@ -1,16 +1,19 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,6 +38,41 @@ class L1ObservationJournalTest {
             assertThat(journal.pending(10, 10, 1_000_000)).containsExactly(observation);
             assertThat(journal.acknowledge(observation)).isTrue();
             assertThat(journal.pending(10, 10, 1_000_000)).isEmpty();
+        }
+    }
+
+    @Test
+    void callbackFailureBarrierSurvivesRestartUntilExactSlotReplays() {
+        AtomicBoolean fail = new AtomicBoolean(true);
+        L1Observer observer = new L1Observer() {
+            @Override public String observerId() { return "restart-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash,
+                                               Block block) {
+                if (fail.getAndSet(false)) {
+                    throw new IllegalStateException("first attempt");
+                }
+                return List.of();
+            }
+        };
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationService service = new L1ObservationService(
+                    List.of(observer), 64,
+                    new L1ObservationJournal(ledger, 1_000_000),
+                    LoggerFactory.getLogger(L1ObservationJournalTest.class));
+            assertThatThrownBy(() -> service.onL1Block(10, filled(1), null))
+                    .hasMessage("L1_OBSERVER_CALLBACK_FAILED");
+        }
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationService restarted = new L1ObservationService(
+                    List.of(observer), 64,
+                    new L1ObservationJournal(ledger, 1_000_000),
+                    LoggerFactory.getLogger(L1ObservationJournalTest.class));
+            assertThat(restarted.healthy()).isFalse();
+            assertThatThrownBy(() -> restarted.onL1Block(11, filled(2), null))
+                    .hasMessageContaining("L1_OBSERVER_REPLAY_REQUIRED");
+            restarted.onL1Block(10, filled(1), null);
+            assertThat(restarted.healthy()).isTrue();
         }
     }
 
@@ -102,6 +140,15 @@ class L1ObservationJournalTest {
                     .hasMessageContaining("L1_INVALIDATED_PREPARED_VALUE");
             assertThat(journal.status().toString()).contains("QUARANTINED=1");
             assertThat(journal.pending(20, 10, 1_000_000)).isEmpty();
+            assertThat(journal.healthy()).isFalse();
+        }
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal restarted = new L1ObservationJournal(ledger, 1_000_000);
+            L1ObservationService service = new L1ObservationService(
+                    List.of(), 64, restarted,
+                    LoggerFactory.getLogger(L1ObservationJournalTest.class));
+            assertThat(restarted.healthy()).isFalse();
+            assertThat(service.healthy()).isFalse();
         }
     }
 

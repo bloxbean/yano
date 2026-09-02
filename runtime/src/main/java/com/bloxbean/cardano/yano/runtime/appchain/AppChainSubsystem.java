@@ -1620,10 +1620,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         String topic = observation.topic();
         byte[] body = observation.encode();
         if (!validTopic(topic) || !validEnvelopeBodyProfile(topic, body)) {
-            throw new IllegalArgumentException("Durable L1 observation is outside the wire profile");
+            quarantineUnencodableObservation(observation);
+            throw new IllegalStateException("OBSERVATION_UNENCODABLE");
         }
         long expiresAt = Long.MAX_VALUE;
-        long seq = senderSeq.incrementAndGet();
+        long seq = 0;
         byte[] signedBody = AppMessage.signedBodyBytes(config.chainId(), topic,
                 signer.publicKey(), seq, expiresAt, body);
         return AppMessage.builder()
@@ -1645,31 +1646,52 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         L1ObservationService blockObservations = observationService;
         if (blockObservations != null) {
             available.addAll(blockObservations.drainInjectable(stableSlot,
-                    config.maxBlockMessages(), config.blockMaxBytes()));
+                    config.maxBlockMessages(), Long.MAX_VALUE));
         }
         L1EpochObservationCoordinator epochObservations = epochObservationCoordinator;
         if (epochObservations != null) {
             available.addAll(epochObservations.pendingForProposal(
-                    config.maxBlockMessages(), config.blockMaxBytes()));
+                    config.maxBlockMessages(), Long.MAX_VALUE));
         }
-        available.sort(L1Observation.CANONICAL_ORDER);
+        return canonicalObservationPrefix(available, config.maxBlockMessages());
+    }
+
+    static List<L1Observation> canonicalObservationPrefix(
+            List<L1Observation> available, int maxMessages) {
+        if (maxMessages <= 0) {
+            return List.of();
+        }
+        List<L1Observation> ordered = new ArrayList<>(available);
+        ordered.sort(L1Observation.CANONICAL_ORDER);
         List<L1Observation> selected = new ArrayList<>();
-        long bytes = 0;
-        for (L1Observation observation : available) {
-            int nextBytes = observation.encode().length;
-            if (selected.size() == config.maxBlockMessages()
-                    || bytes > config.blockMaxBytes() - nextBytes) {
+        for (L1Observation observation : ordered) {
+            if (selected.size() == maxMessages) {
                 break;
             }
             selected.add(observation);
-            bytes += nextBytes;
         }
         return List.copyOf(selected);
     }
 
+    private void quarantineUnencodableObservation(L1Observation observation) {
+        if (observation.anchor() instanceof L1Observation.EpochAnchor) {
+            L1EpochObservationCoordinator coordinator = epochObservationCoordinator;
+            if (coordinator != null) {
+                coordinator.quarantineUnencodable(observation);
+            }
+        } else {
+            L1ObservationService service = observationService;
+            if (service != null) {
+                service.quarantineUnencodable(observation);
+            }
+        }
+    }
+
     private AppChainEngine.L1RefVerdict verifyMandatoryObservationPrefix(
-            List<SequencedL1Observation> proposed,
-            long stableSlot) {
+            AppBlockExecutionContext executionContext) {
+        AppBlock block = executionContext.block();
+        List<SequencedL1Observation> proposed = executionContext.l1Observations();
+        long stableSlot = block.l1Slot();
         L1ObservationService blockObservations = observationService;
         if (blockObservations != null && blockObservations.newestSlot() < stableSlot) {
             return AppChainEngine.L1RefVerdict.AHEAD;
@@ -1692,16 +1714,52 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         }
         List<L1Observation> expected = mandatoryObservationFacts(stableSlot);
-        if (expected.size() != proposed.size()) {
+        if (proposed.size() > expected.size()) {
             return AppChainEngine.L1RefVerdict.MISMATCH;
         }
-        for (int index = 0; index < expected.size(); index++) {
+        for (int index = 0; index < proposed.size(); index++) {
             if (!Arrays.equals(expected.get(index).encode(),
                     proposed.get(index).observation().encode())) {
                 return AppChainEngine.L1RefVerdict.MISMATCH;
             }
         }
+        if (proposed.size() < expected.size()) {
+            if (block.messages().size() > proposed.size()) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+            AppMessage next = unsignedObservationInput(
+                    expected.get(proposed.size()), block.proposer());
+            List<AppMessage> extended = new ArrayList<>(block.messages());
+            extended.add(next);
+            AppBlock withNext = new AppBlock(block.version(), block.chainId(), block.height(),
+                    block.consensusContextDigest(), block.view(), block.prevHash(),
+                    block.l1Slot(), block.l1BlockHash(), block.timestamp(),
+                    AppBlockCodec.messagesRoot(extended), block.stateRoot(), extended,
+                    block.proposer(), block.justification(), block.cert());
+            if (AppBlockCodec.serialize(withNext).length <= config.proposalMaxBytes()) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+        }
         return AppChainEngine.L1RefVerdict.OK;
+    }
+
+    private AppMessage unsignedObservationInput(L1Observation observation, byte[] proposer) {
+        String topic = observation.topic();
+        byte[] body = observation.encode();
+        long expiresAt = Long.MAX_VALUE;
+        long seq = 0;
+        return AppMessage.builder()
+                .messageId(AppMessage.computeMessageId(config.chainId(), topic,
+                        proposer, seq, expiresAt, body))
+                .chainId(config.chainId())
+                .topic(topic)
+                .sender(proposer)
+                .senderSeq(seq)
+                .expiresAt(expiresAt)
+                .body(body)
+                .authScheme(AuthScheme.ED25519.getValue())
+                .authProof(new byte[AppChainConfig.ED25519_SIGNATURE_BYTES])
+                .build();
     }
 
     /** Build, sign and diffuse an envelope (consensus/system topics). */
@@ -4367,10 +4425,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             chainEngine.setL1RefValidator(this::checkL1Ref);
             // L1 observations (008.4 I3.2) — misconfiguration fails start:
             // observers are consensus-critical and must match on all members
-            byte[] observerProfileDigest = observerProfileDigest();
+            byte[] l1NetworkGenesisId = l1NetworkGenesisId();
+            byte[] observerProfileDigest = observerProfileDigest(l1NetworkGenesisId);
             byte[] observationIdentityContext = observationIdentityContext(
                     observerProfileDigest,
-                    ledgerStore.stateCommitmentIdentity().genesisId());
+                    ledgerStore.stateCommitmentIdentity().genesisId(),
+                    l1NetworkGenesisId);
             // Validate the fresh-chain fault assumptions before persisting any
             // observer-journal identity. A rejected consensus configuration
             // must leave the ledger reusable after startup rollback.
@@ -4469,6 +4529,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 .toList());
                 chainEngine.setObservationPrefixValidator(
                         this::verifyMandatoryObservationPrefix);
+                chainEngine.setUnencodableMandatoryInputHandler(message ->
+                        quarantineUnencodableObservation(
+                                L1Observation.decode(message.getBody())));
                 chainEngine.setObservationValidator((sequenced, historicalCatchUp) -> {
                     var observation = sequenced.observation();
                     if (observation.anchor()
@@ -5238,53 +5301,61 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 && (epochObservations == null || epochObservations.healthy());
     }
 
-    private byte[] observerProfileDigest() {
-        try {
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            bytes.write("yano-observer-profile-v1\0".getBytes(StandardCharsets.US_ASCII));
-            try (DataOutputStream out = new DataOutputStream(bytes)) {
-                config.pluginSettings().entrySet().stream()
-                        .filter(entry -> entry.getKey().startsWith("observers."))
-                        .filter(entry -> consensusObserverSetting(entry.getKey()))
-                        .sorted(Map.Entry.comparingByKey())
-                        .forEach(entry -> {
-                            try {
-                                out.writeUTF(entry.getKey());
-                                out.writeUTF(entry.getValue().trim());
-                            } catch (IOException impossible) {
-                                throw new UncheckedIOException(impossible);
-                            }
-                        });
-            }
-            return Blake2bUtil.blake2bHash256(bytes.toByteArray());
-        } catch (IOException impossible) {
-            throw new UncheckedIOException(impossible);
-        }
+    private byte[] observerProfileDigest(byte[] l1NetworkGenesisId) {
+        return L1ObservationService.consensusProfileDigest(
+                config.pluginSettings(), pluginProviders, l1NetworkGenesisId);
     }
 
     private byte[] observationIdentityContext(byte[] observerProfileDigest,
-                                              byte[] chainGenesisId) {
+                                              byte[] chainGenesisId,
+                                              byte[] l1NetworkGenesisId) {
         byte[] chain = config.chainId().getBytes(StandardCharsets.UTF_8);
         byte[] identity = new byte[chain.length + chainGenesisId.length
-                + observerProfileDigest.length];
+                + l1NetworkGenesisId.length + observerProfileDigest.length];
         System.arraycopy(chain, 0, identity, 0, chain.length);
         System.arraycopy(chainGenesisId, 0, identity, chain.length, chainGenesisId.length);
-        System.arraycopy(observerProfileDigest, 0, identity,
-                chain.length + chainGenesisId.length, observerProfileDigest.length);
+        System.arraycopy(l1NetworkGenesisId, 0, identity,
+                chain.length + chainGenesisId.length, l1NetworkGenesisId.length);
+        System.arraycopy(observerProfileDigest, 0, identity, chain.length
+                + chainGenesisId.length + l1NetworkGenesisId.length,
+                observerProfileDigest.length);
         return Blake2bUtil.blake2bHash256(identity);
     }
 
-    private static boolean consensusObserverSetting(String key) {
-        String normalized = key.toLowerCase(Locale.ROOT);
-        return !(normalized.contains("secret")
-                || normalized.contains("password")
-                || normalized.contains("token")
-                || normalized.contains("api-key")
-                || normalized.endsWith(".endpoint")
-                || normalized.endsWith(".url")
-                || normalized.endsWith(".path")
-                || normalized.contains(".retry")
-                || normalized.contains(".timeout"));
+    private byte[] l1NetworkGenesisId() {
+        boolean observersConfigured = config.pluginSettings().keySet().stream()
+                .anyMatch(key -> key.startsWith("observers."));
+        String configured = config.pluginSettings().get(
+                "observation.l1-network-genesis-id");
+        if (configured == null || configured.isBlank()) {
+            if (observersConfigured) {
+                throw new IllegalArgumentException(
+                        "L1 observers require observation.l1-network-genesis-id");
+            }
+            try {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                bytes.write("yano-l1-network-no-observers-v1\0"
+                        .getBytes(StandardCharsets.US_ASCII));
+                try (DataOutputStream out = new DataOutputStream(bytes)) {
+                    out.writeLong(protocolMagic);
+                }
+                return Blake2bUtil.blake2bHash256(bytes.toByteArray());
+            } catch (IOException impossible) {
+                throw new UncheckedIOException(impossible);
+            }
+        }
+        byte[] identity;
+        try {
+            identity = HexUtil.decodeHexString(configured.trim());
+        } catch (RuntimeException malformed) {
+            throw new IllegalArgumentException(
+                    "observation.l1-network-genesis-id must be 32-byte hex", malformed);
+        }
+        if (identity.length != 32) {
+            throw new IllegalArgumentException(
+                    "observation.l1-network-genesis-id must be 32-byte hex");
+        }
+        return identity;
     }
 
     private final List<FinalizedBlockListener> finalizedListeners =

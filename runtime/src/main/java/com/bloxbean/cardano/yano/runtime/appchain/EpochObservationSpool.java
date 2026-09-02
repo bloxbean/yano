@@ -34,6 +34,7 @@ final class EpochObservationSpool {
     private static final byte[] DIGEST_PREFIX = new byte[]{'d'};
     private static final byte[] RECORD_PREFIX = new byte[]{'r'};
     private static final byte[] VERIFY_PREFIX = new byte[]{'v'};
+    private static final byte[] QUARANTINE_KEY = new byte[]{'q'};
     private static final String RECONCILIATION_HEIGHT_META =
             "epoch_observation_reconciliation_height_v1";
 
@@ -41,6 +42,7 @@ final class EpochObservationSpool {
         GENERATING,
         READY,
         OFFERED,
+        QUARANTINED,
         FINALIZED
     }
 
@@ -133,7 +135,7 @@ final class EpochObservationSpool {
     synchronized List<Offered> offer(long maximumBoundaryBlockNumber,
                                     int maxMessages,
                                     long maxPayloadBytes) {
-        if (maxMessages <= 0 || maxPayloadBytes <= 0) {
+        if (!healthy() || maxMessages <= 0 || maxPayloadBytes <= 0) {
             return List.of();
         }
         List<JobEntry> jobs = jobs().stream()
@@ -189,7 +191,7 @@ final class EpochObservationSpool {
     synchronized List<L1Observation> pending(long maximumBoundaryBlockNumber,
                                              int maxMessages,
                                              long maxPayloadBytes) {
-        if (maxMessages <= 0 || maxPayloadBytes <= 0) {
+        if (!healthy() || maxMessages <= 0 || maxPayloadBytes <= 0) {
             return List.of();
         }
         List<L1Observation> result = new ArrayList<>();
@@ -207,7 +209,8 @@ final class EpochObservationSpool {
             for (AppLedgerStore.EpochSpoolEntry encoded : ledger.epochSpoolScan(
                     recordPrefix(jobDigest), MAX_RECORDS_PER_SCAN)) {
                 Record record = decodeRecord(encoded.value());
-                if (record.state() == State.FINALIZED) {
+                if (record.state() == State.FINALIZED
+                        || record.state() == State.QUARANTINED) {
                     continue;
                 }
                 int nextBytes = record.observationBytes().length;
@@ -219,6 +222,30 @@ final class EpochObservationSpool {
             }
         }
         return List.copyOf(result);
+    }
+
+    synchronized void quarantineObservation(L1Observation observation, String reason) {
+        byte[] expected = observation.encode();
+        for (JobEntry entry : jobs()) {
+            byte[] jobDigest = digest(entry.key());
+            for (AppLedgerStore.EpochSpoolEntry encoded : ledger.epochSpoolScan(
+                    recordPrefix(jobDigest), MAX_RECORDS_PER_SCAN)) {
+                Record record = decodeRecord(encoded.value());
+                if (Arrays.equals(record.observationBytes(), expected)) {
+                    ledger.epochSpoolWrite(List.of(
+                            AppLedgerStore.EpochSpoolMutation.put(encoded.key(),
+                                    encodeRecord(record.withState(State.QUARANTINED))),
+                            AppLedgerStore.EpochSpoolMutation.put(QUARANTINE_KEY,
+                                    reason.getBytes(StandardCharsets.UTF_8))));
+                    return;
+                }
+            }
+        }
+        throw new IllegalStateException("Cannot quarantine an absent epoch observation");
+    }
+
+    synchronized boolean healthy() {
+        return ledger.epochSpoolGet(QUARANTINE_KEY) == null;
     }
 
     synchronized void offerFailed(Offered offered) {

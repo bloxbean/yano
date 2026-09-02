@@ -9,6 +9,7 @@ certified-vote = [
   view: uint,
   context-digest: bytes .size 32,
   block-hash: bytes .size 32,
+  value-hash: bytes .size 32,
   signature: bytes .size 64
 ]
 

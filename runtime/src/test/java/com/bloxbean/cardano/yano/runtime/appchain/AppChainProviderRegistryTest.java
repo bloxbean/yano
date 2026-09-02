@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
@@ -556,6 +557,12 @@ class AppChainProviderRegistryTest {
         TestRegistry registry = new TestRegistry().add(L1ObserverProvider.class,
                 "broken-observer", new L1ObserverProvider() {
                     @Override public String type() { return "broken-observer"; }
+                    @Override
+                    public L1ObserverConsensusIdentity consensusIdentity(
+                            String observerId, Map<String, String> settings) {
+                        return new L1ObserverConsensusIdentity(
+                                1, "broken-test-claim-v1", 1, new byte[]{1});
+                    }
                     @Override public L1Observer create(
                             String observerId, Map<String, String> settings) {
                         throw new IllegalStateException("observer factory boom");
@@ -564,7 +571,9 @@ class AppChainProviderRegistryTest {
         Path base = tempDir.resolve("observer-activation");
         AppChainConfig config = baseConfig("observer-activation")
                 .l1StabilityDepth(1)
-                .pluginSettings(Map.of("observers.audit.type", "broken-observer"))
+                .pluginSettings(Map.of(
+                        "observers.audit.type", "broken-observer",
+                        "observation.l1-network-genesis-id", "01".repeat(32)))
                 .build();
         AppChainSubsystem failed = new AppChainSubsystem(
                 config, 42, new SimpleEventBus(), null,
@@ -1151,6 +1160,7 @@ class AppChainProviderRegistryTest {
         Map<String, String> settings = new LinkedHashMap<>();
         settings.put("sequencer.mode", "Registry-Mode");
         settings.put("observers.audit.type", "Registry.Observer:V1");
+        settings.put("observation.l1-network-genesis-id", "01".repeat(32));
         settings.put("sinks.registry+sink.enabled", "true");
         settings.put("effects.enabled", "true");
         settings.put("effects.executor.enabled", "true");
@@ -1343,6 +1353,12 @@ class AppChainProviderRegistryTest {
         private L1ObserverProvider observerProvider() {
             return new L1ObserverProvider() {
                 @Override public String type() { return "Registry.Observer:V1"; }
+                @Override
+                public L1ObserverConsensusIdentity consensusIdentity(
+                        String observerId, Map<String, String> settings) {
+                    return new L1ObserverConsensusIdentity(
+                            1, "registry-test-claim-v1", 1, new byte[]{1});
+                }
                 @Override public L1Observer create(String observerId, Map<String, String> settings) {
                     observers.incrementAndGet();
                     return new L1Observer() {

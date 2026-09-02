@@ -108,6 +108,7 @@ final class AppChainEngine implements AutoCloseable {
     private volatile MandatoryInputProvider mandatoryInputProvider = reference -> List.of();
     /** Complete-prefix check; unlike per-item validation this detects omission. */
     private volatile ObservationPrefixValidator observationPrefixValidator;
+    private volatile Consumer<AppMessage> unencodableMandatoryInputHandler = ignored -> { };
     /** Height-specific identity committed by every v3 proposal. */
     private volatile LongFunction<byte[]> consensusContextProvider = height -> new byte[32];
     private long currentView;
@@ -154,7 +155,7 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     interface ObservationPrefixValidator {
-        L1RefVerdict check(List<SequencedL1Observation> observations, long stableL1Slot);
+        L1RefVerdict check(AppBlockExecutionContext executionContext);
     }
 
     void setL1RefSupplier(Supplier<L1Ref> supplier) {
@@ -175,6 +176,10 @@ final class AppChainEngine implements AutoCloseable {
 
     void setObservationPrefixValidator(ObservationPrefixValidator validator) {
         this.observationPrefixValidator = validator;
+    }
+
+    void setUnencodableMandatoryInputHandler(Consumer<AppMessage> handler) {
+        this.unencodableMandatoryInputHandler = Objects.requireNonNull(handler, "handler");
     }
 
     void setConsensusContextProvider(LongFunction<byte[]> provider) {
@@ -934,8 +939,7 @@ final class AppChainEngine implements AutoCloseable {
                                              long timestamp, List<AppMessage> candidates,
                                              int mandatoryCount) {
         List<AppMessage> list = new ArrayList<>(candidates);
-        int minimum = Math.max(mandatoryCount, 1);
-        while (list.size() > minimum) {
+        while (list.size() > Math.max(mandatoryCount, 1)) {
             int size = AppBlockCodec.serialize(
                     buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length;
             if (size <= proposalMaxBytes) {
@@ -943,16 +947,21 @@ final class AppChainEngine implements AutoCloseable {
             }
             int drop = Math.max(1, (int) ((long) list.size()
                     * (size - proposalMaxBytes) / size));
+            drop = Math.min(drop, list.size() - mandatoryCount);
             list = new ArrayList<>(list.subList(0, list.size() - drop));
+        }
+        while (mandatoryCount > 1 && AppBlockCodec.serialize(
+                buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length
+                > proposalMaxBytes) {
+            mandatoryCount--;
+            list = new ArrayList<>(list.subList(0, mandatoryCount));
         }
         if (!list.isEmpty() && AppBlockCodec.serialize(
                 buildCandidateBlock(height, prevHash, l1Ref, timestamp, list)).length
                 > proposalMaxBytes) {
             if (mandatoryCount > 0) {
-                log.error("App-chain '{}': mandatory L1 observation prefix cannot fit under "
-                                + "block.max-bytes ({}) at height {} — quarantining proposal production",
-                        config.chainId(), proposalMaxBytes, height);
-                return List.of();
+                unencodableMandatoryInputHandler.accept(list.getFirst());
+                throw new IllegalStateException("OBSERVATION_UNENCODABLE");
             }
             AppMessage impossible = list.getFirst();
             pool.remove(List.of(impossible));
@@ -1568,7 +1577,8 @@ final class AppChainEngine implements AutoCloseable {
             if (selected == null || candidate.view() > selected.view()) {
                 selected = candidate;
             } else if (candidate.view() == selected.view()
-                    && !Arrays.equals(candidate.blockHash(), selected.blockHash())) {
+                    && (!Arrays.equals(candidate.blockHash(), selected.blockHash())
+                    || !Arrays.equals(candidate.valueHash(), selected.valueHash()))) {
                 throw new IllegalStateException("CONFLICTING_PREPARED_CERTIFICATES");
             }
         }
@@ -1586,7 +1596,8 @@ final class AppChainEngine implements AutoCloseable {
             }
             if (selected == null) {
                 selected = candidate;
-            } else if (!Arrays.equals(candidate.blockHash(), selected.blockHash())) {
+            } else if (!Arrays.equals(candidate.blockHash(), selected.blockHash())
+                    || !Arrays.equals(candidate.valueHash(), selected.valueHash())) {
                 throw new IllegalStateException("CONFLICTING_FINALITY_CERTIFICATES");
             }
         }
@@ -1768,7 +1779,8 @@ final class AppChainEngine implements AutoCloseable {
                 || vote.height() != round.block.height()
                 || vote.view() != round.block.view()
                 || !Arrays.equals(vote.contextDigest(), round.block.consensusContextDigest())
-                || !Arrays.equals(vote.blockHash(), round.blockHash)) {
+                || !Arrays.equals(vote.blockHash(), round.blockHash)
+                || !Arrays.equals(vote.valueHash(), AppBlockCodec.valueHash(round.block))) {
             return false;
         }
         String voter = HexUtil.encodeHexString(envelope.getSender()).toLowerCase(Locale.ROOT);
@@ -1782,7 +1794,8 @@ final class AppChainEngine implements AutoCloseable {
         return round != null && qc.height() == round.block.height()
                 && qc.view() == round.block.view()
                 && Arrays.equals(qc.contextDigest(), round.block.consensusContextDigest())
-                && Arrays.equals(qc.blockHash(), round.blockHash);
+                && Arrays.equals(qc.blockHash(), round.blockHash)
+                && Arrays.equals(qc.valueHash(), AppBlockCodec.valueHash(round.block));
     }
 
     private boolean verifyQc(CertifiedConsensusCodec.QuorumCertificate qc) {
@@ -1790,7 +1803,7 @@ final class AppChainEngine implements AutoCloseable {
             return false;
         }
         byte[] digest = CertifiedConsensusCodec.signingDigest(qc.phase(), qc.height(),
-                qc.view(), qc.contextDigest(), qc.blockHash());
+                qc.view(), qc.contextDigest(), qc.blockHash(), qc.valueHash());
         return qc.signatures().stream().allMatch(signature -> {
             String key = HexUtil.encodeHexString(signature.signer()).toLowerCase(Locale.ROOT);
             return group.containsAt(key, qc.height())
@@ -1800,7 +1813,8 @@ final class AppChainEngine implements AutoCloseable {
 
     private byte[] certifiedVoteDigest(CertifiedConsensusCodec.Phase phase, AppBlock block) {
         return CertifiedConsensusCodec.signingDigest(phase, block.height(), block.view(),
-                block.consensusContextDigest(), AppBlockCodec.blockHash(block));
+                block.consensusContextDigest(), AppBlockCodec.blockHash(block),
+                AppBlockCodec.valueHash(block));
     }
 
     static byte[] commitDigest(AppBlock block) {
@@ -1811,7 +1825,8 @@ final class AppChainEngine implements AutoCloseable {
         byte[] digest = certifiedVoteDigest(phase, block);
         byte[] body = CertifiedConsensusCodec.encodeVote(new CertifiedConsensusCodec.Vote(
                 phase, block.height(), block.view(), block.consensusContextDigest(),
-                AppBlockCodec.blockHash(block), signer.sign(digest)));
+                AppBlockCodec.blockHash(block), AppBlockCodec.valueHash(block),
+                signer.sign(digest)));
         broadcast.apply(phase == CertifiedConsensusCodec.Phase.PREPARE
                 ? ConsensusCodec.TOPIC_PREPARE : ConsensusCodec.TOPIC_COMMIT, body);
     }
@@ -2175,7 +2190,7 @@ final class AppChainEngine implements AutoCloseable {
         }
         ObservationPrefixValidator prefixValidator = observationPrefixValidator;
         if (prefixValidator != null) {
-            L1RefVerdict prefixVerdict = prefixValidator.check(observations, block.l1Slot());
+            L1RefVerdict prefixVerdict = prefixValidator.check(executionContext);
             if (prefixVerdict != L1RefVerdict.OK) {
                 log.warn("Proposal at height {} has an incomplete or unverifiable mandatory "
                                 + "L1 observation prefix ({}) — not voting",

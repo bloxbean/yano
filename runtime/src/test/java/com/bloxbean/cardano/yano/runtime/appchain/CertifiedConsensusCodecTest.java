@@ -15,26 +15,42 @@ class CertifiedConsensusCodecTest {
     void voteAndCertificateAreCanonicalAndPhaseSeparated() {
         byte[] context = filled(1, 32);
         byte[] block = filled(2, 32);
+        byte[] value = filled(4, 32);
         byte[] signature = filled(3, 64);
         CertifiedConsensusCodec.Vote vote = new CertifiedConsensusCodec.Vote(
-                CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block, signature);
+                CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block, value, signature);
 
         CertifiedConsensusCodec.Vote decodedVote = CertifiedConsensusCodec.decodeVote(
                 CertifiedConsensusCodec.encodeVote(vote));
         assertThat(HexUtil.encodeHexString(CertifiedConsensusCodec.encodeVote(vote)))
-                .isEqualTo("87020009045820" + "01".repeat(32)
+                .isEqualTo("88020009045820" + "01".repeat(32)
                         + "5820" + "02".repeat(32)
+                        + "5820" + "04".repeat(32)
                         + "5840" + "03".repeat(64));
         assertThat(decodedVote.phase()).isEqualTo(vote.phase());
         assertThat(decodedVote.height()).isEqualTo(vote.height());
         assertThat(decodedVote.view()).isEqualTo(vote.view());
         assertThat(decodedVote.contextDigest()).isEqualTo(vote.contextDigest());
         assertThat(decodedVote.blockHash()).isEqualTo(vote.blockHash());
+        assertThat(decodedVote.valueHash()).isEqualTo(vote.valueHash());
         assertThat(decodedVote.signature()).isEqualTo(vote.signature());
         assertThat(CertifiedConsensusCodec.signingDigest(
-                CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block))
+                CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block, value))
                 .isNotEqualTo(CertifiedConsensusCodec.signingDigest(
-                        CertifiedConsensusCodec.Phase.COMMIT, 9, 4, context, block));
+                        CertifiedConsensusCodec.Phase.COMMIT, 9, 4, context, block, value));
+        assertThat(CertifiedConsensusCodec.signingDigest(
+                CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block, value))
+                .isNotEqualTo(CertifiedConsensusCodec.signingDigest(
+                        CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block,
+                        filled(5, 32)));
+        AppMessageSigner signer = new AppMessageSigner(
+                HexUtil.encodeHexString(filled(9, 32)));
+        byte[] certified = signer.sign(CertifiedConsensusCodec.signingDigest(
+                CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block, value));
+        assertThat(AppMessageSigner.verify(certified,
+                CertifiedConsensusCodec.signingDigest(
+                        CertifiedConsensusCodec.Phase.PREPARE, 9, 4, context, block,
+                        filled(5, 32)), signer.publicKey())).isFalse();
 
         CertifiedConsensusCodec.QuorumCertificate qc =
                 new CertifiedConsensusCodec.QuorumCertificate(
@@ -57,7 +73,7 @@ class CertifiedConsensusCodecTest {
                 List.of(duplicate, duplicate))).hasMessageContaining("Duplicate");
         assertThatThrownBy(() -> new CertifiedConsensusCodec.Vote(
                 CertifiedConsensusCodec.Phase.PREPARE, 1, 0,
-                new byte[31], filled(2, 32), filled(3, 64)))
+                new byte[31], filled(2, 32), filled(4, 32), filled(3, 64)))
                 .hasMessageContaining("context digest");
     }
 
@@ -76,7 +92,7 @@ class CertifiedConsensusCodecTest {
                 9, 2, context, new byte[0], new byte[0]))
                 .isNotEqualTo(CertifiedConsensusCodec.signingDigest(
                         CertifiedConsensusCodec.Phase.COMMIT, 9, 2,
-                        context, filled(2, 32)));
+                        context, filled(2, 32), filled(3, 32)));
 
         CertifiedConsensusCodec.NewViewCertificate certificate =
                 new CertifiedConsensusCodec.NewViewCertificate(9, 2, context, List.of(

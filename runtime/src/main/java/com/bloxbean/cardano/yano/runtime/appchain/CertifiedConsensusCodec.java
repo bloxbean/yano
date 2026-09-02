@@ -69,6 +69,7 @@ final class CertifiedConsensusCodec {
                 long view,
                 byte[] contextDigest,
                 byte[] blockHash,
+                byte[] valueHash,
                 byte[] signature) {
         Vote {
             phase = Objects.requireNonNull(phase, "phase");
@@ -77,11 +78,13 @@ final class CertifiedConsensusCodec {
             }
             contextDigest = bytes(contextDigest, 32, "context digest");
             blockHash = bytes(blockHash, 32, "block hash");
+            valueHash = bytes(valueHash, 32, "value hash");
             signature = bytes(signature, AppChainConfig.ED25519_SIGNATURE_BYTES, "signature");
         }
 
         @Override public byte[] contextDigest() { return contextDigest.clone(); }
         @Override public byte[] blockHash() { return blockHash.clone(); }
+        @Override public byte[] valueHash() { return valueHash.clone(); }
         @Override public byte[] signature() { return signature.clone(); }
     }
 
@@ -191,7 +194,7 @@ final class CertifiedConsensusCodec {
     }
 
     static byte[] signingDigest(Phase phase, long height, long view,
-                                byte[] contextDigest, byte[] blockHash) {
+                                byte[] contextDigest, byte[] blockHash, byte[] valueHash) {
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             bytes.write(phase.domain);
@@ -200,6 +203,7 @@ final class CertifiedConsensusCodec {
                 out.writeLong(view);
                 out.write(bytes(contextDigest, 32, "context digest"));
                 out.write(bytes(blockHash, 32, "block hash"));
+                out.write(bytes(valueHash, 32, "value hash"));
             }
             return Blake2bUtil.blake2bHash256(bytes.toByteArray());
         } catch (IOException impossible) {
@@ -210,6 +214,7 @@ final class CertifiedConsensusCodec {
     static byte[] encodeVote(Vote vote) {
         Array array = prefix(vote.phase(), vote.height(), vote.view(),
                 vote.contextDigest(), vote.blockHash());
+        array.add(new ByteString(vote.valueHash()));
         array.add(new ByteString(vote.signature()));
         return CborSerializationUtil.serialize(array);
     }
@@ -221,12 +226,13 @@ final class CertifiedConsensusCodec {
         try {
             List<DataItem> fields = ((Array) CborSerializationUtil.deserializeOne(encoded))
                     .getDataItems();
-            if (fields.size() != 7 || number(fields.get(0)) != VERSION) {
+            if (fields.size() != 8 || number(fields.get(0)) != VERSION) {
                 throw invalid("Invalid certified vote shape");
             }
             Vote vote = new Vote(Phase.fromCode(Math.toIntExact(number(fields.get(1)))),
                     number(fields.get(2)), number(fields.get(3)),
-                    bytes(fields.get(4)), bytes(fields.get(5)), bytes(fields.get(6)));
+                    bytes(fields.get(4)), bytes(fields.get(5)), bytes(fields.get(6)),
+                    bytes(fields.get(7)));
             if (!Arrays.equals(encoded, encodeVote(vote))) {
                 throw invalid("Non-canonical certified vote");
             }

@@ -141,7 +141,7 @@ class AppChainSystemTopicAdmissionTest {
         byte[] blockHash = filled(91);
         byte[] prepareBody = CertifiedConsensusCodec.encodeVote(
                 new CertifiedConsensusCodec.Vote(CertifiedConsensusCodec.Phase.PREPARE,
-                        1, 0, new byte[32], blockHash, new byte[64]));
+                        1, 0, new byte[32], blockHash, new byte[32], new byte[64]));
         AppMessage earlyVote = message(signer, ConsensusCodec.TOPIC_PREPARE, prepareBody, 1);
         AppMessage earlyOrdinary = message(signer, "ordinary", new byte[]{1}, 2);
 

@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
@@ -264,7 +265,8 @@ class AppChainL1CallbackIsolationTest {
                         true, SIGNING_KEY_HEX, 1, 60, 7014))
                 .pluginSettings(Map.of(
                         "sequencer.mode", MODE_ID,
-                        "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE))
+                        "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE,
+                        "observation.l1-network-genesis-id", "01".repeat(32)))
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(
@@ -408,6 +410,12 @@ class AppChainL1CallbackIsolationTest {
             };
             this.observerProvider = new L1ObserverProvider() {
                 @Override public String type() { return OBSERVER_TYPE; }
+                @Override
+                public L1ObserverConsensusIdentity consensusIdentity(
+                        String observerId, Map<String, String> settings) {
+                    return new L1ObserverConsensusIdentity(
+                            1, "controlled-test-claim-v1", 1, new byte[]{1});
+                }
                 @Override
                 public L1Observer create(String observerId, Map<String, String> settings) {
                     controls.observerInstances.incrementAndGet();

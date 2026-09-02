@@ -31,6 +31,8 @@ final class L1ObservationJournal {
     private static final byte[] SOURCE_PREFIX = new byte[]{'S'};
     private static final byte[] CURSOR_PREFIX = new byte[]{'C'};
     private static final byte[] PROFILE_KEY = new byte[]{'P'};
+    private static final byte[] QUARANTINE_KEY = new byte[]{'Q'};
+    private static final byte[] CALLBACK_FAILURE_KEY = new byte[]{'F'};
     private static final int FORMAT_VERSION = 1;
     private static final int MAX_SCAN = 1_000_001;
 
@@ -163,7 +165,7 @@ final class L1ObservationJournal {
     }
 
     synchronized List<L1Observation> pending(long stableSlot, int maxCount, long maxBytes) {
-        if (maxCount <= 0 || maxBytes <= 0) {
+        if (!healthy() || maxCount <= 0 || maxBytes <= 0) {
             return List.of();
         }
         List<L1Observation> pending = new ArrayList<>();
@@ -289,12 +291,31 @@ final class L1ObservationJournal {
         return existing != null && Arrays.equals(decodeRecord(existing).observationBytes(), encoded);
     }
 
+    synchronized void quarantineObservation(L1Observation observation, String reason) {
+        byte[] key = recordKey(observation, observationId(observation));
+        byte[] existing = ledger.epochSpoolGet(key);
+        if (existing == null) {
+            throw new IllegalStateException("Cannot quarantine an absent L1 observation");
+        }
+        Record record = decodeRecord(existing);
+        if (!Arrays.equals(record.observationBytes(), observation.encode())) {
+            throw new IllegalStateException("L1 observation quarantine identity mismatch");
+        }
+        ledger.epochSpoolWrite(List.of(
+                AppLedgerStore.EpochSpoolMutation.put(key,
+                        encodeRecord(new Record(State.QUARANTINED,
+                                record.observationBytes()))),
+                AppLedgerStore.EpochSpoolMutation.put(QUARANTINE_KEY,
+                        reason.getBytes(StandardCharsets.UTF_8))));
+    }
+
     synchronized void rollback(long rollbackToSlot) {
         for (AppLedgerStore.EpochSpoolEntry entry : ledger.epochSpoolScan(
                 CURSOR_PREFIX, MAX_SCAN)) {
             byte[] finalizedRecordKey = cursorRecordKey(entry.value());
             long finalizedSlot = ByteBuffer.wrap(finalizedRecordKey, 1, Long.BYTES).getLong();
             if (finalizedSlot > rollbackToSlot) {
+                quarantine("DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
                 throw new IllegalStateException(
                         "DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
             }
@@ -309,6 +330,7 @@ final class L1ObservationJournal {
                 continue;
             }
             if (record.state() == State.FINALIZED) {
+                quarantine("DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
                 throw new IllegalStateException("DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
             }
             if (record.state() == State.QC_PREPARED) {
@@ -321,11 +343,48 @@ final class L1ObservationJournal {
             mutations.add(AppLedgerStore.EpochSpoolMutation.delete(entry.key()));
             mutations.add(AppLedgerStore.EpochSpoolMutation.delete(sourceKey(observation)));
         }
+        if (invalidatedPreparedValue) {
+            mutations.add(AppLedgerStore.EpochSpoolMutation.put(QUARANTINE_KEY,
+                    "L1_INVALIDATED_PREPARED_VALUE".getBytes(StandardCharsets.UTF_8)));
+        }
         ledger.epochSpoolWrite(mutations);
         usedBytes = calculateUsedBytes();
         if (invalidatedPreparedValue) {
             throw new IllegalStateException("L1_INVALIDATED_PREPARED_VALUE");
         }
+    }
+
+    synchronized boolean healthy() {
+        if (ledger.epochSpoolGet(QUARANTINE_KEY) != null
+                || ledger.epochSpoolGet(CALLBACK_FAILURE_KEY) != null) {
+            return false;
+        }
+        return ledger.epochSpoolScan(RECORD_PREFIX, MAX_SCAN).stream()
+                .map(AppLedgerStore.EpochSpoolEntry::value)
+                .map(L1ObservationJournal::decodeRecord)
+                .noneMatch(record -> record.state() == State.QUARANTINED);
+    }
+
+    synchronized long callbackFailureSlot() {
+        byte[] encoded = ledger.epochSpoolGet(CALLBACK_FAILURE_KEY);
+        return encoded == null ? -1 : ByteBuffer.wrap(encoded).getLong();
+    }
+
+    synchronized void markCallbackFailure(long slot) {
+        ledger.epochSpoolWrite(List.of(AppLedgerStore.EpochSpoolMutation.put(
+                CALLBACK_FAILURE_KEY, ByteBuffer.allocate(Long.BYTES).putLong(slot).array())));
+    }
+
+    synchronized void clearCallbackFailure(long slot) {
+        if (callbackFailureSlot() == slot) {
+            ledger.epochSpoolWrite(List.of(
+                    AppLedgerStore.EpochSpoolMutation.delete(CALLBACK_FAILURE_KEY)));
+        }
+    }
+
+    private void quarantine(String reason) {
+        ledger.epochSpoolWrite(List.of(AppLedgerStore.EpochSpoolMutation.put(
+                QUARANTINE_KEY, reason.getBytes(StandardCharsets.UTF_8))));
     }
 
     synchronized Map<String, Object> status() {
@@ -346,6 +405,15 @@ final class L1ObservationJournal {
         status.put("maxEntries", maxEntries);
         status.put("cursors", ledger.epochSpoolScan(CURSOR_PREFIX, MAX_SCAN).size());
         status.put("cursorDigest", HexFormat.of().formatHex(cursorDigest()));
+        status.put("healthy", healthy());
+        byte[] quarantine = ledger.epochSpoolGet(QUARANTINE_KEY);
+        if (quarantine != null) {
+            status.put("quarantineReason", new String(quarantine, StandardCharsets.UTF_8));
+        }
+        long callbackFailureSlot = callbackFailureSlot();
+        if (callbackFailureSlot >= 0) {
+            status.put("callbackFailureSlot", callbackFailureSlot);
+        }
         return Map.copyOf(status);
     }
 

@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.conformance;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 
 import java.util.List;
@@ -16,6 +17,13 @@ public final class ConformanceL1ObserverProvider implements L1ObserverProvider {
     @Override
     public String type() {
         return TYPE;
+    }
+
+    @Override
+    public L1ObserverConsensusIdentity consensusIdentity(
+            String observerId, Map<String, String> settings) {
+        return new L1ObserverConsensusIdentity(
+                1, "conformance-empty-claim-v1", 1, new byte[]{1});
     }
 
     @Override

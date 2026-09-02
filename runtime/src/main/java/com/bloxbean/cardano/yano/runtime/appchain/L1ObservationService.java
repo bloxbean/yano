@@ -1,11 +1,14 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
-import com.bloxbean.cardano.yano.api.appchain.SequencedL1Observation;
-import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.SequencedL1Observation;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
@@ -13,6 +16,11 @@ import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 import org.rocksdb.WriteBatch;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -43,7 +51,8 @@ final class L1ObservationService {
     private final List<L1Observer> observers;
     private final L1ObservationJournal journal;
     private final Logger log;
-    private volatile boolean healthy = true;
+    private volatile boolean healthy;
+    private volatile long callbackFailureSlot;
 
     /** slot → (observation key → claim). Bounded to {@link #windowBlocks}. */
     private final ConcurrentSkipListMap<Long, Map<String, byte[]>> window =
@@ -73,6 +82,8 @@ final class L1ObservationService {
         this.windowBlocks = Math.max(windowBlocks, 64);
         this.journal = journal;
         this.log = log;
+        this.callbackFailureSlot = journal == null ? -1 : journal.callbackFailureSlot();
+        this.healthy = callbackFailureSlot < 0 && (journal == null || journal.healthy());
     }
 
     L1ObservationService withJournal(L1ObservationJournal durableJournal) {
@@ -104,23 +115,107 @@ final class L1ObservationService {
         return fromRegistry(pluginSettings, windowBlocks, providers, null, log);
     }
 
+    static byte[] consensusProfileDigest(Map<String, String> pluginSettings,
+                                         PluginProviderRegistry providers,
+                                         byte[] l1NetworkGenesisId) {
+        Map<String, Map<String, String>> byId = observerSettings(pluginSettings);
+        byte[] networkIdentity = Objects.requireNonNull(
+                l1NetworkGenesisId, "l1NetworkGenesisId").clone();
+        if (networkIdentity.length != 32) {
+            throw new IllegalArgumentException("L1 network genesis identity must be 32 bytes");
+        }
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            bytes.write("yano-observer-profile-v2\0".getBytes(StandardCharsets.US_ASCII));
+            try (DataOutputStream out = new DataOutputStream(bytes)) {
+                out.write(networkIdentity);
+                for (Map.Entry<String, Map<String, String>> entry : byId.entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey()).toList()) {
+                    String observerId = entry.getKey();
+                    Map<String, String> settings = entry.getValue();
+                    String type = settings.getOrDefault("type", "").trim();
+                    L1ObserverConsensusIdentity identity = consensusIdentity(
+                            observerId, type, settings, providers);
+                    writeProfileString(out, observerId);
+                    writeProfileString(out, type);
+                    out.writeInt(identity.abiVersion());
+                    writeProfileString(out, identity.claimSchema());
+                    out.writeInt(identity.orderingVersion());
+                    byte[] canonical = identity.canonicalIdentityBytes();
+                    out.writeInt(canonical.length);
+                    out.write(canonical);
+                }
+            }
+            return Blake2bUtil.blake2bHash256(bytes.toByteArray());
+        } catch (IOException impossible) {
+            throw new UncheckedIOException(impossible);
+        }
+    }
+
+    private static void writeProfileString(DataOutputStream out, String value)
+            throws IOException {
+        byte[] utf8 = value.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(utf8.length);
+        out.write(utf8);
+    }
+
+    private static L1ObserverConsensusIdentity consensusIdentity(
+            String observerId, String type, Map<String, String> settings,
+            PluginProviderRegistry providers) {
+        return switch (type) {
+            case MetadataLabelObserver.TYPE -> builtInIdentity(
+                    "metadata-label-claim-v1", "label", settings);
+            case AddressDepositObserver.TYPE -> builtInIdentity(
+                    "address-deposit-claim-v1", "address", settings);
+            default -> providers.find(L1ObserverProvider.class, type)
+                    .map(provider -> Objects.requireNonNull(provider.consensusIdentity(
+                            observerId, Map.copyOf(settings)),
+                            "L1ObserverProvider.consensusIdentity returned null"))
+                    .orElseGet(() -> providers.find(L1EpochObserverProvider.class, type)
+                            .map(provider -> Objects.requireNonNull(provider.consensusIdentity(
+                                    observerId, Map.copyOf(settings)),
+                                    "L1EpochObserverProvider.consensusIdentity returned null"))
+                            .orElseThrow(() -> new PluginActivationException(
+                                    "Configured L1 observer type '" + type
+                                            + "' has no selected provider", null)));
+        };
+    }
+
+    private static L1ObserverConsensusIdentity builtInIdentity(
+            String claimSchema, String settingName, Map<String, String> settings) {
+        String value = settings.get(settingName);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Built-in observer setting '" + settingName + "' is required");
+        }
+        return new L1ObserverConsensusIdentity(1, claimSchema, 1,
+                (settingName + "=" + value.trim()).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static Map<String, Map<String, String>> observerSettings(
+            Map<String, String> pluginSettings) {
+        Map<String, Map<String, String>> byId = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : pluginSettings.entrySet()) {
+            String key = entry.getKey();
+            if (!key.startsWith("observers.")) {
+                continue;
+            }
+            String rest = key.substring("observers.".length());
+            int dot = rest.indexOf('.');
+            if (dot > 0) {
+                byId.computeIfAbsent(rest.substring(0, dot), ignored -> new HashMap<>())
+                        .put(rest.substring(dot + 1), entry.getValue());
+            }
+        }
+        return byId;
+    }
+
     static L1ObservationService fromRegistry(Map<String, String> pluginSettings,
                                              int windowBlocks,
                                              PluginProviderRegistry providers,
                                              L1ObservationJournal journal,
                                              Logger log) {
-        Map<String, Map<String, String>> byId = new LinkedHashMap<>();
-        for (Map.Entry<String, String> entry : pluginSettings.entrySet()) {
-            String key = entry.getKey();
-            if (!key.startsWith("observers."))
-                continue;
-            String rest = key.substring("observers.".length());
-            int dot = rest.indexOf('.');
-            if (dot <= 0)
-                continue;
-            byId.computeIfAbsent(rest.substring(0, dot), id -> new HashMap<>())
-                    .put(rest.substring(dot + 1), entry.getValue());
-        }
+        Map<String, Map<String, String>> byId = observerSettings(pluginSettings);
         if (byId.isEmpty())
             return null;
 
@@ -148,10 +243,10 @@ final class L1ObservationService {
         L1ObserverProvider provider = providers.find(L1ObserverProvider.class, type).orElse(null);
         if (provider != null) {
             try {
-                L1Observer observer = java.util.Objects.requireNonNull(
+                L1Observer observer = Objects.requireNonNull(
                         provider.create(observerId, settings),
                         "L1ObserverProvider.create returned null");
-                String productId = java.util.Objects.requireNonNull(
+                String productId = Objects.requireNonNull(
                         observer.observerId(), "L1Observer.observerId returned null");
                 if (!observerId.equals(productId)) {
                     throw new IllegalStateException("L1ObserverProvider '" + type
@@ -204,6 +299,10 @@ final class L1ObservationService {
         if (stableBlockHash.length != 32) {
             throw new IllegalArgumentException("L1 block hash must be 32 bytes");
         }
+        if (callbackFailureSlot >= 0 && callbackFailureSlot != slot) {
+            throw new IllegalStateException("L1_OBSERVER_REPLAY_REQUIRED_AT_SLOT_"
+                    + callbackFailureSlot);
+        }
         List<L1Observation> all = new ArrayList<>();
         Map<String, byte[]> claims = new ConcurrentHashMap<>();
         for (L1Observer observer : observers) {
@@ -222,6 +321,11 @@ final class L1ObservationService {
                 if (e instanceof InterruptedException) {
                     Thread.currentThread().interrupt();
                 }
+                healthy = false;
+                callbackFailureSlot = slot;
+                if (journal != null) {
+                    journal.markCallbackFailure(slot);
+                }
                 try {
                     // Do not re-enter observerId() while handling a callback
                     // failure: it is plugin code too and could mask the
@@ -234,23 +338,29 @@ final class L1ObservationService {
                         Thread.currentThread().interrupt();
                     }
                 }
+                throw new IllegalStateException("L1_OBSERVER_CALLBACK_FAILED", e);
             }
         }
+        if (journal != null) {
+            try {
+                if (!all.isEmpty()) {
+                    journal.observe(all);
+                }
+                journal.clearCallbackFailure(slot);
+            } catch (RuntimeException failure) {
+                healthy = false;
+                callbackFailureSlot = slot;
+                journal.markCallbackFailure(slot);
+                throw failure;
+            }
+        } else if (!all.isEmpty()) {
+            pendingInjection.put(slot, all);
+        }
+        callbackFailureSlot = -1;
+        healthy = journal == null || journal.healthy();
         window.put(slot, claims);
         blockHashes.put(slot, stableBlockHash.clone());
         newestSlot = slot;
-        if (!all.isEmpty()) {
-            if (journal != null) {
-                try {
-                    journal.observe(all);
-                } catch (RuntimeException failure) {
-                    healthy = false;
-                    throw failure;
-                }
-            } else {
-                pendingInjection.put(slot, all);
-            }
-        }
         while (window.size() > windowBlocks) {
             window.pollFirstEntry();
         }
@@ -383,6 +493,13 @@ final class L1ObservationService {
         } catch (RuntimeException failure) {
             healthy = false;
             throw failure;
+        }
+    }
+
+    void quarantineUnencodable(L1Observation observation) {
+        healthy = false;
+        if (journal != null) {
+            journal.quarantineObservation(observation, "OBSERVATION_UNENCODABLE");
         }
     }
 
