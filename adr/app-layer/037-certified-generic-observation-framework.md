@@ -299,9 +299,10 @@ not depend on an absent report or on knowing that a sequence was the latest one
 observed elsewhere. Latest-of-N, median, or any other choice among several
 independently valid claims is closure-certified and cannot use the
 lower-threshold exception. Otherwise the definition uses `r = q` exact
-agreement over claim bytes. The keys, `g`, `r`, and the certificate-local
-uniqueness proof are operator-installed, profile-committed, and never
-application-selected.
+agreement over claim bytes. The reporter-mode/key-selection rule, derivation of
+`g` and `r`, and certificate-local uniqueness proof are operator-installed,
+profile-committed, and never application-selected. Actual `ACTIVE_MEMBERS` keys
+come from the authenticated membership snapshot pinned when the round opens.
 
 ## 5. Responsibilities
 
@@ -370,7 +371,8 @@ reporter mode, reporter-set identity, fault bound, and threshold
 acquisition adapter identity
 normalization identity and version
 evidence verifier identity and version
-reconciliation policy identity and parameters
+reconciliation policy identity, fixed parameters, and the schema/bounds of any
+round-selectable parameters
 source-diversity policy
 freshness and source-version-anchor interpretation
 ordering version
@@ -739,8 +741,8 @@ staleness:
   before `PREPARE`.
 - A bounded, canonically framed input for an unknown, already terminal,
   cancelled, superseded, or out-of-window round is a deterministic audit no-op.
-  A second valid certificate for the same result/round in one block is also a
-  no-op. Local journal contents never change that verdict.
+- A second valid certificate for the same result and active round in one block
+  is a no-op. Local journal contents never change either no-op verdict.
 - Two valid certificates for the same active `(subscriptionId, roundNumber)`
   but different `resultId` values in one block reject the proposal; block order
   cannot be allowed to choose between conflicting results. A pair for a
@@ -748,8 +750,9 @@ staleness:
   certificate for an active round follows the preceding rejection rule.
 
 Phase 0 must choose one uniform rule for an oversized, noncanonical, or
-undecodable result input whose round cannot be identified. Such an input cannot
-be classified by state staleness, so the wire format is not frozen until the
+undecodable result input whose round cannot be identified, or an oversized
+input that identifies a terminal or unknown round. These cases are not assigned
+a validity result here, so the wire format is not frozen until the
 reject-versus-bounded-no-op decision in section 24 is resolved.
 
 This prevents a late but once-valid certificate from poisoning a proposal
@@ -983,10 +986,10 @@ Slot passage alone does not create an app block. The intended model uses
 redundant member-generated heartbeat hints when a due slot is locally stable.
 Such a hint contains no trusted time and carries no result; it only gives the
 sequencer work from which to build a block. The proposed block's verified
-`l1Slot`, not a hint sender's clock, opens/closes due rounds. Phase 0 must still
-freeze the tick body, sender eligibility and sequence rules, admission/dedup
-bounds, and the committed high-water-mark behavior before `~obs/tick/v1` is an
-accepted input.
+`l1Slot`, not a hint sender's clock, opens/closes due rounds, subject to the
+committed high-water-anchor rule below. Phase 0 must still freeze the tick body,
+sender eligibility and sequence rules, admission/dedup bounds, and the
+committed high-water-mark behavior before `~obs/tick/v1` is an accepted input.
 
 "Committed high-water anchor" refers to ADR-012's `effectiveStableSlot`
 pattern: a replicated monotonic summary of the last usable verified L1 slot,
@@ -1419,11 +1422,18 @@ at each round opening or explicit cancel-and-re-watch migration. Any selected
 policy bytes/version remain bounded by a registered schema and host profile; an
 application cannot supply executable policy code or bypass host bounds.
 
-Governed round state cannot select or change the safety envelope: reporter keys,
-`p`, `g`, `r`, minimum source threshold `s`, and the certificate-local
-uniqueness rule remain definition/profile-committed. Round-open selection is
-limited to schema-bounded feed parameters that preserve that envelope, such as
-deviation and jump limits or a choice among profile-authorized source groups.
+Governed round state cannot select or change the safety envelope. In
+`EXTERNAL_REPORTERS` mode, reporter keys, `p`, `g`, and `r` are
+definition/profile-committed. In `ACTIVE_MEMBERS` mode, the keys and `p` come
+from the round's authenticated membership snapshot, while `g` and `r` derive
+from its pinned `f` and `q`; application governance controls neither mode. The
+minimum source threshold `s` and certificate-local uniqueness rule are also
+definition/profile-committed. Round-open selection is limited to
+schema-bounded feed parameters that preserve that envelope, such as deviation
+and jump limits or a choice among profile-authorized source groups. Their
+selected canonical values are pinned in the round's `policyDigest`; the
+definition digest commits to their schema and bounds rather than each future
+selected value.
 
 After ADR-037 exists, the oracle becomes:
 
@@ -1442,6 +1452,8 @@ ordinary-app-message report/round implementation plan, and specify how its
 latest-assertion selection becomes closure-certified. Until that revision,
 this section is the controlling boundary where the two proposed ADRs overlap;
 ADR-012 remains a proposal and is not silently changed by this Yano ADR.
+A cross-repository tracking issue must be linked from both ADRs before Phase 3
+implementation begins.
 
 ### 17.2 External reporter keys
 
@@ -1731,7 +1743,7 @@ Exit criteria:
 Deliver:
 
 - fixed-point numeric schema and arithmetic helpers;
-- two-stage validator-per-source reconciliation and cross-source aggregation;
+- two-stage reporter-per-source reconciliation and cross-source aggregation;
 - definition-pinned external reporter keys and Yano X ADR-012 report/round
   migration;
 - deterministic median with explicit even-count/tie/rounding rules;
@@ -1819,10 +1831,12 @@ open rather than being hidden in an illustrative API or topic name.
    which are operational routing? Every Phase 1 provider must document and
    golden-test that split before its identity is frozen.
 2. How is an oversized, noncanonical, or undecodable `~obs/result/v1` input
-   classified when its round cannot be recovered? The choice must be uniform
-   and must explicitly justify either rejecting the proposal/catch-up block or
-   using a bounded no-op like the effects precedent. State-relative staleness
-   is consulted only after canonical round identity is available.
+   classified when its round cannot be recovered, and how is an oversized input
+   classified when it names a terminal or unknown round? The choice must be
+   uniform and must explicitly justify either rejecting the proposal/catch-up
+   block or using a resource-bounded no-op like the effects precedent.
+   State-relative staleness is consulted only after canonical round identity is
+   available.
 3. What are the exact sender-sequence and admission rules for
    `~obs/result/v1` and `~obs/tick/v1`? The tick decision must freeze its body,
    sender eligibility, per-member/per-anchor deduplication, pool and block
