@@ -1870,7 +1870,13 @@ tasks.register('nativeProjectionHistorySmoke') {
                     && process.isAlive()
                     && (!rangeCovers(artifactEntries.epoch_stake, 0L)
                     || !rangeCovers(artifactEntries.epoch_stake, 1L)
-                    || !rangeCovers(artifactEntries.ada_pot, 2L))) {
+                    || !rangeCovers(artifactEntries.ada_pot, 2L)
+                    || !rangeCovers(artifactEntries.reward, 1L)
+                    || !rangeCovers(artifactEntries.reward, 2L)
+                    || !rangeCovers(artifactEntries.drep_distribution, 1L)
+                    || !rangeCovers(artifactEntries.drep_distribution, 2L)
+                    || !rangeCovers(artifactEntries.governance_proposal_status, 1L)
+                    || !rangeCovers(artifactEntries.governance_proposal_status, 2L))) {
                 Thread.sleep(250)
                 coverage = requireResponse(
                         request('GET', "${apiPrefix}/history/coverage", null),
@@ -1881,12 +1887,17 @@ tasks.register('nativeProjectionHistorySmoke') {
             }
             if (!rangeCovers(artifactEntries.epoch_stake, 0L)
                     || !rangeCovers(artifactEntries.epoch_stake, 1L)
-                    || !rangeCovers(artifactEntries.ada_pot, 2L)) {
+                    || !rangeCovers(artifactEntries.ada_pot, 2L)
+                    || !rangeCovers(artifactEntries.reward, 1L)
+                    || !rangeCovers(artifactEntries.reward, 2L)
+                    || !rangeCovers(artifactEntries.drep_distribution, 1L)
+                    || !rangeCovers(artifactEntries.drep_distribution, 2L)
+                    || !rangeCovers(artifactEntries.governance_proposal_status, 1L)
+                    || !rangeCovers(artifactEntries.governance_proposal_status, 2L)) {
                 throw new GradleException(
-                        'Native producer-mode epoch artifacts did not complete the supported '
-                                + "devnet ranges: ${artifactEntries}")
+                        "Native producer-mode epoch artifacts did not complete: ${artifactEntries}")
             }
-            ['epoch_stake', 'ada_pot'].each { dataset ->
+            expectedArtifacts.each { dataset ->
                 def artifact = artifactEntries[dataset]
                 if (!(artifact.gapRanges as Collection).isEmpty()
                         || !(artifact.pendingEpochs as Collection).isEmpty()
@@ -1895,18 +1906,10 @@ tasks.register('nativeProjectionHistorySmoke') {
                             "Native ${dataset} coverage is incomplete: ${artifact}")
                 }
             }
-            def excludedArtifacts = [
-                    'reward', 'drep_distribution', 'governance_proposal_status'
-            ]
-            if (coverage.epochStagingFailureActive == true
-                    && !(coverage.epochStagingError?.toString()
-                    ?.contains('canonical boundary is unavailable'))) {
+            if (coverage.epochStagingFailureActive == true) {
                 throw new GradleException(
-                        "Unexpected producer-mode staging failure: ${coverage.epochStagingError}")
+                        "Native producer-mode staging failed: ${coverage.epochStagingError}")
             }
-            logger.lifecycle(
-                    'Native devnet producer-mode exclusions (pre-existing boundary ordering '
-                            + "defect; fetched-block Gate D owns coverage): ${excludedArtifacts}")
 
             requireResponse(request('POST', "${apiPrefix}/node/stop", null),
                     200, 'node stop')
@@ -1965,7 +1968,11 @@ tasks.register('nativeProjectionHistorySmoke') {
                     'ServiceConfigurationError', 'UnsatisfiedLinkError',
                     'No suitable driver', 'projection sink initialization failed',
                     'packaged DuckDB extension resource is missing',
-                    'DuckDB extension checksum mismatch'
+                    'DuckDB extension checksum mismatch',
+                    'canonical epoch anchor is unavailable',
+                    'Canonical predecessor is unavailable for epoch boundary block',
+                    'Archive capture failed at',
+                    'startup recovery failed'
             ]
             def observedForbidden = forbidden.findAll { output.contains(it) }
             if (!observedForbidden.isEmpty()) {
@@ -1986,8 +1993,9 @@ tasks.register('nativeProjectionHistorySmoke') {
                             + "sha256=${digest.digest().encodeHex()}, tip=${stoppedTip}, "
                             + "k=${securityParam}, finality=${finalityBlocks}, "
                             + "queryableThrough=${stoppedThrough}, nudges=${nudgeSlots}, "
-                            + "includedEpochArtifacts=[epoch_stake:0..1, ada_pot:2], "
-                            + "excludedEpochArtifacts=${excludedArtifacts}")
+                            + 'epochArtifacts=[epoch_stake:0..1, ada_pot:2, '
+                            + 'reward:1..2, drep_distribution:1..2, '
+                            + 'governance_proposal_status:1..2]')
         } catch (Throwable failure) {
             primaryFailure = failure
             throw failure

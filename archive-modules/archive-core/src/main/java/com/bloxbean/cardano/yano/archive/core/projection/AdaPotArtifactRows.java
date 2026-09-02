@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -53,7 +54,8 @@ public final class AdaPotArtifactRows {
     /** Deterministic job identity, so replay reproduces the same {@code archive_job_id}. */
     public static UUID jobId(ProjectionArtifactRef ref) {
         return UUID.nameUUIDFromBytes(("ada-pot:" + ref.semanticEpoch() + ':'
-                + ref.sourceCodecVersion()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                + ref.sourceGeneration() + ':' + ref.sourceCodecVersion())
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     /** Column names, kept beside the row builder so a schema change breaks both together. */

@@ -36,6 +36,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -377,7 +378,7 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                 while (rows.next()) {
                     result.add(new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
                             com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(rows.getString(1)),
-                            rows.getInt(2), rows.getLong(3), rows.getLong(4), rows.getBytes(5),
+                            rows.getInt(2), rows.getLong(3) + 1, rows.getLong(3), rows.getLong(4), rows.getBytes(5),
                             rows.getString(6), rows.getString(7), rows.getTimestamp(8).toInstant()));
                 }
             } finally {
@@ -955,9 +956,21 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                         + " VALUES (?, ?, ?, ?, ?, 'COMPLETE', ?, ?, NULL, NULL, ?)")) {
             for (var entry : complete.entrySet()) {
                 Key key = entry.getKey();
-                byte[] hash = batch.canonicalBlockHashes().get(key.block());
-                if (hash == null || hash.length == 0) {
-                    throw new ProjectionSinkException("canonical hash is missing for epoch artifact "
+                ProjectionArtifactRef representative = batch.artifacts().stream()
+                        .filter(ref -> ref.dataset() == key.dataset()
+                                && ref.semanticEpoch() == key.epoch()
+                                && ref.producingBlockNumber() == key.block()
+                                && ref.producingSlot() == key.slot())
+                        .findFirst().orElseThrow();
+                byte[] hash = representative.producingBlockHash();
+                boolean conflictingHash = batch.artifacts().stream()
+                        .filter(ref -> ref.dataset() == key.dataset()
+                                && ref.semanticEpoch() == key.epoch()
+                                && ref.producingBlockNumber() == key.block()
+                                && ref.producingSlot() == key.slot())
+                        .anyMatch(ref -> !Arrays.equals(hash, ref.producingBlockHash()));
+                if (conflictingHash) {
+                    throw new ProjectionSinkException("conflicting anchor hashes for epoch artifact "
                             + key.dataset() + " at block " + key.block());
                 }
                 // A verified corrected replay repairs a point GAP atomically: artifact rows have

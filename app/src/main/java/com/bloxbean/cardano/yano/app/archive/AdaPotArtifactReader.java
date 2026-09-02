@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 import com.bloxbean.cardano.yano.archive.core.projection.AdaPotArtifactRows;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -50,6 +51,10 @@ public final class AdaPotArtifactReader implements ArchiveArtifactReader {
                 .blockHash(ref.producingBlockNumber())
                 .orElseThrow(() -> new IllegalStateException("no canonical block reference at boundary block "
                         + ref.producingBlockNumber() + " for the ada-pot artifact of epoch " + ref.semanticEpoch()));
+        if (!Arrays.equals(hash, ref.producingBlockHash())) {
+            throw new IllegalStateException("ada-pot anchor is no longer canonical at block "
+                    + ref.producingBlockNumber());
+        }
 
         var row = AdaPotArtifactRows.row(ref, values, hash,
                 boundaryFacts.blockTimeSeconds(ref.producingSlot()), AdaPotArtifactRows.jobId(ref));
