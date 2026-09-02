@@ -247,7 +247,7 @@ class AppChainSnapshotTest {
                 .isEqualTo("DONE");
         long tipBeforeRotation = source.tipHeight();
         byte[] rootBeforeRotation = source.stateRoot();
-        source.stop();
+        source.close();
         source = null;
 
         AppChainConfig afterRotation = AppChainConfig.builder("snap-chain")
