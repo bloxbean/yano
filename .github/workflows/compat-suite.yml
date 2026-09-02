@@ -1,0 +1,106 @@
+# SDK compatibility suite - MANUAL ONLY.
+#
+# There is deliberately no `push` or `pull_request` trigger: this suite is adhoc by
+# design (adr/053-sdk-compatibility-and-load-suite.md). It is not part of `build`,
+# `extendedTest`, `distributionCheck`, or `fullBuild`, and must not be added to them.
+name: SDK Compat Suite
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Yano API base URL. Leave empty to build this ref and start a devnet in the job.'
+        required: false
+        default: ''
+      kinds:
+        description: 'Which cases to run'
+        required: true
+        default: 'compat-only'
+        type: choice
+        options:
+          - compat-only
+          - load-only
+          - all
+      label:
+        description: 'Results label (default: the run number)'
+        required: false
+        default: ''
+      check_endpoints:
+        description: 'Also capture and diff SDK endpoint usage'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew compat-tests/ccl/gradlew compat-tests/run-suite.sh compat-tests/bin/with-devnet.sh
+
+      - name: Resolve options
+        id: opts
+        run: |
+          case "${{ inputs.kinds }}" in
+            compat-only) echo "flags=--compat-only" >> "$GITHUB_OUTPUT" ;;
+            load-only)   echo "flags=--load-only"   >> "$GITHUB_OUTPUT" ;;
+            *)           echo "flags="              >> "$GITHUB_OUTPUT" ;;
+          esac
+          label='${{ inputs.label }}'
+          [ -n "$label" ] || label="run-${{ github.run_number }}"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          if [ '${{ inputs.check_endpoints }}' = 'true' ]; then
+            echo "endpoints=--check-endpoints" >> "$GITHUB_OUTPUT"
+          else
+            echo "endpoints=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run against the supplied node
+        if: inputs.url != ''
+        run: |
+          compat-tests/run-suite.sh \
+            --url '${{ inputs.url }}' \
+            --label '${{ steps.opts.outputs.label }}' \
+            ${{ steps.opts.outputs.flags }} ${{ steps.opts.outputs.endpoints }}
+
+      - name: Build this ref, start a devnet, and run
+        if: inputs.url == ''
+        run: |
+          compat-tests/bin/with-devnet.sh -- \
+            --label '${{ steps.opts.outputs.label }}' \
+            ${{ steps.opts.outputs.flags }} ${{ steps.opts.outputs.endpoints }}
+
+      - name: Publish summary
+        if: always()
+        run: |
+          summary="compat-tests/results/${{ steps.opts.outputs.label }}/SUMMARY.md"
+          [ -f "$summary" ] && cat "$summary" >> "$GITHUB_STEP_SUMMARY" || \
+            echo 'No summary produced - the suite failed before reporting.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-results-${{ steps.opts.outputs.label }}
+          path: compat-tests/results/
+          if-no-files-found: warn

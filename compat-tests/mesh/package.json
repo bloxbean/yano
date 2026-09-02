@@ -1,0 +1,17 @@
+{
+  "name": "yano-compat-mesh",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MeshJS compatibility and load suite against a running Yano devnet",
+  "scripts": {
+    "postinstall": "node scripts/fix-libsodium.mjs",
+    "compat": "node --experimental-wasm-modules --no-warnings src/compat.mjs",
+    "load": "node --experimental-wasm-modules --no-warnings src/load.mjs",
+    "vesting": "node --experimental-wasm-modules --no-warnings src/vesting.mjs"
+  },
+  "dependencies": {
+    "@meshsdk/core": "1.9.1",
+    "@meshsdk/core-csl": "1.9.1"
+  }
+}

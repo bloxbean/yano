@@ -1,0 +1,17 @@
+{
+  "name": "yano-compat-evolution",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Evolution SDK (Lucid) compatibility and load suite against a running Yano devnet",
+  "scripts": {
+    "postinstall": "node scripts/fix-libsodium.mjs",
+    "compat": "node --no-warnings src/compat.mjs",
+    "load": "node --no-warnings src/load.mjs",
+    "vesting": "node --no-warnings src/vesting.mjs",
+    "await-tx": "node --no-warnings src/await-tx.mjs"
+  },
+  "dependencies": {
+    "@evolution-sdk/lucid": "2.0.1"
+  }
+}
