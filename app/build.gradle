@@ -1969,7 +1969,9 @@ tasks.register('nativeProjectionHistorySmoke') {
                     'No suitable driver', 'projection sink initialization failed',
                     'packaged DuckDB extension resource is missing',
                     'DuckDB extension checksum mismatch',
-                    'canonical boundary is unavailable',
+                    'canonical epoch anchor is unavailable',
+                    'Canonical predecessor is unavailable for epoch boundary block',
+                    'Archive capture failed at',
                     'startup recovery failed'
             ]
             def observedForbidden = forbidden.findAll { output.contains(it) }

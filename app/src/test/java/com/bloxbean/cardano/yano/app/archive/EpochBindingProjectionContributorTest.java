@@ -54,8 +54,10 @@ class EpochBindingProjectionContributorTest {
                 delegate, staging, (writer, carrier, artifact) -> {
                     assertThat(carrier).isEqualTo(25);
                     staged.add(artifact);
-                }, (writer, carrier) -> assertThat(carrier).isEqualTo(25),
-                (block, failure) -> { });
+                }, (writer, carrier, carrierEpoch) -> {
+                    assertThat(carrier).isEqualTo(25);
+                    assertThat(carrierEpoch).isEqualTo(6);
+                }, (block, writer, failure) -> { }, ignored -> 6);
         var event = new BlockAppliedEvent(null, 250, 25, "02".repeat(32), mock(Block.class));
         ConsumedOutputAddresses consumed = ConsumedOutputAddresses.NONE;
         ProjectionStagingWriter writer =
@@ -72,13 +74,46 @@ class EpochBindingProjectionContributorTest {
     }
 
     @Test
+    void doesNotBindLocalEvidenceToAReplacementBlockBeforeItsSemanticEpoch() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(24)).thenReturn(Optional.of(
+                new CanonicalBlockReference(24, 240, new byte[] {1, 2, 3})));
+        when(ledger.slotToUnixTime(240)).thenReturn(1_700_000_240L);
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp,
+                EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD), 0);
+        var boundary = new EpochArchiveStagingSink.Boundary(5, 6, 250, 25);
+        staging.beginBoundary(boundary);
+        try (var output = staging.openRewards(6, "rewards")) {
+            output.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        var staged = new ArrayList<EpochArchiveStagingService.BoundArtifact>();
+        var contributor = new EpochBindingProjectionContributor(
+                mock(CanonicalProjectionContributor.class), staging,
+                (writer, carrier, artifact) -> staged.add(artifact),
+                (writer, carrier, carrierEpoch) -> { },
+                (block, writer, failure) -> { }, ignored -> 5);
+
+        contributor.contributeBlock(
+                new BlockAppliedEvent(null, 245, 25, "02".repeat(32), mock(Block.class)),
+                (columnFamily, key, value) -> { });
+
+        assertThat(staged).isEmpty();
+    }
+
+    @Test
     void ordinaryBlocksCheckPendingIntentsWithoutScanningStagedFiles() {
         CanonicalProjectionContributor delegate = mock(CanonicalProjectionContributor.class);
         EpochArchiveStagingService staging = mock(EpochArchiveStagingService.class);
         var contributor = new EpochBindingProjectionContributor(
                 delegate, staging, (writer, carrier, artifact) -> { },
-                (writer, carrier) -> assertThat(carrier).isEqualTo(26),
-                (block, failure) -> { });
+                (writer, carrier, carrierEpoch) -> {
+                    assertThat(carrier).isEqualTo(26);
+                    assertThat(carrierEpoch).isEqualTo(6);
+                }, (block, writer, failure) -> { }, ignored -> 6);
         var event = new BlockAppliedEvent(null, 251, 26, "not-decoded", mock(Block.class));
         ProjectionStagingWriter writer =
                 (columnFamily, key, value) -> { };
@@ -96,13 +131,13 @@ class EpochBindingProjectionContributorTest {
         var failures = new ArrayList<RuntimeException>();
         var contributor = new EpochBindingProjectionContributor(
                 delegate, null, (writer, carrier, artifact) -> { },
-                (writer, carrier) -> { }, (block, failure) -> {
+                (writer, carrier, carrierEpoch) -> { }, (block, output, failure) -> {
                     assertThat(block).isEqualTo(27);
                     failures.add(failure);
-                });
+                }, ignored -> 6);
         var failure = new IllegalStateException("anchor is no longer canonical");
 
-        contributor.contributionFailed(27, failure);
+        contributor.contributionFailed(27, (columnFamily, key, value) -> { }, failure);
 
         assertThat(failures).containsExactly(failure);
     }

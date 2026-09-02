@@ -9,10 +9,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.Set;
 
 /** Resolves the Shelley genesis component of a projection archive identity. */
 final class ProjectionGenesisIdentity {
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Set<Long> PUBLIC_NETWORK_MAGICS = Set.of(
+            764_824_073L, 1_097_911_063L, 1L, 2L, 4L);
 
     private ProjectionGenesisIdentity() {
     }
@@ -27,13 +30,21 @@ final class ProjectionGenesisIdentity {
 
         try {
             byte[] genesis = Files.readAllBytes(Path.of(config.getShelleyGenesisFile()));
-            if (config.isDevMode() && config.isEnableBlockProducer()) {
+            if (isLocalNetwork(genesis)) {
                 genesis = withoutMutableSystemStart(genesis);
             }
             return HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(genesis));
         } catch (Exception e) {
             throw new IllegalStateException("cannot compute Shelley genesis hash for projection identity", e);
         }
+    }
+
+    private static boolean isLocalNetwork(byte[] genesis) throws Exception {
+        long networkMagic = MAPPER.readTree(genesis).path("networkMagic").asLong(Long.MIN_VALUE);
+        if (networkMagic == Long.MIN_VALUE) {
+            throw new IllegalArgumentException("Shelley genesis networkMagic is required");
+        }
+        return !PUBLIC_NETWORK_MAGICS.contains(networkMagic);
     }
 
     /**

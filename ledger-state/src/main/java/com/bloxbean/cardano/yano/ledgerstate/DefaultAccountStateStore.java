@@ -4752,30 +4752,36 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             flush();
             try (WriteBatch finalBatch = new WriteBatch();
                  WriteOptions options = new WriteOptions().setSync(true)) {
-                if (epochArtifacts.enabled()) {
+                if (epochArtifacts.captures(EpochArtifactContributor.Dataset.EPOCH_STAKE, epoch)) {
                     var boundary = archiveBoundary;
+                    var archiveWrites = new ArrayList<ArchiveWrite>();
                     try {
                         if (boundary == null) {
                             throw new IllegalStateException("epoch boundary was not prepared before the delegation"
                                     + " snapshot for epoch " + epoch + "; the artifact would have no coordinate");
                         }
                         var anchor = epochArtifactAnchor();
-                        var archiveWrites = new ArrayList<ArchiveWrite>();
                         epochArtifacts.contributeEpochStake(epoch, anchor.slot(), anchor.blockNumber(),
                                 anchor.blockHash(), boundary.blockNumber(), rowCount,
                                 (cfName, key, value) -> archiveWrites.add(
                                         new ArchiveWrite(cfName, key, value)));
-                        for (var write : archiveWrites) {
-                            finalBatch.put(rocksHandles.handle(write.columnFamily()),
-                                    write.key(), write.value());
-                        }
                     } catch (RuntimeException archiveFailure) {
+                        archiveWrites.clear();
                         reportEpochArtifactFailure(EpochArtifactContributor.Dataset.EPOCH_STAKE,
-                                epoch, boundary == null ? -1 : boundary.blockNumber(), archiveFailure);
-                    } catch (RocksDBException archiveFailure) {
+                                epoch, boundary == null ? -1 : boundary.blockNumber(), archiveWrites,
+                                archiveFailure);
+                    }
+                    RuntimeException stagingFailure = stageArchiveWrites(finalBatch, archiveWrites);
+                    if (stagingFailure != null) {
+                        archiveWrites.clear();
                         reportEpochArtifactFailure(EpochArtifactContributor.Dataset.EPOCH_STAKE,
-                                epoch, boundary == null ? -1 : boundary.blockNumber(),
-                                new RuntimeException("failed to stage epoch artifact intent", archiveFailure));
+                                epoch, boundary == null ? -1 : boundary.blockNumber(), archiveWrites,
+                                stagingFailure);
+                        RuntimeException gapFailure = stageArchiveWrites(finalBatch, archiveWrites);
+                        if (gapFailure != null) {
+                            log.error("Failed to stage epoch-stake gap for epoch {}; ledger commit continues",
+                                    epoch, gapFailure);
+                        }
                     }
                 }
                 byte[] completeValue = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN)
@@ -4944,7 +4950,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * identical bytes is a no-op semantically and costs one small record per epoch.
      */
     public void contributeAdaPotArtifact(int epoch, AccountStateCborCodec.AdaPot pot) {
-        if (!epochArtifacts.enabled()) return;
+        if (!epochArtifacts.captures(EpochArtifactContributor.Dataset.ADA_POT, epoch)) return;
         var boundary = archiveBoundary;
 
         long[] values = {
@@ -4956,28 +4962,34 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         try (WriteBatch batch = new WriteBatch();
              WriteOptions options = new WriteOptions().setSync(true)) {
             batch.put(cfState, adaPotKey(epoch), AccountStateCborCodec.encodeAdaPot(pot));
+            var archiveWrites = new ArrayList<ArchiveWrite>();
             try {
                 if (boundary == null) {
                     throw new IllegalStateException("epoch boundary was not prepared before the ada pot for"
                             + " epoch " + epoch + "; the artifact would have no coordinate");
                 }
                 var anchor = epochArtifactAnchor();
-                var archiveWrites = new ArrayList<ArchiveWrite>();
                 epochArtifacts.contributeAdaPot(epoch, anchor.slot(), anchor.blockNumber(),
                         anchor.blockHash(), boundary.blockNumber(), values,
                         (cfName, key, value) -> archiveWrites.add(
                                 new ArchiveWrite(cfName, key, value)));
-                for (var write : archiveWrites) {
-                    batch.put(rocksHandles.handle(write.columnFamily()),
-                            write.key(), write.value());
-                }
             } catch (RuntimeException archiveFailure) {
+                archiveWrites.clear();
                 reportEpochArtifactFailure(EpochArtifactContributor.Dataset.ADA_POT,
-                        epoch, boundary == null ? -1 : boundary.blockNumber(), archiveFailure);
-            } catch (RocksDBException archiveFailure) {
+                        epoch, boundary == null ? -1 : boundary.blockNumber(), archiveWrites,
+                        archiveFailure);
+            }
+            RuntimeException stagingFailure = stageArchiveWrites(batch, archiveWrites);
+            if (stagingFailure != null) {
+                archiveWrites.clear();
                 reportEpochArtifactFailure(EpochArtifactContributor.Dataset.ADA_POT,
-                        epoch, boundary == null ? -1 : boundary.blockNumber(),
-                        new RuntimeException("failed to stage ada pot artifact intent", archiveFailure));
+                        epoch, boundary == null ? -1 : boundary.blockNumber(), archiveWrites,
+                        stagingFailure);
+                RuntimeException gapFailure = stageArchiveWrites(batch, archiveWrites);
+                if (gapFailure != null) {
+                    log.error("Failed to stage ada-pot gap for epoch {}; ledger commit continues",
+                            epoch, gapFailure);
+                }
             }
             db.write(options, batch);
         } catch (RocksDBException e) {
@@ -4994,12 +5006,36 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     private void reportEpochArtifactFailure(EpochArtifactContributor.Dataset dataset, int epoch,
-                                            long carrierBlockNumber, RuntimeException failure) {
+                                            long carrierBlockNumber, List<ArchiveWrite> archiveWrites,
+                                            RuntimeException failure) {
         try {
-            epochArtifacts.captureFailed(dataset, epoch, carrierBlockNumber, failure);
-        } catch (RuntimeException ignored) {
+            epochArtifacts.captureFailed(dataset, epoch, carrierBlockNumber,
+                    (cfName, key, value) -> archiveWrites.add(new ArchiveWrite(cfName, key, value)),
+                    failure);
+        } catch (RuntimeException reportingFailure) {
             // Failure reporting is archival too; it must not turn an isolated archive failure
             // back into a ledger-state failure.
+            log.error("Failed to record {} archive capture failure for epoch {}; ledger commit continues",
+                    dataset, epoch, reportingFailure);
+        }
+    }
+
+    private RuntimeException stageArchiveWrites(WriteBatch batch, List<ArchiveWrite> writes) {
+        if (writes.isEmpty()) return null;
+        batch.setSavePoint();
+        try {
+            for (var write : writes) {
+                batch.put(rocksHandles.handle(write.columnFamily()), write.key(), write.value());
+            }
+            batch.popSavePoint();
+            return null;
+        } catch (Exception failure) {
+            try {
+                batch.rollbackToSavePoint();
+            } catch (RocksDBException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+            return new RuntimeException("failed to stage epoch artifact records", failure);
         }
     }
 

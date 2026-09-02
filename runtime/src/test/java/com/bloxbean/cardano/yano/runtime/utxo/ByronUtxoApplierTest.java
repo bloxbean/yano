@@ -157,6 +157,7 @@ class ByronUtxoApplierTest {
     void projectionFailureDiscardsProjectionWritesButCommitsByronUtxo() throws Exception {
         seedMainnetAvvmOutput();
         byte[] markerKey = "adr042.must-not-commit".getBytes(StandardCharsets.UTF_8);
+        byte[] failureKey = "adr042.failure-must-commit".getBytes(StandardCharsets.UTF_8);
         AtomicReference<RuntimeException> reported = new AtomicReference<>();
         store.setProjectionContributor(new TestContributor() {
             @Override
@@ -168,8 +169,10 @@ class ByronUtxoApplierTest {
             }
 
             @Override
-            public void contributionFailed(long blockNumber, RuntimeException failure) {
+            public void contributionFailed(long blockNumber, ProjectionStagingWriter writer,
+                                           RuntimeException failure) {
                 assertThat(blockNumber).isEqualTo(7L);
+                writer.put(ProjectionCfNames.PROJ_META, failureKey, new byte[]{2});
                 reported.set(failure);
             }
         });
@@ -181,6 +184,7 @@ class ByronUtxoApplierTest {
         ColumnFamilyHandle projectionMeta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(
                 ProjectionCfNames.PROJ_META);
         assertThat(store.getDb().get(projectionMeta, markerKey)).isNull();
+        assertThat(store.getDb().get(projectionMeta, failureKey)).containsExactly(2);
         assertThat(store.getUtxo(new Outpoint(GENESIS_AVVM_TX, 0))).isEmpty();
         assertThat(store.getUtxo(new Outpoint(txHash, 0))).isPresent();
         assertThat(store.getLastAppliedBlock()).isEqualTo(7L);

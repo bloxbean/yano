@@ -15,25 +15,35 @@ class ProjectionGenesisIdentityTest {
 
     @Test
     void localProducerIdentityIgnoresOnlySystemStart() throws Exception {
-        Path genesis = writeGenesis("2026-01-01T00:00:00Z", 100);
+        Path genesis = writeGenesis(42, "2026-01-01T00:00:00Z", 100);
         YanoConfig config = config(genesis, true, true);
         String initial = ProjectionGenesisIdentity.resolve(config);
 
-        writeGenesis("2026-09-01T04:34:47Z", 100);
+        writeGenesis(42, "2026-09-01T04:34:47Z", 100);
         assertThat(ProjectionGenesisIdentity.resolve(config)).isEqualTo(initial);
 
-        writeGenesis("2026-09-01T04:34:47Z", 101);
+        writeGenesis(42, "2026-09-01T04:34:47Z", 101);
         assertThat(ProjectionGenesisIdentity.resolve(config)).isNotEqualTo(initial);
     }
 
     @Test
     void publicNetworkIdentityIncludesSystemStart() throws Exception {
-        Path genesis = writeGenesis("2026-01-01T00:00:00Z", 100);
-        YanoConfig config = config(genesis, false, false);
+        Path genesis = writeGenesis(1, "2026-01-01T00:00:00Z", 100);
+        YanoConfig config = config(genesis, true, true);
         String initial = ProjectionGenesisIdentity.resolve(config);
 
-        writeGenesis("2026-09-01T04:34:47Z", 100);
+        writeGenesis(1, "2026-09-01T04:34:47Z", 100);
         assertThat(ProjectionGenesisIdentity.resolve(config)).isNotEqualTo(initial);
+    }
+
+    @Test
+    void localIdentityDoesNotDependOnProducerBeingEnabledAtRestart() throws Exception {
+        Path genesis = writeGenesis(42, "2026-01-01T00:00:00Z", 100);
+
+        String producerIdentity = ProjectionGenesisIdentity.resolve(config(genesis, true, true));
+        String observerIdentity = ProjectionGenesisIdentity.resolve(config(genesis, false, false));
+
+        assertThat(observerIdentity).isEqualTo(producerIdentity);
     }
 
     @Test
@@ -46,15 +56,15 @@ class ProjectionGenesisIdentityTest {
         assertThat(ProjectionGenesisIdentity.resolve(config)).isEqualTo("abcdef");
     }
 
-    private Path writeGenesis(String systemStart, int securityParam) throws Exception {
+    private Path writeGenesis(long networkMagic, String systemStart, int securityParam) throws Exception {
         Path genesis = tempDir.resolve("shelley-genesis.json");
         Files.writeString(genesis, """
                 {
-                  "networkMagic": 42,
+                  "networkMagic": %d,
                   "systemStart": "%s",
                   "securityParam": %d
                 }
-                """.formatted(systemStart, securityParam));
+                """.formatted(networkMagic, systemStart, securityParam));
         return genesis;
     }
 

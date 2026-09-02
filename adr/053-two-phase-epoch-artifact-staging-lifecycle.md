@@ -141,6 +141,14 @@ The existing projection-contributor decorator is retained only as a thin
 carrier attachment mechanism. Its provisional hash-binding and source-adoption
 responsibilities are removed.
 
+Binding is also semantic-epoch aware. A currently applying block may carry an
+outcome only when `slotToEpoch(C.slot) >= ref.semanticEpoch`. Equality is the
+normal boundary case and `>` permits several skipped epochs to share one
+carrier. This prevents a same-height replacement block that is still in epoch
+`N` from consuming an epoch-`N+1` intent retained across rollback. Checking only
+that the carrier descends from `A` is insufficient because that replacement and
+the eventual boundary block can have the same predecessor.
+
 Epoch stake and Ada pot stage a small durable intent through their existing
 state-owned atomic writers. This keeps the intent atomic with the immutable
 snapshot or inline evidence without creating an outbox reference for a future
@@ -194,11 +202,14 @@ facts should have been produced. Its outbox insertion, artifact-set replacement,
 sealing checks and visibility are associated with `C`.
 
 Failure before carrier application records a small durable deferred outcome
-containing both `A` and the intended carrier number. It is not sink-visible
-until the outbox has acknowledged the actual carrier `C`; therefore a predicted
-number alone can never publish a gap. A rollback that changes `A` deletes the
-intent, while a carrier-only rollback retains it for the replacement carrier.
-The durable gap outcome replaces all artifact parts for that dataset and epoch.
+containing the dataset, semantic epoch and intended carrier number. It is not a
+published gap and carries no invented hash. The actual eligible carrier batch
+resolves `A = C - 1`, writes the full `EpochArtifactGap`, and thereby supplies
+both provenance and transport from canonical data. It is not sink-visible until
+the outbox has acknowledged `C`; therefore a predicted number alone can never
+publish a gap. Rollback below the expected predecessor deletes the intent,
+while a carrier-only rollback retains it for the replacement transition. The
+durable gap outcome replaces the dataset outcome for that epoch.
 
 Paused-epoch checkpoints record their own carrier numbers. The drain filters
 both point gaps and interval checkpoints through the acknowledged carrier, so
@@ -235,7 +246,13 @@ retried. It does not propagate to block application.
 Canonical projection contribution shares the UTXO write batch to retain its
 atomicity guarantee. The runtime establishes a write-batch savepoint before the
 contributor runs. If any archive contribution fails, it rolls the batch back to
-that savepoint, reports the failure, and commits the unaffected UTXO/L1 writes.
+that savepoint, writes a bounded durable capture-failure marker containing the
+failed block's full canonical point, and commits the unaffected UTXO/L1 writes.
+The consumer reports `PAUSED` at that marker instead of treating the missing
+envelope as idle. Status, metrics and logs identify the failed block. Rollback
+compares the marker's slot and hash with the retained point, so it removes the
+marker only with its discarded fork even though the failed block has no outbox
+envelope.
 This prevents both outcomes that are unacceptable: wedging sync, and committing
 a partially written archive envelope.
 
@@ -327,15 +344,19 @@ Fetched/public-network block ingestion and local block production remain
 unchanged. Both now use the same thin carrier attachment for already-final
 epoch evidence.
 
-Two independent PR #111 changes remain in scope and are retained unchanged:
+Independent PR #111 changes retained alongside this decision are:
 
 - cooperative projection-drain shutdown, which avoids interrupting an in-flight
   DuckDB commit; and
-- devnet-producer projection genesis identity that excludes mutable
-  `systemStart` while protecting every other genesis field.
-
-The producer-disabled restart condition in the latter identity rule is separate
-follow-up work.
+- local-network projection genesis identity that excludes mutable
+  `systemStart` while protecting every other genesis field. The rule is keyed
+  by genesis network magic, not current producer/dev-mode flags, so disabling a
+  producer on restart cannot change an existing archive identity and a public
+  network run with dev mode enabled keeps its full genesis identity; and
+- the PR #110 pointer-index readiness rules, including exact canonical-marker
+  validation. Rollback to origin preserves an existing genesis proof (block and
+  slot zero with its real genesis hash), so a restart does not reject a valid
+  genesis index; a non-genesis or otherwise unusable proof is still cleared.
 
 ## Rejected alternatives
 
@@ -438,6 +459,8 @@ The change is accepted only when all of the following pass:
    - restart after transition but before carrier attaches the retained final
      source;
    - failed carrier application and same-height replacement are idempotent; and
+   - a same-height replacement still in the source epoch cannot bind a future
+     semantic epoch, while skipped epochs may share an eligible carrier; and
    - no artifact reference or sink-visible gap is published under a predicted
     future block.
 
@@ -459,14 +482,38 @@ The change is accepted only when all of the following pass:
 
 7. **Failure isolation and observability**
    - a contributor that writes one archive record and then throws leaves no
-     archive record, while the same Shelley+ or Byron L1 block commits;
+     partial archive record, while the same Shelley+ or Byron L1 block commits
+     with a durable capture-failure marker;
    - direct epoch-stake or Ada-pot anchor failure does not abort its ledger
      transition;
    - reader anchor mismatch increments the drain-failure metric and remains
      retryable; and
    - synchronous capture failures increment the capture-failure metric and
-     appear in status and error logs with their carrier coordinate.
+     appear in status and error logs with their carrier coordinate; and
+   - restart at a capture hole reports the consumer as paused rather than idle,
+     and rollback of that fork removes the durable marker.
 
-The manual devnet and retained-preprod runs recorded by PR #111 validated the
-provisional implementation and old boundary-column semantics. They do not
-satisfy these gates and must be rerun against a fresh archive.
+The earlier manual devnet and retained-preprod runs recorded by PR #111
+validated the provisional implementation and old boundary-column semantics, so
+their evidence does not transfer to this design.
+
+Fresh validation on 2026-09-02 exercised the completed-epoch anchor design:
+
+- the JVM devnet run crossed epochs 0 through 2 with all five datasets active,
+  no gaps or capture/drain failures, and successful graceful and forced-crash
+  restarts;
+- the JVM preprod run started from origin, crossed Byron into Shelley through
+  epoch 11, retained zero gaps and capture/drain failures, and restored the same
+  epoch nonce after graceful and forced-crash restarts;
+- the GraalVM 25.3.4.1 native smoke completed all five datasets through epoch 2
+  with finality convergence and no forbidden archive failures; and
+- the native preprod run started from origin, crossed Byron into Shelley, then
+  recovered from a forced crash at body block 243367. Startup restored nonce
+  state at that exact body tip and resumed through epoch 33 with zero archive
+  capture failures, drain failures, or gaps before a clean shutdown.
+
+These packaged runs supplement, but do not replace, the deterministic tests for
+carrier replacement, skipped epochs, anchor mismatch, failure markers, and
+rollback semantics listed above. Exact cross-runtime row equality remains a
+release-validation gate; the separate fresh JVM and native network runs prove
+their operational paths but were not stopped at one identical canonical tip.

@@ -100,6 +100,16 @@ public final class EpochArtifactCollector implements EpochArtifactContributor {
     }
 
     @Override
+    public boolean captures(Dataset dataset, int epoch) {
+        ArchiveDatasetId archiveDataset = switch (dataset) {
+            case EPOCH_STAKE -> ArchiveDatasetId.EPOCH_STAKE;
+            case ADA_POT -> ArchiveDatasetId.ADA_POT;
+        };
+        Integer floor = projectedFrom.get(archiveDataset);
+        return floor != null && epoch >= floor;
+    }
+
+    @Override
     public void contributeEpochStake(int epoch, long anchorSlot, long anchorBlockNumber,
                                      byte[] anchorBlockHash, long carrierBlockNumber,
                                      long rowCount, ProjectionStagingWriter writer) {
@@ -168,12 +178,17 @@ public final class EpochArtifactCollector implements EpochArtifactContributor {
 
     @Override
     public void captureFailed(Dataset dataset, int epoch, long carrierBlockNumber,
-                              RuntimeException failure) {
+                              ProjectionStagingWriter writer, RuntimeException failure) {
         ArchiveDatasetId archiveDataset = switch (dataset) {
             case EPOCH_STAKE -> ArchiveDatasetId.EPOCH_STAKE;
             case ADA_POT -> ArchiveDatasetId.ADA_POT;
         };
+        if (!captures(dataset, epoch)) return;
         failureListener.failed(archiveDataset, epoch, carrierBlockNumber, failure);
+        if (carrierBlockNumber >= 0) {
+            outbox.putPendingEpochArtifactGap(writer, archiveDataset, epoch, carrierBlockNumber,
+                    "capture", failure.getMessage());
+        }
     }
 
     private static void requireCoordinates(int epoch, long anchorSlot, long anchorBlockNumber,

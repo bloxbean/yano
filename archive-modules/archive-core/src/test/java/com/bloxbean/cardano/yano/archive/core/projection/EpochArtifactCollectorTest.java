@@ -92,7 +92,8 @@ class EpochArtifactCollectorTest {
     private void bind(long carrierBlock) {
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
             store.bindPendingEpochArtifacts(
-                    ProjectionOutboxStore.batchWriter(batch, store.handles()), carrierBlock);
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()), carrierBlock,
+                    Integer.MAX_VALUE);
             db.write(options, batch);
         } catch (Exception e) {
             throw new IllegalStateException(e);
@@ -232,10 +233,12 @@ class EpochArtifactCollectorTest {
                 (dataset, epoch, carrier, failure) -> failures.add(
                         dataset.logicalName() + ':' + epoch + ':' + carrier + ':' + failure.getMessage()));
 
-        collector.captureFailed(EpochArtifactContributor.Dataset.ADA_POT,
-                250, 4_800_000L, new IllegalStateException("anchor mismatch"));
+        store.commit(writer -> collector.captureFailed(EpochArtifactContributor.Dataset.ADA_POT,
+                250, 4_800_000L, writer,
+                new IllegalStateException("anchor mismatch")));
 
         assertThat(failures).containsExactly("ada_pot:250:4800000:anchor mismatch");
+        assertThat(store.pendingEpochArtifactGapCount()).isEqualTo(1);
     }
 
     @Test

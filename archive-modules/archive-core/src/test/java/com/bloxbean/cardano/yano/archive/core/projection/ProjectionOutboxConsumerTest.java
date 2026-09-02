@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.archive.core.projection;
 
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
@@ -120,6 +121,21 @@ class ProjectionOutboxConsumerTest {
     private ProjectionOutboxConsumer consumer(ProjectionConsumerBounds bounds, ProjectionBatchPolicy policy) {
         return new ProjectionOutboxConsumer(store, sink, identity, new ProjectionFinalityGate(WINDOWS),
                 bounds, artifacts, tip::get, rollbackFloor::get, policy);
+    }
+
+    @Test
+    void durableCaptureFailurePausesDrainAcrossRestartInsteadOfLookingIdle() {
+        store.commit(writer -> store.putProjectionCaptureFailure(
+                writer, new CanonicalBlockReference(7, 70, new byte[32]),
+                new IllegalStateException("synthetic capture hole")));
+        restartNode();
+
+        ProjectionConsumerResult result = consumer().drainOnce();
+
+        assertThat(result.outcome()).isEqualTo(ProjectionConsumerResult.Outcome.PAUSED);
+        assertThat(result.detail()).hasValueSatisfying(detail ->
+                assertThat(detail).contains("block 7", "synthetic capture hole"));
+        assertThat(store.projectionCaptureFailureCount()).isEqualTo(1);
     }
 
     /** Production-shaped near-tip policy: preferred target 50 envelopes, hard bound 15 minutes. */

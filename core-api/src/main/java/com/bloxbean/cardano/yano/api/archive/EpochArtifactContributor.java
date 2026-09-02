@@ -20,6 +20,11 @@ public interface EpochArtifactContributor {
     /** False for a history-disabled node; callers skip all artifact work. */
     boolean enabled();
 
+    /** Whether this dataset and epoch are enrolled, before any anchor lookup is attempted. */
+    default boolean captures(Dataset dataset, int epoch) {
+        return enabled();
+    }
+
     /**
      * Stage the epoch-stake artifact reference for a snapshot just written into {@code writer}'s
      * batch.
@@ -54,9 +59,12 @@ public interface EpochArtifactContributor {
                           byte[] anchorBlockHash, long carrierBlockNumber,
                           long[] values, ProjectionStagingWriter writer);
 
-    /** Report an archive-only capture failure after the ledger has chosen to continue. */
+    /**
+     * Stage a durable failure intent through the ledger's batch and report it to observability.
+     * Implementations must not publish a gap under the predicted carrier directly.
+     */
     default void captureFailed(Dataset dataset, int epoch, long carrierBlockNumber,
-                               RuntimeException failure) { }
+                               ProjectionStagingWriter writer, RuntimeException failure) { }
 
     EpochArtifactContributor NOOP = new EpochArtifactContributor() {
         @Override public boolean enabled() { return false; }

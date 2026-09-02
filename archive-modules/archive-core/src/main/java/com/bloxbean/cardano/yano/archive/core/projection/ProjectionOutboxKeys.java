@@ -36,6 +36,10 @@ final class ProjectionOutboxKeys {
     private static final byte[] EPOCH_RESUME_PREFIX = "epoch-resume/".getBytes(StandardCharsets.UTF_8);
     private static final byte[] EPOCH_PENDING_ARTIFACT_PREFIX =
             "epoch-pending-artifact/".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] EPOCH_PENDING_GAP_PREFIX =
+            "epoch-pending-gap/".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] PROJECTION_CAPTURE_FAILURE_PREFIX =
+            "projection-capture-failure/".getBytes(StandardCharsets.UTF_8);
 
     /** Cursor for the contributor that writes canonical block identity. */
     static final byte[] META_CURSOR_IDENTITY = (CURSOR_PREFIX + "identity").getBytes(StandardCharsets.UTF_8);
@@ -127,6 +131,43 @@ final class ProjectionOutboxKeys {
 
     static long carrierFromPendingEpochArtifactKey(byte[] key) {
         return ByteBuffer.wrap(key, EPOCH_PENDING_ARTIFACT_PREFIX.length, Long.BYTES)
+                .order(ByteOrder.BIG_ENDIAN).getLong();
+    }
+
+    static byte[] pendingEpochGapPrefix() {
+        return EPOCH_PENDING_GAP_PREFIX.clone();
+    }
+
+    static byte[] pendingEpochGapPrefix(long carrierBlockNumber) {
+        return ByteBuffer.allocate(EPOCH_PENDING_GAP_PREFIX.length + Long.BYTES)
+                .order(ByteOrder.BIG_ENDIAN).put(EPOCH_PENDING_GAP_PREFIX)
+                .putLong(carrierBlockNumber).array();
+    }
+
+    static byte[] pendingEpochGapKey(long carrierBlockNumber, String dataset, int semanticEpoch) {
+        byte[] prefix = pendingEpochGapPrefix(carrierBlockNumber);
+        byte[] name = dataset.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(prefix.length + Integer.BYTES + name.length)
+                .order(ByteOrder.BIG_ENDIAN).put(prefix).putInt(semanticEpoch).put(name).array();
+    }
+
+    static long carrierFromPendingEpochGapKey(byte[] key) {
+        return ByteBuffer.wrap(key, EPOCH_PENDING_GAP_PREFIX.length, Long.BYTES)
+                .order(ByteOrder.BIG_ENDIAN).getLong();
+    }
+
+    static byte[] projectionCaptureFailurePrefix() {
+        return PROJECTION_CAPTURE_FAILURE_PREFIX.clone();
+    }
+
+    static byte[] projectionCaptureFailureKey(long blockNumber) {
+        return ByteBuffer.allocate(PROJECTION_CAPTURE_FAILURE_PREFIX.length + Long.BYTES)
+                .order(ByteOrder.BIG_ENDIAN).put(PROJECTION_CAPTURE_FAILURE_PREFIX)
+                .putLong(blockNumber).array();
+    }
+
+    static long blockFromProjectionCaptureFailureKey(byte[] key) {
+        return ByteBuffer.wrap(key, PROJECTION_CAPTURE_FAILURE_PREFIX.length, Long.BYTES)
                 .order(ByteOrder.BIG_ENDIAN).getLong();
     }
 

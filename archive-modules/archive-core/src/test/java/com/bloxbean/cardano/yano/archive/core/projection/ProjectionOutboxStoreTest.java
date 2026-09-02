@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.archive.core.projection;
 
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval;
@@ -542,7 +543,7 @@ class ProjectionOutboxStoreTest {
         restart();
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
             var writer = ProjectionOutboxStore.batchWriter(batch, store.handles());
-            assertThat(store.bindPendingEpochArtifacts(writer, 101)).isEqualTo(1);
+            assertThat(store.bindPendingEpochArtifacts(writer, 101, 5)).isEqualTo(1);
             store.putBlockIdentity(writer, identity(101, ProjectionBlockKind.SHELLEY_PLUS));
             db.write(options, batch);
         } catch (Exception e) {
@@ -556,7 +557,7 @@ class ProjectionOutboxStoreTest {
 
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
             store.bindPendingEpochArtifacts(
-                    ProjectionOutboxStore.batchWriter(batch, store.handles()), 101);
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()), 101, 5);
             db.write(options, batch);
         } catch (Exception e) {
             throw new IllegalStateException(e);
@@ -567,6 +568,143 @@ class ProjectionOutboxStoreTest {
 
         assertThat(store.readArtifacts(101)).isEmpty();
         assertThat(store.pendingArtifacts()).isEmpty();
+    }
+
+    @Test
+    void pendingIntentDoesNotBindToSameHeightBlockBeforeItsSemanticEpoch() {
+        byte[] anchorHash = new byte[32];
+        anchorHash[0] = 1;
+        var ref = new ProjectionArtifactRef(
+                ArchiveDatasetId.EPOCH_STAKE,
+                6, 100, 1_000, anchorHash,
+                ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
+                "epoch-deleg-snapshot:6:01", 1, "ledger-boundary-v1/snapshot",
+                OptionalLong.of(10), "", -1);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            var writer = ProjectionOutboxStore.batchWriter(batch, store.handles());
+            store.putPendingEpochArtifact(writer, 101, ref);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            assertThat(store.bindPendingEpochArtifacts(
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()), 101, 5)).isZero();
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+
+        assertThat(store.readArtifacts(101)).isEmpty();
+        assertThat(store.pendingArtifacts()).containsExactly(ref);
+    }
+
+    @Test
+    void failedDirectCaptureBecomesADurableGapOnlyOnAnEligibleCarrier() {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            store.putPendingEpochArtifactGap(
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()),
+                    ArchiveDatasetId.ADA_POT, 6, 101, "capture", "anchor lookup failed");
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        restart();
+        assertThat(store.pendingEpochArtifactGapCount()).isEqualTo(1);
+
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            assertThat(store.bindPendingEpochArtifacts(
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()),
+                    101, 5, () -> { throw new AssertionError("anchor must not be resolved"); }))
+                    .isZero();
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        assertThat(store.epochArtifactGaps()).isEmpty();
+        restart();
+
+        byte[] anchorHash = new byte[32];
+        anchorHash[0] = 9;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            assertThat(store.bindPendingEpochArtifacts(
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()), 101, 6,
+                    () -> new CanonicalBlockReference(
+                            100, 1_000, anchorHash))).isEqualTo(1);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+
+        assertThat(store.epochArtifactGaps()).singleElement().satisfies(gap -> {
+            assertThat(gap.dataset()).isEqualTo(ArchiveDatasetId.ADA_POT);
+            assertThat(gap.semanticEpoch()).isEqualTo(6);
+            assertThat(gap.carrierBlockNumber()).isEqualTo(101);
+            assertThat(gap.boundaryBlockNumber()).isEqualTo(100);
+            assertThat(gap.boundaryBlockHash()).containsExactly(anchorHash);
+        });
+    }
+
+    @Test
+    void projectionCaptureFailureIsDurableAndRemovedWithItsFork() {
+        byte[] failureHash = new byte[32];
+        failureHash[0] = 11;
+        store.commit(writer -> store.putProjectionCaptureFailure(
+                writer, new CanonicalBlockReference(101, 1_010, failureHash),
+                new IllegalStateException("synthetic projection hole")));
+        restart();
+
+        assertThat(store.projectionCaptureFailureCount()).isEqualTo(1);
+        assertThat(store.firstProjectionCaptureFailure())
+                .hasValueSatisfying(detail -> assertThat(detail)
+                        .contains("block 101", "synthetic projection hole"));
+
+        assertThat(store.rollbackToPoint(0, null, true, REQUIRED)).isEqualTo(1);
+        assertThat(store.projectionCaptureFailureCount()).isZero();
+    }
+
+    @Test
+    void projectionCaptureFailureRollbackUsesItsCanonicalPointWithoutAnEnvelope() {
+        byte[] failedHash = new byte[32];
+        failedHash[0] = 12;
+        store.commit(writer -> store.putProjectionCaptureFailure(
+                writer, new CanonicalBlockReference(101, 1_010, failedHash),
+                new IllegalStateException("synthetic projection hole")));
+
+        assertThat(store.rollbackToPoint(1_010, failedHash, false, REQUIRED)).isZero();
+        assertThat(store.projectionCaptureFailureCount()).isEqualTo(1);
+
+        byte[] replacementHash = failedHash.clone();
+        replacementHash[0] = 13;
+        assertThat(store.rollbackToPoint(1_010, replacementHash, false, REQUIRED)).isEqualTo(1);
+        assertThat(store.projectionCaptureFailureCount()).isZero();
+    }
+
+    @Test
+    void skippedEpochFailuresShareOneEligibleCarrierWithoutLosingThePauseCause() {
+        store.commit(writer -> {
+            store.putPendingEpochArtifactGap(writer, ArchiveDatasetId.REWARD,
+                    6, 101, "io", "capture failed");
+            store.putPendingPausedEpoch(writer, ArchiveDatasetId.REWARD, 7, 101);
+            store.putPendingPausedEpoch(writer, ArchiveDatasetId.REWARD, 8, 101);
+        });
+        byte[] anchorHash = new byte[32];
+        anchorHash[0] = 3;
+
+        store.commit(writer -> assertThat(store.bindPendingEpochArtifacts(
+                writer, 101, 8,
+                () -> new CanonicalBlockReference(
+                        100, 1_000, anchorHash))).isEqualTo(3));
+
+        assertThat(store.epochArtifactGaps()).singleElement()
+                .satisfies(gap -> assertThat(gap.semanticEpoch()).isEqualTo(6));
+        assertThat(store.epochArtifactGapIntervals()).singleElement().satisfies(interval -> {
+            assertThat(interval.fromEpoch()).isEqualTo(7);
+            assertThat(interval.throughEpoch()).isEqualTo(8);
+            assertThat(interval.causedByEpoch()).isEqualTo(6);
+            assertThat(interval.throughBoundaryHash()).containsExactly(anchorHash);
+        });
     }
 
     @Test

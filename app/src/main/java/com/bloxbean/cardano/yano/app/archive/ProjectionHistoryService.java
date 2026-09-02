@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.app.archive;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
@@ -965,29 +966,25 @@ public class ProjectionHistoryService implements AutoCloseable {
                     int semanticEpoch,
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary,
                     Exception failure) {
-                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber() - 1)
-                        .orElseThrow(() -> new IllegalStateException(
-                                "canonical epoch anchor is unavailable while recording epoch gap before block "
-                                        + boundary.blockNumber()));
                 var archiveDataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId
                         .valueOf(dataset.name());
-                outbox.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
-                        .EpochArtifactGap(archiveDataset, semanticEpoch, boundary.blockNumber(),
-                        canonical.blockNumber(), canonical.slot(), canonical.blockHash(), failureClass(failure),
-                        failure.getMessage(), Instant.now()));
+                RuntimeException captureFailure = failure instanceof RuntimeException runtime
+                        ? runtime : new RuntimeException(failure);
+                recordCaptureFailure("dataset " + archiveDataset.logicalName() + ", epoch "
+                        + semanticEpoch + ", intended carrier " + boundary.blockNumber(),
+                        captureFailure);
+                outbox.commit(writer -> outbox.putPendingEpochArtifactGap(
+                        writer, archiveDataset, semanticEpoch, boundary.blockNumber(),
+                        failureClass(failure), failure.getMessage()));
             }
 
             @Override
             public void missed(
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset dataset,
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary) {
-                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber() - 1)
-                        .orElseThrow(() -> new IllegalStateException(
-                                "canonical paused-boundary anchor is unavailable before block "
-                                        + boundary.blockNumber()));
-                outbox.recordPausedEpoch(
+                outbox.commit(writer -> outbox.putPendingPausedEpoch(writer,
                         com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(dataset.name()),
-                        boundary.newEpoch(), boundary.blockNumber(), canonical.slot(), canonical.blockHash());
+                        boundary.newEpoch(), boundary.blockNumber()));
             }
         });
         for (var dataset : pending) {
@@ -1424,8 +1421,13 @@ public class ProjectionHistoryService implements AutoCloseable {
     private void installShelleyPlusContributor(Yano yano) {
         CanonicalProjectionContributor contributor = new EpochBindingProjectionContributor(
                 collector, epochStaging, this::stageStagedFileArtifact,
-                (writer, carrier) -> outbox.bindPendingEpochArtifacts(writer, carrier),
-                this::recordProjectionCaptureFailure);
+                (writer, carrier, carrierEpoch) ->
+                        outbox.bindPendingEpochArtifacts(writer, carrier, carrierEpoch,
+                                () -> chainQuery.getCanonicalBlockReference(carrier - 1)
+                                        .orElseThrow(() -> new IllegalStateException(
+                                                "canonical epoch anchor is unavailable at block "
+                                                        + (carrier - 1)))),
+                this::recordProjectionCaptureFailure, ledgerQuery::slotToEpoch);
         boolean installed = yano.installProjectionContributor(contributor);
         if (!installed) {
             // Failing closed matters here: a silently uninstalled contributor would produce
@@ -1444,9 +1446,15 @@ public class ProjectionHistoryService implements AutoCloseable {
         // Byron transaction. The section and its cursor still commit atomically with each
         // other, and the retained canonical body plus that cursor remain the durable
         // replay intent.
-        bus.subscribe(ByronBlockProjectionEvent.class,
-                ctx -> outbox.commit(writer -> collector.contributeByronBlock(ctx.event(), writer)),
-                SubscriptionOptions.builder().build());
+        bus.subscribe(ByronBlockProjectionEvent.class, ctx -> {
+            try {
+                outbox.commit(writer -> collector.contributeByronBlock(ctx.event(), writer));
+            } catch (RuntimeException failure) {
+                var event = ctx.event();
+                recordProjectionCaptureFailureDirect(new CanonicalBlockReference(
+                        event.blockNumber(), event.slot(), decodeRollbackHash(event.blockHash())), failure);
+            }
+        }, SubscriptionOptions.builder().build());
 
         // Pending envelopes newer than the rollback point must go. The cutoff comes from
         // the rollback event's own slot, not from a live tip read: listener order relative
@@ -1468,13 +1476,17 @@ public class ProjectionHistoryService implements AutoCloseable {
                 genesisPending = true;
                 captureGenesisIfPossible();
             } catch (RuntimeException e) {
-                // Never swallow: an archive that missed genesis reports itself complete, and the
-                // coverage gate below is the only other thing standing between that and a query
-                // returning a wrong answer.
-                drainFailures.increment();
-                lastDrainFailure = "genesis bootstrap failed: " + e;
-                log.error("ADR-039 genesis bootstrap failed", e);
-                throw e;
+                // Genesis is required for a usable archive, but archive availability does not
+                // own canonical L1 availability. Persist the hole and let status/drain fail closed.
+                chainQuery.getCanonicalBlockReference(firstCanonicalBlock)
+                        .ifPresentOrElse(
+                                coordinate -> recordProjectionCaptureFailureDirect(coordinate, e),
+                                () -> recordCaptureFailure(
+                                        "genesis block " + firstCanonicalBlock,
+                                        new RuntimeException(
+                                                "canonical genesis coordinate is unavailable; "
+                                                        + "durable failure marker could not be written",
+                                                e)));
             }
         }, SubscriptionOptions.builder().build());
 
@@ -1713,6 +1725,17 @@ public class ProjectionHistoryService implements AutoCloseable {
         return captureFailures.sum();
     }
 
+    /** Canonical projection holes that remain durable across process restart. */
+    public long durableCaptureFailureCount() {
+        ProjectionOutboxStore current = outbox;
+        return current == null ? 0 : current.projectionCaptureFailureCount();
+    }
+
+    public long pendingEpochArtifactGapCount() {
+        ProjectionOutboxStore current = outbox;
+        return current == null ? 0 : current.pendingEpochArtifactGapCount();
+    }
+
     private void recordEpochArtifactCaptureFailure(
             ArchiveDatasetId dataset,
             int epoch, long carrierBlockNumber, RuntimeException failure) {
@@ -1721,8 +1744,27 @@ public class ProjectionHistoryService implements AutoCloseable {
         recordCaptureFailure(coordinate, failure);
     }
 
-    private void recordProjectionCaptureFailure(long blockNumber, RuntimeException failure) {
+    private void recordProjectionCaptureFailure(long blockNumber, ProjectionStagingWriter writer,
+                                                RuntimeException failure) {
         recordCaptureFailure("carrier block " + blockNumber, failure);
+        var coordinate = chainQuery.getCanonicalBlockReference(blockNumber)
+                .orElseThrow(() -> new IllegalStateException(
+                        "canonical projection failure coordinate is unavailable at block "
+                                + blockNumber, failure));
+        outbox.putProjectionCaptureFailure(writer, coordinate, failure);
+    }
+
+    private void recordProjectionCaptureFailureDirect(CanonicalBlockReference coordinate,
+                                                      RuntimeException failure) {
+        try {
+            outbox.commit(writer -> outbox.putProjectionCaptureFailure(writer, coordinate, failure));
+        } catch (RuntimeException markerFailure) {
+            markerFailure.addSuppressed(failure);
+            recordCaptureFailure("carrier block " + coordinate.blockNumber(),
+                    new RuntimeException("durable capture-failure marker could not be written", markerFailure));
+            return;
+        }
+        recordCaptureFailure("carrier block " + coordinate.blockNumber(), failure);
     }
 
     private void recordCaptureFailure(String coordinate, RuntimeException failure) {
@@ -1744,8 +1786,12 @@ public class ProjectionHistoryService implements AutoCloseable {
         status.put("drainedBlocks", drainedBlocks.sum());
         status.put("drainFailures", drainFailures.sum());
         if (lastDrainFailure != null) status.put("lastDrainFailure", lastDrainFailure);
-        status.put("captureFailures", captureFailures.sum());
+        status.put("captureFailures", captureFailureCount());
+        status.put("durableCaptureFailures", durableCaptureFailureCount());
+        status.put("pendingEpochArtifactGaps", pendingEpochArtifactGapCount());
         if (lastCaptureFailure != null) status.put("lastCaptureFailure", lastCaptureFailure);
+        outbox.firstProjectionCaptureFailure()
+                .ifPresent(failure -> status.put("durableCaptureFailure", failure));
         if (projectionSink != null) {
             var coordinate = projectionSink.coordinate();
             status.put("sinkCoordinate", coordinate.isPresent() ? coordinate.blockNumber() : -1);
