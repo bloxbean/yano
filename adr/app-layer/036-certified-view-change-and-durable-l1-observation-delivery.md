@@ -407,6 +407,13 @@ capacity with ordinary app messages. A capability/ABI marker is required at
 activation because a plugin that previously searched `messages()` for
 `~l1/*` must move to the structured observation API.
 
+Framework-owned `~l1/*` inputs are outside user sender-sequence accounting.
+They retain `senderSeq = 0`; their replay identity and ordering come from the
+canonical observation bytes, durable source key, and mandatory-prefix check.
+They neither read nor advance a user's sender-sequence floor. Public submission
+cannot use this exemption because reserved system topics are rejected before
+pool admission.
+
 The former preview block and six-field observation encodings are intentionally
 not decoded. New v3 proposals use the revised v1 observation shape exclusively.
 
@@ -509,6 +516,10 @@ Required semantics:
 - treat all observer callbacks for one L1 block as one result: a callback
   failure publishes no partial/empty result, durably records the failed slot,
   and blocks voting until that exact slot replays successfully;
+- retry a failed callback from the node's retained canonical L1 block body on
+  later L1 progress and from a bounded periodic startup/recovery tick; the
+  replay invokes only the observer phase and does not republish the L1 event or
+  repeat anchor/epoch side effects;
 - journal the observer result idempotently when its L1 block is applied;
 - fsync/WAL-persist `STABLE_PENDING` before it becomes proposal-eligible;
 - never remove an entry because it was drained, offered, relayed, prepared,
@@ -525,6 +536,9 @@ Required semantics:
 
 Any retained quarantine or failed-callback marker makes the node unhealthy on
 restart. It is never cleared merely by reopening the database.
+If canonical rollback moves below a failed callback slot, that source block is
+orphaned and the marker is deleted in the same durable journal mutation as the
+rollback. Other quarantine reasons remain fail-closed.
 
 ### 5.6 Mandatory prefix validation
 
@@ -772,6 +786,9 @@ persisted phase exactly.
 - Commit per-observer cursors and atomically acknowledge finalization.
 - Separate live/recovery verification from certified catch-up.
 - Implement rollback, capacity backpressure, quarantine, metrics, and status.
+- Recover transient callback failures by exact-slot lookup in retained local
+  canonical block storage, both after restart and before processing a later
+  applied block; clear an orphaned callback barrier on rollback.
 - Migrate epoch observations to the common input/acknowledgement contract where
   necessary without regressing their existing durable spool.
 
@@ -840,6 +857,9 @@ value-bearing chains.
 
 - A stable observation survives proposer crash, view change, graceful restart,
   abrupt restart, arbitrary ordinary-message TTL passage, and pool saturation.
+- A transient observer exception recovers by retained-block replay without
+  manual event publication; restart retries the durable failed slot, while a
+  rollback below it durably clears only that orphaned callback barrier.
 - The replacement leader proposes the same logical observation ID and claim.
 - The exact maximal bounded prefix is mandatory; omission, reorder, duplicate,
   fork mismatch, and conflicting source claims fail closed.
@@ -868,6 +888,8 @@ value-bearing chains.
   consensus and observer profile digests, capability-manifest digest,
   commitment profile/fingerprint, genesis ID, and observation cursors.
 - No endpoint can create a system observation from caller-authored claim bytes.
+- Sender-sequence enforcement remains active for every user message while the
+  mandatory framework observation lane finalizes with `senderSeq = 0`.
 
 ## 13. Alternatives considered
 

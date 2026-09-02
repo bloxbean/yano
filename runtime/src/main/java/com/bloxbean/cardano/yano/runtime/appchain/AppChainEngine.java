@@ -2393,6 +2393,13 @@ final class AppChainEngine implements AutoCloseable {
         }
         Map<String, Long> senderFloor = new HashMap<>();
         for (AppMessage message : block.messages()) {
+            // The mandatory ~l1/* prefix is framework-owned and derives its
+            // identity from the canonical observation bytes. It never enters
+            // the user message pool or advances a member's replay floor.
+            if (message.getTopic() != null
+                    && message.getTopic().startsWith(L1Observation.TOPIC_PREFIX)) {
+                continue;
+            }
             if (message.getSenderSeq() <= 0) {
                 log.warn("{} contains message {} without a sender-seq — rejecting (enforcement on)",
                         context, message.getMessageIdHex());

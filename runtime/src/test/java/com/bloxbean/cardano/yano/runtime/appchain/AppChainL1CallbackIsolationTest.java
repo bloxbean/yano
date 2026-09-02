@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.Event;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
@@ -22,6 +23,7 @@ import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.events.AppChainAnchoredEvent;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
@@ -252,6 +254,60 @@ class AppChainL1CallbackIsolationTest {
         }
     }
 
+    @Test
+    void laterBlockReplaysFailedCallbackFromRetainedHistory() throws Exception {
+        Controls controls = new Controls();
+        Logger logger = mock(Logger.class);
+
+        try (StartedHarness harness = startHarness("forward-replay", controls, logger)) {
+            controls.statusFailure.set(new IllegalStateException("transient"));
+            harness.publish(applied(101, emptyBlock()));
+            assertThat(observerHealthy(harness.subsystem)).isFalse();
+
+            harness.publish(applied(102, emptyBlock()));
+
+            assertThat(observerHealthy(harness.subsystem)).isTrue();
+            assertThat(controls.observerCalls).hasValue(2);
+        }
+    }
+
+    @Test
+    void startupReplaysPersistedFailureFromRetainedHistory() throws Exception {
+        Controls controls = new Controls();
+        Logger logger = mock(Logger.class);
+
+        try (StartedHarness harness = startHarness("startup-replay", controls, logger)) {
+            controls.statusFailure.set(new IllegalStateException("transient"));
+            harness.publish(applied(101, emptyBlock()));
+            assertThat(observerHealthy(harness.subsystem)).isFalse();
+
+            harness.subsystem.stop();
+            startAfterDrain(harness.subsystem);
+
+            awaitObserverHealthy(harness.subsystem);
+            assertThat(controls.observerInstances).hasValue(2);
+            assertThat(controls.observerCalls).hasValue(1);
+        }
+    }
+
+    @Test
+    void rollbackPastFailedSlotClearsPersistedBarrier() throws Exception {
+        Controls controls = new Controls();
+        Logger logger = mock(Logger.class);
+
+        try (StartedHarness harness = startHarness("rollback-recovery", controls, logger)) {
+            controls.statusFailure.set(new IllegalStateException("transient"));
+            harness.publish(applied(101, emptyBlock()));
+            assertThat(observerHealthy(harness.subsystem)).isFalse();
+
+            harness.publish(new RollbackEvent(new Point(100, "64".repeat(32)), true));
+
+            assertThat(observerHealthy(harness.subsystem)).isTrue();
+            harness.publish(applied(102, emptyBlock()));
+            assertThat(controls.observerCalls).hasValue(1);
+        }
+    }
+
     private StartedHarness startHarness(String testId, Controls controls, Logger logger)
             throws Exception {
         DirectEventBus eventBus = new DirectEventBus();
@@ -272,8 +328,10 @@ class AppChainL1CallbackIsolationTest {
         AppChainSubsystem subsystem = new AppChainSubsystem(
                 config, 42, eventBus, null, tempDir.resolve(testId).toString(),
                 null, new ControlledRegistry(controls), logger);
+        Map<Long, BlockAppliedEvent> retainedBlocks = new ConcurrentHashMap<>();
         subsystem.wireL1(ignored -> ANCHOR_TX_HASH,
                 () -> new FixedUtxoState(List.of(anchorUtxo())));
+        subsystem.wireL1BlockReplay(retainedBlocks::get);
         try {
             subsystem.start();
             // Warm the stable-L1 reference window before producing the setup
@@ -288,7 +346,7 @@ class AppChainL1CallbackIsolationTest {
             subsystem.submit("test", new byte[]{1});
             awaitTip(subsystem, 1);
             assertThat(subsystem.forceAnchor()).isTrue();
-            return new StartedHarness(subsystem, eventBus);
+            return new StartedHarness(subsystem, eventBus, retainedBlocks);
         } catch (Exception | Error failure) {
             subsystem.stop();
             throw failure;
@@ -324,6 +382,24 @@ class AppChainL1CallbackIsolationTest {
             }
         }
         throw new AssertionError("Old L1 callback generation did not drain", lastDraining);
+    }
+
+    private static void awaitObserverHealthy(AppChainSubsystem subsystem)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (observerHealthy(subsystem)) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("L1 observer callback barrier did not recover");
+    }
+
+    private static boolean observerHealthy(AppChainSubsystem subsystem) {
+        Object rawObservers = subsystem.status().get("observers");
+        assertThat(rawObservers).isInstanceOf(Map.class);
+        return Boolean.TRUE.equals(((Map<?, ?>) rawObservers).get("healthy"));
     }
 
     private static long anchorHeight(AppChainSubsystem subsystem) {
@@ -621,9 +697,17 @@ class AppChainL1CallbackIsolationTest {
 
     private record StartedHarness(
             AppChainSubsystem subsystem,
-            DirectEventBus eventBus
+            DirectEventBus eventBus,
+            Map<Long, BlockAppliedEvent> retainedBlocks
     ) implements AutoCloseable {
         private void publish(Event event) {
+            if (event instanceof BlockAppliedEvent applied) {
+                retainedBlocks.put(applied.slot(), applied);
+            } else if (event instanceof RollbackEvent rollback) {
+                long targetSlot = rollback.target() != null
+                        ? rollback.target().getSlot() : 0;
+                retainedBlocks.keySet().removeIf(slot -> slot > targetSlot);
+            }
             eventBus.publish(event, EventMetadata.builder().build(),
                     PublishOptions.builder().build());
         }

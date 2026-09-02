@@ -31,6 +31,7 @@ import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
@@ -61,6 +62,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongFunction;
 
 /**
  * App-chain subsystem: authenticated diffusion (M1) + sequenced durable ledger
@@ -159,6 +161,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             epochStateProvider;
     private volatile java.util.function.Function<byte[], String> txSubmitter;
     private volatile java.util.function.Supplier<com.bloxbean.cardano.yano.api.utxo.UtxoState> utxoStateSupplier;
+    private volatile LongFunction<BlockAppliedEvent> l1BlockReplay;
     private final java.util.concurrent.ConcurrentLinkedDeque<AppChainEngine.L1Ref> recentL1Points =
             new java.util.concurrent.ConcurrentLinkedDeque<>();
     private final List<com.bloxbean.cardano.yaci.events.api.SubscriptionHandle> eventSubscriptions =
@@ -1147,6 +1150,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                        java.util.function.Supplier<com.bloxbean.cardano.yano.api.utxo.UtxoState> utxoStateSupplier) {
         this.txSubmitter = txSubmitter;
         this.utxoStateSupplier = utxoStateSupplier;
+    }
+
+    /** Wire read-only access to retained canonical L1 blocks for observer recovery. */
+    public void wireL1BlockReplay(LongFunction<BlockAppliedEvent> blockReplay) {
+        this.l1BlockReplay = Objects.requireNonNull(blockReplay, "blockReplay");
     }
 
     /** Wire the persistent, epoch-pinned ledger-state source used by ADR-028 observers. */
@@ -4710,6 +4718,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             log.info("App-chain '{}' sequencer mode: {}", config.chainId(), sequencerMode.id());
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
         }
+        if (observationService != null && l1BlockReplay != null) {
+            exec.scheduleWithFixedDelay(
+                    () -> generationUseOrNoop(generationToken,
+                            () -> runL1Phase("observation replay",
+                                    this::retryFailedL1Observation)),
+                    1, 5, TimeUnit.SECONDS);
+        }
         if (!sinkRunners.isEmpty()) {
             // Sinks run on their OWN thread — a slow/blocked sink (e.g. an
             // unreachable Kafka broker) must never stall proposeTick / catch-up
@@ -5005,7 +5020,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // next generation's services.
         L1GenerationServices services = new L1GenerationServices(
                 generationToken, anchorService, scriptAnchorService, observationService,
-                epochObservationCoordinator);
+                epochObservationCoordinator, l1BlockReplay);
         eventSubscriptions.addAll(acquireL1Subscriptions(
                 eventBus,
                 event -> onL1BlockApplied(event, services),
@@ -5017,7 +5032,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             AnchorService anchor,
             ScriptAnchorService scriptAnchor,
             L1ObservationService observations,
-            L1EpochObservationCoordinator epochObservations
+            L1EpochObservationCoordinator epochObservations,
+            LongFunction<BlockAppliedEvent> blockReplay
     ) {
     }
 
@@ -5088,6 +5104,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void onL1BlockAppliedWithinGeneration(
             com.bloxbean.cardano.yano.api.events.BlockAppliedEvent event,
             L1GenerationServices services) {
+        runL1Phase("observation replay", () ->
+                retryFailedL1Observation(services.observations(),
+                        services.blockReplay(), event.slot()));
         runL1Phase("reference tracking", () -> {
             recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
                     HexUtil.decodeHexString(event.blockHash())));
@@ -5146,6 +5165,29 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 publishConfirmedAnchor(confirmed);
             }
         });
+    }
+
+    private void retryFailedL1Observation() {
+        retryFailedL1Observation(observationService, l1BlockReplay, -1);
+    }
+
+    private void retryFailedL1Observation(
+            L1ObservationService observations,
+            LongFunction<BlockAppliedEvent> blockReplay,
+            long currentEventSlot) {
+        if (observations == null || blockReplay == null) {
+            return;
+        }
+        long failedSlot = observations.callbackFailureSlot();
+        if (failedSlot < 0 || failedSlot == currentEventSlot) {
+            return;
+        }
+        BlockAppliedEvent retained = blockReplay.apply(failedSlot);
+        if (retained == null || retained.slot() != failedSlot || retained.block() == null) {
+            return;
+        }
+        observations.onL1Block(retained.slot(),
+                HexUtil.decodeHexString(retained.blockHash()), retained.block());
     }
 
     private void publishConfirmedAnchor(AnchorService.ConfirmedAnchor confirmed) {

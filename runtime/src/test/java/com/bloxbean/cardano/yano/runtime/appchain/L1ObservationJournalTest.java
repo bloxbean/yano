@@ -77,6 +77,26 @@ class L1ObservationJournalTest {
     }
 
     @Test
+    void rollbackPastCallbackFailureClearsBarrierDurably() {
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            journal.markCallbackFailure(10);
+            L1ObservationService service = new L1ObservationService(
+                    List.of(), 64, journal,
+                    LoggerFactory.getLogger(L1ObservationJournalTest.class));
+            assertThat(service.healthy()).isFalse();
+
+            service.onL1Rollback(9);
+
+            assertThat(service.healthy()).isTrue();
+            assertThat(journal.callbackFailureSlot()).isEqualTo(-1);
+        }
+        try (AppLedgerStore ledger = store()) {
+            assertThat(new L1ObservationJournal(ledger, 1_000_000).healthy()).isTrue();
+        }
+    }
+
+    @Test
     void ordersBySlotAndOrdinalAndRejectsConflictingSource() {
         L1Observation laterOrdinal = observation(10, 1, 8);
         L1Observation first = observation(10, 0, 7);

@@ -293,7 +293,7 @@ final class L1ObservationService {
      * the verification window (all members) and the pending-injection queue
      * (drained once stable — see {@link #drainInjectable}).
      */
-    void onL1Block(long slot, byte[] blockHash, Block block) {
+    synchronized void onL1Block(long slot, byte[] blockHash, Block block) {
         byte[] stableBlockHash = Objects.requireNonNull(
                 blockHash, "blockHash").clone();
         if (stableBlockHash.length != 32) {
@@ -426,7 +426,7 @@ final class L1ObservationService {
     }
 
     /** L1 rollback: forget observations above the rollback point. */
-    void onL1Rollback(long rollbackToSlot) {
+    synchronized void onL1Rollback(long rollbackToSlot) {
         window.tailMap(rollbackToSlot, false).clear();
         blockHashes.tailMap(rollbackToSlot, false).clear();
         pendingInjection.tailMap(rollbackToSlot, false).clear();
@@ -434,9 +434,15 @@ final class L1ObservationService {
             try {
                 journal.rollback(rollbackToSlot);
             } catch (RuntimeException failure) {
+                callbackFailureSlot = journal.callbackFailureSlot();
                 healthy = false;
                 throw failure;
             }
+            callbackFailureSlot = journal.callbackFailureSlot();
+            healthy = journal.healthy();
+        } else if (callbackFailureSlot > rollbackToSlot) {
+            callbackFailureSlot = -1;
+            healthy = true;
         }
         newestSlot = Math.min(newestSlot, rollbackToSlot);
     }
@@ -478,6 +484,10 @@ final class L1ObservationService {
 
     boolean healthy() {
         return healthy;
+    }
+
+    long callbackFailureSlot() {
+        return callbackFailureSlot;
     }
 
     long newestSlot() {

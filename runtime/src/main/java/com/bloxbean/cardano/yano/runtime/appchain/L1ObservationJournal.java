@@ -347,6 +347,9 @@ final class L1ObservationJournal {
             mutations.add(AppLedgerStore.EpochSpoolMutation.put(QUARANTINE_KEY,
                     "L1_INVALIDATED_PREPARED_VALUE".getBytes(StandardCharsets.UTF_8)));
         }
+        if (callbackFailureSlot() > rollbackToSlot) {
+            mutations.add(AppLedgerStore.EpochSpoolMutation.delete(CALLBACK_FAILURE_KEY));
+        }
         ledger.epochSpoolWrite(mutations);
         usedBytes = calculateUsedBytes();
         if (invalidatedPreparedValue) {

@@ -5,6 +5,9 @@ import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.config.YaciConfig;
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.HeaderBody;
+import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
@@ -69,7 +72,9 @@ import com.bloxbean.cardano.yano.runtime.chain.NearestPointLookup;
 import com.bloxbean.cardano.yano.runtime.chronology.ChronologyService;
 import com.bloxbean.cardano.yano.runtime.chronology.ChronologySubsystem;
 import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryFailureTracker;
@@ -882,12 +887,41 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     appChainConfig, protocolMagic, eventBus, null, appChainStoragePath.toString(),
                     pluginEnvironment.classLoader(), pluginEnvironment.providers(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            subsystem.wireL1BlockReplay(this::retainedL1Block);
             subsystem.wireTxEvaluation(this);
             subsystem.wireAnchorFees(this::anchorFeeParams);
             subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
             subsystems.add(subsystem);
         }
         return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
+    }
+
+    private BlockAppliedEvent retainedL1Block(long slot) {
+        Long blockNumber = chainState.getBlockNumberBySlot(slot);
+        if (blockNumber == null || !Objects.equals(
+                chainState.getSlotByBlockNumber(blockNumber), slot)) {
+            return null;
+        }
+        byte[] blockBytes = chainState.getBlockByNumber(blockNumber);
+        Era storedEra = chainState.getBlockEra(blockNumber);
+        if (blockBytes == null || StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+            return null;
+        }
+        try {
+            Block block = BlockSerializer.INSTANCE.deserialize(blockBytes);
+            HeaderBody header = block.getHeader() != null
+                    ? block.getHeader().getHeaderBody() : null;
+            if (header == null || header.getSlot() != slot
+                    || header.getBlockNumber() != blockNumber
+                    || header.getBlockHash() == null) {
+                return null;
+            }
+            Era era = block.getEra() != null ? block.getEra() : storedEra;
+            return new BlockAppliedEvent(
+                    era, slot, blockNumber, header.getBlockHash(), block);
+        } catch (RuntimeException malformedRetainedBlock) {
+            return null;
+        }
     }
 
     private String runtimeNetwork() {
