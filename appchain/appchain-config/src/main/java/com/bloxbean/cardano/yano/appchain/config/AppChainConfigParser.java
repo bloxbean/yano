@@ -31,7 +31,7 @@ public final class AppChainConfigParser {
 
     private static final List<String> DYNAMIC_PREFIXES = List.of(
             "sinks.", "zk.", "machines.", "state.", "sequencer.", "membership.",
-            "observers.", "transport.", "effects.", "capabilities.");
+            "observation.", "observers.", "transport.", "effects.", "capabilities.");
 
     /*
      * Narrow ownership domains whose complete key set is parsed and parity-tested by Yano.
