@@ -27,12 +27,9 @@ import java.util.function.BooleanSupplier;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Stale vote-lock recovery (I4.2, found by the Iteration-3 devnet gate): a
- * member whose locked proposal EXPIRED across a crash-restart previously
- * wedged its height forever. Now: the proposer proposes a FRESH block around
- * its spent vote without self-voting (threshold from OTHER members certifies
- * — the at-most-one-vote guarantee stands), and for threshold-unreachable
- * configs the operator unlock endpoint is the documented escape hatch.
+ * Certified view-change recovery for a proposal that expires across restart.
+ * A prepare vote is locked per height/view, so the member may safely prepare
+ * a NewView-certified value in a later view without an operator unlock.
  */
 @Timeout(180)
 class AppChainStaleLockTest {
@@ -68,7 +65,7 @@ class AppChainStaleLockTest {
     }
 
     @Test
-    void staleLock_proposerMovesOnWithoutSelfVote_othersCertify() throws Exception {
+    void expiredPartialRound_recoversThroughCertifiedHigherView() throws Exception {
         String pubA = pubHex(KEY_A);
         Set<String> members = Set.of(pubA, pubHex(KEY_B), pubHex(KEY_C));
         int portA = freePort();
@@ -88,8 +85,8 @@ class AppChainStaleLockTest {
         nodes.remove("a").close();
         expireStoredLock(dirA, 1);
 
-        // Restart A; bring B and C up. A must propose a FRESH block at height
-        // 1 WITHOUT voting for it; B + C supply the 2-of-3 certificate.
+        // Restart A and bring B/C up. The expired view-0 proposal cannot be
+        // re-gossiped, so quorum timeouts must install a certified higher view.
         AppChainSubsystem restartedA = start("a", KEY_A, members, pubA, portA,
                 List.of(peer(portB), peer(portC)), dirA);
         AppChainSubsystem nodeB = start("b", KEY_B, members, pubA, portB,
@@ -97,31 +94,23 @@ class AppChainStaleLockTest {
         AppChainSubsystem nodeC = start("c", KEY_C, members, pubA, portC,
                 List.of(peer(portA), peer(portB)), tempDir.resolve("sl-c"));
 
-        // The wedge is visible while unresolved
-        awaitTrue("stale lock surfaced in status", () -> {
-            Object sequencer = restartedA.status().get("sequencer");
-            return sequencer instanceof Map<?, ?> map && map.containsKey("staleLockedHeight");
-        });
-
-        // The fresh proposal needs content (A's pool died with the crash)
+        // The higher-view leader needs content (A's pool died with the crash).
         restartedA.submit("t", "fresh-after-wedge".getBytes(StandardCharsets.UTF_8));
 
         awaitTrue("height 1 finalized everywhere around the stale lock",
                 () -> restartedA.tipHeight() >= 1 && nodeB.tipHeight() >= 1 && nodeC.tipHeight() >= 1);
 
-        // The certificate must NOT carry A's signature — A never voted twice
+        // A may sign again because the durable lock is scoped to view 0.
         FinalityCert cert = restartedA.block(1).orElseThrow().cert();
-        List<String> certSigners = cert.signatures().stream()
-                .map(s -> HexUtil.encodeHexString(s.signer()).toLowerCase())
-                .toList();
-        assertThat(certSigners).doesNotContain(pubA.toLowerCase());
-        assertThat(certSigners).hasSize(2);
+        assertThat(cert.signatures()).hasSize(2);
+        assertThat(restartedA.block(1).orElseThrow().view()).isGreaterThan(0);
+        assertThat(restartedA.block(1).orElseThrow().justification()).isNotEmpty();
         assertThat(restartedA.stateRoot()).isEqualTo(nodeB.stateRoot());
         assertThat(nodeB.stateRoot()).isEqualTo(nodeC.stateRoot());
     }
 
     @Test
-    void thresholdUnreachable_operatorUnlockRestoresLiveness() throws Exception {
+    void twoOfTwoExpiredRound_recoversWithoutOperatorUnlock() throws Exception {
         String pubA = pubHex(KEY_A);
         Set<String> members = Set.of(pubA, pubHex(KEY_B));
         int portA = freePort();
@@ -134,9 +123,6 @@ class AppChainStaleLockTest {
         nodeA.submit("t", "wedged".getBytes(StandardCharsets.UTF_8));
         Thread.sleep(3_000);
 
-        // Unlock is REFUSED while the locked round is still recoverable
-        assertThat(nodeA.unlockStaleRound()).isFalse();
-
         nodes.remove("a").close();
         expireStoredLock(dirA, 1);
         AppChainSubsystem restartedA = start("a", KEY_A, members, pubA, portA,
@@ -144,22 +130,13 @@ class AppChainStaleLockTest {
         AppChainSubsystem nodeB = start("b", KEY_B, members, pubA, portB,
                 List.of(peer(portA)), tempDir.resolve("ul-b"));
 
-        // Operator confirms no conflicting cert exists, then unlocks
-        awaitTrue("unlock succeeds on the stale lock", () -> {
-            try {
-                return restartedA.unlockStaleRound();
-            } catch (Exception e) {
-                return false;
-            }
-        });
-
         restartedA.submit("t", "post-unlock".getBytes(StandardCharsets.UTF_8));
-        awaitTrue("height 1 finalized after operator unlock",
+        awaitTrue("height 1 finalized after certified view change",
                 () -> restartedA.tipHeight() >= 1 && nodeB.tipHeight() >= 1);
 
-        // A voted once more (consciously, post-unlock): 2-of-2 cert includes it
         FinalityCert cert = restartedA.block(1).orElseThrow().cert();
         assertThat(cert.signatures()).hasSize(2);
+        assertThat(restartedA.block(1).orElseThrow().view()).isGreaterThan(0);
         assertThat(restartedA.stateRoot()).isEqualTo(nodeB.stateRoot());
     }
 

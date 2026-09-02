@@ -887,6 +887,8 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
                     + '1111111111111111111111111111111111111111111111111111111111111111',
             '-Dyano.app-chain.sequencer.mode=conformance-mode',
             '-Dyano.app-chain.l1.stability-depth=1',
+            '-Dyano.app-chain.observation.l1-network-genesis-id='
+                    + '2222222222222222222222222222222222222222222222222222222222222222',
             '-Dyano.app-chain.observers.audit.type=conformance-observer',
             '-Dyano.app-chain.sinks.conformance-sink.enabled=true',
             '-Dyano.app-chain.effects.enabled=true',

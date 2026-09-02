@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.Event;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
@@ -15,12 +16,14 @@ import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.events.AppChainAnchoredEvent;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
@@ -65,8 +68,8 @@ class AppChainL1CallbackIsolationTest {
     private static final String OBSERVER_TYPE = "controlled-l1-observer";
     private static final String OBSERVER_ID = "controlled";
     private static final String ANCHOR_TX_HASH = "ab".repeat(32);
-    private static final String PHASE_WARNING =
-            "App-chain L1 {} failed (errorType={})";
+    private static final String OBSERVER_WARNING =
+            "L1 observer failed on slot {} (errorType={})";
     private static final byte[] SIGNING_KEY = fill(32, 73);
     private static final String SIGNING_KEY_HEX = HexUtil.encodeHexString(SIGNING_KEY);
     private static final String PUBLIC_KEY = HexUtil.encodeHexString(
@@ -83,7 +86,7 @@ class AppChainL1CallbackIsolationTest {
         AssertionError phaseFailure = new AssertionError("observer phase failure");
         AssertionError diagnosticFailure = new AssertionError("logger backend failure");
         doThrow(diagnosticFailure).when(logger).warn(
-                PHASE_WARNING, "observation", AssertionError.class.getName());
+                OBSERVER_WARNING, 101L, AssertionError.class.getName());
 
         try (StartedHarness harness = startHarness("recoverable", controls, logger)) {
             harness.publish(applied(100, emptyBlock()));
@@ -93,7 +96,7 @@ class AppChainL1CallbackIsolationTest {
 
             assertThat(anchorHeight(harness.subsystem)).isEqualTo(1);
             assertThat(harness.anchoredEvents()).hasSize(1);
-            verify(logger).warn(PHASE_WARNING, "observation",
+            verify(logger).warn(OBSERVER_WARNING, 101L,
                     AssertionError.class.getName());
 
             // Replaying the inclusion event must not emit a second confirmation.
@@ -137,7 +140,7 @@ class AppChainL1CallbackIsolationTest {
 
             assertThat(anchorHeight(harness.subsystem)).isZero();
             assertThat(harness.anchoredEvents()).isEmpty();
-            verify(logger, never()).warn(PHASE_WARNING, "observation",
+            verify(logger, never()).warn(OBSERVER_WARNING, 101L,
                     TestVirtualMachineError.class.getName());
 
             harness.publish(applied(101, blockWithTx(ANCHOR_TX_HASH)));
@@ -158,7 +161,7 @@ class AppChainL1CallbackIsolationTest {
                 throw fatalDiagnostic;
             }
             return null;
-        }).when(logger).warn(PHASE_WARNING, "observation",
+        }).when(logger).warn(OBSERVER_WARNING, 101L,
                 AssertionError.class.getName());
 
         try (StartedHarness harness = startHarness("fatal-logger", controls, logger)) {
@@ -251,6 +254,60 @@ class AppChainL1CallbackIsolationTest {
         }
     }
 
+    @Test
+    void laterBlockReplaysFailedCallbackFromRetainedHistory() throws Exception {
+        Controls controls = new Controls();
+        Logger logger = mock(Logger.class);
+
+        try (StartedHarness harness = startHarness("forward-replay", controls, logger)) {
+            controls.statusFailure.set(new IllegalStateException("transient"));
+            harness.publish(applied(101, emptyBlock()));
+            assertThat(observerHealthy(harness.subsystem)).isFalse();
+
+            harness.publish(applied(102, emptyBlock()));
+
+            assertThat(observerHealthy(harness.subsystem)).isTrue();
+            assertThat(controls.observerCalls).hasValue(2);
+        }
+    }
+
+    @Test
+    void startupReplaysPersistedFailureFromRetainedHistory() throws Exception {
+        Controls controls = new Controls();
+        Logger logger = mock(Logger.class);
+
+        try (StartedHarness harness = startHarness("startup-replay", controls, logger)) {
+            controls.statusFailure.set(new IllegalStateException("transient"));
+            harness.publish(applied(101, emptyBlock()));
+            assertThat(observerHealthy(harness.subsystem)).isFalse();
+
+            harness.subsystem.stop();
+            startAfterDrain(harness.subsystem);
+
+            awaitObserverHealthy(harness.subsystem);
+            assertThat(controls.observerInstances).hasValue(2);
+            assertThat(controls.observerCalls).hasValue(1);
+        }
+    }
+
+    @Test
+    void rollbackPastFailedSlotClearsPersistedBarrier() throws Exception {
+        Controls controls = new Controls();
+        Logger logger = mock(Logger.class);
+
+        try (StartedHarness harness = startHarness("rollback-recovery", controls, logger)) {
+            controls.statusFailure.set(new IllegalStateException("transient"));
+            harness.publish(applied(101, emptyBlock()));
+            assertThat(observerHealthy(harness.subsystem)).isFalse();
+
+            harness.publish(new RollbackEvent(new Point(100, "64".repeat(32)), true));
+
+            assertThat(observerHealthy(harness.subsystem)).isTrue();
+            harness.publish(applied(102, emptyBlock()));
+            assertThat(controls.observerCalls).hasValue(1);
+        }
+    }
+
     private StartedHarness startHarness(String testId, Controls controls, Logger logger)
             throws Exception {
         DirectEventBus eventBus = new DirectEventBus();
@@ -264,14 +321,17 @@ class AppChainL1CallbackIsolationTest {
                         true, SIGNING_KEY_HEX, 1, 60, 7014))
                 .pluginSettings(Map.of(
                         "sequencer.mode", MODE_ID,
-                        "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE))
+                        "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE,
+                        "observation.l1-network-genesis-id", "01".repeat(32)))
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(
                 config, 42, eventBus, null, tempDir.resolve(testId).toString(),
                 null, new ControlledRegistry(controls), logger);
+        Map<Long, BlockAppliedEvent> retainedBlocks = new ConcurrentHashMap<>();
         subsystem.wireL1(ignored -> ANCHOR_TX_HASH,
                 () -> new FixedUtxoState(List.of(anchorUtxo())));
+        subsystem.wireL1BlockReplay(retainedBlocks::get);
         try {
             subsystem.start();
             // Warm the stable-L1 reference window before producing the setup
@@ -286,7 +346,7 @@ class AppChainL1CallbackIsolationTest {
             subsystem.submit("test", new byte[]{1});
             awaitTip(subsystem, 1);
             assertThat(subsystem.forceAnchor()).isTrue();
-            return new StartedHarness(subsystem, eventBus);
+            return new StartedHarness(subsystem, eventBus, retainedBlocks);
         } catch (Exception | Error failure) {
             subsystem.stop();
             throw failure;
@@ -322,6 +382,24 @@ class AppChainL1CallbackIsolationTest {
             }
         }
         throw new AssertionError("Old L1 callback generation did not drain", lastDraining);
+    }
+
+    private static void awaitObserverHealthy(AppChainSubsystem subsystem)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (observerHealthy(subsystem)) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("L1 observer callback barrier did not recover");
+    }
+
+    private static boolean observerHealthy(AppChainSubsystem subsystem) {
+        Object rawObservers = subsystem.status().get("observers");
+        assertThat(rawObservers).isInstanceOf(Map.class);
+        return Boolean.TRUE.equals(((Map<?, ?>) rawObservers).get("healthy"));
     }
 
     private static long anchorHeight(AppChainSubsystem subsystem) {
@@ -409,6 +487,12 @@ class AppChainL1CallbackIsolationTest {
             this.observerProvider = new L1ObserverProvider() {
                 @Override public String type() { return OBSERVER_TYPE; }
                 @Override
+                public L1ObserverConsensusIdentity consensusIdentity(
+                        String observerId, Map<String, String> settings) {
+                    return new L1ObserverConsensusIdentity(
+                            1, "controlled-test-claim-v1", 1, new byte[]{1});
+                }
+                @Override
                 public L1Observer create(String observerId, Map<String, String> settings) {
                     controls.observerInstances.incrementAndGet();
                     return new ControlledObserver(observerId, controls);
@@ -440,11 +524,9 @@ class AppChainL1CallbackIsolationTest {
     }
 
     private static final class ControlledMode implements SequencerMode {
-        private final Controls controls;
         private String selfKey;
 
         private ControlledMode(Controls controls) {
-            this.controls = controls;
         }
 
         @Override public String id() { return MODE_ID; }
@@ -463,16 +545,6 @@ class AppChainL1CallbackIsolationTest {
 
         @Override
         public Map<String, Object> status() {
-            Throwable failure = controls.statusFailure.getAndSet(null);
-            if (failure instanceof Error error) {
-                throw error;
-            }
-            if (failure instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            if (failure != null) {
-                throw new IllegalStateException(failure);
-            }
             return Map.of("currentProposer", selfKey);
         }
     }
@@ -490,6 +562,16 @@ class AppChainL1CallbackIsolationTest {
 
         @Override
         public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+            Throwable failure = controls.statusFailure.getAndSet(null);
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            if (failure instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (failure != null) {
+                throw new IllegalStateException(failure);
+            }
             if (controls.suppressObservations.get()) {
                 return List.of();
             }
@@ -615,9 +697,17 @@ class AppChainL1CallbackIsolationTest {
 
     private record StartedHarness(
             AppChainSubsystem subsystem,
-            DirectEventBus eventBus
+            DirectEventBus eventBus,
+            Map<Long, BlockAppliedEvent> retainedBlocks
     ) implements AutoCloseable {
         private void publish(Event event) {
+            if (event instanceof BlockAppliedEvent applied) {
+                retainedBlocks.put(applied.slot(), applied);
+            } else if (event instanceof RollbackEvent rollback) {
+                long targetSlot = rollback.target() != null
+                        ? rollback.target().getSlot() : 0;
+                retainedBlocks.keySet().removeIf(slot -> slot > targetSlot);
+            }
             eventBus.publish(event, EventMetadata.builder().build(),
                     PublishOptions.builder().build());
         }

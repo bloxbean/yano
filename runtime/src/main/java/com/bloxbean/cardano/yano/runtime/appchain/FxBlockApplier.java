@@ -51,9 +51,10 @@ final class FxBlockApplier {
             stateCommit = staged;
             byte[] effectiveRoot = stateCommit.stateRoot();
             AppBlock applied = new AppBlock(block.version(), block.chainId(), block.height(),
-                    block.prevHash(), block.l1Slot(), block.l1BlockHash(), block.timestamp(),
+                    block.consensusContextDigest(), block.view(), block.prevHash(),
+                    block.l1Slot(), block.l1BlockHash(), block.timestamp(),
                     block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
-                    block.cert());
+                    block.justification(), block.cert());
             store.stageFx(batch, block.height(), fx);
             byte[] blockHash = AppBlockCodec.blockHash(applied);
             store.commitBlock(applied, blockHash, stateCommit, batch, java.util.List.of());

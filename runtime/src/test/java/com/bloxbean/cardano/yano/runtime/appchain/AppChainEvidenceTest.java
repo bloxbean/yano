@@ -70,11 +70,11 @@ class AppChainEvidenceTest {
     void evidence_verifiesOffline_andRoundTripsJson() throws Exception {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
-        // Two members, threshold 1 (single node signs its own proposals) — the
-        // cert carries the proposer's signature; both keys are in the member set.
+        // A one-member test chain keeps the fixture's quorum assumption safe;
+        // pubB remains an attacker key for the tamper checks below.
         AppChainConfig config = AppChainConfig.builder("evidence-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
-                .memberKeysHex(Set.of(pubA, pubB))
+                .memberKeysHex(Set.of(pubA))
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
@@ -103,13 +103,13 @@ class AppChainEvidenceTest {
         // Offline verification succeeds against pinned membership and proves
         // both signed message-id inclusion and retained envelope content.
         EvidenceVerifier.Result result = EvidenceVerifier.verify(
-                bundle, "evidence-chain", Set.of(pubA, pubB), 1);
+                bundle, "evidence-chain", Set.of(pubA), 1);
         assertThat(result.valid()).isTrue();
         assertThat(result.messageContentVerified()).isTrue();
         assertThat(result.certSignatures()).isGreaterThanOrEqualTo(1);
         assertThat(result.anchoredToL1()).isFalse();
         assertThat(EvidenceVerifier.verify(bundle, new EvidenceVerifier.TrustContext(
-                "evidence-chain", Set.of(pubA, pubB), 1,
+                "evidence-chain", Set.of(pubA), 1,
                 StateCommitmentProfiles.MPF_BLAKE2B256_V1,
                 HexUtil.encodeHexString(
                         bundle.stateCommitment().identity().genesisId()))).valid()).isTrue();
@@ -118,20 +118,20 @@ class AppChainEvidenceTest {
         String json = EvidenceBundleCodec.toJson(bundle);
         EvidenceBundle reparsed = EvidenceBundleCodec.fromJson(json);
         assertThat(EvidenceVerifier.verify(
-                reparsed, "evidence-chain", Set.of(pubA, pubB), 1).valid()).isTrue();
+                reparsed, "evidence-chain", Set.of(pubA), 1).valid()).isTrue();
 
         // Tamper detection: a wrong member set fails the cert check
         EvidenceBundle wrongMembers = new EvidenceBundle(bundle.chainId(), bundle.messageIdHex(),
                 bundle.blocks(), List.of(pubB), 1, null);
         assertThat(EvidenceVerifier.verify(
-                wrongMembers, "evidence-chain", Set.of(pubA, pubB), 1).valid()).isFalse();
+                wrongMembers, "evidence-chain", Set.of(pubA), 1).valid()).isFalse();
 
         // Threshold enforcement: a bundle claiming a threshold above the actual
         // signature count is rejected (a single member can't forge evidence).
         EvidenceBundle overThreshold = new EvidenceBundle(bundle.chainId(), bundle.messageIdHex(),
                 bundle.blocks(), bundle.memberKeysHex(), 2, null);
         assertThat(EvidenceVerifier.verify(
-                overThreshold, "evidence-chain", Set.of(pubA, pubB), 1).valid()).isFalse();
+                overThreshold, "evidence-chain", Set.of(pubA), 1).valid()).isFalse();
     }
 
     @Test

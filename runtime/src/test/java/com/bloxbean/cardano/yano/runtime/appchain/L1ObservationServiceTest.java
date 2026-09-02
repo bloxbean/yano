@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.SequencedL1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +42,36 @@ class L1ObservationServiceTest {
 
     private static final Logger log = LoggerFactory.getLogger(L1ObservationServiceTest.class);
     private static final String WATCHED = "addr_test1qwatched";
+
+    @Test
+    void observerProfileBindsDeterministicSettingsAndL1GenesisIdentity() {
+        Map<String, String> settings = Map.of(
+                "observers.deposits.type", "address-deposit",
+                "observers.deposits.address", WATCHED);
+        byte[] first = L1ObservationService.consensusProfileDigest(
+                settings, PluginProviderRegistry.empty(), fill(32, 1));
+        byte[] anotherNetwork = L1ObservationService.consensusProfileDigest(
+                settings, PluginProviderRegistry.empty(), fill(32, 2));
+        byte[] anotherAddress = L1ObservationService.consensusProfileDigest(Map.of(
+                        "observers.deposits.type", "address-deposit",
+                        "observers.deposits.address", WATCHED + "x"),
+                PluginProviderRegistry.empty(), fill(32, 1));
+
+        assertThat(first).isNotEqualTo(anotherNetwork);
+        assertThat(first).isNotEqualTo(anotherAddress);
+    }
+
+    @Test
+    void globalPrefixNeverSkipsAnEarlierObservationFromAnotherLane() {
+        L1Observation earlierBlockFact = L1Observation.transaction(
+                "block", fill(32, 1), 0, 10, fill(32, 2), fill(4096, 3));
+        L1Observation laterEpochFact = L1Observation.epoch(
+                "epoch", 2, 0, 11, fill(32, 4), new byte[]{5});
+
+        assertThat(AppChainSubsystem.canonicalObservationPrefix(
+                List.of(laterEpochFact, earlierBlockFact), 1))
+                .containsExactly(earlierBlockFact);
+    }
 
     private L1ObservationService service() {
         return L1ObservationService.fromConfig(Map.of(
@@ -145,22 +176,51 @@ class L1ObservationServiceTest {
         };
         L1ObservationService service = new L1ObservationService(List.of(observer), 64, logger);
 
-        service.onL1Block(123, fill(32, 7), null);
+        assertThatThrownBy(() -> service.onL1Block(123, fill(32, 7), null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("L1_OBSERVER_CALLBACK_FAILED");
 
         verify(logger).warn("L1 observer failed on slot {} (errorType={})",
                 123L, IllegalStateException.class.getName());
         verifyNoMoreInteractions(logger);
         assertThat(service.drainInjectable(Long.MAX_VALUE)).isEmpty();
+        assertThat(service.healthy()).isFalse();
     }
 
     @Test
-    void containableObserverErrorDoesNotStarveHealthyObserver() {
+    void failedSlotMustReplaySuccessfullyBeforeObservationHorizonRecovers() {
+        AtomicBoolean fail = new AtomicBoolean(true);
+        L1Observer observer = new L1Observer() {
+            @Override public String observerId() { return "recovering-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                if (fail.getAndSet(false)) {
+                    throw new IllegalStateException("first attempt");
+                }
+                return List.of();
+            }
+        };
+        L1ObservationService service = new L1ObservationService(
+                List.of(observer), 64, mock(Logger.class));
+
+        assertThatThrownBy(() -> service.onL1Block(10, fill(32, 1), null))
+                .hasMessage("L1_OBSERVER_CALLBACK_FAILED");
+        assertThatThrownBy(() -> service.onL1Block(11, fill(32, 2), null))
+                .hasMessageContaining("L1_OBSERVER_REPLAY_REQUIRED");
+        service.onL1Block(10, fill(32, 1), null);
+
+        assertThat(service.healthy()).isTrue();
+        assertThat(service.newestSlot()).isEqualTo(10);
+    }
+
+    @Test
+    void observerErrorFailsClosedBeforePublishingPartialResults() {
         AtomicBoolean healthyCalled = new AtomicBoolean();
         L1Observer failing = new L1Observer() {
             @Override public String observerId() { return "asserting-observer"; }
             @Override
             public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
-                throw new AssertionError("sensitive assertion");
+                throw new IllegalStateException("sensitive failure");
             }
         };
         L1Observer healthy = new L1Observer() {
@@ -175,15 +235,17 @@ class L1ObservationServiceTest {
         L1ObservationService service =
                 new L1ObservationService(List.of(failing, healthy), 64, logger);
 
-        service.onL1Block(321, fill(32, 8), null);
+        assertThatThrownBy(() -> service.onL1Block(321, fill(32, 8), null))
+                .hasMessage("L1_OBSERVER_CALLBACK_FAILED");
 
-        assertThat(healthyCalled).isTrue();
+        assertThat(healthyCalled).isFalse();
+        assertThat(service.healthy()).isFalse();
         verify(logger).warn("L1 observer failed on slot {} (errorType={})",
-                321L, AssertionError.class.getName());
+                321L, IllegalStateException.class.getName());
     }
 
     @Test
-    void interruptedObserverRestoresInterruptBeforeDiagnosticsAndContinues() {
+    void interruptedObserverRestoresInterruptAndFailsClosed() {
         AtomicBoolean interruptedWhenLogged = new AtomicBoolean();
         AtomicBoolean healthyCalled = new AtomicBoolean();
         L1Observer interrupted = new L1Observer() {
@@ -211,10 +273,12 @@ class L1ObservationServiceTest {
                 new L1ObservationService(List.of(interrupted, healthy), 64, logger);
 
         try {
-            service.onL1Block(323, fill(32, 10), null);
+            assertThatThrownBy(() -> service.onL1Block(323, fill(32, 10), null))
+                    .hasMessage("L1_OBSERVER_CALLBACK_FAILED");
 
             assertThat(interruptedWhenLogged).isTrue();
-            assertThat(healthyCalled).isTrue();
+            assertThat(healthyCalled).isFalse();
+            assertThat(service.healthy()).isFalse();
             assertThat(Thread.currentThread().isInterrupted()).isTrue();
         } finally {
             // Do not leak the deliberately restored flag into the JUnit worker.
@@ -223,7 +287,7 @@ class L1ObservationServiceTest {
     }
 
     @Test
-    void recoverableDiagnosticErrorDoesNotStarveHealthyObserver() {
+    void recoverableDiagnosticErrorDoesNotMaskFailClosedObserverState() {
         AtomicBoolean healthyCalled = new AtomicBoolean();
         L1Observer failing = new L1Observer() {
             @Override public String observerId() { return "failing-observer"; }
@@ -247,9 +311,11 @@ class L1ObservationServiceTest {
         L1ObservationService service =
                 new L1ObservationService(List.of(failing, healthy), 64, logger);
 
-        service.onL1Block(324, fill(32, 11), null);
+        assertThatThrownBy(() -> service.onL1Block(324, fill(32, 11), null))
+                .hasMessage("L1_OBSERVER_CALLBACK_FAILED");
 
-        assertThat(healthyCalled).isTrue();
+        assertThat(healthyCalled).isFalse();
+        assertThat(service.healthy()).isFalse();
     }
 
     @Test

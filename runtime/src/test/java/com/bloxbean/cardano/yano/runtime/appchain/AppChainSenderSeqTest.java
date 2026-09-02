@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
@@ -9,7 +10,17 @@ import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableCon
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yaci.events.api.EventMetadata;
+import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -47,6 +58,7 @@ class AppChainSenderSeqTest {
 
     private static final byte[] KEY_A = seed(41); // proposer
     private static final byte[] KEY_B = seed(42); // follower
+    private static final String OBSERVER_TYPE = "sender-seq-observer";
 
     @TempDir
     Path tempDir;
@@ -101,7 +113,7 @@ class AppChainSenderSeqTest {
         first.submit("t", "before".getBytes(StandardCharsets.UTF_8));
         awaitTrue("pre-restart finalized", () -> first.tipHeight() >= 1);
         long seqBefore = first.recentMessages(1).get(0).senderSeq();
-        first.stop();
+        first.close();
 
         AppChainSubsystem second = new AppChainSubsystem(config("r", KEY_A, Set.of(pubA), pubA,
                 List.of(), 300, false), MAGIC, null, null, dir, null, log);
@@ -125,6 +137,27 @@ class AppChainSenderSeqTest {
             awaitTrue("block " + expected, () -> node.tipHeight() >= expected);
         }
         assertThat(node.tipHeight()).isEqualTo(3);
+    }
+
+    @Test
+    void enforceOn_frameworkObservationsFinalizeAcrossTwoMembers() throws Exception {
+        EventBus busA = new SimpleEventBus();
+        EventBus busB = new SimpleEventBus();
+        AppChainSubsystem[] nodes = startObservationPair(busA, busB);
+
+        feedObservedL1(busA, 1, 3);
+        feedObservedL1(busB, 1, 3);
+
+        awaitTrue("framework observation finalized on both enforcing members",
+                () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
+        assertThat(nodes[0].block(1).orElseThrow().messages())
+                .anySatisfy(message -> {
+                    assertThat(message.getTopic()).startsWith(L1Observation.TOPIC_PREFIX);
+                    assertThat(message.getSenderSeq()).isZero();
+                });
+        assertThat(nodes[1].block(1).orElseThrow().messages())
+                .anySatisfy(message ->
+                        assertThat(message.getTopic()).startsWith(L1Observation.TOPIC_PREFIX));
     }
 
     @Test
@@ -180,6 +213,78 @@ class AppChainSenderSeqTest {
                 List.of(peer(portA)), 3_000, 2, followerEnforces);
         awaitTrue("A/B connected", () -> connected(nodeA) && connected(nodeB));
         return new AppChainSubsystem[]{nodeA, nodeB};
+    }
+
+    private AppChainSubsystem[] startObservationPair(EventBus busA, EventBus busB)
+            throws Exception {
+        String pubA = pubHex(KEY_A);
+        String pubB = pubHex(KEY_B);
+        Set<String> members = Set.of(pubA, pubB);
+        int portA = freePort();
+        int portB = freePort();
+        PluginProviderRegistry registry = new ObservationRegistry();
+
+        AppChainSubsystem nodeA = startObservationNode("observation-a", KEY_A, members,
+                pubA, portA, List.of(peer(portB)), busA, registry);
+        AppChainSubsystem nodeB = startObservationNode("observation-b", KEY_B, members,
+                pubA, portB, List.of(peer(portA)), busB, registry);
+        awaitTrue("observation A/B connected", () -> connected(nodeA) && connected(nodeB));
+        return new AppChainSubsystem[]{nodeA, nodeB};
+    }
+
+    private AppChainSubsystem startObservationNode(
+            String name,
+            byte[] signingKey,
+            Set<String> members,
+            String proposerHex,
+            int serverPort,
+            List<AppChainConfig.AppPeer> peers,
+            EventBus eventBus,
+            PluginProviderRegistry registry
+    ) throws Exception {
+        AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
+                .signingKeyHex(HexUtil.encodeHexString(signingKey))
+                .memberKeysHex(members)
+                .peers(peers)
+                .proposerKeyHex(proposerHex)
+                .threshold(2)
+                .blockIntervalMs(300)
+                .maxBlockMessages(100)
+                .enforceSenderSeq(true)
+                .l1StabilityDepth(1)
+                .pluginSettings(Map.of(
+                        "observers.seq.type", OBSERVER_TYPE,
+                        "observation.l1-network-genesis-id", "01".repeat(32)))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppChainSubsystem subsystem = new AppChainSubsystem(
+                config, MAGIC, eventBus, null,
+                tempDir.resolve("ledger-" + name).toString(), null, registry, log);
+        subsystems.add(subsystem);
+
+        NodeServer server = new NodeServer(serverPort,
+                N2NVersionTableConstant.v11AndAboveWithAppLayer(MAGIC, false, 0, false),
+                new MinimalChainState(), null, null, subsystem.serverAgentFactories());
+        servers.add(server);
+        Thread thread = new Thread(server::start);
+        thread.setDaemon(true);
+        thread.start();
+        Thread.sleep(800);
+        subsystem.start();
+        return subsystem;
+    }
+
+    private static void feedObservedL1(EventBus eventBus, long first, long last) {
+        for (long slot = first; slot <= last; slot++) {
+            byte[] hash = seed(Math.toIntExact(slot));
+            Block block = Block.builder()
+                    .transactionBodies(List.of())
+                    .invalidTransactions(List.of())
+                    .build();
+            eventBus.publish(new BlockAppliedEvent(null, slot, slot,
+                            HexUtil.encodeHexString(hash), block),
+                    EventMetadata.builder().build(), PublishOptions.builder().build());
+        }
     }
 
     private AppChainSubsystem startSingle(String name, byte[] key, Set<String> members,
@@ -317,5 +422,45 @@ class AppChainSenderSeqTest {
         @Override public void rollbackTo(Long slot) {}
         @Override public ChainTip getTip() { return null; }
         @Override public ChainTip getHeaderTip() { return null; }
+    }
+
+    private static final class ObservationRegistry implements PluginProviderRegistry {
+        private final L1ObserverProvider provider = new L1ObserverProvider() {
+            @Override public String type() { return OBSERVER_TYPE; }
+
+            @Override
+            public L1ObserverConsensusIdentity consensusIdentity(
+                    String observerId, Map<String, String> settings) {
+                return new L1ObserverConsensusIdentity(
+                        1, "sender-seq-test-claim-v1", 1, new byte[]{1});
+            }
+
+            @Override
+            public L1Observer create(String observerId, Map<String, String> settings) {
+                return new L1Observer() {
+                    @Override public String observerId() { return observerId; }
+
+                    @Override
+                    public List<L1Observation> observe(
+                            long slot, byte[] blockHash, Block block) {
+                        return List.of(L1Observation.transaction(
+                                observerId, blockHash, slot, blockHash,
+                                new byte[]{(byte) slot}));
+                    }
+                };
+            }
+        };
+
+        @Override
+        public <P> Optional<P> find(Class<P> providerType, String selector) {
+            return providerType == L1ObserverProvider.class && OBSERVER_TYPE.equals(selector)
+                    ? Optional.of(providerType.cast(provider)) : Optional.empty();
+        }
+
+        @Override
+        public <P> List<String> names(Class<P> providerType) {
+            return providerType == L1ObserverProvider.class
+                    ? List.of(OBSERVER_TYPE) : List.of();
+        }
     }
 }

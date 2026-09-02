@@ -761,9 +761,10 @@ final class AppLedgerStore implements AutoCloseable {
                     .authProof(new byte[0])
                     .build());
         }
-        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
+        return new AppBlock(block.version(), block.chainId(), block.height(),
+                block.consensusContextDigest(), block.view(), block.prevHash(),
                 block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
-                block.stateRoot(), stripped, block.proposer(), block.cert());
+                block.stateRoot(), stripped, block.proposer(), block.justification(), block.cert());
     }
 
     private static final byte[] SENDER_SEQ_PREFIX = "sender_seq_".getBytes(StandardCharsets.UTF_8);
@@ -919,17 +920,39 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
-    /**
-     * Persisted vote lock: the block hash this member voted for at the given
-     * height. Guarantees at-most-one vote per height across restarts.
-     */
-    Optional<byte[]> voteLock(long height) {
-        return Optional.ofNullable(getMeta(voteLockKey(height)));
+    record PrepareVoteLock(long view, byte[] blockHash) {
+        PrepareVoteLock {
+            if (view < 0 || blockHash == null || blockHash.length != 32) {
+                throw new IllegalArgumentException("Invalid prepare-vote lock");
+            }
+            blockHash = blockHash.clone();
+        }
+
+        @Override
+        public byte[] blockHash() {
+            return blockHash.clone();
+        }
     }
 
-    void putVoteLock(long height, byte[] blockHash) {
+    /** Persisted at-most-one-prepare lock for one height and view. */
+    Optional<PrepareVoteLock> prepareVoteLock(long height) {
+        byte[] hash = getMeta(voteLockKey(height));
+        byte[] encodedView = getMeta(voteLockViewKey(height));
+        if (hash == null || encodedView == null || encodedView.length != Long.BYTES) {
+            return Optional.empty();
+        }
+        return Optional.of(new PrepareVoteLock(ByteBuffer.wrap(encodedView).getLong(), hash));
+    }
+
+    void putVoteLock(long height, long view, byte[] blockHash) {
         try {
-            db.put(metaCf, voteLockKey(height), blockHash);
+            try (WriteBatch batch = new WriteBatch();
+                 WriteOptions options = new WriteOptions().setSync(true)) {
+                batch.put(metaCf, voteLockKey(height), blockHash);
+                batch.put(metaCf, voteLockViewKey(height),
+                        ByteBuffer.allocate(Long.BYTES).putLong(view).array());
+                db.write(options, batch);
+            }
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to persist vote lock at height " + height, e);
         }
@@ -941,8 +964,8 @@ final class AppLedgerStore implements AutoCloseable {
      * or restarts. Stored alongside the vote-lock hash.
      */
     void putVoteLockEnvelope(long height, byte[] envelopeCbor) {
-        try {
-            db.put(metaCf, voteLockEnvelopeKey(height), envelopeCbor);
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(metaCf, options, voteLockEnvelopeKey(height), envelopeCbor);
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to persist locked proposal at height " + height, e);
         }
@@ -952,24 +975,12 @@ final class AppLedgerStore implements AutoCloseable {
         return Optional.ofNullable(getMeta(voteLockEnvelopeKey(height)));
     }
 
-    /**
-     * Operator escape hatch (stale-lock runbook, Iteration 4): clear the vote
-     * lock + stored envelope at a height so this member may vote once more
-     * there. Callers must ensure the locked round is UNRECOVERABLE (expired
-     * proposal) — this consciously trades the at-most-one-vote guarantee for
-     * liveness under operator supervision.
-     */
-    void removeVoteLock(long height) {
-        try {
-            db.delete(metaCf, voteLockKey(height));
-            db.delete(metaCf, voteLockEnvelopeKey(height));
-        } catch (RocksDBException e) {
-            throw new RuntimeException("Failed to clear vote lock at height " + height, e);
-        }
-    }
-
     private static byte[] voteLockEnvelopeKey(long height) {
         return (KEY_VOTE_LOCK_PREFIX + "env_" + height).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static byte[] voteLockViewKey(long height) {
+        return (KEY_VOTE_LOCK_PREFIX + "view_" + height).getBytes(StandardCharsets.UTF_8);
     }
 
     /**
@@ -2164,7 +2175,7 @@ final class AppLedgerStore implements AutoCloseable {
             return;
         }
         try (WriteBatch batch = new WriteBatch();
-             WriteOptions options = new WriteOptions()) {
+             WriteOptions options = new WriteOptions().setSync(true)) {
             for (EpochSpoolMutation mutation : mutations) {
                 byte[] value = mutation.value();
                 if (value == null) {
@@ -2176,6 +2187,22 @@ final class AppLedgerStore implements AutoCloseable {
             db.write(options, batch);
         } catch (RocksDBException failure) {
             throw new RuntimeException("Failed to update epoch-observation spool", failure);
+        }
+    }
+
+    void stageEpochSpoolMutations(WriteBatch batch, List<EpochSpoolMutation> mutations) {
+        Objects.requireNonNull(batch, "batch");
+        try {
+            for (EpochSpoolMutation mutation : mutations) {
+                byte[] value = mutation.value();
+                if (value == null) {
+                    batch.delete(epochObservationsCf, mutation.key());
+                } else {
+                    batch.put(epochObservationsCf, mutation.key(), value);
+                }
+            }
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to stage epoch-observation mutations", failure);
         }
     }
 

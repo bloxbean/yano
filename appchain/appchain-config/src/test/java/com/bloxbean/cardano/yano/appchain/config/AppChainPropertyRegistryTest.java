@@ -52,8 +52,8 @@ class AppChainPropertyRegistryTest {
 
         assertThat(registry.dynamicNamespaces()).extracting(DynamicNamespaceDefinition::prefix)
                 .containsExactly("capabilities.", "effects.", "effects.result.", "machines.",
-                        "membership.", "observers.", "sequencer.", "sinks.", "state.",
-                        "transport.", "zk.");
+                        "membership.", "observation.", "observers.", "sequencer.", "sinks.",
+                        "state.", "transport.", "zk.");
         assertThat(registry.dynamicNamespace("effects.result.unknown"))
                 .get().extracting(DynamicNamespaceDefinition::coverage)
                 .isEqualTo(ValidationCoverage.FULL);

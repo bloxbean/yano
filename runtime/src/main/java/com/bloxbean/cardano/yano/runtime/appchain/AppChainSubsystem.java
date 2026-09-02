@@ -18,6 +18,7 @@ import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
@@ -26,9 +27,11 @@ import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndexedStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedBlockMessageRootIndexedStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedBlockMessageRootIndex;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
@@ -39,6 +42,10 @@ import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 
 import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -55,6 +62,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongFunction;
 
 /**
  * App-chain subsystem: authenticated diffusion (M1) + sequenced durable ledger
@@ -153,6 +161,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             epochStateProvider;
     private volatile java.util.function.Function<byte[], String> txSubmitter;
     private volatile java.util.function.Supplier<com.bloxbean.cardano.yano.api.utxo.UtxoState> utxoStateSupplier;
+    private volatile LongFunction<BlockAppliedEvent> l1BlockReplay;
     private final java.util.concurrent.ConcurrentLinkedDeque<AppChainEngine.L1Ref> recentL1Points =
             new java.util.concurrent.ConcurrentLinkedDeque<>();
     private final List<com.bloxbean.cardano.yaci.events.api.SubscriptionHandle> eventSubscriptions =
@@ -1081,7 +1090,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         long bodyLimit = switch (topic == null ? "" : topic) {
             case ConsensusCodec.TOPIC_PROPOSE -> config.proposalMaxBytes();
-            case ConsensusCodec.TOPIC_VOTE -> ConsensusCodec.MAX_VOTE_BYTES;
+            case ConsensusCodec.TOPIC_PREPARE, ConsensusCodec.TOPIC_COMMIT ->
+                    CertifiedConsensusCodec.MAX_VOTE_BYTES;
+            case ConsensusCodec.TOPIC_PREPARED -> CertifiedConsensusCodec.MAX_QC_BYTES;
+            case ConsensusCodec.TOPIC_TIMEOUT -> CertifiedConsensusCodec.MAX_TIMEOUT_BYTES;
+            case ConsensusCodec.TOPIC_NEW_VIEW -> CertifiedConsensusCodec.MAX_NEW_VIEW_BYTES;
             case ConsensusCodec.TOPIC_CERT -> ConsensusCodec.MAX_CERT_NOTICE_BYTES;
             default -> config.maxMessageBytes();
         };
@@ -1137,6 +1150,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                        java.util.function.Supplier<com.bloxbean.cardano.yano.api.utxo.UtxoState> utxoStateSupplier) {
         this.txSubmitter = txSubmitter;
         this.utxoStateSupplier = utxoStateSupplier;
+    }
+
+    /** Wire read-only access to retained canonical L1 blocks for observer recovery. */
+    public void wireL1BlockReplay(LongFunction<BlockAppliedEvent> blockReplay) {
+        this.l1BlockReplay = Objects.requireNonNull(blockReplay, "blockReplay");
     }
 
     /** Wire the persistent, epoch-pinned ledger-state source used by ADR-028 observers. */
@@ -1605,6 +1623,153 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return message;
     }
 
+    /** Build a non-expiring framework-owned input carried only inside proposals. */
+    private AppMessage buildDurableObservationInput(L1Observation observation) {
+        String topic = observation.topic();
+        byte[] body = observation.encode();
+        if (!validTopic(topic) || !validEnvelopeBodyProfile(topic, body)) {
+            quarantineUnencodableObservation(observation);
+            throw new IllegalStateException("OBSERVATION_UNENCODABLE");
+        }
+        long expiresAt = Long.MAX_VALUE;
+        long seq = 0;
+        byte[] signedBody = AppMessage.signedBodyBytes(config.chainId(), topic,
+                signer.publicKey(), seq, expiresAt, body);
+        return AppMessage.builder()
+                .messageId(AppMessage.computeMessageId(config.chainId(), topic,
+                        signer.publicKey(), seq, expiresAt, body))
+                .chainId(config.chainId())
+                .topic(topic)
+                .sender(signer.publicKey())
+                .senderSeq(seq)
+                .expiresAt(expiresAt)
+                .body(body)
+                .authScheme(AuthScheme.ED25519.getValue())
+                .authProof(signer.sign(signedBody))
+                .build();
+    }
+
+    private List<L1Observation> mandatoryObservationFacts(long stableSlot) {
+        List<L1Observation> available = new ArrayList<>();
+        L1ObservationService blockObservations = observationService;
+        if (blockObservations != null) {
+            available.addAll(blockObservations.drainInjectable(stableSlot,
+                    config.maxBlockMessages(), Long.MAX_VALUE));
+        }
+        L1EpochObservationCoordinator epochObservations = epochObservationCoordinator;
+        if (epochObservations != null) {
+            available.addAll(epochObservations.pendingForProposal(
+                    config.maxBlockMessages(), Long.MAX_VALUE));
+        }
+        return canonicalObservationPrefix(available, config.maxBlockMessages());
+    }
+
+    static List<L1Observation> canonicalObservationPrefix(
+            List<L1Observation> available, int maxMessages) {
+        if (maxMessages <= 0) {
+            return List.of();
+        }
+        List<L1Observation> ordered = new ArrayList<>(available);
+        ordered.sort(L1Observation.CANONICAL_ORDER);
+        List<L1Observation> selected = new ArrayList<>();
+        for (L1Observation observation : ordered) {
+            if (selected.size() == maxMessages) {
+                break;
+            }
+            selected.add(observation);
+        }
+        return List.copyOf(selected);
+    }
+
+    private void quarantineUnencodableObservation(L1Observation observation) {
+        if (observation.anchor() instanceof L1Observation.EpochAnchor) {
+            L1EpochObservationCoordinator coordinator = epochObservationCoordinator;
+            if (coordinator != null) {
+                coordinator.quarantineUnencodable(observation);
+            }
+        } else {
+            L1ObservationService service = observationService;
+            if (service != null) {
+                service.quarantineUnencodable(observation);
+            }
+        }
+    }
+
+    private AppChainEngine.L1RefVerdict verifyMandatoryObservationPrefix(
+            AppBlockExecutionContext executionContext) {
+        AppBlock block = executionContext.block();
+        List<SequencedL1Observation> proposed = executionContext.l1Observations();
+        long stableSlot = block.l1Slot();
+        L1ObservationService blockObservations = observationService;
+        if (blockObservations != null && blockObservations.newestSlot() < stableSlot) {
+            return AppChainEngine.L1RefVerdict.AHEAD;
+        }
+        for (SequencedL1Observation sequenced : proposed) {
+            L1Observation observation = sequenced.observation();
+            AppChainEngine.L1RefVerdict verdict;
+            if (observation.anchor() instanceof L1Observation.EpochAnchor) {
+                L1EpochObservationCoordinator coordinator = epochObservationCoordinator;
+                verdict = coordinator != null
+                        ? coordinator.verify(observation, false)
+                        : AppChainEngine.L1RefVerdict.MISMATCH;
+            } else {
+                verdict = blockObservations != null
+                        ? blockObservations.verify(sequenced)
+                        : AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+            if (verdict != AppChainEngine.L1RefVerdict.OK) {
+                return verdict;
+            }
+        }
+        List<L1Observation> expected = mandatoryObservationFacts(stableSlot);
+        if (proposed.size() > expected.size()) {
+            return AppChainEngine.L1RefVerdict.MISMATCH;
+        }
+        for (int index = 0; index < proposed.size(); index++) {
+            if (!Arrays.equals(expected.get(index).encode(),
+                    proposed.get(index).observation().encode())) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+        }
+        if (proposed.size() < expected.size()) {
+            if (block.messages().size() > proposed.size()) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+            AppMessage next = unsignedObservationInput(
+                    expected.get(proposed.size()), block.proposer());
+            List<AppMessage> extended = new ArrayList<>(block.messages());
+            extended.add(next);
+            AppBlock withNext = new AppBlock(block.version(), block.chainId(), block.height(),
+                    block.consensusContextDigest(), block.view(), block.prevHash(),
+                    block.l1Slot(), block.l1BlockHash(), block.timestamp(),
+                    AppBlockCodec.messagesRoot(extended), block.stateRoot(), extended,
+                    block.proposer(), block.justification(), block.cert());
+            if (AppBlockCodec.serialize(withNext).length <= config.proposalMaxBytes()) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+        }
+        return AppChainEngine.L1RefVerdict.OK;
+    }
+
+    private AppMessage unsignedObservationInput(L1Observation observation, byte[] proposer) {
+        String topic = observation.topic();
+        byte[] body = observation.encode();
+        long expiresAt = Long.MAX_VALUE;
+        long seq = 0;
+        return AppMessage.builder()
+                .messageId(AppMessage.computeMessageId(config.chainId(), topic,
+                        proposer, seq, expiresAt, body))
+                .chainId(config.chainId())
+                .topic(topic)
+                .sender(proposer)
+                .senderSeq(seq)
+                .expiresAt(expiresAt)
+                .body(body)
+                .authScheme(AuthScheme.ED25519.getValue())
+                .authProof(new byte[AppChainConfig.ED25519_SIGNATURE_BYTES])
+                .build();
+    }
+
     /** Build, sign and diffuse an envelope (consensus/system topics). */
     private AppMessage buildAndDiffuse(String topic, byte[] body, long ttlSeconds) {
         AppMessage message = buildSigned(topic, body, ttlSeconds);
@@ -1622,39 +1787,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         String scheduled = String.valueOf(
                 sequencer.getOrDefault("currentProposer", sequencer.get("proposer")));
         return signer.publicKeyHex().equalsIgnoreCase(scheduled);
-    }
-
-    /**
-     * Inject an L1 observation into the pool for sequencing (008.4 I3.2) —
-     * the internal path for the reserved {@code ~l1/*} topics ({@link #submit}
-     * rejects them for external callers). Best-effort: a full pool drops the
-     * observation (counted); the proposer re-observes nothing — the fact is
-     * simply not sequenced until an operator inspects the drop counters.
-     */
-    private boolean injectObservation(
-            com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation observation) {
-        try {
-            AppMessage message = buildSigned(observation.topic(), observation.encode(),
-                    config.defaultTtlSeconds());
-            AppMsgPool.AddResult added = pool.add(message);
-            if (added == AppMsgPool.AddResult.ADDED) {
-                relay(message);
-                record(message, ReceivedAppMessage.Source.LOCAL);
-                log.info("L1 observation injected: topic={}, l1Slot={}, id={}",
-                        observation.topic(), observation.slot(), message.getMessageIdHex());
-                return true;
-            } else if (added == AppMsgPool.AddResult.FULL) {
-                countDrop("pool_full");
-                log.warn("L1 observation dropped — pool full (topic {}, l1Slot {})",
-                        observation.topic(), observation.slot());
-                return false;
-            }
-            return true;
-        } catch (Exception e) {
-            log.warn("L1 observation injection failed (errorType={})",
-                    e.getClass().getName());
-            return false;
-        }
     }
 
     // ------------------------------------------------------------------
@@ -3491,22 +3623,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
-    public boolean unlockStaleRound() {
-        return requireGenerationUse(this::unlockStaleRoundWithinGeneration);
-    }
-
-    private boolean unlockStaleRoundWithinGeneration() {
-        AppChainEngine currentEngine = engine;
-        if (currentEngine == null)
-            throw new IllegalStateException("Sequencing is not enabled on this node");
-        try {
-            return currentEngine.clearStaleVoteLock();
-        } catch (Exception e) {
-            throw new IllegalStateException("Stale-lock unlock failed: " + e.getMessage(), e);
-        }
-    }
-
-    @Override
     public long snapshot(String snapshotPath) {
         return requireGenerationUse(() -> snapshotWithinGeneration(snapshotPath));
     }
@@ -4248,12 +4364,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     + "(EventBus is null) — refusing to start with a silent L1 linkage "
                     + "(set l1.stability-depth: 0 and disable anchoring for L1-less chains)");
         }
-        // Rotating proposership is clocked by observed L1 slots (008.2 §2.1)
-        if (sequencerMode instanceof RotatingSequencerMode && eventBus == null) {
-            throw new IllegalStateException("App-chain '" + config.chainId()
-                    + "': sequencer.mode=rotating requires an L1 event feed (the window clock)");
-        }
-
         if (config.sequencingEnabled()) {
             // Pre-open manifest verification (008.1 I1.7): a freshly restored
             // snapshot must carry a valid member-signed manifest and intact file
@@ -4304,7 +4414,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     signer,
                     group,
                     sequencerMode,
-                    Math.max(config.blockIntervalMs() * 5, 10_000),
+                    parseLongSetting("consensus.round-timeout-ms",
+                            Math.max(config.blockIntervalMs() * 5, 10_000)),
                     config.maxBlockMessages(),
                     config.blockMaxBytes(),
                     (topic, body) -> buildAndDiffuse(topic, body, Math.max(60, config.maxTtlSeconds() / 6)),
@@ -4322,10 +4433,30 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             chainEngine.setL1RefValidator(this::checkL1Ref);
             // L1 observations (008.4 I3.2) — misconfiguration fails start:
             // observers are consensus-critical and must match on all members
+            byte[] l1NetworkGenesisId = l1NetworkGenesisId();
+            byte[] observerProfileDigest = observerProfileDigest(l1NetworkGenesisId);
+            byte[] observationIdentityContext = observationIdentityContext(
+                    observerProfileDigest,
+                    ledgerStore.stateCommitmentIdentity().genesisId(),
+                    l1NetworkGenesisId);
+            // Validate the fresh-chain fault assumptions before persisting any
+            // observer-journal identity. A rejected consensus configuration
+            // must leave the ledger reusable after startup rollback.
+            chainEngine.configuredConsensusContextDigest(
+                    ledgerStore.tipHeight() + 1, observerProfileDigest);
             this.observationService = L1ObservationService.fromRegistry(
                     config.pluginSettings(), Math.max(config.l1StabilityDepth(), 1) + 64,
                     pluginProviders, log);
             if (observationService != null) {
+                L1ObservationJournal observationJournal = new L1ObservationJournal(
+                        ledgerStore,
+                        parseLongSetting("observation.journal.max-bytes",
+                                L1ObservationJournal.DEFAULT_MAX_BYTES),
+                        Math.toIntExact(parseLongSetting(
+                                "observation.journal.max-entries",
+                                L1ObservationJournal.DEFAULT_MAX_ENTRIES)),
+                        observationIdentityContext);
+                this.observationService = observationService.withJournal(observationJournal);
                 if (config.l1StabilityDepth() <= 0) {
                     // Injection is gated on the stable L1 ref — without it a
                     // reorg-able fact could finalize into a chain that never
@@ -4362,18 +4493,53 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         1,
                         config.maxMessageBytes(),
                         this::isScheduledProposer,
-                        this::injectObservation,
+                        observation -> true,
                         chainEngine::markAuthenticatedSnapshotsDisputed,
                         config.chainId(),
                         log);
-                chainEngine.setVotingHealth(epochObservationCoordinator::healthy);
                 log.info("App-chain '{}' L1 epoch observers configured: {}",
                         config.chainId(), epochObservers.stream()
                                 .map(com.bloxbean.cardano.yano.api.appchain.l1view
                                         .L1EpochObserver::observerId)
                                 .toList());
             }
+            chainEngine.setVotingHealth(this::l1ObservationInputsHealthy);
+            chainEngine.setConsensusContextProvider(height ->
+                    chainEngine.configuredConsensusContextDigest(
+                            height, observerProfileDigest));
+            chainEngine.setBlockCommitHook((block, batch) -> {
+                L1ObservationService observations = observationService;
+                if (observations != null) {
+                    observations.stageFinalized(block, batch);
+                }
+            });
+            chainEngine.setBlockInFlightHook(block -> {
+                L1ObservationService observations = observationService;
+                if (observations != null) {
+                    observations.markInFlight(block);
+                }
+            });
+            chainEngine.setBlockPreparedHook(block -> {
+                L1ObservationService observations = observationService;
+                if (observations != null) {
+                    observations.markPrepared(block);
+                }
+            });
             if (observationService != null || epochObservationCoordinator != null) {
+                chainEngine.setFrameworkStateHook((block, state) ->
+                        L1ObservationJournal.commitAuthenticatedCursors(
+                                block, state, observationIdentityContext));
+            }
+            if (observationService != null || epochObservationCoordinator != null) {
+                chainEngine.setMandatoryInputProvider(reference ->
+                        mandatoryObservationFacts(reference != null ? reference.slot() : 0).stream()
+                                .map(this::buildDurableObservationInput)
+                                .toList());
+                chainEngine.setObservationPrefixValidator(
+                        this::verifyMandatoryObservationPrefix);
+                chainEngine.setUnencodableMandatoryInputHandler(message ->
+                        quarantineUnencodableObservation(
+                                L1Observation.decode(message.getBody())));
                 chainEngine.setObservationValidator((sequenced, historicalCatchUp) -> {
                     var observation = sequenced.observation();
                     if (observation.anchor()
@@ -4551,6 +4717,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     config.blockIntervalMs(), config.blockIntervalMs(), TimeUnit.MILLISECONDS);
             log.info("App-chain '{}' sequencer mode: {}", config.chainId(), sequencerMode.id());
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
+        }
+        if (observationService != null && l1BlockReplay != null) {
+            exec.scheduleWithFixedDelay(
+                    () -> generationUseOrNoop(generationToken,
+                            () -> runL1Phase("observation replay",
+                                    this::retryFailedL1Observation)),
+                    1, 5, TimeUnit.SECONDS);
         }
         if (!sinkRunners.isEmpty()) {
             // Sinks run on their OWN thread — a slow/blocked sink (e.g. an
@@ -4743,7 +4916,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 : ref.length <= max ? ref : java.util.Arrays.copyOf(ref, max);
     }
 
-    /** Pool + relay a member-signed ~fx/result (internal path, like injectObservation). */
+    /** Pool + relay a member-signed ~fx/result through its dedicated internal path. */
     private void injectFxResult(com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody body) {
         AppMessage message = buildSigned(
                 com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody.TOPIC,
@@ -4824,7 +4997,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             if (!group.containsAt(signerHex, tipH) || !seen.add(signerHex)) {
                 continue;
             }
-            if (AppMessageSigner.verify(sig.signature(), recomputed, sig.signer())) {
+            if (AppMessageSigner.verify(sig.signature(),
+                    AppChainEngine.commitDigest(tipBlock), sig.signer())) {
                 valid++;
             }
         }
@@ -4846,7 +5020,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // next generation's services.
         L1GenerationServices services = new L1GenerationServices(
                 generationToken, anchorService, scriptAnchorService, observationService,
-                epochObservationCoordinator);
+                epochObservationCoordinator, l1BlockReplay);
         eventSubscriptions.addAll(acquireL1Subscriptions(
                 eventBus,
                 event -> onL1BlockApplied(event, services),
@@ -4858,7 +5032,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             AnchorService anchor,
             ScriptAnchorService scriptAnchor,
             L1ObservationService observations,
-            L1EpochObservationCoordinator epochObservations
+            L1EpochObservationCoordinator epochObservations,
+            LongFunction<BlockAppliedEvent> blockReplay
     ) {
     }
 
@@ -4929,6 +5104,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void onL1BlockAppliedWithinGeneration(
             com.bloxbean.cardano.yano.api.events.BlockAppliedEvent event,
             L1GenerationServices services) {
+        runL1Phase("observation replay", () ->
+                retryFailedL1Observation(services.observations(),
+                        services.blockReplay(), event.slot()));
         runL1Phase("reference tracking", () -> {
             recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
                     HexUtil.decodeHexString(event.blockHash())));
@@ -4952,17 +5130,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             if (currentObservations != null && event.block() != null) {
                 currentObservations.onL1Block(event.slot(),
                         HexUtil.decodeHexString(event.blockHash()), event.block());
-                AppChainEngine.L1Ref stable = stableL1Ref();
-                if (stable != null) {
-                    List<com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation> ready =
-                            currentObservations.drainInjectable(stable.slot());
-                    if (!ready.isEmpty() && isScheduledProposer()) {
-                        for (var observation : ready) {
-                            runL1Phase("observation injection",
-                                    () -> injectObservation(observation));
-                        }
-                    }
-                }
             }
         });
 
@@ -4998,6 +5165,29 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 publishConfirmedAnchor(confirmed);
             }
         });
+    }
+
+    private void retryFailedL1Observation() {
+        retryFailedL1Observation(observationService, l1BlockReplay, -1);
+    }
+
+    private void retryFailedL1Observation(
+            L1ObservationService observations,
+            LongFunction<BlockAppliedEvent> blockReplay,
+            long currentEventSlot) {
+        if (observations == null || blockReplay == null) {
+            return;
+        }
+        long failedSlot = observations.callbackFailureSlot();
+        if (failedSlot < 0 || failedSlot == currentEventSlot) {
+            return;
+        }
+        BlockAppliedEvent retained = blockReplay.apply(failedSlot);
+        if (retained == null || retained.slot() != failedSlot || retained.block() == null) {
+            return;
+        }
+        observations.onL1Block(retained.slot(),
+                HexUtil.decodeHexString(retained.blockHash()), retained.block());
     }
 
     private void publishConfirmedAnchor(AnchorService.ConfirmedAnchor confirmed) {
@@ -5144,6 +5334,70 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         }
         return null;
+    }
+
+    private boolean l1ObservationInputsHealthy() {
+        L1ObservationService blockObservations = observationService;
+        L1EpochObservationCoordinator epochObservations = epochObservationCoordinator;
+        return (blockObservations == null || blockObservations.healthy())
+                && (epochObservations == null || epochObservations.healthy());
+    }
+
+    private byte[] observerProfileDigest(byte[] l1NetworkGenesisId) {
+        return L1ObservationService.consensusProfileDigest(
+                config.pluginSettings(), pluginProviders, l1NetworkGenesisId);
+    }
+
+    private byte[] observationIdentityContext(byte[] observerProfileDigest,
+                                              byte[] chainGenesisId,
+                                              byte[] l1NetworkGenesisId) {
+        byte[] chain = config.chainId().getBytes(StandardCharsets.UTF_8);
+        byte[] identity = new byte[chain.length + chainGenesisId.length
+                + l1NetworkGenesisId.length + observerProfileDigest.length];
+        System.arraycopy(chain, 0, identity, 0, chain.length);
+        System.arraycopy(chainGenesisId, 0, identity, chain.length, chainGenesisId.length);
+        System.arraycopy(l1NetworkGenesisId, 0, identity,
+                chain.length + chainGenesisId.length, l1NetworkGenesisId.length);
+        System.arraycopy(observerProfileDigest, 0, identity, chain.length
+                + chainGenesisId.length + l1NetworkGenesisId.length,
+                observerProfileDigest.length);
+        return Blake2bUtil.blake2bHash256(identity);
+    }
+
+    private byte[] l1NetworkGenesisId() {
+        boolean observersConfigured = config.pluginSettings().keySet().stream()
+                .anyMatch(key -> key.startsWith("observers."));
+        String configured = config.pluginSettings().get(
+                "observation.l1-network-genesis-id");
+        if (configured == null || configured.isBlank()) {
+            if (observersConfigured) {
+                throw new IllegalArgumentException(
+                        "L1 observers require observation.l1-network-genesis-id");
+            }
+            try {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                bytes.write("yano-l1-network-no-observers-v1\0"
+                        .getBytes(StandardCharsets.US_ASCII));
+                try (DataOutputStream out = new DataOutputStream(bytes)) {
+                    out.writeLong(protocolMagic);
+                }
+                return Blake2bUtil.blake2bHash256(bytes.toByteArray());
+            } catch (IOException impossible) {
+                throw new UncheckedIOException(impossible);
+            }
+        }
+        byte[] identity;
+        try {
+            identity = HexUtil.decodeHexString(configured.trim());
+        } catch (RuntimeException malformed) {
+            throw new IllegalArgumentException(
+                    "observation.l1-network-genesis-id must be 32-byte hex", malformed);
+        }
+        if (identity.length != 32) {
+            throw new IllegalArgumentException(
+                    "observation.l1-network-genesis-id must be 32-byte hex");
+        }
+        return identity;
     }
 
     private final List<FinalizedBlockListener> finalizedListeners =
@@ -5720,15 +5974,24 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             lastBlockAtMillis = now;
         }
         L1EpochObservationCoordinator epochCoordinator = epochObservationCoordinator;
-        if (epochCoordinator != null) {
+        L1ObservationService blockObservations = observationService;
+        if (epochCoordinator != null || blockObservations != null) {
             try {
                 AppBlockExecutionContext execution =
                         AppBlockExecutionContext.fromValidatedBlock(block);
                 for (SequencedL1Observation observation : execution.l1Observations()) {
-                    epochCoordinator.onFinalized(observation.observation());
+                    if (observation.observation().anchor()
+                            instanceof com.bloxbean.cardano.yano.api.appchain.l1view
+                            .L1Observation.EpochAnchor) {
+                        if (epochCoordinator != null) {
+                            epochCoordinator.onFinalized(observation.observation());
+                        }
+                    } else if (blockObservations != null) {
+                        blockObservations.acknowledge(observation.observation());
+                    }
                 }
             } catch (RuntimeException failure) {
-                log.warn("Failed to acknowledge finalized epoch observations (errorType={})",
+                log.warn("Failed to acknowledge finalized L1 observations (errorType={})",
                         failure.getClass().getName());
             }
         }

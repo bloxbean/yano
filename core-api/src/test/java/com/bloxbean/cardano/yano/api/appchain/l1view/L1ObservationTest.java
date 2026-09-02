@@ -33,7 +33,7 @@ class L1ObservationTest {
                 .isEqualTo(VECTORS.getProperty("transaction"));
         assertThat(L1Observation.decode(observation.encode())).isEqualTo(observation);
         assertThat(observation.key()).isEqualTo(
-                "deposits/tx:" + "11".repeat(32) + "/42");
+                "deposits/tx:" + "11".repeat(32) + "/0/42");
         assertThat(observation.transactionAnchor().transactionHash())
                 .isEqualTo(filled(0x11));
         assertThatThrownBy(observation::epochAnchor)
@@ -57,7 +57,7 @@ class L1ObservationTest {
         assertThat(HEX.formatHex(observation.encode()))
                 .isEqualTo(VECTORS.getProperty("epoch"));
         assertThat(L1Observation.decode(observation.encode())).isEqualTo(observation);
-        assertThat(observation.key()).isEqualTo("epoch-params/epoch:170/5000");
+        assertThat(observation.key()).isEqualTo("epoch-params/epoch:170/0/5000");
         assertThat(observation.epochAnchor().newEpoch()).isEqualTo(170);
         assertThatThrownBy(observation::transactionAnchor)
                 .isInstanceOf(IllegalStateException.class);
@@ -109,6 +109,7 @@ class L1ObservationTest {
             observation.add(new UnsignedInteger(1));
             observation.add(new UnicodeString("observer"));
             observation.add(anchor);
+            observation.add(new UnsignedInteger(0));
             observation.add(new UnsignedInteger(1));
             observation.add(new ByteString(filled(2)));
             observation.add(new ByteString(new byte[0]));

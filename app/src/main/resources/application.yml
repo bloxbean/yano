@@ -218,6 +218,8 @@ yano:
     # L1 observers (ADR 008.4 I3.2): deterministic L1-fact injection on ~l1/<id>.
     # MUST be configured identically on EVERY member (followers verify each
     # observation against their own recomputation before voting — fail-closed):
+    # observation:
+    #   l1-network-genesis-id: "<64 hex chars>"          # required with observers
     # observers:
     #   deposits:
     #     type: address-deposit                           # watch payments to an address

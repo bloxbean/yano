@@ -149,8 +149,7 @@ class AppChainSnapshotTest {
     @Test
     void snapshotRestore_onDifferentExecutor_resetsAndQuarantinesRuntime() throws Exception {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
-        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
-        Set<String> members = Set.of(pubA, pubB);
+        Set<String> members = Set.of(pubA);
         Map<String, String> effectSettings = Map.of(
                 "effects.enabled", "true",
                 "effects.executor.enabled", "true",
@@ -188,7 +187,7 @@ class AppChainSnapshotTest {
         copyDir(snapshotDir, restoreBase.resolve("snap-chain"));
 
         AppChainConfig targetConfig = AppChainConfig.builder("snap-chain")
-                .signingKeyHex(HexUtil.encodeHexString(KEY_B))
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
                 .memberKeysHex(members)
                 .proposerKeyHex(pubA)
                 .threshold(1)
@@ -215,10 +214,9 @@ class AppChainSnapshotTest {
     }
 
     @Test
-    void memberKeyRotation_onSameExecutorPreservesReadyResult() throws Exception {
+    void restart_onSameExecutorPreservesReadyResult() throws Exception {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
-        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
-        Set<String> members = Set.of(pubA, pubB);
+        Set<String> members = Set.of(pubA);
         Map<String, String> effectSettings = Map.of(
                 "effects.enabled", "true",
                 "effects.executor.enabled", "true",
@@ -249,11 +247,11 @@ class AppChainSnapshotTest {
                 .isEqualTo("DONE");
         long tipBeforeRotation = source.tipHeight();
         byte[] rootBeforeRotation = source.stateRoot();
-        source.stop();
+        source.close();
         source = null;
 
         AppChainConfig afterRotation = AppChainConfig.builder("snap-chain")
-                .signingKeyHex(HexUtil.encodeHexString(KEY_B))
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
                 .memberKeysHex(members)
                 .proposerKeyHex(pubA)
                 .threshold(1)
