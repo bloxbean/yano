@@ -84,6 +84,7 @@ The key decisions are:
    the only mechanism that makes the result authoritative application state.
 5. The initial logical schedule is based on finalized app-chain height, not
    validator wall clocks or the current proposer-supplied app-block timestamp.
+   A verified L1 slot is an optional anchor for L1-connected chains in Phase 2.
    Active subscriptions are indexed in a durable ordered due index and
    processed in bounded batches; there is no timer or thread per subscription.
 6. Java generic types are a developer convenience only. Consensus and storage
@@ -102,7 +103,8 @@ The key decisions are:
 10. The framework is disabled by default, reserves framework state under the
     already-unconditional `~yano/obs/` prefix, and initially activates only on
     a fresh chain whose distinct `observationProfileDigest` commits to the
-    complete observation profile.
+    complete observation profile. Even the canonical disabled profile changes
+    the consensus context and is therefore a fresh-chain cutover.
 
 ## 1. Context and problem
 
@@ -285,15 +287,19 @@ Every v1 reporter threshold must satisfy:
 so two sufficient report sets intersect in at least one non-faulty reporter.
 For an unsigned/raw source, the built-in exact active-member policy also uses
 `r = q`; the report itself is the attestation. For external signed or proven
-evidence, `r < q` is admissible only when the definition makes the accepted
-claim unique for `(definitionDigest, canonical parameters, round)`, such as a
-proof against a root fixed in the parameters or a signer protocol that permits
-at most one valid claim for the subscription-fixed identifier. Authenticity
-alone is insufficient: if a carrier can sign several historical statuses, a
-single Byzantine relay must not choose which still-valid status wins. Such a
-definition uses `r = q` exact agreement over claim bytes unless its source
-sequence/freshness rules establish a unique answer. The keys, `g`, `r`, and
-that uniqueness rule are operator-installed, profile-committed, and never
+evidence, `r < q` is admissible only when the certificate's own canonical bytes
+prove that the accepted claim is unique for `(definitionDigest, canonical
+parameters, round)`. For example, a proof may be checked against a root fixed
+by the round, or the external signer may bind the round identifier and permit
+at most one valid claim for that identifier. Authenticity alone is
+insufficient: if a carrier can sign several historical statuses, a single
+Byzantine relay must not choose which still-valid status wins. A verifier must
+not depend on an absent report or on knowing that a sequence was the latest one
+observed elsewhere. Latest-of-N, median, or any other choice among several
+independently valid claims is closure-certified and cannot use the
+lower-threshold exception. Otherwise the definition uses `r = q` exact
+agreement over claim bytes. The keys, `g`, `r`, and the certificate-local
+uniqueness proof are operator-installed, profile-committed, and never
 application-selected.
 
 ## 5. Responsibilities
@@ -411,6 +417,9 @@ subscriptionId = H(
 )
 ```
 
+A round is identified by the tuple `(subscriptionId, roundNumber)`; v1 does not
+introduce a second, independently encoded `roundId`.
+
 One observation emitter is shared across all deterministic callbacks in the
 block and assigns a zero-based ordinal in the callback order fixed in section
 7.6. Effect and observation ordinals are separate domain-tagged counters; they
@@ -455,18 +464,24 @@ selected anchor is later closes collection and sets `resultExpiryHeight` from
 that block height plus the profile-committed grace, bounded by
 `absoluteMaxRoundHeight`. A valid certificate may be incorporated through
 `resultExpiryHeight`, inclusive, and certificate processing at that height
-occurs before the expiry sweep. For a rotating group, configuration is valid
-only when the post-collection grace is at least `n` heights, so every member can
-have one scheduled proposal opportunity. Fixed-proposer censorship remains
-possible and is reported as a liveness failure. A recurring subscription never
-opens round `k + 1` while `k` is open; close, expiry, or cancellation determines
-the next due entry.
+occurs before the expiry sweep. The grace is a bounded operational inclusion
+window, not proof that each member receives a turn: ADR-036 selects a proposer
+by a per-height hash rather than round robin. Eventual inclusion is conditional
+on a certificate reaching at least one honest proposer selected within the
+window. A future availability certificate may provide a stronger rule; grace
+arithmetic alone cannot. Fixed-proposer censorship remains possible and is
+reported as a liveness failure. A recurring subscription never opens round
+`k + 1` while `k` is open; close, expiry, or cancellation determines the next
+due entry.
 
 A certificate-monotonic value may be incorporated as soon as it reaches its
-threshold, before the report deadline. A closure-certified/non-monotonic policy
-may certify only after the committed collection-close transition has fixed its
-eligible source/report snapshot. `resultExpiryHeight` governs any round still
-open after collection closes.
+threshold, before the report deadline. An anchor-derived collection-close
+transition fixes the deadline state only; it does **not** commit a report set,
+because reports are diffusion-only in the protocol defined here. Therefore v1
+cannot yet certify a non-monotonic policy. Phase 3 must first define a bounded
+sequenced closure proof that makes the complete eligible report/source set
+self-contained and follower-verifiable. `resultExpiryHeight` governs any round
+still open after collection closes.
 
 ### 6.4 `ObservationReport`
 
@@ -536,11 +551,12 @@ Certificate verification is a pure, bounded function:
 
 1. decode canonical bytes and reject duplicate or unordered reporters/sources;
 2. verify every report's domain, round, reporter set, and signature;
-3. verify size, count, source, freshness, and evidence bounds;
+3. require exactly `r` reports for a certificate-monotonic value and verify
+   size, count, source, freshness, and evidence bounds;
 4. run the deterministic evidence validators;
 5. run the deterministic policy over a canonical report order;
 6. recompute output, certificate identity, and `resultId`; and
-7. require the definition's validator and source thresholds.
+7. require the definition's reporter and source thresholds.
 
 The verifier sees only the reports encoded in the certificate; it cannot prove
 that another node has no additional report. An admissible policy must therefore
@@ -548,8 +564,9 @@ be either:
 
 - **certificate-monotonic:** once a certificate proves result `R`, adding any
   other valid report cannot produce a conflicting valid result; or
-- **closure-certified:** the certificate proves a fixed eligible report/source
-  set before applying a non-monotonic aggregation.
+- **closure-certified:** a separately sequenced closure proof makes a fixed
+  eligible report/source set consensus-visible before applying a non-monotonic
+  aggregation. This mechanism is an open Phase 3 design, not part of v1.
 
 For raw exact quorum, `r = q`, quorum intersection, and honest no-double-signing
 make the selected value certificate-monotonic. Within that value group the
@@ -557,10 +574,13 @@ proposer should use the lexicographically lowest `r` reporter keys it has as a
 compact construction convention. That is not a validity rule: any exactly-`r`
 valid subset proving the same result is accepted, regardless of reports a
 follower happens to hold. A median is not certificate-monotonic: adding a later
-value can change it. Phase 3 must therefore use a fixed required source set
-whose per-source values are already certified, or a separately committed
-round-closure snapshot. A simple "first 5 of 10" median is inadmissible. A
-policy that cannot prove a unique result from its encoded evidence is rejected.
+value can change it. Phase 3 must therefore introduce and review a sequenced
+closure mechanism; a fixed required source set alone is insufficient unless the
+certificate also proves one terminal value or explicit unavailability for
+every required source. Candidate mechanisms include sequenced bounded report
+commitments or a separately certified closure input, but this ADR does not
+choose one. A simple "first 5 of 10" median is inadmissible. A policy that
+cannot prove a unique result from its encoded evidence is rejected.
 
 A certificate does **not** finalize itself. It is carried in a reserved
 framework input and becomes authoritative only after the containing app block
@@ -587,8 +607,10 @@ finalized app height
 Names may be refined during API design, but `NO_RESULT`/`EXPIRED` must remain
 distinct from a domain value such as `false`, zero, `NOT_FOUND`, or
 `PROCESSING`. Different sufficient reporter subsets for the same value produce
-the same `resultId`; certificate gossip deduplicates by `(roundId, resultId)`
-and may retain one bounded certificate digest for audit.
+the same `resultId`; certificate gossip deduplicates by `(subscriptionId,
+roundNumber, resultId)` and may retain one bounded certificate digest for audit.
+`CANCELLED` is always a terminal audit status; section 24 leaves its application
+callback behavior open for Phase 0.
 
 ### 6.7 V1 canonical encoding
 
@@ -641,6 +663,12 @@ Because the kernel runs before
 `apply()`, a subscription created at height `H` may be due no earlier than
 `H + 1`.
 
+This is also an emitter validation rule, not merely a consequence of callback
+order: every `watch` emitted by `apply()`, a result callback, or an expiry
+callback must have `firstDueAnchor` strictly later than the current selected
+anchor. The same rule applies to `APP_HEIGHT` and `VERIFIED_L1_SLOT` anchors, so
+a callback can never create a round retroactively in the current kernel pass.
+
 The runtime scans no more than configured entries and opens no more than a
 configured number of rounds per block. Remaining entries stay ordered and due;
 they are not skipped.
@@ -667,12 +695,15 @@ expired; the protocol does not rely on the ordinary 120-second envelope TTL.
 
 The scheduled proposer reads its durable ready-certificate journal, filters
 rounds already terminal in committed state, and constructs bounded
-`~obs/result/v1` system inputs itself. These inputs have `senderSeq = 0`, are
-signed by the proposer, and are exempt from sender-sequence enforcement only by
-their exact host-owned topic and codec. The proposer identity is transport, not
-fact authority. Included results are sorted by `(subscriptionId, roundNumber,
-resultId, certificateDigest)` and followers enforce that order, but they do
-not require inclusion of every certificate they know locally.
+`~obs/result/v1` system inputs itself. Their exact sender-sequence rule is a
+Phase 0 decision in section 24. The outer envelope is transport authorization,
+not fact authority: followers require a valid signature from any active member
+of the block's membership epoch and never compare that sender with the current
+leader. This permits ADR-036 view-change recovery to re-propose the exact
+prepared value under a different leader. Included results are sorted by
+`(subscriptionId, roundNumber, resultId, certificateDigest)` and followers
+enforce that order, but they do not require inclusion of every certificate they
+know locally.
 
 Generic observation readiness cannot use ADR-036's local mandatory-prefix
 rule: correct validators may possess different reports or certificates at a
@@ -682,8 +713,9 @@ would fork proposal validity and harm liveness. Therefore Phase 1 guarantees:
 - safety: an included result must carry a valid certificate;
 - durability: open work, signed reports, and received certificates survive
   restart and are periodically re-diffused;
-- eventual inclusion: under eventual synchrony, a valid certificate reaches
-  an honest proposer and remains eligible until included or expired; and
+- conditional inclusion: under eventual synchrony, a valid certificate is
+  included if it reaches an honest proposer selected before its bounded expiry;
+  otherwise the round expires; and
 - no stronger censorship resistance than ordinary app messages when all
   scheduled proposers are Byzantine.
 
@@ -696,14 +728,22 @@ must not be inferred from local possession alone.
 Certificate handling separates intrinsic invalidity from state-relative
 staleness:
 
-- For an active known round, malformed/noncanonical encoding, an oversized
-  body, wrong domain/profile/definition/round/reporter set, invalid signature
-  or evidence, insufficient threshold, or a policy/result mismatch rejects the
-  proposal before `PREPARE`.
+- For a canonically decoded active known round, a wrong
+  domain/profile/definition/round/reporter set, invalid signature or evidence,
+  insufficient threshold, or a policy/result mismatch rejects the proposal
+  before `PREPARE`.
 - A bounded, canonically framed input for an unknown, already terminal,
   cancelled, superseded, or out-of-window round is a deterministic audit no-op.
   A second valid certificate for the same result/round in one block is also a
   no-op. Local journal contents never change that verdict.
+- Two well-formed inputs for the same `(subscriptionId, roundNumber)` but
+  different `resultId` values in one block reject the proposal; block order
+  cannot be allowed to choose between conflicting results.
+
+Phase 0 must choose one uniform rule for an oversized, noncanonical, or
+undecodable result input whose round cannot be identified. Such an input cannot
+be classified by state staleness, so the wire format is not frozen until the
+reject-versus-bounded-no-op decision in section 24 is resolved.
 
 This prevents a late but once-valid certificate from poisoning a proposal
 after another block closed the round. The proposer performs the same stale
@@ -725,16 +765,18 @@ State keys and wire topics have separate namespaces:
 ~yano/obs/*                         framework state/commitment keys
 ~obs-diffusion/report/v1            diffusion-only signed reports
 ~obs-diffusion/certificate/v1       diffusion-only ready certificates
-~obs/tick/v1                        sequenceable host heartbeat hint
-~obs/result/v1                      sequenceable certified result input
+~obs/tick/v1                        reserved heartbeat candidate; Phase 0 open
+~obs/result/v1                      certified result input
 ```
 
 Only the two `~obs-diffusion/*` topics are routed to an idempotent
-diffusion-only handler and rejected from blocks. The tick and result topics may
-be sequenced but are rejected from public submission and accepted only through
-their exact host-owned codecs/signing rules. Every other unclassified
-`~obs*` topic is rejected at peer admission, pool selection, proposal, and
-catch-up; it must never fall through as an opaque application message.
+diffusion-only handler and rejected from blocks. The result topic may be
+sequenced but is rejected from public submission and accepted only through its
+exact host-owned codec/signing rules. Tick admission is intentionally left to
+the Phase 0 decision in section 24. Every other unclassified topic below the
+exact `~obs/` or `~obs-diffusion/` reserved roots is rejected at peer admission,
+pool selection, proposal, and catch-up; it must never fall through as an opaque
+application message.
 
 The signed inner report/certificate has a stable identity. A periodic sender
 tick may wrap it in a fresh, bounded member-signed diffusion envelope so
@@ -771,10 +813,10 @@ pipeline:
 
 Result incorporation at `resultExpiryHeight` wins because it precedes the
 observation expiry sweep. Cancellation emitted by `apply()` takes effect after
-same-block results/expiry, closes the subscription at the end of that kernel
-execution, and writes a terminal `CANCELLED` audit record. It does not re-enter
-the state machine with a same-block cancellation callback; the application
-already requested the cancellation.
+same-block results/expiry and closes the subscription at the end of that kernel
+execution. It never re-enters the state machine with a same-block cancellation
+callback. Whether `CANCELLED` remains audit-only or is delivered in a later
+block is a Phase 0 API decision in section 24.
 
 One `AppEffectEmitter` retains the existing effect ordinal across all effect
 and observation callbacks plus `apply()`. One `AppObservationEmitter` likewise
@@ -827,8 +869,7 @@ complete query at a fixed external reference. A timeout is a node-local
 Raw exact-match definitions must include a source-native version anchor where
 available—such as an immutable revision, ETag with defined semantics,
 `updatedAt`, or sequence—in the canonical value. Disagreement can then be
-diagnosed as version skew rather than an unexplained byte mismatch. A local
-timeout is not itself a Phase 1 report.
+diagnosed as version skew rather than an unexplained byte mismatch.
 
 ### 8.2 Attested observations
 
@@ -905,10 +946,10 @@ in finalized app-chain heights.
 
 Height measures deterministic chain progress, not elapsed minutes. A
 message-driven app chain that produces no blocks does not advance a
-height-based subscription. Phase 1 therefore opens one-shot observations
-immediately from the state transition that requests them (or at the next block
-boundary) and promises no wall-clock cadence. Recurring `every N heights`
-subscriptions in Phase 2 progress only while the app chain progresses.
+height-based subscription. A transition at height `H` may emit a one-shot
+intent due no earlier than `H + 1`; a future committed block opens it. Phase 1
+promises no wall-clock cadence. Recurring `every N heights` subscriptions in
+Phase 2 progress only while the app chain progresses.
 
 For a chain without an L1 reference, supporting a user promise such as "every
 five minutes" requires a separate consensus-time and heartbeat-block decision.
@@ -931,13 +972,14 @@ may therefore select `VERIFIED_L1_SLOT` instead of `APP_HEIGHT` when
 `l1.stability-depth > 0` and the observation profile binds that choice, the
 round origin, and slot length.
 
-Slot passage alone does not create an app block. Redundant members submit
-bounded host-generated `~obs/tick/v1` messages when a due slot is locally
-stable. A tick contains no trusted time and carries no result; it only gives
-the sequencer work from which to build a block. The proposed block's verified
-`l1Slot`, not the tick sender's clock or body, opens/closes due rounds. Duplicate
-or early ticks are deterministic no-ops, and bounded oldest-first processing
-continues on later ticks.
+Slot passage alone does not create an app block. The intended model uses
+redundant member-generated heartbeat hints when a due slot is locally stable.
+Such a hint contains no trusted time and carries no result; it only gives the
+sequencer work from which to build a block. The proposed block's verified
+`l1Slot`, not a hint sender's clock, opens/closes due rounds. Phase 0 must still
+freeze the tick body, sender eligibility and sequence rules, admission/dedup
+bounds, and the committed high-water-mark behavior before `~obs/tick/v1` is an
+accepted input.
 
 This adopts ADR-012's L1-slot heartbeat insight without making generic
 observations part of the `~l1/*` mandatory fact lane. It gives a cadence in
@@ -989,6 +1031,7 @@ source requests per host/domain/definition
 worker concurrency
 retry attempts and local retained bytes
 maximum round duration and report-to-result inclusion grace
+re-diffusion cadence and reports/certificates sent per tick
 ```
 
 Deterministic emission fails identically on every validator when canonical
@@ -1044,6 +1087,11 @@ lock. Copying another validator's chainstate must fail closed rather than make
 the new node inherit, overwrite, or conflict with the old validator's signed
 reports.
 
+An external reporter likewise needs its own identity-bound durable signing lock
+for the one-report rule. A member gateway can validate and retain an external
+signature but cannot prove that the external key did not sign a conflicting
+report elsewhere; the external-reporter fault model must account for that.
+
 Local retry state is not replicated because DNS failure and HTTP timing differ
 per node. Anything that changes application-visible round status must instead
 be encoded in a finalized block transition.
@@ -1061,7 +1109,7 @@ On startup, before reporting healthy, a validator:
 
 A crash between acquisition and persistence merely repeats acquisition. A
 crash after signing must retain the exact signed report; the node must not sign
-a conflicting value for the same `(round, source)` after restart.
+any second report for the same `(round, source)` after restart.
 
 ### 10.4 Rollback and replay
 
@@ -1109,11 +1157,16 @@ intent without I/O:
 
 ```java
 observations.watch(ObservationIntent.oneShot(
-        "order-status-v1",
-        canonicalOrderParameters,
-        context.block().height() + 1,
-        context.block().height() + 1_000));
+                "order-status-v1",
+                canonicalOrderParameters)
+        .firstDue(AppAnchor.height(context.block().height() + 1))
+        .reportDeadline(AppAnchor.height(context.block().height() + 1_000)));
 ```
+
+The named bounds are intentional. Phase 0 must decide the final API mapping
+among report deadline, inclusion grace, subscription expiry, and the
+profile-derived absolute maximum, including how anchor units and app heights
+interact. A positional argument called only `expiry` is too ambiguous.
 
 The API must also support deterministic cancellation and a bounded
 `activeCount()` backpressure signal. It must not expose HTTP clients, mutable
@@ -1192,16 +1245,18 @@ validator count equals source independence.
 
 An honest proposer cannot include a result it has not received. A Byzantine
 proposer can omit ready results as it can omit ordinary app messages. Proposer
-rotation and durable gossip give eventual liveness under the normal honest
-proposer assumption; stronger mandatory inclusion requires a future
-quorum-known availability protocol.
+rotation and durable gossip provide inclusion only if an honest proposer is
+selected within the bounded eligibility window and receives the certificate.
+Stronger mandatory inclusion requires a future quorum-known availability
+protocol.
 
 ### 12.6 Replay
 
-Every report binds chain genesis, consensus profile, definition, subscription,
-round, membership, source, and freshness fields. A valid old API response,
-signature, or proof cannot satisfy a new round unless the definition
-explicitly validates that evidence for that round.
+Every report binds chain genesis, consensus profile, observation profile,
+definition, subscription, round, membership, reporter set, source, and
+freshness fields. A valid old API response, signature, or proof cannot satisfy
+a new round unless the definition explicitly validates that evidence for that
+round.
 
 ## 13. Failure semantics
 
@@ -1324,21 +1379,30 @@ reports, equivocation rules, independent reporter/source thresholds,
 fixed-point aggregation, an L1-slot round clock with heartbeat ticks, evidence
 commitments, and Cardano publication.
 
-ADR-037 supersedes ADR-012's **generic report ingress, round lifecycle,
-reporter/source quorum execution, aggregation/certificate mechanics, durable
-scheduling, and result incorporation**. Those responsibilities belong in the
-Yano host so other applications reuse them and do not ship an oracle-specific
-voting protocol. No implementation should build both report/round layers.
+For an ADR-012 feed migrated to this framework, ADR-037 supersedes its
+**ordinary-message report ingress, `ingressDecisionAccumulator`, round
+lifecycle, reporter/source threshold execution, aggregation execution, and
+result incorporation**. ADR-012 does not define a second BFT protocol—its
+ordinary messages are finalized by normal Yano consensus—but those replicated
+report mechanics are application-specific infrastructure that the generic host
+should own. Reports no longer appear individually in finalized blocks; only
+the reports encoded in a finalized observation certificate contribute to the
+committed result/evidence digest. No implementation should build both
+report/round layers for the same feed.
 
 ADR-012 retains its **oracle feed-policy data and governance, source
 independence declarations, prior-value circuit breaker, evidence presentation,
 Cardano datum/thread-UTxO protocol, publication effect, and settlement
-lifecycle**. Its fixed-point normalization/outlier/median algorithm becomes a
-Yano X-contributed, profile-identified observation policy run by the host.
-Later dynamically governed feed parameters require a bounded registered policy
-schema: the application pins already-authorized canonical policy bytes/version
-in an `ObservationIntent`, and the host validates them against that schema. An
-application still cannot supply executable policy code or bypass host bounds.
+lifecycle**. Its fixed-point normalization/outlier/median algorithm is a
+candidate Yano X-contributed, profile-identified observation policy, but it
+cannot ship until Phase 3 defines closure certification.
+
+ADR-012 resolves governed policy per round through `effectiveRound`; a recurring
+subscription must not accidentally freeze policy at subscription creation.
+Phase 3 must choose either deterministic policy selection from authorized state
+at each round opening or explicit cancel-and-re-watch migration. Any selected
+policy bytes/version remain bounded by a registered schema and host profile; an
+application cannot supply executable policy code or bypass host bounds.
 
 After ADR-037 exists, the oracle becomes:
 
@@ -1351,9 +1415,12 @@ Yano X governed feed state
         -> ADR-012 Cardano publication and observation lifecycle
 ```
 
-ADR-012 should then be revised to consume this framework and remove its
-ordinary-app-message report/round implementation plan. Until that revision,
-this section is the controlling boundary where the two proposed ADRs overlap.
+Before Phase 3 implementation, the Yano X oracle owners must revise ADR-012 in
+the Yano X repository to consume this framework, remove its
+ordinary-app-message report/round implementation plan, and specify how its
+latest-assertion selection becomes closure-certified. Until that revision,
+this section is the controlling boundary where the two proposed ADRs overlap;
+ADR-012 remains a proposal and is not silently changed by this Yano ADR.
 
 ### 17.2 External reporter keys
 
@@ -1364,6 +1431,11 @@ authority; an active member gateway performs bounded admission and diffusion
 but gains no report weight. The round pins `p`, `g`, `r`, the reporter-set
 digest, source identities, and evidence rules independently of `n`, `f`, and
 `q`.
+
+The host must expose the canonical round descriptor, including its membership
+and reporter-set digests, to authorized external reporters. Each reporter signs
+that exact identity and durably enforces the one-report rule under its own key;
+a gateway cannot synthesize or repair those obligations.
 
 Phase 1 uses `ACTIVE_MEMBERS` to keep the first host protocol small. External
 reporter ingress and the ADR-012 oracle migration enter with aggregation in
@@ -1489,10 +1561,10 @@ than adding dynamic definition fields to the closed
 `AppChainConsensusProfile` v2 codec. `ConsensusContext` gains the new 32-byte
 field alongside `observerProfileDigest`, so every proposal/vote context binds
 both specialized L1 observation identity and generic observation identity.
-Its canonical context version increments from 2 to 3 because adding a signed
-field while retaining version 2 would make one version label describe two
-encodings. The ADR-036 PREPARE/COMMIT/view-change algorithm is unchanged; this
-is a fresh-chain context-schema cutover.
+Its existing `protocolVersion` field increments from 2 to 3 because adding a
+signed field while retaining version 2 would make one version label describe
+two encodings. The ADR-036 PREPARE/COMMIT/view-change algorithm remains the v2
+algorithm; only the signed context schema changes for this fresh-chain cutover.
 
 The observation profile commits to:
 
@@ -1626,9 +1698,10 @@ Exit criteria:
 - 100,000 dormant/active subscription records can be indexed and recovered
   without one timer/thread each;
 - restart and proposer rotation preserve round identity and prevent double
-  signing; and
-- every round has pinned `f`, a bounded lifetime, and at least one full
-  rotating-proposer-cycle of post-report inclusion grace; and
+  signing;
+- every round has pinned `f`, a bounded lifetime, and a bounded operational
+  post-report inclusion grace whose liveness assumption is tested explicitly;
+  and
 - resource exhaustion causes bounded backpressure, not divergent state.
 
 ### Phase 3 — aggregation and source diversity
@@ -1640,8 +1713,7 @@ Deliver:
 - definition-pinned external reporter keys and Yano X ADR-012 report/round
   migration;
 - deterministic median with explicit even-count/tie/rounding rules;
-- a fixed source set or committed closure snapshot for every non-monotonic
-  aggregate;
+- a reviewed bounded sequenced closure proof for every non-monotonic aggregate;
 - source diversity and minimum-source policies;
 - an ADA/USD reference example using several logical sources; and
 - permutation, outlier, equivocation, stale-source, and overflow property tests.
@@ -1698,8 +1770,8 @@ At minimum, implementation must cover:
 | Policy | report permutations, different sufficient subsets with identical result ID, insufficient reporter/source thresholds, selective stale attestation |
 | Scheduling | same due anchor, inclusive report/result deadlines, earlier item too large, bounded scan, L1 tick, expiry, cancel, long downtime |
 | Persistence | copied-owner journal, crash before/after sign, before/after gossip, certificate ready, proposal, final commit |
-| Transport | diffusion topics rejected from blocks, result/tick allowlist, sender-seq exemption, early handler queue, TTL re-diffusion |
-| Consensus | stale certificate no-op versus structurally invalid rejection, result ordering, proposer rotation, view change, prepared recovery, catch-up, faulty omission |
+| Transport | diffusion topics rejected from blocks, exact result/tick allowlist and chosen sender-sequence rules, early handler queue, bounded TTL re-diffusion |
+| Consensus | stale certificate no-op versus the Phase 0 malformed-input rule, same-round conflicting results, result ordering, proposer rotation, view change, prepared recovery, catch-up, faulty omission |
 | Failures | DNS, timeout, 429, malformed/huge/compressed response, stale signature/proof, source disagreement |
 | Security | SSRF address classes, DNS rebinding, redirect escape, secret redaction, parser depth/number bounds |
 | Scale | 100k indexed subscriptions, bounded workers, disk limits, report/certificate amplification |
@@ -1715,18 +1787,45 @@ disagreement expires the round rather than forking app state.
 ## 24. Review questions before implementation
 
 The review has decided explicit committed round records, bounded inline Phase
-1 report/evidence, attested-first delivery, the structural-invalid/stale-no-op
-split, and the optional verified-L1-slot clock. The remaining questions are:
+1 report/evidence, attested-first delivery, the state-stale no-op rule, and the
+optional verified-L1-slot clock. The following questions remain intentionally
+open rather than being hidden in an illustrative API or topic name.
+
+### 24.1 Phase 0 wire and API decisions
 
 1. Which settings of each concrete provider affect logical source identity and
    which are operational routing? Every Phase 1 provider must document and
    golden-test that split before its identity is frozen.
-2. Is a quorum-known availability certificate needed before recurring feeds,
-   or is honest-proposer eventual inclusion sufficient for preview? It is not
-   required for Phase 1 but must be resolved before graduation.
-3. Should a double-signed report proof become a committed
-   `~obs/equivocation/v1` audit input in Phase 3, or remain bounded local
-   evidence? It cannot retroactively invalidate a finalized result.
+2. How is an oversized, noncanonical, or undecodable `~obs/result/v1` input
+   classified when its round cannot be recovered? The choice must be uniform
+   and must explicitly justify either rejecting the proposal/catch-up block or
+   using a bounded no-op like the effects precedent. State-relative staleness
+   is consulted only after canonical round identity is available.
+3. What are the exact sender-sequence and admission rules for
+   `~obs/result/v1` and `~obs/tick/v1`? The tick decision must freeze its body,
+   sender eligibility, per-member/per-anchor deduplication, pool and block
+   bounds, and committed anchor high-water mark. A zero-sequence exact-topic
+   exemption and durable positive member sequences are alternatives, not both.
+4. Which internal bound does each application API argument set: first due,
+   report deadline, subscription expiry, inclusion grace, or absolute maximum?
+   The decision must define conversion when due/deadline use L1 slots but grace
+   and the absolute maximum use app heights, including stalled chains.
+5. Is `CANCELLED` an audit-only terminal status or a result callback delivered
+   in a later block? Same-block callback re-entry remains forbidden either way.
+
+### 24.2 Decisions required by later phases
+
+1. Is a quorum-known availability certificate needed before recurring feeds,
+   or is honest-proposer inclusion within the bounded grace sufficient for
+   preview? It is not required for Phase 1 but must be resolved before
+   graduation.
+2. What bounded sequenced closure proof commits the complete eligible report
+   set for Phase 3 non-monotonic aggregation? Diffusion possession and an
+   anchor-derived close transition are insufficient.
+3. Should a double-signed report proof become a committed audit input in Phase
+   3, or remain bounded local evidence? If committed, its exact topic must be
+   added to the section 7.6 allowlist and observation profile. It cannot
+   retroactively invalidate a finalized result.
 4. Which application requires elapsed-time scheduling without Cardano, and can
    it use a source-native logical anchor instead? A separate consensus-time
    decision is required before exposing duration-based cadence on such chains.
