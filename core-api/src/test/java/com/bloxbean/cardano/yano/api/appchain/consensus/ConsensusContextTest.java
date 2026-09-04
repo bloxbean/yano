@@ -29,15 +29,18 @@ class ConsensusContextTest {
         byte[] a = filled(1);
         byte[] b = filled(2);
         ConsensusQuorum quorum = new ConsensusQuorum(2, 2, 0);
-        ConsensusContext first = new ConsensusContext(2, "chain", filled(3), 7,
-                quorum, List.of(a, b), filled(4), filled(5));
-        ConsensusContext reordered = new ConsensusContext(2, "chain", filled(3), 7,
-                quorum, List.of(b, a), filled(4), filled(5));
-        ConsensusContext differentObserver = new ConsensusContext(2, "chain", filled(3), 7,
-                quorum, List.of(a, b), filled(4), filled(6));
+        ConsensusContext first = new ConsensusContext(3, "chain", filled(3), 7,
+                quorum, List.of(a, b), filled(4), filled(5), filled(6));
+        ConsensusContext reordered = new ConsensusContext(3, "chain", filled(3), 7,
+                quorum, List.of(b, a), filled(4), filled(5), filled(6));
+        ConsensusContext differentObserver = new ConsensusContext(3, "chain", filled(3), 7,
+                quorum, List.of(a, b), filled(4), filled(7), filled(6));
+        ConsensusContext differentObservation = new ConsensusContext(3, "chain", filled(3), 7,
+                quorum, List.of(a, b), filled(4), filled(5), filled(7));
 
         assertThat(first.digest()).isEqualTo(reordered.digest());
         assertThat(first.digest()).isNotEqualTo(differentObserver.digest());
+        assertThat(first.digest()).isNotEqualTo(differentObservation.digest());
     }
 
     private static byte[] filled(int value) {

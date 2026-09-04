@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -38,14 +39,28 @@ class AppChainSystemTopicAdmissionTest {
         assertThat(AppChainSystemTopics.isDiffusionOnly("~consensus/future")).isTrue();
         assertThat(AppChainSystemTopics.isDiffusionOnly(ScriptAnchorService.TOPIC_SIGN)).isTrue();
         assertThat(AppChainSystemTopics.isDiffusionOnly("~anchor/future")).isTrue();
+        assertThat(AppChainSystemTopics.isDiffusionOnly(ObservationTopics.REPORT)).isTrue();
+        assertThat(AppChainSystemTopics.isDiffusionOnly(ObservationTopics.CERTIFICATE)).isTrue();
 
         for (String sequenced : List.of(
                 "ordinary", "~consensus", "~anchor", "~governance/member",
-                "~fx/result", "~l1/deposit")) {
+                "~fx/result", "~l1/deposit", ObservationTopics.RESULT,
+                ObservationTopics.TICK)) {
             assertThat(AppChainSystemTopics.isDiffusionOnly(sequenced))
                     .as("%s remains eligible for sequencing", sequenced)
                     .isFalse();
         }
+    }
+
+    @Test
+    void observationNamespaceUsesAnExactAllowlist() {
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic("~obs/result/v2")).isTrue();
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic("~obs-diffusion/report/v2"))
+                .isTrue();
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic(ObservationTopics.RESULT))
+                .isFalse();
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic(ObservationTopics.REPORT))
+                .isFalse();
     }
 
     @Test

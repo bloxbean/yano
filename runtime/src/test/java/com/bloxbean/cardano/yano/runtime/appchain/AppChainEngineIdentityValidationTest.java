@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
@@ -346,6 +347,7 @@ class AppChainEngineIdentityValidationTest {
         new StateCommitmentGuard(TestStateCommitments.MPF).apply(1, writer);
         new ConsensusProfileGuard(EffectsSettings.from(config).consensusProfile(config))
                 .apply(1, writer);
+        new ObservationProfileGuard(ObservationProfileV1.disabled()).apply(1, writer);
         return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
                 block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
                 trie.getRootHash(), block.messages(), block.proposer(), block.cert());

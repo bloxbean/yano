@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
 import org.rocksdb.WriteBatch;
@@ -28,6 +29,16 @@ final class FxBlockApplier {
     /** Mirrors AppChainEngine.applyBlock + stageFx + commitBlock in one immediate step. */
     static Applied applyAndCommit(AppLedgerStore store, FxKernel kernel,
                                   AppStateMachine machine, AppBlock block) {
+        return applyAndCommit(store, kernel::apply, machine, block);
+    }
+
+    static Applied applyAndCommit(AppLedgerStore store, SystemInputKernel kernel,
+                                  AppStateMachine machine, AppBlock block) {
+        return applyAndCommit(store, kernel::apply, machine, block);
+    }
+
+    private static Applied applyAndCommit(AppLedgerStore store, Kernel kernel,
+                                          AppStateMachine machine, AppBlock block) {
         FxKernel.FxReader reader = store.fxReader();
         WriteBatch batch = new WriteBatch();
         CandidateState candidate = null;
@@ -72,5 +83,12 @@ final class FxBlockApplier {
             }
             batch.close();
         }
+    }
+
+    @FunctionalInterface
+    private interface Kernel {
+        FxKernel.Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                              AppStateWriter state,
+                              FxKernel.FxReader reader);
     }
 }
