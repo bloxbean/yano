@@ -4,6 +4,10 @@ These modules implement the optional history archive. They keep historical
 projection outside the authoritative block-apply path, writing through a
 canonical projection outbox into a single durable backend, DuckLake.
 
+For the complete runtime flow, durability boundaries, restart/rollback behavior,
+staged-file layout, and failure cases, see the
+[archive projection design](../docs/archive/ARCHIVE_PROJECTION_DESIGN.md).
+
 ## Modules
 
 | Gradle project | Purpose |
@@ -53,8 +57,11 @@ Block sections — `transaction:v1`, `utxo-history:v1`, `account-events:v1` and
 the archive identity, so it is made once at fresh sync: an archive cannot gain
 or drop a section later, because the earlier blocks would be missing from it.
 
-Epoch artifacts are not selectable. Rewards, epoch stake, DRep distribution, Ada
-pots and governance proposal status always ship.
+Epoch artifacts are selected separately through
+`yano.history.projection.epoch-artifacts`; omitting the setting selects the shipped
+set. Rewards, epoch stake, DRep distribution, Ada pots and governance proposal
+status are available. A newly selected artifact joins a populated archive only
+prospectively, with its first projected epoch recorded in durable enrollment.
 
 Outputs carry inline datum and reference-script CBOR directly; witness datums
 and redeemers use transaction-scoped tables.

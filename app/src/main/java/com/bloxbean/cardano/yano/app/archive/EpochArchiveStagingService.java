@@ -686,10 +686,40 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
             register("GOVERNANCE_PROPOSAL_STATUS/ratification", ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS,
                     StandardEpochFactCodecs.GOVERNANCE, StandardEpochDatasets.governanceProposalStatus());
         }
-        if (enabled.contains(Dataset.REWARD)) for (String part : List.of("rewards", "pool-reap", "governance", "mir")) {
-            register("REWARD/" + part, ArchiveDatasetId.REWARD, StandardEpochFactCodecs.REWARD,
-                    StandardEpochDatasets.rewards());
+        if (enabled.contains(Dataset.REWARD)) {
+            for (String part : List.of("rewards", "pool-reap", "governance", "mir")) {
+                registerRewardSource(part);
+            }
+            discoverPoolReapSources();
         }
+    }
+
+    /**
+     * Restore dynamically chunked pool-reap sources after a restart.
+     *
+     * <p>{@code PoolReapProcessor} names its durable reward parts from the boundary-delta
+     * sequence (for example {@code pool-reap-000003}). Those bindings are created lazily while
+     * the boundary runs, so merely registering the four fixed reward parts at startup leaves
+     * their already-durable directories invisible. The outbox still references the files, but
+     * {@link #present(ArchiveDatasetId, UUID)} then falsely reports them missing until a later
+     * pool reap happens to recreate the same in-memory binding.
+     */
+    private void discoverPoolReapSources() {
+        Path rewardDirectory = root.resolve("reward");
+        if (!Files.isDirectory(rewardDirectory)) return;
+        try (var directories = Files.list(rewardDirectory)) {
+            directories.filter(Files::isDirectory)
+                    .map(path -> path.getFileName().toString())
+                    .filter(part -> part.matches("pool-reap-[0-9]+"))
+                    .forEach(this::registerRewardSource);
+        } catch (Exception e) {
+            throw new ArchiveStoreException("cannot discover chunked pool-reap epoch sources", e);
+        }
+    }
+
+    private void registerRewardSource(String part) {
+        register("REWARD/" + part, ArchiveDatasetId.REWARD, StandardEpochFactCodecs.REWARD,
+                StandardEpochDatasets.rewards());
     }
 
     private <T> void register(String key, ArchiveDatasetId dataset, EpochFactCodec<T> codec,
