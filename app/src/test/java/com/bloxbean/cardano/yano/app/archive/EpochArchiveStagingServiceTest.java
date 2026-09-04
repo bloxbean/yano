@@ -202,7 +202,11 @@ class EpochArchiveStagingServiceTest {
         });
         assertThat(restarted.present(ArchiveDatasetId.REWARD, stagedArtifact.job().jobId())).isTrue();
 
-        restarted.release(ArchiveDatasetId.REWARD, stagedArtifact.job().jobId());
+        assertThat(restarted.discardAfterBlock(35)).isEqualTo(1);
+        assertThat(restarted.present(ArchiveDatasetId.REWARD, stagedArtifact.job().jobId())).isFalse();
+        Path partDirectory = root.resolve("reward/pool-reap-000003");
+        assertThat(partDirectory.resolve(stagedArtifact.job().jobId() + ".rows")).doesNotExist();
+        assertThat(partDirectory.resolve(stagedArtifact.job().jobId() + ".properties")).doesNotExist();
         assertThat(root.resolve("completed/7-36.properties")).doesNotExist();
     }
 

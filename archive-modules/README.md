@@ -58,10 +58,11 @@ the archive identity, so it is made once at fresh sync: an archive cannot gain
 or drop a section later, because the earlier blocks would be missing from it.
 
 Epoch artifacts are selected separately through
-`yano.history.projection.epoch-artifacts`; omitting the setting selects the shipped
-set. Rewards, epoch stake, DRep distribution, Ada pots and governance proposal
-status are available. A newly selected artifact joins a populated archive only
-prospectively, with its first projected epoch recorded in durable enrollment.
+`yano.history.projection.epoch-artifacts`. On a fresh archive, omitting the setting
+selects the shipped set; on an existing archive, omission preserves its stored
+enrollment. Rewards, epoch stake, DRep distribution, Ada pots and governance
+proposal status are available. A newly selected artifact joins a populated archive
+only prospectively, with its first projected epoch recorded in durable enrollment.
 
 Outputs carry inline datum and reference-script CBOR directly; witness datums
 and redeemers use transaction-scoped tables.

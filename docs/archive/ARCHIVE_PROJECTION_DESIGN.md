@@ -28,6 +28,10 @@
 
 [PNG version of the flow diagram](archive-projection-flow.png)
 
+Regenerate the PNG from the SVG at its native size with
+`rsvg-convert --width 1600 --height 980 --output archive-projection-flow.png archive-projection-flow.svg`
+from `docs/archive/`.
+
 The archive is an optional, asynchronous read model. Canonical chain and ledger state are the
 authority; the archive observes the same accepted blocks and creates query-oriented history
 without putting DuckDB, DuckLake, or Parquet on the block-apply critical path.
@@ -432,6 +436,12 @@ recorded epoch 220 reward coverage as `COMPLETE` with 11,027 rows, but relying o
 pool-reap sequence is not a recovery strategy. Startup must discover every existing dynamic
 pool-reap source before drain begins.
 
+The missing binding also excluded that directory from rollback cleanup sweeps. A rollback after
+restart could therefore leave its staged files orphaned until the same part name was registered
+again. Completion markers and outbox references are rolled back independently, so those orphaned
+files were not silently projected as canonical rows; startup discovery nevertheless must restore
+all bindings before cleanup so non-canonical evidence is deleted promptly.
+
 ## 15. Operational inspection
 
 Use the API as the first coverage authority:
@@ -500,4 +510,4 @@ These rules summarize the design:
 | Artifact paging/lease/release | `StagedEpochArtifactReader`, `RoutingArtifactReader` |
 | DuckLake transaction and receipt | `DuckLakeProjectionSink` |
 | DuckLake schema | `ArchiveSchemas`, `DuckLakeProjectionSchema` |
-| Query coverage guard | `ProjectionEpochCoverageGuard`, history resources/providers |
+| Query coverage guard | `ProjectionHistoryService.requireCompleteEpochHistory`, `HistoryArchiveService.requireCompleteEpochHistory`, `IncompleteEpochHistoryException` |
