@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -113,6 +114,13 @@ final class FxKernel {
      */
     Result apply(AppStateMachine machine, AppBlockExecutionContext context,
                  AppStateWriter state, FxReader reader) {
+        return apply(machine, context, state, reader, AppObservationEmitter.rejecting(
+                "Generic observations are disabled for this chain"));
+    }
+
+    Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                 AppStateWriter state, FxReader reader,
+                 AppObservationEmitter observations) {
         AppBlock block = context.block();
         if (consensusProfileGuard != null) {
             consensusProfileGuard.apply(block.height(), state);
@@ -121,7 +129,7 @@ final class FxKernel {
 
         if (!settings.enabled()) {
             machine.apply(context, machineWriter, AppEffectEmitter.rejecting(
-                    "Effects are disabled for this chain (effects.enabled=false)"));
+                    "Effects are disabled for this chain (effects.enabled=false)"), observations);
             return Result.NONE;
         }
 
@@ -150,7 +158,7 @@ final class FxKernel {
             closedInBlock.add(positionKey(result.effectId().height(), result.effectId().ordinal()));
             incorporated.add(result);
             emitter.closedOne();
-            machine.onEffectResult(context, result, machineWriter, emitter);
+            machine.onEffectResult(context, result, machineWriter, emitter, observations);
         }
 
         // 2. Deterministic expiry sweep at this height. Every swept effect is
@@ -182,10 +190,10 @@ final class FxKernel {
             incorporated.add(expired);
             expiredThisBlock++;
             emitter.closedOne();
-            machine.onEffectResult(context, expired, machineWriter, emitter);
+            machine.onEffectResult(context, expired, machineWriter, emitter, observations);
         }
 
-        machine.apply(context, machineWriter, emitter);
+        machine.apply(context, machineWriter, emitter, observations);
 
         // 4. Commitment leaves.
         byte[] effectsRoot = null;

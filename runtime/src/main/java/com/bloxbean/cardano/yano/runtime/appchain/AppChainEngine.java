@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusContext;
 import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusQuorum;
 import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusDigests;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
 import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
@@ -69,7 +70,7 @@ final class AppChainEngine implements AutoCloseable {
     private final ConsensusProfileGuard consensusProfileGuard;
     private final StateCommitmentGuard stateCommitmentGuard;
     private final AuthenticatedStateBackend stateBackend;
-    private final FxKernel fxKernel;
+    private final SystemInputKernel systemInputKernel;
     private final java.util.Optional<AuthenticatedSnapshotRuntime> authenticatedSnapshots;
     private final FxKernel.FxReader fxReader;
     private final Supplier<WriteBatch> writeBatchFactory;
@@ -196,11 +197,12 @@ final class AppChainEngine implements AutoCloseable {
                 "consensus.max-byzantine-members", "0"));
         ConsensusQuorum quorum = new ConsensusQuorum(epoch.members().size(),
                 epoch.threshold(), maximumFaults);
-        return new ConsensusContext(2, config.chainId(),
+        return new ConsensusContext(3, config.chainId(),
                 stateBackend.identity().genesisId(), height, quorum, members,
                 AppChainConsensusProfileCommitment.digest(
                         consensusProfileGuard.profile()),
-                observerProfileDigest).digest();
+                observerProfileDigest,
+                systemInputKernel.observationProfileDigest()).digest();
     }
 
     void setVotingHealth(BooleanSupplier votingHealth) {
@@ -424,7 +426,11 @@ final class AppChainEngine implements AutoCloseable {
         this.stateBackend = ledger.stateBackend();
         this.stateCommitmentGuard = new StateCommitmentGuard(stateBackend.identity());
         this.stateCommitmentGuard.verifyRetained(ledger, config.chainId());
-        this.fxKernel = new FxKernel(effectsSettings, consensusProfileGuard);
+        ObservationProfileGuard observationProfileGuard = new ObservationProfileGuard(
+                ObservationProfileV1.disabled());
+        observationProfileGuard.verifyRetained(ledger, config.chainId());
+        this.systemInputKernel = new SystemInputKernel(
+                effectsSettings, consensusProfileGuard, observationProfileGuard);
         AuthenticatedSnapshotSettings snapshotSettings = AuthenticatedSnapshotSettings.from(config);
         this.authenticatedSnapshots = AuthenticatedSnapshotRuntime.create(
                 ledger, stateBackend.identity(), snapshotSettings,
@@ -1992,7 +1998,8 @@ final class AppChainEngine implements AutoCloseable {
             AuthenticatedSnapshotRuntime.BlockSession snapshotSession = authenticatedSnapshots.isPresent()
                     ? authenticatedSnapshots.orElseThrow().beginBlock(candidate) : null;
             AppStateWriter machineState = snapshotSession != null ? snapshotSession.writer() : candidate;
-            fxResult[0] = fxKernel.apply(stateMachine, executionContext, machineState, fxReader);
+            fxResult[0] = systemInputKernel.apply(
+                    stateMachine, executionContext, machineState, fxReader);
             if (snapshotSession != null) {
                 snapshotSession.execute(batch, block.height());
             }
@@ -2106,6 +2113,7 @@ final class AppChainEngine implements AutoCloseable {
                 || !StandardCharsets.UTF_8.newEncoder().canEncode(message.getTopic())
                 || message.getTopic().getBytes(StandardCharsets.UTF_8).length
                 > AppChainConfig.MAX_TOPIC_BYTES
+                || AppChainSystemTopics.isUnknownObservationTopic(message.getTopic())
                 || AppChainSystemTopics.isDiffusionOnly(message.getTopic())
                 || message.getSender() == null || message.getSender().length != 32
                 || message.getSenderSeq() < 0 || message.getExpiresAt() < 0

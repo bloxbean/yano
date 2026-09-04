@@ -1894,6 +1894,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private static boolean validTopic(String topic) {
         return topic != null && topic.indexOf('\0') < 0
+                && !AppChainSystemTopics.isUnknownObservationTopic(topic)
                 && StandardCharsets.UTF_8.newEncoder().canEncode(topic)
                 && topic.getBytes(StandardCharsets.UTF_8).length
                 <= AppChainConfig.MAX_TOPIC_BYTES;

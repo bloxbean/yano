@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed — architecture and phased implementation plan only.
+Accepted — Phase 0 implementation started after the architecture-only review.
 
-This ADR deliberately ships in a separate review before implementation. The
+The architecture shipped in a separate review before implementation. The
 number is local to the `adr/app-layer` series. Root-level ADR numbers are a
 separate series.
 
@@ -612,8 +612,8 @@ distinct from a domain value such as `false`, zero, `NOT_FOUND`, or
 `PROCESSING`. Different sufficient reporter subsets for the same value produce
 the same `resultId`; certificate gossip deduplicates by `(subscriptionId,
 roundNumber, resultId)` and may retain one bounded certificate digest for audit.
-`CANCELLED` is always a terminal audit status; section 24 leaves its application
-callback behavior open for Phase 0.
+`CANCELLED` is always a terminal audit status and is audit-only in v1; it does
+not invoke an application callback.
 
 ### 6.7 V1 canonical encoding
 
@@ -625,8 +625,9 @@ unknown fields, and trailing bytes are rejected. Text fields use bounded UTF-8
 with a field-specific grammar; numeric values use bounded integers.
 
 Phase 0 publishes exact CDDL, maximum encoded sizes, field indexes, digest
-domains, and golden bytes before production code. The logical field order is
-the order listed in sections 6.1–6.6. At minimum:
+domains, and golden bytes before production code. The normative schema is
+[`core-api/src/main/cddl/appchain/observation-v1.cddl`](../../core-api/src/main/cddl/appchain/observation-v1.cddl).
+The logical field order is the order listed in sections 6.1–6.6. At minimum:
 
 ```text
 reportSignature = Sign(reporterKey,
@@ -700,8 +701,9 @@ or expired; the protocol does not rely on the ordinary 120-second envelope TTL.
 
 The scheduled proposer reads its durable ready-certificate journal, filters
 rounds already terminal in committed state, and constructs bounded
-`~obs/result/v1` system inputs itself. Their exact sender-sequence rule is a
-Phase 0 decision in section 24. The outer envelope is transport authorization,
+`~obs/result/v1` system inputs itself. Result and tick envelopes use the
+existing positive, durable per-member sender sequence; there is no zero-sequence
+exception. The outer envelope is transport authorization,
 not fact authority: followers require a valid signature from any active member
 of the block's membership epoch and never compare that sender with the current
 leader. This permits ADR-036 view-change recovery to re-propose the exact
@@ -749,11 +751,12 @@ staleness:
   terminal or unknown round follows the preceding no-op rule, while an invalid
   certificate for an active round follows the preceding rejection rule.
 
-Phase 0 must choose one uniform rule for an oversized, noncanonical, or
-undecodable result input whose round cannot be identified, or an oversized
-input that identifies a terminal or unknown round. These cases are not assigned
-a validity result here, so the wire format is not frozen until the
-reject-versus-bounded-no-op decision in section 24 is resolved.
+An oversized, noncanonical, or undecodable result input is structurally invalid
+and rejects the proposal or catch-up block before any round lookup. This rule is
+uniform even if a partial parse appears to name a terminal or unknown round.
+Only a fully bounded, canonical certificate may reach the state-relative stale
+no-op classification. This keeps resource work independent of retained round
+state and prevents malformed bytes from becoming valid through pruning.
 
 This prevents a late but once-valid certificate from poisoning a proposal
 after another block closed the round. The proposer performs the same stale
@@ -775,15 +778,20 @@ State keys and wire topics have separate namespaces:
 ~yano/obs/*                         framework state/commitment keys
 ~obs-diffusion/report/v1            diffusion-only signed reports
 ~obs-diffusion/certificate/v1       diffusion-only ready certificates
-~obs/tick/v1                        reserved heartbeat candidate; Phase 0 open
+~obs/tick/v1                        bounded verified-L1-slot wake hint
 ~obs/result/v1                      certified result input
 ```
 
 Only the two `~obs-diffusion/*` topics are routed to an idempotent
 diffusion-only handler and rejected from blocks. The result topic may be
 sequenced but is rejected from public submission and accepted only through its
-exact host-owned codec/signing rules. Tick admission is intentionally left to
-the Phase 0 decision in section 24. Every other unclassified topic below the
+exact host-owned codec/signing rules. The canonical tick body is
+`[1, VERIFIED_L1_SLOT, locally-stable-slot]`. Only an active member may send it,
+using its positive durable sender sequence. It is a wake hint: the body never
+supplies the proposed block's time or L1 reference. Admission deduplicates
+`(sender, anchor-code, anchor-value)`, retains a bounded number per member and
+anchor, and the profile caps tick pool and block counts. Every other
+unclassified topic below the
 exact `~obs/` or `~obs-diffusion/` reserved roots is rejected at peer admission,
 pool selection, proposal, and catch-up; it must never fall through as an opaque
 application message.
@@ -825,8 +833,9 @@ Result incorporation at `resultExpiryHeight` wins because it precedes the
 observation expiry sweep. Cancellation emitted by `apply()` takes effect after
 same-block results/expiry and closes the subscription at the end of that kernel
 execution. It never re-enters the state machine with a same-block cancellation
-callback. Whether `CANCELLED` remains audit-only or is delivered in a later
-block is a Phase 0 API decision in section 24.
+callback. `CANCELLED` is an audit-only terminal status in v1 and does not invoke
+an application callback. A later protocol may add explicit cancellation
+delivery, but cannot change v1 callback replay semantics.
 
 One `AppEffectEmitter` retains the existing effect ordinal across all effect
 and observation callbacks plus `apply()`. One `AppObservationEmitter` likewise
@@ -987,15 +996,15 @@ redundant member-generated heartbeat hints when a due slot is locally stable.
 Such a hint contains no trusted time and carries no result; it only gives the
 sequencer work from which to build a block. The proposed block's verified
 `l1Slot`, not a hint sender's clock, opens/closes due rounds, subject to the
-committed high-water-anchor rule below. Phase 0 must still freeze the tick body,
-sender eligibility and sequence rules, admission/dedup bounds, and the
-committed high-water-mark behavior before `~obs/tick/v1` is an accepted input.
+committed high-water-anchor rule below. The tick body, sender eligibility,
+sequence rule, and admission bounds are frozen in section 7.6.
 
 "Committed high-water anchor" refers to ADR-012's `effectiveStableSlot`
 pattern: a replicated monotonic summary of the last usable verified L1 slot,
-including when a later block carries `l1Slot = 0`. Whether this framework adopts
-that exact maximum/update rule is part of the Phase 0 decision, not node-local
-state.
+including when a later block carries `l1Slot = 0`. The framework adopts that
+rule: after each finalized block it commits
+`max(previousHighWater, block.l1Slot)` for a non-zero locally verified slot and
+otherwise retains the previous value. Tick bodies never update it.
 
 This adopts ADR-012's L1-slot heartbeat insight without making generic
 observations part of the `~l1/*` mandatory fact lane. It gives a cadence in
@@ -1137,8 +1146,8 @@ rewrite an already finalized observation result.
 
 ## 11. Developer-facing model
 
-The API names remain illustrative until Phase 0 API review. Compatibility is a
-decision: the current abstract three-argument `apply(context, state, effects)`
+The Phase 0 API review freezes the names below. Compatibility is a decision:
+the current abstract three-argument `apply(context, state, effects)`
 remains unchanged. Core API adds a default four-argument overload which
 delegates to it, plus a default no-op `onObservationResult`. The runtime calls
 the new overload. Observation-aware machines opt in through their capability
@@ -1173,16 +1182,24 @@ intent without I/O:
 
 ```java
 observations.watch(ObservationIntent.oneShot(
-                "order-status-v1",
-                canonicalOrderParameters)
-        .firstDue(AppAnchor.height(context.block().height() + 1))
-        .reportDeadline(AppAnchor.height(context.block().height() + 1_000)));
+        "order-status-v1",
+        "order-status-result",
+        canonicalOrderParameters,
+        ObservationAnchorType.APP_HEIGHT,
+        context.block().height() + 1,
+        context.block().height() + 1_000,
+        context.block().height() + 1_100));
 ```
 
-The named bounds are intentional. Phase 0 must decide the final API mapping
-among report deadline, inclusion grace, subscription expiry, and the
-profile-derived absolute maximum, including how anchor units and app heights
-interact. A positional argument called only `expiry` is too ambiguous.
+The named bounds are intentional. `firstDueAnchor`, `reportDeadlineAnchor`, and
+`subscriptionExpiryAnchor` use the selected anchor units. Inclusion grace and
+absolute round lifetime use app heights:
+`absoluteMaxRoundHeight = openingHeight + maxRoundHeights`, and the first block
+whose selected anchor passes the report deadline sets
+`resultExpiryHeight = min(currentHeight + resultInclusionGraceHeights,
+absoluteMaxRoundHeight)`. A stalled chain advances neither height nor callback;
+a block with `l1Slot = 0` retains the committed L1 high-water value. The API
+exposes no ambiguous positional `expiry` argument.
 
 The API must also support deterministic cancellation and a bounded
 `activeCount()` backpressure signal. It must not expose HTTP clients, mutable
@@ -1818,7 +1835,7 @@ sufficient report subsets plus one equivocating reporter and prove identical
 assemble/include a certificate after a faulty proposer omits it and that source
 disagreement expires the round rather than forking app state.
 
-## 24. Review questions before implementation
+## 24. Review decisions and later-phase questions
 
 The review has decided explicit committed round records, bounded inline Phase
 1 report/evidence, attested-first delivery, the state-stale no-op rule, and the
@@ -1827,27 +1844,22 @@ open rather than being hidden in an illustrative API or topic name.
 
 ### 24.1 Phase 0 wire and API decisions
 
-1. Which settings of each concrete provider affect logical source identity and
-   which are operational routing? Every Phase 1 provider must document and
-   golden-test that split before its identity is frozen.
-2. How is an oversized, noncanonical, or undecodable `~obs/result/v1` input
-   classified when its round cannot be recovered, and how is an oversized input
-   classified when it names a terminal or unknown round? The choice must be
-   uniform and must explicitly justify either rejecting the proposal/catch-up
-   block or using a resource-bounded no-op like the effects precedent.
-   State-relative staleness is consulted only after canonical round identity is
-   available.
-3. What are the exact sender-sequence and admission rules for
-   `~obs/result/v1` and `~obs/tick/v1`? The tick decision must freeze its body,
-   sender eligibility, per-member/per-anchor deduplication, pool and block
-   bounds, and committed anchor high-water mark. A zero-sequence exact-topic
-   exemption and durable positive member sequences are alternatives, not both.
-4. Which internal bound does each application API argument set: first due,
-   report deadline, subscription expiry, inclusion grace, or absolute maximum?
-   The decision must define conversion when due/deadline use L1 slots but grace
-   and the absolute maximum use app heights, including stalled chains.
-5. Is `CANCELLED` an audit-only terminal status or a result callback delivered
-   in a later block? Same-block callback re-entry remains forbidden either way.
+1. Provider configuration is split by effect on canonical acquisition. Endpoint
+   scheme/host/port/path template, public query projection, redirect policy,
+   pinned source keys, source set, canonical parsing, and response version
+   selection are logical source identity. Credentials, proxy addresses,
+   connection pools, timeouts, retry/backoff/jitter, local bind addresses, and
+   secret-store references are operational routing. A provider rejects any
+   setting it cannot classify, and every Phase 1 provider golden-tests both the
+   identity bytes and operational non-interference.
+2. Oversized, noncanonical, or undecodable result input is a structural block
+   rejection before state lookup. Only bounded canonical input can be a stale
+   no-op, as fixed in section 7.5.
+3. Result and tick inputs use positive durable member sequences. Tick body,
+   eligibility, deduplication, bounds, and high-water semantics are fixed in
+   sections 7.4, 7.6, and 9.2.
+4. API-to-bound mapping and cross-anchor arithmetic are fixed in section 11.
+5. `CANCELLED` is audit-only in v1, as fixed in sections 6.6 and 7.6.
 
 ### 24.2 Decisions required by later phases
 
