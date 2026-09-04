@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.core.dataset.DrepDistributionFact;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
@@ -166,6 +167,47 @@ class EpochArchiveStagingServiceTest {
         assertThat(restarted.sources().stream()
                 .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())).isEmpty();
         assertThat(root.resolve("completed/6-24.properties")).doesNotExist();
+    }
+
+    @Test
+    void chunkedPoolReapEvidenceIsDiscoveredAfterRestart() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        byte[] anchorHash = new byte[] {3, 7};
+        when(chain.getCanonicalBlockReference(36)).thenReturn(Optional.of(
+                new CanonicalBlockReference(36, 360, anchorHash)));
+        when(ledger.slotToUnixTime(360)).thenReturn(1_700_000_360L);
+        var network = new ArchiveNetworkIdentity(1, "genesis");
+        var enabled = EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD);
+        Path root = temp.resolve("chunked-pool-reap");
+        var staging = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        var boundary = new EpochArchiveStagingSink.Boundary(6, 7, 370, 37);
+
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openRewards(7, "pool-reap-000003")) {
+            writer.append(new EpochArchiveStagingSink.RewardFact(
+                    0, "01", "02", "refund", 6, 7, BigInteger.TEN, "pool-reap-test"));
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        var stagedArtifact = staging.completedArtifacts(37).getFirst();
+        assertThat(stagedArtifact.job().sourceReference())
+                .isEqualTo("REWARD/pool-reap-000003/7");
+
+        var restarted = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        assertThat(restarted.completedArtifacts(37)).singleElement().satisfies(artifact -> {
+            assertThat(artifact.job().jobId()).isEqualTo(stagedArtifact.job().jobId());
+            assertThat(artifact.evidence().rowCount()).isEqualTo(1);
+        });
+        assertThat(restarted.present(ArchiveDatasetId.REWARD, stagedArtifact.job().jobId())).isTrue();
+
+        assertThat(restarted.discardAfterBlock(35)).isEqualTo(1);
+        assertThat(restarted.present(ArchiveDatasetId.REWARD, stagedArtifact.job().jobId())).isFalse();
+        Path partDirectory = root.resolve("reward/pool-reap-000003");
+        assertThat(partDirectory.resolve(stagedArtifact.job().jobId() + ".rows")).doesNotExist();
+        assertThat(partDirectory.resolve(stagedArtifact.job().jobId() + ".properties")).doesNotExist();
+        assertThat(root.resolve("completed/7-36.properties")).doesNotExist();
     }
 
     @Test

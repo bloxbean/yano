@@ -4,6 +4,9 @@ This document is the column-level schema reference for Yano's DuckLake projectio
 It describes the relations exposed under the attached DuckLake catalog, normally queried as
 `history_lake.<relation>`.
 
+For the end-to-end producer, staging, outbox, projection, acknowledgement, and recovery flow, see
+[Archive Projection: End-to-End Design and Recovery](ARCHIVE_PROJECTION_DESIGN.md).
+
 The schema is defined by `ArchiveSchemas`, `DuckLakeProjectionSchema`, and
 `DuckLakeInitializer`. When every projection is selected, the catalog exposes:
 
