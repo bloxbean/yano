@@ -41,7 +41,7 @@ class ProjectionEpochCoverageGuardTest {
                 .hasMessageContaining("NOT_PROJECTED");
 
         when(sink.epochArtifactGaps()).thenReturn(List.of(new EpochArtifactGap(
-                ArchiveDatasetId.REWARD, 450, 9_000, 90_000, new byte[] {7},
+                ArchiveDatasetId.REWARD, 450, 9_001, 9_000, 90_000, new byte[] {7},
                 "io", "disk", Instant.now())));
         var gapped = service(sink, enrollment(ProjectionArtifactEnrollmentOrigin.FRESH));
         assertThatThrownBy(() -> gapped.requireCompleteEpochHistory(ArchiveDatasetId.REWARD))
@@ -87,7 +87,7 @@ class ProjectionEpochCoverageGuardTest {
         when(sink.epochArtifactCoverage()).thenReturn(Map.of(
                 ArchiveDatasetId.REWARD, List.of(new EpochRange(209, 500))));
         when(sink.epochArtifactGaps()).thenReturn(List.of(new EpochArtifactGap(
-                ArchiveDatasetId.REWARD, 450, 9_000, 90_000, new byte[] {7},
+                ArchiveDatasetId.REWARD, 450, 9_001, 9_000, 90_000, new byte[] {7},
                 "io", "disk", Instant.now())));
         var service = service(sink, enrollment(ProjectionArtifactEnrollmentOrigin.FRESH));
         var selected = ProjectionArtifactIdentity.of(List.of(ProjectionArtifactContracts.reward()));

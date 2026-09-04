@@ -274,6 +274,7 @@ tasks.register('verifyLegacyAccountHistoryRemoved') {
         fileTree(rootProject.projectDir) {
             include '**/src/main/**/*.java'
             exclude '**/build/**'
+            exclude '.claude/worktrees/**'
         }.files.each { source ->
             def text = source.getText('UTF-8')
             forbiddenTokens.each { token ->
@@ -336,6 +337,7 @@ tasks.register('verifyLegacyHistoryReplayRemoved') {
         fileTree(rootProject.projectDir) {
             include '**/src/main/**/*.java'
             exclude '**/build/**'
+            exclude '.claude/worktrees/**'
         }.files.each { source ->
             def text = source.getText('UTF-8')
             forbiddenTokens.each { token ->

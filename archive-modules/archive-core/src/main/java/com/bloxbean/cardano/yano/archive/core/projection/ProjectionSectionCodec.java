@@ -17,7 +17,7 @@ import java.util.OptionalLong;
 /** Deterministic encoding for per-section manifests and artifact references. */
 final class ProjectionSectionCodec {
     private static final int MANIFEST_FORMAT = 1;
-    private static final int ARTIFACT_FORMAT = 2;
+    private static final int ARTIFACT_FORMAT = 3;
 
     private ProjectionSectionCodec() {}
 
@@ -59,6 +59,9 @@ final class ProjectionSectionCodec {
             out.writeInt(ref.semanticEpoch());
             out.writeLong(ref.producingBlockNumber());
             out.writeLong(ref.producingSlot());
+            byte[] producingHash = ref.producingBlockHash();
+            out.writeInt(producingHash.length);
+            out.write(producingHash);
             out.writeUTF(ref.representation().name());
             out.writeUTF(ref.sourceGeneration());
             out.writeInt(ref.sourceCodecVersion());
@@ -86,6 +89,8 @@ final class ProjectionSectionCodec {
             int semanticEpoch = in.readInt();
             long producingBlock = in.readLong();
             long producingSlot = in.readLong();
+            byte[] producingHash = new byte[in.readInt()];
+            in.readFully(producingHash);
             ProjectionArtifactRepresentation representation = ProjectionArtifactRepresentation.valueOf(in.readUTF());
             String generation = in.readUTF();
             int codecVersion = in.readInt();
@@ -96,7 +101,7 @@ final class ProjectionSectionCodec {
             long oldestRequiredSlot = in.readLong();
             byte[] payload = new byte[in.readInt()];
             in.readFully(payload);
-            return new ProjectionArtifactRef(dataset, semanticEpoch, producingBlock, producingSlot,
+            return new ProjectionArtifactRef(dataset, semanticEpoch, producingBlock, producingSlot, producingHash,
                     representation, generation, codecVersion, stateVersion,
                     hasRowCount ? OptionalLong.of(rowCount) : OptionalLong.empty(), digest,
                     oldestRequiredSlot, payload);

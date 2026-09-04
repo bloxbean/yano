@@ -74,8 +74,9 @@ public final class StagedEpochArtifactReader implements ArchiveArtifactReader {
     @Override
     public ArtifactLease acquire(ProjectionArtifactRef ref, Instant expiresAt) {
         var source = sourceFor(ref);
-        // Fail closed before the lease is granted. Evidence that has gone cannot be recomputed,
-        // so an absent file must stop the drain rather than commit an epoch with no rows.
+        // Fail this drain attempt before the lease is granted. Evidence that has gone cannot be
+        // recomputed, so an absent file must stop archive progress rather than commit an epoch
+        // with no rows. ProjectionHistoryService reports/retries it without stopping L1 sync.
         if (!source.present(ref)) {
             throw new IllegalStateException("staged evidence for " + ref.dataset() + " epoch "
                     + ref.semanticEpoch() + " (" + ref.sourceGeneration() + ") is missing or"

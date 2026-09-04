@@ -9,6 +9,10 @@ import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
+import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
+import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
+import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -28,8 +32,10 @@ import java.math.BigInteger;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.bloxbean.cardano.yaci.core.util.Constants.LOVELACE;
 import static org.junit.jupiter.api.Assertions.*;
@@ -122,6 +128,48 @@ class DefaultUtxoStoreTest {
 
         assertTrue(ex.getMessage().contains("UTXO apply failed for block 1"));
         assertTrue(ex.getCause() instanceof IllegalStateException);
+    }
+
+    @Test
+    void projectionFailureDiscardsProjectionWritesButCommitsShelleyUtxoState() throws Exception {
+        byte[] markerKey = "projection.must-not-commit".getBytes(StandardCharsets.UTF_8);
+        byte[] failureKey = "projection.failure-must-commit".getBytes(StandardCharsets.UTF_8);
+        AtomicReference<RuntimeException> reported = new AtomicReference<>();
+        store.setProjectionContributor(new CanonicalProjectionContributor() {
+            @Override public boolean enabled() { return true; }
+
+            @Override
+            public void contributeBlock(BlockAppliedEvent event, ProjectionStagingWriter writer) {
+                writer.put(ProjectionCfNames.PROJ_META, markerKey, new byte[]{1});
+                throw new IllegalStateException("synthetic Shelley projection failure");
+            }
+
+            @Override
+            public void contributionFailed(long blockNumber, ProjectionStagingWriter writer,
+                                           RuntimeException failure) {
+                assertEquals(1L, blockNumber);
+                writer.put(ProjectionCfNames.PROJ_META, failureKey, new byte[]{2});
+                reported.set(failure);
+            }
+
+            @Override public void contributeByronBlock(
+                    ByronBlockProjectionEvent event, ProjectionStagingWriter writer) { }
+            @Override public void rollbackFrom(long fromBlockNumber) { }
+        });
+        Block block = Block.builder()
+                .era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList())
+                .build();
+
+        store.applyBlock(new BlockAppliedEvent(Era.Babbage, 10, 1, "bb".repeat(32), block));
+
+        ColumnFamilyHandle projectionMeta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(
+                ProjectionCfNames.PROJ_META);
+        assertNull(store.getDb().get(projectionMeta, markerKey));
+        assertArrayEquals(new byte[]{2}, store.getDb().get(projectionMeta, failureKey));
+        assertEquals(1L, store.getLastAppliedBlock());
+        assertEquals("synthetic Shelley projection failure", reported.get().getMessage());
     }
 
     @Test
@@ -346,17 +394,67 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
-    void advancedOriginRollbackDoesNotClaimUnprovableGenesisCoverage() throws Exception {
-        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "00".repeat(32));
-        publishBlock(100, 1, "c5".repeat(32), Block.builder().era(Era.Babbage)
+    void advancedOriginRollbackPreservesGenesisProofAcrossRestartAndReplay() throws Exception {
+        String genesisHash = "ca".repeat(32);
+        String transactionHash = "c6".repeat(32);
+        String blockHash = "c5".repeat(32);
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, genesisHash);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
                 .transactionBodies(List.of(pointerOutputTransaction(
-                        "c6".repeat(32), 15_000_000L)))
+                        transactionHash, 15_000_000L)))
                 .invalidTransactions(List.of()).build());
+        byte[] outpoint = UtxoKeyUtil.outpointKey(transactionHash, 0);
+        ColumnFamilyHandle pointer = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        assertNotNull(chain.rocks().db().get(pointer, outpoint));
 
         store.rollbackToPoint(Point.ORIGIN);
 
-        assertNull(chain.rocks().db().get(
+        assertNull(chain.rocks().db().get(pointer, outpoint));
+        PointerIndexMarker marker = PointerIndexMarker.decode(chain.rocks().db().get(
                 chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+        assertNotNull(marker);
+        assertEquals(0, marker.blockNumber());
+        assertEquals(0, marker.slot());
+        assertArrayEquals(HexUtil.decodeHexString(genesisHash), marker.blockHash());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+
+        chain.close();
+        chain = new DirectRocksDBChainState(tempDir.getAbsolutePath());
+        store = new DefaultUtxoStore(
+                chain, LoggerFactory.getLogger(DefaultUtxoStoreTest.class),
+                Map.of("yano.utxo.enabled", true));
+        bus = new SimpleEventBus();
+        new UtxoEventHandler(bus, store);
+
+        assertTrue(store.isPointerIndexApplicable());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        transactionHash, 15_000_000L)))
+                .invalidTransactions(List.of()).build());
+
+        assertNotNull(chain.rocks().db().get(
+                chain.rocks().handle(UtxoCfNames.UTXO_POINTER), outpoint));
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+    }
+
+    @Test
+    void originRollbackClearsNonGenesisPointerProof() throws Exception {
+        String blockHash = "cb".repeat(32);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        "cc".repeat(32), 15_000_000L)))
+                .invalidTransactions(List.of()).build());
+        ColumnFamilyHandle meta = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        CanonicalBlockReference nonGenesis = new CanonicalBlockReference(
+                1, 100, HexUtil.decodeHexString(blockHash));
+        chain.rocks().db().put(meta, PointerIndexMarker.KEY,
+                PointerIndexMarker.encode(PointerIndexMarker.at(nonGenesis)));
+
+        store.rollbackToPoint(Point.ORIGIN);
+
+        assertNull(chain.rocks().db().get(meta, PointerIndexMarker.KEY));
         assertFalse(store.isPointerIndexReadyAtCurrentCoordinate());
     }
 

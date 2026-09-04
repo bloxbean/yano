@@ -154,9 +154,11 @@ class ByronUtxoApplierTest {
     }
 
     @Test
-    void projectionFailureRollsBackByronUtxoDeltaCursorAndProjectionWrites() throws Exception {
+    void projectionFailureDiscardsProjectionWritesButCommitsByronUtxo() throws Exception {
         seedMainnetAvvmOutput();
         byte[] markerKey = "adr042.must-not-commit".getBytes(StandardCharsets.UTF_8);
+        byte[] failureKey = "adr042.failure-must-commit".getBytes(StandardCharsets.UTF_8);
+        AtomicReference<RuntimeException> reported = new AtomicReference<>();
         store.setProjectionContributor(new TestContributor() {
             @Override
             public void contributeByronMainBlock(ByronMainBlockAppliedEvent event,
@@ -165,19 +167,28 @@ class ByronUtxoApplierTest {
                 writer.put(ProjectionCfNames.PROJ_META, markerKey, new byte[]{1});
                 throw new IllegalStateException("synthetic projection failure");
             }
+
+            @Override
+            public void contributionFailed(long blockNumber, ProjectionStagingWriter writer,
+                                           RuntimeException failure) {
+                assertThat(blockNumber).isEqualTo(7L);
+                writer.put(ProjectionCfNames.PROJ_META, failureKey, new byte[]{2});
+                reported.set(failure);
+            }
         });
         String txHash = hex(0x74);
 
-        assertThatThrownBy(() -> store.applyByronBlock(event(61L, 7L, hex(0x75), block(List.of(
-                tx(txHash, List.of(input(GENESIS_AVVM_TX)), BYRON_ADDRESS, 900_000L))))))
-                .hasRootCauseMessage("synthetic projection failure");
+        store.applyByronBlock(event(61L, 7L, hex(0x75), block(List.of(
+                tx(txHash, List.of(input(GENESIS_AVVM_TX)), BYRON_ADDRESS, 900_000L)))));
 
         ColumnFamilyHandle projectionMeta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(
                 ProjectionCfNames.PROJ_META);
         assertThat(store.getDb().get(projectionMeta, markerKey)).isNull();
-        assertThat(store.getUtxo(new Outpoint(GENESIS_AVVM_TX, 0))).isPresent();
-        assertThat(store.getUtxo(new Outpoint(txHash, 0))).isEmpty();
-        assertThat(store.getLastAppliedBlock()).isZero();
+        assertThat(store.getDb().get(projectionMeta, failureKey)).containsExactly(2);
+        assertThat(store.getUtxo(new Outpoint(GENESIS_AVVM_TX, 0))).isEmpty();
+        assertThat(store.getUtxo(new Outpoint(txHash, 0))).isPresent();
+        assertThat(store.getLastAppliedBlock()).isEqualTo(7L);
+        assertThat(reported.get()).hasMessage("synthetic projection failure");
     }
 
     @Test

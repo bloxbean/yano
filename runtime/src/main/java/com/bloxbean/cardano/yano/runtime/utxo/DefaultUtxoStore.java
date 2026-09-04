@@ -35,6 +35,7 @@ import com.bloxbean.cardano.yano.api.plugin.UtxoFilterContext;
 import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
 import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
+import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -1251,15 +1252,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     result.created(), result.spent());
             if (projectionContributor.enabled()) {
                 long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
-                projectionContributor.contributeByronMainBlock(event, result.consumedAddresses(),
-                        (cf, key, value) -> {
-                            try {
-                                batch.put(rocksContext.handle(cf), key, value);
-                            } catch (RocksDBException rex) {
-                                throw new RuntimeException(
-                                        "Failed to stage Byron projection record in UTXO batch", rex);
-                            }
-                        });
+                ProjectionStagingWriter projectionWriter = projectionWriter(batch, "Byron");
+                contributeProjection(batch, event.blockNumber(), projectionWriter, () ->
+                        projectionContributor.contributeByronMainBlock(
+                                event, result.consumedAddresses(), projectionWriter));
                 if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
             }
             db.write(options, batch);
@@ -1581,13 +1577,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             // disabled this is one predictable false check.
             if (projectionContributor.enabled()) {
                 long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
-                projectionContributor.contributeBlock(e, consumedAddresses.view(), (cf, key, value) -> {
-                    try {
-                        batch.put(rocksContext.handle(cf), key, value);
-                    } catch (RocksDBException rex) {
-                        throw new RuntimeException("Failed to stage projection record in UTXO batch", rex);
-                    }
-                });
+                ProjectionStagingWriter projectionWriter = projectionWriter(batch, "Shelley");
+                contributeProjection(batch, e.blockNumber(), projectionWriter, () ->
+                        projectionContributor.contributeBlock(e, consumedAddresses.view(),
+                                projectionWriter));
                 if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
             }
             db.write(wo, batch);
@@ -1626,6 +1619,44 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         } catch (Exception ex) {
             log.error("UTXO apply failed for block {}: {}", e.blockNumber(), ex.toString(), ex);
             throw new RuntimeException("UTXO apply failed for block " + e.blockNumber(), ex);
+        }
+    }
+
+    /**
+     * Isolate projection construction from canonical UTXO application.
+     *
+     * <p>Projection records share the UTXO write batch for atomicity. A savepoint lets a failed
+     * contributor discard every projection write it staged without discarding the L1 state that
+     * preceded it. Failure reporting is best-effort and is never allowed to fail block apply.
+     */
+    private ProjectionStagingWriter projectionWriter(WriteBatch batch, String era) {
+        return (cf, key, value) -> {
+            try {
+                batch.put(rocksContext.handle(cf), key, value);
+            } catch (RocksDBException failure) {
+                throw new RuntimeException("Failed to stage " + era
+                        + " projection record in UTXO batch", failure);
+            }
+        };
+    }
+
+    private void contributeProjection(WriteBatch batch, long blockNumber,
+                                      ProjectionStagingWriter writer,
+                                      Runnable contribution) throws RocksDBException {
+        batch.setSavePoint();
+        try {
+            contribution.run();
+            batch.popSavePoint();
+        } catch (RuntimeException projectionFailure) {
+            batch.rollbackToSavePoint();
+            log.error("Projection contribution failed at block {}; L1 application will continue: {}",
+                    blockNumber, projectionFailure.toString(), projectionFailure);
+            try {
+                projectionContributor.contributionFailed(blockNumber, writer, projectionFailure);
+            } catch (RuntimeException reportingFailure) {
+                log.warn("Projection failure reporter also failed at block {}: {}",
+                        blockNumber, reportingFailure.toString(), reportingFailure);
+            }
         }
     }
 
@@ -2699,14 +2730,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
         CanonicalBlockReference restored;
         if (retained == null) {
-            if (current.blockNumber() != 0 || current.slot() != 0) {
+            if (marker.blockNumber() != 0 || marker.slot() != 0) {
                 batch.delete(cfMeta, PointerIndexMarker.KEY);
-                log.warn("Pointer UTXO index marker not preserved for rollback to origin "
-                                + "from advanced state: currentBlock={}, currentSlot={}",
-                        current.blockNumber(), current.slot());
+                log.warn("Pointer UTXO index non-genesis marker cleared by rollback to origin: "
+                                + "markerBlock={}, markerSlot={}",
+                        marker.blockNumber(), marker.slot());
                 return;
             }
-            restored = new CanonicalBlockReference(0, 0, new byte[32]);
+            restored = new CanonicalBlockReference(
+                    marker.blockNumber(), marker.slot(), marker.blockHash());
         } else {
             restored = new CanonicalBlockReference(
                     retained.blockNumber(), retained.slot(),

@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title description">
+  <title id="title">Yano archive projection flow</title>
+  <desc id="description">Canonical blocks are applied to RocksDB and a durable projection outbox, drained after finality into DuckLake, and staged epoch evidence is released only after a durable receipt.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7faff"/>
+      <stop offset="1" stop-color="#eef4fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#19324d" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#2672d6"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#16856b"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#b87509"/>
+    </marker>
+    <style>
+      .title { font: 700 42px Inter, ui-sans-serif, system-ui, sans-serif; fill: #112a46; }
+      .subtitle { font: 400 21px Inter, ui-sans-serif, system-ui, sans-serif; fill: #4c6178; }
+      .lane { font: 700 17px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 1.5px; fill: #60758c; }
+      .box-title { font: 700 22px Inter, ui-sans-serif, system-ui, sans-serif; fill: #102b49; }
+      .box-copy { font: 400 17px Inter, ui-sans-serif, system-ui, sans-serif; fill: #425a72; }
+      .small { font: 600 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #526980; }
+      .step { font: 700 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: white; }
+      .arrow-label { font: 600 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #315a87; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="980" rx="24" fill="url(#background)"/>
+  <text x="70" y="76" class="title">Yano archive projection flow</text>
+  <text x="70" y="113" class="subtitle">Canonical state stays authoritative; history drains asynchronously and in order.</text>
+
+  <text x="70" y="170" class="lane">CANONICAL BLOCK PATH</text>
+  <line x1="70" y1="185" x2="1530" y2="185" stroke="#cedae7" stroke-width="2"/>
+
+  <!-- Step 1 -->
+  <rect x="70" y="225" width="230" height="175" rx="18" fill="#ffffff" stroke="#a8bfd8" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="102" cy="255" r="18" fill="#2672d6"/>
+  <text x="102" y="261" class="step" text-anchor="middle">1</text>
+  <text x="128" y="262" class="box-title">Cardano sync</text>
+  <text x="98" y="307" class="box-copy">Receive and validate</text>
+  <text x="98" y="334" class="box-copy">canonical block body</text>
+  <text x="98" y="371" class="small">Epoch boundary may run</text>
+
+  <!-- Step 2 -->
+  <rect x="370" y="225" width="250" height="175" rx="18" fill="#edf8f4" stroke="#55a993" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="402" cy="255" r="18" fill="#16856b"/>
+  <text x="402" y="261" class="step" text-anchor="middle">2</text>
+  <text x="428" y="262" class="box-title">Canonical apply</text>
+  <text x="398" y="307" class="box-copy">Ledger / UTxO state</text>
+  <text x="398" y="334" class="box-copy">and projection sections</text>
+  <text x="398" y="371" class="small">One atomic RocksDB batch</text>
+
+  <!-- Step 3 -->
+  <rect x="690" y="225" width="250" height="175" rx="18" fill="#edf8f4" stroke="#55a993" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="722" cy="255" r="18" fill="#16856b"/>
+  <text x="722" y="261" class="step" text-anchor="middle">3</text>
+  <text x="748" y="262" class="box-title">Durable outbox</text>
+  <text x="718" y="307" class="box-copy">Ordered envelopes</text>
+  <text x="718" y="334" class="box-copy">+ artifact references</text>
+  <text x="718" y="371" class="small">Stored in chainstate</text>
+
+  <!-- Step 4 -->
+  <rect x="1010" y="225" width="230" height="175" rx="18" fill="#eef5ff" stroke="#73a3df" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="1042" cy="255" r="18" fill="#2672d6"/>
+  <text x="1042" y="261" class="step" text-anchor="middle">4</text>
+  <text x="1068" y="262" class="box-title">Ordered drain</text>
+  <text x="1038" y="307" class="box-copy">Complete + contiguous</text>
+  <text x="1038" y="334" class="box-copy">+ rollback-safe</text>
+  <text x="1038" y="371" class="small">Bounded batch</text>
+
+  <!-- Step 5 -->
+  <rect x="1310" y="225" width="220" height="175" rx="18" fill="#ffffff" stroke="#a8bfd8" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="1342" cy="255" r="18" fill="#2672d6"/>
+  <text x="1342" y="261" class="step" text-anchor="middle">5</text>
+  <text x="1368" y="262" class="box-title">DuckLake</text>
+  <text x="1338" y="307" class="box-copy">Parquet history rows</text>
+  <text x="1338" y="334" class="box-copy">+ coverage + receipt</text>
+  <text x="1338" y="371" class="small">One transaction</text>
+
+  <!-- Main arrows -->
+  <path d="M300 312 H354" fill="none" stroke="#2672d6" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <path d="M620 312 H674" fill="none" stroke="#16856b" stroke-width="4" marker-end="url(#arrow-green)"/>
+  <path d="M940 312 H994" fill="none" stroke="#2672d6" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <path d="M1240 312 H1294" fill="none" stroke="#2672d6" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <text x="967" y="292" class="arrow-label" text-anchor="middle">finality gate</text>
+
+  <!-- Staged artifact lane -->
+  <text x="70" y="500" class="lane">EPOCH ARTIFACT PATH</text>
+  <line x1="70" y1="515" x2="1530" y2="515" stroke="#cedae7" stroke-width="2"/>
+
+  <rect x="145" y="555" width="315" height="205" rx="18" fill="#fff7e8" stroke="#dda742" stroke-width="2" filter="url(#shadow)"/>
+  <text x="178" y="598" class="box-title">Boundary producers</text>
+  <text x="178" y="638" class="box-copy">Rewards · DRep distribution</text>
+  <text x="178" y="667" class="box-copy">Governance observations</text>
+  <text x="178" y="707" class="small">Facts may be irreproducible later</text>
+
+  <rect x="555" y="555" width="350" height="205" rx="18" fill="#fff7e8" stroke="#dda742" stroke-width="2" filter="url(#shadow)"/>
+  <text x="588" y="598" class="box-title">Durable staged evidence</text>
+  <text x="588" y="638" class="box-copy">&lt;uuid&gt;.rows</text>
+  <text x="588" y="667" class="box-copy">&lt;uuid&gt;.properties</text>
+  <text x="588" y="707" class="small">Row count · bytes · SHA-256</text>
+
+  <rect x="1000" y="555" width="385" height="205" rx="18" fill="#eef5ff" stroke="#73a3df" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1033" y="598" class="box-title">Paged artifact reader</text>
+  <text x="1033" y="638" class="box-copy">Verify manifest + file integrity</text>
+  <text x="1033" y="667" class="box-copy">Stream rows into sink batch</text>
+  <text x="1033" y="707" class="small">No whole reward epoch in heap</text>
+
+  <path d="M460 657 H539" fill="none" stroke="#b87509" stroke-width="4" marker-end="url(#arrow-amber)"/>
+  <text x="500" y="638" class="small" text-anchor="middle">publish</text>
+  <path d="M905 657 H984" fill="none" stroke="#b87509" stroke-width="4" marker-end="url(#arrow-amber)"/>
+  <text x="944" y="638" class="small" text-anchor="middle">lease</text>
+
+  <!-- Connections between lanes -->
+  <path d="M730 555 V478 H815 V416" fill="none" stroke="#b87509" stroke-width="4" marker-end="url(#arrow-amber)"/>
+  <text x="745" y="465" class="small">ArtifactRef → outbox</text>
+
+  <path d="M1192 555 V470 H1125 V416" fill="none" stroke="#2672d6" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <text x="1160" y="458" class="small">pages join batch</text>
+
+  <!-- Acknowledgement loop -->
+  <path d="M1420 416 V850 H730 V776" fill="none" stroke="#16856b" stroke-width="4" stroke-dasharray="10 9" marker-end="url(#arrow-green)"/>
+  <rect x="905" y="815" width="340" height="52" rx="26" fill="#edf8f4" stroke="#55a993" stroke-width="2"/>
+  <text x="1075" y="847" class="box-copy" text-anchor="middle">verified receipt authorizes release</text>
+
+  <!-- Footer invariants -->
+  <rect x="70" y="905" width="1460" height="1" fill="#cedae7"/>
+  <circle cx="88" cy="940" r="7" fill="#16856b"/>
+  <text x="108" y="946" class="small">L1 sync continues if the asynchronous sink fails</text>
+  <circle cx="612" cy="940" r="7" fill="#b87509"/>
+  <text x="632" y="946" class="small">Unreadable referenced evidence stops ordered projection</text>
+  <circle cx="1178" cy="940" r="7" fill="#2672d6"/>
+  <text x="1198" y="946" class="small">Never skip or infer empty history</text>
+</svg>
