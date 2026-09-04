@@ -339,6 +339,51 @@ class L1EpochObservationCoordinatorTest {
     }
 
     @Test
+    void ignoresPreLedgerStateEpochsAndReconcilesTheFirstObservableBoundary(
+            @TempDir Path dir) throws Exception {
+        L1EpochBoundary boundary = new L1EpochBoundary(3, 4, 86_400,
+                bytes(0x04), 100);
+        AtomicBoolean completed = new AtomicBoolean();
+        L1EpochStateProvider provider = new L1EpochStateProvider() {
+            @Override public boolean persistent() { return true; }
+            @Override public int snapshotRetentionEpochs() { return 8; }
+            @Override public long epochAtSlot(long slot) { return slot < 86_400 ? 3 : 4; }
+            @Override public long firstObservableEpoch() { return 4; }
+            @Override public List<L1EpochBoundary> completedBoundaries(long after, int limit) {
+                return completed.get() && boundary.newEpoch() > after
+                        ? List.of(boundary) : List.of();
+            }
+            @Override public Optional<L1EpochState> open(L1EpochBoundary ignored) {
+                return Optional.of(new EmptyState(boundary));
+            }
+        };
+
+        try (AppLedgerStore ledger = ledger(dir.resolve("pre-ledger-state"));
+             L1EpochObservationCoordinator coordinator = new L1EpochObservationCoordinator(
+                     List.of(observer(null, null)), provider,
+                     new EpochObservationSpool(ledger, 1_000_000), 2, 1, 65_536,
+                     () -> false, ignored -> false, ignored -> { }, "pre-ledger-state",
+                     LoggerFactory.getLogger("epoch-test"))) {
+            coordinator.start();
+            coordinator.onBlockApplied(64_800, 90, bytes(0x03));
+            await(() -> Long.valueOf(90L).equals(
+                    coordinator.status().get("latestAppliedBlockNumber")));
+
+            assertThat(coordinator.healthy()).isTrue();
+            assertThat(coordinator.status()).containsEntry("failures", 0L);
+            assertThat(coordinator.status().toString()).contains("ready=0");
+
+            completed.set(true);
+            coordinator.onBlockApplied(86_400, 100, bytes(0x04));
+            await(() -> coordinator.status().toString().contains("ready=1"),
+                    coordinator::status);
+
+            assertThat(coordinator.healthy()).isTrue();
+            assertThat(coordinator.status()).containsEntry("completedJobs", 1L);
+        }
+    }
+
+    @Test
     void restartResumesGeneratingJobOutsideTheCurrentBoundaryScan(@TempDir Path dir)
             throws Exception {
         L1EpochBoundary boundary = new L1EpochBoundary(90, 91, 9_000,

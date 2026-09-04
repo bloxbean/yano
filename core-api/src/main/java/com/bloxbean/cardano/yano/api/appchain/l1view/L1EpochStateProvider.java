@@ -15,6 +15,16 @@ public interface L1EpochStateProvider {
     /** Pure slot-to-epoch calculation used by the non-blocking event callback. */
     long epochAtSlot(long slot);
 
+    /**
+     * First epoch transition for which this source can expose observer datasets.
+     *
+     * <p>The default matches networks whose ledger-state datasets start at genesis. Hosts with
+     * a Byron era override this with the first post-Byron epoch.</p>
+     */
+    default long firstObservableEpoch() {
+        return 1;
+    }
+
     /** Return completed boundaries after {@code afterNewEpoch}, ascending. */
     List<L1EpochBoundary> completedBoundaries(long afterNewEpoch, int limit);
 

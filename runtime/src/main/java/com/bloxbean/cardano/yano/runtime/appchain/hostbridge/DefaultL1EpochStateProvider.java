@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochState;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsView;
+import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor;
 import com.bloxbean.cardano.yano.ledgerstate.HistoricalEpochStateView;
@@ -40,6 +41,10 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
         return epochParams.getEpochSlotCalc().slotToEpoch(slot);
     }
 
+    @Override public long firstObservableEpoch() {
+        return firstObservableEpoch(epochParams.getEpochSlotCalc());
+    }
+
     @Override
     public List<L1EpochBoundary> completedBoundaries(long afterNewEpoch, int limit) {
         if (limit <= 0) return List.of();
@@ -49,8 +54,8 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
             return List.of();
         }
         long latestNewEpoch = state[0];
-        long first = Math.max(afterNewEpoch + 1,
-                Math.max(1, latestNewEpoch - store.snapshotRetentionEpochs() + 1));
+        long first = firstBoundaryToScan(afterNewEpoch, latestNewEpoch,
+                store.snapshotRetentionEpochs(), firstObservableEpoch());
         List<L1EpochBoundary> result = new ArrayList<>();
         for (long newEpoch = first; newEpoch <= latestNewEpoch && result.size() < limit; newEpoch++) {
             long startSlot = epochParams.getEpochSlotCalc().epochToStartSlot((int) newEpoch);
@@ -64,6 +69,16 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
                     point.getSlot(), hash, blockNumber));
         }
         return List.copyOf(result);
+    }
+
+    static long firstObservableEpoch(EpochSlotCalc epochSlotCalc) {
+        return Math.max(1, epochSlotCalc.firstNonByronEpoch());
+    }
+
+    static long firstBoundaryToScan(long afterNewEpoch, long latestNewEpoch,
+                                    int retentionEpochs, long firstObservableEpoch) {
+        return Math.max(afterNewEpoch + 1,
+                Math.max(firstObservableEpoch, latestNewEpoch - retentionEpochs + 1));
     }
 
     @Override

@@ -43,6 +43,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private final int stabilityDepth;
     private final int maxMessagesPerOffer;
     private final long maxBytesPerOffer;
+    private final long firstObservableEpoch;
     private final BooleanSupplier scheduledProposer;
     private final Function<L1Observation, Boolean> injector;
     private final Logger log;
@@ -94,6 +95,11 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         if (stateProvider.snapshotRetentionEpochs() < MINIMUM_RETENTION_EPOCHS) {
             throw new IllegalArgumentException("L1 epoch observers require snapshot retention of at least "
                     + MINIMUM_RETENTION_EPOCHS + " epochs");
+        }
+        this.firstObservableEpoch = stateProvider.firstObservableEpoch();
+        if (firstObservableEpoch < 1) {
+            throw new IllegalArgumentException(
+                    "L1 epoch observer first observable epoch must be positive");
         }
         if (stabilityDepth <= 0) {
             throw new IllegalArgumentException(
@@ -173,6 +179,10 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             return;
         }
         latestAppliedBlockNumber.accumulateAndGet(blockNumber, Math::max);
+        if (epoch < firstObservableEpoch) {
+            lastObservedEpoch.set(-1);
+            return;
+        }
         long previous = lastObservedEpoch.getAndSet(epoch);
         if (previous >= 0 && epoch > previous) {
             for (long next = previous + 1; next <= epoch; next++) {
@@ -188,7 +198,8 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         pendingRollbackSlot.accumulateAndGet(rollbackToSlot, Math::min);
         pendingBoundaries.entrySet().removeIf(
                 entry -> entry.getValue().boundarySlot() > rollbackToSlot);
-        lastObservedEpoch.set(stateProvider.epochAtSlot(rollbackToSlot));
+        long rollbackEpoch = stateProvider.epochAtSlot(rollbackToSlot);
+        lastObservedEpoch.set(rollbackEpoch >= firstObservableEpoch ? rollbackEpoch : -1);
         latestAppliedBlockNumber.set(-1);
         wake();
     }
