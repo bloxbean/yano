@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValid
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
@@ -976,7 +977,8 @@ final class PluginCatalogBuilder {
             case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
                     SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
                     PluginTrustTier.CONSENSUS;
-            case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API, LOCAL_READ_MODEL ->
+            case SIGNER_PROVIDER, EFFECT_EXECUTOR, OBSERVATION_PROVIDER,
+                    DOMAIN_API, LOCAL_READ_MODEL ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };
@@ -1235,6 +1237,8 @@ final class PluginCatalogBuilder {
                     case SEQUENCER_MODE -> ((SequencerModeProvider) provider).id();
                     case L1_OBSERVER -> ((L1ObserverProvider) provider).type();
                     case L1_EPOCH_OBSERVER -> ((L1EpochObserverProvider) provider).type();
+                    case OBSERVATION_PROVIDER ->
+                            ((ObservationProviderFactory) provider).type();
                     case SIGNER_PROVIDER -> ((SignerProviderFactory) provider).scheme();
                     case EFFECT_EXECUTOR -> ((AppEffectExecutorFactory) provider).scheme();
                     case FINALIZED_SINK -> ((FinalizedStreamSinkFactory) provider).scheme();

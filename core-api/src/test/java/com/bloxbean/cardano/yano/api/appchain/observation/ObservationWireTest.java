@@ -98,6 +98,23 @@ class ObservationWireTest {
     }
 
     @Test
+    void sourceIdentityCommitsHttpSemanticsAndCanonicalAttestorSet() {
+        byte[] get = ObservationSourceConfiguration.httpsSourceDigest(
+                "https://example.com/value", "GET", "source", "etag");
+        byte[] post = ObservationSourceConfiguration.httpsSourceDigest(
+                "https://example.com/value", "POST", "source", "etag");
+        assertThat(get).isNotEqualTo(post);
+
+        byte[] first = filled(1);
+        byte[] second = filled(2);
+        assertThat(ObservationSourceConfiguration.attestedHttpsSourceDigest(
+                "https://example.com/attestation", "POST", List.of(first, second)))
+                .isEqualTo(ObservationSourceConfiguration.attestedHttpsSourceDigest(
+                        "https://example.com/attestation", "POST",
+                        List.of(second, first)));
+    }
+
+    @Test
     void reportSignatureDigestCoversEveryClaimFieldButNotSignature() {
         ObservationDefinition definition = definition();
         ObservationRound round = round(definition, filled(20));

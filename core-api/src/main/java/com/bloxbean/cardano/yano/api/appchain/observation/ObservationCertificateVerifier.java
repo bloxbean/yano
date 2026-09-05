@@ -24,6 +24,25 @@ public final class ObservationCertificateVerifier {
             ObservationEvidenceVerifier evidenceVerifier,
             ObservationReconciliationPolicy policy
     ) {
+        return validate(definition, round, certificate, profile, expectedChainGenesisId,
+                expectedChainId, expectedConsensusProfileDigest, authorizedReporters,
+                signatureVerifier, evidenceVerifier, policy).valid();
+    }
+
+    /** Same bounded verification with a stable, non-sensitive diagnostic code. */
+    public static Validation validate(
+            ObservationDefinition definition,
+            ObservationRound round,
+            ObservationCertificate certificate,
+            ObservationProfileV1 profile,
+            byte[] expectedChainGenesisId,
+            String expectedChainId,
+            byte[] expectedConsensusProfileDigest,
+            List<byte[]> authorizedReporters,
+            ObservationSignatureVerifier signatureVerifier,
+            ObservationEvidenceVerifier evidenceVerifier,
+            ObservationReconciliationPolicy policy
+    ) {
         Objects.requireNonNull(signatureVerifier, "signatureVerifier");
         Objects.requireNonNull(evidenceVerifier, "evidenceVerifier");
         Objects.requireNonNull(policy, "policy");
@@ -47,14 +66,14 @@ public final class ObservationCertificateVerifier {
                 || (round.reportThreshold() < round.finalityQuorum()
                 && !definition.certificateLocalUniqueness())
                 || certificate.reports().size() > definition.maxReports()) {
-            return false;
+            return Validation.reject("certificate_identity_or_bounds");
         }
         Set<ReporterSource> reporterSources = new HashSet<>();
         Set<ByteKey> sources = new HashSet<>();
         if (authorizedReporters.size() != round.reporterCount()
                 || !Arrays.equals(ObservationHashes.reporterSetDigest(authorizedReporters),
                 round.reporterSetDigest())) {
-            return false;
+            return Validation.reject("reporter_set");
         }
         Set<ByteKey> allowed = new HashSet<>();
         for (byte[] reporter : authorizedReporters) {
@@ -69,32 +88,58 @@ public final class ObservationCertificateVerifier {
                     || !Arrays.equals(report.subscriptionId(), round.subscriptionId())
                     || report.roundNumber() != round.roundNumber()
                     || !Arrays.equals(report.membershipDigest(), round.membershipDigest())
-                    || !Arrays.equals(report.reporterSetDigest(), round.reporterSetDigest())
-                    || report.value().length > definition.maxValueBytes()
+                    || !Arrays.equals(report.reporterSetDigest(), round.reporterSetDigest())) {
+                return Validation.reject("report_identity");
+            }
+            if (report.value().length > definition.maxValueBytes()
                     || report.evidence().length > definition.maxEvidenceBytes()
                     || report.evidence().length > profile.maxEvidenceBytes()
-                    || report.encode().length > profile.maxReportBytes()
-                    || !allowed.contains(new ByteKey(report.reporterPublicKey()))
-                    || !reporterSources.add(new ReporterSource(
+                    || report.encode().length > profile.maxReportBytes()) {
+                return Validation.reject("report_bounds");
+            }
+            if (!allowed.contains(new ByteKey(report.reporterPublicKey()))) {
+                return Validation.reject("reporter_authorization");
+            }
+            if (!reporterSources.add(new ReporterSource(
                             new ByteKey(report.reporterPublicKey()), new ByteKey(report.sourceId())))
-                    || !signatureVerifier.verify(report.reporterPublicKey(),
-                            report.signingDigest(), report.signature())
-                    || !evidenceVerifier.verify(definition, round, report)) {
-                return false;
+            ) {
+                return Validation.reject("duplicate_reporter_source");
+            }
+            if (!signatureVerifier.verify(report.reporterPublicKey(),
+                    report.signingDigest(), report.signature())) {
+                return Validation.reject("report_signature");
+            }
+            if (!evidenceVerifier.verify(definition, round, report)) {
+                return Validation.reject("report_evidence");
             }
             sources.add(new ByteKey(report.sourceId()));
         }
         if (sources.size() < definition.sourceThreshold()
                 || sources.size() > definition.maxSources()) {
-            return false;
+            return Validation.reject("source_threshold");
         }
         byte[] valueDigest = ObservationHashes.digest(certificate.output());
         byte[] expectedResult = ObservationHashes.resultId(round.subscriptionId(),
                 round.roundNumber(), round.definitionDigest(), ObservationResultStatus.VALUE,
                 valueDigest);
-        return Arrays.equals(expectedResult, certificate.resultId())
-                && policy.verify(definition, round, certificate.reports(),
-                certificate.output(), certificate.policyTrace());
+        if (!Arrays.equals(expectedResult, certificate.resultId())) {
+            return Validation.reject("result_id");
+        }
+        if (!policy.verify(definition, round, certificate.reports(),
+                certificate.output(), certificate.policyTrace())) {
+            return Validation.reject("policy");
+        }
+        return Validation.accept();
+    }
+
+    public record Validation(boolean valid, String reason) {
+        private static Validation accept() {
+            return new Validation(true, "accepted");
+        }
+
+        private static Validation reject(String reason) {
+            return new Validation(false, reason);
+        }
     }
 
     private record ByteKey(byte[] value) {

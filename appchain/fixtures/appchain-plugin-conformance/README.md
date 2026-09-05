@@ -1,6 +1,6 @@
 # ADR-011.2 plugin conformance fixture
 
-This build-only bundle covers the `NodePlugin` lifecycle and all ten typed
+This build-only bundle covers the `NodePlugin` lifecycle and all eleven typed
 app-chain plugin SPIs in both runtime modes without peers or external work.
 
 Its schema-v1 manifest declares global plugin API `minLevel` `2`, which adds the

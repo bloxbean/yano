@@ -121,6 +121,19 @@ final class FxKernel {
     Result apply(AppStateMachine machine, AppBlockExecutionContext context,
                  AppStateWriter state, FxReader reader,
                  AppObservationEmitter observations) {
+        return apply(machine, context, state, reader, observations, null);
+    }
+
+    Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                 AppStateWriter state, FxReader reader,
+                 ObservationKernel.BlockSession observations) {
+        return apply(machine, context, state, reader, observations, observations);
+    }
+
+    private Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                         AppStateWriter state, FxReader reader,
+                         AppObservationEmitter observations,
+                         ObservationKernel.BlockSession observationSession) {
         AppBlock block = context.block();
         if (consensusProfileGuard != null) {
             consensusProfileGuard.apply(block.height(), state);
@@ -128,8 +141,13 @@ final class FxKernel {
         AppStateWriter machineWriter = guardedWriter(state, settings.strictReservedPrefix());
 
         if (!settings.enabled()) {
-            machine.apply(context, machineWriter, AppEffectEmitter.rejecting(
-                    "Effects are disabled for this chain (effects.enabled=false)"), observations);
+            AppEffectEmitter rejectingEffects = AppEffectEmitter.rejecting(
+                    "Effects are disabled for this chain (effects.enabled=false)");
+            if (observationSession != null) {
+                observationSession.incorporateResults(machine, machineWriter, rejectingEffects);
+                observationSession.advance(machine, machineWriter, rejectingEffects);
+            }
+            machine.apply(context, machineWriter, rejectingEffects, observations);
             return Result.NONE;
         }
 
@@ -159,6 +177,12 @@ final class FxKernel {
             incorporated.add(result);
             emitter.closedOne();
             machine.onEffectResult(context, result, machineWriter, emitter, observations);
+        }
+
+        // Observation results are incorporated after effect results and before
+        // either expiry sweep (ADR-037 section 7.6).
+        if (observationSession != null) {
+            observationSession.incorporateResults(machine, machineWriter, emitter);
         }
 
         // 2. Deterministic expiry sweep at this height. Every swept effect is
@@ -191,6 +215,11 @@ final class FxKernel {
             expiredThisBlock++;
             emitter.closedOne();
             machine.onEffectResult(context, expired, machineWriter, emitter, observations);
+        }
+
+        // Observation close/expiry/due work follows the effect expiry sweep.
+        if (observationSession != null) {
+            observationSession.advance(machine, machineWriter, emitter);
         }
 
         machine.apply(context, machineWriter, emitter, observations);

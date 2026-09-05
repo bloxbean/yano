@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.bloxbean.cardano.yano.fixture.plugin-conformance",
   "version": "${pluginVersion}",
-  "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 5 },
   "dependencies": [],
   "contributions": [
     {
@@ -39,6 +39,11 @@
       "kind": "effect-executor",
       "name": "conformance-effect",
       "provider": "com.bloxbean.cardano.yano.appchain.conformance.ConformanceEffectExecutorFactory"
+    },
+    {
+      "kind": "observation-provider",
+      "name": "conformance-observation",
+      "provider": "com.bloxbean.cardano.yano.appchain.conformance.ConformanceObservationProviderFactory"
     },
     {
       "kind": "finalized-sink",

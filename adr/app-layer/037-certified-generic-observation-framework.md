@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 0 implementation started after the architecture-only review.
+Accepted — Phases 0 and 1 implemented; later milestones remain in progress.
 
 The architecture shipped in a separate review before implementation. The
 number is local to the `adr/app-layer` series. Root-level ADR numbers are a
@@ -1133,8 +1133,13 @@ On startup, before reporting healthy, a validator:
 6. re-gossips valid retained reports and certificates.
 
 A crash between acquisition and persistence merely repeats acquisition. A
-crash after signing must retain the exact signed report; the node must not sign
-any second report for the same `(round, source)` after restart.
+node synchronously persists the canonical unsigned signing material before
+invoking its signer, including a remote signer. A crash during or after signing
+resumes that retained material without reacquiring a different value. The
+signed report and no-equivocation lock are synchronously stored before diffusion.
+The node must not sign different material for the same `(round, source)` after
+restart. Repeating a deterministic signature over identical retained material
+is permitted.
 
 ### 10.4 Rollback and replay
 
@@ -1152,6 +1157,12 @@ remains unchanged. Core API adds a default four-argument overload which
 delegates to it, plus a default no-op `onObservationResult`. The runtime calls
 the new overload. Observation-aware machines opt in through their capability
 manifest; existing source and binaries keep their current behavior.
+
+Every host decorator and plugin facade must explicitly forward the observation
+overloads of `apply` and `onEffectResult`, and `onObservationResult`. Inheriting
+the legacy default through a wrapper discards the observation emitter and is
+not compatible. Qualification includes a networked subsystem test with the
+normal indexing decorators enabled and a committed query of callback state.
 
 The intended shape is:
 

@@ -7,6 +7,11 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRound;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscription;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptionStatus;
 import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
@@ -45,6 +50,12 @@ final class AppLedgerStore implements AutoCloseable {
     private static final byte[] CF_FX_RECORDS = "app_fx_records".getBytes(StandardCharsets.UTF_8);
     /** Effect runtime tier (ADR-010 F3): node-local execution progress — never replicated, disposable. */
     private static final byte[] CF_FX_RUNTIME = "app_fx_runtime".getBytes(StandardCharsets.UTF_8);
+    /** Replicated observation scheduler records, rebuilt by finalized-block replay. */
+    private static final byte[] CF_OBSERVATIONS =
+            "app_observations_v1".getBytes(StandardCharsets.UTF_8);
+    /** Node-local observation reports/certificates and acquisition progress. */
+    private static final byte[] CF_OBSERVATION_RUNTIME =
+            "app_observation_runtime_v1".getBytes(StandardCharsets.UTF_8);
     /** Durable ADR-028 epoch-observation generation/outbox state (node local). */
     private static final byte[] CF_EPOCH_OBSERVATIONS =
             "app_epoch_observations_v1".getBytes(StandardCharsets.UTF_8);
@@ -57,7 +68,7 @@ final class AppLedgerStore implements AutoCloseable {
     private static final byte[] CF_SNAPSHOT_LIFECYCLE =
             "app_snapshot_lifecycle_v1".getBytes(StandardCharsets.UTF_8);
     private static final String CF_MPF_GC_MARKS_PREFIX = "marks_";
-    private static final int STANDARD_COLUMN_FAMILY_COUNT = 18;
+    private static final int STANDARD_COLUMN_FAMILY_COUNT = 20;
 
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
@@ -83,6 +94,8 @@ final class AppLedgerStore implements AutoCloseable {
     private final ColumnFamilyHandle queryIndexCf;
     private final ColumnFamilyHandle fxRecordsCf;
     private final ColumnFamilyHandle fxRuntimeCf;
+    private final ColumnFamilyHandle observationsCf;
+    private final ColumnFamilyHandle observationRuntimeCf;
     private final ColumnFamilyHandle epochObservationsCf;
     private final ColumnFamilyHandle snapshotNodesCf;
     private final ColumnFamilyHandle snapshotRootsCf;
@@ -142,7 +155,9 @@ final class AppLedgerStore implements AutoCloseable {
                     new ColumnFamilyDescriptor(CF_SNAPSHOT_NODES, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_SNAPSHOT_ROOTS, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_SNAPSHOT_BUILDS, defaultCfOptions),
-                    new ColumnFamilyDescriptor(CF_SNAPSHOT_LIFECYCLE, defaultCfOptions)));
+                    new ColumnFamilyDescriptor(CF_SNAPSHOT_LIFECYCLE, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_OBSERVATIONS, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_OBSERVATION_RUNTIME, defaultCfOptions)));
             for (byte[] staleMarks : staleMpfGcColumnFamilies(path)) {
                 descriptors.add(new ColumnFamilyDescriptor(staleMarks, defaultCfOptions));
             }
@@ -171,6 +186,8 @@ final class AppLedgerStore implements AutoCloseable {
             this.snapshotRootsCf = cfHandles.get(15);
             this.snapshotBuildsCf = cfHandles.get(16);
             this.snapshotLifecycleCf = cfHandles.get(17);
+            this.observationsCf = cfHandles.get(18);
+            this.observationRuntimeCf = cfHandles.get(19);
             dropStaleMpfGcColumnFamilies();
             this.stateBackend = StateCommitmentProfiles.MPF.id().equals(profileId)
                     ? new MpfAuthenticatedStateBackend(
@@ -1208,6 +1225,261 @@ final class AppLedgerStore implements AutoCloseable {
                 return fxExpiredCount();
             }
         };
+    }
+
+    // ------------------------------------------------------------------
+    // Generic observation consensus tier (ADR-037). These records are not
+    // node-local worker state: every mutation is staged with the finalized
+    // block and each logical record also has an authenticated-state leaf.
+    // ------------------------------------------------------------------
+
+    private static final byte[] OBS_ACTIVE_COUNT = new byte[]{'m', 'a'};
+    private static final byte[] OBS_OPEN_ROUND_COUNT = new byte[]{'m', 'o'};
+
+    void stageObservations(WriteBatch batch, ObservationKernel.Result result) {
+        if (result == null || result.isEmpty()) {
+            return;
+        }
+        try {
+            for (ObservationSubscription subscription : result.subscriptions()) {
+                batch.put(observationsCf, observationSubscriptionKey(
+                        subscription.subscriptionId()), subscription.encode());
+            }
+            for (ObservationRound round : result.rounds()) {
+                batch.put(observationsCf, observationRoundKey(
+                        round.subscriptionId(), round.roundNumber()), round.encode());
+            }
+            for (ObservationKernel.DueEntry due : result.dueDeletes()) {
+                batch.delete(observationsCf, observationDueKey(due));
+            }
+            for (ObservationKernel.DueEntry due : result.dueAdds()) {
+                batch.put(observationsCf, observationDueKey(due), new byte[0]);
+            }
+            for (ObservationResult observationResult : result.results()) {
+                batch.put(observationsCf, observationResultKey(
+                        observationResult.resultId()), observationResult.encode());
+            }
+            batch.put(observationsCf, OBS_ACTIVE_COUNT, longBytes(result.activeCount()));
+            batch.put(observationsCf, OBS_OPEN_ROUND_COUNT, longBytes(result.openRoundCount()));
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to stage observation records", failure);
+        }
+    }
+
+    ObservationKernel.Reader observationReader() {
+        return new ObservationKernel.Reader() {
+            @Override
+            public Optional<ObservationSubscription> subscription(byte[] subscriptionId) {
+                try {
+                    byte[] encoded = db.get(observationsCf,
+                            observationSubscriptionKey(subscriptionId));
+                    return encoded == null ? Optional.empty()
+                            : Optional.of(ObservationSubscription.decode(encoded));
+                } catch (RocksDBException failure) {
+                    throw new RuntimeException("Failed to read observation subscription", failure);
+                }
+            }
+
+            @Override
+            public Optional<ObservationRound> round(byte[] subscriptionId, long roundNumber) {
+                try {
+                    byte[] encoded = db.get(observationsCf,
+                            observationRoundKey(subscriptionId, roundNumber));
+                    return encoded == null ? Optional.empty()
+                            : Optional.of(ObservationRound.decode(encoded));
+                } catch (RocksDBException failure) {
+                    throw new RuntimeException("Failed to read observation round", failure);
+                }
+            }
+
+            @Override
+            public List<ObservationKernel.DueEntry> dueAtOrBefore(
+                    ObservationAnchorType anchorType, long anchor, int limit) {
+                List<ObservationKernel.DueEntry> due = new ArrayList<>();
+                byte[] prefix = new byte[]{'d', (byte) anchorType.code()};
+                try (RocksIterator iterator = db.newIterator(observationsCf)) {
+                    for (iterator.seek(prefix); iterator.isValid() && due.size() < limit;
+                         iterator.next()) {
+                        byte[] key = iterator.key();
+                        if (key.length != 42 || key[0] != 'd'
+                                || key[1] != (byte) anchorType.code()) {
+                            break;
+                        }
+                        ByteBuffer decoded = ByteBuffer.wrap(key);
+                        decoded.position(2);
+                        long dueAnchor = decoded.getLong();
+                        if (dueAnchor > anchor) {
+                            break;
+                        }
+                        byte[] id = new byte[32];
+                        decoded.get(id);
+                        due.add(new ObservationKernel.DueEntry(anchorType, dueAnchor, id));
+                    }
+                }
+                return due;
+            }
+
+            @Override
+            public List<ObservationRound> openRounds(int limit) {
+                List<ObservationRound> rounds = new ArrayList<>();
+                try (RocksIterator iterator = db.newIterator(observationsCf)) {
+                    for (iterator.seek(new byte[]{'r'}); iterator.isValid()
+                            && rounds.size() < limit; iterator.next()) {
+                        byte[] key = iterator.key();
+                        if (key.length != 41 || key[0] != 'r') {
+                            break;
+                        }
+                        ObservationRound round = ObservationRound.decode(iterator.value());
+                        ObservationSubscription subscription = subscription(
+                                round.subscriptionId()).orElseThrow(() ->
+                                new IllegalStateException("Observation round has no subscription"));
+                        if (subscription.status() == ObservationSubscriptionStatus.ACTIVE
+                                && subscription.nextDueAnchor() == 0
+                                && subscription.nextRoundNumber() == round.roundNumber()) {
+                            rounds.add(round);
+                        }
+                    }
+                }
+                return rounds;
+            }
+
+            @Override public long activeCount() {
+                return observationCounter(OBS_ACTIVE_COUNT);
+            }
+
+            @Override public long openRoundCount() {
+                return observationCounter(OBS_OPEN_ROUND_COUNT);
+            }
+
+            @Override
+            public long activeCount(byte[] definitionDigest) {
+                long count = 0;
+                try (RocksIterator iterator = db.newIterator(observationsCf)) {
+                    for (iterator.seek(new byte[]{'s'}); iterator.isValid(); iterator.next()) {
+                        byte[] key = iterator.key();
+                        if (key.length != 33 || key[0] != 's') {
+                            break;
+                        }
+                        ObservationSubscription subscription =
+                                ObservationSubscription.decode(iterator.value());
+                        if (subscription.status() == ObservationSubscriptionStatus.ACTIVE
+                                && Arrays.equals(subscription.definitionDigest(), definitionDigest)) {
+                            count++;
+                        }
+                    }
+                }
+                return count;
+            }
+        };
+    }
+
+    private long observationCounter(byte[] key) {
+        try {
+            byte[] encoded = db.get(observationsCf, key);
+            return encoded == null ? 0 : ByteBuffer.wrap(encoded).getLong();
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to read observation counter", failure);
+        }
+    }
+
+    private static byte[] observationSubscriptionKey(byte[] subscriptionId) {
+        ByteBuffer key = ByteBuffer.allocate(33);
+        key.put((byte) 's').put(fixedObservationId(subscriptionId));
+        return key.array();
+    }
+
+    private static byte[] observationRoundKey(byte[] subscriptionId, long roundNumber) {
+        if (roundNumber < 0) {
+            throw new IllegalArgumentException("round number must be nonnegative");
+        }
+        ByteBuffer key = ByteBuffer.allocate(41);
+        key.put((byte) 'r').put(fixedObservationId(subscriptionId)).putLong(roundNumber);
+        return key.array();
+    }
+
+    private static byte[] observationDueKey(ObservationKernel.DueEntry due) {
+        ByteBuffer key = ByteBuffer.allocate(42);
+        key.put((byte) 'd').put((byte) due.anchorType().code())
+                .putLong(due.dueAnchor()).put(due.subscriptionId());
+        return key.array();
+    }
+
+    private static byte[] observationResultKey(byte[] resultId) {
+        ByteBuffer key = ByteBuffer.allocate(33);
+        key.put((byte) 'v').put(fixedObservationId(resultId));
+        return key.array();
+    }
+
+    private static byte[] fixedObservationId(byte[] id) {
+        if (id == null || id.length != 32) {
+            throw new IllegalArgumentException("observation id must be 32 bytes");
+        }
+        return id;
+    }
+
+    record ObservationRuntimeEntry(byte[] key, byte[] value) {
+        ObservationRuntimeEntry {
+            key = key.clone();
+            value = value.clone();
+        }
+
+        @Override public byte[] key() { return key.clone(); }
+        @Override public byte[] value() { return value.clone(); }
+    }
+
+    byte[] observationRuntimeGet(byte[] key) {
+        try {
+            return db.get(observationRuntimeCf, key);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to read observation runtime journal", failure);
+        }
+    }
+
+    void observationRuntimePutSync(byte[] key, byte[] value) {
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(observationRuntimeCf, options, key, value);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to persist observation runtime journal", failure);
+        }
+    }
+
+    void observationRuntimeWriteSync(List<ObservationRuntimeEntry> puts,
+                                     List<byte[]> deletes) {
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions options = new WriteOptions().setSync(true)) {
+            for (ObservationRuntimeEntry entry : puts) {
+                batch.put(observationRuntimeCf, entry.key(), entry.value());
+            }
+            for (byte[] key : deletes) {
+                batch.delete(observationRuntimeCf, key);
+            }
+            db.write(options, batch);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to update observation runtime journal", failure);
+        }
+    }
+
+    void observationRuntimeDeleteSync(byte[] key) {
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.delete(observationRuntimeCf, options, key);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to delete observation runtime journal entry", failure);
+        }
+    }
+
+    List<ObservationRuntimeEntry> observationRuntimeScan(byte[] prefix, int limit) {
+        List<ObservationRuntimeEntry> entries = new ArrayList<>();
+        try (RocksIterator iterator = db.newIterator(observationRuntimeCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && entries.size() < limit;
+                 iterator.next()) {
+                byte[] key = iterator.key();
+                if (!startsWith(key, prefix)) {
+                    break;
+                }
+                entries.add(new ObservationRuntimeEntry(key, iterator.value()));
+            }
+        }
+        return entries;
     }
 
     Optional<EffectRecord> fxRecord(long height, int ordinal) {

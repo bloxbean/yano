@@ -508,7 +508,10 @@ class L1EpochObservationCoordinatorTest {
     private static void await(java.util.function.BooleanSupplier condition,
                               java.util.function.Supplier<?> diagnostic) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
             Thread.sleep(10);
         }
         assertThat(condition.getAsBoolean()).as(String.valueOf(diagnostic.get())).isTrue();
