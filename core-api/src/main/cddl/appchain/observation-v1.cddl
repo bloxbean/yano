@@ -48,6 +48,15 @@ observation-subscription = [
 ]
 
 ; Field indexes 0..23. result-expiry-height=0 means collection remains open.
+; Profile stateCodecVersion=2 selects this 17-field subscription record.
+; Last field is the retained report-window offset in selected anchor units.
+observation-subscription-v2 = [
+  2, hash32, bounded-id, bounded-id, hash32, bytes .size (0..65536),
+  uint .gt 0, 0 / 1, uint .gt 0, uint, uint, 0 / 1, 0 / 1 / 2 / 3,
+  uint, uint, bstr .size (0 / 32), uint
+]
+
+; Field indexes 0..23. result-expiry-height=0 means collection remains open.
 observation-round = [
   1, hash32, uint, 0 / 1, uint .gt 0, uint .gt 0, uint .gt 0,
   uint, uint .gt 0, uint, hash32, hash32, uint, hash32,

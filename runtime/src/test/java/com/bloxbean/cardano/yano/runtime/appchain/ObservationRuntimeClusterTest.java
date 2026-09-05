@@ -34,6 +34,7 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRequest;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSourceConfiguration;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscription;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.io.TempDir;
@@ -165,9 +166,10 @@ class ObservationRuntimeClusterTest {
             AppBlock finalized = proposer.block(3).orElseThrow();
             assertThat(finalized.messages()).anyMatch(message ->
                     ObservationTopics.RESULT.equals(message.getTopic()));
-            byte[] output = ObservationCertificate.decode(finalized.messages().stream()
+            ObservationCertificate finalizedObservation = ObservationCertificate.decode(finalized.messages().stream()
                     .filter(message -> ObservationTopics.RESULT.equals(message.getTopic()))
-                    .findFirst().orElseThrow().getBody()).output();
+                    .findFirst().orElseThrow().getBody());
+            byte[] output = finalizedObservation.output();
             assertThat(new String(output, StandardCharsets.US_ASCII))
                     .contains(attested ? "delivered" : "distributionUrl=");
             for (AppChainSubsystem node : subsystems) {
@@ -176,9 +178,15 @@ class ObservationRuntimeClusterTest {
                 assertThat(block.stateRoot()).isEqualTo(finalized.stateRoot());
                 assertThat(node.query("result", new byte[0]).payload())
                         .isEqualTo(output);
+                var audit = node.query("yano/observations/result", finalizedObservation.resultId());
+                assertThat(audit.stateRoot()).isEqualTo(finalized.stateRoot());
+                assertThat(ObservationResult.decode(audit.payload()).value()).isEqualTo(output);
+                assertThat(ObservationSubscription.decode(node.query("yano/observations/subscription",
+                        finalizedObservation.subscriptionId()).payload()).status().name()).isEqualTo("COMPLETED");
+                assertThat(node.status()).containsKey("genericObservations");
             }
         } finally {
-            for (AppChainSubsystem node : subsystems) node.stop();
+            for (AppChainSubsystem node : subsystems) node.close();
             for (NodeServer server : servers) server.shutdown();
         }
     }

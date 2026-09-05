@@ -45,6 +45,31 @@ class ObservationWireTest {
     }
 
     @Test
+    void subscriptionV2RetainsReportWindowWithoutReinterpretingV1() {
+        ObservationSubscription legacy = subscription(definition());
+        ObservationSubscription recurring = new ObservationSubscription(2, legacy.subscriptionId(),
+                legacy.applicationId(), legacy.route(), legacy.definitionDigest(), legacy.parameters(),
+                legacy.creationHeight(), legacy.anchorType(), legacy.firstDueAnchor(), 10,
+                legacy.expiryAnchor(), 0, legacy.status(), legacy.nextDueAnchor(), 0, null, 3);
+        byte[] encoded = recurring.encode();
+        assertThat(encoded[0]).isEqualTo((byte) 0x91);
+        assertThat(ObservationSubscription.decode(encoded).reportWindow()).isEqualTo(3);
+        assertThat(ObservationSubscription.decode(encoded).encode()).isEqualTo(encoded);
+        assertThat(legacy.encode()[0]).isEqualTo((byte) 0x90);
+        byte[] mislabeled = encoded.clone();
+        mislabeled[1] = 1;
+        assertThatThrownBy(() -> ObservationSubscription.decode(mislabeled))
+                .isInstanceOf(IllegalArgumentException.class);
+        for (int length = 0; length < encoded.length; length++) {
+            byte[] truncated = Arrays.copyOf(encoded, length);
+            assertThatThrownBy(() -> ObservationSubscription.decode(truncated))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThatThrownBy(() -> ObservationSubscription.decode(Arrays.copyOf(encoded, encoded.length + 1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void canonicalConformanceVectorDigestsAreStable() {
         ObservationDefinition definition = definition();
         ObservationSubscription subscription = subscription(definition);

@@ -28,6 +28,11 @@ public final class ObservationHashes {
     private ObservationHashes() {
     }
 
+    /** V2 definition selector; each round separately commits its actual member keys. */
+    public static byte[] activeMemberRuleDigest() {
+        return digest("yano/observation/active-members/v2\0".getBytes(StandardCharsets.US_ASCII));
+    }
+
     public static byte[] definitionDigest(ObservationDefinition definition) {
         return digest(DEFINITION, definition.encode());
     }

@@ -719,7 +719,7 @@ class AppChainL1CallbackIsolationTest {
                     .toList();
         }
 
-        @Override public void close() { subsystem.stop(); }
+        @Override public void close() { subsystem.close(); }
     }
 
     private static final class TestVirtualMachineError extends VirtualMachineError {

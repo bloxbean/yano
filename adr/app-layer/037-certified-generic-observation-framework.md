@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phases 0 and 1 implemented; later milestones remain in progress.
+Accepted — Phases 0–2 implemented; later milestones remain in progress.
 
 The architecture shipped in a separate review before implementation. The
 number is local to the `adr/app-layer` series. Root-level ADR numbers are a
@@ -403,6 +403,7 @@ creationHeight
 firstDueAnchor (APP_HEIGHT in Phase 1)
 cadence in selected logical-anchor units, if recurring
 subscription expiry anchor
+reportWindow = first report deadline - firstDueAnchor (state codec v2)
 completion policy
 status
 nextDueAnchor
@@ -430,6 +431,43 @@ cannot collide and do not make the two APIs consume each other's capacity.
 This is analogous to deterministic effect IDs. Identical public definitions
 created by different applications remain distinct subscriptions in the first
 implementation.
+
+Phase 2 uses the existing profile envelope with `stateCodecVersion = 2` and
+`roundRulesVersion = 2`; both must be selected together. Subscription codec v2
+appends `reportWindow` as its seventeenth field. Codec v1's sixteen fields and
+golden vectors remain unchanged. A v2 round deadline is
+`min(dueAnchor + reportWindow, subscriptionExpiryAnchor)`, using checked or
+expiry-saturating arithmetic. `absoluteMaxRoundHeight` is opening height plus
+the profile's maximum lifetime, independently of the selected logical anchor.
+The first due anchor must be future relative to the block's effective anchor.
+Completion code 0 continues a recurring subscription until its last eligible
+due anchor; code 1 stops on its first VALUE. A zero cadence is always one-shot.
+Unknown completion codes are rejected. Following VALUE or EXPIRED, recurrence
+advances from the previous **scheduled due** by exactly one cadence, never from
+the current height/slot. Backlogged rounds are opened in bounded subsequent
+passes, even when their report window is already closed; they are not skipped.
+A recurrence exhausted after VALUE is COMPLETED, and after EXPIRED is EXPIRED.
+This is a profile-selected protocol change, not an implicit reinterpretation
+of an existing v1 chain's commitments.
+
+Round-rules v2 admits at most 1,024 new subscriptions in one block, sharing one
+ordinal across all callbacks. The chain/application/definition lifetime quotas
+still apply. This fixed ABI bound prevents the 100,000-record scale target
+from authorizing an unbounded single-block allocation. Scale qualification
+accumulates records over bounded blocks, then recovers the full committed set.
+
+In a round-rules v2 ACTIVE_MEMBERS definition, `reporterSetDigest` is the
+Blake2b-256 digest of the UTF-8 domain `yano/observation/active-members/v2\0`.
+It selects the active-members rule, not the initial key list. Each opened round
+pins the actual reporter-set digest and epoch, and uses
+`max(definition.reportThreshold, openingEpoch.finalityQuorum)` reports. The
+definition threshold is a floor; its fault bound remains pinned. Membership
+changes must preserve the profile's report-count capacity and fault bounds.
+The governed-membership activation guard treats incompatible changes as
+deterministic void commands, using the existing governance no-op convention.
+Operator-supplied membership epochs must satisfy the same checks. The v1 pinned-set semantics
+remain unchanged. The round's snapshot, never current membership at report
+arrival, authorizes reporters for an already opened round.
 
 ### 6.3 `ObservationRound`
 
@@ -1006,6 +1044,13 @@ rule: after each finalized block it commits
 `max(previousHighWater, block.l1Slot)` for a non-zero locally verified slot and
 otherwise retains the previous value. Tick bodies never update it.
 
+The Phase 2 implementation selects this behavior with `logicalTimeVersion=2`
+and requires round-rules/state-codec v2. It commits the high-water slot under
+`~yano/obs/high-water-slot/v2` as one unsigned big-endian 64-bit value (restricted
+to the nonnegative signed-long range). Scheduler active/open counts use two
+such values under `~yano/obs/scheduler-counts/v2`. APP_HEIGHT-only v1 chains
+retain their original roots and do not acquire these leaves.
+
 This adopts ADR-012's L1-slot heartbeat insight without making generic
 observations part of the `~l1/*` mandatory fact lane. It gives a cadence in
 Cardano slots, not universal wall-clock time. Chains with no verified L1
@@ -1033,6 +1078,13 @@ Deterministic summary/commitment leaves under `~yano/obs/` bind the framework
 records into the app state root. A missing due record, commitment mismatch, or
 partial restore fails loudly and requires index rebuild by finalized-block
 replay; silently skipping corruption could fork the transition.
+
+Replay produces a non-runnable repair candidate: a fresh replay ledger does
+not inherit the original node's observation signing or consensus vote locks.
+After every replayed root is verified, an explicit offline install replaces
+only the original ledger's observation index column family. All node-local
+safety records remain in the original ledger. A durable install-in-progress
+marker prevents startup after interruption until repair is completed.
 
 Node-local runtime state may use a priority queue, timing wheel, or RocksDB
 ordered index to wake workers efficiently. It is a cache reconstructed from

@@ -10,6 +10,7 @@ Start with:
 - [App-chain consensus and state-machine internals](../APP_CHAIN_CONSENSUS_GUIDE.md)
 - [Plugin query and domain API contract](../APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md)
 - [Plugin operations](../PLUGIN_OPERATIONS.md)
+- [Certified observations (preview)](observations.md)
 - [`ordered-log` reference](state-machines/ordered-log.md)
 - [Console UI status](../console-ui.md)
 

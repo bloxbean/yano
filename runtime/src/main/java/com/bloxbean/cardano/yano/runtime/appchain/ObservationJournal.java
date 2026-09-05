@@ -1,5 +1,10 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import co.nstant.in.cbor.model.Array;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.serializers.AppMsgSubmissionSerializers;
+import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificate;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationHashes;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReport;
@@ -17,6 +22,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Identity-bound, synchronous node-local signing/report journal. A report's
@@ -33,6 +39,7 @@ final class ObservationJournal {
     private static final byte CERTIFICATE = 'c';
     private static final byte READY = 'y';
     private static final byte CANDIDATE = 'a';
+    private static final byte[] TICK_KEY = new byte[]{'h'};
 
     private final AppLedgerStore ledger;
     private final int maxEntries;
@@ -95,6 +102,36 @@ final class ObservationJournal {
                 roundPrefix(CANDIDATE, subscriptionId, roundNumber));
         return encoded == null ? Optional.empty()
                 : Optional.of(ObservationReport.decode(encoded));
+    }
+
+    /** At most one durable heartbeat envelope per identity-bound journal. */
+    synchronized AppMessage pendingTick(byte[] body, Supplier<AppMessage> factory) {
+        byte[] previous = ledger.observationRuntimeGet(TICK_KEY);
+        if (previous != null) {
+            if (previous.length > 2048) throw new IllegalStateException("Oversized retained observation tick");
+            AppMessage retained = AppMsgSubmissionSerializers.deserializeAppMessage(
+                    (Array) CborSerializationUtil.deserializeOne(previous));
+            if (!ObservationTopics.TICK.equals(retained.getTopic())) {
+                throw new IllegalStateException("Invalid retained observation tick");
+            }
+            if (Arrays.equals(body, retained.getBody())
+                    && retained.getSenderSeq() > ledger.senderSeq(retained.getSender())
+                    && ledger.messageHeight(retained.getMessageId()).isEmpty()) return retained;
+        }
+        AppMessage message = factory.get();
+        if (!ObservationTopics.TICK.equals(message.getTopic()) || !Arrays.equals(body, message.getBody())
+                || message.getSenderSeq() <= 0) {
+            throw new IllegalArgumentException("Invalid observation heartbeat envelope");
+        }
+        byte[] encoded = CborSerializationUtil.serialize(
+                AppMsgSubmissionSerializers.serializeAppMessage(message));
+        if (encoded.length > 2048) throw new IllegalArgumentException("Observation tick envelope exceeds bound");
+        long delta = previous == null ? TICK_KEY.length + encoded.length : encoded.length - previous.length;
+        reserve(previous == null ? 1 : 0, delta);
+        ledger.observationRuntimePutSync(TICK_KEY, encoded);
+        if (previous == null) entries++;
+        bytes += delta;
+        return message;
     }
 
     /** Pin canonical signing material before invoking even a remote signer. */
@@ -229,6 +266,12 @@ final class ObservationJournal {
 
     synchronized long bytes() {
         return bytes;
+    }
+
+    synchronized boolean canReserve(int additionalEntries, long additionalBytes) {
+        return additionalEntries >= 0 && additionalBytes >= 0
+                && (long) entries + additionalEntries <= maxEntries
+                && additionalBytes <= maxBytes - bytes;
     }
 
     private void reserve(int additionalEntries, long additionalBytes) {

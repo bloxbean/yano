@@ -42,6 +42,8 @@ public record ObservationProfileV1(
 ) {
     public static final int MAX_ENCODED_BYTES = 1024 * 1024;
     public static final int MAX_DEFINITIONS = 256;
+    /** Fixed round-rules-v2 admission bound, independent of the lifetime quota. */
+    public static final int MAX_SUBSCRIPTIONS_CREATED_PER_BLOCK_V2 = 1024;
     private static final int FIELDS = 25;
 
     public ObservationProfileV1 {
