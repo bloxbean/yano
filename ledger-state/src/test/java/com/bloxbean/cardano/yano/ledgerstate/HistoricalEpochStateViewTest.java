@@ -47,6 +47,62 @@ class HistoricalEpochStateViewTest {
     }
 
     @Test
+    void completedEmptyStakeSnapshotIsPinnedAndRemovedOnRollback() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(getClass()), true);
+            try (HistoricalEpochStateView before = store.openHistoricalEpochStateView()) {
+                store.createAndCommitDelegationSnapshot(3);
+                assertThat(before.hasStakeSnapshot(3)).isFalse();
+                try (HistoricalEpochStateView completed = store.openHistoricalEpochStateView()) {
+                    assertThat(completed.hasStakeSnapshot(3)).isTrue();
+                    List<String> entries = new ArrayList<>();
+                    completed.forEachStakeEntry(3, (type, hash, coin, pool) -> entries.add("unexpected"));
+                    assertThat(entries).isEmpty();
+                    store.rollbackToSlot(store.slotForEpochStart(3));
+                    assertThat(completed.hasStakeSnapshot(3)).isTrue();
+                    try (HistoricalEpochStateView rolledBack = store.openHistoricalEpochStateView()) {
+                        assertThat(rolledBack.hasStakeSnapshot(3)).isFalse();
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void pruningRemovesCompletedEmptyStakeSnapshotPresence() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(getClass()), true);
+            store.createAndCommitDelegationSnapshot(207);
+            try (HistoricalEpochStateView retained = store.openHistoricalEpochStateView()) {
+                assertThat(retained.hasStakeSnapshot(207)).isTrue();
+                int newEpoch = 208 + store.snapshotRetentionEpochs();
+                store.handleEpochTransitionSnapshot(newEpoch - 1, newEpoch);
+                assertThat(retained.hasStakeSnapshot(207)).isTrue();
+                try (HistoricalEpochStateView pruned = store.openHistoricalEpochStateView()) {
+                    assertThat(pruned.hasStakeSnapshot(207)).isFalse();
+                }
+            }
+        }
+    }
+
+    @Test
+    void incompleteOrUnknownStakeGenerationIsUnavailableEvenWithRows() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(getClass()), true);
+            put(rocks, 42, 0, 1, 10);
+            for (byte[] marker : List.of(new byte[]{1, 0}, new byte[]{2, 1}, new byte[]{1})) {
+                rocks.db().put(rocks.cfState(), DefaultAccountStateStore.snapshotGenerationKey(42), marker);
+                try (HistoricalEpochStateView view = store.openHistoricalEpochStateView()) {
+                    assertThat(view.hasStakeSnapshot(42)).isFalse();
+                }
+            }
+        }
+    }
+
+    @Test
     void heldRocksSnapshotIsStableAndCloseGuarded() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             put(rocks, 42, 0, 1, 10);
