@@ -55,7 +55,11 @@ public final class ObservationCertificateVerifier {
                 || !Arrays.equals(definition.digest(), round.definitionDigest())
                 || definition.reporterMode() != round.reporterMode()
                 || definition.reporterFaultBound() != round.reporterFaultBound()
-                || definition.reportThreshold() != round.reportThreshold()
+                || (profile.roundRulesVersion() == 2
+                    && definition.reporterMode() == ObservationReporterMode.ACTIVE_MEMBERS
+                    ? !Arrays.equals(definition.reporterSetDigest(), ObservationHashes.activeMemberRuleDigest())
+                        || round.reportThreshold() != Math.max(definition.reportThreshold(), round.finalityQuorum())
+                    : definition.reportThreshold() != round.reportThreshold())
                 || !Arrays.equals(certificate.subscriptionId(), round.subscriptionId())
                 || certificate.roundNumber() != round.roundNumber()
                 || !Arrays.equals(certificate.membershipDigest(), round.membershipDigest())

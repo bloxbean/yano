@@ -1158,7 +1158,7 @@ def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
     // Must match PluginApiVersion.CURRENT_MAJOR / CURRENT_LEVEL (core-api).
     if (!(summary.catalogFingerprint ==~ /sha256:[0-9a-f]{64}/)
             || summary.pluginApiMajor != 3
-            || summary.pluginApiLevel != 4
+            || summary.pluginApiLevel != 5
             || !(summary.generation instanceof Number)
             || !(summary.totals instanceof Map)
             || !summary.totals.containsKey('observedContributions')

@@ -1,6 +1,10 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReport;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTick;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
@@ -12,6 +16,36 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ObservationJournalTest {
+
+    @Test
+    void heartbeatOutboxSurvivesRestartAndReplacesOnlyOneBoundedEntry(@TempDir Path directory) {
+        byte[] body = new ObservationTick(1, ObservationAnchorType.VERIFIED_L1_SLOT, 100).encode();
+        AppMessage expected = heartbeat(body, 1);
+        try (AppLedgerStore ledger = ledger(directory)) {
+            ObservationJournal journal = new ObservationJournal(ledger, filled(1), "chain",
+                    filled(2), filled(3), 10, 4096);
+            assertThat(journal.pendingTick(body, () -> expected).getMessageId()).isEqualTo(expected.getMessageId());
+            assertThat(journal.entries()).isEqualTo(1);
+        }
+        try (AppLedgerStore ledger = ledger(directory)) {
+            ObservationJournal journal = new ObservationJournal(ledger, filled(1), "chain",
+                    filled(2), filled(3), 10, 4096);
+            assertThat(journal.pendingTick(body, () -> { throw new AssertionError("must reuse durable tick"); })
+                    .getMessageId()).isEqualTo(expected.getMessageId());
+            byte[] later = new ObservationTick(1, ObservationAnchorType.VERIFIED_L1_SLOT, 101).encode();
+            assertThat(journal.pendingTick(later, () -> heartbeat(later, 2)).getSenderSeq()).isEqualTo(2);
+            assertThat(journal.entries()).isEqualTo(1);
+            assertThat(journal.bytes()).isLessThan(2048);
+        }
+    }
+
+    private static AppMessage heartbeat(byte[] body, long sequence) {
+        byte[] sender = filled(2);
+        return AppMessage.builder().messageId(AppMessage.computeMessageId("chain", ObservationTopics.TICK,
+                        sender, sequence, Long.MAX_VALUE, body))
+                .chainId("chain").topic(ObservationTopics.TICK).sender(sender).senderSeq(sequence)
+                .expiresAt(Long.MAX_VALUE).body(body).authScheme(0).authProof(new byte[64]).build();
+    }
 
     @Test
     void restartAfterPreparingSigningMaterialCannotSelectAnotherValue(@TempDir Path directory) {
@@ -68,20 +102,20 @@ class ObservationJournalTest {
         }
     }
 
-    private static AppLedgerStore ledger(Path path) {
+    static AppLedgerStore ledger(Path path) {
         return new AppLedgerStore(path.toString(),
                 LoggerFactory.getLogger(ObservationJournalTest.class),
                 TestStateCommitments.MPF);
     }
 
-    private static ObservationReport report(byte[] reporter, byte[] value) {
+    static ObservationReport report(byte[] reporter, byte[] value) {
         return new ObservationReport(1, filled(1), "chain", filled(4), filled(3),
                 filled(5), filled(6), 0, filled(7), filled(8), reporter,
                 new byte[]{1}, value, new byte[0], new byte[]{1}, 0, 1,
                 new byte[64]);
     }
 
-    private static byte[] filled(int value) {
+    static byte[] filled(int value) {
         byte[] bytes = new byte[32];
         Arrays.fill(bytes, (byte) value);
         return bytes;

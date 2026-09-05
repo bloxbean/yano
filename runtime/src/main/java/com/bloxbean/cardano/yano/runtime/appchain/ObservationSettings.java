@@ -64,11 +64,19 @@ final class ObservationSettings {
             throw new IllegalArgumentException(
                     "Omit observations.profile-cbor-hex for the canonical disabled profile");
         }
-        if (profile.frameworkAbiVersion() != 1 || profile.stateCodecVersion() != 1
-                || profile.topicVersion() != 1 || profile.logicalTimeVersion() != 1
-                || profile.roundRulesVersion() != 1 || profile.orderingVersion() != 1
+        if (profile.frameworkAbiVersion() != 1
+                || (profile.stateCodecVersion() != 1 && profile.stateCodecVersion() != 2)
+                || profile.topicVersion() != 1
+                || (profile.logicalTimeVersion() != 1 && profile.logicalTimeVersion() != 2)
+                || profile.roundRulesVersion() != profile.stateCodecVersion()
+                || profile.orderingVersion() != 1
                 || profile.incorporationVersion() != 1) {
-            throw new IllegalArgumentException("Only the observation v1 Phase-1 profile is released");
+            throw new IllegalArgumentException("Unsupported observation protocol versions");
+        }
+        if (profile.logicalTimeVersion() == 2
+                && (profile.roundRulesVersion() != 2 || config.l1StabilityDepth() <= 0)) {
+            throw new IllegalArgumentException(
+                    "Verified-slot observations require v2 scheduling and positive L1 stability depth");
         }
         if (profile.maxCertificateBytes() > config.maxMessageBytes()
                 || profile.maxResultBytesPerBlock() > config.proposalMaxBytes()) {
@@ -85,8 +93,13 @@ final class ObservationSettings {
         for (ObservationDefinition definition : profile.definitions()) {
             if (definition.reporterMode() != ObservationReporterMode.ACTIVE_MEMBERS
                     || definition.reporterFaultBound() != maximumFaults
-                    || definition.reportThreshold() != members.threshold()
-                    || !Arrays.equals(definition.reporterSetDigest(), reporterSetDigest)) {
+                    || (profile.roundRulesVersion() == 1
+                        && definition.reportThreshold() != members.threshold())
+                    || Math.max(definition.reportThreshold(), members.threshold()) > definition.maxReports()
+                    || Math.max(definition.reportThreshold(), members.threshold()) > profile.maxReportsPerRound()
+                    || Math.max(definition.reportThreshold(), members.threshold()) > members.size() - maximumFaults
+                    || !Arrays.equals(definition.reporterSetDigest(), profile.roundRulesVersion() == 2
+                            ? ObservationHashes.activeMemberRuleDigest() : reporterSetDigest)) {
                 throw new IllegalArgumentException("Observation definition '" + definition.id()
                         + "' does not bind the configured active-member quorum");
             }
@@ -121,7 +134,31 @@ final class ObservationSettings {
             keys.forEach(key -> allowed.add(new ByteKey(key)));
             attestors.put(definition.id(), Set.copyOf(allowed));
         }
-        return new ObservationSettings(profile, Map.copyOf(attestors), rawSources);
+        ObservationSettings settings = new ObservationSettings(profile, Map.copyOf(attestors), rawSources);
+        for (MemberGroup.Epoch epoch : members.history()) {
+            if (!settings.admitsMembership(epoch.members(), epoch.threshold())) {
+                throw new IllegalArgumentException("Retained membership is incompatible with the observation profile");
+            }
+        }
+        return settings;
+    }
+
+    boolean admitsMembership(Set<String> memberKeys, int finalityQuorum) {
+        if (!profile.enabled()) return true;
+        int count = memberKeys.size();
+        List<byte[]> keys = memberKeys.stream().map(HexUtil::decodeHexString).toList();
+        for (ObservationDefinition definition : profile.definitions()) {
+            int faults = definition.reporterFaultBound();
+            if (2L * finalityQuorum - count <= faults || finalityQuorum > count - faults) return false;
+            int reports = Math.max(definition.reportThreshold(), finalityQuorum);
+            if (reports > count - faults || reports > definition.maxReports()
+                    || reports > profile.maxReportsPerRound()) return false;
+            if (profile.roundRulesVersion() == 1 && (definition.reportThreshold() != finalityQuorum
+                    || !Arrays.equals(definition.reporterSetDigest(), ObservationHashes.reporterSetDigest(keys)))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     ObservationProfileV1 profile() {

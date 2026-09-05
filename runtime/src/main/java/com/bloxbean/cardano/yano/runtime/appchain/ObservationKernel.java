@@ -29,11 +29,13 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptio
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptionId;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptionStatus;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTick;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -67,6 +69,10 @@ final class ObservationKernel {
         long openRoundCount();
 
         long activeCount(byte[] definitionDigest);
+
+        long activeCount(String applicationId);
+
+        long highWaterSlot();
     }
 
     interface MembershipView {
@@ -101,14 +107,15 @@ final class ObservationKernel {
             List<DueEntry> dueDeletes,
             List<ObservationResult> results,
             long activeCount,
-            long openRoundCount
+            long openRoundCount,
+            long highWaterSlot
     ) {
         static final Result NONE = new Result(List.of(), List.of(), List.of(), List.of(),
-                List.of(), 0, 0);
+                List.of(), 0, 0, -1);
 
         boolean isEmpty() {
             return subscriptions.isEmpty() && rounds.isEmpty() && dueAdds.isEmpty()
-                    && dueDeletes.isEmpty() && results.isEmpty();
+                    && dueDeletes.isEmpty() && results.isEmpty() && highWaterSlot < 0;
         }
     }
 
@@ -186,8 +193,12 @@ final class ObservationKernel {
         private final Map<DueKey, DueEntry> dueAdds = new LinkedHashMap<>();
         private final Map<DueKey, DueEntry> dueDeletes = new LinkedHashMap<>();
         private final Map<IdKey, ObservationResult> resultPuts = new LinkedHashMap<>();
+        private final Map<IdKey, Long> definitionActive = new LinkedHashMap<>();
+        private final Map<String, Long> applicationActive = new LinkedHashMap<>();
         private long activeCount;
         private long openRoundCount;
+        private final long highWaterSlot;
+        private final boolean highWaterChanged;
         private int emissionOrdinal;
 
         private BlockSession(String applicationId, AppBlockExecutionContext context,
@@ -199,6 +210,13 @@ final class ObservationKernel {
             this.reader = Objects.requireNonNull(reader, "reader");
             this.activeCount = reader.activeCount();
             this.openRoundCount = reader.openRoundCount();
+            this.highWaterSlot = profile.logicalTimeVersion() == 2
+                    ? Math.max(reader.highWaterSlot(), block.l1Slot()) : 0;
+            this.highWaterChanged = highWaterSlot > reader.highWaterSlot();
+            if (highWaterChanged) {
+                state.put(ObservationKeys.highWaterSlot(),
+                        ByteBuffer.allocate(Long.BYTES).putLong(highWaterSlot).array());
+            }
             this.certificates = preverifyLayout(block);
         }
 
@@ -252,12 +270,7 @@ final class ObservationKernel {
                 resultPuts.put(new IdKey(result.resultId()), result);
                 state.put(ObservationKeys.result(result.resultId()), result.encode());
 
-                ObservationSubscription completed = copySubscription(subscription,
-                        ObservationSubscriptionStatus.COMPLETED, 0,
-                        subscription.nextRoundNumber(), result.resultId());
-                putSubscription(completed);
-                activeCount--;
-                openRoundCount--;
+                completeRound(subscription, round, result);
                 machine.onObservationResult(context, result, machineWriter, effects, this);
             }
         }
@@ -269,10 +282,14 @@ final class ObservationKernel {
         }
 
         Result finish() {
+            if (profile.stateCodecVersion() == 2) {
+                state.put(ObservationKeys.schedulerCounts(), ByteBuffer.allocate(16)
+                        .putLong(activeCount).putLong(openRoundCount).array());
+            }
             return new Result(List.copyOf(subscriptionPuts.values()),
                     List.copyOf(roundPuts.values()), List.copyOf(dueAdds.values()),
                     List.copyOf(dueDeletes.values()), List.copyOf(resultPuts.values()),
-                    activeCount, openRoundCount);
+                    activeCount, openRoundCount, highWaterChanged ? highWaterSlot : -1);
         }
 
         @Override
@@ -286,28 +303,36 @@ final class ObservationKernel {
                 throw new IllegalArgumentException(
                         "unknown observation definition: " + intent.definitionId());
             }
-            if (intent.anchorType() != ObservationAnchorType.APP_HEIGHT || intent.cadence() != 0) {
+            if ((intent.anchorType() != ObservationAnchorType.APP_HEIGHT
+                    && profile.logicalTimeVersion() != 2)
+                    || (profile.roundRulesVersion() == 1 && intent.cadence() != 0)) {
                 throw new IllegalArgumentException(
                         "Phase 1 supports one-shot APP_HEIGHT observations only");
             }
-            if (intent.firstDueAnchor() <= block.height()) {
+            if (intent.firstDueAnchor() <= anchor(intent.anchorType())) {
                 throw new IllegalArgumentException(
                         "observation first due height must be later than the current block");
             }
-            if (intent.reportDeadlineAnchor() != intent.subscriptionExpiryAnchor()) {
+            if (profile.roundRulesVersion() == 1
+                    && intent.reportDeadlineAnchor() != intent.subscriptionExpiryAnchor()) {
                 throw new IllegalArgumentException(
                         "Phase 1 requires report deadline and subscription expiry to match");
             }
-            if (intent.subscriptionExpiryAnchor() - block.height() > profile.maxRoundHeights()) {
+            if (profile.roundRulesVersion() == 1
+                    && intent.subscriptionExpiryAnchor() - block.height() > profile.maxRoundHeights()) {
                 throw new IllegalArgumentException("observation exceeds the maximum round lifetime");
             }
             if (intent.parameters().length > definition.maxParameterBytes()) {
                 throw new IllegalArgumentException("observation parameters exceed definition bound");
             }
-            long createdThisBlock = subscriptionPuts.values().stream()
-                    .filter(subscription -> subscription.creationHeight() == block.height())
-                    .count();
-            if (createdThisBlock >= profile.maxSubscriptionsPerApplication()
+            if (profile.roundRulesVersion() == 2 && intent.completionPolicy() > 1) {
+                throw new IllegalArgumentException("unknown observation completion policy");
+            }
+            if (profile.roundRulesVersion() == 2
+                    && emissionOrdinal >= ObservationProfileV1.MAX_SUBSCRIPTIONS_CREATED_PER_BLOCK_V2) {
+                throw new IllegalStateException("observation per-block creation bound exceeded");
+            }
+            if (countApplicationActive() >= profile.maxSubscriptionsPerApplication()
                     || activeCount >= profile.maxActiveSubscriptions()) {
                 throw new IllegalStateException("observation subscription quota exceeded");
             }
@@ -319,11 +344,13 @@ final class ObservationKernel {
             int ordinal = emissionOrdinal++;
             byte[] id = ObservationHashes.subscriptionId(chainGenesisId, block.height(), ordinal,
                     definition.digest(), intent.parameters());
-            ObservationSubscription subscription = new ObservationSubscription(1, id,
+            ObservationSubscription subscription = new ObservationSubscription(
+                    profile.stateCodecVersion(), id,
                     machineApplicationId(), intent.route(), definition.digest(), intent.parameters(),
-                    block.height(), intent.anchorType(), intent.firstDueAnchor(), 0,
+                    block.height(), intent.anchorType(), intent.firstDueAnchor(), intent.cadence(),
                     intent.subscriptionExpiryAnchor(), intent.completionPolicy(),
-                    ObservationSubscriptionStatus.ACTIVE, intent.firstDueAnchor(), 0, null);
+                    ObservationSubscriptionStatus.ACTIVE, intent.firstDueAnchor(), 0, null,
+                    intent.reportDeadlineAnchor() - intent.firstDueAnchor());
             putSubscription(subscription);
             DueEntry due = new DueEntry(intent.anchorType(), intent.firstDueAnchor(), id);
             dueAdds.put(new DueKey(due), due);
@@ -391,11 +418,13 @@ final class ObservationKernel {
                 ObservationSubscription subscription = currentSubscription(round.subscriptionId())
                         .orElseThrow(() -> new IllegalStateException(
                                 "Observation index inconsistent: open round has no subscription"));
-                if (subscription.status() != ObservationSubscriptionStatus.ACTIVE) {
+                if (subscription.status() != ObservationSubscriptionStatus.ACTIVE
+                        || subscription.nextRoundNumber() != round.roundNumber()
+                        || subscription.nextDueAnchor() != 0) {
                     continue;
                 }
                 if (round.resultExpiryHeight() == 0
-                        && block.height() > round.reportDeadlineAnchor()) {
+                        && anchor(round.anchorType()) > round.reportDeadlineAnchor()) {
                     long expiry = Math.min(round.absoluteMaxRoundHeight(),
                             Math.addExact(block.height(), round.resultInclusionGraceHeights()));
                     round = copyRound(round, expiry);
@@ -416,24 +445,50 @@ final class ObservationKernel {
                         0, 0, new byte[0], block.height());
                 resultPuts.put(new IdKey(resultId), result);
                 state.put(ObservationKeys.result(resultId), result.encode());
-                putSubscription(copySubscription(subscription,
-                        ObservationSubscriptionStatus.EXPIRED, 0,
-                        subscription.nextRoundNumber(), resultId));
-                activeCount--;
-                openRoundCount--;
+                completeRound(subscription, round, result);
                 machine.onObservationResult(context, result, machineWriter, effects, this);
             }
+        }
+
+        private void completeRound(ObservationSubscription subscription, ObservationRound round,
+                                   ObservationResult result) {
+            boolean value = result.status() == ObservationResultStatus.VALUE;
+            boolean recur = subscription.version() == 2 && subscription.cadence() > 0
+                    && !(value && subscription.completionPolicy() == 1)
+                    && subscription.cadence() <= subscription.expiryAnchor() - round.dueAnchor();
+            if (recur) {
+                long nextDue = Math.addExact(round.dueAnchor(), subscription.cadence());
+                putSubscription(copySubscription(subscription, ObservationSubscriptionStatus.ACTIVE,
+                        nextDue, Math.incrementExact(round.roundNumber()), result.resultId()));
+                DueEntry due = new DueEntry(subscription.anchorType(), nextDue,
+                        subscription.subscriptionId());
+                dueAdds.put(new DueKey(due), due);
+            } else {
+                putSubscription(copySubscription(subscription, value
+                                ? ObservationSubscriptionStatus.COMPLETED
+                                : ObservationSubscriptionStatus.EXPIRED,
+                        0, round.roundNumber(), result.resultId()));
+                activeCount--;
+            }
+            openRoundCount--;
         }
 
         private void openDueRounds() {
             int scanLimit = Math.min(profile.maxActiveSubscriptions(),
                     Math.max(profile.maxRoundsOpenedPerBlock(), 1));
-            List<DueEntry> due = reader.dueAtOrBefore(
-                    ObservationAnchorType.APP_HEIGHT, block.height(), scanLimit);
+            List<DueEntry> due = new ArrayList<>(reader.dueAtOrBefore(
+                    ObservationAnchorType.APP_HEIGHT, block.height(), scanLimit));
+            if (profile.logicalTimeVersion() == 2 && due.size() < scanLimit) {
+                due.addAll(reader.dueAtOrBefore(ObservationAnchorType.VERIFIED_L1_SLOT,
+                        highWaterSlot, scanLimit - due.size()));
+            }
             int opened = 0;
             for (DueEntry entry : due) {
                 if (opened >= profile.maxRoundsOpenedPerBlock()) {
                     break;
+                }
+                if (dueDeletes.containsKey(new DueKey(entry))) {
+                    continue; // A preceding deterministic callback cancelled this due item.
                 }
                 ObservationSubscription subscription = currentSubscription(entry.subscriptionId())
                         .orElseThrow(() -> new IllegalStateException(
@@ -452,26 +507,41 @@ final class ObservationKernel {
                 ObservationDefinition definition = definition(subscription.definitionDigest());
                 if (definition.reporterMode() != ObservationReporterMode.ACTIVE_MEMBERS
                         || definition.reporterFaultBound() != maxByzantineMembers
-                        || definition.reportThreshold() != epoch.threshold()
+                        || (profile.roundRulesVersion() == 1
+                            && definition.reportThreshold() != epoch.threshold())
                         || !Arrays.equals(definition.reporterSetDigest(),
-                        ObservationHashes.reporterSetDigest(reporters))) {
+                            profile.roundRulesVersion() == 2 ? ObservationHashes.activeMemberRuleDigest()
+                                    : ObservationHashes.reporterSetDigest(reporters))) {
                     throw new IllegalStateException(
                             "active-member observation definition differs from opening membership");
                 }
-                long absoluteMax = Math.max(block.height(), Math.min(
+                int reportThreshold = profile.roundRulesVersion() == 2
+                        ? Math.max(definition.reportThreshold(), epoch.threshold())
+                        : definition.reportThreshold();
+                if (reportThreshold > definition.maxReports()
+                        || reportThreshold > profile.maxReportsPerRound()) {
+                    throw new IllegalStateException("Opening membership exceeds observation report bounds");
+                }
+                long absoluteMax = profile.roundRulesVersion() == 2
+                        ? Math.addExact(block.height(), profile.maxRoundHeights())
+                        : Math.max(block.height(), Math.min(
                         Math.addExact(block.height(), profile.maxRoundHeights()),
                         Math.addExact(subscription.expiryAnchor(),
                                 profile.resultInclusionGraceHeights())));
+                long reportDeadline = subscription.version() == 2
+                        ? entry.dueAnchor() + Math.min(subscription.reportWindow(),
+                                subscription.expiryAnchor() - entry.dueAnchor())
+                        : subscription.expiryAnchor();
                 ObservationRound round = new ObservationRound(1,
                         subscription.subscriptionId(), subscription.nextRoundNumber(),
                         subscription.anchorType(), entry.dueAnchor(), block.height(),
-                        subscription.expiryAnchor(), profile.resultInclusionGraceHeights(),
+                        reportDeadline, profile.resultInclusionGraceHeights(),
                         absoluteMax, 0, subscription.definitionDigest(),
                         ObservationHashes.digest(subscription.parameters()), epoch.fromHeight(),
                         epoch.digest(), epoch.members().size(), epoch.threshold(),
                         maxByzantineMembers, definition.reporterMode(),
-                        definition.reporterSetDigest(), epoch.members().size(),
-                        definition.reporterFaultBound(), definition.reportThreshold(),
+                        ObservationHashes.reporterSetDigest(reporters), epoch.members().size(),
+                        definition.reporterFaultBound(), reportThreshold,
                         definition.sourceConfigurationDigest(), definition.policyParametersDigest());
                 putRound(round);
                 dueDeletes.put(new DueKey(entry), entry);
@@ -482,6 +552,10 @@ final class ObservationKernel {
                 openRoundCount++;
                 opened++;
             }
+        }
+
+        private long anchor(ObservationAnchorType type) {
+            return type == ObservationAnchorType.APP_HEIGHT ? block.height() : highWaterSlot;
         }
 
         private boolean verifyCertificate(ObservationDefinition definition,
@@ -513,6 +587,17 @@ final class ObservationKernel {
         }
 
         private void putSubscription(ObservationSubscription subscription) {
+            ObservationSubscription previous = currentSubscription(subscription.subscriptionId()).orElse(null);
+            int delta = (subscription.status() == ObservationSubscriptionStatus.ACTIVE ? 1 : 0)
+                    - (previous != null && previous.status() == ObservationSubscriptionStatus.ACTIVE ? 1 : 0);
+            if (delta != 0) {
+                IdKey definition = new IdKey(subscription.definitionDigest());
+                long count = definitionActive.computeIfAbsent(definition,
+                        ignored -> reader.activeCount(subscription.definitionDigest()));
+                definitionActive.put(definition, Math.addExact(count, delta));
+                count = applicationActive.computeIfAbsent(subscription.applicationId(), reader::activeCount);
+                applicationActive.put(subscription.applicationId(), Math.addExact(count, delta));
+            }
             subscriptionPuts.put(new IdKey(subscription.subscriptionId()), subscription);
             state.put(ObservationKeys.subscription(subscription.subscriptionId()),
                     subscription.encode());
@@ -525,17 +610,12 @@ final class ObservationKernel {
         }
 
         private long countDefinitionActive(byte[] definitionDigest) {
-            long created = subscriptionPuts.values().stream()
-                    .filter(subscription -> subscription.status() == ObservationSubscriptionStatus.ACTIVE
-                            && subscription.creationHeight() == block.height()
-                            && Arrays.equals(subscription.definitionDigest(), definitionDigest))
-                    .count();
-            long closed = subscriptionPuts.values().stream()
-                    .filter(subscription -> subscription.status() != ObservationSubscriptionStatus.ACTIVE
-                            && subscription.creationHeight() < block.height()
-                            && Arrays.equals(subscription.definitionDigest(), definitionDigest))
-                    .count();
-            return Math.addExact(reader.activeCount(definitionDigest), created) - closed;
+            return definitionActive.computeIfAbsent(new IdKey(definitionDigest),
+                    ignored -> reader.activeCount(definitionDigest));
+        }
+
+        private long countApplicationActive() {
+            return applicationActive.computeIfAbsent(applicationId, reader::activeCount);
         }
     }
 
@@ -554,6 +634,7 @@ final class ObservationKernel {
         boolean l1Prefix = true;
         ObservationCertificate previous = null;
         int resultBytes = 0;
+        int ticks = 0;
         for (AppMessage message : block.messages()) {
             String topic = message.getTopic();
             if (topic != null && topic.startsWith("~l1/") && l1Prefix) {
@@ -564,7 +645,13 @@ final class ObservationKernel {
                 throw new IllegalArgumentException("observation diffusion input cannot be sequenced");
             }
             if (ObservationTopics.TICK.equals(topic)) {
-                throw new IllegalArgumentException("observation ticks are unavailable in Phase 1");
+                if (profile.logicalTimeVersion() != 2) {
+                    throw new IllegalArgumentException("observation ticks are unavailable in Phase 1");
+                }
+                ObservationTick.decode(message.getBody());
+                if (++ticks > profile.maxTicksPerBlock()) {
+                    throw new IllegalArgumentException("observation tick bound exceeded");
+                }
             }
             if (!ObservationTopics.RESULT.equals(topic)) {
                 resultRegionClosed = true;
@@ -617,7 +704,8 @@ final class ObservationKernel {
                 source.applicationId(), source.route(), source.definitionDigest(),
                 source.parameters(), source.creationHeight(), source.anchorType(),
                 source.firstDueAnchor(), source.cadence(), source.expiryAnchor(),
-                source.completionPolicy(), status, nextDueAnchor, nextRoundNumber, lastResultId);
+                source.completionPolicy(), status, nextDueAnchor, nextRoundNumber, lastResultId,
+                source.reportWindow());
     }
 
     private static ObservationRound copyRound(ObservationRound source, long resultExpiryHeight) {

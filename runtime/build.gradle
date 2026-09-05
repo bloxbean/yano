@@ -105,6 +105,9 @@ tasks.named('test') {
     dependsOn tasks.named('generateTestPluginCatalogIndex')
     classpath += files(generatedTestPluginCatalogDir)
     catalogSemanticsTestClasses.each { exclude it }
+    doFirst {
+        systemProperty 'yano.test.runtime-classpath', classpath.asPath
+    }
 }
 
 tasks.register('pluginCatalogSemanticsTest', Test) {

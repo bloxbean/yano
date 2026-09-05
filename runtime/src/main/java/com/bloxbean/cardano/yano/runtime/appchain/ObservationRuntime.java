@@ -1,8 +1,10 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificate;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificateVerifier;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationDefinition;
@@ -16,6 +18,7 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRound;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscription;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptionStatus;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTick;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
@@ -28,18 +31,22 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
+import java.util.function.Function;
 
 /**
  * Bounded node-local acquisition, report collection, certification, and
@@ -62,13 +69,21 @@ final class ObservationRuntime implements AutoCloseable {
     private final Logger log;
     private final ScheduledExecutorService coordinator;
     private final ExecutorService workers;
+    private final int requestsPerSecond;
+    private final Map<String, Long> nextDefinitionRequest = new LinkedHashMap<>();
+    private long requestWindow = System.nanoTime();
+    private int requestsInWindow;
     private final Set<RoundKey> inFlight = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Semaphore coordinatorSlots = new Semaphore(1024);
+    private static final int COORDINATOR_BYTE_BUDGET = 16 * 1024 * 1024;
+    private final Semaphore coordinatorBytes = new Semaphore(COORDINATOR_BYTE_BUDGET);
     private final AtomicLong acquisitionAttempts = new AtomicLong();
     private final AtomicLong acquisitionFailures = new AtomicLong();
     private final AtomicLong reportsAccepted = new AtomicLong();
     private final AtomicLong certificatesReady = new AtomicLong();
+    private final AtomicLong backpressureEvents = new AtomicLong();
+    private volatile boolean lastTickFailed;
 
     ObservationRuntime(ObservationSettings settings, ObservationProviders providers,
                        AppLedgerStore ledger, SignerProvider signer, MemberGroup members,
@@ -101,15 +116,33 @@ final class ObservationRuntime implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         });
-        this.workers = Executors.newFixedThreadPool(workerCount, runnable -> {
+        this.requestsPerSecond = workerCount;
+        this.workers = new ThreadPoolExecutor(workerCount, workerCount, 0, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(workerCount), runnable -> {
             Thread thread = new Thread(runnable, "observation-worker-" + chainId);
             thread.setDaemon(true);
             return thread;
-        });
+        }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     void start() {
         coordinator.scheduleWithFixedDelay(this::safeTick, 0, 1, TimeUnit.SECONDS);
+    }
+
+    Optional<AppMessage> heartbeat(long stableSlot, Function<byte[], AppMessage> envelope) {
+        if (closed.get() || profile.logicalTimeVersion() != 2 || stableSlot <= 0
+                || profile.maxTicksPerBlock() == 0 || reader.activeCount() == 0) return Optional.empty();
+        boolean needed = !reader.dueAtOrBefore(ObservationAnchorType.VERIFIED_L1_SLOT,
+                stableSlot, 1).isEmpty();
+        if (!needed) {
+            needed = reader.openRounds(profile.maxOpenRounds()).stream().anyMatch(round ->
+                    round.anchorType() == ObservationAnchorType.VERIFIED_L1_SLOT
+                            && (stableSlot > round.reportDeadlineAnchor()
+                                || committedHeight.getAsLong() >= round.absoluteMaxRoundHeight()));
+        }
+        if (!needed) return Optional.empty();
+        byte[] body = new ObservationTick(1, ObservationAnchorType.VERIFIED_L1_SLOT, stableSlot).encode();
+        return Optional.of(journal.pendingTick(body, () -> envelope.apply(body)));
     }
 
     void onFinalized() {
@@ -127,7 +160,7 @@ final class ObservationRuntime implements AutoCloseable {
         } catch (IllegalArgumentException malformed) {
             return;
         }
-        submitCoordinator(() -> acceptReport(report, true));
+        submitCoordinator(() -> acceptReport(report, true), body.length);
     }
 
     void onCertificate(byte[] body) {
@@ -139,7 +172,7 @@ final class ObservationRuntime implements AutoCloseable {
         } catch (IllegalArgumentException malformed) {
             return;
         }
-        submitCoordinator(() -> acceptCertificate(certificate, true));
+        submitCoordinator(() -> acceptCertificate(certificate, true), body.length);
     }
 
     List<ObservationCertificate> readyCertificates(int limit) {
@@ -163,46 +196,85 @@ final class ObservationRuntime implements AutoCloseable {
     }
 
     Map<String, Long> status() {
-        return Map.of("acquisitionAttempts", acquisitionAttempts.get(),
-                "acquisitionFailures", acquisitionFailures.get(),
-                "reportsAccepted", reportsAccepted.get(),
-                "certificatesReady", certificatesReady.get(),
-                "journalEntries", (long) journal.entries(),
-                "journalBytes", journal.bytes());
+        Map<String, Long> status = new LinkedHashMap<>();
+        status.put("acquisitionAttempts", acquisitionAttempts.get());
+        status.put("acquisitionFailures", acquisitionFailures.get());
+        status.put("reportsAccepted", reportsAccepted.get());
+        status.put("certificatesReady", certificatesReady.get());
+        status.put("journalEntries", (long) journal.entries());
+        status.put("journalBytes", journal.bytes());
+        status.put("backpressureEvents", backpressureEvents.get());
+        status.put("inFlight", (long) inFlight.size());
+        status.put("coordinatorQueued", (long) (1024 - coordinatorSlots.availablePermits()));
+        status.put("coordinatorReservedBytes", (long) (COORDINATOR_BYTE_BUDGET - coordinatorBytes.availablePermits()));
+        status.put("queuedWorkers", (long) ((ThreadPoolExecutor) workers).getQueue().size());
+        status.put("activeSubscriptions", reader.activeCount());
+        status.put("openRounds", reader.openRoundCount());
+        status.put("highWaterSlot", reader.highWaterSlot());
+        return Map.copyOf(status);
+    }
+
+    boolean ready() {
+        return !closed.get() && !lastTickFailed && coordinatorSlots.availablePermits() > 0
+                && coordinatorBytes.availablePermits() > 0
+                && journal.canReserve(3, 4L * profile.maxReportBytes())
+                && ((ThreadPoolExecutor) workers).getQueue().remainingCapacity() > 0;
     }
 
     private void safeTick() {
         try {
             tick();
+            lastTickFailed = false;
         } catch (Throwable failure) {
             LifecycleFailures.rethrowIfProcessFatal(failure);
+            lastTickFailed = true;
             log.warn("Observation runtime tick failed (errorType={})",
                     failure.getClass().getName());
         }
     }
 
     private void submitCoordinator(Runnable task) {
-        if (closed.get() || !coordinatorSlots.tryAcquire()) return;
+        submitCoordinator(task, 0);
+    }
+
+    private void submitCoordinator(Runnable task, int encodedBytes) {
+        if (closed.get()) return;
+        // Include conservative headroom for defensive copies and decoded records.
+        int weight = Math.toIntExact(Math.min(Integer.MAX_VALUE, 4L * (encodedBytes + 256L)));
+        if (!coordinatorBytes.tryAcquire(weight)) {
+            backpressureEvents.incrementAndGet();
+            return;
+        }
+        if (!coordinatorSlots.tryAcquire()) {
+            coordinatorBytes.release(weight);
+            backpressureEvents.incrementAndGet();
+            return;
+        }
         try {
             coordinator.execute(() -> {
                 try {
                     task.run();
                 } finally {
                     coordinatorSlots.release();
+                    coordinatorBytes.release(weight);
                 }
             });
         } catch (RejectedExecutionException stopped) {
             coordinatorSlots.release();
+            coordinatorBytes.release(weight);
             if (!closed.get()) throw stopped;
         }
     }
 
     void tick() {
         if (closed.get()) return;
-        List<ObservationRound> rounds = reader.openRounds(profile.maxOpenRounds() + 1);
+        List<ObservationRound> rounds = new ArrayList<>(reader.openRounds(profile.maxOpenRounds() + 1));
         if (rounds.size() > profile.maxOpenRounds()) {
             throw new IllegalStateException("Observation open-round index exceeds profile bound");
         }
+        rounds.sort(Comparator.comparingInt((ObservationRound round) -> round.anchorType().code())
+                .thenComparingLong(ObservationRound::dueAnchor)
+                .thenComparing(ObservationRound::subscriptionId, Arrays::compareUnsigned));
         long height = committedHeight.getAsLong();
         for (ObservationJournal.RoundRef retained : journal.retainedRounds(
                 profile.maxOpenRounds() + profile.maxResultsPerBlock() + 1)) {
@@ -238,18 +310,57 @@ final class ObservationRuntime implements AutoCloseable {
                     profile.maxReportsPerRound()).stream().anyMatch(report ->
                     Arrays.equals(report.reporterPublicKey(), signer.publicKey()));
             if (!alreadyReported && round.resultExpiryHeight() == 0
-                    && height <= round.reportDeadlineAnchor()) {
+                    && height <= round.absoluteMaxRoundHeight()
+                    && (round.anchorType() == ObservationAnchorType.APP_HEIGHT
+                            ? height : reader.highWaterSlot()) <= round.reportDeadlineAnchor()) {
                 RoundKey key = new RoundKey(round.subscriptionId(), round.roundNumber());
                 if (inFlight.add(key)) {
-                    workers.execute(() -> acquire(subscription, round, key));
+                    if (!requestPermit(definition(round.definitionDigest()).id())) {
+                        backpressureEvents.incrementAndGet();
+                        inFlight.remove(key);
+                        continue;
+                    }
+                    try {
+                        workers.execute(() -> acquire(subscription, round, key));
+                    } catch (RejectedExecutionException full) {
+                        backpressureEvents.incrementAndGet();
+                        inFlight.remove(key);
+                        break; // Bounded backpressure; retained rounds are retried later.
+                    }
                 }
             }
         }
     }
 
+    private synchronized boolean requestPermit(String definitionId) {
+        long now = System.nanoTime();
+        if (now - requestWindow >= TimeUnit.SECONDS.toNanos(1)) {
+            requestWindow = now;
+            requestsInWindow = 0;
+        }
+        Long next = nextDefinitionRequest.get(definitionId);
+        if (requestsInWindow >= requestsPerSecond || (next != null && now - next < 0)) return false;
+        requestsInWindow++;
+        nextDefinitionRequest.put(definitionId, now + TimeUnit.MILLISECONDS.toNanos(250));
+        return true;
+    }
+
+    private boolean stillCollecting(ObservationRound round) {
+        ObservationSubscription subscription = reader.subscription(round.subscriptionId()).orElse(null);
+        if (closed.get() || subscription == null
+                || subscription.status() != ObservationSubscriptionStatus.ACTIVE
+                || subscription.nextDueAnchor() != 0
+                || subscription.nextRoundNumber() != round.roundNumber()) return false;
+        long height = committedHeight.getAsLong();
+        long anchor = round.anchorType() == ObservationAnchorType.APP_HEIGHT
+                ? height : reader.highWaterSlot();
+        return height <= round.absoluteMaxRoundHeight() && anchor <= round.reportDeadlineAnchor();
+    }
+
     private void acquire(ObservationSubscription subscription, ObservationRound round,
                          RoundKey key) {
         try {
+            if (!stillCollecting(round)) return;
             acquisitionAttempts.incrementAndGet();
             ObservationDefinition definition = definition(round.definitionDigest());
             ObservationReport unsigned = journal.localCandidate(
@@ -258,9 +369,11 @@ final class ObservationRuntime implements AutoCloseable {
                 ObservationProvider provider = providers.require(definition.id());
                 ObservationCandidate candidate;
                 synchronized (provider) {
+                    if (!stillCollecting(round)) return;
                     candidate = provider.acquire(
                             new ObservationRequest(definition, subscription, round));
                 }
+                if (!stillCollecting(round)) return;
                 unsigned = new ObservationReport(1, chainGenesisId, chainId,
                     consensusProfileDigest, profile.digest(), definition.digest(),
                     round.subscriptionId(), round.roundNumber(), round.membershipDigest(),
@@ -276,6 +389,7 @@ final class ObservationRuntime implements AutoCloseable {
                 }
                 unsigned = journal.prepareLocalReport(unsigned);
             }
+            if (!stillCollecting(round)) return;
             ObservationReport report = copyWithSignature(unsigned,
                     signer.sign(unsigned.signingDigest()));
             if (!validReport(definition, round, report)) {

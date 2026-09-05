@@ -49,6 +49,29 @@ class ObservationRuntimeTest {
     private static final String MEMBER_SEED = "51".repeat(32);
 
     @Test
+    void incompatibleGovernedMembershipActivationIsVoid() {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        MemberGroup members = new MemberGroup(Set.of(signer.publicKeyHex()), 1);
+        ObservationSettings settings = ObservationSettings.from(config(signer,
+                profile(definition(signer.publicKey()))), members);
+        GovernedMembership governance = new GovernedMembership(members, null, 600,
+                LoggerFactory.getLogger(ObservationRuntimeTest.class));
+        governance.setEpochGuard(effect -> settings.admitsMembership(effect.members(), effect.threshold()));
+        byte[] body = GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
+                new AppMessageSigner("52".repeat(32)).publicKey(), 0, 1);
+        AppMessage command = AppMessage.builder().messageId(AppMessage.computeMessageId(CHAIN_ID,
+                        GovernedMembership.TOPIC, signer.publicKey(), 1, Long.MAX_VALUE, body))
+                .chainId(CHAIN_ID).topic(GovernedMembership.TOPIC).sender(signer.publicKey())
+                .senderSeq(1).expiresAt(Long.MAX_VALUE).body(body).authScheme(0).authProof(new byte[64]).build();
+        List<AppMessage> messages = List.of(command);
+        AppBlock block = new AppBlock(AppBlock.BLOCK_VERSION, CHAIN_ID, 1, new byte[32], 0,
+                new byte[0], 1, AppBlockCodec.messagesRoot(messages), new byte[32], messages,
+                signer.publicKey(), FinalityCert.empty());
+        assertThat(governance.processBlock(block).effects()).isEmpty();
+        assertThat(members.membersAt(2)).containsExactly(signer.publicKeyHex());
+    }
+
+    @Test
     void retriesTransientFailureRestoresReadyCertificateAndPrunesAfterFinality(
             @TempDir Path directory) throws Exception {
         AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);

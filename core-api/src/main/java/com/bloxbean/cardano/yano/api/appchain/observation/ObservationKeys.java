@@ -16,6 +16,15 @@ public final class ObservationKeys {
         return PROFILE.clone();
     }
 
+    /** Profile logicalTimeVersion=2 monotone verified-slot summary. */
+    public static byte[] highWaterSlot() {
+        return "~yano/obs/high-water-slot/v2".getBytes(StandardCharsets.US_ASCII);
+    }
+
+    public static byte[] schedulerCounts() {
+        return "~yano/obs/scheduler-counts/v2".getBytes(StandardCharsets.US_ASCII);
+    }
+
     public static byte[] subscription(byte[] subscriptionId) {
         return suffix("subscription/", subscriptionId);
     }

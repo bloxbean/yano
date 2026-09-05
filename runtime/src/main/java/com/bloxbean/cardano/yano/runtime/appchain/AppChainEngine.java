@@ -74,6 +74,7 @@ final class AppChainEngine implements AutoCloseable {
     private final java.util.Optional<AuthenticatedSnapshotRuntime> authenticatedSnapshots;
     private final FxKernel.FxReader fxReader;
     private final ObservationKernel.Reader observationReader;
+    private final int maxObservationTicks;
     private final Supplier<WriteBatch> writeBatchFactory;
     /** Sends a body on a system topic to the group (via the subsystem's diffusion). */
     private final BiFunction<String, byte[], AppMessage> broadcast;
@@ -439,6 +440,9 @@ final class AppChainEngine implements AutoCloseable {
         this.stateCommitmentGuard = new StateCommitmentGuard(stateBackend.identity());
         this.stateCommitmentGuard.verifyRetained(ledger, config.chainId());
         ObservationSettings observationSettings = ObservationSettings.from(config, group);
+        ledger.requireObservationLedgerRunnable();
+        this.maxObservationTicks = observationSettings.profile().logicalTimeVersion() == 2
+                ? observationSettings.profile().maxTicksPerBlock() : 0;
         ObservationProfileGuard observationProfileGuard = new ObservationProfileGuard(
                 observationSettings.profile());
         observationProfileGuard.verifyRetained(ledger, config.chainId());
@@ -882,6 +886,13 @@ final class AppChainEngine implements AutoCloseable {
         });
         // Exclude anything already finalized (re-gossip after restart)
         candidates.removeIf(m -> ledger.messageHeight(m.getMessageId()).isPresent());
+        int ticks = 0;
+        for (var iterator = candidates.iterator(); iterator.hasNext();) {
+            AppMessage message = iterator.next();
+            if (ObservationTopics.TICK.equals(message.getTopic()) && ++ticks > maxObservationTicks) {
+                iterator.remove();
+            }
+        }
         // Sender-seq replay floor (I1.2): drop stale seqs; with enforcement on,
         // also keep per-sender seqs strictly increasing WITHIN the block so an
         // honest proposer never builds a block enforcing followers would reject

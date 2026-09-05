@@ -23,6 +23,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Predicate;
 
 /**
  * Chain-governed membership (ADR app-layer/008.3): membership changes are
@@ -62,6 +63,11 @@ final class GovernedMembership {
     private final String fixedProposerHex;
     private final long approvalWindowBlocks;
     private final Logger log;
+    private Predicate<EpochEffect> epochGuard = ignored -> true;
+
+    void setEpochGuard(Predicate<EpochEffect> guard) {
+        this.epochGuard = Objects.requireNonNull(guard, "guard");
+    }
 
     /** command bytes (hex) → approval state; rebuilt from meta on restart. */
     private final LinkedHashMap<String, Pending> pending = new LinkedHashMap<>();
@@ -236,7 +242,12 @@ final class GovernedMembership {
                 return null;
             }
         }
-        return new EpochEffect(fromHeight, members, threshold);
+        EpochEffect effect = new EpochEffect(fromHeight, members, threshold);
+        if (!epochGuard.test(effect)) {
+            log.warn("Governance: membership at height {} violates the observation profile — void", height);
+            return null;
+        }
+        return effect;
     }
 
     // ------------------------------------------------------------------
