@@ -19,14 +19,15 @@ public record ConsensusContext(int protocolVersion,
                                ConsensusQuorum quorum,
                                List<byte[]> memberKeys,
                                byte[] consensusProfileDigest,
-                               byte[] observerProfileDigest) {
+                               byte[] observerProfileDigest,
+                               byte[] observationProfileDigest) {
 
     private static final byte[] DOMAIN =
             "yano-appchain-consensus-context\0".getBytes(StandardCharsets.US_ASCII);
 
     public ConsensusContext {
-        if (protocolVersion != 2) {
-            throw new IllegalArgumentException("certified consensus protocol version must be 2");
+        if (protocolVersion != 3) {
+            throw new IllegalArgumentException("certified consensus protocol version must be 3");
         }
         Objects.requireNonNull(chainId, "chainId");
         if (chainId.isBlank() || height < 1) {
@@ -35,6 +36,7 @@ public record ConsensusContext(int protocolVersion,
         genesisId = bytes32(genesisId, "genesisId");
         consensusProfileDigest = bytes32(consensusProfileDigest, "consensusProfileDigest");
         observerProfileDigest = bytes32(observerProfileDigest, "observerProfileDigest");
+        observationProfileDigest = bytes32(observationProfileDigest, "observationProfileDigest");
         quorum = Objects.requireNonNull(quorum, "quorum");
         memberKeys = Objects.requireNonNull(memberKeys, "memberKeys").stream()
                 .map(key -> bytes32(key, "memberKey"))
@@ -53,6 +55,7 @@ public record ConsensusContext(int protocolVersion,
     @Override public byte[] genesisId() { return genesisId.clone(); }
     @Override public byte[] consensusProfileDigest() { return consensusProfileDigest.clone(); }
     @Override public byte[] observerProfileDigest() { return observerProfileDigest.clone(); }
+    @Override public byte[] observationProfileDigest() { return observationProfileDigest.clone(); }
     @Override public List<byte[]> memberKeys() {
         return memberKeys.stream().map(byte[]::clone).toList();
     }
@@ -74,6 +77,7 @@ public record ConsensusContext(int protocolVersion,
                 }
                 out.write(consensusProfileDigest);
                 out.write(observerProfileDigest);
+                out.write(observationProfileDigest);
             }
             return Blake2bUtil.blake2bHash256(bytes.toByteArray());
         } catch (IOException impossible) {

@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValid
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
@@ -841,6 +842,9 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 case L1_EPOCH_OBSERVER -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((L1EpochObserverProvider) provider)::type);
+                case OBSERVATION_PROVIDER -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((ObservationProviderFactory) provider)::type);
                 case SIGNER_PROVIDER -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((SignerProviderFactory) provider)::scheme);

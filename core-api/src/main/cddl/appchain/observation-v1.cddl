@@ -1,0 +1,109 @@
+; ADR-037 certified generic observation framework, wire ABI v1.
+; All arrays are definite length. Integers and lengths use shortest RFC 8949
+; encodings. Decoders reject tags, floats, indefinite values and trailing bytes.
+
+hash32 = bytes .size 32
+ed25519-key = bytes .size 32
+ed25519-signature = bytes .size 64
+bounded-id = text .size (1..128)
+
+; Field indexes 0..28.
+observation-definition = [
+  1,                         ; 0 wire version
+  bounded-id,                ; 1 definition id
+  uint .gt 0,                ; 2 schema version
+  hash32,                    ; 3 parameter schema digest
+  hash32,                    ; 4 report schema digest
+  hash32,                    ; 5 result schema digest
+  hash32,                    ; 6 source identity schema digest
+  0 / 1,                     ; 7 ACTIVE_MEMBERS / EXTERNAL_REPORTERS
+  hash32,                    ; 8 reporter-set identity
+  uint,                      ; 9 reporter fault bound g
+  uint .gt 0,                ; 10 report threshold r
+  uint .gt 0,                ; 11 source threshold s
+  0 / 1,                     ; 12 certificate-local uniqueness proof
+  bounded-id,                ; 13 acquisition adapter identity
+  hash32,                    ; 14 logical source configuration digest
+  bounded-id,                ; 15 normalization identity
+  bounded-id,                ; 16 evidence verifier identity
+  bounded-id,                ; 17 reconciliation policy identity
+  hash32,                    ; 18 fixed policy parameters digest
+  hash32,                    ; 19 round-selectable policy schema/bounds digest
+  bounded-id,                ; 20 source-diversity policy identity
+  bounded-id,                ; 21 freshness policy identity
+  bounded-id,                ; 22 evidence-retention policy identity
+  uint .gt 0,                ; 23 canonical ordering version
+  uint .gt 0,                ; 24 maximum parameter bytes
+  uint .gt 0,                ; 25 maximum value bytes
+  uint,                      ; 26 maximum evidence bytes
+  uint .gt 0,                ; 27 maximum reports
+  uint .gt 0                 ; 28 maximum sources
+]
+
+; Field indexes 0..15. Empty last-result-id means absent.
+observation-subscription = [
+  1, hash32, bounded-id, bounded-id, hash32, bytes .size (0..65536),
+  uint .gt 0, 0 / 1, uint .gt 0, uint, uint, uint, 0 / 1 / 2 / 3,
+  uint, uint, bstr .size (0 / 32)
+]
+
+; Field indexes 0..23. result-expiry-height=0 means collection remains open.
+; Profile stateCodecVersion=2 selects this 17-field subscription record.
+; Last field is the retained report-window offset in selected anchor units.
+observation-subscription-v2 = [
+  2, hash32, bounded-id, bounded-id, hash32, bytes .size (0..65536),
+  uint .gt 0, 0 / 1, uint .gt 0, uint, uint, 0 / 1, 0 / 1 / 2 / 3,
+  uint, uint, bstr .size (0 / 32), uint
+]
+
+; Field indexes 0..23. result-expiry-height=0 means collection remains open.
+observation-round = [
+  1, hash32, uint, 0 / 1, uint .gt 0, uint .gt 0, uint .gt 0,
+  uint, uint .gt 0, uint, hash32, hash32, uint, hash32,
+  uint .gt 0, uint .gt 0, uint, 0 / 1, hash32, uint .gt 0, uint,
+  uint .gt 0, hash32, hash32
+]
+
+; Field indexes 0..17. The report signature covers deterministic CBOR of
+; indexes 0..16 under the yano/observation/report/v1 NUL-terminated domain.
+observation-report = [
+  1, hash32, bounded-id, hash32, hash32, hash32, hash32, uint,
+  hash32, hash32, ed25519-key, bytes .size (1..256),
+  bytes .size (0..65536), bytes .size (0..393216),
+  bytes .size (0..256), uint, uint, ed25519-signature
+]
+
+; Phase-1 external Ed25519 attestation evidence. The signature covers indexes
+; 0..7 under the yano/observation/attestation/v1 NUL-terminated domain.
+observation-attestation = [
+  1, hash32, hash32, uint, ed25519-key, bytes .size (1..256),
+  bytes .size (0..65536), bytes .size (1..256), uint, uint,
+  ed25519-signature
+]
+
+; Field indexes 0..10. Reports are embedded as their canonical byte strings
+; and ordered by unsigned (source-id, reporter-public-key).
+observation-certificate = [
+  1, hash32, uint, hash32, hash32, hash32, hash32,
+  [1*256 bytes .size (1..524288)],
+  bytes .size (0..65536), bytes .size (0..65536), hash32
+]
+
+; Field indexes 0..12. Empty certificate-digest means sweep-generated.
+observation-result = [
+  1, hash32, hash32, uint, hash32, 0 / 1 / 2 / 3,
+  bytes .size (0..65536), hash32, bstr .size (0 / 32),
+  uint, uint, bytes .size (0..1024), uint .gt 0
+]
+
+; Field indexes 0..24. The only disabled profile is version=1, enabled=0,
+; empty definitions and zero in every remaining numeric field.
+observation-profile-v1 = [
+  1, 0 / 1, uint, uint, uint, uint, uint, uint, uint,
+  [* bytes .size (1..8192)],
+  uint, uint, uint, uint, uint, uint, uint, uint, uint, uint,
+  uint, uint, uint, uint, uint
+]
+
+; Body of ~obs/tick/v1. Anchor code 1 is VERIFIED_L1_SLOT.
+observation-tick = [1, 1, uint .gt 0]

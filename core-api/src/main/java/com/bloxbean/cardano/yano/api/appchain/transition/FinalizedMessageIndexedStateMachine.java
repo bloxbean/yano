@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
 
 import java.security.MessageDigest;
 import java.util.HexFormat;
@@ -116,6 +118,32 @@ public final class FinalizedMessageIndexedStateMachine implements AppStateMachin
     public void apply(AppBlockExecutionContext context, AppStateWriter writer,
                       AppEffectEmitter effects) {
         delegate.apply(context, writer, effects);
+        index(context, writer, effects);
+    }
+
+    @Override
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                      AppEffectEmitter effects, AppObservationEmitter observations) {
+        delegate.apply(context, writer, effects, observations);
+        index(context, writer, effects);
+    }
+
+    @Override
+    public void onEffectResult(AppBlockExecutionContext context, EffectResult result,
+                               AppStateWriter writer, AppEffectEmitter effects,
+                               AppObservationEmitter observations) {
+        delegate.onEffectResult(context, result, writer, effects, observations);
+    }
+
+    @Override
+    public void onObservationResult(AppBlockExecutionContext context, ObservationResult result,
+                                    AppStateWriter writer, AppEffectEmitter effects,
+                                    AppObservationEmitter observations) {
+        delegate.onObservationResult(context, result, writer, effects, observations);
+    }
+
+    private void index(AppBlockExecutionContext context, AppStateWriter writer,
+                       AppEffectEmitter effects) {
         if (context.block().height() == 1) {
             if (writer.get(FinalizedMessageIndex.CONFIG_KEY).isPresent()) {
                 throw new IllegalStateException("finalized-message index config already exists");

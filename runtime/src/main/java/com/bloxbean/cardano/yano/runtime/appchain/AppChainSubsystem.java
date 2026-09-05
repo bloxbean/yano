@@ -19,6 +19,13 @@ import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTick;
+import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
@@ -91,6 +98,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final AppChainConfig config;
     private final EffectsSettings effectsSettings;
     private final AppChainConsensusProfile consensusProfile;
+    private final ObservationSettings observationSettings;
     private final StateCommitmentIdentity stateCommitmentIdentity;
     private final StateProofPruningSettings proofPruningSettings;
     private final com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectRegistry proofSubjectRegistry;
@@ -156,6 +164,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /** L1 observations (008.4 I3.2): all members recompute; the scheduled
      *  proposer injects. Null when no observers are configured. */
     private volatile L1ObservationService observationService;
+    private volatile ObservationRuntime genericObservationRuntime;
     private volatile L1EpochObservationCoordinator epochObservationCoordinator;
     private volatile com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider
             epochStateProvider;
@@ -540,6 +549,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             this.signer = SignerProviders.resolveFromRegistry(
                     config.signingKeyHex(), pluginProviders, log);
             this.group = new MemberGroup(normalizedMembers, config.threshold());
+            this.observationSettings = ObservationSettings.from(config, group);
             this.seenMessageIds = new SeenMessageIds(SEEN_IDS_HARD_CAP);
             this.pool = new AppMsgPool(config.poolMaxMessages());
             AppStateMachineContext stateMachineContext =
@@ -551,6 +561,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 @Override
                                 public Optional<AppChainConsensusProfile> consensusProfile() {
                                     return Optional.of(AppChainSubsystem.this.consensusProfile);
+                                }
+                                @Override
+                                public Optional<ObservationProfileV1> observationProfile() {
+                                    return Optional.of(observationSettings.profile());
                                 }
                                 @Override
                                 public Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
@@ -931,6 +945,26 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             public byte[] query(String path, byte[] params, AppQueryContext state) {
                 return delegate.query(path, params, state);
             }
+
+            @Override
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                              AppEffectEmitter effects, AppObservationEmitter observations) {
+                delegate.apply(context, writer, effects, observations);
+            }
+
+            @Override
+            public void onEffectResult(AppBlockExecutionContext context, EffectResult result,
+                                       AppStateWriter writer, AppEffectEmitter effects,
+                                       AppObservationEmitter observations) {
+                delegate.onEffectResult(context, result, writer, effects, observations);
+            }
+
+            @Override
+            public void onObservationResult(AppBlockExecutionContext context, ObservationResult result,
+                                            AppStateWriter writer, AppEffectEmitter effects,
+                                            AppObservationEmitter observations) {
+                delegate.onObservationResult(context, result, writer, effects, observations);
+            }
         };
     }
 
@@ -1096,6 +1130,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             case ConsensusCodec.TOPIC_TIMEOUT -> CertifiedConsensusCodec.MAX_TIMEOUT_BYTES;
             case ConsensusCodec.TOPIC_NEW_VIEW -> CertifiedConsensusCodec.MAX_NEW_VIEW_BYTES;
             case ConsensusCodec.TOPIC_CERT -> ConsensusCodec.MAX_CERT_NOTICE_BYTES;
+            case ObservationTopics.REPORT -> observationSettings.profile().enabled()
+                    ? observationSettings.profile().maxReportBytes() : 0;
+            case ObservationTopics.CERTIFICATE, ObservationTopics.RESULT ->
+                    observationSettings.profile().enabled()
+                            ? observationSettings.profile().maxCertificateBytes() : 0;
+            case ObservationTopics.TICK -> observationSettings.profile().logicalTimeVersion() == 2
+                    ? ObservationTick.MAX_ENCODED_BYTES : 0;
             default -> config.maxMessageBytes();
         };
         return body.length <= bodyLimit;
@@ -1310,7 +1351,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void queueEarlyConsensus(List<AppMessage> messages) {
         for (AppMessage message : messages) {
             String topic = message.getTopic() != null ? message.getTopic() : "";
-            if (!topic.startsWith(AppChainSystemTopics.CONSENSUS_DIFFUSION_PREFIX)) {
+            if (!topic.startsWith(AppChainSystemTopics.CONSENSUS_DIFFUSION_PREFIX)
+                    && !ObservationTopics.isDiffusionOnly(topic)) {
                 continue;
             }
             if (!offerEarlyConsensus(message)) {
@@ -1346,6 +1388,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 continue;
             }
             receivedCount.incrementAndGet();
+            // Generic reports and certificates have a dedicated durable
+            // journal and are never admitted to the ordinary message pool.
+            if (ObservationTopics.isDiffusionOnly(topic)) {
+                relay(message);
+                ObservationRuntime runtime = genericObservationRuntime;
+                if (runtime != null) {
+                    if (ObservationTopics.REPORT.equals(topic)) {
+                        runtime.onReport(message.getBody());
+                    } else {
+                        runtime.onCertificate(message.getBody());
+                    }
+                }
+                continue;
+            }
             // ~anchor/* (008.4): diffusion-only co-signing traffic — relayed
             // but never pooled/sequenced; the leader re-diffuses each tick, so
             // first-sighting delivery is enough
@@ -1649,6 +1705,25 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 .build();
     }
 
+    /** Durable generic result envelope with the normal positive member sequence. */
+    private AppMessage buildDurableGenericObservationInput(String topic, byte[] body) {
+        if ((!ObservationTopics.RESULT.equals(topic) && !ObservationTopics.TICK.equals(topic))
+                || !validEnvelopeBodyProfile(topic, body)) {
+            throw new IllegalArgumentException("Invalid generic observation result input");
+        }
+        long sequence = senderSeq.incrementAndGet();
+        long expiresAt = Long.MAX_VALUE;
+        byte[] signedBody = AppMessage.signedBodyBytes(config.chainId(), topic,
+                signer.publicKey(), sequence, expiresAt, body);
+        return AppMessage.builder()
+                .messageId(AppMessage.computeMessageId(config.chainId(), topic,
+                        signer.publicKey(), sequence, expiresAt, body))
+                .chainId(config.chainId()).topic(topic).sender(signer.publicKey())
+                .senderSeq(sequence).expiresAt(expiresAt).body(body)
+                .authScheme(AuthScheme.ED25519.getValue())
+                .authProof(signer.sign(signedBody)).build();
+    }
+
     private List<L1Observation> mandatoryObservationFacts(long stableSlot) {
         List<L1Observation> available = new ArrayList<>();
         L1ObservationService blockObservations = observationService;
@@ -1894,6 +1969,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private static boolean validTopic(String topic) {
         return topic != null && topic.indexOf('\0') < 0
+                && !AppChainSystemTopics.isUnknownObservationTopic(topic)
                 && StandardCharsets.UTF_8.newEncoder().canEncode(topic)
                 && topic.getBytes(StandardCharsets.UTF_8).length
                 <= AppChainConfig.MAX_TOPIC_BYTES;
@@ -2901,7 +2977,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     // already-started callback is interrupted and remains
                     // generation-fenced until it exits.
                     task.throwIfCancelled();
-                    result = stateMachine.query(path, request.clone(), context);
+                    result = observationSettings.profile().enabled()
+                            && path.startsWith(ObservationQueries.PREFIX)
+                            ? ObservationQueries.query(path, request, context)
+                            : stateMachine.query(path, request.clone(), context);
                 } catch (AppQueryException declared) {
                     LifecycleFailures.rethrowIfProcessFatalReachable(declared);
                     if (declared.code() == AppQueryException.Code.UNSUPPORTED) {
@@ -3409,6 +3488,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private void applyEpoch(AppLedgerStore ledgerStore, Set<String> members, int threshold) {
+        if (!observationSettings.admitsMembership(members, threshold)) {
+            throw new IllegalArgumentException("Membership violates observation quorum or report bounds");
+        }
         group.appendEpoch(ledgerStore.tipHeight() + 1, members, threshold);
         ledgerStore.metaPutString(META_MEMBER_EPOCHS, group.encode());
     }
@@ -3790,6 +3872,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("running", running.get());
         status.put("sequencing", config.sequencingEnabled());
         status.put("configuredBlockIntervalMs", config.blockIntervalMs());
+        ObservationRuntime observationsRuntime = genericObservationRuntime;
+        if (observationsRuntime != null) {
+            Map<String, Object> observations = new LinkedHashMap<>(observationsRuntime.status());
+            observations.put("ready", observationsRuntime.ready());
+            observations.put("preview", true);
+            status.put("genericObservations", observations);
+        }
         if (config.sequencingEnabled()) {
             AppChainEngine currentEngine = engine;
             Map<String, Object> sequencer = currentEngine != null
@@ -4431,6 +4520,50 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             chainEngine.setOnBlockFinalized(this::onBlockFinalized);
             chainEngine.setL1RefSupplier(this::stableL1Ref);
             chainEngine.setL1RefValidator(this::checkL1Ref);
+            if (observationSettings.profile().enabled()) {
+                ledgerStore.verifyObservationIndexes();
+                ObservationProviders providers = ObservationProviders.from(
+                        observationSettings.profile(), config.pluginSettings(), pluginProviders);
+                ObservationRuntime runtime;
+                try {
+                    runtime = new ObservationRuntime(
+                        observationSettings, providers, ledgerStore, signer, group,
+                        config.chainId(), ledgerStore.stateCommitmentIdentity().genesisId(),
+                        AppChainConsensusProfileCommitment.digest(consensusProfile),
+                        (topic, body) -> buildAndDiffuse(topic, body, 120),
+                        Math.toIntExact(parseLongSetting("observations.workers", 4)),
+                        Math.toIntExact(parseLongSetting("observations.journal.max-entries",
+                                ObservationJournal.DEFAULT_MAX_ENTRIES)),
+                        parseLongSetting("observations.journal.max-bytes",
+                                ObservationJournal.DEFAULT_MAX_BYTES), log);
+                } catch (Throwable failure) {
+                    try {
+                        providers.close();
+                    } catch (Throwable cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                    throw failure;
+                }
+                this.genericObservationRuntime = runtime;
+                chainEngine.setObservationResultInputProvider((height, limit) -> {
+                    int bounded = Math.min(limit,
+                            observationSettings.profile().maxResultsPerBlock());
+                    int bytes = 0;
+                    List<AppMessage> inputs = new ArrayList<>();
+                    for (var certificate : runtime.readyCertificates(bounded)) {
+                        byte[] body = certificate.encode();
+                        if (bytes + body.length
+                                > observationSettings.profile().maxResultBytesPerBlock()) {
+                            break;
+                        }
+                        inputs.add(buildDurableGenericObservationInput(
+                                ObservationTopics.RESULT, body));
+                        bytes += body.length;
+                    }
+                    return List.copyOf(inputs);
+                });
+                runtime.start();
+            }
             // L1 observations (008.4 I3.2) — misconfiguration fails start:
             // observers are consensus-critical and must match on all members
             byte[] l1NetworkGenesisId = l1NetworkGenesisId();
@@ -4565,6 +4698,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 GovernedMembership.DEFAULT_APPROVAL_WINDOW_BLOCKS),
                         log);
                 governed.restore(ledgerStore);
+                governed.setEpochGuard(effect -> observationSettings.admitsMembership(
+                        effect.members(), effect.threshold()));
                 chainEngine.setGovernance(governed);
                 log.info("App-chain '{}' membership mode: governed (approval = {} identical "
                         + "member commands on {})", config.chainId(), group.threshold(),
@@ -4717,6 +4852,21 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     config.blockIntervalMs(), config.blockIntervalMs(), TimeUnit.MILLISECONDS);
             log.info("App-chain '{}' sequencer mode: {}", config.chainId(), sequencerMode.id());
             exec.scheduleWithFixedDelay(this::catchUpTick, 5, 5, TimeUnit.SECONDS);
+        }
+        if (genericObservationRuntime != null && observationSettings.profile().logicalTimeVersion() == 2) {
+            exec.scheduleWithFixedDelay(() -> generationUseOrNoop(generationToken, () -> {
+                try {
+                    AppChainEngine.L1Ref stable = stableL1Ref();
+                    if (stable == null || !group.containsAt(signer.publicKeyHex(), tipHeight() + 1)) return;
+                    genericObservationRuntime.heartbeat(stable.slot(), body ->
+                            buildDurableGenericObservationInput(ObservationTopics.TICK, body))
+                            .ifPresent(message -> {
+                                if (pool.add(message) != AppMsgPool.AddResult.FULL) relay(message);
+                            });
+                } catch (RuntimeException failure) {
+                    log.warn("Observation heartbeat deferred (errorType={})", failure.getClass().getName());
+                }
+            }), 1, 1, TimeUnit.SECONDS);
         }
         if (observationService != null && l1BlockReplay != null) {
             exec.scheduleWithFixedDelay(
@@ -5995,6 +6145,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         failure.getClass().getName());
             }
         }
+        ObservationRuntime genericObservations = genericObservationRuntime;
+        if (genericObservations != null) {
+            genericObservations.onFinalized();
+        }
         for (FinalizedBlockListener listener : finalizedListeners) {
             try {
                 listener.onFinalized(block, blockHash);
@@ -6208,6 +6362,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     retiringEpochCoordinator::close, cleanupFailures);
         }
 
+        ObservationRuntime retiringGenericObservations = genericObservationRuntime;
+        genericObservationRuntime = null;
+        if (retiringGenericObservations != null) {
+            closeResource("generic observation runtime",
+                    retiringGenericObservations::close, cleanupFailures);
+        }
+
         // Shutdown ORDER matters (ADR-010 F5 review): stop the tick source and
         // WAIT for it, then close the runtime (waits for workers), and only
         // then may the ledger close — nothing may touch RocksDB afterwards.
@@ -6286,6 +6447,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         anchorService = null;
         scriptAnchorService = null;
         observationService = null;
+        genericObservationRuntime = null;
 
         AppChainEngine currentEngine = engine;
         engine = null;

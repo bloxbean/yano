@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.api.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 
 import java.util.Map;
 import java.util.Optional;
@@ -31,6 +32,11 @@ public interface AppStateMachineContext {
      * when it is absent.</p>
      */
     default Optional<AppChainConsensusProfile> consensusProfile() {
+        return Optional.empty();
+    }
+
+    /** Immutable generic-observation definitions and protocol limits. */
+    default Optional<ObservationProfileV1> observationProfile() {
         return Optional.empty();
     }
 

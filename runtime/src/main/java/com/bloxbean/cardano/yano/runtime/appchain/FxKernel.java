@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -113,6 +114,26 @@ final class FxKernel {
      */
     Result apply(AppStateMachine machine, AppBlockExecutionContext context,
                  AppStateWriter state, FxReader reader) {
+        return apply(machine, context, state, reader, AppObservationEmitter.rejecting(
+                "Generic observations are disabled for this chain"));
+    }
+
+    Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                 AppStateWriter state, FxReader reader,
+                 AppObservationEmitter observations) {
+        return apply(machine, context, state, reader, observations, null);
+    }
+
+    Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                 AppStateWriter state, FxReader reader,
+                 ObservationKernel.BlockSession observations) {
+        return apply(machine, context, state, reader, observations, observations);
+    }
+
+    private Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                         AppStateWriter state, FxReader reader,
+                         AppObservationEmitter observations,
+                         ObservationKernel.BlockSession observationSession) {
         AppBlock block = context.block();
         if (consensusProfileGuard != null) {
             consensusProfileGuard.apply(block.height(), state);
@@ -120,8 +141,13 @@ final class FxKernel {
         AppStateWriter machineWriter = guardedWriter(state, settings.strictReservedPrefix());
 
         if (!settings.enabled()) {
-            machine.apply(context, machineWriter, AppEffectEmitter.rejecting(
-                    "Effects are disabled for this chain (effects.enabled=false)"));
+            AppEffectEmitter rejectingEffects = AppEffectEmitter.rejecting(
+                    "Effects are disabled for this chain (effects.enabled=false)");
+            if (observationSession != null) {
+                observationSession.incorporateResults(machine, machineWriter, rejectingEffects);
+                observationSession.advance(machine, machineWriter, rejectingEffects);
+            }
+            machine.apply(context, machineWriter, rejectingEffects, observations);
             return Result.NONE;
         }
 
@@ -150,7 +176,13 @@ final class FxKernel {
             closedInBlock.add(positionKey(result.effectId().height(), result.effectId().ordinal()));
             incorporated.add(result);
             emitter.closedOne();
-            machine.onEffectResult(context, result, machineWriter, emitter);
+            machine.onEffectResult(context, result, machineWriter, emitter, observations);
+        }
+
+        // Observation results are incorporated after effect results and before
+        // either expiry sweep (ADR-037 section 7.6).
+        if (observationSession != null) {
+            observationSession.incorporateResults(machine, machineWriter, emitter);
         }
 
         // 2. Deterministic expiry sweep at this height. Every swept effect is
@@ -182,10 +214,15 @@ final class FxKernel {
             incorporated.add(expired);
             expiredThisBlock++;
             emitter.closedOne();
-            machine.onEffectResult(context, expired, machineWriter, emitter);
+            machine.onEffectResult(context, expired, machineWriter, emitter, observations);
         }
 
-        machine.apply(context, machineWriter, emitter);
+        // Observation close/expiry/due work follows the effect expiry sweep.
+        if (observationSession != null) {
+            observationSession.advance(machine, machineWriter, emitter);
+        }
+
+        machine.apply(context, machineWriter, emitter, observations);
 
         // 4. Commitment leaves.
         byte[] effectsRoot = null;

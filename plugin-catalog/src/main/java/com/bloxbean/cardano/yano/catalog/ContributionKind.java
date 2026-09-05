@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValid
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
@@ -31,6 +32,8 @@ public enum ContributionKind {
     L1_OBSERVER("l1-observer", L1ObserverProvider.class, false),
     /** App-chain epoch-boundary L1 observation provider. */
     L1_EPOCH_OBSERVER("l1-epoch-observer", L1EpochObserverProvider.class, false),
+    /** Generic external observation acquisition provider. */
+    OBSERVATION_PROVIDER("observation-provider", ObservationProviderFactory.class, false),
     /** Local signer provider factory. */
     SIGNER_PROVIDER("signer-provider", SignerProviderFactory.class, false),
     /** Local app-effect executor factory. */
