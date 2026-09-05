@@ -11,6 +11,12 @@ public final class ExactValueQuorumPolicy implements ObservationReconciliationPo
         if (reports.size() != round.reportThreshold() || policyTrace.length != 0) {
             return false;
         }
-        return reports.stream().allMatch(report -> Arrays.equals(report.value(), output));
+        ObservationReport first = reports.get(0);
+        return first.sourceVersion().length > 0
+                && reports.stream().allMatch(report -> Arrays.equals(report.value(), output)
+                && Arrays.equals(report.sourceId(), first.sourceId())
+                && Arrays.equals(report.sourceVersion(), first.sourceVersion())
+                && report.freshnessAnchorType() == first.freshnessAnchorType()
+                && report.freshnessAnchor() == first.freshnessAnchor());
     }
 }

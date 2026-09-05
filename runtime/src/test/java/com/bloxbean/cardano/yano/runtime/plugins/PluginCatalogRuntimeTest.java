@@ -13,6 +13,8 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserver;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
@@ -3216,6 +3218,7 @@ class PluginCatalogRuntimeTest {
             case SEQUENCER_MODE -> ParitySequencerProvider.class;
             case L1_OBSERVER -> ParityL1ObserverProvider.class;
             case L1_EPOCH_OBSERVER -> ParityL1EpochObserverProvider.class;
+            case OBSERVATION_PROVIDER -> ParityObservationProvider.class;
             case SIGNER_PROVIDER -> ParitySignerProvider.class;
             case EFFECT_EXECUTOR -> ParityEffectProvider.class;
             case FINALIZED_SINK -> ParitySinkProvider.class;
@@ -3925,6 +3928,14 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
         @Override public String type() { throw unexpectedParityActivation(); }
         @Override
         public L1EpochObserver create(String observerId, Map<String, String> settings) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityObservationProvider implements ObservationProviderFactory {
+        @Override public String type() { throw unexpectedParityActivation(); }
+        @Override
+        public ObservationProvider create(String definitionId, Map<String, String> settings) {
             throw unexpectedParityActivation();
         }
     }

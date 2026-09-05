@@ -55,7 +55,7 @@ class PluginCatalogPackagedCliTest {
         assertThat(validate.exitCode()).isEqualTo(PluginCatalogCli.EXIT_OK);
         assertThat(validate.standardError()).isEmpty();
         assertThat(validate.standardOutput())
-                .startsWith("VALID apiMajor=3 apiLevel=4 bundles=1 selected=1")
+                .startsWith("VALID apiMajor=3 apiLevel=5 bundles=1 selected=1")
                 .contains("fingerprint=sha256:")
                 .doesNotContain(temporary.toString());
 

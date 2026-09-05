@@ -14,9 +14,13 @@ import java.util.Objects;
  * ordering; later phases add result incorporation and scheduling here.
  */
 final class SystemInputKernel {
+    record Result(FxKernel.Result effects, ObservationKernel.Result observations) {
+    }
+
     private final ConsensusProfileGuard consensusProfileGuard;
     private final ObservationProfileGuard observationProfileGuard;
     private final FxKernel effects;
+    private final ObservationKernel observations;
 
     SystemInputKernel(EffectsSettings effectsSettings,
                       ConsensusProfileGuard consensusProfileGuard,
@@ -26,10 +30,29 @@ final class SystemInputKernel {
         this.observationProfileGuard = Objects.requireNonNull(
                 observationProfileGuard, "observationProfileGuard");
         this.effects = new FxKernel(Objects.requireNonNull(effectsSettings, "effectsSettings"));
+        this.observations = null;
     }
 
-    FxKernel.Result apply(AppStateMachine machine, AppBlockExecutionContext context,
-                          AppStateWriter state, FxKernel.FxReader reader) {
+    SystemInputKernel(EffectsSettings effectsSettings,
+                      ConsensusProfileGuard consensusProfileGuard,
+                      ObservationProfileGuard observationProfileGuard,
+                      ObservationKernel observations) {
+        this.consensusProfileGuard = Objects.requireNonNull(
+                consensusProfileGuard, "consensusProfileGuard");
+        this.observationProfileGuard = Objects.requireNonNull(
+                observationProfileGuard, "observationProfileGuard");
+        this.effects = new FxKernel(Objects.requireNonNull(effectsSettings, "effectsSettings"));
+        this.observations = Objects.requireNonNull(observations, "observations");
+    }
+
+    Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                 AppStateWriter state, FxKernel.FxReader reader) {
+        return apply(machine, context, state, reader, null);
+    }
+
+    Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                 AppStateWriter state, FxKernel.FxReader reader,
+                 ObservationKernel.Reader observationReader) {
         long height = context.block().height();
         context.block().messages().forEach(message -> {
             String topic = message.getTopic();
@@ -45,9 +68,17 @@ final class SystemInputKernel {
         });
         consensusProfileGuard.apply(height, state);
         observationProfileGuard.apply(height, state);
-        AppObservationEmitter observations = AppObservationEmitter.rejecting(
-                "Generic observations are disabled for this chain");
-        return effects.apply(machine, context, state, reader, observations);
+        if (observations == null) {
+            AppObservationEmitter rejecting = AppObservationEmitter.rejecting(
+                    "Generic observations are disabled for this chain");
+            return new Result(effects.apply(machine, context, state, reader, rejecting),
+                    ObservationKernel.Result.NONE);
+        }
+        ObservationKernel.BlockSession session = observations.begin(
+                machine, context, state, Objects.requireNonNull(
+                        observationReader, "observationReader"));
+        FxKernel.Result effectResult = effects.apply(machine, context, state, reader, session);
+        return new Result(effectResult, session.finish());
     }
 
     byte[] observationProfileDigest() {

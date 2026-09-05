@@ -64,6 +64,14 @@ observation-report = [
   bytes .size (0..256), uint, uint, ed25519-signature
 ]
 
+; Phase-1 external Ed25519 attestation evidence. The signature covers indexes
+; 0..7 under the yano/observation/attestation/v1 NUL-terminated domain.
+observation-attestation = [
+  1, hash32, hash32, uint, ed25519-key, bytes .size (1..256),
+  bytes .size (0..65536), bytes .size (1..256), uint, uint,
+  ed25519-signature
+]
+
 ; Field indexes 0..10. Reports are embedded as their canonical byte strings
 ; and ordered by unsigned (source-id, reporter-public-key).
 observation-certificate = [

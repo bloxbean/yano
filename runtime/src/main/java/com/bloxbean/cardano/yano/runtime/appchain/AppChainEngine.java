@@ -9,7 +9,7 @@ import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusContext;
 import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusQuorum;
 import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusDigests;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
-import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
 import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
@@ -73,6 +73,7 @@ final class AppChainEngine implements AutoCloseable {
     private final SystemInputKernel systemInputKernel;
     private final java.util.Optional<AuthenticatedSnapshotRuntime> authenticatedSnapshots;
     private final FxKernel.FxReader fxReader;
+    private final ObservationKernel.Reader observationReader;
     private final Supplier<WriteBatch> writeBatchFactory;
     /** Sends a body on a system topic to the group (via the subsystem's diffusion). */
     private final BiFunction<String, byte[], AppMessage> broadcast;
@@ -107,6 +108,9 @@ final class AppChainEngine implements AutoCloseable {
     private volatile ObservationValidator observationValidator;
     /** Durable system inputs selected ahead of the ordinary, expiring message pool. */
     private volatile MandatoryInputProvider mandatoryInputProvider = reference -> List.of();
+    /** Locally ready certified results; optional and never a follower completeness rule. */
+    private volatile ObservationResultInputProvider observationResultInputProvider =
+            (height, limit) -> List.of();
     /** Complete-prefix check; unlike per-item validation this detects omission. */
     private volatile ObservationPrefixValidator observationPrefixValidator;
     private volatile Consumer<AppMessage> unencodableMandatoryInputHandler = ignored -> { };
@@ -155,6 +159,10 @@ final class AppChainEngine implements AutoCloseable {
         List<AppMessage> inputs(L1Ref reference);
     }
 
+    interface ObservationResultInputProvider {
+        List<AppMessage> inputs(long candidateHeight, int limit);
+    }
+
     interface ObservationPrefixValidator {
         L1RefVerdict check(AppBlockExecutionContext executionContext);
     }
@@ -173,6 +181,10 @@ final class AppChainEngine implements AutoCloseable {
 
     void setMandatoryInputProvider(MandatoryInputProvider provider) {
         this.mandatoryInputProvider = Objects.requireNonNull(provider, "provider");
+    }
+
+    void setObservationResultInputProvider(ObservationResultInputProvider provider) {
+        this.observationResultInputProvider = Objects.requireNonNull(provider, "provider");
     }
 
     void setObservationPrefixValidator(ObservationPrefixValidator validator) {
@@ -426,11 +438,29 @@ final class AppChainEngine implements AutoCloseable {
         this.stateBackend = ledger.stateBackend();
         this.stateCommitmentGuard = new StateCommitmentGuard(stateBackend.identity());
         this.stateCommitmentGuard.verifyRetained(ledger, config.chainId());
+        ObservationSettings observationSettings = ObservationSettings.from(config, group);
         ObservationProfileGuard observationProfileGuard = new ObservationProfileGuard(
-                ObservationProfileV1.disabled());
+                observationSettings.profile());
         observationProfileGuard.verifyRetained(ledger, config.chainId());
-        this.systemInputKernel = new SystemInputKernel(
-                effectsSettings, consensusProfileGuard, observationProfileGuard);
+        if (observationSettings.profile().enabled()) {
+            int maximumFaults = Integer.parseInt(config.pluginSettings().getOrDefault(
+                    "consensus.max-byzantine-members", "0"));
+            ObservationKernel observationKernel = new ObservationKernel(
+                    observationSettings.profile(), stateBackend.identity().genesisId(),
+                    config.chainId(), AppChainConsensusProfileCommitment.digest(
+                    consensusProfileGuard.profile()), maximumFaults,
+                    height -> {
+                        MemberGroup.Epoch epoch = group.epochAt(height);
+                        return new AppChainMembershipEpoch(
+                                epoch.fromHeight(), new ArrayList<>(epoch.members()),
+                                epoch.threshold());
+                    }, observationSettings.verifierRegistry());
+            this.systemInputKernel = new SystemInputKernel(effectsSettings,
+                    consensusProfileGuard, observationProfileGuard, observationKernel);
+        } else {
+            this.systemInputKernel = new SystemInputKernel(
+                    effectsSettings, consensusProfileGuard, observationProfileGuard);
+        }
         AuthenticatedSnapshotSettings snapshotSettings = AuthenticatedSnapshotSettings.from(config);
         this.authenticatedSnapshots = AuthenticatedSnapshotRuntime.create(
                 ledger, stateBackend.identity(), snapshotSettings,
@@ -440,6 +470,7 @@ final class AppChainEngine implements AutoCloseable {
                         com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity
                                 .L1_PROOF_REQUIRED_SETTING, "false")), config.chainId());
         this.fxReader = ledger.fxReader();
+        this.observationReader = ledger.observationReader();
         if (!effectsSettings.enabled() && ledger.fxOpenCount() > 0) {
             // One-way switch (ADR-010 F12): the expiry sweep only runs while
             // effects are enabled, so disabling with open effects would strand
@@ -642,7 +673,8 @@ final class AppChainEngine implements AutoCloseable {
                 log.warn("Catch-up block state-root mismatch at height {} — rejecting", block.height());
                 return false;
             }
-            ledger.stageFx(applied.batch, block.height(), applied.fx);
+            ledger.stageFx(applied.batch, block.height(), applied.systemInputs.effects());
+            ledger.stageObservations(applied.batch, applied.systemInputs.observations());
             blockCommitHook.accept(block, applied.batch);
             ledger.commitBlock(block, blockHash, applied.stateCommit, applied.batch,
                     governanceWrites(block));
@@ -728,6 +760,7 @@ final class AppChainEngine implements AutoCloseable {
             AppBlock candidate = recoveryCandidate(height);
             boolean recoveringPreparedValue = candidate != null;
             List<AppMessage> mandatoryInputs;
+            List<AppMessage> observationResults = List.of();
             List<AppMessage> candidates;
             long timestamp;
             if (candidate != null) {
@@ -741,7 +774,15 @@ final class AppChainEngine implements AutoCloseable {
                 timestamp = candidate.timestamp();
             } else {
                 mandatoryInputs = List.copyOf(mandatoryInputProvider.inputs(l1Ref));
-                candidates = selectMessages(height, mandatoryInputs);
+                int available = Math.max(0, maxBlockMessages - mandatoryInputs.size());
+                observationResults = List.copyOf(
+                        observationResultInputProvider.inputs(height, available));
+                if (observationResults.size() > available || observationResults.stream()
+                        .anyMatch(message -> !ObservationTopics.RESULT.equals(message.getTopic()))) {
+                    throw new IllegalStateException(
+                            "Observation result provider returned invalid system inputs");
+                }
+                candidates = selectMessages(height, mandatoryInputs, observationResults);
                 if (candidates.isEmpty()) {
                     return;
                 }
@@ -811,18 +852,29 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private List<AppMessage> selectMessages(long candidateHeight,
-                                            List<AppMessage> mandatoryInputs) {
+                                            List<AppMessage> mandatoryInputs,
+                                            List<AppMessage> observationResults) {
         if (mandatoryInputs.size() > maxBlockMessages) {
             throw new IllegalStateException("OBSERVATION_PREFIX_EXCEEDS_BLOCK_COUNT");
         }
         List<AppMessage> candidates = pool.drainCandidates(
-                maxBlockMessages - mandatoryInputs.size(), proposalMaxBytes);
+                maxBlockMessages - mandatoryInputs.size() - observationResults.size(),
+                proposalMaxBytes);
         // L1 observations have one framework-owned durable ingress. Stale
         // preview-era copies in the ordinary pool may never compete with or
         // duplicate the mandatory prefix.
         candidates.removeIf(message -> {
             if (message.getTopic() == null
                     || !message.getTopic().startsWith(L1Observation.TOPIC_PREFIX)) {
+                return false;
+            }
+            pool.remove(List.of(message));
+            return true;
+        });
+        // Generic results have a separate durable ready journal. They never
+        // fall through the ordinary TTL-bound pool.
+        candidates.removeIf(message -> {
+            if (!ObservationTopics.RESULT.equals(message.getTopic())) {
                 return false;
             }
             pool.remove(List.of(message));
@@ -884,8 +936,10 @@ final class AppChainEngine implements AutoCloseable {
             }
             return false;
         });
-        List<AppMessage> selected = new ArrayList<>(mandatoryInputs.size() + candidates.size());
+        List<AppMessage> selected = new ArrayList<>(mandatoryInputs.size()
+                + observationResults.size() + candidates.size());
         selected.addAll(mandatoryInputs);
+        selected.addAll(observationResults);
         selected.addAll(candidates);
         return selected;
     }
@@ -1899,7 +1953,8 @@ final class AppChainEngine implements AutoCloseable {
         heightStartedAt = System.currentTimeMillis();
         timeoutVotes.clear();
         try (AppliedBlock applied = round.applied) {
-            ledger.stageFx(applied.batch, finalBlock.height(), applied.fx);
+            ledger.stageFx(applied.batch, finalBlock.height(), applied.systemInputs.effects());
+            ledger.stageObservations(applied.batch, applied.systemInputs.observations());
             blockCommitHook.accept(finalBlock, applied.batch);
             ledger.commitBlock(finalBlock, round.blockHash, applied.stateCommit, applied.batch,
                     governanceWrites(finalBlock));
@@ -1994,12 +2049,12 @@ final class AppChainEngine implements AutoCloseable {
             candidate = stateBackend.beginCandidate(
                     committedHeight, baseRoot, block.height());
             stateCommitmentGuard.apply(block.height(), candidate);
-            FxKernel.Result[] fxResult = new FxKernel.Result[1];
+            SystemInputKernel.Result[] systemInputs = new SystemInputKernel.Result[1];
             AuthenticatedSnapshotRuntime.BlockSession snapshotSession = authenticatedSnapshots.isPresent()
                     ? authenticatedSnapshots.orElseThrow().beginBlock(candidate) : null;
             AppStateWriter machineState = snapshotSession != null ? snapshotSession.writer() : candidate;
-            fxResult[0] = systemInputKernel.apply(
-                    stateMachine, executionContext, machineState, fxReader);
+            systemInputs[0] = systemInputKernel.apply(
+                    stateMachine, executionContext, machineState, fxReader, observationReader);
             if (snapshotSession != null) {
                 snapshotSession.execute(batch, block.height());
             }
@@ -2017,7 +2072,7 @@ final class AppChainEngine implements AutoCloseable {
                     block.l1Slot(), block.l1BlockHash(), block.timestamp(),
                     block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
                     block.justification(), block.cert());
-            return new AppliedBlock(applied, stateCommit, batch, fxResult[0]);
+            return new AppliedBlock(applied, stateCommit, batch, systemInputs[0]);
         } catch (Throwable failure) {
             Throwable outcome = failure;
             if (stateCommit != null) {
@@ -2607,15 +2662,15 @@ final class AppChainEngine implements AutoCloseable {
         final AppBlock block;
         final StagedStateCommit stateCommit;
         final WriteBatch batch;
-        final FxKernel.Result fx;
+        final SystemInputKernel.Result systemInputs;
         private boolean closed;
 
         AppliedBlock(AppBlock block, StagedStateCommit stateCommit,
-                     WriteBatch batch, FxKernel.Result fx) {
+                     WriteBatch batch, SystemInputKernel.Result systemInputs) {
             this.block = block;
             this.stateCommit = stateCommit;
             this.batch = batch;
-            this.fx = fx;
+            this.systemInputs = systemInputs;
         }
 
         @Override

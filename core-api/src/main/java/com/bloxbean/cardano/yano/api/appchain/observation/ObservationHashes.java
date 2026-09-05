@@ -23,6 +23,7 @@ public final class ObservationHashes {
     private static final byte[] CERTIFICATE = domain("certificate");
     private static final byte[] RESULT = domain("result");
     private static final byte[] REPORTER_SET = domain("reporter-set");
+    private static final byte[] ATTESTATION = domain("attestation");
 
     private ObservationHashes() {
     }
@@ -61,6 +62,10 @@ public final class ObservationHashes {
 
     public static byte[] reportSigningDigest(ObservationReport report) {
         return digest(REPORT, report.encodeWithoutSignature());
+    }
+
+    public static byte[] attestationSigningDigest(ObservationAttestation attestation) {
+        return digest(ATTESTATION, attestation.encodeWithoutSignature());
     }
 
     public static byte[] certificateDigest(ObservationCertificate certificate) {
