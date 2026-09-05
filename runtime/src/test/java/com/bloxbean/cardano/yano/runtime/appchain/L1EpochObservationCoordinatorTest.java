@@ -341,20 +341,39 @@ class L1EpochObservationCoordinatorTest {
     @Test
     void ignoresPreLedgerStateEpochsAndReconcilesTheFirstObservableBoundary(
             @TempDir Path dir) throws Exception {
+        assertFirstObservableBoundary(dir, false);
+    }
+
+    @Test
+    void rollbackIntoByronReconcilesOnlyTheFirstObservableBoundary(@TempDir Path dir)
+            throws Exception {
+        assertFirstObservableBoundary(dir, true);
+    }
+
+    private void assertFirstObservableBoundary(Path dir, boolean rollback) throws Exception {
         L1EpochBoundary boundary = new L1EpochBoundary(3, 4, 86_400,
                 bytes(0x04), 100);
         AtomicBoolean completed = new AtomicBoolean();
+        AtomicBoolean failStartup = new AtomicBoolean(true);
+        List<L1EpochBoundary> opened = new CopyOnWriteArrayList<>();
         L1EpochStateProvider provider = new L1EpochStateProvider() {
             @Override public boolean persistent() { return true; }
             @Override public int snapshotRetentionEpochs() { return 8; }
-            @Override public long epochAtSlot(long slot) { return slot < 86_400 ? 3 : 4; }
+            @Override public long epochAtSlot(long slot) { return slot / 21_600; }
             @Override public long firstObservableEpoch() { return 4; }
             @Override public List<L1EpochBoundary> completedBoundaries(long after, int limit) {
+                if (failStartup.getAndSet(false)) {
+                    throw new IllegalStateException("transient startup failure");
+                }
                 return completed.get() && boundary.newEpoch() > after
                         ? List.of(boundary) : List.of();
             }
-            @Override public Optional<L1EpochState> open(L1EpochBoundary ignored) {
-                return Optional.of(new EmptyState(boundary));
+            @Override public Optional<L1EpochState> open(L1EpochBoundary requested) {
+                opened.add(requested);
+                if (!requested.equals(boundary)) {
+                    throw new IllegalArgumentException("Unexpected boundary: " + requested);
+                }
+                return Optional.of(new EmptyState(requested));
             }
         };
 
@@ -365,21 +384,32 @@ class L1EpochObservationCoordinatorTest {
                      () -> false, ignored -> false, ignored -> { }, "pre-ledger-state",
                      LoggerFactory.getLogger("epoch-test"))) {
             coordinator.start();
+            await(() -> !coordinator.healthy());
+            coordinator.onBlockApplied(43_200, 80, bytes(0x02));
+            await(coordinator::healthy, coordinator::status);
             coordinator.onBlockApplied(64_800, 90, bytes(0x03));
             await(() -> Long.valueOf(90L).equals(
                     coordinator.status().get("latestAppliedBlockNumber")));
 
             assertThat(coordinator.healthy()).isTrue();
-            assertThat(coordinator.status()).containsEntry("failures", 0L);
+            assertThat(coordinator.status()).containsEntry("failures", 1L);
             assertThat(coordinator.status().toString()).contains("ready=0");
+            assertThat(opened).isEmpty();
 
+            if (rollback) {
+                // Re-enter Shelley directly from epoch 2: without the rollback clamp
+                // the event path incorrectly enqueues the Byron 2 -> 3 boundary.
+                coordinator.onRollback(43_200);
+            }
             completed.set(true);
             coordinator.onBlockApplied(86_400, 100, bytes(0x04));
             await(() -> coordinator.status().toString().contains("ready=1"),
                     coordinator::status);
 
             assertThat(coordinator.healthy()).isTrue();
-            assertThat(coordinator.status()).containsEntry("completedJobs", 1L);
+            assertThat(coordinator.status()).containsEntry("completedJobs", 1L)
+                    .containsEntry("failures", 1L);
+            assertThat(opened).isNotEmpty().allMatch(boundary::equals);
         }
     }
 

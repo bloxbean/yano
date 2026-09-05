@@ -19,7 +19,8 @@ public interface L1EpochStateProvider {
      * First epoch transition for which this source can expose observer datasets.
      *
      * <p>The default matches networks whose ledger-state datasets start at genesis. Hosts with
-     * a Byron era override this with the first post-Byron epoch.</p>
+     * a Byron era override this with the first post-Byron epoch. Every member must derive
+     * the same value from deterministic network configuration, never local dataset availability.</p>
      */
     default long firstObservableEpoch() {
         return 1;

@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceCborCodec;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
+import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
 import org.rocksdb.Snapshot;
 
@@ -38,6 +39,17 @@ public final class HistoricalEpochStateView implements AutoCloseable {
     public boolean hasStakeSnapshot(int epoch) {
         requireOpen();
         byte[] prefix = epochPrefix(epoch);
+        try {
+            byte[] marker = db.get(state, reads, DefaultAccountStateStore.snapshotGenerationKey(epoch));
+            if (marker != null) {
+                // A completed generation can contain zero rows. BUILDING generations
+                // must remain unavailable even when some rows have already been flushed.
+                return marker.length >= 2 && marker[0] == 1 && marker[1] == 1;
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("historical stake snapshot marker read failed", e);
+        }
+        // Legacy snapshots predate generation markers and require at least one row.
         try (RocksIterator iterator = db.newIterator(stakeSnapshots, reads)) {
             iterator.seek(prefix);
             return iterator.isValid() && keyEpoch(iterator.key()) == epoch;
@@ -128,7 +140,7 @@ public final class HistoricalEpochStateView implements AutoCloseable {
         requireOpen();
         try {
             return db.get(state, reads, stateEpochPrefix(markerPrefix, epoch)) != null;
-        } catch (org.rocksdb.RocksDBException e) {
+        } catch (RocksDBException e) {
             throw new IllegalStateException("historical epoch marker read failed", e);
         }
     }

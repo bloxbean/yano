@@ -181,6 +181,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         latestAppliedBlockNumber.accumulateAndGet(blockNumber, Math::max);
         if (epoch < firstObservableEpoch) {
             lastObservedEpoch.set(-1);
+            wake();
             return;
         }
         long previous = lastObservedEpoch.getAndSet(epoch);
