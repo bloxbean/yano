@@ -2,6 +2,78 @@
 
 ## Latest checkpoint and CI findings
 
+### Retained round recovery and final runtime package
+
+Round 5 subsequently passed on the upgraded package: the fifth reporter signed
+two conflicting claims while the four honest journals remained separate.
+All five nodes certified VALUE at height 53, result
+`ef8aeb002e037ac8a63d0973d3d092edbc3c44585bb598120c4a4103f6695d51`, root
+`a3af78f3c2d78a00f0507b11c09aef648250ee32d9f93e80d7346c4fac20c741`.
+The expected median was 0.501 with three complete sources. All observation
+journals, queues and coordinator reservations drained to zero. Retained evidence:
+`equivocation-round-5.json`, `cadence-rounds-5-5.jsonl`, and
+`round-5-equivocation-retry-1.log`. The first pre-sign timeout remains below.
+The guarded membership drill has now started from this certified checkpoint;
+no membership-transition pass is claimed yet.
+
+Two further test-only gaps were closed without runtime/L1 source changes:
+
+- A five-node TCP test holds a ready certificate on all nodes, deliberately
+  omits it at the faulty proposer's height 3, then fail-stops that node. Four
+  honest validators include the retained certificate at height 4 through
+  certified view change; the restarted node catches up. Assertions identify
+  both the faulty and subsequent honest proposers, quorum signatures, result
+  and root parity. Focused pass: 33s; full cluster-suite pass: 58s
+  (`/private/tmp/adr-037-phase-5-network-cluster-review.log`). This is a real
+  networked subsystem test, not the separate packaged Preprod omission drill.
+- Envelope fitting now has an explicit regression proving that an oversized
+  earlier observation result cannot be skipped in favor of a smaller later
+  result, both at the head and after a fitting prefix. This tests fitting,
+  not certificate validity. Identity/envelope suite: 3 tests, zero failures
+  or skips, 5s (`/private/tmp/adr-037-phase-5-envelope-order-rerun.log`). The
+  first compile attempt required an AssertJ wildcard-list assertion correction.
+
+Round 4 was explicitly recovered from its certified opening at height 42,
+without resetting state or replacing signing journals. All five nodes certified
+VALUE at height 43, result
+`4559756e6e61869cda33337b9063593391382095ce989bc68e7b9e48cb1460bf`, root
+`21d4d295f8ec5f83a3df282c72d5ff77999dfd6a7488ce33de379dd6cae67f81`.
+Evidence: `round-4-recovery.log`, `cadence-rounds-4-4.jsonl` with
+`explicitOpeningRecovery:true` in the retained qualification directory.
+
+At 15:32 Singapore the five nodes were gracefully upgraded to host
+`bf0a1d38faac5a5a7192c1b76bd2db43fe9453d4` / Yano X `a12fcb89`:
+`/private/tmp/adr037-qualified-package.ZKdHZU/yano-x-jvm-0.1.0-adr037-a12fcb89`.
+The JVM ZIP SHA-256 is
+`6c3fd2ecf0c61927bdfb743f2b4174972510c72acc0095d1100b1e9206ddb7b0`;
+its exact host version is `0.1.0-pre14-bf0a1d38f`. All five restarted ready
+at height 43 with the same root. Keys, genesis, retained stores, public upstream
+and default validation were preserved. Logs are
+`node-<n>/cluster-qualified-default-1.log`. No L1 core files changed.
+
+The first round-5 equivocation attempt timed out while advancing toward its
+opening, before signing or submitting reports. All five subsequently converged
+at height 47 with root
+`efaf894367c2390b6d03f065f0c8c7d9a3fa91ec80e20193fc7247fd2352e340`.
+Its empty evidence file was archived as
+`cadence-rounds-5-5-pre-sign-timeout.jsonl`; `round-5-equivocation.log` remains
+unchanged. A new attempt uses `round-5-equivocation-retry-1.log`. No successful
+equivocation outcome is claimed yet. L1 remains in historical catch-up.
+
+Host runtime checkpoint gates passed: build `34015009604`, integration /
+distribution / native `34015010885`, and exact input staging `34015011910`.
+Companion full run `34015241678` passed all gates on `a12fcb89` against those
+host inputs. The earlier intermittent composite-anchor failure remains in the
+failure history; a passing rerun is not proof of a root-cause fix.
+
+Companion `3506da65` adds explicit opening recovery, independently verified
+governance-message proofs and height-specific membership pins, plus a bounded
+directed TCP partition harness. Focused tests passed; full tests, artifact
+inventory, JVM-only and distribution checks passed in 3m27s
+(`/private/tmp/adr-037-phase-5-drills-package.log`). Remote full run
+`34019843505` is in progress. Membership transitions and the TCP harness have
+not yet been exercised against this retained Preprod cluster.
+
 ### User-directed default L1 configuration
 
 The user clarified that qualification must use the normal single-public-upstream
@@ -20,7 +92,8 @@ body advancement, with no runtime degradation on the first poll. New logs are
 `node-<n>/cluster-sync-default-1.log`; exact PIDs and commands are recorded in the
 local `QUALIFICATION_RUN.md`. No L1 source code was changed. This is an
 observation-framework qualification run, not a strict Praos validation claim.
-Round 4 remains partially opened and the cadence driver has not been restarted.
+At this checkpoint round 4 was still partially opened; the later explicit
+recovery and package upgrade above supersede that state.
 
 ### Live qualification blocked at the Praos checkpoint
 

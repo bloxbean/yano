@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,6 +42,44 @@ class AppChainEngineIdentityValidationTest {
 
     private static final String CHAIN = "identity-chain";
     private static final String FOREIGN_CHAIN = "foreign-chain";
+
+    @Test
+    void oversizedEarlierObservationEnvelopeNeverSkipsToSmallerLaterResult(
+            @TempDir Path directory) throws Exception {
+        AppMessageSigner signer = new AppMessageSigner(HexUtil.encodeHexString(filled(31)));
+        Set<String> members = Set.of(signer.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(31)))
+                .memberKeysHex(members).proposerKeyHex(signer.publicKeyHex()).threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF).build();
+        Logger logger = mock(Logger.class);
+        try (AppLedgerStore ledger = new AppLedgerStore(directory.resolve("ledger").toString(), logger)) {
+            AppChainEngine engine = new AppChainEngine(config, ledger, new AppMsgPool(10),
+                    new NoOpMachine(), signer, new MemberGroup(members, 1), new AlwaysSequencer(),
+                    60_000, 10, config.blockMaxBytes(), (topic, body) -> null, logger);
+            try {
+                // Exercise envelope fitting only, not certificate parsing or consensus validity.
+                AppMessage large = signedMessage(signer, CHAIN, ObservationTopics.RESULT,
+                        new byte[Math.toIntExact(config.blockMaxBytes())], 1);
+                AppMessage small = signedMessage(signer, CHAIN, ObservationTopics.RESULT, new byte[]{1}, 2);
+                AppMessage later = signedMessage(signer, CHAIN, ObservationTopics.RESULT, new byte[]{2}, 3);
+                Method fit = AppChainEngine.class.getDeclaredMethod("fitToBlockBytes", long.class,
+                        byte[].class, AppChainEngine.L1Ref.class, long.class, List.class, int.class);
+                fit.setAccessible(true);
+                List<AppMessage> retained = List.of(large, small);
+                assertThat((List<?>) fit.invoke(engine, 1L, AppBlock.GENESIS_PREV_HASH,
+                        null, 1L, List.of(small), 0)).isEqualTo(List.of(small));
+                assertThat((List<?>) fit.invoke(engine, 1L, AppBlock.GENESIS_PREV_HASH,
+                        null, 1L, retained, 0)).isEmpty();
+                assertThat(retained).containsExactly(large, small);
+                assertThat((List<?>) fit.invoke(engine, 1L, AppBlock.GENESIS_PREV_HASH,
+                        null, 1L, List.of(small, large, later), 0)).isEqualTo(List.of(small));
+            } finally {
+                engine.close();
+                engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
 
     @Test
     void rejectsWrongChainVersionAndInnerMessageIdentityOnLiveAndCatchUpPaths(

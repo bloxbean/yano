@@ -48,6 +48,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
 import java.math.BigInteger;
+import java.lang.reflect.Field;
 import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -106,6 +107,17 @@ class ObservationRuntimeClusterTest {
     }
 
     private static void networkCluster(Path directory, boolean attested, boolean external) throws Exception {
+        networkCluster(directory, attested, external, false);
+    }
+
+    @Test
+    void honestProposerIncludesRetainedCertificateAfterFaultyNetworkedProposerOmitsIt(
+            @TempDir Path directory) throws Exception {
+        networkCluster(directory, false, true, true);
+    }
+
+    private static void networkCluster(Path directory, boolean attested, boolean external,
+                                       boolean omitCertificate) throws Exception {
         List<String> seeds = external ? List.of("61".repeat(32), "62".repeat(32), "63".repeat(32),
                 "64".repeat(32), "65".repeat(32)) : SEEDS;
         List<AppMessageSigner> signers = seeds.stream().map(AppMessageSigner::new).toList();
@@ -170,6 +182,9 @@ class ObservationRuntimeClusterTest {
                 settings.put("threshold", external ? 4 : 2);
                 settings.put("sequencer.proposer", signers.getFirst().publicKeyHex());
                 settings.put("block.interval-ms", 300);
+                if (omitCertificate) {
+                    settings.put("consensus.round-timeout-ms", "2000");
+                }
                 settings.put("peers", ports.stream().filter(candidate -> candidate != port)
                         .map(candidate -> "localhost:" + candidate).collect(Collectors.joining(",")));
                 settings.putAll(TestStateCommitments.MPF.settings());
@@ -207,6 +222,14 @@ class ObservationRuntimeClusterTest {
                         ByteBuffer.allocate(40).put(subscriptionId).putLong(0).array()).payload());
                 byte[] consensusDigest = AppChainConsensusProfileCommitment.digest(
                         EffectsSettings.from(configs.getFirst()).consensusProfile(configs.getFirst()));
+                if (omitCertificate) {
+                    // Fault injection is test-only. The runtime still acquires, validates and
+                    // retains certificates; only this proposer's selection deliberately omits them.
+                    Field engineField = AppChainSubsystem.class.getDeclaredField("engine");
+                    engineField.setAccessible(true);
+                    ((AppChainEngine) engineField.get(proposer))
+                            .setObservationResultInputProvider((height, limit) -> List.of());
+                }
                 // Three independent source quorums enter through non-proposer gateways.
                 for (int source = 0; source < 3; source++) {
                     for (int reporter = 0; reporter < 4; reporter++) {
@@ -218,9 +241,39 @@ class ObservationRuntimeClusterTest {
                     }
                 }
             }
-            await(() -> subsystems.stream().allMatch(node -> node.tipHeight() >= 3),
+            long resultHeight = 3;
+            if (omitCertificate) {
+                await(() -> subsystems.stream().allMatch(node ->
+                        node.status().get("genericObservations") instanceof Map<?, ?> resources
+                                && resources.get("certificatesReady") instanceof Number count
+                                && count.intValue() > 0), Duration.ofSeconds(30));
+                assertThat(subsystems).allMatch(node -> node.tipHeight() == 2);
+                proposer.submit("omit-ready-certificate", new byte[]{3});
+                await(() -> subsystems.stream().allMatch(node -> node.tipHeight() == 3),
+                        Duration.ofSeconds(30));
+                for (AppChainSubsystem node : subsystems) {
+                    AppBlock omitted = node.block(3).orElseThrow();
+                    assertThat(omitted.cert().signatures()).hasSize(4);
+                    assertThat(omitted.proposer()).isEqualTo(signers.getFirst().publicKey());
+                    assertThat(omitted.messages()).noneMatch(message ->
+                            ObservationTopics.RESULT.equals(message.getTopic()));
+                    assertThat(node.query("result", new byte[0]).payload()).isEmpty();
+                }
+                // A single faulty validator may now fail-stop. Four honest validators must
+                // recover through certified view change without re-signing external reports.
+                proposer.stop();
+                await(() -> subsystems.subList(1, 5).stream().allMatch(node -> node.tipHeight() >= 4),
+                        Duration.ofSeconds(60));
+                AppBlock recovered = subsystems.get(1).block(4).orElseThrow();
+                assertThat(recovered.view()).isPositive();
+                assertThat(recovered.proposer()).isNotEqualTo(signers.getFirst().publicKey());
+                proposer.start();
+                resultHeight = 4;
+            }
+            long expectedHeight = resultHeight;
+            await(() -> subsystems.stream().allMatch(node -> node.tipHeight() >= expectedHeight),
                     Duration.ofSeconds(30));
-            AppBlock finalized = proposer.block(3).orElseThrow();
+            AppBlock finalized = proposer.block(resultHeight).orElseThrow();
             assertThat(finalized.messages()).anyMatch(message ->
                     ObservationTopics.RESULT.equals(message.getTopic()));
             ObservationCertificate finalizedObservation = ObservationCertificate.decode(finalized.messages().stream()
@@ -235,7 +288,7 @@ class ObservationRuntimeClusterTest {
                         .contains(attested ? "delivered" : "distributionUrl=");
             }
             for (AppChainSubsystem node : subsystems) {
-                AppBlock block = node.block(3).orElseThrow();
+                AppBlock block = node.block(resultHeight).orElseThrow();
                 assertThat(block.cert().signatures()).hasSize(external ? 4 : 2);
                 assertThat(block.stateRoot()).isEqualTo(finalized.stateRoot());
                 assertThat(node.query("result", new byte[0]).payload())
