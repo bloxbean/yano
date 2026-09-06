@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,6 +39,7 @@ class ObservationAttestationTest {
                 .pluginSettings(Map.of(
                         ObservationSettings.PROFILE_HEX, HexUtil.encodeHexString(profile.encode()),
                         "observations.attestors.delivery", attestor.publicKeyHex(),
+                        "observations.providers.delivery.source-id", "source",
                         "observations.providers.delivery.type", ObservationProviders.HTTPS_ATTESTED,
                         "observations.providers.delivery.url", "https://example.com/attestation"))
                 .build();
@@ -49,6 +51,15 @@ class ObservationAttestationTest {
         ObservationReport report = signedReport(reporter, definition, round, valid);
         assertThat(settings.verifierRegistry().evidenceVerifier(definition)
                 .verify(definition, round, report)).isTrue();
+
+        ObservationAttestation otherSource = new ObservationAttestation(1, definition.digest(),
+                round.subscriptionId(), round.roundNumber(), attestor.publicKey(), new byte[]{9},
+                valid.claim(), valid.sourceVersion(), valid.freshnessAnchorType(), valid.freshnessAnchor(),
+                new byte[64]);
+        otherSource = copy(otherSource, otherSource.subscriptionId(), otherSource.roundNumber(),
+                otherSource.freshnessAnchor(), attestor.sign(otherSource.signingDigest()));
+        assertThat(settings.verifierRegistry().evidenceVerifier(definition)
+                .verify(definition, round, signedReport(reporter, definition, round, otherSource))).isFalse();
 
         byte[] forgedSignature = valid.signature();
         forgedSignature[0] ^= 1;
@@ -84,7 +95,7 @@ class ObservationAttestationTest {
             AppMessageSigner signer, ObservationDefinition definition, byte[] subscriptionId,
             long roundNumber, byte[] claim, long freshness) {
         ObservationAttestation unsigned = new ObservationAttestation(1, definition.digest(),
-                subscriptionId, roundNumber, signer.publicKey(), new byte[]{5}, claim,
+                subscriptionId, roundNumber, signer.publicKey(), "source".getBytes(StandardCharsets.US_ASCII), claim,
                 new byte[]{3}, 0, freshness, new byte[64]);
         return copy(unsigned, subscriptionId, roundNumber, freshness,
                 signer.sign(unsigned.signingDigest()));
@@ -134,7 +145,7 @@ class ObservationAttestationTest {
                 ObservationHashes.reporterSetDigest(List.of(reporter)), 0, 1, 1, true,
                 ObservationProviders.HTTPS_ATTESTED,
                 ObservationSourceConfiguration.attestedHttpsSourceDigest(
-                        "https://example.com/attestation", "GET", List.of(attestor)),
+                        "https://example.com/attestation", "GET", "source", List.of(attestor)),
                 "identity-v1", ObservationSettings.ATTESTATION_EVIDENCE,
                 ObservationSettings.EXACT_POLICY, filled(14), filled(15), "one-source-v1",
                 "source-version-v1", "inline-v1", 1, 1024, 1024, 4096, 1, 1);

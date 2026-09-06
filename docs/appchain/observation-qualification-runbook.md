@@ -7,8 +7,8 @@ private signing keys, source credentials or spending-wallet material.
 
 ## Exact coordinated CI inputs
 
-Yano's existing `integration.yml` workflow has an opt-in
-`stage_inputs_only=true` dispatch mode. On a clean committed checkout it stages
+Yano's separate `stage-consumer-inputs.yml` workflow has an opt-in manual
+dispatch. On a clean committed checkout it stages
 the ordinary Maven publications and matching JVM ZIP, runs the packaged JVM
 catalog smoke, and uploads `yano-inputs-<full-host-commit>`. It includes a
 version/commit manifest and SHA-256 inventory. It does not publish to Sonatype,
@@ -23,8 +23,8 @@ qualification staging, not a permanent published release channel.
 For example, dispatch on the reviewed host milestone branch:
 
 ```bash
-gh workflow run integration.yml --repo bloxbean/yano \
-  --ref milestone/adr-037-phase-5 -f stage_inputs_only=true
+gh workflow run stage-consumer-inputs.yml --repo bloxbean/yano \
+  --ref <reviewed-host-branch>
 ```
 
 After that run succeeds, independently record its full source commit and run

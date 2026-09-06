@@ -1,0 +1,31 @@
+name: Stage Consumer Inputs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage-consumer-inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: 'gradle'
+      - name: Stage exact publications and ordinary JVM ZIP
+        id: stage
+        run: bash .github/scripts/stage-consumer-inputs.sh
+      - name: Retain qualification inputs (not a public release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: yano-inputs-${{ github.sha }}
+          path: ${{ steps.stage.outputs.directory }}
+          if-no-files-found: error
+          retention-days: 14

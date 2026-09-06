@@ -170,6 +170,7 @@ class ObservationRuntimeClusterTest {
                     providerSettings.put("consensus.max-byzantine-members", "1");
                 } else if (attested) {
                     providerSettings.put("observations.attestors.delivery", attestor.publicKeyHex());
+                    providerSettings.put("observations.providers.delivery.source-id", "source");
                 } else {
                     providerSettings.put("observations.providers.delivery.url", LIVE_SOURCE);
                     providerSettings.put("observations.providers.delivery.source-id", "source");
@@ -482,6 +483,7 @@ class ObservationRuntimeClusterTest {
                 ? "https://example.com/attestation" : "https://example.com/value");
         if (attested) {
             settings.put("observations.attestors.delivery", attestor.publicKeyHex());
+            settings.put("observations.providers.delivery.source-id", "source");
         } else {
             settings.put("observations.providers.delivery.source-id", "source");
         }
@@ -508,13 +510,13 @@ class ObservationRuntimeClusterTest {
                 ? ObservationProviders.HTTPS_ATTESTED : ObservationProviders.HTTPS_EXACT;
         byte[] sourceConfiguration = attested
                 ? ObservationSourceConfiguration.attestedHttpsSourceDigest(
-                "https://example.com/attestation", "GET", List.of(attestor.publicKey()))
+                "https://example.com/attestation", "GET", "source", List.of(attestor.publicKey()))
                 : ObservationSourceConfiguration.httpsSourceDigest(
                 "https://example.com/value", "GET", "source", "etag");
         if (networkFixture && attested) {
             adapter = "fixture-attested-v1";
-            sourceConfiguration = ObservationSourceConfiguration.attestorSetDigest(
-                    List.of(attestor.publicKey()));
+            sourceConfiguration = ObservationSourceConfiguration.attestedSourceDigest(
+                    "source", List.of(attestor.publicKey()));
         } else if (networkFixture) {
             sourceConfiguration = ObservationSourceConfiguration.httpsSourceDigest(
                     LIVE_SOURCE, "GET", "source", "etag");

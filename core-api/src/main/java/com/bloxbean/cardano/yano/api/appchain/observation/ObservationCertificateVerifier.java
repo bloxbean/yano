@@ -74,16 +74,24 @@ public final class ObservationCertificateVerifier {
         }
         Set<ReporterSource> reporterSources = new HashSet<>();
         Set<ByteKey> sources = new HashSet<>();
-        if (authorizedReporters.size() != round.reporterCount()
-                || !Arrays.equals(ObservationHashes.reporterSetDigest(authorizedReporters),
-                round.reporterSetDigest())) {
+        if (authorizedReporters == null || authorizedReporters.size() != round.reporterCount()) {
             return Validation.reject("reporter_set");
         }
         Set<ByteKey> allowed = new HashSet<>();
         for (byte[] reporter : authorizedReporters) {
-            allowed.add(new ByteKey(reporter));
+            if (reporter == null || reporter.length != 32 || !allowed.add(new ByteKey(reporter))) {
+                return Validation.reject("reporter_set");
+            }
+        }
+        if (!Arrays.equals(ObservationHashes.reporterSetDigest(authorizedReporters), round.reporterSetDigest())) {
+            return Validation.reject("reporter_set");
         }
         for (ObservationReport report : certificate.reports()) {
+            if (report.freshnessAnchorType() != round.anchorType().code()
+                    || report.freshnessAnchor() < round.dueAnchor()
+                    || report.freshnessAnchor() > round.reportDeadlineAnchor()) {
+                return Validation.reject("report_freshness");
+            }
             if (!Arrays.equals(report.chainGenesisId(), expectedChainGenesisId)
                     || !report.chainId().equals(expectedChainId)
                     || !Arrays.equals(report.consensusProfileDigest(), expectedConsensusProfileDigest)

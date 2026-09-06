@@ -267,6 +267,17 @@ final class ObservationKernel {
                     continue;
                 }
 
+                // Effect-result and earlier observation callbacks can cancel a
+                // subscription in this block. Preserve committed-state conflict
+                // classification above, but never resurrect that staged terminal
+                // record or decrement its scheduler counters a second time.
+                subscription = currentSubscription(certificate.subscriptionId()).orElseThrow();
+                if (subscription.status() != ObservationSubscriptionStatus.ACTIVE
+                        || subscription.nextRoundNumber() != round.roundNumber()
+                        || subscription.nextDueAnchor() != 0) {
+                    continue;
+                }
+
                 byte[] valueDigest = ObservationHashes.digest(certificate.output());
                 ObservationResult result = new ObservationResult(1, certificate.resultId(),
                         certificate.subscriptionId(), certificate.roundNumber(),
@@ -648,6 +659,9 @@ final class ObservationKernel {
         int ticks = 0;
         for (AppMessage message : block.messages()) {
             String topic = message.getTopic();
+            if (ObservationTopics.isReserved(topic) && message.getSenderSeq() <= 0) {
+                throw new IllegalArgumentException("Observation inputs require a positive sender sequence");
+            }
             if (topic != null && topic.startsWith("~l1/") && l1Prefix) {
                 continue;
             }

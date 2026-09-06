@@ -549,7 +549,7 @@ public class AppChainResource {
         @POST
         @Path("observations/reports")
         @Consumes(MediaType.APPLICATION_OCTET_STREAM)
-        @AppChainAccess(AppChainAccess.Level.SUBMIT)
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
         public Response observationReport(InputStream input) {
             if (input == null) return badRequest("Canonical signed report bytes are required");
             try {
@@ -572,7 +572,7 @@ public class AppChainResource {
         @POST
         @Path("observations/wake")
         @Consumes(MediaType.APPLICATION_OCTET_STREAM)
-        @AppChainAccess(AppChainAccess.Level.SUBMIT)
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
         public Response observationWake(InputStream input) {
             if (input == null) return badRequest("A subscription ID is required");
             try {

@@ -84,6 +84,7 @@ public record ObservationProfileV1(
             throw new IllegalArgumentException("enabled observation profile requires definitions and positive bounds");
         }
         if (maxReportsPerRound > ObservationCertificate.MAX_REPORTS
+                || maxRoundHeights > Integer.MAX_VALUE || resultInclusionGraceHeights > Integer.MAX_VALUE
                 || maxCertificateBytes > ObservationCertificate.MAX_ENCODED_BYTES
                 || maxReportBytes > ObservationReport.MAX_ENCODED_BYTES) {
             throw new IllegalArgumentException("observation profile exceeds v1 wire bounds");
@@ -104,6 +105,16 @@ public record ObservationProfileV1(
     public static ObservationProfileV1 disabled() {
         return new ObservationProfileV1(1, false, 0, 0, 0, 0, 0, 0, 0,
                 List.of(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    /** v1 admission policy: at most sixteen blocks of hints, with a hard 1024 cap. */
+    public int maxTicksInPool() {
+        return enabled && logicalTimeVersion == 2 ? (int) Math.min(1024L, 16L * maxTicksPerBlock) : 0;
+    }
+
+    /** v1 re-diffusion budget, shared by reports and certificates per node per second. */
+    public int maxDiffusionsPerSecond() {
+        return enabled ? Math.min(64, maxReportsPerRound) : 0;
     }
 
     @Override public List<ObservationDefinition> definitions() { return List.copyOf(definitions); }

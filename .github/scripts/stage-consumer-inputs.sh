@@ -32,6 +32,10 @@ jq -n --arg commit "$commit" --arg version "$staged_version" \
 (
   cd "$staged_directory"
   # Inventory only regular packaged outputs; no credentials or source checkout.
+  if [[ -z "$(find maven -type f -print -quit)" ]]; then
+    echo 'Staging produced no Maven artifacts; refusing an empty inventory' >&2
+    exit 1
+  fi
   find maven -type f -print0 | sort -z | xargs -0 sha256sum
   sha256sum "yano-$staged_version.zip" yano-inputs.json
 ) > "$staged_directory/SHA256SUMS"

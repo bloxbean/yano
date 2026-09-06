@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted — Phases 0–3 implemented; later milestones remain in progress.
+Proposed — Phases 0–5 implemented; independent implementation review and remediation in progress.
 
-The architecture shipped in a separate review before implementation. The
+The initial design was reviewed before implementation. That review does not
+constitute acceptance of the implementation or its fresh-chain release cutover. The
 number is local to the `adr/app-layer` series. Root-level ADR numbers are a
 separate series.
 
@@ -742,8 +743,11 @@ or expired; the protocol does not rely on the ordinary 120-second envelope TTL.
 The scheduled proposer reads its durable ready-certificate journal, filters
 rounds already terminal in committed state, and constructs bounded
 `~obs/result/v1` system inputs itself. Result and tick envelopes use the
-existing positive, durable per-member sender sequence; there is no zero-sequence
-exception. The outer envelope is transport authorization,
+positive durable sequences in separate `(member, result-topic)` and
+`(member, tick-topic)` replay domains; there is no zero-sequence exception.
+Neither domain advances the ordinary effect/governance/application replay floor.
+Ephemeral observation diffusion does not allocate ordinary durable sequences.
+The outer envelope is transport authorization,
 not fact authority: followers require a valid signature from any active member
 of the block's membership epoch and never compare that sender with the current
 leader. This permits ADR-036 view-change recovery to re-propose the exact
@@ -830,7 +834,10 @@ exact host-owned codec/signing rules. The canonical tick body is
 using its positive durable sender sequence. It is a wake hint: the body never
 supplies the proposed block's time or L1 reference. Admission deduplicates
 `(sender, anchor-code, anchor-value)`, retains a bounded number per member and
-anchor, and the profile caps tick pool and block counts. Every other
+anchor (one latest slot per member, with 60-second node-local retention).
+The v1 profile derives the tick pool cap as `min(1024, 16 * maxTicksPerBlock)`;
+the local pool further limits ticks to one quarter of its capacity. The existing
+`maxTicksPerBlock` remains follower-enforced. Every other
 unclassified topic below the
 exact `~obs/` or `~obs-diffusion/` reserved roots is rejected at peer admission,
 pool selection, proposal, and catch-up; it must never fall through as an opaque
@@ -843,6 +850,16 @@ recovery. The receiving handler validates the outer member, bounds the body,
 deduplicates by inner identity, and durably stores valid inner data before
 acknowledging/marking it handled. Startup supplies a bounded early-message
 queue until the handler and journal are ready.
+
+V1 re-diffusion shares a node-wide budget of `min(64, maxReportsPerRound)`
+items per second across reports and certificates. Its byte budget is
+`min(16 MiB, max(maxCertificateBytes, maxResultBytesPerBlock))` per second.
+A bounded FIFO (4096 entries, the same byte cap) deduplicates pending bodies,
+and a bounded recent-content cache suppresses retries for ten seconds.
+Unexpired outer envelopes are reused; fresh envelopes are created after expiry,
+not on every scheduler tick. The durable journal remains the recovery source
+when transient queues are full. These are node-local liveness controls, not
+additional block-validity conditions.
 
 The app-block layout is follower-enforced:
 

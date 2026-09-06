@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
@@ -14,6 +16,7 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptio
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptionStatus;
 import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationKeys;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
@@ -796,6 +799,35 @@ final class AppLedgerStore implements AutoCloseable {
         return value != null ? ByteBuffer.wrap(value).getLong() : 0L;
     }
 
+    long observationSenderSeq(byte[] sender, String topic) {
+        byte[] value = getMeta(senderSeqKey(sender, topic));
+        return value == null ? 0 : ByteBuffer.wrap(value).getLong();
+    }
+
+    // Generic system inputs have independent replay domains. Proposal-time
+    // certificates must never retire a member's pending effect/governance work.
+    static String senderSeqDomain(AppMessage message) {
+        String topic = message.getTopic();
+        return HexUtil.encodeHexString(message.getSender())
+                + (ObservationTopics.RESULT.equals(topic) || ObservationTopics.TICK.equals(topic) ? topic : "");
+    }
+
+    long senderSeq(AppMessage message) {
+        byte[] value = getMeta(senderSeqKey(message));
+        return value == null ? 0 : ByteBuffer.wrap(value).getLong();
+    }
+
+    private static byte[] senderSeqKey(AppMessage message) {
+        return senderSeqKey(message.getSender(), message.getTopic());
+    }
+
+    private static byte[] senderSeqKey(byte[] sender, String topic) {
+        byte[] base = senderSeqKey(sender);
+        if (!ObservationTopics.RESULT.equals(topic) && !ObservationTopics.TICK.equals(topic)) return base;
+        byte[] domain = topic.getBytes(StandardCharsets.US_ASCII);
+        return ByteBuffer.allocate(base.length + domain.length).put(base).put(domain).array();
+    }
+
     private static byte[] senderSeqKey(byte[] sender) {
         ByteBuffer buffer = ByteBuffer.allocate(SENDER_SEQ_PREFIX.length + sender.length);
         buffer.put(SENDER_SEQ_PREFIX).put(sender);
@@ -1074,8 +1106,7 @@ final class AppLedgerStore implements AutoCloseable {
             batch.put(metaCf, KEY_STATE_ROOT, newStateRoot);
             byte[] heightBytes = longBytes(block.height());
             int index = 0;
-            java.util.Map<String, Long> senderMaxSeq = new java.util.LinkedHashMap<>();
-            java.util.Map<String, byte[]> senderKeys = new java.util.LinkedHashMap<>();
+            Map<ByteBuffer, Long> senderMaxSeq = new LinkedHashMap<>();
             for (var message : block.messages()) {
                 batch.put(msgsCf, message.getMessageId(), heightBytes);
                 // Query index (ADR 006 E3.3): topic/sender -> message refs, same atomic batch
@@ -1085,9 +1116,7 @@ final class AppLedgerStore implements AutoCloseable {
                         message.getMessageId());
                 byte[] sender = message.getSender();
                 if (sender != null && sender.length > 0 && message.getSenderSeq() > 0) {
-                    String senderHex = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(sender);
-                    senderKeys.putIfAbsent(senderHex, sender);
-                    senderMaxSeq.merge(senderHex, message.getSenderSeq(), Math::max);
+                    senderMaxSeq.merge(ByteBuffer.wrap(senderSeqKey(message)), message.getSenderSeq(), Math::max);
                 }
                 index++;
             }
@@ -1096,9 +1125,10 @@ final class AppLedgerStore implements AutoCloseable {
             // committed state — one write per sender per block avoids the
             // WriteBatch read-visibility trap).
             for (var seqEntry : senderMaxSeq.entrySet()) {
-                byte[] sender = senderKeys.get(seqEntry.getKey());
-                long floor = Math.max(senderSeq(sender), seqEntry.getValue());
-                batch.put(metaCf, senderSeqKey(sender), longBytes(floor));
+                byte[] key = seqEntry.getKey().array();
+                byte[] committed = getMeta(key);
+                long floor = Math.max(committed == null ? 0 : ByteBuffer.wrap(committed).getLong(), seqEntry.getValue());
+                batch.put(metaCf, key, longBytes(floor));
             }
             stateCommitFaults.at(StateCommitFaultInjector.FaultPoint.BEFORE_DURABLE_WRITE);
             try (WriteOptions writeOptions = new WriteOptions().setSync(true)) {
@@ -1235,6 +1265,7 @@ final class AppLedgerStore implements AutoCloseable {
     // ------------------------------------------------------------------
 
     private static final byte[] OBS_ACTIVE_COUNT = new byte[]{'m', 'a'};
+    private static final byte[] OBS_LAST_STAGED_HEIGHT = new byte[]{'m', 'v'};
     private static final byte[] OBS_OPEN_ROUND_COUNT = new byte[]{'m', 'o'};
     private static final byte[] OBS_HIGH_WATER_SLOT = new byte[]{'m', 'h'};
     static final String OBS_REBUILD_CANDIDATE = "observation_rebuild_candidate";
@@ -1275,11 +1306,12 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
-    void stageObservations(WriteBatch batch, ObservationKernel.Result result) {
-        if (result == null || result.isEmpty()) {
-            return;
-        }
+    void stageObservations(WriteBatch batch, long height, ObservationKernel.Result result) {
         try {
+            // Include even idle/disabled blocks in the same durable batch as the
+            // ledger tip. A recreated CF must not pass a vacuous zero-count audit.
+            batch.put(observationsCf, OBS_LAST_STAGED_HEIGHT, longBytes(height));
+            if (result == null || result.isEmpty()) return;
             Map<ByteBuffer, Long> counterDeltas = new LinkedHashMap<>();
             for (ObservationSubscription subscription : result.subscriptions()) {
                 ObservationSubscription prior = observationReader()
@@ -1466,6 +1498,10 @@ final class AppLedgerStore implements AutoCloseable {
 
     /** Read-only startup audit. Run with finalized-block writes stopped. */
     void verifyObservationIndexes() {
+        if (tipHeight() > 0 && stateGet(ObservationKeys.profile()).isPresent()
+                && observationCounter(OBS_LAST_STAGED_HEIGHT) != tipHeight()) {
+            throw new IllegalStateException("Observation index height mismatch or missing watermark; rebuild by replay");
+        }
         Map<ByteBuffer, Long> quotas = new LinkedHashMap<>();
         long active = 0;
         long open = 0;

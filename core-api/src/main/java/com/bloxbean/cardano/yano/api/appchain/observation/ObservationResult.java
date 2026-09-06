@@ -40,6 +40,10 @@ public record ObservationResult(
             throw new IllegalArgumentException("non-value observation result cannot carry value bytes");
         }
         valueEvidenceDigest = ObservationCbor.fixed(valueEvidenceDigest, 32, "value/evidence digest");
+        if (status == ObservationResultStatus.VALUE
+                && !Arrays.equals(valueEvidenceDigest, ObservationHashes.digest(value))) {
+            throw new IllegalArgumentException("observation value digest mismatch");
+        }
         certificateDigest = certificateDigest == null || certificateDigest.length == 0
                 ? null : ObservationCbor.fixed(certificateDigest, 32, "certificate digest");
         freshnessSummary = ObservationCbor.bounded(freshnessSummary, 1024, "freshness summary");

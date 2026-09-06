@@ -678,7 +678,7 @@ final class AppChainEngine implements AutoCloseable {
                 return false;
             }
             ledger.stageFx(applied.batch, block.height(), applied.systemInputs.effects());
-            ledger.stageObservations(applied.batch, applied.systemInputs.observations());
+            ledger.stageObservations(applied.batch, block.height(), applied.systemInputs.observations());
             blockCommitHook.accept(block, applied.batch);
             ledger.commitBlock(block, blockHash, applied.stateCommit, applied.batch,
                     governanceWrites(block));
@@ -901,9 +901,9 @@ final class AppChainEngine implements AutoCloseable {
             if (m.getSenderSeq() <= 0) {
                 return false;
             }
-            String senderHex = HexUtil.encodeHexString(m.getSender());
+            String senderHex = AppLedgerStore.senderSeqDomain(m);
             long floor = senderFloor.computeIfAbsent(senderHex,
-                    h -> ledger.senderSeq(m.getSender()));
+                    h -> ledger.senderSeq(m));
             if (m.getSenderSeq() <= floor) {
                 log.info("Message {} dropped: stale sender-seq {} (floor {})",
                         m.getMessageIdHex(), m.getSenderSeq(), floor);
@@ -1965,7 +1965,7 @@ final class AppChainEngine implements AutoCloseable {
         timeoutVotes.clear();
         try (AppliedBlock applied = round.applied) {
             ledger.stageFx(applied.batch, finalBlock.height(), applied.systemInputs.effects());
-            ledger.stageObservations(applied.batch, applied.systemInputs.observations());
+            ledger.stageObservations(applied.batch, finalBlock.height(), applied.systemInputs.observations());
             blockCommitHook.accept(finalBlock, applied.batch);
             ledger.commitBlock(finalBlock, round.blockHash, applied.stateCommit, applied.batch,
                     governanceWrites(finalBlock));
@@ -2461,7 +2461,7 @@ final class AppChainEngine implements AutoCloseable {
      * as of the parent block. Deterministic — every honest member re-derives
      * the same floors from its own ledger.
      */
-    private boolean verifySenderSeqs(AppBlock block, String context) {
+    boolean verifySenderSeqs(AppBlock block, String context) {
         if (!config.enforceSenderSeq()) {
             return true;
         }
@@ -2479,9 +2479,9 @@ final class AppChainEngine implements AutoCloseable {
                         context, message.getMessageIdHex());
                 return false;
             }
-            String senderHex = HexUtil.encodeHexString(message.getSender());
+            String senderHex = AppLedgerStore.senderSeqDomain(message);
             long floor = senderFloor.computeIfAbsent(senderHex,
-                    h -> ledger.senderSeq(message.getSender()));
+                    h -> ledger.senderSeq(message));
             if (message.getSenderSeq() <= floor) {
                 log.warn("{} contains stale/duplicate sender-seq {} from {} (floor {}) — rejecting",
                         context, message.getSenderSeq(), senderHex, floor);

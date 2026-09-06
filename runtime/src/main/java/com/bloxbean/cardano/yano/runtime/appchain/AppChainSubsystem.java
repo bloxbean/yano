@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationHashes;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTick;
 import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
@@ -120,6 +121,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * on ledger nodes. Gaps are meaningless by design.
      */
     private final AtomicLong senderSeq = new AtomicLong(System.currentTimeMillis());
+    private final AtomicLong observationDiffusionSeq = new AtomicLong(System.currentTimeMillis());
+    private final Map<String, AppMessage> observationEnvelopeCache = new LinkedHashMap<>();
+    private long observationEnvelopeBytes;
 
     private final SeenMessageIds seenMessageIds;
     private final ConcurrentLinkedDeque<ReceivedAppMessage> recentMessages = new ConcurrentLinkedDeque<>();
@@ -551,7 +555,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             this.group = new MemberGroup(normalizedMembers, config.threshold());
             this.observationSettings = ObservationSettings.from(config, group);
             this.seenMessageIds = new SeenMessageIds(SEEN_IDS_HARD_CAP);
-            this.pool = new AppMsgPool(config.poolMaxMessages());
+            this.pool = new AppMsgPool(config.poolMaxMessages(), observationSettings.profile().maxTicksInPool());
             AppStateMachineContext stateMachineContext =
                     new com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext() {
                                 @Override public String chainId() { return config.chainId(); }
@@ -1080,6 +1084,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 || !validTopic(topic)
                 || message.getSender() == null || message.getSender().length != 32
                 || message.getSenderSeq() < 0 || message.getExpiresAt() < 0
+                || (ObservationTopics.isReserved(topic) && message.getSenderSeq() == 0)
                 || !validEnvelopeBodyProfile(topic, message.getBody())
                 || message.getAuthProof() == null
                 || message.getAuthProof().length != AppChainConfig.ED25519_SIGNATURE_BYTES
@@ -1121,6 +1126,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     boolean validEnvelopeBodyProfile(String topic, byte[] body) {
         if (body == null) {
             return false;
+        }
+        if (ObservationTopics.isReserved(topic) && (!observationSettings.profile().enabled() || body.length == 0)) {
+            return false;
+        }
+        if (ObservationTopics.TICK.equals(topic)) {
+            try {
+                ObservationTick.decode(body);
+            } catch (IllegalArgumentException malformed) {
+                return false;
+            }
         }
         long bodyLimit = switch (topic == null ? "" : topic) {
             case ConsensusCodec.TOPIC_PROPOSE -> config.proposalMaxBytes();
@@ -1508,7 +1523,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // Replay floor (I1.2): a seq at or below the sender's last finalized
         // seq is a replay — reject at admission (node-local, always on)
         if (currentLedger != null && message.getSenderSeq() > 0
-                && message.getSenderSeq() <= currentLedger.senderSeq(message.getSender())) {
+                && message.getSenderSeq() <= currentLedger.senderSeq(message)) {
             countDrop("stale_seq");
             log.debug("App-chain '{}': stale sender-seq {} from {} — dropped",
                     config.chainId(), message.getSenderSeq(), message.getMessageIdHex());
@@ -1656,7 +1671,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     "Internal app message is outside the v1 topic/body profile");
         }
         long expiresAt = System.currentTimeMillis() / 1000 + ttlSeconds;
-        long seq = senderSeq.incrementAndGet();
+        long seq = (ObservationTopics.isDiffusionOnly(topic) ? observationDiffusionSeq : senderSeq).incrementAndGet();
         byte[] signedBody = AppMessage.signedBodyBytes(config.chainId(), topic,
                 signer.publicKey(), seq, expiresAt, body);
         byte[] signature = signer.sign(signedBody);
@@ -1847,8 +1862,29 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Build, sign and diffuse an envelope (consensus/system topics). */
     private AppMessage buildAndDiffuse(String topic, byte[] body, long ttlSeconds) {
-        AppMessage message = buildSigned(topic, body, ttlSeconds);
+        AppMessage message = ObservationTopics.isDiffusionOnly(topic)
+                ? observationDiffusionEnvelope(topic, body, ttlSeconds) : buildSigned(topic, body, ttlSeconds);
         relay(message);
+        return message;
+    }
+
+    private synchronized AppMessage observationDiffusionEnvelope(String topic, byte[] body, long ttlSeconds) {
+        String key = topic + HexUtil.encodeHexString(
+                ObservationHashes.digest(body));
+        AppMessage cached = observationEnvelopeCache.get(key);
+        if (cached != null && !cached.isExpired(System.currentTimeMillis() / 1000 + 1)) return cached;
+        if (cached != null) {
+            observationEnvelopeCache.remove(key);
+            observationEnvelopeBytes -= cached.getBody().length + AppMsgPool.ENVELOPE_OVERHEAD_BYTES;
+        }
+        AppMessage message = buildSigned(topic, body, ttlSeconds);
+        observationEnvelopeCache.put(key, message);
+        observationEnvelopeBytes += body.length + AppMsgPool.ENVELOPE_OVERHEAD_BYTES;
+        while (observationEnvelopeCache.size() > 4096 || observationEnvelopeBytes > 16L * 1024 * 1024) {
+            String oldest = observationEnvelopeCache.keySet().iterator().next();
+            observationEnvelopeBytes -= observationEnvelopeCache.remove(oldest).getBody().length
+                    + AppMsgPool.ENVELOPE_OVERHEAD_BYTES;
+        }
         return message;
     }
 
@@ -4518,6 +4554,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             verifyTipCert(ledgerStore);
             // Own seq must stay above the finalized floor across restarts (I1.2)
             senderSeq.updateAndGet(v -> Math.max(v, ledgerStore.senderSeq(signer.publicKey())));
+            senderSeq.updateAndGet(v -> Math.max(v, Math.max(
+                    ledgerStore.observationSenderSeq(signer.publicKey(), ObservationTopics.RESULT),
+                    ledgerStore.observationSenderSeq(signer.publicKey(), ObservationTopics.TICK))));
             AppChainEngine chainEngine = new AppChainEngine(
                     config,
                     ledgerStore,
