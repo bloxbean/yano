@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationHashes;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationFixedPoint;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReconciliationPolicy;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationMerkleEvidence;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReporterMode;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReport;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSourceConfiguration;
@@ -163,14 +164,21 @@ final class ObservationSettings {
                 registerRawSource(config.pluginSettings(), definition, rawSources);
                 continue;
             }
-            if (!ATTESTATION_EVIDENCE.equals(definition.evidenceVerifierId())) {
+            if (!ATTESTATION_EVIDENCE.equals(definition.evidenceVerifierId())
+                    && !ObservationMerkleEvidence.VERIFIER_ID.equals(definition.evidenceVerifierId())) {
                 throw new IllegalArgumentException("Observation definition '" + definition.id()
                         + "' uses an unreleased evidence verifier");
             }
             List<byte[]> keys = parseAttestors(config.pluginSettings().get(
                     "observations.attestors." + definition.id()));
-            byte[] expectedSource = definition.acquisitionAdapterId().equals(
-                    ObservationProviders.HTTPS_ATTESTED)
+            boolean merkle = ObservationMerkleEvidence.VERIFIER_ID.equals(definition.evidenceVerifierId());
+            if ((merkle && keys.size() > 32)
+                    || (ObservationProviders.HTTPS_MERKLE.equals(definition.acquisitionAdapterId()) && !merkle)
+                    || (ObservationProviders.HTTPS_ATTESTED.equals(definition.acquisitionAdapterId()) && merkle)) {
+                throw new IllegalArgumentException("Incompatible Merkle attestor bounds or acquisition adapter");
+            }
+            byte[] expectedSource = (definition.acquisitionAdapterId().equals(ObservationProviders.HTTPS_ATTESTED)
+                    || definition.acquisitionAdapterId().equals(ObservationProviders.HTTPS_MERKLE))
                     ? attestedHttpsSource(config.pluginSettings(), definition, keys)
                     : ObservationSourceConfiguration.attestorSetDigest(keys);
             if (!Arrays.equals(definition.sourceConfigurationDigest(), expectedSource)) {
@@ -227,6 +235,16 @@ final class ObservationSettings {
             @Override
             public ObservationEvidenceVerifier evidenceVerifier(ObservationDefinition definition) {
                 return switch (definition.evidenceVerifierId()) {
+                    case ObservationMerkleEvidence.VERIFIER_ID -> (ignoredDefinition, round, report) -> {
+                        try {
+                            return ObservationMerkleEvidence.decode(report.evidence()).verify(round, report,
+                                    attestors.getOrDefault(definition.id(), Set.of()).stream()
+                                            .map(ByteKey::value).toList(),
+                                    (key, digest, signature) -> AppMessageSigner.verify(signature, digest, key));
+                        } catch (IllegalArgumentException malformed) {
+                            return false;
+                        }
+                    };
                     case EXTERNAL_EVIDENCE -> (ignoredDefinition, round, report) -> {
                         CompleteSourceMedianPolicy.Parameters parameters = aggregates.get(definition.id());
                         if (report.evidence().length != 0 || report.sourceVersion().length == 0
@@ -379,8 +397,9 @@ final class ObservationSettings {
         }
         String method = settings.getOrDefault(prefix + "method", "GET")
                 .trim().toUpperCase(Locale.ROOT);
-        return ObservationSourceConfiguration.attestedHttpsSourceDigest(
-                endpoint.toASCIIString(), method, keys);
+        return ObservationProviders.HTTPS_MERKLE.equals(definition.acquisitionAdapterId())
+                ? ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(endpoint.toASCIIString(), method, keys)
+                : ObservationSourceConfiguration.attestedHttpsSourceDigest(endpoint.toASCIIString(), method, keys);
     }
 
     private record ByteKey(byte[] value) {

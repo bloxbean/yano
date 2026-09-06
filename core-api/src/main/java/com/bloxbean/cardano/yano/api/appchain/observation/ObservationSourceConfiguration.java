@@ -45,6 +45,13 @@ public final class ObservationSourceConfiguration {
                 attestorSetDigest(publicKeys)));
     }
 
+    public static byte[] merkleAttestedHttpsSourceDigest(String canonicalUrl, String method,
+                                                         List<byte[]> publicKeys) {
+        return digest("https-attested-merkle-v1", List.of(
+                boundedAscii(canonicalUrl, 2048, "canonical URL"),
+                boundedAscii(method, 8, "HTTP method"), attestorSetDigest(publicKeys)));
+    }
+
     private static byte[] digest(String type, List<byte[]> values) {
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();

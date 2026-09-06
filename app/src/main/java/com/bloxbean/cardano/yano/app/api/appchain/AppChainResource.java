@@ -548,6 +548,7 @@ public class AppChainResource {
         @POST
         @Path("observations/reports")
         @Consumes(MediaType.APPLICATION_OCTET_STREAM)
+        @AppChainAccess(AppChainAccess.Level.SUBMIT)
         public Response observationReport(InputStream input) {
             if (input == null) return badRequest("Canonical signed report bytes are required");
             try {
@@ -562,6 +563,26 @@ public class AppChainResource {
                 return Response.status(429).entity(Map.of("error", busy.getMessage())).build();
             } catch (IllegalArgumentException | IOException malformed) {
                 return badRequest("Invalid observation report");
+            } catch (IllegalStateException unavailable) {
+                return Response.status(503).entity(Map.of("error", "Observation ingress unavailable")).build();
+            }
+        }
+
+        @POST
+        @Path("observations/wake")
+        @Consumes(MediaType.APPLICATION_OCTET_STREAM)
+        @AppChainAccess(AppChainAccess.Level.SUBMIT)
+        public Response observationWake(InputStream input) {
+            if (input == null) return badRequest("A subscription ID is required");
+            try {
+                byte[] id = input.readNBytes(33);
+                if (id.length != 32) return badRequest("Expected exactly 32 subscription ID bytes");
+                gateway.wakeObservation(id);
+                return Response.accepted(Map.of("status", "HINT_ACCEPTED", "chainId", gateway.chainId())).build();
+            } catch (PoolFullException busy) {
+                return Response.status(429).entity(Map.of("error", "Observation hint ingress busy")).build();
+            } catch (IllegalArgumentException | IOException malformed) {
+                return badRequest("Invalid observation hint");
             } catch (IllegalStateException unavailable) {
                 return Response.status(503).entity(Map.of("error", "Observation ingress unavailable")).build();
             }

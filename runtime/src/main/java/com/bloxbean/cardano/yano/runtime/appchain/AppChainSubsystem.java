@@ -1890,6 +1890,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public void wakeObservation(byte[] subscriptionId) {
+        requireGenerationUse(() -> {
+            ObservationRuntime runtime = genericObservationRuntime;
+            if (runtime == null || !group.containsAt(signer.publicKeyHex(), tipHeight() + 1)) {
+                throw new IllegalStateException("An active member observation gateway is required");
+            }
+            runtime.wake(subscriptionId);
+            return null;
+        });
+    }
+
+    @Override
     public String submitPrivilegedSystemMessage(String topic, byte[] body) {
         return requireGenerationUse(() -> submitPrivilegedSystemMessageWithinGeneration(topic, body));
     }

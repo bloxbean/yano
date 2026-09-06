@@ -16,6 +16,8 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
 import com.bloxbean.cardano.yano.api.appchain.observation.CompleteSourceMedianPolicy;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationFixedPoint;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAttestation;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationMerkleEvidence;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReport;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRound;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
@@ -56,6 +58,107 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ObservationRuntimeTest {
     private static final String CHAIN_ID = "observation-runtime-test";
     private static final String MEMBER_SEED = "51".repeat(32);
+
+    @Test
+    void lateHintsCannotReopenCollectionOrAcquire(@TempDir Path directory) throws Exception {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        ObservationDefinition definition = definition(signer.publicKey());
+        AppChainConfig config = config(signer, profile(definition));
+        MemberGroup members = new MemberGroup(Set.of(signer.publicKeyHex()), 1);
+        ObservationSettings settings = ObservationSettings.from(config, members);
+        EffectsSettings effects = EffectsSettings.from(config);
+        AppChainConsensusProfile consensus = effects.consensusProfile(config);
+        SystemInputKernel kernel = kernel(settings, effects, consensus);
+        AppStateMachine machine = machine();
+        try (AppLedgerStore ledger = ledger(directory)) {
+            for (long height = 1; height <= 5; height++) apply(ledger, kernel, machine, height, List.of());
+            ObservationRound round = ledger.observationReader().openRounds(1).getFirst();
+            assertThat(round.resultExpiryHeight()).isPositive();
+            byte[] state = ledger.stateRoot();
+            try (ObservationRuntime runtime = runtime(settings, request -> {
+                throw new AssertionError("A hint must not reacquire after collection closes");
+            }, ledger, signer, members, consensus, new CopyOnWriteArrayList<>())) {
+                runtime.wake(round.subscriptionId());
+                await(() -> runtime.status().get("coordinatorQueued") == 0, Duration.ofSeconds(5));
+                assertThat(runtime.status().get("acquisitionAttempts")).isZero();
+                assertThat(ledger.stateRoot()).isEqualTo(state);
+            }
+        }
+    }
+
+    @Test
+    void merkleHintsCannotOpenRoundsAndPeriodicAcquisitionSurvivesMissingHints(@TempDir Path directory)
+            throws Exception {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        AppMessageSigner attestor = new AppMessageSigner("71".repeat(32));
+        MemberGroup members = new MemberGroup(Set.of(signer.publicKeyHex()), 1);
+        ObservationDefinition definition = new ObservationDefinition(1, "delivery", 1,
+                filled(1), filled(2), filled(3), filled(4), ObservationReporterMode.ACTIVE_MEMBERS,
+                ObservationHashes.reporterSetDigest(List.of(signer.publicKey())), 0, 1, 1, false,
+                ObservationProviders.HTTPS_MERKLE, ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(
+                "https://example.com/receipts", "GET", List.of(attestor.publicKey())), "identity-v1",
+                ObservationMerkleEvidence.VERIFIER_ID, ObservationSettings.EXACT_POLICY,
+                filled(6), filled(7), "one-source-v1", "source-version-v1", "inline-v1",
+                1, 1024, 1024, 1024, 1, 1);
+        ObservationProfileV1 profile = profile(definition);
+        AppChainConfig config = AppChainConfig.builder(CHAIN_ID).signingKeyHex(MEMBER_SEED)
+                .memberKeysHex(Set.of(signer.publicKeyHex())).proposerKeyHex(signer.publicKeyHex())
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .pluginSettings(Map.of(ObservationSettings.PROFILE_HEX, HexUtil.encodeHexString(profile.encode()),
+                        "observations.attestors.delivery", attestor.publicKeyHex(),
+                        "observations.providers.delivery.type", ObservationProviders.HTTPS_MERKLE,
+                        "observations.providers.delivery.url", "https://example.com/receipts")).build();
+        ObservationSettings settings = ObservationSettings.from(config, members);
+        EffectsSettings effects = EffectsSettings.from(config);
+        AppChainConsensusProfile consensus = effects.consensusProfile(config);
+        SystemInputKernel kernel = kernel(settings, effects, consensus);
+        AppStateMachine machine = machine();
+        byte[] subscription = ObservationHashes.subscriptionId(TestStateCommitments.MPF.genesisId(),
+                1, 0, definition.digest(), new byte[0]);
+        AtomicInteger attempts = new AtomicInteger();
+        try (AppLedgerStore ledger = ledger(directory)) {
+            apply(ledger, kernel, machine, 1, List.of());
+            try (ObservationRuntime runtime = runtime(settings, request -> {
+                byte[] value = new byte[]{1, 2, 3};
+                byte[] source = filled(9);
+                byte[] sibling = filled(10);
+                byte[] leaf = ObservationMerkleEvidence.leafHash(request.round().parametersDigest(), source, value);
+                byte[] root = ObservationMerkleEvidence.branchHash(leaf, sibling);
+                ObservationAttestation unsigned = new ObservationAttestation(1, definition.digest(), subscription, 0,
+                        attestor.publicKey(), source, root, new byte[]{1}, 0, 2, new byte[64]);
+                ObservationAttestation signed = new ObservationAttestation(1, definition.digest(), subscription, 0,
+                        attestor.publicKey(), source, root, new byte[]{1}, 0, 2, attestor.sign(unsigned.signingDigest()));
+                ObservationMerkleEvidence proof = new ObservationMerkleEvidence(1, signed, value, 0,
+                        List.of(attempts.incrementAndGet() == 1 ? filled(11) : sibling));
+                return new ObservationCandidate(source, value, proof.encode(), new byte[]{1}, 0, 2);
+            }, ledger, signer, members, consensus, new CopyOnWriteArrayList<>())) {
+                byte[] before = ledger.stateRoot();
+                runtime.wake(subscription);
+                await(() -> runtime.status().get("coordinatorQueued") == 0, Duration.ofSeconds(5));
+                assertThat(attempts).hasValue(0);
+                assertThat(ledger.stateRoot()).isEqualTo(before);
+                assertThat(ledger.observationReader().openRoundCount()).isZero();
+                apply(ledger, kernel, machine, 2, List.of());
+                runtime.wake(subscription);
+                await(() -> runtime.status().get("acquisitionFailures") == 1, Duration.ofSeconds(5));
+                assertThat(runtime.readyCertificates(1)).isEmpty();
+                // No further webhook: normal periodic retry must make progress.
+                runtime.start();
+                await(() -> runtime.readyCertificates(1).size() == 1, Duration.ofSeconds(5));
+                ObservationCertificate certificate = runtime.readyCertificates(1).getFirst();
+                assertThat(certificate.output()).isEqualTo(new byte[]{1, 2, 3});
+                assertThat(attempts).hasValue(2);
+                apply(ledger, kernel, machine, 3, List.of(message(ObservationTopics.RESULT, certificate.encode(), 1)));
+                byte[] finalized = ledger.stateRoot();
+                for (int hint = 0; hint < 1000; hint++) runtime.wake(subscription);
+                await(() -> runtime.status().get("coordinatorQueued") == 0, Duration.ofSeconds(5));
+                assertThat(attempts).hasValue(2);
+                assertThat(ledger.stateRoot()).isEqualTo(finalized);
+                assertThat(runtime.status().get("wakeHints")).isEqualTo(1002);
+                ledger.verifyObservationIndexes();
+            }
+        }
+    }
 
     @Test
     void externalReportersCertifyAllSourcesWithoutGatewayAcquisition(@TempDir Path directory) throws Exception {
