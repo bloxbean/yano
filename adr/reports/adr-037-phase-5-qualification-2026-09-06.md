@@ -2,6 +2,26 @@
 
 ## Latest checkpoint and CI findings
 
+### User-directed default L1 configuration
+
+The user clarified that qualification must use the normal single-public-upstream
+Yano defaults, with **no L1 core changes**. The fixture's explicit `praos-ledger`,
+body-level and opcert-counter overrides were removed, and a regression test now
+requires no `yano.upstream.validation.*` override in generated properties.
+Devtools tests passed in 4s (`/private/tmp/adr-037-phase-5-default-validation-tests.log`).
+The previous stricter-validation failure is preserved below but does not mandate
+a Cardano core change within ADR-037. Its proposed nonce-skew cause remains
+unconfirmed; the implicated code was unchanged by ADR-037.
+
+At 15:27 Singapore time all five retained nodes restarted with the same binaries,
+keys, stores and upstream. Their effective default validation level is `none`.
+All restored their body-tip nonce, matched the saved epoch-162 nonce and resumed
+body advancement, with no runtime degradation on the first poll. New logs are
+`node-<n>/cluster-sync-default-1.log`; exact PIDs and commands are recorded in the
+local `QUALIFICATION_RUN.md`. No L1 source code was changed. This is an
+observation-framework qualification run, not a strict Praos validation claim.
+Round 4 remains partially opened and the cadence driver has not been restarted.
+
 ### Live qualification blocked at the Praos checkpoint
 
 All five nodes rejected the first configured validation header, slot
