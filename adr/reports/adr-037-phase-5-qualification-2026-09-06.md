@@ -16,12 +16,65 @@ inputs and deployed package checksums remain recorded below.
 | --- | --- |
 | Exact host Maven/JVM input and companion distribution | Passed locally and staged under exact full host commit |
 | Host CI build / integration / distribution / native | Passed: `34024476267`, `34024477578` |
-| Companion full CI | `34025873379` passed composite parity but failed role workflow; harness-budget experiment `34027879714` pending |
+| Companion full CI | e958/c887 run `34028155896` passed all gates; `34027879714` failed after observed L1 recovery, exposing a separately reproduced spent-advance adoption gap |
 | Packaged five-node omission, later-view inclusion and automatic heal | Round 11 passed on e958/bd09 |
 | Membership and operator recovery | Live 5→6→5, graceful upgrade and abrupt process recovery evidence retained |
 | 100k indexed-subscription recovery | Final e958 opt-in rerun passed, 9.275s |
 | Sustained cadence / resource qualification | Rounds 0–99 complete; final 88-round run, all 500 historical proofs and bounded idle-tail checks passed |
 | Independent code/protocol review | Outstanding; both PRs have no submitted reviews and report `REVIEW_REQUIRED` |
+
+### Extended CI distinguishes L1 recovery from missed anchor adoption
+
+Full companion `c887f071`/e958 run `34028155896` passed all five jobs, including
+isolated effect failover, composite parity, role workflow/catch-up and release
+acceptance. Successful role diagnostics captured fresh follower L1 progress at
+slot 1168 with no degradation. Log:
+`/private/tmp/adr-037-phase-5-c887-companion-ci-success.log`.
+
+The earlier `09ba6523`/e958 run `34027879714` failed composite parity with
+`ANCHOR_UNAVAILABLE`, despite the 900-second scenario budget. Its diagnostics
+show follower 2's default supervisor requesting `NO_PROGRESS` recovery at
+10:55:15 UTC after 617,426 ms without application progress, then recovering
+successfully at 10:55:16. At failure all three L1 tips were slot 5093/block 99,
+and both followers had fresh progress and no degradation. All three app nodes
+agreed at height 6/root
+`6c93499912feadc13e42464ac696bfd17f7fcca730301c3aa5ef4623f06ab7de`.
+The leader and follower 1 had anchor height 6; follower 2 still exposed no
+adopted anchor identity. Log:
+`/private/tmp/adr-037-phase-5-09ba-companion-ci-failure.log`.
+
+Follower 2 had verified advance `ea8b89a69d4a40a96cc6433b23f53b53175129033fef516dd92f3338e9f0ec7c`
+while its L1 view remained at the bootstrap output. It rejected subsequent
+requests that spent a newer output. By the time L1 catch-up completed, the
+current thread output belonged to a later transaction outside its verified
+candidate set. Existing reconciliation looked only at unspent outputs; it
+could no longer see the exact verified advance required to establish identity.
+The extended budget therefore supplied useful recovery evidence but is not,
+by itself, a fix for anchor adoption.
+
+A new deterministic host regression reproduces that missed-poll history and
+failed before the app-layer correction (`Expecting actual not to be null` at
+the first historical adoption). Evidence:
+`/private/tmp/adr-037-phase-5-spent-adoption-before-fix.log` and `.xml`.
+The correction reads the existing spent/unspent transaction-output API for
+at most eight previously verified transaction hashes, inside the existing
+atomic committed-point/hash guard. All local datum/root/identity checks remain;
+raw callbacks, collateral returns and unrelated current transactions are not
+adoption authority. The exact historical advance establishes the rollback
+checkpoint first, then a later tick follows the current thread output.
+Missing/pruned history stays pending. No L1 source/API/storage/pruning policy
+or validation setting changes.
+
+Focused tests cover restart from persisted candidate metadata, missing history,
+forged historical data, collateral returns, future-slot history, a different
+fork at the same slot, idempotent current-output catch-up and rollback before
+and after the historical trust checkpoint. All 10 script-anchor tests passed
+(zero failures/errors/skips), with the final Gradle run completing in 11s:
+`/private/tmp/adr-037-phase-5-spent-adoption-final-tests.log`.
+The new host candidate still needs
+exact-package and CI qualification. This reproduces the unadopted-candidate
+case above; it does not prove the cause of every older bootstrapped-follower
+anchor lag. A green e958 CI run does not erase those failed attempts.
 
 ### One hundred rounds and five hundred historical proofs completed
 
@@ -157,7 +210,8 @@ cross-node acceptance checks remain unchanged. Role diagnostics now retain
 bounded recovery logs on success as well as failure. Shell syntax and the
 contract passed (`/private/tmp/adr-037-phase-5-recovery-budget-contract.log`).
 Full run `34027879714` tests this hypothesis using the same exact e958 host
-inputs and unchanged runtime binaries. No L1 source, supervisor policy,
+inputs and unchanged runtime sources. Separately rebuilt distribution archives
+are not asserted to be byte-identical. No L1 source, supervisor policy,
 upstream selection, producer pace or validation setting was changed. A green
 run alone would not prove that the earlier stall recovered or establish its
 cause; recovery must be identified in the retained diagnostics.
@@ -166,6 +220,32 @@ At 10:36 UTC both PRs still had no submitted reviews and reported
 `REVIEW_REQUIRED`. Self-review and CI do not satisfy the independent
 code/protocol review gate. Phase 5 remains unmerged and preview remains
 disabled by default.
+
+The local 09ba role rerun passed (`/private/tmp/adr-037-phase-5-09ba-role-local-e2e.log`),
+but revealed that successful explicit cleanup bypassed the exit trap and its
+new diagnostics. Companion `c887f071` adds the missing diagnostic call before
+successful cleanup and a contract assertion for that exact path. This is a
+three-line, two-file test-only correction; it does not change the runtime or
+scenario assertions. Contract log:
+`/private/tmp/adr-037-phase-5-success-diagnostics-contract.log`.
+
+The corrected local run also passed, including role lifecycle idempotency and
+one-member retained catch-up. Its successful pre-cleanup diagnostics captured
+all three at height/anchor 60, root
+`23987efbda2fd75462d527ac69273627222179a586bed0810ea3317a5750d00a`,
+with L1 slot 1292, fresh follower progress and no degradation. No watchdog
+recovery was observed; this local pass does not prove the stalled-CI hypothesis.
+Log: `/private/tmp/adr-037-phase-5-success-diagnostics-role-local-e2e.log`.
+The test's isolated containers and temporary root were cleaned successfully;
+retained Preprod state was not touched. Full exact-head CI run `34028155896`
+qualifies the corrected diagnostics while the earlier run remains recorded.
+
+Draft milestone review PRs target the existing integration branches:
+[Yano #118](https://github.com/bloxbean/yano/pull/118) and
+[Yano X #10](https://github.com/bloxbean/yano-x/pull/10).
+They expose the unmerged Phase 5 changes for independent review, and do not
+replace or merge the original integration PRs. Host documentation checkpoint
+`da033b151` adds no runtime change beyond the staged executable e958 candidate.
 
 ### Fixed-package live omission and automatic healing passed
 

@@ -84,6 +84,22 @@ the exact verified transaction in committed L1 state; a request alone never
 opens anchoring or settlement gates. No L1 core behavior or observation profile
 changes are part of this correction.
 
+A follower catching up quickly can miss the first verified advance while it
+is unspent. Adoption therefore also checks retained spent outputs for the
+bounded set of exact transaction hashes it previously verified. This read
+runs under the same atomic committed-UTxO point/hash guard as current-output
+reconciliation; the datum still has to match local app history and identity,
+and collateral-return outputs are not successful script acceptance. The
+historical advance establishes the identity checkpoint first, then ordinary
+reconciliation can follow the current thread output on a subsequent tick.
+Rollback before that checkpoint clears the identity. Raw block callbacks or
+an unrelated current transaction never establish it.
+
+If spent history has been pruned or is unavailable, adoption stays pending;
+do not fabricate evidence or reset stores. A subsequent independently verified
+and committed advance can supply fresh acceptance evidence. The recovery uses
+the existing UTxO read API and does not change L1 storage, pruning or validation.
+
 Compare the retained finalized height/root and generation identity, then verify
 historical state proofs under independently pinned trust. Inspect journal
 health, cursor recovery count, pending records and preserved failure barriers.

@@ -1222,7 +1222,9 @@ final class ScriptAnchorService {
                         return null;
                     }
                     return new CommittedAnchorView(point,
-                            findAnchorUtxo(utxoState, policyId, scriptHash));
+                            authoritativeIdentity
+                                    ? findAnchorUtxo(utxoState, policyId, scriptHash)
+                                    : findVerifiedAdoptionUtxo(utxoState, policyId, scriptHash));
                 });
                 AppChainEngine.L1Ref canonicalAfterRead = observedL1TipPoint();
                 if (committedView == null || !samePoint(canonicalPoint, canonicalAfterRead)) {
@@ -1421,6 +1423,35 @@ final class ScriptAnchorService {
 
     private record CommittedAnchorView(RollbackCapableStore.AppliedPoint point,
                                        Utxo anchorUtxo) {
+    }
+
+    /**
+     * Called only inside the point-correlated committed UTxO read. Catch-up may
+     * spend the first verified advance before a periodic app poll sees it.
+     * Retained spent outputs still prove that exact transaction's acceptance;
+     * raw callbacks and an unrelated current thread output do not.
+     */
+    private Utxo findVerifiedAdoptionUtxo(UtxoState utxoState, byte[] policyId, byte[] scriptHash) {
+        Set<String> verifiedTxs = verifiedAdoptionTxs();
+        Utxo current = findAnchorUtxo(utxoState, policyId, scriptHash);
+        if (current != null && !current.collateralReturn() && current.outpoint() != null
+                && verifiedTxs.contains(current.outpoint().txHash().toLowerCase(Locale.ROOT))) {
+            return current;
+        }
+        String scriptAddress = AddressProvider.getEntAddress(
+                Credential.fromScript(scriptHash), network).getAddress();
+        String policyHex = HexUtil.encodeHexString(policyId);
+        // At most MAX_ADOPTION_TXS exact transaction-prefix lookups. Missing or
+        // pruned history is not authority and leaves adoption pending.
+        for (String tx : verifiedTxs) {
+            for (Utxo output : utxoState.getOutputsByTxHash(tx)) {
+                if (output.outpoint() != null && tx.equalsIgnoreCase(output.outpoint().txHash())
+                        && !output.collateralReturn() && isThreadUtxo(output, scriptAddress, policyHex)) {
+                    return output;
+                }
+            }
+        }
+        return null;
     }
 
     void onL1Rollback(long rollbackToSlot) {
