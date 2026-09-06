@@ -365,17 +365,30 @@ class ObservationRuntimeTest {
         }
 
         AtomicInteger restartedAttempts = new AtomicInteger();
+        List<byte[]> restartedDiffusion = new CopyOnWriteArrayList<>();
         try (AppLedgerStore reopened = ledger(ledgerPath);
              ObservationRuntime restarted = runtime(settings,
                      request -> {
                          restartedAttempts.incrementAndGet();
                          throw new AssertionError("durable report must suppress double signing");
-                     }, reopened, signer, members, consensusProfile, new CopyOnWriteArrayList<>())) {
+                     }, reopened, signer, members, consensusProfile, restartedDiffusion)) {
             assertThat(restarted.readyCertificates(10)).hasSize(1);
             restarted.tick();
             await(() -> restarted.status().get("journalEntries") > 0,
                     Duration.ofSeconds(1));
             assertThat(restartedAttempts).hasValue(0);
+            assertThat(restartedDiffusion).hasSize(1);
+            long retainedBytes = restarted.status().get("journalBytes");
+            byte[] retainedReport = restartedDiffusion.getFirst();
+            for (int duplicate = 0; duplicate < 100; duplicate++) restarted.onReport(retainedReport);
+            await(() -> restarted.status().get("coordinatorQueued") == 0, Duration.ofSeconds(5));
+            assertThat(restartedDiffusion).hasSize(1);
+            assertThat(restarted.status().get("reportsAccepted")).isZero();
+            assertThat(restarted.status().get("journalBytes")).isEqualTo(retainedBytes);
+            for (int tick = 0; tick < 10; tick++) restarted.tick();
+            assertThat(restartedDiffusion).hasSize(11); // One retained report per periodic tick, not per duplicate.
+            assertThat(restarted.readyCertificates(10)).hasSize(1);
+            assertThat(restarted.status().get("journalBytes")).isEqualTo(retainedBytes);
 
             ObservationCertificate certificate = restarted.readyCertificates(1).getFirst();
             apply(reopened, kernel, machine, 3,
@@ -383,6 +396,13 @@ class ObservationRuntimeTest {
             restarted.tick();
             assertThat(restarted.readyCertificates(10)).isEmpty();
             assertThat(restarted.status().get("journalEntries")).isZero();
+            for (int tick = 0; tick < 10; tick++) {
+                restarted.tick();
+                restarted.onReport(retainedReport);
+            }
+            await(() -> restarted.status().get("coordinatorQueued") == 0, Duration.ofSeconds(5));
+            assertThat(restartedDiffusion).hasSize(11);
+            assertThat(restarted.status().get("journalBytes")).isZero();
         }
     }
 

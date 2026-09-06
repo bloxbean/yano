@@ -57,6 +57,7 @@ final class L1ObservationJournal {
     private final int maxEntries;
     private final byte[] identityContext;
     private long usedBytes;
+    private final int recoveredLegacyCursors;
 
     L1ObservationJournal(AppLedgerStore ledger, long maxBytes) {
         this(ledger, maxBytes, DEFAULT_MAX_ENTRIES, new byte[32]);
@@ -108,6 +109,46 @@ final class L1ObservationJournal {
         if (recordCount() > maxEntries) {
             throw new IllegalStateException("L1 observation journal exceeds configured entry limit");
         }
+        this.recoveredLegacyCursors = recoverLegacyCursors();
+    }
+
+    /** Repair only the historical raw-record-key writer defect, using committed authority. */
+    private int recoverLegacyCursors() {
+        List<AppLedgerStore.EpochSpoolMutation> repairs = new ArrayList<>();
+        long addedBytes = 0;
+        for (AppLedgerStore.EpochSpoolEntry entry : ledger.epochSpoolScan(CURSOR_PREFIX, MAX_SCAN)) {
+            try {
+                cursorRecordKey(entry.value());
+                continue;
+            } catch (IllegalStateException malformed) {
+                // The old writer stored the exact finalized record key as the cursor.
+                // Arbitrary corruption, absent records and missing authority are not repairable here.
+            }
+            byte[] legacyKey = entry.value();
+            byte[] encoded = legacyKey.length > 0 && legacyKey[0] == RECORD_PREFIX[0]
+                    ? ledger.epochSpoolGet(legacyKey) : null;
+            if (encoded == null) throw new IllegalStateException("L1_CURSOR_RECOVERY_REQUIRES_COMMITTED_EVIDENCE");
+            Record record = decodeRecord(encoded);
+            L1Observation observation = requireObservation(record.observationBytes());
+            byte[] expected = cursorValue(observation, identityContext);
+            byte[] committed = ledger.stateGet(authenticatedCursorKey(observation.observerId(), identityContext))
+                    .orElse(null);
+            if (record.state() != State.FINALIZED
+                    || !Arrays.equals(entry.key(), cursorKey(observation.observerId()))
+                    || !Arrays.equals(legacyKey, recordKey(observation, observationId(observation)))
+                    || !Arrays.equals(expected, committed)) {
+                throw new IllegalStateException("L1_CURSOR_RECOVERY_REQUIRES_COMMITTED_EVIDENCE");
+            }
+            addedBytes = Math.addExact(addedBytes, expected.length - legacyKey.length);
+            repairs.add(AppLedgerStore.EpochSpoolMutation.put(entry.key(), expected));
+        }
+        if (usedBytes > maxBytes - addedBytes) {
+            throw new IllegalStateException("L1_CURSOR_RECOVERY_EXCEEDS_CAPACITY");
+        }
+        // Validate the entire bounded batch before writing. Never clear failure/quarantine markers.
+        if (!repairs.isEmpty()) ledger.epochSpoolWrite(repairs);
+        usedBytes += addedBytes;
+        return repairs.size();
     }
 
     synchronized void observe(List<L1Observation> observations) {
@@ -407,6 +448,7 @@ final class L1ObservationJournal {
         status.put("entries", counts.values().stream().mapToLong(Long::longValue).sum());
         status.put("maxEntries", maxEntries);
         status.put("cursors", ledger.epochSpoolScan(CURSOR_PREFIX, MAX_SCAN).size());
+        status.put("recoveredLegacyCursors", recoveredLegacyCursors);
         status.put("cursorDigest", HexFormat.of().formatHex(cursorDigest()));
         status.put("healthy", healthy());
         byte[] quarantine = ledger.epochSpoolGet(QUARANTINE_KEY);

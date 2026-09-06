@@ -71,7 +71,7 @@ class CustomSignerProviderTest {
 
     @AfterEach
     void tearDown() {
-        if (node != null) node.stop();
+        if (node != null) node.close();
     }
 
     @Test

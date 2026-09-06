@@ -1,15 +1,20 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.yaci.core.network.TCPNodeClient;
 import com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionAgent;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionConfig;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.messages.MsgInitAck;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.HandshakeAgent;
+import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.messages.AcceptVersion;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.messages.N2NVersionData;
 import com.bloxbean.cardano.yaci.core.protocol.keepalive.KeepAliveAgent;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.nio.NioEventLoopGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
@@ -22,6 +27,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,6 +35,88 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Timeout(10)
 class AppPeerClientLifecycleTest {
     private static final Logger LOG = LoggerFactory.getLogger(AppPeerClientLifecycleTest.class);
+
+    @Test
+    void closedChannelIsNotRunningEvenWhenTheDelegateRetainsItsSession() {
+        var agent = new AppMsgSubmissionAgent(AppMsgSubmissionConfig.createDefault());
+        var handshake = new HandshakeAgent(
+                N2NVersionTableConstant.v11AndAboveWithAppLayer(42, false, 0, false), true);
+        TCPNodeClient delegate = new TCPNodeClient("127.0.0.1", 3001, handshake, agent) {
+            @Override public boolean isRunning() { return true; }
+            @Override protected EventLoopGroup configureEventLoopGroup() { return new NioEventLoopGroup(1); }
+        };
+        var transport = new AppPeerClient.YaciPeerTransport(delegate, agent);
+        EmbeddedChannel channel = new EmbeddedChannel();
+        try {
+            assertThat(transport.isRunning()).isFalse();
+            agent.setChannel(channel);
+            assertThat(transport.isRunning()).isTrue();
+            channel.close();
+            assertThat(transport.isRunning()).isFalse();
+        } finally {
+            channel.finishAndReleaseAll();
+            delegate.shutdown();
+        }
+    }
+
+    @Test
+    void protocolNegotiationHasABoundButHealthyConnectionsDoNotExpire() {
+        CapturingTransportFactory factory = new CapturingTransportFactory();
+        AtomicLong clock = new AtomicLong();
+        AppPeerClient client = new AppPeerClient(new AppChainConfig.AppPeer("127.0.0.1", 3001), 42,
+                AppMsgSubmissionConfig.builder().chainIds(Set.of("c1")).build(), null, LOG, factory,
+                () -> { }, () -> { }, clock::get);
+        try {
+            client.ensureConnected();
+            var oldAgent = factory.appMsgAgent;
+            client.enqueue(message(1));
+            client.ensureConnected();
+            assertThat(factory.transport.startCalls).isEqualTo(1);
+            clock.addAndGet(TimeUnit.SECONDS.toNanos(31));
+            client.ensureConnected();
+            assertThat(factory.transport.startCalls).isEqualTo(2);
+            assertThat(factory.transport.shutdownCalls).isEqualTo(1);
+            oldAgent.processResponse(new MsgInitAck(List.of("c1")));
+            assertThat(client.isConnected()).isFalse();
+            negotiate(factory);
+            assertThat(client.isConnected()).isTrue();
+            assertThat(factory.appMsgAgent.getQueueSize()).isEqualTo(1);
+            clock.addAndGet(TimeUnit.SECONDS.toNanos(31));
+            client.ensureConnected();
+            assertThat(factory.transport.startCalls).isEqualTo(2);
+        } finally {
+            client.shutdown();
+        }
+    }
+
+    @Test
+    void supervisorInterruptsOneStalledConnectorWithoutBlockingItsOwnThread() throws Exception {
+        CapturingTransportFactory factory = new CapturingTransportFactory();
+        AtomicLong clock = new AtomicLong();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AppPeerClient client = new AppPeerClient(new AppChainConfig.AppPeer("127.0.0.1", 3001), 42,
+                AppMsgSubmissionConfig.builder().chainIds(Set.of("c1")).build(), null, LOG, factory,
+                () -> { }, () -> {
+                    entered.countDown();
+                    awaitUninterruptibly(release, interrupted);
+                }, clock::get);
+        try {
+            client.ensureConnectedAsync();
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            clock.addAndGet(TimeUnit.SECONDS.toNanos(31));
+            client.ensureConnectedAsync();
+            assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            release.countDown();
+            client.shutdown();
+        }
+        assertThat(factory.transport.startCalls).isEqualTo(1);
+        assertThat(factory.transport.startObservedInterrupted).isTrue();
+        assertThat(factory.transport.shutdownCalls).isEqualTo(1);
+        assertThat(client.isConnected()).isFalse();
+    }
 
     @Test
     void shutdownInFinalPublicationToStartGapMakesLateStartANoOp() throws Exception {

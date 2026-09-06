@@ -57,7 +57,7 @@ class AppChainL1RefTest {
     void tearDown() {
         for (AppChainSubsystem subsystem : subsystems) {
             try {
-                subsystem.stop();
+                subsystem.close();
             } catch (Exception ignored) {
             }
         }

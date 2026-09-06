@@ -114,6 +114,7 @@ dependencies {
     // Uses the release-matched, bounded MPF verifier for the console's
     // node-assisted existing-proof verification endpoint.
     implementation project(':appchain-proof-verifier')
+    implementation project(':appchain-config')
 
     // App-chain metrics (ADR 006 E5.1); Prometheus endpoint at /q/metrics
     implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
@@ -135,7 +136,6 @@ dependencies {
 
     testImplementation project(':testkit')
     testImplementation project(':app-e2e-testkit')
-    testImplementation project(':appchain-config')
     testImplementation project(':scalus-bridge')
     testImplementation libs.cardano.client.lib
     testImplementation libs.cardano.client.backend.blockfrost
