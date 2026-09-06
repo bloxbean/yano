@@ -57,7 +57,7 @@ class ClassicJmtClusterRuntimeTest {
     void closeCluster() {
         for (AppChainSubsystem node : nodes) {
             try {
-                node.stop();
+                node.close();
             } catch (Exception ignored) {
                 // Preserve the primary test failure.
             }

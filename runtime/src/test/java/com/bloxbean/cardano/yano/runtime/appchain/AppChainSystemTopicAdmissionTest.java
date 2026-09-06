@@ -29,7 +29,7 @@ class AppChainSystemTopicAdmissionTest {
     @AfterEach
     void closeSubsystem() {
         if (subsystem != null) {
-            subsystem.stop();
+            subsystem.close();
         }
     }
 

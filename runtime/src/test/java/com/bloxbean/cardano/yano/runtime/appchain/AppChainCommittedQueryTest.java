@@ -58,7 +58,7 @@ class AppChainCommittedQueryTest {
     @AfterEach
     void tearDown() {
         for (AppChainSubsystem node : nodes) {
-            node.stop();
+            node.close();
         }
     }
 

@@ -2,6 +2,42 @@
 
 ## Latest checkpoint and CI findings
 
+### CI teardown correction and staged membership recovery
+
+Host test checkpoint `75e799ab3` passed integration/distribution/native run
+`34020262069`. Its build run `34020259935` failed after 8m45s: 1,526 runtime
+tests, one failure, five skips. `CustomSignerProviderTest` completed its
+assertions but failed temporary-directory cleanup with an open `ledger/signer-chain`.
+Its terminal `@AfterEach` still called restartable `stop()`, which does not
+join all deferred cleanup. It now calls terminal `close()`. An audit corrected
+the same terminal-only call in fifteen nearby app-chain fixtures; intentional
+stop/restart operations inside tests are unchanged. The sixteen-class focused
+suite passed in 2m47s (`/private/tmp/adr-037-phase-5-terminal-fixtures.log`).
+These are test lifecycle changes, not runtime or L1 core changes. Retained
+failure log: `/private/tmp/adr-037-phase-5-host-review-ci-failure.log`.
+
+Companion `3506da65` full run `34019843505` passed all five jobs, including
+composite parity, role workflow and release acceptance. Subsequent exact-input
+runs are `34020423482` (`94694638`) and `34020835218` (`c78f39aa`).
+
+The first membership drill exposed a qualification-tool identity assumption:
+the retained public manifest predates the redundant `effectiveGenesisId` field.
+`94694638` derives identity from pinned chain settings and rejects a conflicting
+optional identity. The failure occurred after submitting the four add approvals;
+the explicit `recover-add-approvals` path verified their existing signed envelopes
+and certified block-root inclusions on all five nodes, without resubmission.
+All approvals finalized at height 54, pinning six-member activation at height 64.
+The plan, four public approval proof packages and membership history are retained.
+
+That recovery's cadence later hit its five-minute wait while node 3 was still
+catching up to the L1 reference for app height 59. No round-6 reports had been
+signed. No node state, L1 validation or protocol deadline was changed.
+`c78f39aa` adds an operator-only 1..1800-second checkpoint wait override and a
+separate removal recovery requiring five certified round-7 VALUEs at height 74.
+Fifteen focused qualification tests passed in 4s with zero failures/skips
+(`/private/tmp/adr-037-phase-5-bounded-recovery-tools.log`). Membership activation,
+removal and subsequent live rounds are still pending.
+
 ### Retained round recovery and final runtime package
 
 Round 5 subsequently passed on the upgraded package: the fifth reporter signed
