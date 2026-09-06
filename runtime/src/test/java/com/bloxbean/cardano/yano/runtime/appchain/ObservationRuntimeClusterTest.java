@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
@@ -161,15 +162,18 @@ class ObservationRuntimeClusterTest {
                     providerSettings.put("observations.providers.delivery.url", LIVE_SOURCE);
                     providerSettings.put("observations.providers.delivery.source-id", "source");
                 }
-                AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
-                        .signingKeyHex(seeds.get(index)).memberKeysHex(members).threshold(external ? 4 : 2)
-                        .proposerKeyHex(signers.getFirst().publicKeyHex()).blockIntervalMs(300)
-                        .peers(ports.stream().filter(candidate -> candidate != port)
-                                .map(candidate -> new AppChainConfig.AppPeer("localhost", candidate))
-                                .toList())
-                        .stateCommitmentIdentity(TestStateCommitments.MPF)
-                        .pluginSettings(providerSettings)
-                        .build();
+                // Exercise the ordinary configuration boundary, not direct pluginSettings injection.
+                Map<String, Object> settings = new LinkedHashMap<>(providerSettings);
+                settings.put("chain-id", CHAIN_ID);
+                settings.put("signing-key", seeds.get(index));
+                settings.put("members", String.join(",", members));
+                settings.put("threshold", external ? 4 : 2);
+                settings.put("sequencer.proposer", signers.getFirst().publicKeyHex());
+                settings.put("block.interval-ms", 300);
+                settings.put("peers", ports.stream().filter(candidate -> candidate != port)
+                        .map(candidate -> "localhost:" + candidate).collect(Collectors.joining(",")));
+                settings.putAll(TestStateCommitments.MPF.settings());
+                AppChainConfig config = AppChainConfigParser.parse(settings);
                 configs.add(config);
                 AppChainSubsystem node = new AppChainSubsystem(config, 42, null, machine(),
                         directory.resolve("network-" + index).toString(), null, registry,

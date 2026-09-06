@@ -16,7 +16,8 @@ create a GitHub release, or mark the other CI gates successful.
 
 The version is the repository's base version without `-SNAPSHOT`, followed by
 the first nine characters of the checked-out commit. Artifacts expire after
-14 days; record the run ID and availability deadline. This is temporary
+the server-reported `expires_at` deadline (the workflow requests 14 days,
+but repository policy may shorten this); record that deadline and the run ID. This is temporary
 qualification staging, not a permanent published release channel.
 
 For example, dispatch on the reviewed host milestone branch:
@@ -51,6 +52,15 @@ the five-member/four-vote model with one Byzantine assumption. Then run normal
 host tests and packaged JVM/native conformance. For Yano X, run all unit tests,
 artifact inventory, JVM-only verification and exact-version distribution checks;
 also execute repository integration/crypto and required connector/E2E gates.
+
+The scale test is opt-in; ordinary `test` runs skip it. Execute it explicitly
+and inspect the test result to confirm that it ran rather than skipped:
+
+```bash
+YANO_OBSERVATION_SCALE=1 ./gradlew :runtime:test \
+  --tests '*ObservationKernelTest.recoversOneHundredThousandCommittedSubscriptionsWithBoundedOpening' \
+  -PskipSigning=true --no-parallel
+```
 
 Preserve failed logs and record the actual fixes/reruns. An incremental pass
 reuses prior validated tasks; do not describe it as a fresh full execution.

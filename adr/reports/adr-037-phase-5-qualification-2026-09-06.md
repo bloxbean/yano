@@ -37,11 +37,56 @@ permission to erase or rebuild arbitrary journal data.
 Initial focused journal suite passed in 12 seconds. Expanded journal,
 observation runtime, network cluster and kernel tests passed in 37 seconds
 (`/private/tmp/adr-037-phase-5-recovery-observation-tests.log`), including
-100k-subscription bounds, restart/rollback guards and rejection of partial or
-unauthorized cursor repair. Live qualification and final full-suite validation
+restart/rollback guards and rejection of partial or unauthorized cursor repair.
+The opt-in 100k-subscription test was skipped in this selection; a fresh scale
+run with `YANO_OBSERVATION_SCALE=1` is required before claiming Phase 5 scale evidence.
+Live qualification and final full-suite validation
 remain pending.
 
 ## Coordinated CI staging work
+
+Host staging run [34010953807](https://github.com/bloxbean/yano/actions/runs/34010953807)
+passed for `7adff6bd8d0cf7eab7fa71627cfd6b1baafd5db5`. Companion full CI
+[34011404923](https://github.com/bloxbean/yano-x/actions/runs/34011404923)
+was dispatched against that exact commit and staged version. Staging-only
+dispatch deliberately skips the ordinary integration/distribution/native jobs;
+it is not evidence that those independent gates passed.
+The artifact API reports an expiry of **2026-09-13T04:13:24Z** for this run,
+shorter than the requested 14-day retention; use the actual deadline.
+
+## Packaged configuration boundary finding
+
+The full host suite passed in 11m47s (124 tasks: 39 executed, 2 cached,
+83 up-to-date), logged at `/private/tmp/adr-037-phase-5-host-full-tests.log`.
+That run began before the configuration fix, so it does not validate the new
+configuration changes. The first focused forwarding regression failed because
+the new flat fixture omitted its mandatory chain ID; the fixture was corrected
+before rerunning. All four companion jobs successfully prepared the exact host
+inputs, confirming cross-repository artifact access on the actual CI runners.
+
+Preparing real-node configuration exposed missing `observations.*` and
+`consensus.*` forwarding in both the REST-host adapter and shared chain parser.
+Subsystem tests supplied plugin settings directly and therefore did not cover
+this boundary. Without the fix, an ordinary configured host could silently lose
+the enabled observation profile and the requested Byzantine fault bound.
+The host adapter now shares the parser's namespace list, and the configuration
+catalog declares both namespaces as core-owned with partial validation coverage.
+Regression tests follow flat and indexed settings through both adapters into
+the runtime configuration object. The existing singular `observation.*` L1
+identity namespace is preserved. A new exact artifact checkpoint is required
+before live qualification; the first staging checkpoint predates this fix.
+
+Final focused rerun passed in 32s:
+`/private/tmp/adr-037-phase-5-config-scale-tests-final.log`. This includes the
+configuration module, host forwarding tests, parser-backed three/five-node
+network tests, and the explicitly enabled 100k test. The latter has zero skips
+and zero failures in JUnit XML; the unrelated opt-in live HTTPS case remains
+skipped. Converting the network fixture also required its full existing state
+identity (including fingerprint), now copied through `identity.settings()`.
+These are configuration-boundary and local network checks, not live Preprod
+or a sustained resource soak.
+
+## Staging implementation
 
 An opt-in host workflow path stages exact Maven/JVM inputs from a clean
 commit, with a manifest/checksum inventory and 14-day Actions retention. The
