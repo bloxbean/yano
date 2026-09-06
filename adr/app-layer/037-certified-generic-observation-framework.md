@@ -1926,6 +1926,16 @@ Exit criteria:
 
 ### Phase 4 — proofs, webhooks, and workflow integration
 
+Qualification of the lifecycle evidence view requires a complete current
+certified-block header at the REST/SDK boundary. The header carries view,
+consensus-context digest, proposer and justification digest in addition to the
+existing value fields. Consumers verify the domain-separated COMMIT digest,
+not a bare block hash, and independently pin the height-specific consensus
+context (including genesis, membership and profiles). API level 8 adds a shared
+`AppBlockHeader` commitment helper so SDKs do not reconstruct obsolete header
+formats. This completes proof transport; it does not change block-v3 hashes,
+vote digests, generic-observation encodings or justification admission rules.
+
 Deliver:
 
 - bounded Merkle/proof evidence profiles selected by concrete demand;

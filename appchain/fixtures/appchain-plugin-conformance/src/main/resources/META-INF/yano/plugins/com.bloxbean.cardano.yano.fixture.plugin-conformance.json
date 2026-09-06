@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.bloxbean.cardano.yano.fixture.plugin-conformance",
   "version": "${pluginVersion}",
-  "yanoApi": { "min": 3, "max": 3, "minLevel": 7 },
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 8 },
   "dependencies": [],
   "contributions": [
     {

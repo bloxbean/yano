@@ -113,6 +113,11 @@ class AppChainProofResourceTest {
         assertEquals("22".repeat(32), proof.get("genesisId"));
         assertEquals(2L, proof.get("oldestProvableHeight"));
         assertEquals(4L, ((Map<?, ?>) proof.get("block")).get("height"));
+        Map<?, ?> header = (Map<?, ?>) proof.get("block");
+        assertEquals(block.view(), header.get("view"));
+        assertEquals(HexUtil.encodeHexString(block.consensusContextDigest()), header.get("consensusContextDigest"));
+        assertEquals(HexUtil.encodeHexString(block.proposer()), header.get("proposer"));
+        assertEquals(64, ((String) header.get("justificationDigest")).length());
         assertEquals(1, ((List<?>) ((Map<?, ?>) proof.get("finalityCertificate"))
                 .get("signatures")).size());
 

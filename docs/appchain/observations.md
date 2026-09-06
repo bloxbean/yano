@@ -7,7 +7,17 @@ Height cadence measures chain progress, not minutes.
 
 Phase 4 is in progress: the additional Merkle evidence and wake APIs below
 require host API level 7. Existing Phase 3 external-reporter consumers require
-level 6; the default interface bridges remain available.
+level 6; the default interface bridges remain available. The complete certified
+header proof path and shipment reference require API level 8.
+
+Offline finality verification uses `AppBlockHeader` and its domain-separated
+`commitDigest()`, not a signature over the bare block hash. Pin the expected
+height-specific consensus-context digest independently from trusted chain
+configuration and membership history; copying it from the untrusted proof
+does not establish trust. API level 8 exposes view, consensus-context digest,
+proposer and justification digest in REST certified headers. Older incomplete
+headers must fail closed in the updated SDK. These transport additions do not
+change existing block-v3 commitments or observation encodings.
 
 ## Profile selection
 

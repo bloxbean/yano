@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockHeader;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
@@ -2244,6 +2245,11 @@ public class AppChainResource {
             result.put("messagesRoot", HexUtil.encodeHexString(block.messagesRoot()));
             result.put("stateRoot", HexUtil.encodeHexString(block.stateRoot()));
             result.put("blockHash", HexUtil.encodeHexString(blockHash));
+            AppBlockHeader header = AppBlockHeader.from(block);
+            result.put("view", header.view());
+            result.put("consensusContextDigest", HexUtil.encodeHexString(header.consensusContextDigest()));
+            result.put("proposer", HexUtil.encodeHexString(header.proposer()));
+            result.put("justificationDigest", HexUtil.encodeHexString(header.justificationDigest()));
             return result;
         }
 
