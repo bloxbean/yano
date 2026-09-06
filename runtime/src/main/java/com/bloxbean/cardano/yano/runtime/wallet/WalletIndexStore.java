@@ -153,7 +153,11 @@ public final class WalletIndexStore {
             byte[] key = new byte[]{feature};
             byte[] old = db.get(meta, key);
             State prior = old == null ? null : decodeState(old);
-            boolean contiguous = prior != null && prior.through.equals(previous) && prior.reason == null;
+            boolean nextCanonicalNumber = previous.equals(WalletChainPoint.ORIGIN)
+                    ? point.blockNumber() == 0 || point.blockNumber() == 1
+                    : point.blockNumber() == previous.blockNumber() + 1;
+            boolean contiguous = prior != null && prior.through.equals(previous)
+                    && prior.reason == null && nextCanonicalNumber;
             String reason = feature == FIRST_SEEN ? firstSeenFailure : filterFailure;
             if (feature == FIRST_SEEN && (!contiguous || !prior.complete)) {
                 reason = "First-seen history is incomplete; enable before a fresh sync";

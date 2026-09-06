@@ -153,3 +153,70 @@ credential counts and digests match, including decoded withdrawals, certificates
 pool owners/reward accounts, MIR recipients and proposal return accounts; every
 expected credential matches its filter. These non-contiguous fixtures lack prior
 UTxOs and do not establish full historical input resolution or scan throughput.
+
+## Pruning, checkpoint gaps and canonical continuity
+
+The wallet runtime suite now has 47 passing tests. Additional checks exercise the
+real UTxO pruner and block-body pruner: first-seen persists for a fully spent address,
+old undo is removed while permanent filters remain, an active scan fails without
+completion after required bodies disappear, and new scans reject that body gap.
+Exact rollback within the retained window preserves older first-seen entries;
+rollback below the ordinary floor is rejected. The legacy origin rollback path
+bypasses that floor, so its wallet coverage is explicitly checked to become
+unavailable when undo is missing.
+
+Real chain-state header-only rollback preserves applied wallet coverage. A body
+rollback invalidates an active scan before derived rollback runs; the normal
+`RollbackEvent` then restores first-seen and still invalidates the old scan.
+Restoring a checkpoint created with both wallet features disabled invalidates
+active scans and leaves first-seen unavailable even after new blocks. Filters can
+begin a later interval, but origin scans cannot claim complete coverage. Each
+independent flag rejects disabled UTxO storage, built-in selective storage, and
+nonempty plugin storage-filter chains.
+
+Review found and fixed two continuity holes. Coverage now requires consecutive
+canonical block numbers (origin permits the chain's first numbered block at 0 or 1).
+The runtime also validates both the previous applied point and the current point
+against canonical chain storage before committing wallet index progress. A missed
+same-height rollback therefore cannot be concealed by applying a later canonical
+block over orphaned first-seen records. Regressions cover both a skipped UTxO apply
+with complete canonical headers/bodies and advancement after a missed rollback.
+
+`/private/tmp/yano-119-coverage-and-smoke.log` records the 47 runtime tests and a
+corrected 1,000-block historical replay smoke run. The API/live node suites passed
+again after these changes (`/private/tmp/yano-119-canonical-api-live.log`).
+
+## Historical replay measurement harness
+
+`benchmarkWalletHistory` opens a retained source RocksDB read-only and creates four
+new destination databases. It replays the same canonical prefix through real
+Byron/Shelley-family decoding, header/body persistence, UTxO apply, index staging
+and ordinary undo pruning. It records CPU, wall time, allocation/GC, apply latency,
+physical filter counts, per-index SST sizes, disk samples and confirmed warm scans.
+All destination column families are flushed before measuring SST sizes.
+
+The source `/Users/satya/Downloads/yano-cluster/chainstate-preprod` has canonical
+numbers 1–5,039,478 and no block-pruner cursor. A read-only probe found retained
+sample bodies from Byron through Conway. This sampling is not a proof that every
+body exists; replay fails if any required header/body is missing. The 1,000-block
+smoke run passed all four modes (`/private/tmp/yano-119-history-smoke-v2/report.json`).
+It contains 45 Byron main blocks and 955 Shelley blocks, not a representative
+million-block measurement.
+
+Reproduce against an appropriate retained database, with a destination that does
+not already exist:
+
+```sh
+./gradlew :runtime:benchmarkWalletHistory \
+  -PwalletHistorySource=/absolute/path/to/source-chainstate \
+  -PwalletHistoryOutput=/absolute/path/to/fresh-benchmark-directory \
+  -PwalletHistoryGenesis=/absolute/path/to/network/genesis-directory \
+  -PwalletHistoryBlocks=1000000
+```
+
+The first million-block attempt was intentionally terminated while still in its
+baseline mode after the continuity review identified required runtime changes.
+Its partial data under `/private/tmp/yano-119-history-million` must not be used as
+final performance evidence. Even a completed replay excludes network, consensus
+and other ledger stores; it does not replace native, true cold-cache,
+concurrent-sync or independent full-history reference measurements.

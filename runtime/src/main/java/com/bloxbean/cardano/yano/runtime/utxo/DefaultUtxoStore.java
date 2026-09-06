@@ -1766,6 +1766,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         WalletChainPoint previous = walletAppliedPoint();
         batch.setSavePoint();
         try {
+            if (!(supplier instanceof ArchiveChainStateCapabilities canonical)) {
+                throw new IllegalStateException("Canonical block reader unavailable for wallet indexing");
+            }
+            requireWalletCanonicalPoint(canonical, previous);
+            requireWalletCanonicalPoint(canonical, point);
             walletIndexes.stageBlock(batch, previous, point, addresses, filter, null, filterFailure);
             batch.popSavePoint();
         } catch (RuntimeException failure) {
