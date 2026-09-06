@@ -58,6 +58,16 @@ adjustment. Neither condition justifies deleting chainstate.
 
 ## Post-upgrade checks
 
+Script-anchor compatibility qualification also found that a member excluded
+from a responsive co-signing subset ignored the advance request, losing the
+exact transaction identity needed for later anchor adoption. Every member now
+verifies such requests against its local app history, membership threshold,
+validator artifact and L1 view, and may retain a non-authoritative candidate.
+Only listed required signers emit witnesses. Candidate promotion still requires
+the exact verified transaction in committed L1 state; a request alone never
+opens anchoring or settlement gates. No L1 core behavior or observation profile
+changes are part of this correction.
+
 Compare the retained finalized height/root and generation identity, then verify
 historical state proofs under independently pinned trust. Inspect journal
 health, cursor recovery count, pending records and preserved failure barriers.

@@ -722,12 +722,10 @@ final class ScriptAnchorService {
         TransactionBody body = deserializeBody(request.bodyBytes());
         if (body == null)
             return;
-        // Only sign bodies that list US as a required signer
+        // Only listed members sign, but every member must be able to learn a
+        // fully verified candidate when a responsive subset advances the anchor.
         boolean listed = body.getRequiredSigners() != null && body.getRequiredSigners().stream()
                 .anyMatch(pkh -> java.util.Arrays.equals(pkh, selfPkh));
-        if (!listed)
-            return;
-
         if (!verifyAdvance(body, request.policyId(), request.scriptHash()))
             return;
 
@@ -736,6 +734,11 @@ final class ScriptAnchorService {
         if (anchorUtxo == null || !adoptVerifiedIdentity(
                 request.policyId(), request.scriptHash(), anchorUtxo,
                 HexUtil.encodeHexString(bodyHash))) {
+            return;
+        }
+        if (!listed) {
+            // This is not authoritative adoption: reconciliation still requires
+            // the exact verified transaction in our own committed L1 UTxO view.
             return;
         }
         byte[] witnessSig = memberSigner.sign(bodyHash);

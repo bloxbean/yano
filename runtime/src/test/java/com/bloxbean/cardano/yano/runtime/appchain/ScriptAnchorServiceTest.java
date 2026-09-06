@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
@@ -22,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -322,6 +325,75 @@ class ScriptAnchorServiceTest {
         assertThat(follower.lastAnchoredHeight()).isZero();
         assertThat(followerLedger.metaBytes("anchor_script_policy_id")).isEmpty();
         assertThat(followerLedger.metaBytes("anchor_script_hash")).isEmpty();
+    }
+
+    @Test
+    void unlistedMemberLearnsVerifiedAdvanceWithoutSigningAndAdoptsOnlyAfterL1Confirmation() throws Exception {
+        AppMessageSigner observerSigner = new AppMessageSigner("33".repeat(32));
+        members = Set.of(leaderSigner.publicKeyHex(), followerSigner.publicKeyHex(), observerSigner.publicKeyHex());
+        AtomicInteger observerDiffusions = new AtomicInteger();
+        try (AppLedgerStore observerLedger = new AppLedgerStore(
+                tempDir.resolve("unlisted-observer").toString(), log, stateIdentity())) {
+            ScriptAnchorService observer = new ScriptAnchorService(CHAIN_ID, "ordered-log",
+                    new AppChainConfig.AnchorConfig(false, "", 0, 0, 0), observerLedger,
+                    cbor -> { throw new AssertionError("Unlisted follower must never submit"); },
+                    () -> utxoState, this::blockAt, () -> tip[0],
+                    new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
+                    observerSigner, () -> members, () -> 2,
+                    (topic, body) -> observerDiffusions.incrementAndGet(), false, 42, log);
+            observer.wireTxPricing(() -> DEVNET_PARAMS, () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+            utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+            Map<String, Object> boot = leader.bootstrap();
+            Transaction bootstrapTx = Transaction.deserialize(submitted.getFirst());
+            String bootstrapHash = (String) boot.get("txHash");
+            String scriptAddress = (String) boot.get("scriptAddress");
+            String policy = (String) boot.get("threadPolicyId");
+            String script = (String) boot.get("scriptHash");
+            leader.onL1Block(100, List.of(bootstrapHash));
+            TransactionOutput bootstrapOut = outputTo(bootstrapTx, scriptAddress);
+            utxoState.put(scriptAddress, List.of(anchorUtxo(bootstrapHash,
+                    bootstrapTx.getBody().getOutputs().indexOf(bootstrapOut), bootstrapOut, policy, 100)));
+            TransactionOutput change = outputTo(bootstrapTx, wallet);
+            utxoState.put(wallet, List.of(walletUtxo(bootstrapHash,
+                    bootstrapTx.getBody().getOutputs().indexOf(change), change.getValue().getCoin().longValue())));
+            tip[0] = 9;
+            Method start = ScriptAnchorService.class.getDeclaredMethod("startCosignRound", Set.class);
+            start.setAccessible(true);
+            start.invoke(leader, Set.of(leaderSigner.publicKeyHex(), followerSigner.publicKeyHex()));
+            assertThat(submitted).hasSize(2);
+            Transaction advance = Transaction.deserialize(submitted.get(1));
+            assertThat(advance.getBody().getRequiredSigners()).hasSize(2);
+
+            // An unlisted observer still applies the full threshold/body verification.
+            Transaction invalid = Transaction.deserialize(submitted.get(1));
+            invalid.getBody().setRequiredSigners(invalid.getBody().getRequiredSigners().subList(0, 1));
+            deliver(observer, leaderSigner.publicKey(), ScriptAnchorService.TOPIC_SIGN,
+                    ScriptAnchorService.encodeSignRequest(CborSerializationUtil.serialize(
+                            invalid.getBody().serialize(Era.Conway)), HexUtil.decodeHexString(policy),
+                            HexUtil.decodeHexString(script)));
+            assertThat(observer.status()).containsEntry("identityCandidatePending", false);
+            deliver(observer, leaderSigner.publicKey(), ScriptAnchorService.TOPIC_SIGN,
+                    ScriptAnchorService.encodeSignRequest(CborSerializationUtil.serialize(
+                            advance.getBody().serialize(Era.Conway)), HexUtil.decodeHexString(policy),
+                            HexUtil.decodeHexString(script)));
+            assertThat(observerDiffusions).hasValue(0);
+            assertThat(observer.status()).containsEntry("identityCandidatePending", true);
+            assertThat(observer.bootstrapped()).isFalse();
+            assertThat(observer.tick()).isNull();
+
+            TransactionOutput next = outputTo(advance, scriptAddress);
+            String advanceHash = txHash(submitted.get(1));
+            utxoState.put(scriptAddress, List.of(anchorUtxo(advanceHash,
+                    advance.getBody().getOutputs().indexOf(next), next, policy, 200)));
+            assertThat(observer.tick()).isNotNull();
+            assertThat(observer.bootstrapped()).isTrue();
+            assertThat(observer.lastAnchoredHeight()).isEqualTo(9);
+            assertThat(observer.status()).containsEntry("lastAnchorTx", advanceHash);
+            assertThat(observerDiffusions).hasValue(0);
+            observer.onL1Rollback(150);
+            assertThat(observer.bootstrapped()).isFalse();
+            assertThat(observer.lastAnchoredHeight()).isZero();
+        }
     }
 
     @Test

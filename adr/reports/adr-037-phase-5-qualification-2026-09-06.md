@@ -2,6 +2,34 @@
 
 ## Latest checkpoint and CI findings
 
+### Reproduced app-anchor subset adoption defect
+
+Host checkpoint `86031c3dc` passed build `34020918143` and integration /
+distribution / native `34020919530`. Companion run `34020423482` at `94694638`
+again failed composite parity with `ANCHOR_UNAVAILABLE`: all three nodes
+agreed on height 6 and root, while node 1 still had no adopted anchor identity.
+The leader and node 2 had anchored height 6. This repeated failure is retained
+at `/private/tmp/adr-037-phase-5-946-companion-ci-failure.log`.
+
+Source inspection and a failing regression reproduced a specific app-layer
+defect consistent with that symptom: `ScriptAnchorService.onSignRequest`
+returned before verification/adoption whenever the local member was not a
+required signer. Responsive-subset advances could therefore exclude a follower
+from recording the exact transaction candidate, preventing later adoption.
+The regression failed on `identityCandidatePending=false` before the fix
+(`/private/tmp/adr-037-phase-5-unlisted-anchor-before-fix.log`).
+
+The fix separates observation from witness signing. Unlisted members perform
+the existing full verification and may retain a non-authoritative candidate;
+they emit no witness. Promotion still requires the exact verified transaction
+in committed L1 state. The regression rejects a below-threshold body, checks
+no witness/submission, forbids adoption before confirmation, verifies confirmed
+adoption and rollback clearing. All nine script-anchor tests passed in 18s
+(`/private/tmp/adr-037-phase-5-unlisted-anchor-after-fix.log`). This fixes the
+reproduced subset defect; the remote composite scenario must still be rerun
+against a newly staged exact host package before claiming its failure resolved.
+No Cardano L1 core source or validation settings changed.
+
 ### CI teardown correction and staged membership recovery
 
 Host test checkpoint `75e799ab3` passed integration/distribution/native run
