@@ -161,7 +161,8 @@ public final class UtxoSubsystem implements Subsystem {
                 ? genesisConfig.getByronAvvmBalances() : Map.of();
         defaultStore.initializeFreshFullStateGenesis(
                 shelley, networkMagic, nonAvvm, avvm,
-                0L, 0L, "00".repeat(32));
+                0L, 0L, "00".repeat(32),
+                genesisConfig == null ? Map.of() : genesisConfig.getInitialFunds());
         if (config.isEnableBlockProducer() && genesisConfig != null
                 && !genesisConfig.getInitialFunds().isEmpty()) {
             log.info("Deferred {} Shelley genesis UTXOs to the block-producer genesis path",

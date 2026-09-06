@@ -21,6 +21,7 @@ import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
+import com.bloxbean.cardano.yano.runtime.wallet.WalletIndexCf;
 import lombok.extern.slf4j.Slf4j;
 import org.rocksdb.*;
 
@@ -241,6 +242,12 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                             UtxoCfNames.UTXO_BLOCK_DELTA.getBytes(),
                             tuningEnabled ? utxoDeltaOpts : new ColumnFamilyOptions()),
                     descriptor(UtxoCfNames.UTXO_META, tuningEnabled),
+                    new ColumnFamilyDescriptor(WalletIndexCf.FIRST_SEEN.getBytes(),
+                            tuningEnabled ? utxoPointLookup : new ColumnFamilyOptions()),
+                    descriptor(WalletIndexCf.FILTERS, tuningEnabled),
+                    descriptor(WalletIndexCf.META, tuningEnabled),
+                    descriptor(WalletIndexCf.UNDO, tuningEnabled),
+                    descriptor(WalletIndexCf.GENESIS, tuningEnabled),
                     descriptor(UtxoCfNames.SCRIPT_REF, tuningEnabled),
                     new ColumnFamilyDescriptor(
                             UtxoCfNames.UTXO_STAKE_BALANCE.getBytes(),

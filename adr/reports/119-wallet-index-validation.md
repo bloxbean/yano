@@ -1,0 +1,119 @@
+# Issue 119 validation (in progress)
+
+This report records measured checks, not completion of issue 119.
+
+## JVM and wallet regression tests
+
+- `./gradlew :runtime:test --tests '*wallet.*Test' --tests '*UtxoSubsystem*' :app:quarkusBuild --console=plain`: passed on 2026-09-06.
+- Wallet-index suites: 25 tests, zero failures/errors. Includes producer-deferred Shelley genesis, effective collateral, same-block spends, fully spent first-seen, coverage gaps, undo and replacement branches.
+- In the wallet checkout, `./gradlew :wallet-node-client:test :wallet-app:compileJava --console=plain`: passed. Live opt-in tests were skipped.
+- Eleven new wallet tests cover first-seen zero/null/lag/incomplete handling, old-node route compatibility, persisted assets and outgoing-only history, incomplete streams, shallow/deep reorgs, mismatched completion, post-completion data and invalid transaction points.
+
+Review found and fixed two gaps: producer initialization excluded deferred Shelley genesis from wallet coverage, and the wallet accepted malformed transaction coordinates through default numeric values. Both now have regression tests.
+
+## Isolated live devnet probe
+
+Artifact: JVM `app/build/yano.jar`, Java 25, heap limit 1 GiB. Fresh copied PV11 devnet configuration, epochLength 50, slotLength 0.2 seconds. HTTP 17119, node-to-node 14119. Both wallet indexes enabled; projection history disabled; block-body pruning depth zero. Test directory and retained evidence: `/private/tmp/yano-119-devnet-ttafwmir`.
+
+Command from the test directory (log path changed for each restart):
+
+```sh
+java -Xmx1g -Dquarkus.profile=devnet -Dquarkus.http.port=17119 -Dyano.server.port=14119 -Dyano.scan.index.enabled=true -Dyano.address-first-seen.enabled=true -Dyano.history.projection.enabled=false -Dyano.chain.block-body-prune-depth=0 -jar /Users/satya/work/bloxbean/yano/app/build/yano.jar > run-1.log 2>&1
+```
+
+Observed:
+
+- Projection service explicitly logged disabled.
+- Produced blocks crossed slots 50 and 100 without production errors.
+- Initial payment-credential scan returned HTTP 200, complete-from-origin coverage, the applicable genesis output and a matching done point at block 124 / slot 129.
+- Genesis address first-seen returned numeric zero and complete coverage.
+- After SIGTERM/restart, the saved block-124 cursor and genesis outpoint state resumed successfully through block 246 / slot 315.
+- After SIGKILL/restart, the same saved cursor resumed successfully through block 883. First-seen remained zero. Coverage identity remained unchanged.
+- Restart logs reported nonce restoration at the durable body tip. Numerical epoch nonce parity was not independently compared in this probe.
+- Test node was stopped; logs, requests and responses are retained.
+
+These are empty-block producer probes, not representative historical sync or wallet transaction-flow validation. They do not establish throughput, disk budgets, mainnet cardinality, or all recovery/rollback paths.
+
+## Extraction, address validation and native follow-up
+
+On 2026-09-06, the added extraction matrix tests passed for all ten supported
+stake certificate variants, DRep certificate subjects, Shelley address headers,
+withdrawals, pool owners/reward accounts, MIR and proposal return accounts.
+The decoder emits reward-account fields as raw hex; review fixed the extractor
+accordingly and added equivalence checks against Bech32 display forms.
+
+Review also found that the display-address constructor rejects Byron addresses
+and does not validate Shelley lengths. A dedicated validator now verifies Shelley
+lengths, pointer framing, and the Byron envelope/payload/CRC32. Three address
+validation tests and a Byron genesis first-seen/rollback test pass. The wallet
+now ignores unrelated Byron outputs when filtering a matching transaction by
+stake credential; its regression passes. These changes are not a claim of Byron
+wallet recovery support.
+
+An independent GCS golden test passes using published SipHash values, independently
+calculated unsigned range mapping, and a literal Rice bitstream. The codec suite
+now contains six tests. It does not merely round-trip production encode/decode.
+
+Native build command:
+
+```sh
+env JAVA_HOME=/Users/satya/work/java/graalvm-25.3.4.1+1.1/Contents/Home ./gradlew :app:build -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -x test --console=plain
+```
+
+The first attempt without `quarkus.package.jar.enabled=false` failed because this
+build cannot output both native and jar packages. Corrected builds succeeded;
+the final build includes reward-account extraction and strict address validation
+fixes. Final build log: `/private/tmp/yano-119-native-build-final.log`.
+
+Native probe evidence is retained in `/private/tmp/yano-119-native-3h52irw7`.
+It uses the same heap limit, shortened devnet epoch, isolated ports, flags and
+archival-disabled settings as the JVM probe, with `app/build/yano` as executable.
+The initial native run crossed slots 50 and 100 without production errors,
+returned genesis first-seen zero, and completed an origin scan through block 67.
+After rebuilding and restarting on the same database, the saved cursor and
+outpoint set resumed successfully through block 403 / slot 1374. A valid unused
+Byron address returned HTTP 200 with firstSeenSlot null and complete coverage.
+The native test process was stopped after the probes.
+
+This validates native request/response reflection and basic persistence, not the
+pending native performance, transaction-flow, and crash/rollback matrix.
+
+## Million-filter JVM storage spike
+
+The four-mode synthetic storage benchmark completed one million block batches per
+mode, with one million physically stored filters in each filter-enabled database.
+Results, exact workload limitations, raw JSON, compiled-class hashes and RocksDB
+statistics are published in [the benchmark report](119-wallet-benchmark-jvm/README.md).
+This satisfies the physical-scale spike, not the complete representative-era,
+JVM/native, sync-contention and body-confirmation performance matrix.
+
+Review after the spike added fail-closed handling for unreadable derived metadata,
+strict first-seen slot record checks, and canonical-point verification around
+first-seen reads. The latter prevents an orphaned UTxO/index point from serving
+an authoritative result while runtime rollback is still propagating.
+
+Post-spike command `./gradlew :runtime:test --tests '*wallet.*Test' :app:test
+--tests '*AddressResourceTest' --tests '*WalletScanResourceTest' --console=plain`
+passed: 38 runtime tests and 8 API tests, zero failures/errors. Log retained at
+`/private/tmp/yano-119-post-bench-tests.log`.
+
+## Outstanding gates
+
+Native crash/rollback and performance matrix; actual wallet-to-node incoming/outgoing and assets across wallet restart/reorg; representative serialized-era extraction fixtures; pruning and all runtime rollback entry points; representative-era brute-force comparison; historical JVM/native sync, true cold-cache and concurrent-sync measurements beyond the completed synthetic million-filter spike. The wallet profile now enables both indexes, retains block bodies and complete UTxO processing, and removes its archival-history settings. Production recommendations remain gated on the outstanding measurements. Draft PRs preserve these outstanding acceptance gates; issue 119 is not complete.
+
+Final wallet verification: 90 tests discovered, 86 passed and 4 opt-in tests skipped; wallet app compilation passed. Final node targeted verification: 38 runtime and 8 API tests passed. Cursor review moved canonical validation before coverage-range rejection so a cursor above a restored tip receives the rollback response (409).
+
+## Final live transaction test
+
+`./gradlew :app:integrationTest --tests '*WalletIndexLiveIT' --console=plain`
+passed on 2026-09-06 (log: `/private/tmp/yano-119-live-final.log`). The disposable
+JVM devnet runs both indexes with history projection disabled. It verifies funded
+genesis slot zero, unused null, incoming transactions with minted native assets,
+resumed outgoing-only history, a fully spent address retaining first-seen, full
+scan equivalence for both transactions, snapshot restore removing orphaned history
+and first-seen, HTTP 409 for the saved orphaned cursor, and replacement-branch
+transactions. The transaction builder uses a separately funded fee payer for the
+outgoing sweep. Earlier test-harness attempts failed on disabled producer networking,
+reused snapshot names, and transaction builder fee/change configuration; these were
+fixed before this successful run. This test exercises the node HTTP API through
+CCL, not the actual wallet application's live persistence/restart path.

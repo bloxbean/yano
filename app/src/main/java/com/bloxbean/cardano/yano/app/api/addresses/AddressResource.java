@@ -5,9 +5,14 @@ import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.address.AddressType;
 import com.bloxbean.cardano.client.address.CredentialType;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
+import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
+import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
 import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressSummaryDto;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressTxDto;
@@ -53,12 +58,42 @@ public class AddressResource {
     LedgerQuery ledgerQuery;
 
     @Inject
+    ChainQuery chainQuery;
+
+    @Inject
     HistoryArchiveService historyArchive;
 
     private AccountHistoryProvider historyProvider() {
         return historyArchive != null && historyArchive.enabled()
                 ? historyArchive.accountHistoryProvider()
                 : null;
+    }
+
+    @GET
+    @Path("/addresses/{address}/first-seen")
+    public Response getFirstSeen(@PathParam("address") String address) {
+        UtxoState state = ledgerQuery.getUtxoState();
+        if (state == null || !state.isEnabled()) {
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity(Map.of("error", "First-seen index requires enabled UTxO state")).build();
+        }
+        try {
+            AddressFirstSeen result = state.getAddressFirstSeen(address);
+            var tip = chainQuery != null ? chainQuery.getLocalTip() : null;
+            WalletChainPoint liveTip = tip == null ? WalletChainPoint.ORIGIN
+                    : new WalletChainPoint(tip.getBlockNumber(), tip.getSlot(), HexUtil.encodeHexString(tip.getBlockHash()));
+            return Response.ok(new AddressFirstSeen(result.firstSeenSlot(), result.coverage(), liveTip)).build();
+        } catch (WalletIndexUnavailableException unavailable) {
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity(Map.of("error", unavailable.getMessage(), "coverage", unavailable.coverage())).build();
+        } catch (IllegalArgumentException invalid) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "Invalid address")).build();
+        } catch (IllegalStateException unavailable) {
+            log.warn("First-seen read unavailable", unavailable);
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity(Map.of("error", "First-seen index unavailable")).build();
+        }
     }
 
     @GET

@@ -189,6 +189,13 @@ public final class YanoPropertyKeys {
     /**
      * UTXO tracking, indexing, pruning, and rollback settings.
      */
+    public static final class WalletIndex {
+        public static final String FIRST_SEEN_ENABLED = "yano.address-first-seen.enabled";
+        public static final String FILTERS_ENABLED = "yano.scan.index.enabled";
+
+        private WalletIndex() { }
+    }
+
     public static final class Utxo {
         public static final String ENABLED = "yano.utxo.enabled";
         public static final String PRUNE_DEPTH = "yano.utxo.pruneDepth";
