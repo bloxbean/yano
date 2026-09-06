@@ -59,6 +59,7 @@ class WalletIndexLiveIT {
         assertThat(snapshot.statusCode()).as(snapshot.body()).isEqualTo(200);
 
         var policy = ScriptPubkey.createWithNewKey();
+        String policyId = policy._1.getPolicyId();
         Tx receive = new Tx().payToAddress(address, Amount.ada(10))
                 .mintAssets(policy._1, new Asset("Wallet119", BigInteger.valueOf(100)), address)
                 .from(sender.baseAddress());
@@ -75,6 +76,10 @@ class WalletIndexLiveIT {
         assertThat(known.stream().flatMap(o -> {
             List<JsonNode> values = new ArrayList<>(); o.path("assets").forEach(values::add); return values.stream();
         }).anyMatch(a -> a.path("quantity").bigIntegerValue().equals(BigInteger.valueOf(100)))).isTrue();
+        assertThat(known.stream().flatMap(o -> {
+            List<JsonNode> values = new ArrayList<>(); o.path("assets").forEach(values::add); return values.stream();
+        }).anyMatch(a -> a.path("policyId").asText().equals(policyId)
+                && a.path("assetName").asText().equals("57616c6c6574313139"))).isTrue();
         JsonNode firstSeen = get("addresses/" + address + "/first-seen");
         long seenSlot = firstSeen.path("firstSeenSlot").longValue();
         assertThat(seenSlot).isPositive();

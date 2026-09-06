@@ -1,8 +1,9 @@
 # Issue 119 acceptance audit
 
-This audit preserves the issue scope. A draft PR and passing targeted tests do not
-establish production readiness. Evidence below refers to tracked implementation,
-tests and `119-wallet-index-validation.md`; outstanding gates stay open.
+Implementation handoff is complete under the owner's 2026-09-06 decision to
+accept devnet validation and perform preprod sync manually. The larger replay
+was stopped at the owner's request; incomplete results are not acceptance evidence.
+The table retains the distinction between verified behavior and deferred measurements.
 
 | Requirement | Evidence / current result |
 |---|---|
@@ -20,9 +21,10 @@ tests and `119-wallet-index-validation.md`; outstanding gates stay open.
 | Incompatible UTxO filters rejected | Both independent flags tested with UTxO disabled, built-in filters, and plugin storage-filter chains. |
 | Wallet discovery and persistent canonical history | `YanoNodeClient`, `YanoNodePorts`, `WalletScanHistory`, application wiring and their unit/live tests; receive/change discovery retains independent existing counters. |
 | Fresh-sync/configuration/retention/API/resource documentation | `docs/wallet-indexes.md`, ADR 054 and linked measurement reports. |
-| Million-filter performance measurements | Synthetic four-mode spike complete. Real historical four-mode replay harness smoke-tested; full run still pending. |
-| Historical brute-force comparison and performance matrix | **Open:** full historical input-resolution/history reference comparison; full-node JVM/native throughput, allocations/memory, candidate vs confirmed reads, true cold-cache and concurrent-sync/tip impact. |
+| Million-filter performance measurements | Synthetic four-mode spike complete. Real historical four-mode replay harness smoke-tested; full run stopped during baseline; deferred to manual validation. |
+| Historical brute-force comparison and performance matrix | **Deferred to manual follow-up:** full historical input-resolution/history reference comparison; full-node JVM/native throughput, allocations/memory, candidate vs confirmed reads, true cold-cache and concurrent-sync/tip impact. |
 
-The remaining measurement requirements cannot be inferred from the synthetic
-spike, ten block fixtures or short live devnets. Do not close #119 or recommend
-production resource budgets until these gates have authoritative results.
+The owner accepted devnet validation for this implementation handoff. Manual
+preprod sync and any further historical/performance measurements are follow-up
+work, not blockers for this task. Production resource budgets have not been
+established by the synthetic spike or short devnet runs.

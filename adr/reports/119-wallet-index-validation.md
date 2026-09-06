@@ -235,3 +235,23 @@ The corrected million-block historical run uses
 `/private/tmp/yano-119-history-million-v2`, with progress in the adjacent `.log`.
 It is pending measurement evidence, not an acceptance pass. The requirement audit
 is tracked in `119-wallet-index-acceptance.md`.
+
+
+## Final handoff — 2026-09-06
+
+The owner accepted the completed devnet validation and deferred preprod sync to
+manual testing. The read-only preprod million-block replay was intentionally
+stopped during baseline (last logged progress: 600,000 blocks); it provides no
+completed four-mode comparison. No further automated network/performance runs
+are required for this handoff.
+
+The final scan asset serialization uses canonical lowercase hex from raw asset-name
+bytes, matching the UTxO API and preserving empty and non-UTF8 asset names.
+A focused scanner regression covers these cases. The optional historical verifier
+and independent Python raw-CBOR oracle passed a 1,000-block preprod smoke dataset,
+including transaction/output digests and exact first-seen entries; this is not a
+full historical acceptance or performance result.
+
+Final focused scanner tests (7) and the real devnet `WalletIndexLiveIT` pass
+after the asset-name byte fix. The wallet scan API tests also passed in the
+preceding targeted run. Log: `/private/tmp/yano-119-final-devnet.log`.

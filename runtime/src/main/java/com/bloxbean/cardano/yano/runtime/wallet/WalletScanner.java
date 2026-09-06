@@ -162,7 +162,11 @@ public final class WalletScanner implements WalletScan {
         if (output.getAmounts() != null) {
             for (var amount : output.getAmounts()) {
                 if ("lovelace".equals(amount.getUnit())) lovelace = lovelace.add(amount.getQuantity());
-                else assets.add(new AssetAmount(amount.getPolicyId(), amount.getAssetName(), amount.getQuantity()));
+                else {
+                    byte[] name = amount.getAssetNameBytes();
+                    assets.add(new AssetAmount(amount.getPolicyId(),
+                            name == null ? "" : HexUtil.encodeHexString(name), amount.getQuantity()));
+                }
             }
         }
         return new Utxo(new Outpoint(txHash, index), output.getAddress(), lovelace, List.copyOf(assets),

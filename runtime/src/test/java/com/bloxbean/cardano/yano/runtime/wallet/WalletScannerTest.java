@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.wallet;
 
 import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yaci.core.model.Amount;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
@@ -43,6 +44,22 @@ class WalletScannerTest {
                 .containsExactly(transactions.getLast());
         assertThat(events.getLast().type()).isEqualTo("done");
         assertThat(events.getLast().point()).isEqualTo(P2);
+    }
+
+    @Test void assetNamesUseCanonicalHexIncludingEmptyAndNonUtf8Bytes() {
+        Backend backend = new Backend();
+        TransactionOutput created = TransactionOutput.builder().address(transaction(1, false, 1).getOutputs().getFirst().getAddress()).amounts(List.of(
+                Amount.builder().unit("lovelace").quantity(BigInteger.valueOf(2_000_000)).build(),
+                Amount.builder().unit("aa".repeat(28) + "57616c6c6574313139").policyId("aa".repeat(28)).assetNameBytes(HexUtil.decodeHexString("57616c6c6574313139")).assetName("Wallet119").quantity(BigInteger.TEN).build(),
+                Amount.builder().unit("bb".repeat(28) + "ff00").policyId("bb".repeat(28)).assetNameBytes(new byte[]{(byte) 255, 0}).assetName("lossy display").quantity(BigInteger.ONE).build(),
+                Amount.builder().unit("cc".repeat(28)).policyId("cc".repeat(28)).assetNameBytes(new byte[0]).assetName("").quantity(BigInteger.TWO).build())).build();
+        TransactionBody tx = TransactionBody.builder().txHash(hash(1)).outputs(List.of(created)).inputs(Set.of()).build();
+        backend.blocks.set(0, Block.builder().transactionBodies(List.of(tx)).build());
+        var output = drain(scanner(backend, WalletChainPoint.ORIGIN, null, P1)).stream()
+                .filter(e -> e.type().equals("transaction")).findFirst().orElseThrow().outputs().getFirst();
+        assertThat(output.assets()).extracting(a -> a.policyId() + a.assetName()).containsExactly(
+                "aa".repeat(28) + "57616c6c6574313139", "bb".repeat(28) + "ff00", "cc".repeat(28));
+        assertThat(output.assets()).extracting(a -> a.quantity()).containsExactly(BigInteger.TEN, BigInteger.ONE, BigInteger.TWO);
     }
 
     @Test void falsePositiveDoesNotEmitAnUnrelatedTransaction() {

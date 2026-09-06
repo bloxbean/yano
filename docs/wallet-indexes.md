@@ -185,4 +185,9 @@ Reopening clears RocksDB caches but does not evict the OS page cache. Peak disk
 is sampled, not an exact upper bound, and logical batch bytes are distinct from
 physical disk writes. Use the raw RocksDB counters alongside those measurements.
 Representative-era replay, true cold storage, native performance, and contention
-with live sync remain separate validation requirements.
+with live sync are deferred follow-up validation; the owner accepted devnet
+validation for the implementation handoff and will test preprod sync manually.
+
+Native asset `policyId` and `assetName` values in scan outputs use lowercase hex,
+matching the UTxO API. An empty asset name is the empty string; arbitrary binary
+asset names are preserved without decoding them as display text.

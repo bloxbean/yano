@@ -196,3 +196,14 @@ tasks.register('benchmarkWalletHistory', JavaExec) {
             providers.gradleProperty('walletHistoryGenesis').getOrElse(''),
             providers.gradleProperty('walletHistoryBlocks').getOrElse('1000000')
 }
+
+// Exports a completed historical replay and real scan results for the raw-CBOR oracle.
+tasks.register('verifyWalletHistory', JavaExec) {
+    group = 'verification'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.runtime.wallet.WalletHistoricalVerifier'
+    maxHeapSize = '1g'
+    args providers.gradleProperty('walletVerifyDatabase').getOrElse(''),
+            providers.gradleProperty('walletVerifyOutput').getOrElse('')
+}
