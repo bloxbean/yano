@@ -2,6 +2,66 @@
 
 ## Latest checkpoint and CI findings
 
+Host checkpoint `01f990e85` passed the full build
+[34011971201](https://github.com/bloxbean/yano/actions/runs/34011971201)
+and all three integration/distribution/native jobs in
+[34011972777](https://github.com/bloxbean/yano/actions/runs/34011972777).
+These include the Phase 5 configuration correction below.
+
+Companion checkpoint `737fc450` passed commit-build, distribution-check and
+connector-fault-matrix in
+[34012021380](https://github.com/bloxbean/yano-x/actions/runs/34012021380).
+Effect failover reached healthy nodes and bootstrap, but timed out during
+anchor adoption. Checkpoint `728b67ee` adds bounded public-counter diagnostics
+without relaxing acceptance; its full rerun
+[34013047087](https://github.com/bloxbean/yano-x/actions/runs/34013047087)
+failed at the same anchor boundary, now with actionable diagnostics. All three
+nodes had height/root zero, empty pools and no submitted/stored application
+messages, while automatic consensus diffusion incremented received/relayed/
+duplicate/seen-ID counters. Host routing explicitly bypasses the application
+pool/history for these control messages. Companion `0d4ec822` therefore keeps
+all counter type/bounds checks but requires zero only for tip, pool, submitted
+and stored application messages (plus the zero root). Anchor identities,
+topology, adoption-height checks and no-downgrade rules remain unchanged.
+Regression fixtures reproduce the observed counters and independently reject
+each nonzero application-state guard. Full rerun
+[34013386814](https://github.com/bloxbean/yano-x/actions/runs/34013386814)
+is pending. Phase 5 is not ready to merge.
+
+The dedicated non-spending five-node experiment at
+`/Users/satya/Downloads/yano-cluster/adr037-phase5-preprod` passed its first
+synthetic-source round with independently pinned certified proofs on all five
+nodes. Exact deployed host: `0.1.0-pre14-8a0f31f7a`; companion:
+`0.1.0-adr037-737fc450`; ZIP SHA-256:
+`93230b75728590a4e3d13933d3d93c977c9d7a364014c5037709989b9704d76c`.
+Height 3 result `3894baead2208adba017a164947caf62602055486b4c2ec31327ea272899c74c`
+has median `0.501000`, three sources and common state root
+`ed96f7c8f712e9e12b42f61d2f56c4dbdd9e49548f6ada365f868ec1507b561b`.
+All 12 externally signed reports were durably journaled before signing, with
+no wake hints. Journals drained from 18730 bytes / 26 entries to zero on
+finalization; all five coordinator queues and reservations were zero.
+The package-boundary fixture needed dependency-complete manifest allow-lists,
+explicit API authentication and governed membership, all fixed in the helper.
+
+The retained seed was incompatible with the current epoch-boundary format.
+It and its five qualification copies were preserved; only the two documented
+retired account-history column families were cleaned from those new copies.
+Qualification switched to fresh `chainstate-v1` directories, without bypassing
+the compatibility marker. A held-tip graceful restart reproduced the durable
+epoch-29 nonce before cloning the stopped current-format seed to five nodes.
+The detailed local `QUALIFICATION_RUN.md` records exact paths and evidence.
+Current catch-up is below the Conway validation gate; validated-header counts
+are zero, so this baseline is **not** the completed live Preprod gate.
+Fault injection, membership transition, long cadence, resource soak and
+independent review remain pending.
+
+The report retry regression now explicitly replays 100 duplicate valid reports,
+checks no extra immediate report diffusion or journal growth, checks one report
+per periodic tick, and checks that finalization stops both retry diffusion and
+late duplicate persistence. `ObservationRuntimeTest` passed in 19s:
+`/private/tmp/adr-037-phase-5-rediffusion-regression.log`. This is a bounded unit
+regression, not sustained network resource-soak evidence.
+
 Host configuration checkpoint `8a0f31f7a6ed42047b78b0a3e7c29b15651d43e3`
 is pushed. Exact Maven Local/JVM ZIP publication and packaged catalog smoke
 passed in 1m18s (`/private/tmp/adr-037-phase-5-config-publication.log`). Remote
