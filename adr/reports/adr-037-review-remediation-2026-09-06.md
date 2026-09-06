@@ -69,7 +69,7 @@ ADR-037 defect diagnosis. L1 core, validation mode, upstream selection and
 retained Preprod data are unchanged. The previously observed native Kafka crash
 is not attributed to this framework or claimed fixed.
 
-## Validation record (in progress)
+## Validation record
 
 - Original B1 regression: failed before the fix; passed after it.
 - Initial focused observation-kernel suite: passed (100k opt-in skipped).
@@ -92,8 +92,10 @@ is not attributed to this framework or claimed fixed.
   `AppChainKeyRotationTest.stagedRotation_guards_andPersistsAcrossRestart`:
   RocksDB LOCK still held at immediate restart. It passed in the focused rerun;
   six isolated runs on untouched head `5333e4e3` also passed. Exact attribution
-  remains unproven. Full baseline comparison and final package validation are
-  still in progress; do not relabel the initial full run green.
+  remains unproven. The full baseline run separately failed the pruning
+  scheduler timing assertion (expected at least three prunes, observed one).
+  This does not establish that the different key-rotation failure is pre-existing;
+  do not relabel the initial full run green.
 - Initial full-run XML is retained at
   `/private/tmp/adr037-review-results.3Kn4hZ/runtime-full`.
 - Workflow YAML parsing, shell syntax and `git diff --check`: PASS.
@@ -101,6 +103,37 @@ is not attributed to this framework or claimed fixed.
   not a docs-only change. The historical Phase 5 report has an explicit
   independent-review correction and no verified Praos diagnosis is claimed.
 
-Do not treat this working report as a green final validation or independent
-approval of the remediation. Final commands and results will be appended once
-the current tree has been tested.
+### Final executable checkpoint
+
+Host code: `60622092b4d930ca2a7589e37640053b71218347`.
+Companion: `7fd5d21015df576fe092ee398101663ed149f97c`.
+Documentation-only closeout commits do not change these qualified binaries.
+
+- Clean host full suites: core API 310, runtime 1539 and application 339 tests;
+  **zero failures**, five runtime opt-in skips. The scale test was separately
+  enabled and passed as recorded above. A final identical Gradle invocation
+  completed successfully, reusing unchanged core/runtime outputs and rerunning
+  application tests. XML is under `/private/tmp/adr037-review-package.wFfCKr`.
+- Normal JVM packaging, plugin-catalog smoke, local Maven staging and strict
+  SHA256 manifest verification: PASS. Exact version: `0.1.0-pre14-60622092b`.
+  Staging root:
+  `/private/tmp/adr037-review-package.wFfCKr/build/consumer-inputs/60622092b4d930ca2a7589e37640053b71218347`.
+  Repository: `maven/`; ZIP: `yano-0.1.0-pre14-60622092b.zip`.
+  ZIP SHA256: `ab07b46d3d38df5ee0a694f4026f617c37a22c0851910c378aa57d5354d4074f`.
+- Companion `:sdk:client:test` (76 tests), `:state-machines:stdlib:test`
+  (78 tests), `verifyArtifactInventory`, `verifyJvmOnlyBuild` and
+  `distributionCheck`: PASS with explicit `-PyanoVersion`, `-PyanoRepository`
+  and `-PyanoJvmDist` pointing to those exact staged inputs. This includes the
+  local three-node shipment fixture, not a retained Preprod restart. All ten
+  staging-input shell contract cases passed. No remote staging run or public
+  publication of the preview version is claimed.
+- Remote [integration, JVM distribution and native qualification](https://github.com/bloxbean/yano/actions/runs/34038792751):
+  all three jobs PASS on the executable checkpoint.
+- Remote [Clean, Build](https://github.com/bloxbean/yano/actions/runs/34038791390)
+  is still running at report closeout; this report does not claim it passed.
+
+Fixes are published for re-review in [host PR #121](https://github.com/bloxbean/yano/pull/121)
+targeting the PR #113 integration branch and [companion PR #11](https://github.com/bloxbean/yano-x/pull/11)
+targeting the Phase 5 milestone. They have not been self-approved or merged.
+The fresh-chain release decision remains outstanding. Successful tests do not
+constitute independent acceptance of these review fixes.
