@@ -2030,24 +2030,38 @@ open rather than being hidden in an illustrative API or topic name.
 4. API-to-bound mapping and cross-anchor arithmetic are fixed in section 11.
 5. `CANCELLED` is audit-only in v1, as fixed in sections 6.6 and 7.6.
 
-### 24.2 Decisions required by later phases
+### 24.2 Implemented choices and deferred extensions
 
-1. Is a quorum-known availability certificate needed before recurring feeds,
-   or is honest-proposer inclusion within the bounded grace sufficient for
-   preview? It is not required for Phase 1 but must be resolved before
-   graduation.
-2. What bounded sequenced closure proof commits the complete eligible report
-   set for Phase 3 non-monotonic aggregation? Diffusion possession and an
-   anchor-derived close transition are insufficient. Its exact sequenced topic
-   must be added to the section 7.6 allowlist and observation profile before
-   implementation.
-3. Should a double-signed report proof become a committed audit input in Phase
-   3, or remain bounded local evidence? If committed, its exact topic must be
-   added to the section 7.6 allowlist and observation profile. It cannot
-   retroactively invalidate a finalized result.
-4. Which application requires elapsed-time scheduling without Cardano, and can
-   it use a source-native logical anchor instead? A separate consensus-time
-   decision is required before exposing duration-based cadence on such chains.
+These choices record the Phase 0–5 implementation scope, not independent
+review approval or graduation. The Phase 5 review must explicitly assess the
+conditional-inclusion assumption below; no test result upgrades it into an
+unconditional delivery guarantee.
+
+1. Recurring feeds use section 7.4's honest-proposer inclusion within bounded
+   grace. A quorum-known availability certificate is not part of this profile.
+   Inclusion requires timely delivery to an honest proposer with capacity;
+   a valid report set can still expire under delay, contention or censorship.
+   The five-node Phase 5 drill demonstrates one faulty proposer's omission,
+   later-view honest inclusion and automatic catch-up after healing. It does
+   not prove inclusion under arbitrary partitions or resource exhaustion.
+   Stronger availability/inclusion semantics require a separately reviewed
+   protocol and profile change, never local mandatory-prefix admission.
+2. Phase 3 implements only the certificate-monotonic complete-source policy
+   in section 17.1.1. Non-monotonic aggregation remains deferred: diffusion
+   possession and an anchor-derived close transition are insufficient. A
+   future bounded sequenced closure proof must specify its exact topic in the
+   section 7.6 allowlist and observation profile before implementation.
+3. Double-signed reports remain bounded local evidence; no committed
+   equivocation-audit topic is introduced. Such evidence cannot retroactively
+   invalidate a finalized result. A future committed audit input requires its
+   own allowlist/profile decision and resource bounds.
+4. The reference workflows use logical APP_HEIGHT cadence or the existing
+   verified-L1-slot option, not elapsed-time scheduling without Cardano.
+   A separate consensus-time decision remains required before exposing
+   duration-based cadence on chains without that L1 anchor.
+
+The retained qualification evidence and its limitations are recorded in
+[the Phase 5 report](../reports/adr-037-phase-5-qualification-2026-09-06.md).
 
 ## 25. Consequences
 

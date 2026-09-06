@@ -77,8 +77,14 @@ plan; never copy a live RocksDB directory or reset another retained cluster.
 The `yano-sync-validation` workflow governs L1 sync/restart/rollback checks.
 
 Source claims may be explicitly synthetic fixtures, but the Preprod L1 feed
-must actually be validated. Do not call synthetic already-applied test events
-Preprod. If the experiment needs anchors, settlement or any test-ADA spending,
+must come from actual network sync, not synthetic already-applied test events.
+For this ADR's qualification, retain the node's default L1 validation settings
+and one public upstream, as selected by the operator. Record the effective
+`upstreamValidationLevel`; a run reporting `none` is not evidence of full
+header/ledger validation. Do not select `praos-ledger`, change L1 core, or
+broaden the experiment into an L1 validator qualification. Check applied body
+progress, durable replay and same-epoch nonce parity under those retained settings.
+If the experiment needs anchors, settlement or any test-ADA spending,
 identify the authorized test wallet and transaction scope first. No generic
 observation test authorizes changing an existing anchor or production wallet.
 
@@ -94,7 +100,7 @@ independent trust pins. Retain evidence of:
    the same result ID; source disagreement/unavailability expiring without a fork.
 5. Membership transition between rounds, with each round keeping its opening set.
 6. Graceful and abrupt process restarts, retained signing claims, cursor/root
-   parity, validated L1 replay and unchanged epoch nonce at the same boundary.
+   parity, durable L1 replay and unchanged epoch nonce at the same boundary.
 7. Long-running cadence with absent wake hints and measured worker, memory,
    journal, pending-report and certificate-amplification bounds.
 

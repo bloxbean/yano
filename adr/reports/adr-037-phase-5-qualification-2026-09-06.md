@@ -2,6 +2,240 @@
 
 ## Latest checkpoint and CI findings
 
+Current executable candidate: host `e95817393`, companion `bd09f322`.
+The entries below are chronological evidence; older pending/failure statements
+are retained history, not the current gate status. Phases 0–4 are merged into
+the integration branches. Phase 5 is not yet merged or graduated.
+
+The current staged input artifact expires at `2026-09-13T09:22:41Z`, as
+reported by GitHub (not the workflow's requested retention). It is temporary
+qualification evidence, not a released publication. Local exact Maven/ZIP
+inputs and deployed package checksums remain recorded below.
+
+| Current gate | Status |
+| --- | --- |
+| Exact host Maven/JVM input and companion distribution | Passed locally and staged under exact full host commit |
+| Host CI build / integration / distribution / native | Passed: `34024476267`, `34024477578` |
+| Companion full CI | `34025873379` passed composite parity but failed role workflow; harness-budget experiment `34027879714` pending |
+| Packaged five-node omission, later-view inclusion and automatic heal | Round 11 passed on e958/bd09 |
+| Membership and operator recovery | Live 5→6→5, graceful upgrade and abrupt process recovery evidence retained |
+| 100k indexed-subscription recovery | Final e958 opt-in rerun passed, 9.275s |
+| Sustained cadence / resource qualification | Rounds 0–99 complete; final 88-round run, all 500 historical proofs and bounded idle-tail checks passed |
+| Independent code/protocol review | Outstanding; both PRs have no submitted reviews and report `REVIEW_REQUIRED` |
+
+### One hundred rounds and five hundred historical proofs completed
+
+The final uninterrupted packaged cadence ran rounds 12–99 from
+17:39:29 to 17:58:07 Singapore (18m38s), exiting zero. It completed 22 cases
+each of full-source success, delayed reporter, source disagreement and source
+unavailability: 44 VALUE and 44 EXPIRED outcomes, each with five verified
+certified proofs. Together with the retained baseline, membership, equivocation
+and withholding drills, rounds 0–99 are complete. This is not a claim that all
+100 rounds ran uninterrupted on one package: the earlier upgrade/crash/fault
+boundaries are recorded separately above and below.
+
+All five finished at height 994/root
+`460f2b52ebbaabc2f6392212e82774be0eb18704ecdb15fc77d9426f25d50ba5`, result
+`ca10b357ca1c0eee493ff0722625b5d09578dbd71e954d63cdd7ebf72bb6e73a`.
+The subscription completed (`activeSubscriptions=0`), with zero open rounds,
+journal bytes/entries, workers, coordinator queue/reservations and wake hints.
+All twenty directed app links remained connected.
+
+The separate read-only final audit retrieved every historical outcome from
+each of the five nodes and verified all 500 certified proof packages. Trust
+contexts came from the original genesis/profile pins and retained
+height-specific membership history, including the six-member interval; they
+were not copied from response headers. Result IDs, heights and roots matched
+the retained outcome records. Evidence: `final-100-round-proof-audit.log`,
+`final-100-round-proof-audit/round-<n>.json`, its SHA-256 inventory, and the
+retained `Adr037FinalProofAudit.java` source. It used the exact packaged SDK and
+devtools, not a sibling source dependency.
+
+Resource evidence: `cadence-rounds-12-99.jsonl`, `final-cadence-app-status.jsonl`
+and the once-per-minute `resource-samples-1.jsonl`. Two terminal snapshots
+(rounds 72–73) caught asynchronous cleanup in flight: at most 18,840 journal
+bytes / 26 entries, 15 coordinator tasks and 39,048 reserved bytes. Later
+snapshots and the final state drained completely. Do not describe every
+terminal snapshot as zero. No sampled backpressure or wake hints occurred.
+These are external-reporter rounds, not a live load test of HTTPS acquisition.
+
+At 10:01:02 UTC, 155 post-upgrade process samples covered all five nodes over
+30m12s without runtime degradation, with continued L1 progress and
+`upstreamValidationLevel=none`. Whole-process RSS peaked at 1,072,256 KiB;
+the complete app store (including retained block/proof history) reached
+19,136 KiB. Those are process/store measurements, not observation-only memory
+or journal sizes. The explicit 100k indexed-subscription test and worker/journal
+capacity regressions supply the separate scale/bounds evidence; this live run
+does not establish 100k simultaneous network acquisitions or production capacity.
+
+The sampler was deliberately stopped after cadence completion and idle follow-up:
+425 samples (85 complete five-node sets) span 08:36:35–10:01:02 UTC across the
+recorded process generations. Its configured 180-interval maximum was not run
+to exhaustion; this is not a three-hour soak claim. Final summary:
+`resource-summary-e958-final.json`, with the retained `resource-summary.jq`.
+The four honest external reporter journals each occupied 1,108 KiB; their
+retained signing history was not discarded. The deliberately equivocating fifth
+reporter's fault wires are separate from those honest journals.
+
+During round-11 partition the proxy forwarded about 96.6 MB of combined app
+protocol traffic, versus 5,052 unique signed-report bytes. This includes
+consensus/control/re-diffusion traffic and must not be advertised as a
+report-only amplification ratio. The counter grew from 114,102,310 at isolation
+to 210,698,712 at heal. Post-cadence counter samples are retained separately to
+check the idle tail; substantial fault-period traffic remains an operational
+cost even though bounded queues recovered.
+Two subsequent idle intervals added only 128,151 and 129,866 bytes of combined
+app traffic (roughly kilobytes per second); all twenty links remained connected.
+The final complete app-store sizes stayed unchanged through the idle samples,
+and all five epoch-311 nonce responses still matched the pre-upgrade value.
+This is a bounded observed recovery/tail check, not a long-term leak proof.
+
+All five qualification processes shut down gracefully at 18:07:52 Singapore;
+the proxy and resource sampler are also stopped. Final closed app stores,
+configs, honest reporter journals and public identity/membership pins have an
+additional private offline backup at `offline-final-backup.qxAxzW`. Original
+L1/app stores, keys, logs and proofs remain intact. No signing identity was
+started from a copied journal. Shutdown logs and closed HTTP ports were checked.
+
+### Remaining composite CI failure is not closed by the app-peer fix
+
+Companion `bd09f322` full run `34024811396` failed composite deployment parity
+with `ANCHOR_UNAVAILABLE`. Build, connector-fault and distribution jobs passed;
+release acceptance correctly failed. The role step did not run in this CI job;
+the separately recorded local role pass is not substituted for it.
+Log: `/private/tmp/adr-037-phase-5-bd09-companion-ci-failure.log`.
+
+All three app nodes agreed at height 6/root
+`0da74155b823b6c738d49688027e7b9a1a46b5e4c5ab4987405a4cfdd9a54c36`.
+Leader and follower 1 observed the final anchor at L1 slot 893, while follower 2
+remained at app-anchor height 5 / L1 slot 793. All three were bootstrapped with
+the same identity; follower 2 had verified and witnessed the height-6 advance.
+This differs from the previously reproduced unlisted-signing-subset candidate
+defect. The available snapshots did not include L1 progress, so they do not
+establish whether follower sync or anchor reconciliation stalled. No causal
+claim or L1 fix is inferred from them.
+
+Companion `598a6ceb` changes only the two failure-diagnostic harnesses and their
+contract test: bounded public L1 progress/peer counters and bounded recovery
+logs are captured before cleanup. Shell syntax and the contract pass. Full run
+`34025873379` uses the same e958 staging input and unchanged test timeouts.
+A local isolated composite parity run passed with the same exact prepared
+artifacts: identical artifacts, semantics and retained replay behavior across
+Compose and host JVM deployment, including restarts. Its owned temporary
+resources were cleaned up. This pass does not establish the earlier failure's
+root cause. Log `/private/tmp/adr-037-phase-5-e958-composite-local-e2e.log`.
+
+### Role CI failure exposes L1 progress stall; recovery-budget experiment
+
+Run `34025873379` completed with build, connector faults and distribution
+checks passing. Isolated effect failover and composite deployment parity also
+passed. The mandatory role workflow failed with `STORAGE_FAILED`, and release
+acceptance correctly failed. Log:
+`/private/tmp/adr-037-phase-5-598-companion-ci-failure.log`.
+
+At failure all three app nodes agreed at height 39/root
+`51dbb8ad13488142f9796d6d03c6014ad4461a3707941c08f14e3b8da37981b5`,
+with app peer links connected. Follower 1's L1 tip remained at slot 620/block 10,
+with application-progress age 623,481 ms, fresh keepalive age 8,127 ms, peer
+state `RUNNING`, and no body fetch in progress. Leader and follower 2 had
+advanced to slot 3723/block 72. Follower 1's anchor remained at app height 26;
+the other two were at 30. All used default validation `none`, and none reported
+runtime degradation. This establishes an observed follower L1 progress stall,
+not its underlying cause or a proven pre-existing core defect.
+
+Read-only inspection confirmed the existing supervisor is wired to its default
+600-second no-progress threshold and 30-second fixed-delay polling interval.
+Recovery is deferred during rollback or terminal recovery failure. The original
+600-second scenario deadline can expire before the next eligible poll plus
+recovery completes. That is a test-budget hypothesis, not a demonstrated cause
+of `STORAGE_FAILED`; the scenario also uses that code for terminal storage
+failure states.
+
+Companion `09ba6523` changes only the CI workflow, role diagnostics and contract
+test. CI scenario waits are bounded at 900 seconds; all proof, anchor and
+cross-node acceptance checks remain unchanged. Role diagnostics now retain
+bounded recovery logs on success as well as failure. Shell syntax and the
+contract passed (`/private/tmp/adr-037-phase-5-recovery-budget-contract.log`).
+Full run `34027879714` tests this hypothesis using the same exact e958 host
+inputs and unchanged runtime binaries. No L1 source, supervisor policy,
+upstream selection, producer pace or validation setting was changed. A green
+run alone would not prove that the earlier stall recovered or establish its
+cause; recovery must be identified in the retained diagnostics.
+
+At 10:36 UTC both PRs still had no submitted reviews and reported
+`REVIEW_REQUIRED`. Self-review and CI do not satisfy the independent
+code/protocol review gate. Phase 5 remains unmerged and preview remains
+disabled by default.
+
+### Fixed-package live omission and automatic healing passed
+
+Round 11 isolated node 3 while it led actual view 5 at opening height 112.
+The packaged helper recorded `partition-view.json` before signing. Node 3
+retained a ready certificate behind the TCP partition, then the exact twelve
+signed report wires were released to the honest group. Four honest nodes
+certified height 113 in view 6 before healing; result
+`63d9efcfe59a31579d7506d1c1c8fc79ecf44cd6fb25d5bfffe599cb4b11dccc`, root
+`eaf6a8ed09a150683c690e9e622c4992f333d6abbc23ee036b15bc17c39c417d`.
+After `heal`, node 3 reconnected and caught up automatically without restart,
+key replacement, journal reset, or any L1 changes. The helper exited zero with
+five independently verified matching certified proof packages. All twenty
+directed links subsequently returned; all five journals, queues, in-flight
+workers and coordinator reservations drained to zero.
+
+Evidence: `withholding-round-11.log`, and the same-named directory containing
+injection statuses, actual-view pin, retained signed wires, ready-certificate
+status, four pre-heal proofs, five post-heal proofs, heal control observation,
+and `healed-all-links-status.jsonl`. Round 10 additionally now has five pinned
+height-103 proofs in `all-five-certified-after-upgrade.json`; that remains a
+separate upgrade recovery, not an automatic-heal pass.
+
+The exact-input local role workflow passed authorization, recovery, proofs,
+retained lifecycle idempotency and one-member catch-up; its owned temporary
+containers/root were cleaned up. Log:
+`/private/tmp/adr-037-phase-5-bd09-role-local-e2e.log`.
+The final focused e958 host suite passed in 1m47s: 41 tests, zero failures,
+one optional live-HTTPS skip; the explicit 100k subscription recovery case
+passed in 9.275s without skipping. Log:
+`/private/tmp/adr-037-phase-5-e958-final-qualification-tests.log`.
+Host integration/distribution/native run `34024477578` passed.
+The long-cadence driver now continues rounds 12 through 99, with per-round
+five-node certified outcomes and resource snapshots; this soak is not yet
+claimed complete. Independent review and the remaining CI gates stay open.
+
+### Exact e958/bd09 package and retained-state recovery
+
+Host `e95817393bdd6e7c01e764ee5a955ab67706e847` published locally with
+explicit version `0.1.0-pre14-e95817393`; publication, ordinary JVM ZIP and
+packaged-plugin smoke passed in 1m18s. Companion `bd09f322` pins that exact
+version. Full local tests, artifact inventory, JVM-only and distribution checks,
+plus the prepared evidence harness passed in 3m10s. Logs are
+`/private/tmp/adr-037-phase-5-e958-exact-publication.log` and
+`/private/tmp/adr-037-phase-5-bd09-exact-package.log`.
+
+The extracted companion ZIP SHA-256 is
+`f7e57e1fe0977ab3a5a51fc33db557a03fd9f2baf352a8a6c39947908c5d23aa`;
+both manifests were checked against the exact host version. All five retained
+Preprod nodes were gracefully stopped and their closed app stores/configs
+backed up in private `offline-e958-backup.i7ujHd`. No L1 state or observation
+journal was reset. They restarted from the new package at 17:30 Singapore.
+Node 3 caught up from 102 to the other four nodes' height 103/root
+`4a8e5ce240d1fa63f4d0e2b18fc0a3b15a24468c7f3e0344fe8e38664c40967e`;
+all twenty directed proxy links connected. All five before/after epoch-311
+nonce samples match
+`177fbb46606547da6886817e8f17eb6afab4ff15da37fad6b57951c88d682763`.
+Startup restored body block 5144333 / slot 133003777.
+Evidence is retained under `upgrade-e958-before-*`, `upgrade-e958-after-*`,
+and `node-<n>/cluster-e958-proxy-1.log`. This is upgrade recovery, not a
+retroactive automatic-heal pass for round 10. A fresh round-11 omission drill
+is running against the fixed package.
+
+Staging run `34024478828` passed. Host build `34024476267` and
+integration/native run `34024477578` remain pending at this checkpoint.
+Companion full workflow `34024811396` consumes the exact successful staging
+run and full host SHA. The earlier dispatch `34024803850` used a mistyped SHA
+and was cancelled, not counted as qualification. A local isolated role E2E is
+also running with the exact prepared inputs and bounded failure diagnostics.
+
 ### Live withholding found an app-peer reconnect defect
 
 Round 10 opened at 102 on the e84/7ce package. The manual prompt selected node 3
