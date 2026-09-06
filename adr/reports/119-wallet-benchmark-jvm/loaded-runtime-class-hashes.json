@@ -1,0 +1,16 @@
+{
+  "WalletScanner.class": "e08fa526c64717303638459abe7b0f35cbb93dd69b1e2ce2795c2ce3f68aabce",
+  "CredentialFilter$BitReader.class": "10ffe6f5425fe5e45bba62a43d0d5e35b066c4046c23159934f5e9a13f5fae94",
+  "CredentialFilter.class": "1db44fa6abf4ea8553714499ec442c068b28af793598889c3aaa401ad6f709a2",
+  "WalletCredentials.class": "c1160d017a48bc71732a4ccb1a5d9110a06446296ce2849478ad77e0fbb62f12",
+  "WalletScanner$Backend.class": "11573c9b99147f9857ab479eae40aa1f4f61183030fb68c72c6346f059d4e80e",
+  "WalletIndexStore.class": "bc2ddc994f9522e58eef86650f068a15c0ea9cfd861ef71ddbf871a0d1c45c2b",
+  "WalletIndexCf.class": "e8112ebfc4d8e0ecd912b8dda942bad088292eb8cb563fd43f2bfe728fce163b",
+  "WalletIndexStore$FilterRecord.class": "2ad8b8c38052de5147c5e6e3d8d89a084ec09021ceb3d5cb78075312e5412092",
+  "WalletAddresses.class": "cf0988b49687092a3574acf48d7b30b0478f6b34bbc0a7efbc3c020c0d9a1f60",
+  "WalletIndexStore$Undo.class": "725d3d7eb44087322cb3ae3acd5c9dd0c00b852fe9c2a40b756c5f51998b49c4",
+  "WalletIndexStore$State.class": "85958b6cee0713d91b68ee8163c1cccb8acf644339ad4b68a08f3c4380c8f4b2",
+  "CredentialFilter$BitWriter.class": "4bdc980d713092d690c031b407766a1de7da5561e2262f0a4b175343822e1c08",
+  "SipHash24.class": "703a422fba2d67bce7358822e23cfdb68f859af58bf22f6f52ce7e668efee9e0",
+  "WalletIndexBenchmark.class": "acc9d2ef8655c2976cc87fd855ed3a78c66e2270e6fad78615ec39c3e08cf6b6"
+}

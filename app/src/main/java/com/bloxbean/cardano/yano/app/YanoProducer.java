@@ -181,6 +181,11 @@ public class YanoProducer {
     boolean eventsEnabled;
 
     // UTXO config
+    @ConfigProperty(name = YanoPropertyKeys.WalletIndex.FIRST_SEEN_ENABLED, defaultValue = "false")
+    boolean walletFirstSeenEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, defaultValue = "false")
+    boolean walletFiltersEnabled;
+
     @ConfigProperty(name = YanoPropertyKeys.Utxo.ENABLED, defaultValue = "true")
     boolean utxoEnabled;
     @ConfigProperty(name = YanoPropertyKeys.Utxo.PRUNE_DEPTH, defaultValue = "2160")
@@ -638,6 +643,8 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.RESOURCE_PROFILE, ResourceProfile.current().externalName());
         putRollbackRetentionGlobals(globals, rollbackRetentionSettings);
         globals.put(YanoPropertyKeys.Utxo.ENABLED, utxoEnabled);
+        globals.put(YanoPropertyKeys.WalletIndex.FIRST_SEEN_ENABLED, walletFirstSeenEnabled);
+        globals.put(YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, walletFiltersEnabled);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_DEPTH, utxoPruneDepth);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_BATCH_SIZE, utxoPruneBatchSize);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_SCHEDULE_SECONDS, utxoPruneScheduleSeconds);

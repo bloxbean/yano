@@ -305,6 +305,13 @@ yano:
     block-body-prune-depth: 0          # blocks to retain (0 = disabled)
     block-prune-batch-size: 500000     # entries per prune pass
     block-prune-interval-seconds: 300
+  # Optional wallet indexes. Complete coverage requires enabling before initial sync.
+  address-first-seen:
+    enabled: false
+  scan:
+    index:
+      enabled: false
+    max-concurrent: 2
   filters:
     utxo:
       enabled: false

@@ -1,6 +1,11 @@
 package com.bloxbean.cardano.yano.api.utxo;
 
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
+import com.bloxbean.cardano.yano.api.wallet.WalletIndexCoverage;
+import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
+import com.bloxbean.cardano.yano.api.wallet.WalletScan;
+import com.bloxbean.cardano.yano.api.wallet.WalletScanRequest;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 
@@ -13,6 +18,16 @@ import java.util.Optional;
  * Implementations live in runtime (e.g., DefaultUtxoStore).
  */
 public interface UtxoState {
+
+    default WalletScan openWalletScan(WalletScanRequest request) {
+        throw new WalletIndexUnavailableException(new WalletIndexCoverage(false, false,
+                null, null, null, "Credential-filter scan unavailable"));
+    }
+
+    default AddressFirstSeen getAddressFirstSeen(String address) {
+        throw new WalletIndexUnavailableException(new WalletIndexCoverage(false, false,
+                null, null, null, "First-seen index unavailable"));
+    }
 
     /**
      * Return current unspent UTXOs for a bech32 or hex address.

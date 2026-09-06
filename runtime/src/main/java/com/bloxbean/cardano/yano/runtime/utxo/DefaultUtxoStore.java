@@ -17,6 +17,20 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.genesis.GenesisUtxos;
+import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
+import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.wallet.WalletCredential;
+import com.bloxbean.cardano.yano.api.wallet.WalletIndexCoverage;
+import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
+import com.bloxbean.cardano.yano.api.wallet.WalletScan;
+import com.bloxbean.cardano.yano.api.wallet.WalletScanRequest;
+import com.bloxbean.cardano.yano.api.wallet.WalletScanRollbackException;
+import com.bloxbean.cardano.yano.runtime.wallet.CredentialFilter;
+import com.bloxbean.cardano.yano.runtime.wallet.WalletCredentials;
+import com.bloxbean.cardano.yano.runtime.wallet.WalletIndexStore;
+import com.bloxbean.cardano.yano.runtime.wallet.WalletScanner;
+import com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.PointerAddressId;
@@ -98,6 +112,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private UtxoProcessor processor;
     private ByronUtxoApplier byronUtxoApplier;
     private volatile StorageFilterChain filterChain;
+    private final boolean walletFirstSeenEnabled;
+    private final boolean walletFiltersEnabled;
+    private WalletIndexStore walletIndexes;
+    private long walletIndexGeneration;
     // Metrics
     private final boolean metricsEnabled;
     private ScheduledExecutorService metricsScheduler;
@@ -198,6 +216,12 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.stakeBalanceIndexEnabled = getBool(
                 config, YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, true);
         this.configuredUtxoFiltersEnabled = getBool(config, YanoPropertyKeys.UtxoFilter.ENABLED, false);
+        this.walletFirstSeenEnabled = getBool(config, YanoPropertyKeys.WalletIndex.FIRST_SEEN_ENABLED, false);
+        this.walletFiltersEnabled = getBool(config, YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, false);
+        if ((walletFirstSeenEnabled || walletFiltersEnabled) && (!enabled || configuredUtxoFiltersEnabled)) {
+            throw new IllegalArgumentException("Wallet indexes require enabled, unfiltered UTxO storage");
+        }
+        this.walletIndexes = new WalletIndexStore(rocksContext, walletFirstSeenEnabled, walletFiltersEnabled);
 
         this.processor = new DefaultUtxoProcessor(this.db);
         this.byronUtxoApplier = createByronUtxoApplier();
@@ -241,8 +265,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
      * cached handles are stale.
      */
     public synchronized void reinitialize() {
+        walletIndexGeneration++;
         var ctx = supplier.rocks();
         this.rocksContext = ctx;
+        this.walletIndexes = new WalletIndexStore(ctx, walletFirstSeenEnabled, walletFiltersEnabled);
         this.db = ctx.db();
         this.cfUnspent = ctx.handle(UtxoCfNames.UTXO_UNSPENT);
         this.cfSpent = ctx.handle(UtxoCfNames.UTXO_SPENT);
@@ -270,6 +296,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
      * A null value explicitly clears the previously installed chain.
      */
     public void setFilterChain(StorageFilterChain filterChain) {
+        if (walletIndexes.enabled() && filterChain != null && !filterChain.isEmpty()) {
+            throw new IllegalArgumentException("Wallet indexes cannot run with UTxO storage filters, including plugins");
+        }
         this.filterChain = filterChain;
         if (filterChain != null && !filterChain.isEmpty()) {
             clearStakeBalanceIndexReadyNow("UTXO storage filter chain is active");
@@ -1248,6 +1277,21 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             ConsumedAddressCapture consumedAddresses = ConsumedAddressCapture.create(
                     projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses());
             ByronUtxoApplier.ApplyResult result = byronUtxoApplier.stageBlock(event, batch, consumedAddresses);
+            if (walletIndexes.enabled()) {
+                List<String> createdAddresses = new ArrayList<>();
+                if (event.block().getBody() != null && event.block().getBody().getTxPayload() != null) {
+                    for (var payload : event.block().getBody().getTxPayload()) {
+                        var tx = payload.getTransaction();
+                        if (tx.getOutputs() != null) {
+                            tx.getOutputs().forEach(out -> createdAddresses.add(out.getAddress().getBase58Raw()));
+                        }
+                    }
+                }
+                stageWalletIndexes(batch, new WalletChainPoint(event.blockNumber(), event.slot(), event.blockHash()),
+                        createdAddresses, walletFiltersEnabled
+                                ? CredentialFilter.encode(Arrays.copyOf(HexUtil.decodeHexString(event.blockHash()), 16), List.of())
+                                : null, null);
+            }
             stageDeltaAndCursor(batch, event.blockNumber(), event.slot(), event.blockHash(),
                     result.created(), result.spent());
             if (projectionContributor.enabled()) {
@@ -1289,7 +1333,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         // Only collected when a contributor actually needs them (the address-transaction
         // section); otherwise the shared disabled sentinel costs one reference check per input.
         ConsumedAddressCapture consumedAddresses = ConsumedAddressCapture.create(
-                projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses());
+                walletFiltersEnabled || projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses());
 
         // Determine Allegra bootstrap outpoints to remove (before ctx is created).
         // These are collected here but written into the block's WriteBatch for atomicity.
@@ -1568,6 +1612,47 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 }
             }
 
+            if (walletIndexes.enabled()) {
+                List<String> createdAddresses = new ArrayList<>();
+                Set<WalletCredential> credentials = new HashSet<>();
+                String filterFailure = null;
+                for (int txIndex = 0; txIndex < txs.size(); txIndex++) {
+                    var tx = txs.get(txIndex);
+                    boolean valid = !invalidIdx.contains(txIndex);
+                    if (valid && tx.getOutputs() != null) {
+                        tx.getOutputs().forEach(out -> createdAddresses.add(out.getAddress()));
+                    } else if (!valid && tx.getCollateralReturn() != null) {
+                        createdAddresses.add(tx.getCollateralReturn().getAddress());
+                    }
+                    if (walletFiltersEnabled && filterFailure == null) {
+                        try {
+                            var inputs = valid ? tx.getInputs() : tx.getCollateralInputs();
+                            if (inputs != null) {
+                                for (var input : inputs) {
+                                    String address = consumedAddresses.view().addressOf(input.getTransactionId(), input.getIndex());
+                                    if (address == null) throw new IllegalStateException("Unresolved effective input");
+                                    WalletCredentials.address(address, credentials);
+                                }
+                            }
+                            if (valid) WalletCredentials.events(tx, credentials);
+                        } catch (RuntimeException failure) {
+                            filterFailure = "Credential extraction failed: " + failure.getMessage();
+                        }
+                    }
+                }
+                byte[] filter = null;
+                if (walletFiltersEnabled && filterFailure == null) {
+                    try {
+                        createdAddresses.forEach(address -> WalletCredentials.address(address, credentials));
+                        filter = CredentialFilter.encode(Arrays.copyOf(HexUtil.decodeHexString(blockHash), 16),
+                                credentials.stream().map(WalletCredential::filterElement).toList());
+                    } catch (RuntimeException failure) {
+                        filterFailure = "Credential extraction failed: " + failure.getMessage();
+                    }
+                }
+                stageWalletIndexes(batch, new WalletChainPoint(blockNo, slot, blockHash),
+                        createdAddresses, filter, filterFailure);
+            }
             stageDeltaAndCursor(batch, blockNo, slot, blockHash, createdRefs, spentRefs);
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             // ADR-039: stage this block's projection sections into the SAME batch as the
@@ -1674,6 +1759,127 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
                 ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array());
         batch.put(cfMeta, META_LAST_APPLIED_HASH, decodeCanonicalHash(blockHash));
+    }
+
+    private void stageWalletIndexes(WriteBatch batch, WalletChainPoint point,
+                                    List<String> addresses, byte[] filter, String filterFailure) throws RocksDBException {
+        WalletChainPoint previous = walletAppliedPoint();
+        batch.setSavePoint();
+        try {
+            if (!(supplier instanceof ArchiveChainStateCapabilities canonical)) {
+                throw new IllegalStateException("Canonical block reader unavailable for wallet indexing");
+            }
+            requireWalletCanonicalPoint(canonical, previous);
+            requireWalletCanonicalPoint(canonical, point);
+            walletIndexes.stageBlock(batch, previous, point, addresses, filter, null, filterFailure);
+            batch.popSavePoint();
+        } catch (RuntimeException failure) {
+            batch.rollbackToSavePoint();
+            log.error("Wallet indexing failed at block {}; marking coverage unavailable", point.blockNumber(), failure);
+            walletIndexes.stageUnavailable(batch, point,
+                    "Wallet index construction failed; fresh sync required");
+        }
+    }
+
+    private WalletChainPoint walletAppliedPoint() throws RocksDBException {
+        byte[] block = db.get(cfMeta, META_LAST_APPLIED_BLOCK);
+        if (block == null) return WalletChainPoint.ORIGIN;
+        byte[] slot = db.get(cfMeta, META_LAST_APPLIED_SLOT);
+        byte[] hash = db.get(cfMeta, META_LAST_APPLIED_HASH);
+        if (slot == null || hash == null) throw new IllegalStateException("Incomplete UTxO cursor");
+        return new WalletChainPoint(ByteBuffer.wrap(block).getLong(), ByteBuffer.wrap(slot).getLong(), HexUtil.encodeHexString(hash));
+    }
+
+    @Override
+    public synchronized AddressFirstSeen getAddressFirstSeen(String address) {
+        try {
+            WalletChainPoint applied = walletAppliedPoint();
+            if (!(supplier instanceof ArchiveChainStateCapabilities canonical)) {
+                throw new IllegalStateException("Canonical point reader unavailable for first-seen");
+            }
+            requireWalletCanonicalPoint(canonical, applied);
+            AddressFirstSeen result = walletIndexes.firstSeen(address, applied);
+            requireWalletCanonicalPoint(canonical, applied);
+            return result;
+        } catch (RocksDBException failure) {
+            throw new IllegalStateException("Failed to read first-seen index", failure);
+        }
+    }
+
+    @Override
+    public synchronized WalletScan openWalletScan(WalletScanRequest request) {
+        if (!(supplier instanceof ChainState chainState)
+                || !(supplier instanceof ArchiveChainStateCapabilities capabilities)) {
+            throw new IllegalStateException("Canonical block reader unavailable for wallet scan");
+        }
+        try {
+            WalletIndexCoverage coverage = walletIndexes.coverage(WalletIndexStore.FILTERS, walletAppliedPoint());
+            if (!coverage.available()) throw new WalletIndexUnavailableException(coverage);
+            WalletChainPoint end = request.to() == null ? coverage.indexedThrough() : request.to();
+            requireWalletCanonicalPoint(capabilities, request.after());
+            if (request.after().blockNumber() < coverage.from().blockNumber() - 1
+                    || request.after().blockNumber() == -1 && !coverage.completeFromOrigin()
+                    || end.blockNumber() > coverage.indexedThrough().blockNumber()
+                    || end.blockNumber() < request.after().blockNumber()) {
+                throw new IllegalArgumentException("Requested range is outside complete filter coverage");
+            }
+            requireWalletCanonicalPoint(capabilities, end);
+            long generation = walletIndexGeneration;
+            return new WalletScanner(new WalletScanner.Backend() {
+                @Override public void validate() {
+                    synchronized (DefaultUtxoStore.this) {
+                        if (generation != walletIndexGeneration) throw new WalletScanRollbackException("Scan invalidated by rollback or restore; restart from a canonical cursor");
+                        requireWalletCanonicalPoint(capabilities, end);
+                        var floor = capabilities.getEarliestRetainedBodyBlockNumber();
+                        if (end.blockNumber() >= 0 && (floor.isEmpty()
+                                || floor.getAsLong() > Math.max(1, request.after().blockNumber() + 1))) {
+                            throw new IllegalStateException("Requested scan bodies are no longer retained");
+                        }
+                    }
+                }
+
+                @Override public List<WalletIndexStore.FilterRecord> filters(long after, long to, int limit) {
+                    synchronized (DefaultUtxoStore.this) {
+                        validate();
+                        try { return walletIndexes.readFilters(after, to, limit); }
+                        catch (RocksDBException failure) { throw new IllegalStateException("Filter read failed", failure); }
+                    }
+                }
+
+                @Override public Block block(WalletChainPoint point) {
+                    synchronized (DefaultUtxoStore.this) {
+                        validate();
+                        requireWalletCanonicalPoint(capabilities, point);
+                        byte[] body = chainState.getBlock(HexUtil.decodeHexString(point.blockHash()));
+                        if (body == null) throw new IllegalStateException("Candidate block body unavailable");
+                        Block block = BlockSerializer.INSTANCE.deserialize(body);
+                        if (!point.blockHash().equals(block.getHeader().getHeaderBody().getBlockHash())) {
+                            throw new IllegalStateException("Candidate block hash mismatch");
+                        }
+                        return block;
+                    }
+                }
+
+                @Override public List<Utxo> genesis() {
+                    synchronized (DefaultUtxoStore.this) {
+                        validate();
+                        try { return walletIndexes.scanGenesis(); }
+                        catch (RocksDBException failure) { throw new IllegalStateException("Scan genesis read failed", failure); }
+                    }
+                }
+            }, request, coverage, end);
+        } catch (RocksDBException failure) {
+            throw new IllegalStateException("Wallet scan unavailable", failure);
+        }
+    }
+
+    private static void requireWalletCanonicalPoint(ArchiveChainStateCapabilities chain, WalletChainPoint point) {
+        if (point.blockNumber() == -1) return;
+        var canonical = chain.getCanonicalBlockReference(point.blockNumber());
+        if (canonical.isEmpty() || canonical.get().slot() != point.slot()
+                || !Arrays.equals(canonical.get().blockHash(), HexUtil.decodeHexString(point.blockHash()))) {
+            throw new WalletScanRollbackException("Scan cursor is no longer canonical; rollback and resume required");
+        }
     }
 
     private static byte[] decodeCanonicalHash(String blockHash) {
@@ -1880,6 +2086,20 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             long slot,
             long blockNumber,
             String blockHash) {
+        initializeFreshFullStateGenesis(shelleyFunds, networkMagic, nonAvvmBalances, avvmBalances,
+                slot, blockNumber, blockHash, shelleyFunds);
+    }
+
+    /** Producers defer live Shelley UTxO insertion, but wallet coverage includes all genesis funds. */
+    public synchronized void initializeFreshFullStateGenesis(
+            java.util.Map<String, BigInteger> shelleyFunds,
+            long networkMagic,
+            java.util.Map<String, BigInteger> nonAvvmBalances,
+            java.util.Map<String, BigInteger> avvmBalances,
+            long slot,
+            long blockNumber,
+            String blockHash,
+            java.util.Map<String, BigInteger> walletShelleyFunds) {
         if (!enabled || hasByronMainApplyCapability()) return;
         if (metadataHandle == null || byronGenesisKeysMetadataKey == null) {
             throw new IllegalStateException("Chain metadata must be wired before fresh UTXO genesis initialization");
@@ -1928,6 +2148,16 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             markStakeBalanceIndexReady(batch);
             stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
             batch.put(cfMeta, META_BYRON_MAIN_APPLY_CAPABILITY, new byte[]{1});
+            if (walletIndexes.enabled()) {
+                HashMap<String, BigInteger> byronBalances = new HashMap<>();
+                if (nonAvvmBalances != null) byronBalances.putAll(nonAvvmBalances);
+                if (avvmBalances != null) avvmBalances.forEach((address, amount) -> byronBalances.merge(address, amount, BigInteger::add));
+                var genesis = GenesisUtxos.of(walletShelleyFunds == null ? java.util.Map.of() : walletShelleyFunds,
+                        byronBalances, networkMagic, blockNumber, slot, blockHash);
+                walletIndexes.stageGenesis(batch, networkMagic + ":" + GenesisUtxos.digest(genesis),
+                        genesis.stream().map(output -> output.address()).toList());
+                walletIndexes.stageScanGenesis(batch, genesis);
+            }
             db.write(options, batch);
             invalidateContinuityCache();
             if (stakeBalanceIndexEnabled) stakeBalanceIndexReady = true;
@@ -1969,6 +2199,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             java.util.Map<String, BigInteger> nonAvvmBalances,
             java.util.Map<String, BigInteger> avvmBalances) {
         if (!enabled) return;
+        if (walletIndexes.enabled()) {
+            throw new IllegalStateException("Wallet indexes do not support in-place backfill; use a fresh sync database");
+        }
         if (chainState == null) throw new IllegalArgumentException("ChainState is required for UTXO rebuild");
         if (metadataHandle == null || byronGenesisKeysMetadataKey == null) {
             throw new IllegalStateException("Chain metadata must be wired before UTXO rebuild");
@@ -2400,7 +2633,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        walletIndexGeneration++;
         pauseMetricsSampler(Duration.ofSeconds(5));
     }
 
@@ -2697,9 +2931,12 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     retained != null ? retained.slot() : null,
                     retained != null ? retained.blockHash() : null);
             restorePointerMarkerAfterRollback(batch, retained);
+            walletIndexes.stageRollback(batch, retained == null ? WalletChainPoint.ORIGIN
+                    : new WalletChainPoint(retained.blockNumber(), retained.slot(), retained.blockHash()));
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             db.write(wo, batch);
             rememberRollbackContinuity(retained);
+            walletIndexGeneration++;
             log.info("UTXO {} rollback complete: slot={}, hash={}",
                     operation, target.slot(), target.hash());
         } catch (Exception ex) {
@@ -3105,6 +3342,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 var dec = UtxoDeltaCodec.decode(v);
                 if (dec.slot() <= deltaCutoff) {
                     batch.delete(cfDelta, k);
+                    walletIndexes.stagePruneUndo(batch, dec.blockNumber());
                     lastProcessed = k;
                     remaining--;
                     deleted++;

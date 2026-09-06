@@ -1,22 +1,19 @@
-# Wallet profile: address transaction history without epoch projections.
+# Wallet profile: discovery and transaction scans without archival history.
+# Enable before initial sync into a fresh database for complete coverage.
 # Compose after a network profile, for example:
 #   ./yano.sh start:preprod,wallet
 #   ./yano.sh start:mainnet,wallet
 
 yano:
-  history:
-    dir: ${YANO_HISTORY_DIR:./history}
-    projection:
+  scan:
+    index:
       enabled: true
-      sink: ducklake
-      # Block projections: transaction:v1, utxo-history:v1,
-      # account-events:v1, address-transaction:v1
-      sections: address-transaction:v1
-      # Epoch projections: reward:v1, epoch-stake:v1, ada-pot:v1,
-      # drep-distribution:v1, governance-proposal-status:v1
-      epoch-artifacts: none
-    archive:
-      engine: ducklake
-      finality-blocks: auto
-    rollback:
-      retention-blocks: auto
+  address-first-seen:
+    enabled: true
+  chain:
+    block-body-prune-depth: 0
+  utxo:
+    enabled: true
+  filters:
+    utxo:
+      enabled: false
