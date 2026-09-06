@@ -2,11 +2,14 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
+import com.bloxbean.cardano.yano.api.appchain.observation.CompleteSourceMedianPolicy;
 import com.bloxbean.cardano.yano.api.appchain.observation.ExactValueQuorumPolicy;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAttestation;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationDefinition;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationEvidenceVerifier;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationHashes;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationFixedPoint;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReconciliationPolicy;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReporterMode;
@@ -31,19 +34,29 @@ final class ObservationSettings {
     static final String RAW_EXACT_EVIDENCE = "raw-exact-v1";
     static final String ATTESTATION_EVIDENCE = "ed25519-attestation-v1";
     static final String EXACT_POLICY = "exact-value-quorum-v1";
+    static final String EXTERNAL_EVIDENCE = "external-reporter-claim-v1";
 
     private final ObservationProfileV1 profile;
     private final Map<String, Set<ByteKey>> attestors;
     private final Map<String, byte[]> rawSources;
+    private final Map<String, List<byte[]>> externalReporters;
+    private final Map<String, CompleteSourceMedianPolicy.Parameters> aggregates;
+    private final int maximumFaults;
 
     private ObservationSettings(ObservationProfileV1 profile,
                                 Map<String, Set<ByteKey>> attestors,
-                                Map<String, byte[]> rawSources) {
+                                Map<String, byte[]> rawSources,
+                                Map<String, List<byte[]>> externalReporters,
+                                Map<String, CompleteSourceMedianPolicy.Parameters> aggregates,
+                                int maximumFaults) {
         this.profile = profile;
         this.attestors = attestors;
         Map<String, byte[]> copied = new LinkedHashMap<>();
         rawSources.forEach((id, source) -> copied.put(id, source.clone()));
         this.rawSources = Map.copyOf(copied);
+        this.externalReporters = Map.copyOf(externalReporters);
+        this.aggregates = Map.copyOf(aggregates);
+        this.maximumFaults = maximumFaults;
     }
 
     static ObservationSettings from(AppChainConfig config, MemberGroup members) {
@@ -51,7 +64,8 @@ final class ObservationSettings {
         Objects.requireNonNull(members, "members");
         String encoded = config.pluginSettings().get(PROFILE_HEX);
         if (encoded == null || encoded.isBlank()) {
-            return new ObservationSettings(ObservationProfileV1.disabled(), Map.of(), Map.of());
+            return new ObservationSettings(ObservationProfileV1.disabled(), Map.of(), Map.of(),
+                    Map.of(), Map.of(), 0);
         }
         final ObservationProfileV1 profile;
         try {
@@ -90,7 +104,40 @@ final class ObservationSettings {
         byte[] reporterSetDigest = ObservationHashes.reporterSetDigest(reporterKeys);
         Map<String, Set<ByteKey>> attestors = new LinkedHashMap<>();
         Map<String, byte[]> rawSources = new LinkedHashMap<>();
+        Map<String, List<byte[]>> externalReporters = new LinkedHashMap<>();
+        Map<String, CompleteSourceMedianPolicy.Parameters> aggregates = new LinkedHashMap<>();
         for (ObservationDefinition definition : profile.definitions()) {
+            if (definition.reporterMode() == ObservationReporterMode.EXTERNAL_REPORTERS) {
+                List<byte[]> keys = parseAttestors(config.pluginSettings().get(
+                        "observations.reporters." + definition.id()));
+                String policyHex = config.pluginSettings().get("observations.policy." + definition.id());
+                if (policyHex == null || policyHex.length() > 2 * (62 + 64 * CompleteSourceMedianPolicy.MAX_SOURCES)) {
+                    throw new IllegalArgumentException("Missing or oversized complete-source policy parameters");
+                }
+                CompleteSourceMedianPolicy.Parameters parameters = CompleteSourceMedianPolicy.Parameters.decode(
+                        HexUtil.decodeHexString(policyHex));
+                int count = keys.size();
+                int reports = definition.reportThreshold();
+                int faults = definition.reporterFaultBound();
+                int matrix = Math.multiplyExact(count, parameters.sources().size());
+                if (profile.roundRulesVersion() != 2 || count > 32
+                        || 2L * reports - count <= faults || reports > count - faults
+                        || !Arrays.equals(definition.reporterSetDigest(), ObservationHashes.reporterSetDigest(keys))
+                        || !CompleteSourceMedianPolicy.ID.equals(definition.reconciliationPolicyId())
+                        || !EXTERNAL_EVIDENCE.equals(definition.evidenceVerifierId())
+                        || !ObservationProviders.EXTERNAL_REPORTERS.equals(definition.acquisitionAdapterId())
+                        || !definition.certificateLocalUniqueness()
+                        || !Arrays.equals(parameters.digest(), definition.policyParametersDigest())
+                        || !Arrays.equals(parameters.sourceSetDigest(), definition.sourceConfigurationDigest())
+                        || definition.sourceThreshold() != parameters.sources().size()
+                        || matrix > definition.maxReports() || matrix > profile.maxReportsPerRound()
+                        || definition.maxValueBytes() < ObservationFixedPoint.ENCODED_BYTES) {
+                    throw new IllegalArgumentException("Invalid complete-source external reporter profile");
+                }
+                externalReporters.put(definition.id(), keys);
+                aggregates.put(definition.id(), parameters);
+                continue;
+            }
             if (definition.reporterMode() != ObservationReporterMode.ACTIVE_MEMBERS
                     || definition.reporterFaultBound() != maximumFaults
                     || (profile.roundRulesVersion() == 1
@@ -134,7 +181,8 @@ final class ObservationSettings {
             keys.forEach(key -> allowed.add(new ByteKey(key)));
             attestors.put(definition.id(), Set.copyOf(allowed));
         }
-        ObservationSettings settings = new ObservationSettings(profile, Map.copyOf(attestors), rawSources);
+        ObservationSettings settings = new ObservationSettings(profile, Map.copyOf(attestors), rawSources,
+                externalReporters, aggregates, maximumFaults);
         for (MemberGroup.Epoch epoch : members.history()) {
             if (!settings.admitsMembership(epoch.members(), epoch.threshold())) {
                 throw new IllegalArgumentException("Retained membership is incompatible with the observation profile");
@@ -146,8 +194,10 @@ final class ObservationSettings {
     boolean admitsMembership(Set<String> memberKeys, int finalityQuorum) {
         if (!profile.enabled()) return true;
         int count = memberKeys.size();
+        if (2L * finalityQuorum - count <= maximumFaults || finalityQuorum > count - maximumFaults) return false;
         List<byte[]> keys = memberKeys.stream().map(HexUtil::decodeHexString).toList();
         for (ObservationDefinition definition : profile.definitions()) {
+            if (definition.reporterMode() == ObservationReporterMode.EXTERNAL_REPORTERS) continue;
             int faults = definition.reporterFaultBound();
             if (2L * finalityQuorum - count <= faults || finalityQuorum > count - faults) return false;
             int reports = Math.max(definition.reportThreshold(), finalityQuorum);
@@ -168,8 +218,32 @@ final class ObservationSettings {
     ObservationKernel.VerifierRegistry verifierRegistry() {
         return new ObservationKernel.VerifierRegistry() {
             @Override
+            public List<byte[]> reporters(ObservationDefinition definition, AppChainMembershipEpoch epoch) {
+                return definition.reporterMode() == ObservationReporterMode.EXTERNAL_REPORTERS
+                        ? externalReporters.get(definition.id()).stream().map(byte[]::clone).toList()
+                        : ObservationKernel.VerifierRegistry.super.reporters(definition, epoch);
+            }
+
+            @Override
             public ObservationEvidenceVerifier evidenceVerifier(ObservationDefinition definition) {
                 return switch (definition.evidenceVerifierId()) {
+                    case EXTERNAL_EVIDENCE -> (ignoredDefinition, round, report) -> {
+                        CompleteSourceMedianPolicy.Parameters parameters = aggregates.get(definition.id());
+                        if (report.evidence().length != 0 || report.sourceVersion().length == 0
+                                || report.freshnessAnchorType() != round.anchorType().code()
+                                || report.freshnessAnchor() < round.dueAnchor()
+                                || report.freshnessAnchor() > round.reportDeadlineAnchor()
+                                || parameters.sources().stream().noneMatch(source ->
+                                Arrays.equals(source.id(), report.sourceId()))) return false;
+                        try {
+                            ObservationFixedPoint value = ObservationFixedPoint.decode(report.value());
+                            return value.scale() == parameters.scale()
+                                    && value.units().compareTo(parameters.minimumValue()) >= 0
+                                    && value.units().compareTo(parameters.maximumValue()) <= 0;
+                        } catch (IllegalArgumentException invalid) {
+                            return false;
+                        }
+                    };
                     case RAW_EXACT_EVIDENCE -> (ignoredDefinition, round, report) ->
                             report.evidence().length == 0 && report.sourceVersion().length > 0
                                     && report.freshnessAnchorType() == round.anchorType().code()
@@ -189,6 +263,9 @@ final class ObservationSettings {
 
             @Override
             public ObservationReconciliationPolicy policy(ObservationDefinition definition) {
+                if (CompleteSourceMedianPolicy.ID.equals(definition.reconciliationPolicyId())) {
+                    return new CompleteSourceMedianPolicy(aggregates.get(definition.id()));
+                }
                 if (!EXACT_POLICY.equals(definition.reconciliationPolicyId())) {
                     throw new IllegalArgumentException(
                             "Unknown observation reconciliation policy: "
@@ -197,6 +274,10 @@ final class ObservationSettings {
                 return new ExactValueQuorumPolicy();
             }
         };
+    }
+
+    CompleteSourceMedianPolicy.Parameters aggregate(ObservationDefinition definition) {
+        return aggregates.get(definition.id());
     }
 
     private boolean verifyAttestation(ObservationDefinition definition,

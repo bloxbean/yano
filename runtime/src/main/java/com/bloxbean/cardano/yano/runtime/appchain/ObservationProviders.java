@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationDefinition;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProvider;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReporterMode;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 
 import java.util.LinkedHashMap;
@@ -14,6 +15,7 @@ import java.util.Objects;
 final class ObservationProviders implements AutoCloseable {
     static final String HTTPS_ATTESTED = "https-attested-v1";
     static final String HTTPS_EXACT = "https-exact-v1";
+    static final String EXTERNAL_REPORTERS = "external-reporters-v1";
 
     private final Map<String, ObservationProvider> providers;
 
@@ -41,6 +43,12 @@ final class ObservationProviders implements AutoCloseable {
         Map<String, ObservationProvider> resolved = new LinkedHashMap<>();
         try {
             for (ObservationDefinition definition : profile.definitions()) {
+                if (definition.reporterMode() == ObservationReporterMode.EXTERNAL_REPORTERS) {
+                    if (!EXTERNAL_REPORTERS.equals(definition.acquisitionAdapterId())) {
+                        throw new IllegalArgumentException("External reporters require the external ingress adapter");
+                    }
+                    continue; // Gateways do not acquire or sign on behalf of external keys.
+                }
                 String prefix = "observations.providers." + definition.id() + ".";
                 Map<String, String> settings = new LinkedHashMap<>();
                 pluginSettings.forEach((key, value) -> {
