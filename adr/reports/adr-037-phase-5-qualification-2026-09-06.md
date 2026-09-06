@@ -2,6 +2,56 @@
 
 ## Latest checkpoint and CI findings
 
+### Live qualification blocked at the Praos checkpoint
+
+All five nodes rejected the first configured validation header, slot
+`69638426`, block `2651408`, at `vrf-proof` with
+`Praos VRF proof does not verify`. Each has zero accepted validated headers and
+two or three rejections. The durable body tips remained around slots
+`68386307`–`68453182`, with body nonce epoch 162. Reconnection did not repair
+progress. Under the sync-validation workflow this is a qualification blocker,
+not an acceptable source-fault result. Validation was not disabled or weakened.
+
+Source inspection identifies a likely prerequisite sync defect:
+`RuntimeNode.epochNonceForHeaderValidation(slot)` directly calls the body-owned
+`EpochNonceState.previewEpochNonceForSlot(slot)`. For every future epoch that
+preview combines the current candidate and previous-hash nonces only once; it
+does not reconstruct intervening epochs. Pipelined headers may lead bodies by
+50,000 blocks. The rejected header is several epochs ahead of the body state.
+This is a strong causal hypothesis, not yet a reproduced/fixed cryptographic
+verification result. Resolving it requires separately scoped Cardano sync and
+nonce validation work, not an observation certificate acceptance change.
+
+The cadence driver was stopped before further fault traffic. Four nodes had
+opened round 4 at app height 42 and node 2 remained at 41; all height-42 roots
+matched `6b88a150b82aa3a616614afe9cd1f6119261eac2cb2c1d9fc37c82dc643ac763`.
+Round 4 has no submitted driver reports and no claimed successful outcome.
+All five exact owned JVM PIDs were gracefully stopped at 13:57 Singapore time;
+shutdown completed normally. Stores, keys, logs and partial evidence remain
+under `/Users/satya/Downloads/yano-cluster/adr037-phase5-preprod`.
+Public snapshots are `validation-failure-node-<n>-status.json`, matching nonce
+files, and `validation-failure-app-status.jsonl`. Do not reset or silently resume
+this partly opened round through the pristine cadence entry point.
+
+Host framing checkpoint `bf0a1d38f` published locally with catalog smoke in
+2m1s and staged remotely in run `34015011910`. Companion `a12fcb89` adds an
+explicit one-round adversarial fifth-reporter mode (two conflicting signed
+claims, retained public wire evidence, four untouched honest journals). Its
+focused tests passed; the full exact-pair tests/inventory/JVM-only/distribution
+build passed in 3m4s. Log:
+`/private/tmp/adr-037-phase-5-framing-companion-package.log`.
+Full remote companion run `34015241678` is pending. The adversarial mode has
+**not** been exercised live because the sync blocker was discovered first.
+Neither this new host nor the new companion has replaced the retained live
+package. Phase 5 remains incomplete and unmerged.
+
+Companion rerun `34014598668` subsequently passed build, distribution, connector
+faults, effect failover and composite deployment parity, and entered role-workflow
+E2E. The earlier missing-follower-anchor run remains a recorded intermittent
+failure; a passing rerun is not a demonstrated repair. Final framing host run
+`34015010885` has passed integration/distribution; native and the separate build
+run `34015009604` remain in progress at this checkpoint.
+
 ### HTTPS framing and scheduling follow-up
 
 The IPv6 transport host is now unbracketed for DNS/TLS, while the HTTP Host
