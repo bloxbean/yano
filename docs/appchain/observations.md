@@ -1,7 +1,7 @@
 # Certified observations (preview)
 
 Generic observations are disabled by default. This page describes ADR-037's
-one-shot and recurring exact-value implementation and the in-progress Phase 3
+one-shot and recurring exact-value implementation and the Phase 3
 complete-source aggregation profile. Graduation remains a later milestone.
 Height cadence measures chain progress, not minutes.
 

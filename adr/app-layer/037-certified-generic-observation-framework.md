@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phases 0–2 implemented; later milestones remain in progress.
+Accepted — Phases 0–3 implemented; later milestones remain in progress.
 
 The architecture shipped in a separate review before implementation. The
 number is local to the `adr/app-layer` series. Root-level ADR numbers are a
@@ -1534,15 +1534,17 @@ Yano X governed feed state
 
 Before Phase 3 implementation, the Yano X oracle owners must revise ADR-012 in
 the Yano X repository to consume this framework, remove its
-ordinary-app-message report/round implementation plan, and specify how its
-latest-assertion selection becomes closure-certified. Until that revision,
+ordinary-app-message report/round implementation plan, and replace its
+latest-assertion selection with a proven unique-result policy (or separately
+closure-certify that behavior). Until that revision,
 this section is the controlling boundary where the two proposed ADRs overlap;
 ADR-012 remains a proposal and is not silently changed by this Yano ADR.
 A cross-repository tracking issue must be linked from both ADRs before Phase 3
 implementation begins.
 
 The coordinated migration is tracked in
-[Yano X #5](https://github.com/bloxbean/yano-x/issues/5). Its companion ADR-012
+[Yano X #5](https://github.com/bloxbean/yano-x/issues/5) and
+[companion PR #6](https://github.com/bloxbean/yano-x/pull/6). Its ADR-012
 revision replaces application-owned report/round processing with host
 subscriptions, external reports and finalized-result callbacks. The initial
 policy migration is explicit cancel-and-re-watch, preserving old pinned round
