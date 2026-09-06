@@ -16,7 +16,8 @@ public class WalletIndexDevnetProfile extends DevnetTestProfile {
     static final String MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     private static boolean prepared;
 
-    static Account account(int index) { return new Account(Networks.testnet(), MNEMONIC, index); }
+    static Account account(int index) { return new Account(Networks.testnet(), index == 0 ? MNEMONIC
+            : "legal winner thank year wave sausage worth useful legal winner thank yellow", 0); }
 
     @Override public synchronized Map<String, String> getConfigOverrides() {
         Map<String, String> result = new HashMap<>(super.getConfigOverrides());

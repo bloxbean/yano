@@ -150,6 +150,21 @@ class WalletIndexRuntimeTest {
         assertThatThrownBy(() -> store.getAddressFirstSeen(B)).isInstanceOf(IllegalStateException.class);
     }
 
+    @Test void corruptWalletUndoCannotPreventCanonicalUtxoRollback() throws Exception {
+        apply(1, List.of(tx(1, List.of(), List.of(output(A)))), List.of());
+        apply(2, List.of(tx(2, List.of(input(1)), List.of(output(B)))), List.of());
+        byte[] key = ByteBuffer.allocate(9).put(WalletIndexStore.FIRST_SEEN).putLong(2).array();
+        chain.rocks().db().put(chain.rocks().handle(WalletIndexCf.UNDO), key, new byte[]{0});
+        store.rollbackToSlot(10);
+        assertThat(store.getUtxosByAddress(A, 1, 10)).hasSize(1);
+        assertThat(store.getUtxosByAddress(B, 1, 10)).isEmpty();
+        assertThatThrownBy(() -> store.getAddressFirstSeen(A)).isInstanceOf(WalletIndexUnavailableException.class);
+        assertThat(chain.rocks().db().get(chain.rocks().handle(WalletIndexCf.FILTERS), number(2))).isNull();
+        apply(2, List.of(tx(3, List.of(input(1)), List.of(output(C)))), List.of());
+        assertThat(store.getUtxosByAddress(C, 1, 10)).hasSize(1);
+        assertThatThrownBy(() -> store.getAddressFirstSeen(C)).isInstanceOf(WalletIndexUnavailableException.class);
+    }
+
     private boolean filterMatches(int block, int payment) throws Exception {
         byte[] stored = chain.rocks().db().get(chain.rocks().handle(WalletIndexCf.FILTERS), number(block));
         byte[] element = new WalletCredential("payment", "key", "%02x".formatted(payment).repeat(28)).filterElement();

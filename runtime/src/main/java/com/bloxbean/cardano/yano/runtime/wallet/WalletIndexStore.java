@@ -204,44 +204,57 @@ public final class WalletIndexStore {
     public void stageRollback(WriteBatch batch, WalletChainPoint target) throws RocksDBException {
         if (meta == null) return;
         for (byte feature : new byte[]{FIRST_SEEN, FILTERS}) {
-            byte[] stateBytes = db.get(meta, new byte[]{feature});
-            if (stateBytes == null) continue;
-            State current = decodeState(stateBytes);
-            if (current.through.blockNumber() <= target.blockNumber()) continue;
-            boolean found = false;
-            boolean missingUndo = false;
-            try (ReadOptions options = new ReadOptions().setFillCache(false);
-                 RocksIterator it = db.newIterator(undo, options)) {
-                it.seekForPrev(undoKey(feature, Long.MAX_VALUE));
-                while (it.isValid() && it.key()[0] == feature) {
-                    long block = ByteBuffer.wrap(it.key(), 1, 8).getLong();
-                    if (block <= target.blockNumber()) break;
-                    if (stateBytes == null || decodeState(stateBytes).through.blockNumber() != block) {
-                        missingUndo = true;
-                        break;
-                    }
-                    found = true;
-                    Undo entry = decodeUndo(it.value());
-                    for (byte[] address : entry.inserted) batch.delete(firstSeen, address);
-                    if (feature == FILTERS) batch.delete(filters, number(block));
-                    stateBytes = entry.previous;
-                    batch.delete(undo, it.key());
-                    it.prev();
-                }
-                it.status();
+            try {
+                stageFeatureRollback(batch, target, feature);
+            } catch (IllegalStateException invalidDerivedRecord) {
+                // Malformed derived records must not prevent the canonical UTxO rollback.
+                // Partial staged cleanup is safe because this feature is now unavailable.
+                batch.put(meta, new byte[]{feature}, encodeState(new State(false, target, target,
+                        "unknown", "Wallet rollback metadata or undo invalid; fresh sync required")));
             }
-            State restored = stateBytes == null ? null : decodeState(stateBytes);
-            if (missingUndo || !found || restored != null && restored.through.blockNumber() > target.blockNumber()) {
-                restored = new State(false, current.from, target, current.identity,
-                        "Wallet rollback undo unavailable; fresh sync required");
-            } else if (restored != null && restored.through.blockNumber() == target.blockNumber()
-                    && !restored.through.equals(target)) {
-                restored = new State(false, current.from, target, current.identity,
-                        "Wallet rollback hash mismatch; fresh sync required");
-            }
-            if (restored == null) batch.delete(meta, new byte[]{feature});
-            else batch.put(meta, new byte[]{feature}, encodeState(restored));
         }
+    }
+
+    private void stageFeatureRollback(WriteBatch batch, WalletChainPoint target, byte feature)
+            throws RocksDBException {
+        byte[] stateBytes = db.get(meta, new byte[]{feature});
+        if (stateBytes == null) return;
+        State current = decodeState(stateBytes);
+        if (current.through.blockNumber() <= target.blockNumber()) return;
+        boolean found = false;
+        boolean missingUndo = false;
+        try (ReadOptions options = new ReadOptions().setFillCache(false);
+             RocksIterator it = db.newIterator(undo, options)) {
+            it.seekForPrev(undoKey(feature, Long.MAX_VALUE));
+            while (it.isValid() && it.key().length > 0 && it.key()[0] == feature) {
+                if (it.key().length != 9) throw new IllegalStateException("Invalid wallet undo key");
+                long block = ByteBuffer.wrap(it.key(), 1, 8).getLong();
+                if (block <= target.blockNumber()) break;
+                if (stateBytes == null || decodeState(stateBytes).through.blockNumber() != block) {
+                    missingUndo = true;
+                    break;
+                }
+                found = true;
+                Undo entry = decodeUndo(it.value());
+                for (byte[] address : entry.inserted) batch.delete(firstSeen, address);
+                if (feature == FILTERS) batch.delete(filters, number(block));
+                stateBytes = entry.previous;
+                batch.delete(undo, it.key());
+                it.prev();
+            }
+            it.status();
+        }
+        State restored = stateBytes == null ? null : decodeState(stateBytes);
+        if (missingUndo || !found || restored != null && restored.through.blockNumber() > target.blockNumber()) {
+            restored = new State(false, current.from, target, current.identity,
+                    "Wallet rollback undo unavailable; fresh sync required");
+        } else if (restored != null && restored.through.blockNumber() == target.blockNumber()
+                && !restored.through.equals(target)) {
+            restored = new State(false, current.from, target, current.identity,
+                    "Wallet rollback hash mismatch; fresh sync required");
+        }
+        if (restored == null) batch.delete(meta, new byte[]{feature});
+        else batch.put(meta, new byte[]{feature}, encodeState(restored));
     }
 
     public WalletIndexCoverage coverage(byte feature, WalletChainPoint applied) throws RocksDBException {

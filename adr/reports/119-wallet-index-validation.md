@@ -99,7 +99,7 @@ passed: 38 runtime tests and 8 API tests, zero failures/errors. Log retained at
 
 ## Outstanding gates
 
-Native crash/rollback and performance matrix; actual wallet-to-node incoming/outgoing and assets across wallet restart/reorg; representative serialized-era extraction fixtures; pruning and all runtime rollback entry points; representative-era brute-force comparison; historical JVM/native sync, true cold-cache and concurrent-sync measurements beyond the completed synthetic million-filter spike. The wallet profile now enables both indexes, retains block bodies and complete UTxO processing, and removes its archival-history settings. Production recommendations remain gated on the outstanding measurements. Draft PRs preserve these outstanding acceptance gates; issue 119 is not complete.
+Historical JVM/native sync throughput, true cold-cache and concurrent-sync measurements beyond the completed synthetic million-filter spike; pruning and all runtime rollback entry points; full historical input-resolution/scan comparison beyond the non-contiguous serialized output/event fixtures. JVM/native wallet-to-node restart, crash, assets, outgoing-only history and snapshot reorg now pass as detailed below. The wallet profile now enables both indexes, retains block bodies and complete UTxO processing, and removes its archival-history settings. Production recommendations remain gated on the outstanding measurements. Draft PRs preserve these outstanding acceptance gates; issue 119 is not complete.
 
 Final wallet verification: 90 tests discovered, 86 passed and 4 opt-in tests skipped; wallet app compilation passed. Final node targeted verification: 38 runtime and 8 API tests passed. Cursor review moved canonical validation before coverage-range rejection so a cursor above a restored tip receives the rollback response (409).
 
@@ -117,3 +117,39 @@ outgoing sweep. Earlier test-harness attempts failed on disabled producer networ
 reused snapshot names, and transaction builder fee/change configuration; these were
 fixed before this successful run. This test exercises the node HTTP API through
 CCL, not the actual wallet application's live persistence/restart path.
+
+## Wallet-to-node recovery and stronger fixture review
+
+The companion wallet PR now contains `WalletIndexLiveTest`. It launches only its
+own temporary devnet and talks through the actual `YanoNodeClient` and
+`YanoNodePorts`, recreating wallet objects from persisted history between queries.
+It checks genesis discovery, native assets, outgoing-only history and fully spent
+first-seen, graceful node restart, forced process termination/restart, snapshot
+reorg removing orphaned history/outpoints, and replacement transactions. Both JVM
+and native runs passed on 2026-09-06. Each owned node was stopped after the test.
+
+- JVM evidence: `/var/folders/9x/p4g24d210kq8hngwdmh5mwrm0000gn/T/yano-wallet-119-live-16518682916464853004`
+- Native evidence: `/var/folders/9x/p4g24d210kq8hngwdmh5mwrm0000gn/T/yano-wallet-119-live-15444983075084036656`
+- Logs: `/private/tmp/yano-119-wallet-live-jvm.log`, `/private/tmp/yano-119-wallet-live-native.log`
+- Native rebuild: `/private/tmp/yano-119-native-wallet-build.log`; includes the corrupt-undo rollback safeguard below.
+
+Review found that the earlier test's `Account(..., index)` varied payment keys but
+retained the same stake credential. The old stake-query test therefore did not
+prove outgoing-only discovery independently of the recipient's output. Both live
+tests now use separate public test mnemonics/stake credentials. The node-only test
+passed again with this correction (`/private/tmp/yano-119-distinct-stake-live.log`).
+
+Malformed wallet undo now makes only that feature unavailable, with a fresh-sync
+reason, while allowing the canonical UTxO rollback to commit. A regression corrupts
+an undo record, checks restored spent inputs and removed orphan outputs, verifies
+the independent filter rollback, and applies a replacement block without reviving
+the invalid first-seen index.
+
+`WalletSerializedEraTest` passes against ten upstream Pallas CBOR fixtures from
+Shelley, Allegra, Mary, Alonzo, Babbage and Conway. Source provenance, byte digests,
+license and a Python raw-CBOR reference walker are tracked under
+`runtime/src/test/resources/wallet/eras`. Exact per-transaction output/event
+credential counts and digests match, including decoded withdrawals, certificates,
+pool owners/reward accounts, MIR recipients and proposal return accounts; every
+expected credential matches its filter. These non-contiguous fixtures lack prior
+UTxOs and do not establish full historical input resolution or scan throughput.
