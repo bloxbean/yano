@@ -272,7 +272,7 @@ final class ObservationKernel {
                         certificate.subscriptionId(), certificate.roundNumber(),
                         certificate.definitionDigest(), ObservationResultStatus.VALUE,
                         certificate.output(), valueDigest, certificate.digest(),
-                        distinctSourceCount(certificate.reports()), certificate.reports().size(),
+                        distinctSourceCount(certificate.reports()), distinctReporterCount(certificate.reports()),
                         freshnessSummary(certificate.reports()), block.height());
                 resultPuts.put(new IdKey(result.resultId()), result);
                 state.put(ObservationKeys.result(result.resultId()), result.encode());
@@ -733,6 +733,10 @@ final class ObservationKernel {
 
     private static int distinctSourceCount(List<ObservationReport> reports) {
         return (int) reports.stream().map(report -> new IdKey(report.sourceId())).distinct().count();
+    }
+
+    private static int distinctReporterCount(List<ObservationReport> reports) {
+        return (int) reports.stream().map(report -> new IdKey(report.reporterPublicKey())).distinct().count();
     }
 
     private static byte[] freshnessSummary(List<ObservationReport> reports) {

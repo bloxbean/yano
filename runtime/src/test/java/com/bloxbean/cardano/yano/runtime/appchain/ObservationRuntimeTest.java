@@ -21,6 +21,7 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRound;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificate;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificateVerifier;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationDefinition;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationHashes;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationIntent;
@@ -39,6 +40,7 @@ import java.math.BigInteger;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -114,6 +116,40 @@ class ObservationRuntimeTest {
                 assertThat(ObservationFixedPoint.decode(certificate.output()).units())
                         .isEqualTo(BigInteger.valueOf(501000));
                 assertThat(runtime.status().get("acquisitionAttempts")).isZero();
+                List<ObservationReport> alternateReports = new ArrayList<>();
+                for (int source = 0; source < 3; source++) {
+                    for (int reporter = 1; reporter < 5; reporter++) {
+                        AppMessageSigner signer = reporters.get(reporter);
+                        ObservationReport unsigned = externalClaim(round, profile, consensus, signer, source,
+                                new byte[64]);
+                        alternateReports.add(externalClaim(round, profile, consensus, signer, source,
+                                signer.sign(unsigned.signingDigest())));
+                    }
+                }
+                ObservationCertificate alternate = replaceReports(certificate, alternateReports);
+                var registry = settings.verifierRegistry();
+                assertThat(ObservationCertificateVerifier.verify(definition, round, alternate, profile,
+                        TestStateCommitments.MPF.genesisId(), CHAIN_ID,
+                        AppChainConsensusProfileCommitment.digest(consensus), keys,
+                        (key, digest, signature) -> AppMessageSigner.verify(signature, digest, key),
+                        registry.evidenceVerifier(definition), registry.policy(definition))).isTrue();
+                assertThat(alternate.resultId()).isEqualTo(certificate.resultId());
+                assertThat(alternate.digest()).isNotEqualTo(certificate.digest());
+                // Reporter 4 equivocates for source 0. A valid signature does not create a second source quorum.
+                AppMessageSigner faulty = reporters.get(4);
+                ObservationReport conflicting = externalClaim(round, profile, consensus, faulty, 0,
+                        900000, new byte[64]);
+                ObservationReport signedConflict = externalClaim(round, profile, consensus, faulty, 0,
+                        900000, faulty.sign(conflicting.signingDigest()));
+                alternateReports.removeIf(report -> Arrays.equals(report.sourceId(), filled(0))
+                        && Arrays.equals(report.reporterPublicKey(), faulty.publicKey()));
+                alternateReports.add(signedConflict);
+                assertThat(ObservationCertificateVerifier.verify(definition, round,
+                        replaceReports(certificate, alternateReports), profile,
+                        TestStateCommitments.MPF.genesisId(), CHAIN_ID,
+                        AppChainConsensusProfileCommitment.digest(consensus), keys,
+                        (key, digest, signature) -> AppMessageSigner.verify(signature, digest, key),
+                        registry.evidenceVerifier(definition), registry.policy(definition))).isFalse();
                 apply(ledger, kernel, machine, 3, List.of(message(ObservationTopics.RESULT, certificate.encode(), 1)));
                 assertThat(ledger.observationReader().activeCount()).isZero();
                 ledger.verifyObservationIndexes();
@@ -124,11 +160,28 @@ class ObservationRuntimeTest {
     private static ObservationReport externalClaim(ObservationRound round, ObservationProfileV1 profile,
                                                    AppChainConsensusProfile consensus, AppMessageSigner reporter,
                                                    int source, byte[] signature) {
+        return externalClaim(round, profile, consensus, reporter, source, 500000 + source * 1000L, signature);
+    }
+
+    private static ObservationCertificate replaceReports(ObservationCertificate original,
+                                                           List<ObservationReport> reports) {
+        return new ObservationCertificate(1, original.subscriptionId(), original.roundNumber(),
+                original.membershipDigest(), original.definitionDigest(), original.policyDigest(),
+                original.sourceSetDigest(), reports.stream().sorted((left, right) -> {
+                    int source = Arrays.compareUnsigned(left.sourceId(), right.sourceId());
+                    return source != 0 ? source : Arrays.compareUnsigned(left.reporterPublicKey(), right.reporterPublicKey());
+                }).toList(),
+                original.output(), original.policyTrace(), original.resultId());
+    }
+
+    private static ObservationReport externalClaim(ObservationRound round, ObservationProfileV1 profile,
+                                                   AppChainConsensusProfile consensus, AppMessageSigner reporter,
+                                                   int source, long units, byte[] signature) {
         return new ObservationReport(1, TestStateCommitments.MPF.genesisId(), CHAIN_ID,
                 AppChainConsensusProfileCommitment.digest(consensus), profile.digest(), round.definitionDigest(),
                 round.subscriptionId(), round.roundNumber(), round.membershipDigest(), round.reporterSetDigest(),
                 reporter.publicKey(), filled(source), new ObservationFixedPoint(
-                BigInteger.valueOf(500000 + source * 1000L), 6).encode(), new byte[0], new byte[]{1},
+                BigInteger.valueOf(units), 6).encode(), new byte[0], new byte[]{1},
                 round.anchorType().code(), round.dueAnchor(), signature);
     }
 

@@ -14,6 +14,31 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CompleteSourceMedianPolicyTest {
     @Test
+    void extremeSignedValuesUseExactBoundedIntermediateArithmetic() {
+        BigInteger minimum = BigInteger.ONE.shiftLeft(127).negate();
+        BigInteger maximum = BigInteger.ONE.shiftLeft(127).subtract(BigInteger.ONE);
+        var parameters = new CompleteSourceMedianPolicy.Parameters(18, 2, 1_000_000, maximum,
+                minimum, maximum, parameters(false).sources());
+        CompleteSourceMedianPolicy policy = new CompleteSourceMedianPolicy(parameters);
+        for (List<BigInteger> values : List.of(List.of(minimum, minimum.add(BigInteger.ONE), maximum),
+                List.of(minimum, maximum.subtract(BigInteger.ONE), maximum))) {
+            List<ObservationReport> reports = new ArrayList<>();
+            for (int source = 0; source < 3; source++) {
+                for (int reporter = 0; reporter < 4; reporter++) {
+                    reports.add(claim(source, reporter, values.get(source), 18, 10));
+                }
+            }
+            // Opposite-sign outlier is excluded without wrapping subtraction, abs, or ppm multiplication.
+            BigInteger expected = values.get(1).signum() < 0 ? minimum : maximum.subtract(BigInteger.ONE);
+            assertThat(ObservationFixedPoint.decode(policy.reconcile(round(parameters), reports)).units())
+                    .isEqualTo(expected);
+            Collections.reverse(reports);
+            assertThat(ObservationFixedPoint.decode(policy.reconcile(round(parameters), reports)).units())
+                    .isEqualTo(expected);
+        }
+    }
+
+    @Test
     void everyReporterSubsetAndPermutationHasIdenticalOutput() {
         CompleteSourceMedianPolicy.Parameters parameters = parameters(false);
         CompleteSourceMedianPolicy policy = new CompleteSourceMedianPolicy(parameters);
@@ -114,9 +139,13 @@ class CompleteSourceMedianPolicyTest {
     }
 
     private static ObservationReport claim(int source, int reporter, long units, int scale, long anchor) {
+        return claim(source, reporter, BigInteger.valueOf(units), scale, anchor);
+    }
+
+    private static ObservationReport claim(int source, int reporter, BigInteger units, int scale, long anchor) {
         return new ObservationReport(1, id(30), "chain", id(31), id(32), id(21), id(20), 0,
                 id(23), id(24), id(40 + reporter), id(source),
-                new ObservationFixedPoint(BigInteger.valueOf(units), scale).encode(), new byte[0],
+                new ObservationFixedPoint(units, scale).encode(), new byte[0],
                 new byte[]{1}, ObservationAnchorType.APP_HEIGHT.code(), anchor, new byte[64]);
     }
 

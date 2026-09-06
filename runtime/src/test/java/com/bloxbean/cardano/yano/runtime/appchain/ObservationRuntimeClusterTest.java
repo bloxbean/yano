@@ -239,6 +239,10 @@ class ObservationRuntimeClusterTest {
                 var audit = node.query("yano/observations/result", finalizedObservation.resultId());
                 assertThat(audit.stateRoot()).isEqualTo(finalized.stateRoot());
                 assertThat(ObservationResult.decode(audit.payload()).value()).isEqualTo(output);
+                if (external) {
+                    assertThat(ObservationResult.decode(audit.payload()).reporterCount()).isEqualTo(4);
+                    assertThat(ObservationResult.decode(audit.payload()).sourceCount()).isEqualTo(3);
+                }
                 assertThat(ObservationSubscription.decode(node.query("yano/observations/subscription",
                         finalizedObservation.subscriptionId()).payload()).status().name()).isEqualTo("COMPLETED");
                 assertThat(node.status()).containsKey("genericObservations");

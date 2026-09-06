@@ -519,7 +519,7 @@ A certificate-monotonic value may be incorporated as soon as it reaches its
 threshold, before the report deadline. An anchor-derived collection-close
 transition fixes the deadline state only; it does **not** commit a report set,
 because reports are diffusion-only in the protocol defined here. Therefore v1
-cannot yet certify a non-monotonic policy. Phase 3 must first define a bounded
+cannot certify a non-monotonic policy. Such an extension must first define a bounded
 sequenced closure proof that makes the complete eligible report/source set
 self-contained and follower-verifiable. `resultExpiryHeight` governs any round
 still open after collection closes.
@@ -607,20 +607,22 @@ be either:
   other valid report cannot produce a conflicting valid result; or
 - **closure-certified:** a separately sequenced closure proof makes a fixed
   eligible report/source set consensus-visible before applying a non-monotonic
-  aggregation. This mechanism is an open Phase 3 design, not part of v1.
+  aggregation. This mechanism remains deferred and is not enabled by Phase 3.
 
 For raw exact quorum, `r = q`, quorum intersection, and honest no-double-signing
 make the selected value certificate-monotonic. Within that value group the
 proposer should use the lexicographically lowest `r` reporter keys it has as a
 compact construction convention. That is not a validity rule: any exactly-`r`
 valid subset proving the same result is accepted, regardless of reports a
-follower happens to hold. A median is not certificate-monotonic: adding a later
-value can change it. Phase 3 must therefore introduce and review a sequenced
-closure mechanism; a fixed required source set alone is insufficient unless the
-certificate also proves one terminal value or explicit unavailability for
-every required source. Candidate mechanisms include sequenced bounded report
-commitments or a separately certified closure input, but this ADR does not
-choose one. A simple "first 5 of 10" median is inadmissible. A policy that
+follower happens to hold. A median of an arbitrary subset is not
+certificate-monotonic: adding a later source value can change it. A fixed
+required source set alone is insufficient unless the certificate also proves
+one terminal value for every required source. Phase 3 chooses that complete
+terminal-value proof in section 17.1.1: each source has an intersecting exact
+reporter quorum, so adding reports cannot change the source vector. Missing
+sources yield no result; no unavailability claim is invented. Non-monotonic
+extensions still need sequenced bounded report commitments or a separately
+certified closure input. A simple "first 5 of 10" median is inadmissible. A policy that
 cannot prove a unique result from its encoded evidence is rejected.
 
 A certificate does **not** finalize itself. It is carried in a reserved
@@ -640,7 +642,7 @@ status: VALUE | NO_RESULT | EXPIRED | CANCELLED
 canonical value bytes, if any
 value/evidence digest
 certificate digest as non-identity audit metadata
-source and reporter counts
+distinct source-ID and distinct reporter-public-key counts (not report-record count)
 source freshness summary
 finalized app height
 ```
@@ -962,9 +964,10 @@ accepted sources.
 Aggregation must use integer or fixed-point values with explicit scale,
 rounding, overflow behavior, canonical sort order, tie rules, and a round
 closure rule. If a policy allows any five of ten sources to determine a median,
-different valid subsets may yield different answers. Phase 3 must therefore
-define the sequenced, follower-verifiable closure proof required by section 6.5
-and section 24.2; neither a locally held fixed source subset nor the first
+different valid subsets may yield different answers. Phase 3 instead requires
+the complete-source terminal-value proof in section 17.1.1. A non-monotonic
+extension requires the sequenced, follower-verifiable closure proof discussed
+in section 6.5 and section 24.2; neither a locally held fixed source subset nor the first
 responses to arrive closes the report set. IEEE-754 floating point, locale
 parsing, implicit timestamps, and unordered collection iteration are forbidden.
 
@@ -1492,13 +1495,14 @@ ADR-012 retains its **oracle feed-policy data and governance, source
 independence declarations, prior-value circuit breaker, evidence presentation,
 Cardano datum/thread-UTxO protocol, publication effect, and settlement
 lifecycle**. Its fixed-point normalization/outlier/median algorithm is a
-candidate Yano X-contributed, profile-identified observation policy, but it
-cannot ship until Phase 3 defines closure certification.
+candidate profile-identified observation policy. The initial Phase 3 policy
+ships only with the complete-source terminal-value proof in section 17.1.1;
+partial-coverage/non-monotonic variants remain disabled pending closure certification.
 
 ADR-012 resolves governed policy per round through `effectiveRound`; a recurring
 subscription must not accidentally freeze policy at subscription creation.
-Phase 3 must choose either deterministic policy selection from authorized state
-at each round opening or explicit cancel-and-re-watch migration. Any selected
+Phase 3 chooses explicit cancel-and-re-watch migration. Dynamic selection from
+authorized state at each round opening is not implemented. Any selected
 policy bytes/version remain bounded by a registered schema and host profile; an
 application cannot supply executable policy code or bypass host bounds.
 
@@ -1512,8 +1516,10 @@ definition/profile-committed. Round-open selection is limited to
 schema-bounded feed parameters that preserve that envelope, such as deviation
 and jump limits or a choice among profile-authorized source groups. Their
 selected canonical values are pinned in the round's `policyDigest`; the
-definition digest commits to their schema and bounds rather than each future
-selected value.
+definition digest would need to commit to their schema and bounds rather than
+each future selected value. That dynamic extension is deferred: Phase 3 pins
+the exact parameter bytes through the definition digest, and migration selects
+another already authorized definition by cancelling and re-watching.
 
 After ADR-037 exists, the oracle becomes:
 
