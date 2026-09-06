@@ -220,3 +220,18 @@ Its partial data under `/private/tmp/yano-119-history-million` must not be used 
 final performance evidence. Even a completed replay excludes network, consensus
 and other ledger stores; it does not replace native, true cold-cache,
 concurrent-sync or independent full-history reference measurements.
+
+Native wallet recovery was rebuilt and rerun on commit `314e776` after the canonical
+continuity changes. The test passed with all three owned native process startups
+reporting that commit. Evidence directory:
+`/var/folders/9x/p4g24d210kq8hngwdmh5mwrm0000gn/T/yano-wallet-119-live-10222115598539104397`.
+Logs: `/private/tmp/yano-119-native-canonical-build.log` and
+`/private/tmp/yano-119-native-canonical-live.log`. An initial rerun reused a Gradle
+cache result; that was discarded. The wallet live task now disables caching and
+up-to-date reuse when an external artifact is supplied, and the successful rerun
+explicitly executed the test against the rebuilt binary.
+
+The corrected million-block historical run uses
+`/private/tmp/yano-119-history-million-v2`, with progress in the adjacent `.log`.
+It is pending measurement evidence, not an acceptance pass. The requirement audit
+is tracked in `119-wallet-index-acceptance.md`.
