@@ -52,7 +52,7 @@ class AppChainStaleLockTest {
     void tearDown() {
         for (AppChainSubsystem subsystem : nodes.values()) {
             try {
-                subsystem.stop();
+                subsystem.close();
             } catch (Exception ignored) {
             }
         }

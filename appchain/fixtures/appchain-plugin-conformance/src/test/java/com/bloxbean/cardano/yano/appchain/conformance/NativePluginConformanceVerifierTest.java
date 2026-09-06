@@ -9,6 +9,8 @@ import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorInitContext;
 import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProvider;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
@@ -91,6 +93,7 @@ class NativePluginConformanceVerifierTest {
                     ConformanceL1ObserverProvider.class.getName(),
                     ConformanceSignerProviderFactory.class.getName(),
                     ConformanceEffectExecutorFactory.class.getName(),
+                    ConformanceObservationProviderFactory.class.getName(),
                     ConformanceFinalizedSinkFactory.class.getName(),
                     ConformanceDomainApiProvider.class.getName(),
                     ConformanceHealthProvider.class.getName(),
@@ -117,6 +120,8 @@ class NativePluginConformanceVerifierTest {
                 ConformanceSignerProviderFactory.class);
         assertExactService(loader, AppEffectExecutorFactory.class,
                 ConformanceEffectExecutorFactory.class);
+        assertExactService(loader, ObservationProviderFactory.class,
+                ConformanceObservationProviderFactory.class);
         assertExactService(loader, FinalizedStreamSinkFactory.class,
                 ConformanceFinalizedSinkFactory.class);
         assertExactService(loader, DomainApiProvider.class,
@@ -128,7 +133,7 @@ class NativePluginConformanceVerifierTest {
     }
 
     @Test
-    void catalogRegistryResolvesAndConstructsAllTenTypedProviders(
+    void catalogRegistryResolvesAndConstructsAllElevenTypedProviders(
             @TempDir Path pluginDirectory) throws Exception {
         String fixtureJarProperty = System.getProperty(
                 "yano.plugin.conformance.fixture.jar");
@@ -160,6 +165,8 @@ class NativePluginConformanceVerifierTest {
                     ConformanceSignerProviderFactory.SCHEME);
             assertCatalogProvider(environment, AppEffectExecutorFactory.class,
                     ConformanceEffectExecutorFactory.SCHEME);
+            assertCatalogProvider(environment, ObservationProviderFactory.class,
+                    ConformanceObservationProviderFactory.TYPE);
             assertCatalogProvider(environment, FinalizedStreamSinkFactory.class,
                     ConformanceFinalizedSinkFactory.SCHEME);
             assertCatalogProvider(environment, DomainApiProvider.class,
@@ -173,7 +180,7 @@ class NativePluginConformanceVerifierTest {
     }
 
     @Test
-    void strictManifestDeclaresNodeVerifierAndAllTenTypedKinds() throws Exception {
+    void strictManifestDeclaresNodeVerifierAndAllElevenTypedKinds() throws Exception {
         ClassLoader loader = getClass().getClassLoader();
         try (InputStream input = loader.getResourceAsStream(MANIFEST_PATH)) {
             assertThat(input).as("fixture manifest").isNotNull();
@@ -197,6 +204,7 @@ class NativePluginConformanceVerifierTest {
                             ContributionKind.L1_OBSERVER,
                             ContributionKind.SIGNER_PROVIDER,
                             ContributionKind.EFFECT_EXECUTOR,
+                            ContributionKind.OBSERVATION_PROVIDER,
                             ContributionKind.FINALIZED_SINK,
                             ContributionKind.DOMAIN_API,
                             ContributionKind.HEALTH,
@@ -292,6 +300,11 @@ class NativePluginConformanceVerifierTest {
         } finally {
             executors.forEach(AppEffectExecutor::close);
         }
+
+        ObservationProvider observationProvider = environment.providers().require(
+                ObservationProviderFactory.class, ConformanceObservationProviderFactory.TYPE)
+                .create("conformance-observation", Map.of());
+        observationProvider.close();
 
         List<FinalizedStreamSink> sinks = environment.providers().require(
                 FinalizedStreamSinkFactory.class, ConformanceFinalizedSinkFactory.SCHEME)

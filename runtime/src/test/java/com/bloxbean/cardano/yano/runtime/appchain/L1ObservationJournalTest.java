@@ -5,13 +5,18 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.WriteBatch;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -22,6 +27,149 @@ class L1ObservationJournalTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void legacyCursorRecoveryRequiresCommittedAuthorityAndPreservesFailureBarrier() {
+        L1Observation observation = observation(10, 0, 7);
+        byte[] root;
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            commitWithAuthenticatedCursor(ledger, journal, observation);
+            root = ledger.stateRoot();
+            replaceCursorWithLegacyKey(ledger);
+            journal.markCallbackFailure(10);
+        }
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            assertThat(journal.status().get("recoveredLegacyCursors")).isEqualTo(1);
+            assertThat(ledger.stateRoot()).isEqualTo(root);
+            assertThat(journal.healthy()).isFalse();
+            assertThat(journal.callbackFailureSlot()).isEqualTo(10);
+            assertThat(journal.acknowledge(observation)).isTrue();
+            assertThat(journal.acknowledge(observation)).isFalse();
+            journal.clearCallbackFailure(10);
+            journal.rollback(10);
+            assertThat(journal.healthy()).isTrue();
+        }
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            assertThat(journal.status().get("recoveredLegacyCursors")).isEqualTo(0);
+            assertThat(ledger.stateRoot()).isEqualTo(root);
+            assertThatThrownBy(() -> journal.rollback(9)).hasMessageContaining("DEEP_L1_ROLLBACK");
+        }
+    }
+
+    @Test
+    void legacyCursorWithoutAuthenticatedEvidenceFailsClosedWithoutWriting() {
+        L1Observation observation = observation(10, 0, 7);
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            journal.observe(List.of(observation));
+            AppBlock block = blockWith(observation);
+            try (WriteBatch batch = new WriteBatch()) {
+                journal.stageFinalized(block, batch);
+                ledger.commitBlock(block, AppBlockCodec.blockHash(block), block.stateRoot(), batch);
+            }
+            byte[] legacy = replaceCursorWithLegacyKey(ledger);
+            assertThatThrownBy(() -> new L1ObservationJournal(ledger, 1_000_000))
+                    .hasMessage("L1_CURSOR_RECOVERY_REQUIRES_COMMITTED_EVIDENCE");
+            assertThat(ledger.epochSpoolScan(new byte[]{'C'}, 2).getFirst().value()).isEqualTo(legacy);
+        }
+    }
+
+    @Test
+    void legacyCursorRecoveryRespectsCapacityAndDoesNotClearQuarantine() {
+        L1Observation observation = observation(10, 0, 7);
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            commitWithAuthenticatedCursor(ledger, journal, observation);
+            long canonicalBytes = (long) new L1ObservationJournal(ledger, 1_000_000).status().get("usedBytes");
+            byte[] legacy = replaceCursorWithLegacyKey(ledger);
+            assertThatThrownBy(() -> new L1ObservationJournal(ledger, canonicalBytes - 1))
+                    .hasMessage("L1_CURSOR_RECOVERY_EXCEEDS_CAPACITY");
+            assertThat(ledger.epochSpoolScan(new byte[]{'C'}, 2).getFirst().value()).isEqualTo(legacy);
+            ledger.epochSpoolWrite(List.of(AppLedgerStore.EpochSpoolMutation.put(new byte[]{'Q'}, new byte[]{1})));
+            L1ObservationJournal repaired = new L1ObservationJournal(ledger, 1_000_000);
+            assertThat(repaired.status().get("recoveredLegacyCursors")).isEqualTo(1);
+            assertThat(repaired.healthy()).isFalse();
+            assertThat(ledger.epochSpoolGet(new byte[]{'Q'})).containsExactly(1);
+        }
+    }
+
+    private static byte[] replaceCursorWithLegacyKey(AppLedgerStore ledger) {
+        var entry = ledger.epochSpoolScan(new byte[]{'C'}, 2).getFirst();
+        ByteBuffer cursor = ByteBuffer.wrap(entry.value());
+        byte[] rawKey = new byte[cursor.getInt()];
+        cursor.get(rawKey);
+        ledger.epochSpoolWrite(List.of(AppLedgerStore.EpochSpoolMutation.put(entry.key(), rawKey)));
+        return rawKey;
+    }
+
+    @Test
+    void recoveryRejectsWrongCursorIdentityAndUnfinalizedRecordsWithoutPartialRepair() {
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            commitWithAuthenticatedCursor(ledger, journal, observation(10, 0, 7));
+            byte[] legacy = replaceCursorWithLegacyKey(ledger);
+            byte[] originalKey = ledger.epochSpoolScan(new byte[]{'C'}, 2).getFirst().key();
+            byte[] wrongKey = originalKey.clone();
+            Arrays.fill(wrongKey, 1, wrongKey.length, (byte) 0xff);
+            assertThat(wrongKey).isNotEqualTo(originalKey);
+            ledger.epochSpoolWrite(List.of(AppLedgerStore.EpochSpoolMutation.put(wrongKey, legacy)));
+            assertThatThrownBy(() -> new L1ObservationJournal(ledger, 1_000_000))
+                    .hasMessage("L1_CURSOR_RECOVERY_REQUIRES_COMMITTED_EVIDENCE");
+            assertThat(ledger.epochSpoolGet(originalKey)).isEqualTo(legacy);
+            assertThat(ledger.epochSpoolGet(wrongKey)).isEqualTo(legacy);
+
+            byte[] record = ledger.epochSpoolGet(legacy);
+            record[Integer.BYTES] = (byte) L1ObservationJournal.State.SEEN_UNSTABLE.ordinal();
+            ledger.epochSpoolWrite(List.of(AppLedgerStore.EpochSpoolMutation.delete(wrongKey),
+                    AppLedgerStore.EpochSpoolMutation.put(legacy, record)));
+            assertThatThrownBy(() -> new L1ObservationJournal(ledger, 1_000_000))
+                    .hasMessage("L1_CURSOR_RECOVERY_REQUIRES_COMMITTED_EVIDENCE");
+            assertThat(ledger.epochSpoolGet(originalKey)).isEqualTo(legacy);
+        }
+    }
+
+    private static void commitWithAuthenticatedCursor(AppLedgerStore ledger, L1ObservationJournal journal,
+                                                       L1Observation observation) {
+        journal.observe(List.of(observation));
+        AppBlock input = blockWith(observation);
+        try (CandidateState candidate = ledger.stateBackend().beginCandidate(0, new byte[32], 1)) {
+            L1ObservationJournal.commitAuthenticatedCursors(input, candidate, new byte[32]);
+            StagedStateCommit prepared = (StagedStateCommit) candidate.prepare();
+            AppBlock block = new AppBlock(input.version(), input.chainId(), input.height(), input.prevHash(),
+                    input.l1Slot(), input.l1BlockHash(), input.timestamp(), input.messagesRoot(), prepared.stateRoot(),
+                    input.messages(), input.proposer(), input.cert());
+            try (WriteBatch batch = new WriteBatch()) {
+                journal.stageFinalized(block, batch);
+                ledger.commitBlock(block, AppBlockCodec.blockHash(block), prepared, batch, List.of());
+            }
+        }
+    }
+
+    @Test
+    void committedCursorSurvivesRestartAcknowledgementAndGuardsDeepRollback() {
+        L1Observation observation = observation(10, 0, 7);
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            journal.observe(List.of(observation));
+            AppBlock block = blockWith(observation);
+            try (WriteBatch batch = new WriteBatch()) {
+                journal.stageFinalized(block, batch);
+                ledger.commitBlock(block, AppBlockCodec.blockHash(block), block.stateRoot(), batch);
+            }
+        }
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            assertThat(journal.acknowledge(observation)).isTrue();
+            assertThat(journal.acknowledge(observation)).isFalse();
+            assertThat(journal.pending(20, 10, 1_000_000)).isEmpty();
+            journal.rollback(10);
+            assertThat(journal.healthy()).isTrue();
+            assertThatThrownBy(() -> journal.rollback(9)).hasMessageContaining("DEEP_L1_ROLLBACK");
+        }
+    }
 
     @Test
     void pendingSurvivesRestartUntilFinalizedAcknowledgement() {
@@ -220,7 +368,7 @@ class L1ObservationJournalTest {
 
     private static byte[] filled(int value) {
         byte[] bytes = new byte[32];
-        java.util.Arrays.fill(bytes, (byte) value);
+        Arrays.fill(bytes, (byte) value);
         return bytes;
     }
 }

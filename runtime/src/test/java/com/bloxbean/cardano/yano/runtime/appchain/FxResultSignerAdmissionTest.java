@@ -45,7 +45,7 @@ class FxResultSignerAdmissionTest {
     @AfterEach
     void tearDown() {
         if (node != null) {
-            node.stop();
+            node.close();
         }
     }
 

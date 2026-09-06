@@ -114,6 +114,7 @@ dependencies {
     // Uses the release-matched, bounded MPF verifier for the console's
     // node-assisted existing-proof verification endpoint.
     implementation project(':appchain-proof-verifier')
+    implementation project(':appchain-config')
 
     // App-chain metrics (ADR 006 E5.1); Prometheus endpoint at /q/metrics
     implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
@@ -135,7 +136,6 @@ dependencies {
 
     testImplementation project(':testkit')
     testImplementation project(':app-e2e-testkit')
-    testImplementation project(':appchain-config')
     testImplementation project(':scalus-bridge')
     testImplementation libs.cardano.client.lib
     testImplementation libs.cardano.client.backend.blockfrost
@@ -1158,7 +1158,7 @@ def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
     // Must match PluginApiVersion.CURRENT_MAJOR / CURRENT_LEVEL (core-api).
     if (!(summary.catalogFingerprint ==~ /sha256:[0-9a-f]{64}/)
             || summary.pluginApiMajor != 3
-            || summary.pluginApiLevel != 4
+            || summary.pluginApiLevel != 8
             || !(summary.generation instanceof Number)
             || !(summary.totals instanceof Map)
             || !summary.totals.containsKey('observedContributions')

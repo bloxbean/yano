@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
+import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.IncompatibleChainStateException;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -275,6 +277,37 @@ class YanoProducerTest {
         var fatalSiblingProducer = new StartupProbeProducer(siblingGraph);
         assertSame(fatalSibling, assertThrows(OutOfMemoryError.class,
                 () -> fatalSiblingProducer.onStart(null)));
+    }
+
+    @Test
+    void certifiedObservationAndConsensusSettingsReachTheRuntimeParserForBothConfigShapes() {
+        Map<String, String> settings = Map.of(
+                "observations.profile-cbor-hex", "a100",
+                "observations.providers.shipment.endpoint", "https://example.invalid/proof",
+                "observations.reporters.ada-usd", "01".repeat(32),
+                "observations.policy.ada-usd", "a100",
+                "consensus.max-byzantine-members", "1",
+                "consensus.round-timeout-ms", "5000");
+        Map<String, String> properties = new LinkedHashMap<>();
+        settings.forEach((key, value) -> {
+            properties.put("yano.app-chain." + key, value);
+            properties.put("yano.app-chain.chains[0]." + key, value);
+        });
+        properties.put("yano.app-chain.chains[0].chain-id", "observations");
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(properties);
+
+        Map<String, Object> globals = new LinkedHashMap<>();
+        producer.forwardAppChainDynamicKeys(globals);
+        Map<String, Object> flat = new LinkedHashMap<>();
+        flat.put("chain-id", "observations");
+        globals.forEach((key, value) -> flat.put(key.substring("yano.app-chain.".length()), value));
+        var flatConfig = AppChainConfigParser.parse(flat);
+        var indexedConfig = AppChainConfigParser.parse(producer.parseAppChainChains().getFirst());
+        settings.forEach((key, value) -> {
+            assertEquals(value, flatConfig.pluginSettings().get(key), "flat: " + key);
+            assertEquals(value, indexedConfig.pluginSettings().get(key), "indexed: " + key);
+        });
     }
 
     @Test

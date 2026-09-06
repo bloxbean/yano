@@ -45,7 +45,7 @@ class AppChainWebhookTest {
 
     @AfterEach
     void tearDown() {
-        if (node != null) node.stop();
+        if (node != null) node.close();
         if (webhookServer != null) webhookServer.stop(0);
     }
 

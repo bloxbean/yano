@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.api.appchain;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
 
 /**
  * The developer-facing SPI of the Yano app-chain framework: a deterministic
@@ -112,6 +114,19 @@ public interface AppStateMachine {
     void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects);
 
     /**
+     * Observation-aware deterministic transition. Existing machines remain
+     * source and binary compatible through this default bridge.
+     */
+    default void apply(
+            AppBlockExecutionContext context,
+            AppStateWriter writer,
+            AppEffectEmitter effects,
+            AppObservationEmitter observations
+    ) {
+        apply(context, writer, effects);
+    }
+
+    /**
      * Deterministic callback when a consensus-incorporated effect outcome
      * commits (ADR app-layer/010 F8/F9): a member-attested {@code ~fx/result}
      * the framework interpreter accepted, or a deterministic EXPIRED
@@ -124,6 +139,33 @@ public interface AppStateMachine {
             EffectResult result,
             AppStateWriter writer,
             AppEffectEmitter effects
+    ) {
+    }
+
+    /**
+     * Observation-aware effect callback. One block-scoped observation emitter
+     * is shared by every framework callback and {@link #apply} invocation.
+     */
+    default void onEffectResult(
+            AppBlockExecutionContext context,
+            EffectResult result,
+            AppStateWriter writer,
+            AppEffectEmitter effects,
+            AppObservationEmitter observations
+    ) {
+        onEffectResult(context, result, writer, effects);
+    }
+
+    /**
+     * Deterministic callback for one consensus-incorporated observation result.
+     * Cancellation is audit-only in v1 and does not invoke this callback.
+     */
+    default void onObservationResult(
+            AppBlockExecutionContext context,
+            ObservationResult result,
+            AppStateWriter writer,
+            AppEffectEmitter effects,
+            AppObservationEmitter observations
     ) {
     }
 

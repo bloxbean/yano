@@ -6,6 +6,7 @@ public final class AppCapabilityIds {
     public static final String BASIC_APPROVAL = "approval:basic-quorum-v1";
     public static final String ACTOR_ROLE_APPROVAL = "approval:actor-role-v1";
     public static final String OUTBOX_EFFECTS = "effects:outbox-v1";
+    public static final String CERTIFIED_OBSERVATIONS = "observations:certified-v1";
     public static final String L1_VAULT_DEPOSIT = "l1-observer:eutxo-vault-deposit-v1";
     public static final String L1_WITHDRAWAL_CONFIRMATION =
             "l1-observer:eutxo-withdrawal-confirmation-v1";

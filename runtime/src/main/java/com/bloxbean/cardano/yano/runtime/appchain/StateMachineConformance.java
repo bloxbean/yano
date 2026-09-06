@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -434,8 +435,9 @@ public final class StateMachineConformance {
                                                 AppChainConsensusProfile profile,
                                                 AppBlock block,
                                                 List<StateProbe> stateProbes) {
-        FxKernel kernel = new FxKernel(EffectsSettings.fromSettings(settings),
-                new ConsensusProfileGuard(profile));
+        SystemInputKernel kernel = new SystemInputKernel(
+                EffectsSettings.fromSettings(settings), new ConsensusProfileGuard(profile),
+                new ObservationProfileGuard(ObservationProfileV1.disabled()));
         FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
         List<String> effectHashes = new ArrayList<>(applied.fx().emitted().size());
         for (FxKernel.StagedEffect staged : applied.fx().emitted()) {

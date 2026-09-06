@@ -42,7 +42,7 @@ class AppChainBlockBytesTest {
     void tearDown() {
         if (node != null) {
             try {
-                node.stop();
+                node.close();
             } catch (Exception ignored) {
             }
         }

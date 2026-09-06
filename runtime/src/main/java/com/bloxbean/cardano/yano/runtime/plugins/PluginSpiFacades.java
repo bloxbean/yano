@@ -22,6 +22,8 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import com.bloxbean.cardano.yano.api.appchain.l1view.EpochObservationManifest;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochBoundary;
@@ -33,6 +35,10 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRequest;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode.ProposalEligibility;
@@ -389,6 +395,9 @@ final class PluginSpiFacades {
                     products, callbacks);
             case L1_EPOCH_OBSERVER -> new EpochObserverProviderFacade(
                     (L1EpochObserverProvider) delegate, effectiveLoader, activation,
+                    products, callbacks);
+            case OBSERVATION_PROVIDER -> new ObservationProviderFactoryFacade(
+                    (ObservationProviderFactory) delegate, effectiveLoader, activation,
                     products, callbacks);
             case SIGNER_PROVIDER -> new SignerFactoryFacade(
                     (SignerProviderFactory) delegate, effectiveLoader, activation,
@@ -1436,6 +1445,28 @@ final class PluginSpiFacades {
                     () -> delegate.query(path, input, state));
             return response != null ? response.clone() : null;
         }
+
+        @Override
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                          AppEffectEmitter effects, AppObservationEmitter observations) {
+            pluginRun(callbacks, loader, () -> delegate.apply(context, writer, effects, observations));
+        }
+
+        @Override
+        public void onEffectResult(AppBlockExecutionContext context, EffectResult result,
+                                   AppStateWriter writer, AppEffectEmitter effects,
+                                   AppObservationEmitter observations) {
+            pluginRun(callbacks, loader,
+                    () -> delegate.onEffectResult(context, result, writer, effects, observations));
+        }
+
+        @Override
+        public void onObservationResult(AppBlockExecutionContext context, ObservationResult result,
+                                        AppStateWriter writer, AppEffectEmitter effects,
+                                        AppObservationEmitter observations) {
+            pluginRun(callbacks, loader,
+                    () -> delegate.onObservationResult(context, result, writer, effects, observations));
+        }
     }
 
     private record SnapshotSourceCommitmentFacade(
@@ -1631,6 +1662,67 @@ final class PluginSpiFacades {
                         value, observer -> new EpochObserverFacade(
                                 observer, observerId, loader, activation, callbacks));
             }));
+        }
+    }
+
+    private record ObservationProviderFactoryFacade(
+            ObservationProviderFactory delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements ObservationProviderFactory {
+        private ObservationProviderFactoryFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String type() {
+            return pluginCall(callbacks, loader, delegate::type);
+        }
+
+        @Override
+        public ObservationProvider create(String definitionId,
+                                          Map<String, String> operationalSettings) {
+            Map<String, String> snapshot = operationalSettings == null
+                    ? Map.of() : Map.copyOf(operationalSettings);
+            return activation.call("create observation-provider product", () ->
+                    callbacks.call(() -> {
+                        ObservationProvider value = PluginThreadContext.call(loader,
+                                () -> delegate.create(definitionId, snapshot));
+                        return products.facadeForNewInvocation(value,
+                                provider -> new ObservationProviderFacade(
+                                        provider, loader, activation, callbacks));
+                    }));
+        }
+    }
+
+    private record ObservationProviderFacade(
+            ObservationProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            CallbackTracker callbacks
+    ) implements ObservationProvider {
+        private ObservationProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public ObservationCandidate acquire(ObservationRequest request) throws Exception {
+            ObservationCandidate candidate = pluginCall(callbacks, loader,
+                    () -> delegate.acquire(request));
+            if (candidate == null) {
+                throw new IllegalStateException(
+                        "Observation provider returned a null candidate");
+            }
+            return new ObservationCandidate(candidate.sourceId(), candidate.value(),
+                    candidate.evidence(), candidate.sourceVersion(),
+                    candidate.freshnessAnchorType(), candidate.freshnessAnchor());
+        }
+
+        @Override
+        public void close() {
+            pluginCleanupRun(callbacks, loader, delegate::close);
         }
     }
 

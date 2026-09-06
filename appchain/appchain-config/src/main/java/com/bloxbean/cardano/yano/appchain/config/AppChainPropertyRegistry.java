@@ -45,6 +45,8 @@ public final class AppChainPropertyRegistry {
             dynamic("sequencer.", "extension/sequencer", "Sequencer strategies"),
             dynamic("membership.", "extension/membership", "Membership strategies"),
             dynamic("observation.", OWNER_CORE, "L1 observation consensus identity"),
+            dynamic("observations.", OWNER_CORE, "Certified generic observations"),
+            dynamic("consensus.", OWNER_CORE, "Consensus fault bounds and view changes"),
             dynamic("observers.", "extension/observers", "L1/external observers"),
             dynamic("transport.", "yano-core/transport", "App-message transport"),
             dynamicFull("effects.result.", "yano-core/effects",
