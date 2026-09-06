@@ -7,6 +7,7 @@ import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.lang.reflect.Proxy;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -16,6 +17,31 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class AppChainObservationResourceTest {
+    @Test
+    void hintsHaveOnlyBoundedSubscriptionIdentityAndSubmitAccess() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        var resource = resource(bytes -> {
+            assertEquals(32, bytes.length);
+            calls.incrementAndGet();
+            return null;
+        });
+        for (int size : new int[]{0, 31, 33, 1024}) {
+            try (Response response = resource.observationWake(new ByteArrayInputStream(new byte[size]))) {
+                assertEquals(400, response.getStatus());
+            }
+        }
+        assertEquals(0, calls.get());
+        try (Response response = resource.observationWake(new ByteArrayInputStream(new byte[32]))) {
+            assertEquals(202, response.getStatus());
+            assertEquals(Map.of("status", "HINT_ACCEPTED", "chainId", "chain"), response.getEntity());
+        }
+        assertEquals(1, calls.get());
+        for (String method : new String[]{"observationWake", "observationReport"}) {
+            assertEquals(AppChainAccess.Level.SUBMIT, AppChainResource.ChainScopedResource.class
+                    .getMethod(method, InputStream.class).getAnnotation(AppChainAccess.class).value());
+        }
+    }
+
     @Test
     void queueReceiptDoesNotClaimDurabilityOrFinality() {
         var resource = resource(bytes -> {
@@ -52,7 +78,7 @@ class AppChainObservationResourceTest {
         AppChainGateway gateway = (AppChainGateway) Proxy.newProxyInstance(AppChainGateway.class.getClassLoader(),
                 new Class<?>[]{AppChainGateway.class}, (proxy, method, args) -> switch (method.getName()) {
                     case "chainId" -> "chain";
-                    case "submitObservationReport" -> ingress.apply((byte[]) args[0]);
+                    case "submitObservationReport", "wakeObservation" -> ingress.apply((byte[]) args[0]);
                     default -> throw new AssertionError("Unexpected gateway operation: " + method.getName());
                 });
         return new AppChainResource.ChainScopedResource(gateway);

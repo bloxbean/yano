@@ -5,10 +5,12 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.WriteBatch;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
@@ -22,6 +24,29 @@ class L1ObservationJournalTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void committedCursorSurvivesRestartAcknowledgementAndGuardsDeepRollback() {
+        L1Observation observation = observation(10, 0, 7);
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            journal.observe(List.of(observation));
+            AppBlock block = blockWith(observation);
+            try (WriteBatch batch = new WriteBatch()) {
+                journal.stageFinalized(block, batch);
+                ledger.commitBlock(block, AppBlockCodec.blockHash(block), block.stateRoot(), batch);
+            }
+        }
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            assertThat(journal.acknowledge(observation)).isTrue();
+            assertThat(journal.acknowledge(observation)).isFalse();
+            assertThat(journal.pending(20, 10, 1_000_000)).isEmpty();
+            journal.rollback(10);
+            assertThat(journal.healthy()).isTrue();
+            assertThatThrownBy(() -> journal.rollback(9)).hasMessageContaining("DEEP_L1_ROLLBACK");
+        }
+    }
 
     @Test
     void pendingSurvivesRestartUntilFinalizedAcknowledgement() {

@@ -241,7 +241,7 @@ final class L1ObservationJournal {
             mutations.add(AppLedgerStore.EpochSpoolMutation.put(key,
                     encodeRecord(new Record(State.FINALIZED, encoded))));
             mutations.add(AppLedgerStore.EpochSpoolMutation.put(
-                    cursorKey(observation.observerId()), key));
+                    cursorKey(observation.observerId()), cursorValue(observation, identityContext)));
         }
         ledger.stageEpochSpoolMutations(batch, mutations);
     }

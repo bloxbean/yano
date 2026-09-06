@@ -5,6 +5,20 @@ one-shot and recurring exact-value implementation and the Phase 3
 complete-source aggregation profile. Graduation remains a later milestone.
 Height cadence measures chain progress, not minutes.
 
+The Phase 4 Merkle evidence and wake APIs below
+require host API level 7. Existing Phase 3 external-reporter consumers require
+level 6; the default interface bridges remain available. The complete certified
+header proof path and shipment reference require API level 8.
+
+Offline finality verification uses `AppBlockHeader` and its domain-separated
+`commitDigest()`, not a signature over the bare block hash. Pin the expected
+height-specific consensus-context digest independently from trusted chain
+configuration and membership history; copying it from the untrusted proof
+does not establish trust. API level 8 exposes view, consensus-context digest,
+proposer and justification digest in REST certified headers. Older incomplete
+headers must fail closed in the updated SDK. These transport additions do not
+change existing block-v3 commitments or observation encodings.
+
 ## Profile selection
 
 `observations.profile-cbor-hex` supplies the canonical `ObservationProfileV1`
@@ -175,6 +189,50 @@ subscription/round/source before signing. Do not re-key or erase that journal to
 retry. Companion SDK and ADA/USD example delivery are tracked in
 [Yano X #5](https://github.com/bloxbean/yano-x/issues/5) and
 [the design migration PR](https://github.com/bloxbean/yano-x/pull/6).
+
+## Signed Merkle receipt evidence (Phase 4 preview)
+
+Select evidence verifier `ed25519-merkle-inclusion-v1`, active-member exact
+quorum, and provider `https-attested-merkle-v1`. Configure at most 32 authorized
+root signers under `observations.attestors.<definition>`. The definition's
+source configuration must equal
+`ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(url, method, keys)`;
+the fixed URL and HTTP method are part of source identity. The restricted HTTPS
+transport keeps the same DNS/IP, redirect, encoding, size and timeout rules.
+
+The provider returns canonical `ObservationMerkleEvidence`: version 1, a
+canonical root-attestation byte string, the value, a leaf index, and a
+leaf-to-root list of at most 20 sibling hashes. The root attestation is the
+existing `ObservationAttestation` with its claim set to the 32-byte Merkle root.
+It must identify this definition/subscription/round/source/version/anchor.
+The leaf binds the round's committed parameter digest, source ID and value.
+The CDDL defines length framing, domain-separated Blake2b-256 hashing, branch
+order and index bounds. Empty paths describe a one-leaf tree; there is no
+implicit padding or inferred non-membership. Encoded evidence is at most
+68 KiB, further constrained by the configured evidence/report/certificate bounds.
+
+This is a positive membership proof under an authorized external commitment.
+It does not prove source truth, complete query results, negative facts, or
+Cardano payment/settlement. A malformed proof is rejected before local signing
+and independently during certificate verification.
+
+## Webhook wake hints (Phase 4 preview)
+
+`POST /api/v1/app-chain/chains/{chainId}/observations/wake` accepts an
+`application/octet-stream` body of exactly 32 subscription-ID bytes. Like
+report ingress, it uses the normal SUBMIT access policy and configured API-key
+rules. No separate administrative privilege is required. If API authentication
+is disabled, an unauthenticated caller still gains only hint authority.
+
+HTTP 202 `HINT_ACCEPTED` means a best-effort local hint, not acquisition,
+durability, committed state, or finality. Unknown, future, closed and externally
+reported subscriptions do not acquire. At most one hint is pending per node;
+additional hints may be coalesced. Existing worker, definition/node request-rate
+and coordinator bounds apply. Saturation/stopping may return 429/503.
+Hints carry no URL, value, proof, timestamp or deadline and never change the
+committed schedule or a reporter's retained choice. Normal periodic retry is
+always the fallback when hints are lost or absent. `genericObservations.wakeHints`
+counts local hint calls, including coalesced hints, and is not a consensus counter.
 
 ## Qualification commands
 

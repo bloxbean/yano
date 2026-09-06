@@ -33,6 +33,11 @@ public interface AppChainGateway {
         throw new IllegalStateException("External observation ingress is unavailable");
     }
 
+    /** Best-effort local acquisition hint; never creates work or changes committed scheduling. */
+    default void wakeObservation(byte[] subscriptionId) {
+        throw new IllegalStateException("Observation wake hints unavailable");
+    }
+
     /**
      * Validate and member-sign a state-machine-owned reserved-topic command.
      * Exposed only through privileged operator surfaces; implementations fail

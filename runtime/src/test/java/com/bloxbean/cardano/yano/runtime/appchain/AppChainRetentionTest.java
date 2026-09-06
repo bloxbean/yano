@@ -42,7 +42,8 @@ class AppChainRetentionTest {
 
     @AfterEach
     void tearDown() {
-        if (node != null) node.stop();
+        // TempDir cleanup must wait for the engine and RocksDB's deferred release.
+        if (node != null) node.close();
     }
 
     @Test

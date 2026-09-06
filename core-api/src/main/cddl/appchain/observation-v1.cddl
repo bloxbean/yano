@@ -78,11 +78,23 @@ observation-report = [
 ]
 
 ; Phase-1 external Ed25519 attestation evidence. The signature covers indexes
-; 0..7 under the yano/observation/attestation/v1 NUL-terminated domain.
+; 0..9 under the yano/observation/attestation/v1 NUL-terminated domain.
 observation-attestation = [
   1, hash32, hash32, uint, ed25519-key, bytes .size (1..256),
   bytes .size (0..65536), bytes .size (1..256), uint, uint,
   ed25519-signature
+]
+
+; Optional Phase-4 ed25519-merkle-inclusion-v1 evidence, at most 69632 encoded bytes.
+; The embedded canonical attestation's claim MUST be the 32-byte batch root.
+; Leaf hash = Blake2b-256("yano/observation/merkle/leaf/v1\0" || parameters-digest32
+;   || source-length-u32be || source || value-length-u32be || value).
+; Branch hash = Blake2b-256("yano/observation/merkle/branch/v1\0" || left32 || right32).
+; Siblings run leaf-to-root; bit i of leaf-index puts the current hash right when 1.
+; Require leaf-index < 2^path-length, including index 0 for an empty path.
+observation-merkle-evidence = [
+  1, bytes .size (1..2048), bytes .size (0..65536), uint,
+  [0*20 hash32]
 ]
 
 ; Field indexes 0..10. Reports are embedded as their canonical byte strings

@@ -1403,6 +1403,42 @@ A signed webhook may be the evidence acquired by an attested definition, but it
 still binds a round and passes normal verification. Validators need not all
 receive the webhook because committed scheduling remains authoritative.
 
+### 14.1 Phase 4 bounded reference choices
+
+The concrete evidence demand is a shipment receipt included in a publisher's
+signed batch. The initial `ed25519-merkle-inclusion-v1` profile carries a
+canonical bounded value, a binary inclusion path of at most 20 siblings, and
+an existing `ObservationAttestation` whose claim is the 32-byte batch root.
+The attestation binds definition, subscription, round, source/version and
+freshness as before. The leaf additionally binds the opened round's parameter
+digest and source ID, preventing selection of another shipment's leaf from
+the same batch. Domain-separated Blake2b-256 leaf/branch hashing and a bounded
+unsigned leaf index define the tree; there is no implicit padding convention.
+An empty path is a one-leaf tree. Index bits beyond the path length reject.
+
+This proves inclusion under an authorized external signer's commitment, not
+real-world truth, batch completeness, non-membership, or Cardano settlement.
+Negative/absent shipment claims cannot be inferred from a missing proof.
+It uses the existing active-member exact quorum and report/certificate
+lifecycle. ZK/TEE, arbitrary tree algorithms, non-membership proofs and
+dynamic verifier code remain outside this profile.
+
+The webhook API accepts only a subscription ID, not a value, URL, deadline,
+timestamp or evidence body. It is a bounded node-local request to retry an
+already-open eligible round. It never opens a future round, bypasses the
+normal acquisition rate/worker limits, or changes a retained signing choice.
+Normal committed scheduling and periodic retry remain the fallback when no
+hint arrives. HTTP acknowledgement is not committed state or finality.
+
+Workflow correlation is application-owned authenticated data: retain payment
+observation identity, generic subscription/result/certificate identity, release
+effect identity and later specialized L1 settlement identity in one root-fixed
+workflow record. Do not change generic observation wire encodings merely to
+add shipment-specific fields. The reference will exercise that lineage with
+explicit synthetic fixtures; actual Preprod transaction qualification remains
+Phase 5. A shared mutable/deduplicated feed is still deferred; the root-fixed
+application query is the optional read-only view.
+
 ## 15. Relationship with effects and workflows
 
 Observations and effects are complementary directions across the deterministic
@@ -1889,6 +1925,16 @@ Exit criteria:
 - integer overflow, scale mismatch, and ambiguous decimal input fail closed.
 
 ### Phase 4 — proofs, webhooks, and workflow integration
+
+Qualification of the lifecycle evidence view requires a complete current
+certified-block header at the REST/SDK boundary. The header carries view,
+consensus-context digest, proposer and justification digest in addition to the
+existing value fields. Consumers verify the domain-separated COMMIT digest,
+not a bare block hash, and independently pin the height-specific consensus
+context (including genesis, membership and profiles). API level 8 adds a shared
+`AppBlockHeader` commitment helper so SDKs do not reconstruct obsolete header
+formats. This completes proof transport; it does not change block-v3 hashes,
+vote digests, generic-observation encodings or justification admission rules.
 
 Deliver:
 

@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAttestation;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationDefinition;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationMerkleEvidence;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProvider;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRequest;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSourceConfiguration;
@@ -44,7 +45,7 @@ import javax.net.ssl.SSLSocketFactory;
  * as an opaque POST body and can never select scheme, authority, port, or path.
  */
 final class RestrictedHttpsObservationProvider implements ObservationProvider {
-    enum Mode { ATTESTED, RAW_EXACT }
+    enum Mode { ATTESTED, MERKLE_ATTESTED, RAW_EXACT }
     private static final ScheduledThreadPoolExecutor DEADLINES = deadlines();
 
     private static ScheduledThreadPoolExecutor deadlines() {
@@ -125,9 +126,11 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
                     "GET observation definition does not accept application parameters");
         }
         InetAddress address = resolvePublicAddresses(endpoint).getFirst();
-        int maximum = mode == Mode.ATTESTED
-                ? Math.min(definition.maxEvidenceBytes(), ObservationAttestation.MAX_ENCODED_BYTES)
-                : definition.maxValueBytes();
+        int maximum = switch (mode) {
+            case ATTESTED -> Math.min(definition.maxEvidenceBytes(), ObservationAttestation.MAX_ENCODED_BYTES);
+            case MERKLE_ATTESTED -> Math.min(definition.maxEvidenceBytes(), ObservationMerkleEvidence.MAX_ENCODED_BYTES);
+            case RAW_EXACT -> definition.maxValueBytes();
+        };
         Response response = exchange(address, request, parameters, maximum);
         if (response.status() < 200 || response.status() >= 300) {
             throw new IOException("Observation HTTPS source returned status " + response.status());
@@ -137,6 +140,16 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
             throw new IOException("Observation HTTPS source returned encoded content");
         }
         byte[] body = response.body();
+        if (mode == Mode.MERKLE_ATTESTED) {
+            ObservationMerkleEvidence proof = ObservationMerkleEvidence.decode(body);
+            ObservationAttestation root = proof.rootAttestation();
+            if (!Arrays.equals(root.subscriptionId(), request.round().subscriptionId())
+                    || root.roundNumber() != request.round().roundNumber()) {
+                throw new IOException("Observation Merkle root identifies another round");
+            }
+            return new ObservationCandidate(root.sourceId(), proof.value(), body,
+                    root.sourceVersion(), root.freshnessAnchorType(), root.freshnessAnchor());
+        }
         if (mode == Mode.ATTESTED) {
             ObservationAttestation attestation = ObservationAttestation.decode(body);
             if (!Arrays.equals(attestation.subscriptionId(), request.round().subscriptionId())

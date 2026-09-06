@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.serializers.AppMsgSubmissionSerializers;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockHeader;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
@@ -45,6 +46,25 @@ public final class AppBlockCodec {
         header.add(new ByteString(block.proposer()));
         header.add(new ByteString(Blake2bUtil.blake2bHash256(block.justification())));
         return Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(header));
+    }
+
+    /** Same commitment as a full block, without requiring messages or justification preimages. */
+    public static byte[] blockHash(AppBlockHeader block) {
+        Array header = wireHeaderArray(headerOnlyBlock(block));
+        header.add(new ByteString(block.proposer()));
+        header.add(new ByteString(block.justificationDigest()));
+        return Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(header));
+    }
+
+    public static byte[] valueHash(AppBlockHeader block) {
+        return valueHash(headerOnlyBlock(block));
+    }
+
+    private static AppBlock headerOnlyBlock(AppBlockHeader header) {
+        return new AppBlock(header.version(), header.chainId(), header.height(), header.consensusContextDigest(),
+                header.view(), header.prevHash(), header.l1Slot(), header.l1BlockHash(), header.timestamp(),
+                header.messagesRoot(), header.stateRoot(), List.of(), header.proposer(), new byte[0],
+                FinalityCert.empty());
     }
 
     /** Hash of the deterministic application value, excluding view/proposer/evidence. */

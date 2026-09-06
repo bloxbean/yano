@@ -77,6 +77,8 @@ final class ObservationRuntime implements AutoCloseable {
     private int requestsInWindow;
     private final Set<RoundKey> inFlight = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean wakePending = new AtomicBoolean();
+    private final AtomicLong wakeHints = new AtomicLong();
     private final Semaphore coordinatorSlots = new Semaphore(1024);
     private static final int COORDINATOR_BYTE_BUDGET = 16 * 1024 * 1024;
     private final Semaphore coordinatorBytes = new Semaphore(COORDINATOR_BYTE_BUDGET);
@@ -196,6 +198,35 @@ final class ObservationRuntime implements AutoCloseable {
         return HexUtil.encodeHexString(ObservationHashes.digest(body));
     }
 
+    void wake(byte[] subscriptionId) {
+        if (closed.get()) throw new IllegalStateException("Observation ingress is stopped");
+        if (subscriptionId == null || subscriptionId.length != 32) {
+            throw new IllegalArgumentException("Expected one subscription ID");
+        }
+        wakeHints.incrementAndGet();
+        // Best effort: at most one pending hint per node. Coalesced/dropped hints
+        // cannot affect correctness because committed scheduling always retries.
+        if (!wakePending.compareAndSet(false, true)) return;
+        byte[] id = subscriptionId.clone();
+        boolean queued = false;
+        try {
+            queued = submitCoordinator(() -> {
+                try {
+                    ObservationSubscription subscription = reader.subscription(id).orElse(null);
+                    if (subscription == null || subscription.status() != ObservationSubscriptionStatus.ACTIVE
+                            || subscription.nextDueAnchor() != 0) return;
+                    ObservationRound round = reader.round(id, subscription.nextRoundNumber()).orElse(null);
+                    if (round != null) tryAcquire(subscription, round, committedHeight.getAsLong());
+                } finally {
+                    wakePending.set(false);
+                }
+            }, id.length);
+            if (!queued) throw new PoolFullException("Observation hint ingress is busy");
+        } finally {
+            if (!queued) wakePending.set(false);
+        }
+    }
+
     List<ObservationCertificate> readyCertificates(int limit) {
         if (limit <= 0) return List.of();
         limit = Math.min(limit, profile.maxResultsPerBlock());
@@ -225,6 +256,7 @@ final class ObservationRuntime implements AutoCloseable {
         status.put("journalEntries", (long) journal.entries());
         status.put("journalBytes", journal.bytes());
         status.put("backpressureEvents", backpressureEvents.get());
+        status.put("wakeHints", wakeHints.get());
         status.put("inFlight", (long) inFlight.size());
         status.put("coordinatorQueued", (long) (1024 - coordinatorSlots.availablePermits()));
         status.put("coordinatorReservedBytes", (long) (COORDINATOR_BYTE_BUDGET - coordinatorBytes.availablePermits()));
@@ -329,30 +361,31 @@ final class ObservationRuntime implements AutoCloseable {
                     diffusion.accept(ObservationTopics.CERTIFICATE, certificate.encode());
                 }
             }
-            boolean alreadyReported = journal.reports(round.subscriptionId(), round.roundNumber(),
-                    profile.maxReportsPerRound()).stream().anyMatch(report ->
-                    Arrays.equals(report.reporterPublicKey(), signer.publicKey()));
-            if (round.reporterMode() == ObservationReporterMode.ACTIVE_MEMBERS
-                    && !alreadyReported && round.resultExpiryHeight() == 0
-                    && height <= round.absoluteMaxRoundHeight()
-                    && (round.anchorType() == ObservationAnchorType.APP_HEIGHT
-                            ? height : reader.highWaterSlot()) <= round.reportDeadlineAnchor()) {
-                RoundKey key = new RoundKey(round.subscriptionId(), round.roundNumber());
-                if (inFlight.add(key)) {
-                    if (!requestPermit(definition(round.definitionDigest()).id())) {
-                        backpressureEvents.incrementAndGet();
-                        inFlight.remove(key);
-                        continue;
-                    }
-                    try {
-                        workers.execute(() -> acquire(subscription, round, key));
-                    } catch (RejectedExecutionException full) {
-                        backpressureEvents.incrementAndGet();
-                        inFlight.remove(key);
-                        break; // Bounded backpressure; retained rounds are retried later.
-                    }
-                }
-            }
+            if (!tryAcquire(subscription, round, height)) break;
+        }
+    }
+
+    private boolean tryAcquire(ObservationSubscription subscription, ObservationRound round, long height) {
+        if (round.reporterMode() != ObservationReporterMode.ACTIVE_MEMBERS || round.resultExpiryHeight() != 0
+                || height > round.absoluteMaxRoundHeight() || !stillCollecting(round)) return true;
+        boolean alreadyReported = journal.reports(round.subscriptionId(), round.roundNumber(),
+                profile.maxReportsPerRound()).stream().anyMatch(report ->
+                Arrays.equals(report.reporterPublicKey(), signer.publicKey()));
+        if (alreadyReported) return true;
+        RoundKey key = new RoundKey(round.subscriptionId(), round.roundNumber());
+        if (!inFlight.add(key)) return true;
+        if (!requestPermit(definition(round.definitionDigest()).id())) {
+            backpressureEvents.incrementAndGet();
+            inFlight.remove(key);
+            return true;
+        }
+        try {
+            workers.execute(() -> acquire(subscription, round, key));
+            return true;
+        } catch (RejectedExecutionException full) {
+            backpressureEvents.incrementAndGet();
+            inFlight.remove(key);
+            return false; // Bounded backpressure; retained rounds are retried later.
         }
     }
 

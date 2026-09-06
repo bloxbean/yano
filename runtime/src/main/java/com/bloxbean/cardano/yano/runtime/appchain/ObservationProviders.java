@@ -14,6 +14,7 @@ import java.util.Objects;
 /** Resolves one bounded acquisition provider for every enabled definition. */
 final class ObservationProviders implements AutoCloseable {
     static final String HTTPS_ATTESTED = "https-attested-v1";
+    static final String HTTPS_MERKLE = "https-attested-merkle-v1";
     static final String HTTPS_EXACT = "https-exact-v1";
     static final String EXTERNAL_REPORTERS = "external-reporters-v1";
 
@@ -69,6 +70,9 @@ final class ObservationProviders implements AutoCloseable {
                 ObservationProvider provider = switch (type.trim()) {
                     case HTTPS_ATTESTED -> new RestrictedHttpsObservationProvider(
                             RestrictedHttpsObservationProvider.Mode.ATTESTED,
+                            definition, settings);
+                    case HTTPS_MERKLE -> new RestrictedHttpsObservationProvider(
+                            RestrictedHttpsObservationProvider.Mode.MERKLE_ATTESTED,
                             definition, settings);
                     case HTTPS_EXACT -> new RestrictedHttpsObservationProvider(
                             RestrictedHttpsObservationProvider.Mode.RAW_EXACT,
