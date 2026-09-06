@@ -1535,6 +1535,43 @@ ADR-012 remains a proposal and is not silently changed by this Yano ADR.
 A cross-repository tracking issue must be linked from both ADRs before Phase 3
 implementation begins.
 
+The coordinated migration is tracked in
+[Yano X #5](https://github.com/bloxbean/yano-x/issues/5). Its companion ADR-012
+revision replaces application-owned report/round processing with host
+subscriptions, external reports and finalized-result callbacks. The initial
+policy migration is explicit cancel-and-re-watch, preserving old pinned round
+identities and the domain-owned publication/circuit-breaker lifecycle.
+
+### 17.1.1 Initial aggregation safety decision
+
+Phase 3 starts with `complete-source-median-v1`, a certificate-monotonic
+composition of exact-value quorums, not an arbitrary-subset reporter median.
+The definition pins a bounded complete source/independence-group list and
+fixed-point/filter parameters. Every certificate contains exactly `r`
+distinct authorized reporter claims for **every** required source. Reports
+within each source quorum agree on its complete terminal claim, not just its
+numeric value. Reporters lock one choice per subscription/round/source.
+
+For each source, two sufficient sets intersect in more than `g` reporters
+because `2r-p>g`. Conflicting terminal claims would therefore require honest
+double-signing. Complete coverage fixes the source vector; deterministic
+alias-group lower medians, outlier filtering and final lower median are pure
+functions of that vector. Different sufficient reporter subsets cannot change
+the result. Five reporters for one source still count as one source.
+
+This meets section 6.5's terminal-value-for-every-source exception. The normal
+sequenced RESULT carries the complete coverage proof; no new closure topic
+is introduced for this certificate-monotonic policy. Missing/stale required
+sources prevent VALUE certification. This consciously trades availability
+for a self-contained uniqueness proof. It does not implement the former
+ADR-012 latest-assertion or differing-reporter median behavior.
+
+Non-monotonic policies, partial source coverage and latest-assertion selection
+remain unsupported pending their own separately sequenced closure protocol
+and review. They must not be enabled by configuration. Phase 3 tests must
+attack omitted sources, aliases, scale/overflow, equivocation and reporter
+subset/permutation invariance before this initial policy is released.
+
 ### 17.2 External reporter keys
 
 ADR-012 reporters are authorized external Ed25519 keys, not app-chain members.
@@ -1827,7 +1864,9 @@ Deliver:
 - definition-pinned external reporter keys and Yano X ADR-012 report/round
   migration;
 - deterministic median with explicit even-count/tie/rounding rules;
-- a reviewed bounded sequenced closure proof for every non-monotonic aggregate;
+- the reviewed complete-source terminal-claim proof in section 17.1.1 for the
+  initial certificate-monotonic aggregate; any non-monotonic extension remains
+  gated on a separately reviewed bounded sequenced closure proof;
 - source diversity and minimum-source policies;
 - an ADA/USD reference example using several logical sources; and
 - permutation, outlier, equivocation, stale-source, and overflow property tests.

@@ -14,6 +14,10 @@ import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
+import com.bloxbean.cardano.yano.api.appchain.observation.CompleteSourceMedianPolicy;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationFixedPoint;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReport;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRound;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificate;
@@ -31,6 +35,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.math.BigInteger;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
@@ -41,12 +46,91 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ObservationRuntimeTest {
     private static final String CHAIN_ID = "observation-runtime-test";
     private static final String MEMBER_SEED = "51".repeat(32);
+
+    @Test
+    void externalReportersCertifyAllSourcesWithoutGatewayAcquisition(@TempDir Path directory) throws Exception {
+        AppMessageSigner member = new AppMessageSigner(MEMBER_SEED);
+        List<AppMessageSigner> reporters = IntStream.range(61, 66)
+                .mapToObj(seed -> new AppMessageSigner(Integer.toHexString(seed).repeat(32))).toList();
+        List<byte[]> keys = reporters.stream().map(AppMessageSigner::publicKey).toList();
+        CompleteSourceMedianPolicy.Parameters parameters = new CompleteSourceMedianPolicy.Parameters(
+                6, 2, 100_000, BigInteger.ZERO, BigInteger.ZERO, BigInteger.valueOf(10_000_000),
+                IntStream.range(0, 3).mapToObj(i -> new CompleteSourceMedianPolicy.Source(filled(i), filled(i))).toList());
+        ObservationDefinition definition = new ObservationDefinition(1, "delivery", 1,
+                filled(1), filled(2), filled(3), filled(4), ObservationReporterMode.EXTERNAL_REPORTERS,
+                ObservationHashes.reporterSetDigest(keys), 1, 4, 3, true,
+                ObservationProviders.EXTERNAL_REPORTERS, parameters.sourceSetDigest(), "fixed-point-i128-v1",
+                ObservationSettings.EXTERNAL_EVIDENCE, CompleteSourceMedianPolicy.ID, parameters.digest(),
+                filled(7), "pinned-groups-v1", "round-window-v1", "digest-v1", 1, 1024, 18, 0, 15, 3);
+        ObservationProfileV1 profile = new ObservationProfileV1(1, true, 1, 2, 1, 1, 2, 1, 1,
+                List.of(definition), 100, 100, 100, 10, 100, 15, 3,
+                4096, 1024, 16_384, 10, 32_768, 1, 20, 3);
+        AppChainConfig config = AppChainConfig.builder(CHAIN_ID).signingKeyHex(MEMBER_SEED)
+                .memberKeysHex(Set.of(member.publicKeyHex())).proposerKeyHex(member.publicKeyHex())
+                .pluginSettings(Map.of(ObservationSettings.PROFILE_HEX, HexUtil.encodeHexString(profile.encode()),
+                        "observations.reporters.delivery", reporters.stream().map(AppMessageSigner::publicKeyHex)
+                                .collect(Collectors.joining(",")),
+                        "observations.policy.delivery", HexUtil.encodeHexString(parameters.encode())))
+                .stateCommitmentIdentity(TestStateCommitments.MPF).build();
+        MemberGroup members = new MemberGroup(Set.of(member.publicKeyHex()), 1);
+        ObservationSettings settings = ObservationSettings.from(config, members);
+        EffectsSettings effects = EffectsSettings.from(config);
+        AppChainConsensusProfile consensus = effects.consensusProfile(config);
+        SystemInputKernel kernel = kernel(settings, effects, consensus);
+        AppStateMachine machine = machine();
+        try (AppLedgerStore ledger = ledger(directory)) {
+            apply(ledger, kernel, machine, 1, List.of());
+            apply(ledger, kernel, machine, 2, List.of());
+            ObservationRound round = ledger.observationReader().openRounds(1).getFirst();
+            assertThat(round.memberCount()).isEqualTo(1);
+            assertThat(round.reporterCount()).isEqualTo(5);
+            assertThat(round.reporterFaultBound()).isEqualTo(1);
+            try (ObservationRuntime runtime = runtime(settings, request -> {
+                throw new AssertionError("Gateway must not acquire or sign external claims");
+            }, ledger, member, members, consensus, new CopyOnWriteArrayList<>())) {
+                runtime.tick();
+                for (int source = 0; source < 3; source++) {
+                    for (int reporter = 0; reporter < 4; reporter++) {
+                        runtime.submitExternalReport(externalClaim(round, profile, consensus,
+                                reporters.get(reporter), source, new byte[64]).encode()); // Bad signatures add no weight.
+                        ObservationReport unsigned = externalClaim(round, profile, consensus,
+                                reporters.get(reporter), source, new byte[64]);
+                        runtime.submitExternalReport(externalClaim(round, profile, consensus,
+                                reporters.get(reporter), source,
+                                reporters.get(reporter).sign(unsigned.signingDigest())).encode());
+                    }
+                }
+                await(() -> runtime.readyCertificates(1).size() == 1, Duration.ofSeconds(5));
+                ObservationCertificate certificate = runtime.readyCertificates(1).getFirst();
+                assertThat(certificate.reports()).hasSize(12);
+                assertThat(ObservationFixedPoint.decode(certificate.output()).units())
+                        .isEqualTo(BigInteger.valueOf(501000));
+                assertThat(runtime.status().get("acquisitionAttempts")).isZero();
+                apply(ledger, kernel, machine, 3, List.of(message(ObservationTopics.RESULT, certificate.encode(), 1)));
+                assertThat(ledger.observationReader().activeCount()).isZero();
+                ledger.verifyObservationIndexes();
+            }
+        }
+    }
+
+    private static ObservationReport externalClaim(ObservationRound round, ObservationProfileV1 profile,
+                                                   AppChainConsensusProfile consensus, AppMessageSigner reporter,
+                                                   int source, byte[] signature) {
+        return new ObservationReport(1, TestStateCommitments.MPF.genesisId(), CHAIN_ID,
+                AppChainConsensusProfileCommitment.digest(consensus), profile.digest(), round.definitionDigest(),
+                round.subscriptionId(), round.roundNumber(), round.membershipDigest(), round.reporterSetDigest(),
+                reporter.publicKey(), filled(source), new ObservationFixedPoint(
+                BigInteger.valueOf(500000 + source * 1000L), 6).encode(), new byte[0], new byte[]{1},
+                round.anchorType().code(), round.dueAnchor(), signature);
+    }
 
     @Test
     void incompatibleGovernedMembershipActivationIsVoid() {

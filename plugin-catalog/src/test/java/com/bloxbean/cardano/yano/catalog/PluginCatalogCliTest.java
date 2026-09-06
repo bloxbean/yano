@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.catalog;
 
+import com.bloxbean.cardano.yano.api.plugin.PluginApiVersion;
+
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
@@ -52,7 +54,7 @@ class PluginCatalogCliTest {
         assertThat(firstTable.err()).isEmpty();
         assertThat(firstTable.out()).isEqualTo(secondTable.out())
                 .contains("PLUGIN_API_MAJOR\t3")
-                .contains("PLUGIN_API_LEVEL\t5")
+                .contains("PLUGIN_API_LEVEL\t" + PluginApiVersion.CURRENT_LEVEL)
                 .contains("ID\tVERSION\tSTATUS")
                 .contains(BUNDLE_ID)
                 .contains("health/" + BUNDLE_ID)
@@ -63,7 +65,7 @@ class PluginCatalogCliTest {
                 .doesNotContain(temporary.toString());
         JsonNode json = new ObjectMapper().readTree(firstJson.out());
         assertThat(json.path("pluginApiMajor").asInt()).isEqualTo(3);
-        assertThat(json.path("pluginApiLevel").asInt()).isEqualTo(5);
+        assertThat(json.path("pluginApiLevel").asInt()).isEqualTo(PluginApiVersion.CURRENT_LEVEL);
         assertThat(json.path("bundles").get(0).path("id").asText()).isEqualTo(BUNDLE_ID);
         assertThat(json.path("bundles").get(0).path("source").asText())
                 .isEqualTo("DIRECTORY");
@@ -81,7 +83,7 @@ class PluginCatalogCliTest {
 
         assertThat(result.exit()).isZero();
         assertThat(result.out())
-                .startsWith("VALID apiMajor=3 apiLevel=5 bundles=1 selected=1")
+                .startsWith("VALID apiMajor=3 apiLevel=" + PluginApiVersion.CURRENT_LEVEL + " bundles=1 selected=1")
                 .contains("fingerprint=sha256:");
         assertThat(System.getProperty(INITIALIZED)).isNull();
         assertThat(System.getProperty(CONSTRUCTED)).isNull();
@@ -129,15 +131,16 @@ class PluginCatalogCliTest {
         assertThat(rejectedOldPlugin.err())
                 .contains("does not support Yano plugin API major 3");
 
-        Path newLevel = healthArtifact("new-level", 6);
+        int futureLevel = PluginApiVersion.CURRENT_LEVEL + 1;
+        Path newLevel = healthArtifact("new-level", futureLevel);
         Result oldHost = run("validate", newLevel.toString());
         assertThat(oldHost.exit()).isEqualTo(PluginCatalogCli.EXIT_INVALID_CATALOG);
-        assertThat(oldHost.err()).contains("API major 3 level 5");
+        assertThat(oldHost.err()).contains("API major 3 level " + PluginApiVersion.CURRENT_LEVEL);
 
         Result currentEnough = run(
-                "validate", "--api-level", "6", newLevel.toString());
+                "validate", "--api-level", Integer.toString(futureLevel), newLevel.toString());
         assertThat(currentEnough.exit()).isZero();
-        assertThat(currentEnough.out()).startsWith("VALID apiMajor=3 apiLevel=6");
+        assertThat(currentEnough.out()).startsWith("VALID apiMajor=3 apiLevel=" + futureLevel);
 
         Result invalidLevel = run(
                 "inspect", "--api-level", "0", valid.toString());

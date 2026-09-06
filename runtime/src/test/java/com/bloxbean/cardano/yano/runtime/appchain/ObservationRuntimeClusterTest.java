@@ -18,6 +18,10 @@ import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
+import com.bloxbean.cardano.yano.api.appchain.observation.CompleteSourceMedianPolicy;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationFixedPoint;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReport;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRound;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAttestation;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
@@ -41,6 +45,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.math.BigInteger;
 import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -53,6 +59,8 @@ import java.util.Set;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -88,12 +96,30 @@ class ObservationRuntimeClusterTest {
     }
 
     private static void networkCluster(Path directory, boolean attested) throws Exception {
-        List<AppMessageSigner> signers = SEEDS.stream().map(AppMessageSigner::new).toList();
+        networkCluster(directory, attested, false);
+    }
+
+    @Test
+    void externalMedianFinalizesThroughFiveNetworkedValidators(@TempDir Path directory) throws Exception {
+        networkCluster(directory, false, true);
+    }
+
+    private static void networkCluster(Path directory, boolean attested, boolean external) throws Exception {
+        List<String> seeds = external ? List.of("61".repeat(32), "62".repeat(32), "63".repeat(32),
+                "64".repeat(32), "65".repeat(32)) : SEEDS;
+        List<AppMessageSigner> signers = seeds.stream().map(AppMessageSigner::new).toList();
+        List<AppMessageSigner> reporters = IntStream.range(71, 76)
+                .mapToObj(seed -> new AppMessageSigner(Integer.toHexString(seed).repeat(32))).toList();
+        CompleteSourceMedianPolicy.Parameters parameters = aggregateParameters();
         AppMessageSigner attestor = new AppMessageSigner("64".repeat(32));
         Set<String> members = Set.copyOf(signers.stream()
                 .map(AppMessageSigner::publicKeyHex).toList());
-        ObservationDefinition definition = definition(signers, attested, attestor, true);
-        ObservationProfileV1 profile = profile(definition);
+        ObservationDefinition definition = external ? externalDefinition(reporters, parameters)
+                : definition(signers, attested, attestor, true);
+        ObservationProfileV1 profile = external
+                ? new ObservationProfileV1(1, true, 1, 2, 1, 1, 2, 1, 1,
+                List.of(definition), 100, 100, 100, 10, 100, 15, 3,
+                4096, 1024, 16_384, 10, 32_768, 1, 20, 3) : profile(definition);
         ObservationProviderFactory factory = new ObservationProviderFactory() {
             @Override public String type() { return "fixture-attested-v1"; }
             @Override public ObservationProvider create(String id, Map<String, String> settings) {
@@ -110,27 +136,33 @@ class ObservationRuntimeClusterTest {
             }
         };
         List<Integer> ports = new ArrayList<>();
-        for (int index = 0; index < 3; index++) {
+        for (int index = 0; index < seeds.size(); index++) {
             try (ServerSocket socket = new ServerSocket(0)) { ports.add(socket.getLocalPort()); }
         }
         List<AppChainSubsystem> subsystems = new ArrayList<>();
         List<NodeServer> servers = new ArrayList<>();
+        List<AppChainConfig> configs = new ArrayList<>();
         try {
-            for (int index = 0; index < 3; index++) {
+            for (int index = 0; index < seeds.size(); index++) {
                 int port = ports.get(index);
                 Map<String, String> providerSettings = new LinkedHashMap<>();
                 providerSettings.put(ObservationSettings.PROFILE_HEX,
                         HexUtil.encodeHexString(profile.encode()));
                 providerSettings.put("observations.providers.delivery.type",
                         attested ? factory.type() : ObservationProviders.HTTPS_EXACT);
-                if (attested) {
+                if (external) {
+                    providerSettings.put("observations.reporters.delivery", reporters.stream()
+                            .map(AppMessageSigner::publicKeyHex).collect(Collectors.joining(",")));
+                    providerSettings.put("observations.policy.delivery", HexUtil.encodeHexString(parameters.encode()));
+                    providerSettings.put("consensus.max-byzantine-members", "1");
+                } else if (attested) {
                     providerSettings.put("observations.attestors.delivery", attestor.publicKeyHex());
                 } else {
                     providerSettings.put("observations.providers.delivery.url", LIVE_SOURCE);
                     providerSettings.put("observations.providers.delivery.source-id", "source");
                 }
                 AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
-                        .signingKeyHex(SEEDS.get(index)).memberKeysHex(members).threshold(2)
+                        .signingKeyHex(seeds.get(index)).memberKeysHex(members).threshold(external ? 4 : 2)
                         .proposerKeyHex(signers.getFirst().publicKeyHex()).blockIntervalMs(300)
                         .peers(ports.stream().filter(candidate -> candidate != port)
                                 .map(candidate -> new AppChainConfig.AppPeer("localhost", candidate))
@@ -138,6 +170,7 @@ class ObservationRuntimeClusterTest {
                         .stateCommitmentIdentity(TestStateCommitments.MPF)
                         .pluginSettings(providerSettings)
                         .build();
+                configs.add(config);
                 AppChainSubsystem node = new AppChainSubsystem(config, 42, null, machine(),
                         directory.resolve("network-" + index).toString(), null, registry,
                         LoggerFactory.getLogger(ObservationRuntimeClusterTest.class));
@@ -154,13 +187,33 @@ class ObservationRuntimeClusterTest {
             AppChainSubsystem proposer = subsystems.getFirst();
             await(() -> subsystems.stream().allMatch(node -> {
                 Object connected = node.status().get("peers");
-                return connected instanceof Map<?, ?> peers && peers.size() == 2
+                return connected instanceof Map<?, ?> peers && peers.size() == seeds.size() - 1
                         && peers.values().stream().allMatch(Boolean.TRUE::equals);
             }), Duration.ofSeconds(30));
             proposer.submit("open", new byte[]{1});
             await(() -> subsystems.stream().allMatch(node -> node.tipHeight() >= 1),
                     Duration.ofSeconds(30));
             proposer.submit("due", new byte[]{2});
+            if (external) {
+                await(() -> subsystems.stream().allMatch(node -> node.tipHeight() >= 2), Duration.ofSeconds(30));
+                byte[] genesisId = proposer.stateCommitmentIdentity().orElseThrow().genesisId();
+                byte[] subscriptionId = ObservationHashes.subscriptionId(genesisId,
+                        1, 0, definition.digest(), new byte[0]);
+                ObservationRound round = ObservationRound.decode(proposer.query("yano/observations/round",
+                        ByteBuffer.allocate(40).put(subscriptionId).putLong(0).array()).payload());
+                byte[] consensusDigest = AppChainConsensusProfileCommitment.digest(
+                        EffectsSettings.from(configs.getFirst()).consensusProfile(configs.getFirst()));
+                // Three independent source quorums enter through non-proposer gateways.
+                for (int source = 0; source < 3; source++) {
+                    for (int reporter = 0; reporter < 4; reporter++) {
+                        AppMessageSigner key = reporters.get(reporter);
+                        ObservationReport unsigned = externalReport(round, profile, consensusDigest, genesisId, key, source,
+                                new byte[64]);
+                        subsystems.get(1 + reporter).submitObservationReport(externalReport(round, profile,
+                                consensusDigest, genesisId, key, source, key.sign(unsigned.signingDigest())).encode());
+                    }
+                }
+            }
             await(() -> subsystems.stream().allMatch(node -> node.tipHeight() >= 3),
                     Duration.ofSeconds(30));
             AppBlock finalized = proposer.block(3).orElseThrow();
@@ -170,11 +223,16 @@ class ObservationRuntimeClusterTest {
                     .filter(message -> ObservationTopics.RESULT.equals(message.getTopic()))
                     .findFirst().orElseThrow().getBody());
             byte[] output = finalizedObservation.output();
-            assertThat(new String(output, StandardCharsets.US_ASCII))
-                    .contains(attested ? "delivered" : "distributionUrl=");
+            if (external) {
+                assertThat(ObservationFixedPoint.decode(output).units()).isEqualTo(BigInteger.valueOf(501000));
+                assertThat(finalizedObservation.reports()).hasSize(12);
+            } else {
+                assertThat(new String(output, StandardCharsets.US_ASCII))
+                        .contains(attested ? "delivered" : "distributionUrl=");
+            }
             for (AppChainSubsystem node : subsystems) {
                 AppBlock block = node.block(3).orElseThrow();
-                assertThat(block.cert().signatures()).hasSize(2);
+                assertThat(block.cert().signatures()).hasSize(external ? 4 : 2);
                 assertThat(block.stateRoot()).isEqualTo(finalized.stateRoot());
                 assertThat(node.query("result", new byte[0]).payload())
                         .isEqualTo(output);
@@ -189,6 +247,33 @@ class ObservationRuntimeClusterTest {
             for (AppChainSubsystem node : subsystems) node.close();
             for (NodeServer server : servers) server.shutdown();
         }
+    }
+
+    private static CompleteSourceMedianPolicy.Parameters aggregateParameters() {
+        return new CompleteSourceMedianPolicy.Parameters(6, 2, 100_000, BigInteger.ZERO,
+                BigInteger.ZERO, BigInteger.valueOf(10_000_000), IntStream.range(0, 3)
+                .mapToObj(i -> new CompleteSourceMedianPolicy.Source(filled(i), filled(i))).toList());
+    }
+
+    private static ObservationDefinition externalDefinition(List<AppMessageSigner> reporters,
+                                                            CompleteSourceMedianPolicy.Parameters parameters) {
+        return new ObservationDefinition(1, "delivery", 1, filled(1), filled(2), filled(3), filled(4),
+                ObservationReporterMode.EXTERNAL_REPORTERS,
+                ObservationHashes.reporterSetDigest(reporters.stream().map(AppMessageSigner::publicKey).toList()),
+                1, 4, 3, true, ObservationProviders.EXTERNAL_REPORTERS, parameters.sourceSetDigest(),
+                "fixed-point-i128-v1", ObservationSettings.EXTERNAL_EVIDENCE, CompleteSourceMedianPolicy.ID,
+                parameters.digest(), filled(7), "pinned-groups-v1", "round-window-v1", "digest-v1",
+                1, 1024, 18, 0, 15, 3);
+    }
+
+    private static ObservationReport externalReport(ObservationRound round, ObservationProfileV1 profile,
+                                                     byte[] consensusDigest, byte[] genesisId, AppMessageSigner reporter,
+                                                     int source, byte[] signature) {
+        return new ObservationReport(1, genesisId, CHAIN_ID, consensusDigest,
+                profile.digest(), round.definitionDigest(), round.subscriptionId(), round.roundNumber(),
+                round.membershipDigest(), round.reporterSetDigest(), reporter.publicKey(), filled(source),
+                new ObservationFixedPoint(BigInteger.valueOf(500000 + source * 1000L), 6).encode(),
+                new byte[0], new byte[]{1}, round.anchorType().code(), round.dueAnchor(), signature);
     }
 
     private static void runCluster(Path directory, boolean attested) throws Exception {

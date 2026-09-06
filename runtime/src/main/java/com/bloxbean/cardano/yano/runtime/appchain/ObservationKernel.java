@@ -83,6 +83,13 @@ final class ObservationKernel {
         ObservationEvidenceVerifier evidenceVerifier(ObservationDefinition definition);
 
         ObservationReconciliationPolicy policy(ObservationDefinition definition);
+
+        default List<byte[]> reporters(ObservationDefinition definition, AppChainMembershipEpoch epoch) {
+            if (definition.reporterMode() != ObservationReporterMode.ACTIVE_MEMBERS) {
+                throw new IllegalArgumentException("External reporter profile is not registered");
+            }
+            return reporterKeys(epoch);
+        }
     }
 
     record DueEntry(ObservationAnchorType anchorType, long dueAnchor, byte[] subscriptionId) {
@@ -503,19 +510,23 @@ final class ObservationKernel {
                     break;
                 }
                 AppChainMembershipEpoch epoch = memberships.epochAt(block.height());
-                List<byte[]> reporters = reporterKeys(epoch);
                 ObservationDefinition definition = definition(subscription.definitionDigest());
-                if (definition.reporterMode() != ObservationReporterMode.ACTIVE_MEMBERS
-                        || definition.reporterFaultBound() != maxByzantineMembers
+                List<byte[]> reporters = verifiers.reporters(definition, epoch);
+                boolean activeMembers = definition.reporterMode() == ObservationReporterMode.ACTIVE_MEMBERS;
+                if (activeMembers && (definition.reporterFaultBound() != maxByzantineMembers
                         || (profile.roundRulesVersion() == 1
                             && definition.reportThreshold() != epoch.threshold())
                         || !Arrays.equals(definition.reporterSetDigest(),
                             profile.roundRulesVersion() == 2 ? ObservationHashes.activeMemberRuleDigest()
-                                    : ObservationHashes.reporterSetDigest(reporters))) {
+                                    : ObservationHashes.reporterSetDigest(reporters)))) {
                     throw new IllegalStateException(
                             "active-member observation definition differs from opening membership");
                 }
-                int reportThreshold = profile.roundRulesVersion() == 2
+                if (!activeMembers && !Arrays.equals(definition.reporterSetDigest(),
+                        ObservationHashes.reporterSetDigest(reporters))) {
+                    throw new IllegalStateException("External reporter keys differ from the definition");
+                }
+                int reportThreshold = activeMembers && profile.roundRulesVersion() == 2
                         ? Math.max(definition.reportThreshold(), epoch.threshold())
                         : definition.reportThreshold();
                 if (reportThreshold > definition.maxReports()
@@ -540,7 +551,7 @@ final class ObservationKernel {
                         ObservationHashes.digest(subscription.parameters()), epoch.fromHeight(),
                         epoch.digest(), epoch.members().size(), epoch.threshold(),
                         maxByzantineMembers, definition.reporterMode(),
-                        ObservationHashes.reporterSetDigest(reporters), epoch.members().size(),
+                        ObservationHashes.reporterSetDigest(reporters), reporters.size(),
                         definition.reporterFaultBound(), reportThreshold,
                         definition.sourceConfigurationDigest(), definition.policyParametersDigest());
                 putRound(round);
@@ -568,7 +579,7 @@ final class ObservationKernel {
                         "retained observation round membership snapshot is unavailable");
             }
             return ObservationCertificateVerifier.verify(definition, round, certificate, profile,
-                    chainGenesisId, chainId, consensusProfileDigest, reporterKeys(epoch),
+                    chainGenesisId, chainId, consensusProfileDigest, verifiers.reporters(definition, epoch),
                     (publicKey, digest, signature) ->
                             AppMessageSigner.verify(signature, digest, publicKey),
                     verifiers.evidenceVerifier(definition),

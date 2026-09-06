@@ -5,6 +5,10 @@
 hash32 = bytes .size 32
 ed25519-key = bytes .size 32
 ed25519-signature = bytes .size 64
+; Policy-selected opaque numeric value: version byte 1, scale byte 0..18,
+; followed by signed 128-bit big-endian two's-complement units. This binary
+; payload is carried inside the canonical report/output CBOR byte string.
+observation-fixed-point-i128-v1 = bytes .size 18
 bounded-id = text .size (1..128)
 
 ; Field indexes 0..28.

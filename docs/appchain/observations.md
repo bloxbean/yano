@@ -1,8 +1,9 @@
 # Certified observations (preview)
 
 Generic observations are disabled by default. This page describes ADR-037's
-one-shot and recurring exact-value implementation; aggregation and graduation
-remain later milestones. Height cadence measures chain progress, not minutes.
+one-shot and recurring exact-value implementation and the in-progress Phase 3
+complete-source aggregation profile. Graduation remains a later milestone.
+Height cadence measures chain progress, not minutes.
 
 ## Profile selection
 
@@ -121,6 +122,59 @@ observation signing journal and all other column families. Its synchronous
 in-progress marker prevents startup after a partial install; rerun the
 offline install to recover. Missing finalized history or replay divergence
 requires restoring verified history/configuration, never bypassing a check.
+
+## Complete-source numeric observations (Phase 3 preview)
+
+Plugin API level 6 adds `AppChainGateway.submitObservationReport` and the
+bounded fixed-point/complete-source helpers. Existing gateway implementations
+inherit an unavailable default; existing exact-value definitions are unchanged.
+
+The initial aggregation mode uses `EXTERNAL_REPORTERS`, acquisition identity
+`external-reporters-v1`, evidence identity `external-reporter-claim-v1`, and
+policy `complete-source-median-v1`. Gateways do not acquire or sign for external
+keys. Evidence is empty: the trust claim is reporter attestation, not a source
+signature or objective truth.
+
+Configure `observations.reporters.<definition-id>` with distinct Ed25519 public
+keys and `observations.policy.<definition-id>` with the hex encoding returned by
+`CompleteSourceMedianPolicy.Parameters.encode()`. Their exact digests must match
+the definition. Use v2 scheduling. The definition fixes external `g,r`; keys
+fix `p`, with `2r-p>g` and `r<=p-g`. Up to 32 reporters and 16 sources are
+supported, further bounded by the full `p * sourceCount` report matrix and
+the profile's 256-report wire limit. These reporters are independent of the
+app-chain member set and its `n,f,q`.
+
+Every required source must have exactly `r` reports agreeing on its value,
+source version and freshness anchor. A certificate proves the complete source
+vector before grouping aliases, filtering outliers and taking lower medians.
+An omitted, stale or disagreeing required source prevents VALUE. Declared
+independence groups prevent aliases multiplying weight, but cannot prove that
+two businesses have independent upstream data. Partial-source/latest-assertion
+policies are not supported.
+
+`ObservationFixedPoint` encodes version byte 1, scale byte 0–18, and a 16-byte
+big-endian signed two's-complement integer. The quantity is `units * 10^-scale`.
+Strict decimal parsing pads exact fractional digits but never rounds. Exponents,
+leading-zero ambiguity, negative zero, overflow and scale mismatch fail closed.
+Policy parameters encode version/scale/source-count/minimum-groups (one byte
+each), a four-byte nonnegative ppm limit, three 18-byte fixed-point values
+(absolute deviation, minimum and maximum), then sorted 32-byte source and
+32-byte independence-group pairs. Noncanonical order/trailing bytes are rejected.
+
+POST canonical signed report CBOR as `application/octet-stream` to
+`/api/v1/app-chain/chains/<chain-id>/observations/reports` (with the configured
+API prefix). HTTP 202 / `QUEUED` acknowledges bounded local queue admission
+only—not signature validity, durable retention, certification or finality.
+Retry identical signed bytes after 429 or uncertain transport. Audit the
+finalized result through root-fixed queries. Gateways never wrap these reports
+as ordinary application messages.
+
+External reporters must use the resolved chain genesis/profile identity and
+canonical committed round descriptor, and durably lock one complete choice per
+subscription/round/source before signing. Do not re-key or erase that journal to
+retry. Companion SDK and ADA/USD example delivery are tracked in
+[Yano X #5](https://github.com/bloxbean/yano-x/issues/5) and
+[the design migration PR](https://github.com/bloxbean/yano-x/pull/6).
 
 ## Qualification commands
 

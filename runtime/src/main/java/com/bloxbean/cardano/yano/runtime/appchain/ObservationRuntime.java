@@ -6,6 +6,9 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificate;
+import com.bloxbean.cardano.yano.api.appchain.observation.CompleteSourceMedianPolicy;
+import com.bloxbean.cardano.yano.api.appchain.PoolFullException;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReporterMode;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCertificateVerifier;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationDefinition;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationHashes;
@@ -28,7 +31,6 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -175,6 +177,25 @@ final class ObservationRuntime implements AutoCloseable {
         submitCoordinator(() -> acceptCertificate(certificate, true), body.length);
     }
 
+    String submitExternalReport(byte[] body) {
+        if (closed.get()) throw new IllegalStateException("Observation ingress is stopped");
+        if (body == null || body.length > profile.maxReportBytes()) {
+            throw new IllegalArgumentException("Observation report exceeds profile bounds");
+        }
+        ObservationReport report = ObservationReport.decode(body);
+        ObservationRound round = reader.round(report.subscriptionId(), report.roundNumber()).orElseThrow(() ->
+                new IllegalArgumentException("Unknown observation round"));
+        if (round.reporterMode() != ObservationReporterMode.EXTERNAL_REPORTERS) {
+            throw new IllegalArgumentException("Round does not accept external reporters");
+        }
+        // Queue admission is not signature validity, durability or finality.
+        // Signature/evidence checks share the bounded member-diffusion coordinator.
+        if (!submitCoordinator(() -> acceptReport(report, true), body.length)) {
+            throw new PoolFullException("Observation ingress is busy; retry with the same signed report");
+        }
+        return HexUtil.encodeHexString(ObservationHashes.digest(body));
+    }
+
     List<ObservationCertificate> readyCertificates(int limit) {
         if (limit <= 0) return List.of();
         limit = Math.min(limit, profile.maxResultsPerBlock());
@@ -237,18 +258,18 @@ final class ObservationRuntime implements AutoCloseable {
         submitCoordinator(task, 0);
     }
 
-    private void submitCoordinator(Runnable task, int encodedBytes) {
-        if (closed.get()) return;
+    private boolean submitCoordinator(Runnable task, int encodedBytes) {
+        if (closed.get()) return false;
         // Include conservative headroom for defensive copies and decoded records.
         int weight = Math.toIntExact(Math.min(Integer.MAX_VALUE, 4L * (encodedBytes + 256L)));
         if (!coordinatorBytes.tryAcquire(weight)) {
             backpressureEvents.incrementAndGet();
-            return;
+            return false;
         }
         if (!coordinatorSlots.tryAcquire()) {
             coordinatorBytes.release(weight);
             backpressureEvents.incrementAndGet();
-            return;
+            return false;
         }
         try {
             coordinator.execute(() -> {
@@ -259,10 +280,12 @@ final class ObservationRuntime implements AutoCloseable {
                     coordinatorBytes.release(weight);
                 }
             });
+            return true;
         } catch (RejectedExecutionException stopped) {
             coordinatorSlots.release();
             coordinatorBytes.release(weight);
             if (!closed.get()) throw stopped;
+            return false;
         }
     }
 
@@ -309,7 +332,8 @@ final class ObservationRuntime implements AutoCloseable {
             boolean alreadyReported = journal.reports(round.subscriptionId(), round.roundNumber(),
                     profile.maxReportsPerRound()).stream().anyMatch(report ->
                     Arrays.equals(report.reporterPublicKey(), signer.publicKey()));
-            if (!alreadyReported && round.resultExpiryHeight() == 0
+            if (round.reporterMode() == ObservationReporterMode.ACTIVE_MEMBERS
+                    && !alreadyReported && round.resultExpiryHeight() == 0
                     && height <= round.absoluteMaxRoundHeight()
                     && (round.anchorType() == ObservationAnchorType.APP_HEIGHT
                             ? height : reader.highWaterSlot()) <= round.reportDeadlineAnchor()) {
@@ -441,22 +465,45 @@ final class ObservationRuntime implements AutoCloseable {
                 round.roundNumber(), profile.maxReportsPerRound())) {
             groups.computeIfAbsent(new ValueKey(report), ignored -> new ArrayList<>()).add(report);
         }
+        CompleteSourceMedianPolicy.Parameters parameters = settings.aggregate(definition);
+        if (parameters != null) {
+            List<ObservationReport> selected = new ArrayList<>();
+            for (CompleteSourceMedianPolicy.Source source : parameters.sources()) {
+                List<ObservationReport> sufficient = groups.values().stream()
+                        .filter(group -> group.size() >= round.reportThreshold()
+                                && Arrays.equals(group.getFirst().sourceId(), source.id()))
+                        .findFirst().orElse(null);
+                if (sufficient == null) return;
+                sufficient.sort(REPORT_ORDER);
+                selected.addAll(sufficient.subList(0, round.reportThreshold()));
+            }
+            selected.sort(REPORT_ORDER);
+            try {
+                byte[] output = new CompleteSourceMedianPolicy(parameters).reconcile(round, selected);
+                certify(round, selected, output);
+            } catch (IllegalArgumentException noAggregate) {
+                // Complete source claims can still fail the deterministic outlier/diversity policy.
+            }
+            return;
+        }
         for (List<ObservationReport> reports : groups.values()) {
             reports.sort(REPORT_ORDER);
             if (reports.size() < round.reportThreshold()) continue;
             List<ObservationReport> selected = List.copyOf(
                     reports.subList(0, round.reportThreshold()));
             byte[] output = selected.getFirst().value();
-            byte[] resultId = ObservationHashes.resultId(round.subscriptionId(),
-                    round.roundNumber(), round.definitionDigest(), ObservationResultStatus.VALUE,
-                    ObservationHashes.digest(output));
-            ObservationCertificate certificate = new ObservationCertificate(1,
-                    round.subscriptionId(), round.roundNumber(), round.membershipDigest(),
-                    round.definitionDigest(), round.policyDigest(), round.sourceSetDigest(),
-                    selected, output, new byte[0], resultId);
-            acceptCertificate(certificate, false);
+            certify(round, selected, output);
             return;
         }
+    }
+
+    private void certify(ObservationRound round, List<ObservationReport> reports, byte[] output) {
+        byte[] resultId = ObservationHashes.resultId(round.subscriptionId(),
+                round.roundNumber(), round.definitionDigest(), ObservationResultStatus.VALUE,
+                ObservationHashes.digest(output));
+        acceptCertificate(new ObservationCertificate(1, round.subscriptionId(), round.roundNumber(),
+                round.membershipDigest(), round.definitionDigest(), round.policyDigest(), round.sourceSetDigest(),
+                reports, output, new byte[0], resultId), false);
     }
 
     private void acceptCertificate(ObservationCertificate certificate, boolean rediffuse) {
@@ -490,8 +537,8 @@ final class ObservationRuntime implements AutoCloseable {
                 && report.roundNumber() == round.roundNumber()
                 && Arrays.equals(report.membershipDigest(), round.membershipDigest())
                 && Arrays.equals(report.reporterSetDigest(), round.reporterSetDigest())
-                && epoch.members().contains(HexUtil.encodeHexString(
-                report.reporterPublicKey()).toLowerCase(Locale.ROOT))
+                && settings.verifierRegistry().reporters(definition, epoch).stream()
+                .anyMatch(key -> Arrays.equals(key, report.reporterPublicKey()))
                 && report.value().length <= definition.maxValueBytes()
                 && report.evidence().length <= definition.maxEvidenceBytes()
                 && report.encode().length <= profile.maxReportBytes()
@@ -504,7 +551,7 @@ final class ObservationRuntime implements AutoCloseable {
     private boolean validCertificate(ObservationDefinition definition, ObservationRound round,
                                      ObservationCertificate certificate) {
         AppChainMembershipEpoch epoch = membership(round.openingHeight());
-        List<byte[]> reporters = epoch.members().stream().map(HexUtil::decodeHexString).toList();
+        List<byte[]> reporters = settings.verifierRegistry().reporters(definition, epoch);
         return ObservationCertificateVerifier.verify(definition, round, certificate, profile,
                 chainGenesisId, chainId, consensusProfileDigest, reporters,
                 (publicKey, digest, signature) ->

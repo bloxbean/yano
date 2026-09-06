@@ -28,6 +28,11 @@ public interface AppChainGateway {
      */
     String submit(String topic, byte[] body);
 
+    /** Queue a canonical, externally signed observation report; never an ordinary app message. */
+    default String submitObservationReport(byte[] report) {
+        throw new IllegalStateException("External observation ingress is unavailable");
+    }
+
     /**
      * Validate and member-sign a state-machine-owned reserved-topic command.
      * Exposed only through privileged operator surfaces; implementations fail

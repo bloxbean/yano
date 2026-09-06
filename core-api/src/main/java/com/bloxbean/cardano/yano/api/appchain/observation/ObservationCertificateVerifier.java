@@ -66,7 +66,7 @@ public final class ObservationCertificateVerifier {
                 || !Arrays.equals(certificate.definitionDigest(), round.definitionDigest())
                 || !Arrays.equals(certificate.policyDigest(), round.policyDigest())
                 || !Arrays.equals(certificate.sourceSetDigest(), round.sourceSetDigest())
-                || certificate.reports().size() != round.reportThreshold()
+                || certificate.reports().size() != policy.requiredReportCount(round)
                 || (round.reportThreshold() < round.finalityQuorum()
                 && !definition.certificateLocalUniqueness())
                 || certificate.reports().size() > definition.maxReports()) {
