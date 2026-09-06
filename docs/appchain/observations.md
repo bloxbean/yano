@@ -5,7 +5,7 @@ one-shot and recurring exact-value implementation and the Phase 3
 complete-source aggregation profile. Graduation remains a later milestone.
 Height cadence measures chain progress, not minutes.
 
-Phase 4 is in progress: the additional Merkle evidence and wake APIs below
+The Phase 4 Merkle evidence and wake APIs below
 require host API level 7. Existing Phase 3 external-reporter consumers require
 level 6; the default interface bridges remain available. The complete certified
 header proof path and shipment reference require API level 8.
