@@ -2,28 +2,96 @@
 
 ## Latest checkpoint and CI findings
 
-Current executable candidate: host `e95817393`, companion `bd09f322`.
+Current implementation candidate: host `9a0e0ccee`, companion `039abb07`.
+The retained deployment was upgraded to 9a0/039, qualified for restart and
+historical proof recovery, then gracefully stopped at 19:39:31 Singapore.
 The entries below are chronological evidence; older pending/failure statements
 are retained history, not the current gate status. Phases 0–4 are merged into
 the integration branches. Phase 5 is not yet merged or graduated.
 
-The current staged input artifact expires at `2026-09-13T09:22:41Z`, as
+The current 9a0 staged input artifact expires at `2026-09-13T11:09:12Z`, as
 reported by GitHub (not the workflow's requested retention). It is temporary
 qualification evidence, not a released publication. Local exact Maven/ZIP
 inputs and deployed package checksums remain recorded below.
 
 | Current gate | Status |
 | --- | --- |
-| Exact host Maven/JVM input and companion distribution | Passed locally and staged under exact full host commit |
-| Host CI build / integration / distribution / native | Passed: `34024476267`, `34024477578` |
-| Companion full CI | e958/c887 run `34028155896` passed all gates; `34027879714` failed after observed L1 recovery, exposing a separately reproduced spent-advance adoption gap |
+| Exact host Maven/JVM input and companion distribution | 9a0 local publication/smoke and remote staging passed; companion 039 local tests/distribution passed |
+| Host CI build / integration / distribution / native | 9a0 passed all gates: `34029408650`, `34029410182`; staging `34029411768` passed |
+| Companion full CI | 039/9a0 `34029688518` failed host bootstrap visibility before scenarios; build/distribution/connector matrix passed. Prior e958/c887 `34028155896` passed |
 | Packaged five-node omission, later-view inclusion and automatic heal | Round 11 passed on e958/bd09 |
 | Membership and operator recovery | Live 5→6→5, graceful upgrade and abrupt process recovery evidence retained |
 | 100k indexed-subscription recovery | Final e958 opt-in rerun passed, 9.275s |
 | Sustained cadence / resource qualification | Rounds 0–99 complete; final 88-round run, all 500 historical proofs and bounded idle-tail checks passed |
-| Independent code/protocol review | Outstanding; both PRs have no submitted reviews and report `REVIEW_REQUIRED` |
+| Independent code/protocol review | Outstanding; milestone draft PRs host #118 / companion #10 have no submitted reviews |
+
+### Latest exact-package upgrade and CI outcome
+
+Local role workflow passed on 039/9a0, including role authorization, catch-up,
+retained lifecycle idempotency and proofs. All three app/anchor heights were 60.
+Log: `/private/tmp/adr-037-phase-5-039-role-local-e2e.log`.
+
+All five retained Preprod nodes then upgraded without changing L1 settings or
+identities. Node 3 was SIGKILLed after fresh application at block 5144645 /
+slot 133011082, and restored the exact body tip on restart. Epoch 311 nonce
+matched before/after and further blocks applied. All five app nodes retained
+height 994/root `460f2b52ebbaabc2f6392212e82774be0eb18704ecdb15fc77d9426f25d50ba5`;
+all 20 peer links recovered. The new read-only audit passed 100 retained rounds /
+500 independently pinned historical proofs, including the six-member interval.
+This is upgrade verification of existing outcomes, not 100 new rounds on 9a0.
+Evidence under the retained Preprod root: `upgrade-9a0-proof-audit.log`, the
+100-package archive and verified SHA-256 inventory, crash before/after status
+and nonce files, and `upgrade-9a0-final-app-status.jsonl`. All nodes and the proxy
+were stopped cleanly; no stores, identities or journals were deleted.
+
+Companion CI `34029688518` failed at a distinct, earlier prerequisite: host
+node 1 did not expose the bootstrap thread UTxO within the launcher's fixed
+300-second deadline. Nodes 0 and 2 were visible. The 900-second scenario
+timeout did not govern startup. Host-mode failure lacked L1 status diagnostics,
+so the precise cause is unproven; do not attribute this to the spent-advance
+adoption fix or claim default recovery occurred in this run. Log:
+`/private/tmp/adr-037-phase-5-039-companion-ci-failure.log`.
+
+The companion harness follow-up makes only the startup wait configurable:
+`DEMO_ANCHOR_VISIBILITY_TIMEOUT_SECONDS` defaults to 300 (validated 60–3600),
+with 900 selected explicitly for CI composite/role startup. It adds bounded,
+allowlisted L1 status diagnostics before startup cleanup. Default node recovery,
+validation and the all-member UTxO acceptance predicate are unchanged. A
+deterministic mocked-clock regression proves the 300-second budget still fails
+with one missing follower and 900 succeeds only once all three expose the UTxO.
+Diagnostic tests cover valid/malformed/non-object responses and omission of
+unrelated fields; invalid timeout values fail before managed-root creation.
+Deployment parity and effect-failover contracts passed. This is a diagnostic
+and recovery-budget correction, not evidence that the unidentified L1 stall
+has been fixed. Independent review remains outstanding (draft #118/#10 checked
+again on September 6; no submitted reviews).
 
 ### Extended CI distinguishes L1 recovery from missed anchor adoption
+
+New exact host publication, ordinary JVM ZIP and packaged plugin-catalog smoke
+passed locally in 1m20s. Log:
+`/private/tmp/adr-037-phase-5-9a0-exact-publication.log`.
+Staging run `34029411768` passed for full host commit
+`9a0e0ccee3963dcc563d8a8f44e9e1371c62a00a`, version
+`0.1.0-pre14-9a0e0ccee`. Companion `039abb07` changes only that exact host pin.
+Its full local tests, artifact inventory, JVM-only check, distribution check
+and prepared evidence-demo artifacts passed in 3m18s:
+`/private/tmp/adr-037-phase-5-039-exact-package.log`.
+
+New extracted candidate:
+`/private/tmp/adr037-039-package.8vrM3J/yano-x-jvm-0.1.0-adr037-039abb07`.
+Both distribution manifests confirm the matching exact host version. Companion
+ZIP SHA-256: `67a044b833598561c6f488356ecb1aaabf094a358218f91d14904ba39bf16e60`.
+This replaced the earlier retained Preprod package for the completed upgrade,
+crash recovery and historical proof audit described above.
+
+The ZIP is also retained privately under
+`upgrade-9a0-artifacts.bRQe96/yano-x-jvm-0.1.0-adr037-039abb07.zip` in the
+Preprod qualification root; its copied checksum matches. The new local
+Compose/host-JVM composite parity test passed, including both deployment
+restarts, artifact/semantic agreement and retained replay. Its owned containers
+and temporary root were cleaned. Log:
+`/private/tmp/adr-037-phase-5-039-composite-local-e2e.log`.
 
 Full companion `c887f071`/e958 run `34028155896` passed all five jobs, including
 isolated effect failover, composite parity, role workflow/catch-up and release
