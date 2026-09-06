@@ -31,7 +31,7 @@ and report signing happen afterward. The broad candidate envelope limits do
 not override narrower definition/profile/verifier limits.
 
 Calls to one provider instance are serialized; distinct providers may run
-concurrently. Bound connection/read time, parsing depth, response bytes, retries
+concurrently. Bound DNS/connection/read time, parsing depth, response bytes, retries
 and memory. Release sockets/executors in `close()`, honor interruption, and
 avoid background operations that outlive the provider generation. Do not hold
 unbounded queues or assume a late result will still be eligible for its round.
@@ -70,6 +70,16 @@ handling. Do not bypass those checks to reach loopback, metadata services or
 private networks. A custom plugin is trusted operator-installed code: it does
 not inherit a sandbox simply because it implements the provider interface.
 Its network policy requires its own review.
+
+The bundled adapter shares one timeout budget across DNS, connect, TLS and
+response reads. Its host-wide DNS isolator permits four daemon workers and 64
+queued lookups; timed-out queued work is cancelled and removed. A platform DNS
+call that ignores interruption cannot hold an acquisition worker or retain an
+app-chain generation, though it may occupy a bounded shared resolver worker.
+Capacity exhaustion is a local failure, not a signed observation outcome.
+Both attestation adapters require `Content-Type: application/cbor`; raw-exact
+mode handles opaque bounded bytes without selecting a parser from that header.
+Redirects and compressed responses are rejected in every built-in mode.
 
 Keep credentials in operator-managed configuration, not subscription params,
 evidence or logs. Sanitize errors; never log bearer tokens, private signing

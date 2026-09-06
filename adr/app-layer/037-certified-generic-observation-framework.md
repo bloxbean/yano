@@ -1306,11 +1306,24 @@ A built-in HTTP adapter must enforce:
   creates an isolated private-source capability;
 - DNS resolution validation on every connection and after redirects;
 - bounded redirects, with every target revalidated;
-- connection, header, body, decompression, parse-depth, and execution limits;
-- fixed accepted content types and canonical UTF-8 handling;
+- a bounded DNS resolver and one acquisition deadline shared by DNS,
+  connection, TLS, headers and body (a post-DNS socket timeout alone is insufficient);
+- decompression, parse-depth, and execution limits;
+- fixed media-type/parsing policy and canonical UTF-8 handling where text is
+  interpreted; attestation/Merkle adapters require `application/cbor`, while
+  raw-exact acquisition treats bounded response bodies as opaque bytes and
+  never selects executable content or a parser from the response media type;
 - no ambient proxy, filesystem, environment, or credential access;
 - per-source and global rate/concurrency limits; and
 - redacted logs and metrics.
+
+The bundled adapter denies all redirects and compression. Its host-wide DNS
+isolation has four daemon workers and at most 64 queued lookups. Timed-out
+queued work is removed; a platform lookup that ignores interruption may retain
+only one of those bounded workers, not the calling acquisition worker or a
+provider-generation resource. Capacity exhaustion fails locally and retries
+through normal scheduling. These operational limits do not enter result IDs
+or change committed report/result deadlines.
 
 In-process custom plugins are operator-trusted code and cannot be fully
 sandboxed by an interface. Production documentation must say this plainly.

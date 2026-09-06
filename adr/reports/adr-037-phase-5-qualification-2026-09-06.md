@@ -2,6 +2,75 @@
 
 ## Latest checkpoint and CI findings
 
+### Provider-boundary review iteration
+
+Review of the required failure matrix found that the socket timeout began only
+after synchronous DNS resolution. The built-in adapter now uses a bounded
+host-wide resolver (four daemon workers, 64 queued lookups), removes cancelled
+queued tasks, and shares one deadline across DNS/connect/TLS/response reads.
+Caller interruption releases acquisition promptly even if a simulated native
+resolver ignores interruption. Shared DNS workers do not inherit caller
+thread-local state or context class loaders. Saturation fails locally, with no
+signed failure report or change to committed logical deadlines.
+
+The ADR and provider/threat guides now state this boundary explicitly. Both
+attestation modes request/require `application/cbor`; raw-exact response bytes
+remain opaque and never select a parser through their media type. Redirects,
+429/error statuses, compression, duplicate framing/encoding/type headers,
+oversized/truncated bodies, mixed public/private DNS answers and rebinding-like
+answer changes have focused regressions. This is implementation self-review,
+not the independent review required for graduation.
+
+Initial DNS/provider/runtime tests passed in 38s; the expanded provider/network
+selection passed in 1m25s. The opt-in real HTTPS test then passed in 15s through
+three networked subsystems against an immutable public source. The final
+caller-context isolation regression passed in 19s. The fresh exact-source
+provider/live-HTTPS selection passed in 16s: six DNS cases, seven provider
+boundary cases and one real HTTPS/network case, all with zero skips/failures.
+Final log: `/private/tmp/adr-037-phase-5-provider-exact-final.log`.
+Logs: `/private/tmp/adr-037-phase-5-dns-timeout-tests.log`,
+`/private/tmp/adr-037-phase-5-provider-boundary-tests-final.log`,
+`/private/tmp/adr-037-phase-5-dns-live-https.log`, and
+`/private/tmp/adr-037-phase-5-dns-context-tests.log`.
+
+### Continued live fault evidence
+
+Round 1 (one unavailable source) retained eight reports but no sufficient
+certificate. The original cadence driver timed out at 90 seconds while waiting
+for height 18; all five nodes subsequently converged there. Its failure log and
+empty `cadence-rounds-1-4.jsonl` remain preserved. An explicit one-height advance,
+guarded by five matching certified round proofs at that retained boundary,
+produced five verified `EXPIRED` proofs at height 19: result
+`d0b48af33879adbde39f67a44ff72e8740b8d0b8ad650a3519d86c73ad3c4f92`, root
+`e766c66d9086fa02593c4edfb33d17e6866cdf46e76f3840f1ddb686de2c8125`.
+No reports were re-signed and no state was reset. Evidence:
+`round-1-expiry-recovery.json` and `expiry-recovery-2.log` in the dedicated run.
+
+The driver wait was increased to five minutes to accommodate multiple consensus
+views during catch-up; protocol deadlines remain unchanged. Round 2 split one
+source's reporters 2+2, below its threshold of four, and all five certified the
+same expiry at height 29: result
+`dffca35d22b5ec0f4596e3cb66e0699d9cf7624b10b624a2d35bde274d161179`, root
+`0ab825c1ddae8fb2424057e76d967616aeadd40e8f7b4033f49430ac04ef7b87`.
+All five journals and coordinator queues drained to zero. This is recorded in
+`cadence-rounds-2-4.jsonl`; delayed-reporter and complete-source rounds continue.
+These runs still use the earlier exact package and historical L1 catch-up, not
+the new DNS package or completed post-checkpoint Preprod qualification.
+
+### Companion CI follow-through
+
+At `0d4ec822`, anchor reconciliation passed. CI then exposed stale harness
+expectations (24 contributions/API level 4 versus 26/API level 8) and a balances
+fixture temp-directory teardown failure. Companion `8e0e8ce4` pins the correct
+exact inventory, checks counts against source manifests, and uses terminal
+`close()` for stdlib fixture owners. Stdlib/devtools tests passed in 2m19s;
+effect-failover and deployment-parity contracts passed. The full rerun
+[34013848901](https://github.com/bloxbean/yano-x/actions/runs/34013848901)
+has passed the effect-failover E2E and moved on to deployment parity.
+A follow-up terminal-owner audit found equivalent ZK/composite fixture cleanup;
+those focused tests passed in 1m45s. Discarded subsystem instances now release
+fully before a new instance opens their retained ledger; restart coverage stays.
+
 Host checkpoint `01f990e85` passed the full build
 [34011971201](https://github.com/bloxbean/yano/actions/runs/34011971201)
 and all three integration/distribution/native jobs in
