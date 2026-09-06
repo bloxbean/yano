@@ -27,6 +27,10 @@ change existing block-v3 commitments or observation encodings.
 
 ## Profile selection
 
+Read the [fresh-chain cutover warning](observation-upgrade-and-recovery.md)
+before deployment: this PR is incompatible with pre-ADR-037 app-chain ledgers
+even when observations are disabled. It is not an in-place upgrade.
+
 `observations.profile-cbor-hex` supplies the canonical `ObservationProfileV1`
 envelope. Its bytes are committed independently of the consensus profile.
 Omit the setting for the canonical disabled profile. Changing a retained
@@ -189,6 +193,12 @@ Retry identical signed bytes after 429 or uncertain transport. Audit the
 finalized result through root-fixed queries. Gateways never wrap these reports
 as ordinary application messages.
 
+Report and wake endpoints require an unscoped full API key even if broad
+`api.auth.enabled` is false. With no such key configured they return 503, not
+anonymous access. External report admission has a separate limit of 16 requests
+per second and eight queued/in-flight checks per node, within the coordinator's
+overall byte budget. Retry with backoff after HTTP 429.
+
 External reporters must use the resolved chain genesis/profile identity and
 canonical committed round descriptor, and durably lock one complete choice per
 subscription/round/source before signing. Do not re-key or erase that journal to
@@ -202,8 +212,13 @@ Select evidence verifier `ed25519-merkle-inclusion-v1`, active-member exact
 quorum, and provider `https-attested-merkle-v1`. Configure at most 32 authorized
 root signers under `observations.attestors.<definition>`. The definition's
 source configuration must equal
-`ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(url, method, keys)`;
-the fixed URL and HTTP method are part of source identity. The restricted HTTPS
+`ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(url, method, sourceId, keys)`;
+the fixed URL, HTTP method and logical source ID are part of source identity.
+Configure `observations.providers.<definition>.source-id` explicitly. Ordinary
+attestations use `attestedHttpsSourceDigest(url, method, sourceId, keys)`; custom
+attested adapters use `attestedSourceDigest(sourceId, keys)`. Both evidence
+verifiers reject an otherwise valid attestation for any other logical source.
+The restricted HTTPS
 transport keeps the same DNS/IP, redirect, encoding, size and timeout rules.
 
 The provider returns canonical `ObservationMerkleEvidence`: version 1, a

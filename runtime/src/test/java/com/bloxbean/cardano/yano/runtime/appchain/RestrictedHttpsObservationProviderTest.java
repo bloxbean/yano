@@ -139,7 +139,8 @@ class RestrictedHttpsObservationProviderTest {
                 InetAddress.getByName("fd00::1"))).isFalse();
         assertThat(RestrictedHttpsObservationProvider.isPublic(
                 InetAddress.getByName("8.8.8.8"))).isTrue();
-        for (String address : new String[]{"64:ff9b::a00:1", "2002:a00:1::1",
+        for (String address : new String[]{"172.16.0.1", "172.31.255.254", "192.168.0.1",
+                "198.18.0.1", "0.1.2.3", "224.0.0.1", "240.0.0.1", "64:ff9b::a00:1", "2002:a00:1::1",
                 "::a00:1", "2001::a00:1", "2001:db8::1"}) {
             assertThat(RestrictedHttpsObservationProvider.isPublic(InetAddress.getByName(address)))
                     .as(address).isFalse();

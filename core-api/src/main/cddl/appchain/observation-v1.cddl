@@ -1,6 +1,10 @@
 ; ADR-037 certified generic observation framework, wire ABI v1.
 ; All arrays are definite length. Integers and lengths use shortest RFC 8949
 ; encodings. Decoders reject tags, floats, indefinite values and trailing bytes.
+; Java long-backed uint fields are limited to 0..9223372036854775807;
+; int-backed counts/versions are limited to 0..2147483647, with tighter
+; record/profile bounds checked by constructors. IDs reject blank text and NUL.
+; Decoders re-encode and compare canonical bytes after structural preflight.
 
 hash32 = bytes .size 32
 ed25519-key = bytes .size 32
@@ -51,7 +55,7 @@ observation-subscription = [
   uint, uint, bstr .size (0 / 32)
 ]
 
-; Field indexes 0..23. result-expiry-height=0 means collection remains open.
+; Field indexes 0..16.
 ; Profile stateCodecVersion=2 selects this 17-field subscription record.
 ; Last field is the retained report-window offset in selected anchor units.
 observation-subscription-v2 = [
@@ -116,7 +120,7 @@ observation-result = [
 ; empty definitions and zero in every remaining numeric field.
 observation-profile-v1 = [
   1, 0 / 1, uint, uint, uint, uint, uint, uint, uint,
-  [* bytes .size (1..8192)],
+  [*256 bytes .size (1..8192)],
   uint, uint, uint, uint, uint, uint, uint, uint, uint, uint,
   uint, uint, uint, uint, uint
 ]

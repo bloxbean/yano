@@ -86,10 +86,10 @@ class ObservationWireTest {
         assertThat(actual).isEqualTo("e8053588040f000c3458e87c929e499cbae5e68c2d12f39a4392b06eabc736b9"
                 + "/9e3baea8893a07272aa277fc4827701955f0cb95187bbd077d3029c7636e37d9"
                 + "/39b34f1188e2dade8f10fd33cfee065c2dc3b4073bdaa48a8c2cd72c3a7f9354"
-                + "/4f4b74c33a7048eea565ad91cd18c1c942230a1d6b64aaa8e99cbc71c5001069"
-                + "/48b3bb537f21f7f80363c38dc50dc1a63560822e5e4fb7b07f5b10a6098fcd1f"
-                + "/17afbd48f69598210c7727f993da966c0d047d4c5a3c6f44ccea29be3df30351"
-                + "/351ead0c1592779bdba60e7363bc7fc76de97588fc197358bcd03979af80af4d");
+                + "/be7efb5ee0469ed36460f6592bf41b5da49c28c56ea29bac2290341b9d0776fb"
+                + "/46b12653fed60a8e14b2f25d8879c3720540f75fb042c2344b20e52a4807a34b"
+                + "/dd53052a2c684e217080975c32bfb95b7ef790c024ede0450b3d4b2a84933959"
+                + "/4bc8a621d053ebcfbb3fe2ab3fd54644cb667fc1ec305d9eeabddc6f16068c05");
     }
 
     @Test
@@ -133,10 +133,18 @@ class ObservationWireTest {
         byte[] first = filled(1);
         byte[] second = filled(2);
         assertThat(ObservationSourceConfiguration.attestedHttpsSourceDigest(
-                "https://example.com/attestation", "POST", List.of(first, second)))
+                "https://example.com/attestation", "POST", "source", List.of(first, second)))
                 .isEqualTo(ObservationSourceConfiguration.attestedHttpsSourceDigest(
-                        "https://example.com/attestation", "POST",
+                        "https://example.com/attestation", "POST", "source",
                         List.of(second, first)));
+        assertThat(ObservationSourceConfiguration.attestedHttpsSourceDigest(
+                "https://example.com/attestation", "POST", "source-A", List.of(first)))
+                .isNotEqualTo(ObservationSourceConfiguration.attestedHttpsSourceDigest(
+                        "https://example.com/attestation", "POST", "source-B", List.of(first)));
+        assertThat(ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(
+                "https://example.com/attestation", "POST", "source-A", List.of(first)))
+                .isNotEqualTo(ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(
+                        "https://example.com/attestation", "POST", "source-B", List.of(first)));
     }
 
     @Test
@@ -148,7 +156,7 @@ class ObservationWireTest {
         ObservationReport differentSourceAnchor = report(
                 definition, round, 1, new byte[]{9}, 44, filled64(8));
         ObservationReport differentSignature = report(
-                definition, round, 1, new byte[]{9}, 43, filled64(7));
+                definition, round, 1, new byte[]{9}, round.dueAnchor(), filled64(7));
 
         assertThat(first.signingDigest()).isNotEqualTo(differentValue.signingDigest());
         assertThat(first.signingDigest()).isNotEqualTo(differentSourceAnchor.signingDigest());
@@ -176,6 +184,36 @@ class ObservationWireTest {
         assertThatThrownBy(() -> certificate(round, reversed))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("canonical order");
+    }
+
+    @Test
+    void genericVerifierEnforcesFreshnessEvenWithPermissiveEvidenceVerifier() {
+        ObservationDefinition definition = definition();
+        ObservationRound round = round(definition, filled(20));
+        ObservationReport valid = signedReport(definition, round, 1, new byte[]{9});
+        assertThat(verify(definition, round, certificate(round, List.of(valid)),
+                List.of(filled(1)))).isTrue();
+        assertThat(verify(definition, round, certificate(round, List.of(valid)), List.of(new byte[31]))).isFalse();
+        for (long anchor : new long[]{round.dueAnchor() - 1, round.reportDeadlineAnchor() + 1}) {
+            ObservationReport unsigned = report(definition, round, 1, new byte[]{9}, anchor, new byte[64]);
+            ObservationReport stale = report(definition, round, 1, new byte[]{9}, anchor,
+                    signature(unsigned.signingDigest()));
+            assertThat(verify(definition, round, certificate(round, List.of(stale)),
+                    List.of(filled(1)))).isFalse();
+        }
+    }
+
+    @Test
+    void resultRejectsValueBytesNotBoundToItsDigest() {
+        ObservationDefinition definition = definition();
+        ObservationRound round = round(definition, filled(20));
+        ObservationResult valid = result(round, certificate(round,
+                List.of(signedReport(definition, round, 1, new byte[]{9}))));
+        assertThatThrownBy(() -> new ObservationResult(valid.version(), valid.resultId(), valid.subscriptionId(),
+                valid.roundNumber(), valid.definitionDigest(), valid.status(), new byte[]{8},
+                valid.valueEvidenceDigest(), valid.certificateDigest(), valid.sourceCount(), valid.reporterCount(),
+                valid.freshnessSummary(), valid.finalizedHeight()))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("value digest mismatch");
     }
 
     @Test
@@ -334,8 +372,8 @@ class ObservationWireTest {
                                                   ObservationRound round, int reporter,
                                                   byte[] value) {
         ObservationReport unsigned = report(
-                definition, round, reporter, value, 43, new byte[64]);
-        return report(definition, round, reporter, value, 43,
+                definition, round, reporter, value, round.dueAnchor(), new byte[64]);
+        return report(definition, round, reporter, value, round.dueAnchor(),
                 signature(unsigned.signingDigest()));
     }
 
@@ -346,7 +384,7 @@ class ObservationWireTest {
                 enabledProfile(definition).digest(),
                 round.definitionDigest(), round.subscriptionId(), round.roundNumber(),
                 round.membershipDigest(), round.reporterSetDigest(), filled(reporter),
-                new byte[]{1}, value, new byte[]{2}, new byte[]{3}, 1, sourceAnchor, signature);
+                new byte[]{1}, value, new byte[]{2}, new byte[]{3}, round.anchorType().code(), sourceAnchor, signature);
     }
 
     private static ObservationCertificate certificate(ObservationRound round,

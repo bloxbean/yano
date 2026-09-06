@@ -29,6 +29,7 @@ import org.slf4j.Logger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -87,6 +88,11 @@ final class ObservationRuntime implements AutoCloseable {
     private final AtomicLong reportsAccepted = new AtomicLong();
     private final AtomicLong certificatesReady = new AtomicLong();
     private final AtomicLong backpressureEvents = new AtomicLong();
+    private final ObservationDiffusionLimiter diffusionLimiter;
+    private final Semaphore externalSlots = new Semaphore(8);
+    private long externalWindow = System.nanoTime();
+    private int externalRequests;
+    private int diffusionRoundOffset;
     private volatile boolean lastTickFailed;
 
     ObservationRuntime(ObservationSettings settings, ObservationProviders providers,
@@ -109,6 +115,7 @@ final class ObservationRuntime implements AutoCloseable {
         this.consensusProfileDigest = Objects.requireNonNull(
                 consensusProfileDigest, "consensusProfileDigest").clone();
         this.diffusion = Objects.requireNonNull(diffusion, "diffusion");
+        this.diffusionLimiter = new ObservationDiffusionLimiter(profile, System::nanoTime, this::diffuseIfOpen);
         this.log = Objects.requireNonNull(log, "log");
         if (workerCount < 1 || workerCount > 64) {
             throw new IllegalArgumentException("Observation worker count must be 1..64");
@@ -131,6 +138,23 @@ final class ObservationRuntime implements AutoCloseable {
 
     void start() {
         coordinator.scheduleWithFixedDelay(this::safeTick, 0, 1, TimeUnit.SECONDS);
+    }
+
+    private void diffuseIfOpen(String topic, byte[] body) {
+        byte[] subscriptionId;
+        long roundNumber;
+        if (ObservationTopics.REPORT.equals(topic)) {
+            ObservationReport report = ObservationReport.decode(body);
+            subscriptionId = report.subscriptionId();
+            roundNumber = report.roundNumber();
+        } else {
+            ObservationCertificate certificate = ObservationCertificate.decode(body);
+            subscriptionId = certificate.subscriptionId();
+            roundNumber = certificate.roundNumber();
+        }
+        ObservationSubscription subscription = reader.subscription(subscriptionId).orElse(null);
+        if (!closed.get() && subscription != null && subscription.status() == ObservationSubscriptionStatus.ACTIVE
+                && subscription.nextRoundNumber() == roundNumber) diffusion.accept(topic, body);
     }
 
     Optional<AppMessage> heartbeat(long stableSlot, Function<byte[], AppMessage> envelope) {
@@ -180,22 +204,47 @@ final class ObservationRuntime implements AutoCloseable {
     }
 
     String submitExternalReport(byte[] body) {
-        if (closed.get()) throw new IllegalStateException("Observation ingress is stopped");
-        if (body == null || body.length > profile.maxReportBytes()) {
-            throw new IllegalArgumentException("Observation report exceeds profile bounds");
+        if (!externalPermit()) {
+            backpressureEvents.incrementAndGet();
+            throw new PoolFullException("Observation external ingress rate limit; retry the same signed report");
         }
-        ObservationReport report = ObservationReport.decode(body);
-        ObservationRound round = reader.round(report.subscriptionId(), report.roundNumber()).orElseThrow(() ->
-                new IllegalArgumentException("Unknown observation round"));
-        if (round.reporterMode() != ObservationReporterMode.EXTERNAL_REPORTERS) {
-            throw new IllegalArgumentException("Round does not accept external reporters");
+        boolean queued = false;
+        try {
+            if (closed.get()) throw new IllegalStateException("Observation ingress is stopped");
+            if (body == null || body.length > profile.maxReportBytes()) {
+                throw new IllegalArgumentException("Observation report exceeds profile bounds");
+            }
+            ObservationReport report = ObservationReport.decode(body);
+            ObservationRound round = reader.round(report.subscriptionId(), report.roundNumber()).orElseThrow(() ->
+                    new IllegalArgumentException("Unknown observation round"));
+            if (round.reporterMode() != ObservationReporterMode.EXTERNAL_REPORTERS) {
+                throw new IllegalArgumentException("Round does not accept external reporters");
+            }
+            // Queue admission is not signature validity, durability or finality.
+            // External ingress has its own small admission budget; it cannot fill
+            // the member/acquisition coordinator's queue with signature checks.
+            queued = submitCoordinator(() -> {
+                try { acceptReport(report, true); }
+                finally { externalSlots.release(); }
+            }, body.length);
+            if (!queued) {
+                throw new PoolFullException("Observation ingress is busy; retry with the same signed report");
+            }
+            return HexUtil.encodeHexString(ObservationHashes.digest(body));
+        } finally {
+            if (!queued) externalSlots.release();
         }
-        // Queue admission is not signature validity, durability or finality.
-        // Signature/evidence checks share the bounded member-diffusion coordinator.
-        if (!submitCoordinator(() -> acceptReport(report, true), body.length)) {
-            throw new PoolFullException("Observation ingress is busy; retry with the same signed report");
+    }
+
+    private synchronized boolean externalPermit() {
+        long now = System.nanoTime();
+        if (now - externalWindow >= 1_000_000_000L) {
+            externalWindow = now;
+            externalRequests = 0;
         }
-        return HexUtil.encodeHexString(ObservationHashes.digest(body));
+        if (externalRequests >= 16 || !externalSlots.tryAcquire()) return false;
+        externalRequests++;
+        return true;
     }
 
     void wake(byte[] subscriptionId) {
@@ -259,6 +308,7 @@ final class ObservationRuntime implements AutoCloseable {
         status.put("wakeHints", wakeHints.get());
         status.put("inFlight", (long) inFlight.size());
         status.put("coordinatorQueued", (long) (1024 - coordinatorSlots.availablePermits()));
+        status.put("externalIngressQueued", (long) (8 - externalSlots.availablePermits()));
         status.put("coordinatorReservedBytes", (long) (COORDINATOR_BYTE_BUDGET - coordinatorBytes.availablePermits()));
         status.put("queuedWorkers", (long) ((ThreadPoolExecutor) workers).getQueue().size());
         status.put("activeSubscriptions", reader.activeCount());
@@ -330,6 +380,12 @@ final class ObservationRuntime implements AutoCloseable {
         rounds.sort(Comparator.comparingInt((ObservationRound round) -> round.anchorType().code())
                 .thenComparingLong(ObservationRound::dueAnchor)
                 .thenComparing(ObservationRound::subscriptionId, Arrays::compareUnsigned));
+        if (!rounds.isEmpty()) {
+            // Vary the starting point so a full transient diffusion queue does
+            // not permanently privilege the lowest subscription identifiers.
+            Collections.rotate(rounds, -(diffusionRoundOffset % rounds.size()));
+            diffusionRoundOffset = (diffusionRoundOffset + 1) % rounds.size();
+        }
         long height = committedHeight.getAsLong();
         for (ObservationJournal.RoundRef retained : journal.retainedRounds(
                 profile.maxOpenRounds() + profile.maxResultsPerBlock() + 1)) {
@@ -343,6 +399,7 @@ final class ObservationRuntime implements AutoCloseable {
                 journal.markTerminal(retained.subscriptionId(), retained.roundNumber());
             }
         }
+        List<ObservationCertificate> readyCertificates = journal.readyCertificates(profile.maxResultsPerBlock() * 2);
         for (ObservationRound round : rounds) {
             ObservationSubscription subscription = reader.subscription(
                     round.subscriptionId()).orElse(null);
@@ -352,17 +409,17 @@ final class ObservationRuntime implements AutoCloseable {
             }
             for (ObservationReport report : journal.reports(
                     round.subscriptionId(), round.roundNumber(), profile.maxReportsPerRound())) {
-                diffusion.accept(ObservationTopics.REPORT, report.encode());
+                diffusionLimiter.offer(ObservationTopics.REPORT, report.encode());
             }
-            for (ObservationCertificate certificate : journal.readyCertificates(
-                    profile.maxResultsPerBlock() * 2)) {
+            for (ObservationCertificate certificate : readyCertificates) {
                 if (Arrays.equals(certificate.subscriptionId(), round.subscriptionId())
                         && certificate.roundNumber() == round.roundNumber()) {
-                    diffusion.accept(ObservationTopics.CERTIFICATE, certificate.encode());
+                    diffusionLimiter.offer(ObservationTopics.CERTIFICATE, certificate.encode());
                 }
             }
             if (!tryAcquire(subscription, round, height)) break;
         }
+        diffusionLimiter.drain();
     }
 
     private boolean tryAcquire(ObservationSubscription subscription, ObservationRound round, long height) {
@@ -483,7 +540,7 @@ final class ObservationRuntime implements AutoCloseable {
             boolean added = journal.persistReport(report);
             if (added) reportsAccepted.incrementAndGet();
             if (added) {
-                diffusion.accept(ObservationTopics.REPORT, report.encode());
+                diffusionLimiter.offer(ObservationTopics.REPORT, report.encode());
             }
             assemble(definition, round);
         } catch (IllegalArgumentException equivocation) {
@@ -554,7 +611,7 @@ final class ObservationRuntime implements AutoCloseable {
         boolean added = journal.persistCertificate(certificate);
         if (added) certificatesReady.incrementAndGet();
         if (added) {
-            diffusion.accept(ObservationTopics.CERTIFICATE, certificate.encode());
+            diffusionLimiter.offer(ObservationTopics.CERTIFICATE, certificate.encode());
         }
     }
 

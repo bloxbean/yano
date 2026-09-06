@@ -1,5 +1,20 @@
 # ADR-037 Phase 5 qualification — 2026-09-06
 
+## Independent-review correction
+
+After the checkpoints below, host PR #118 was merged into PR #113 at
+`5333e4e3967708a30e22ec5aa98bbd3bbd08d42d`. Claude reviewed that implementation
+and requested changes: one cancellation/certificate blocker and six majors
+were confirmed. See [review remediation](adr-037-review-remediation-2026-09-06.md)
+for fixes and fresh validation. The tables below remain historical evidence of
+their exact binaries, not acceptance or validation of the remediated code.
+No retained cluster was restarted or reset for the review.
+
+The earlier Praos/VRF checkpoint discussion is an unverified, out-of-scope
+hypothesis, not an established header/body nonce-skew diagnosis. It neither
+justifies an L1 core change nor supplies evidence for that diagnosis. Any
+investigation belongs in separate L1 tracking, with its own reproduction.
+
 ## Latest checkpoint and CI findings
 
 Current executable host candidate: `9a0e0ccee`; companion runtime/package `039abb07`,

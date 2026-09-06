@@ -74,7 +74,7 @@ final class FxBlockApplier {
                     block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
                     block.justification(), block.cert());
             store.stageFx(batch, block.height(), result.effects());
-            store.stageObservations(batch, result.observations());
+            store.stageObservations(batch, block.height(), result.observations());
             byte[] blockHash = AppBlockCodec.blockHash(applied);
             store.commitBlock(applied, blockHash, stateCommit, batch, List.of());
             return new Applied(applied, blockHash, result.effects(), result.observations());

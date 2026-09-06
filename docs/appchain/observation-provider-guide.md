@@ -43,13 +43,19 @@ whether another attempt is possible and whether the round expires.
 
 ## Evidence and source identity
 
-For exact attested HTTPS, pin endpoint/method/attestor configuration with the
+For exact attested HTTPS, pin endpoint/method/logical-source-ID/attestor configuration with the
 corresponding `ObservationSourceConfiguration` digest. For signed Merkle
 receipts, use `merkleAttestedHttpsSourceDigest` and verifier
 `ed25519-merkle-inclusion-v1`. Leaves bind parameter digest, source and value;
 branches bind ordering; the root attestation binds round, definition, source
 version and freshness. Supply canonical bounded evidence, not a new encoding
 that merely produces the same application value.
+
+Both HTTPS digest helpers require `sourceId` before the attestor-key list.
+Set `observations.providers.<definition>.source-id` to that exact ASCII value;
+custom attested adapters use `attestedSourceDigest(sourceId, keys)`. A signed
+claim or Merkle leaf for another logical source is rejected, even if its
+signature and inclusion proof are otherwise valid.
 
 Select a definition's verifier/reconciliation policy at genesis. Custom
 acquisition does not authorize changing either. External reporters are a

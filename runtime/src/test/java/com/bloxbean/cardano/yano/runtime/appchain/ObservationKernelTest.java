@@ -12,6 +12,11 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody;
+import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
 import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
 import com.bloxbean.cardano.yano.api.appchain.observation.ExactValueQuorumPolicy;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationAnchorType;
@@ -28,6 +33,7 @@ import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResultStatu
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRound;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscription;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptionId;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationSubscriptionStatus;
 import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTick;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -242,6 +248,140 @@ class ObservationKernelTest {
     }
 
     @Test
+    void resultCallbackCancellationWinsOverLaterCertificateAndSurvivesRestart(@TempDir Path directory) {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        for (boolean codecV2 : List.of(false, true)) {
+            Path ledgerDirectory = directory.resolve(Boolean.toString(codecV2));
+            AtomicInteger callbacks = new AtomicInteger();
+            List<ObservationSubscriptionId> subscriptions = new ArrayList<>();
+            AppStateMachine cancelling = new AppStateMachine() {
+                @Override public String id() { return "test-app"; }
+                @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                            AppEffectEmitter effects) { }
+                @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                            AppEffectEmitter effects, AppObservationEmitter observations) {
+                    if (context.block().height() == 1) {
+                        for (int index = 0; index < 2; index++) {
+                            subscriptions.add(observations.watch(ObservationIntent.oneShot(
+                                    "delivery", "cancel/" + index, new byte[0],
+                                    ObservationAnchorType.APP_HEIGHT, 2, 4, 4)));
+                        }
+                    }
+                }
+                @Override public void onObservationResult(AppBlockExecutionContext context,
+                        ObservationResult result, AppStateWriter writer, AppEffectEmitter effects,
+                        AppObservationEmitter observations) {
+                    callbacks.incrementAndGet();
+                    for (ObservationSubscriptionId subscription : subscriptions) {
+                        if (!Arrays.equals(subscription.bytes(), result.subscriptionId())) {
+                            observations.cancel(subscription);
+                        }
+                    }
+                }
+            };
+            try (Fixture fixture = fixture(ledgerDirectory, signer, codecV2)) {
+                apply(fixture, cancelling, 1, List.of());
+                apply(fixture, cancelling, 2, List.of());
+                List<ObservationCertificate> certificates = subscriptions.stream()
+                        .map(id -> certificate(fixture, signer, fixture.ledger.observationReader()
+                                .round(id.bytes(), 0).orElseThrow(), new byte[]{1}))
+                        .sorted((left, right) -> Arrays.compareUnsigned(left.subscriptionId(), right.subscriptionId()))
+                        .toList();
+                apply(fixture, cancelling, 3, List.of(resultMessage(certificates.get(0), 1),
+                        resultMessage(certificates.get(1), 2)));
+                assertThat(callbacks).hasValue(1);
+                assertThat(fixture.ledger.observationReader().subscription(certificates.get(1).subscriptionId())
+                        .orElseThrow().status()).isEqualTo(ObservationSubscriptionStatus.CANCELLED);
+                assertThat(fixture.ledger.observationReader().activeCount()).isZero();
+                assertThat(fixture.ledger.observationReader().openRoundCount()).isZero();
+                fixture.ledger.verifyObservationIndexes();
+            }
+            try (Fixture restarted = fixture(ledgerDirectory, signer, codecV2)) {
+                restarted.ledger.verifyObservationIndexes();
+                assertThat(restarted.ledger.observationReader().activeCount()).isZero();
+                assertThat(restarted.ledger.observationReader().openRoundCount()).isZero();
+            }
+        }
+    }
+
+    @Test
+    void effectCallbackCancellationWinsOverCertificateAndReplays(@TempDir Path directory) {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        for (boolean codecV2 : List.of(false, true)) {
+            AtomicReference<ObservationSubscriptionId> subscription = new AtomicReference<>();
+            AtomicInteger effectCallbacks = new AtomicInteger();
+            AtomicInteger observationCallbacks = new AtomicInteger();
+            AppStateMachine machine = new AppStateMachine() {
+                @Override public String id() { return "test-app"; }
+                @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                            AppEffectEmitter effects) { }
+                @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                            AppEffectEmitter effects, AppObservationEmitter observations) {
+                    if (context.block().height() == 1) {
+                        subscription.set(observations.watch(ObservationIntent.oneShot("delivery", "cancel",
+                                new byte[0], ObservationAnchorType.APP_HEIGHT, 2, 4, 4)));
+                        effects.emit(EffectIntent.of("test", new byte[0]).result(ResultPolicy.CHAIN).build());
+                    }
+                }
+                @Override public void onEffectResult(AppBlockExecutionContext context, EffectResult result,
+                        AppStateWriter writer, AppEffectEmitter effects, AppObservationEmitter observations) {
+                    effectCallbacks.incrementAndGet();
+                    observations.cancel(subscription.get());
+                }
+                @Override public void onObservationResult(AppBlockExecutionContext context, ObservationResult result,
+                        AppStateWriter writer, AppEffectEmitter effects, AppObservationEmitter observations) {
+                    observationCallbacks.incrementAndGet();
+                }
+            };
+            try (Fixture fixture = fixture(directory.resolve("source-" + codecV2), signer, codecV2,
+                    false, 100, StateCommitFaultInjector.NONE, Map.of("effects.enabled", "true"));
+                 Fixture replay = fixture(directory.resolve("replay-" + codecV2), signer, codecV2,
+                    false, 100, StateCommitFaultInjector.NONE, Map.of("effects.enabled", "true"))) {
+                apply(fixture, machine, 1, List.of());
+                apply(fixture, machine, 2, List.of());
+                ObservationRound round = fixture.ledger.observationReader().round(subscription.get().bytes(), 0)
+                        .orElseThrow();
+                AppMessage certificate = resultMessage(certificate(fixture, signer, round, new byte[]{1}), 100);
+                AppMessage effect = message(FxResultBody.TOPIC, new FxResultBody(1, 1, 0,
+                        EffectOutcome.CONFIRMED, new byte[]{1}, null).encode(), 1);
+                apply(fixture, machine, 3, List.of(certificate, effect));
+                assertThat(effectCallbacks).hasValue(1);
+                assertThat(observationCallbacks).hasValue(0);
+                assertThat(fixture.ledger.observationReader().subscription(subscription.get().bytes()).orElseThrow()
+                        .status()).isEqualTo(ObservationSubscriptionStatus.CANCELLED);
+                assertThat(fixture.ledger.observationReader().activeCount()).isZero();
+                assertThat(fixture.ledger.observationReader().openRoundCount()).isZero();
+                fixture.ledger.verifyObservationIndexes();
+                assertThat(ObservationLedgerRebuilder.replay(fixture.ledger, replay.ledger, replay.kernel, machine))
+                        .isEqualTo(3);
+                assertThat(replay.ledger.stateRoot()).isEqualTo(fixture.ledger.stateRoot());
+                replay.ledger.verifyObservationIndexes();
+                assertThat(observationCallbacks).hasValue(0);
+            }
+        }
+    }
+
+    @Test
+    void certificateSequenceDoesNotRetireOrdinaryMessages(@TempDir Path directory) {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        try (Fixture fixture = fixture(directory, signer)) {
+            AtomicReference<ObservationSubscriptionId> id = new AtomicReference<>();
+            AppStateMachine machine = machine(id, new AtomicInteger());
+            apply(fixture, machine, 1, List.of());
+            apply(fixture, machine, 2, List.of());
+            AppMessage result = resultMessage(certificate(fixture, signer,
+                    fixture.ledger.observationReader().round(id.get().bytes(), 0).orElseThrow(), new byte[]{1}), 1000);
+            AppMessage ordinary = message("ordinary", new byte[0], 1);
+            apply(fixture, machine, 3, List.of(result, ordinary));
+            assertThat(fixture.ledger.senderSeq(ordinary)).isEqualTo(1);
+            assertThat(fixture.ledger.senderSeq(result)).isEqualTo(1000);
+            assertThat(fixture.ledger.senderSeq(ordinary.getSender())).isEqualTo(1);
+            apply(fixture, machine, 4, List.of(message("ordinary", new byte[0], 2)));
+            assertThat(fixture.ledger.senderSeq(ordinary)).isEqualTo(2);
+        }
+    }
+
+    @Test
     void cancellationIsTerminalAuditOnlyAndIdempotent(@TempDir Path directory) {
         AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
         Fixture fixture = fixture(directory, signer);
@@ -390,6 +530,27 @@ class ObservationKernelTest {
                 results.add(result);
             }
         };
+    }
+
+    @Test
+    void wipedObservationIndexFailsAuditEvenWithCodecV1(@TempDir Path directory) throws Exception {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        for (boolean codecV2 : List.of(false, true)) {
+            try (Fixture fixture = fixture(directory.resolve(Boolean.toString(codecV2)), signer, codecV2)) {
+                apply(fixture, machine(new AtomicReference<>(), new AtomicInteger()), 1, List.of());
+                apply(fixture, machine(new AtomicReference<>(), new AtomicInteger()), 2, List.of());
+                fixture.ledger.verifyObservationIndexes();
+                Field dbField = AppLedgerStore.class.getDeclaredField("db");
+                Field cfField = AppLedgerStore.class.getDeclaredField("observationsCf");
+                dbField.setAccessible(true);
+                cfField.setAccessible(true);
+                RocksDB db = (RocksDB) dbField.get(fixture.ledger);
+                ColumnFamilyHandle cf = (ColumnFamilyHandle) cfField.get(fixture.ledger);
+                db.deleteRange(cf, new byte[]{0}, new byte[]{(byte) 0xff});
+                assertThatThrownBy(fixture.ledger::verifyObservationIndexes)
+                        .isInstanceOf(IllegalStateException.class).hasMessageContaining("watermark");
+            }
+        }
     }
 
     @Test
@@ -682,11 +843,18 @@ class ObservationKernelTest {
     private static Fixture fixture(Path directory, AppMessageSigner signer,
                                    boolean recurring, boolean slots, int capacity,
                                    StateCommitFaultInjector faults) {
+        return fixture(directory, signer, recurring, slots, capacity, faults, Map.of());
+    }
+
+    private static Fixture fixture(Path directory, AppMessageSigner signer,
+                                   boolean recurring, boolean slots, int capacity,
+                                   StateCommitFaultInjector faults, Map<String, String> pluginSettings) {
         AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
                 .signingKeyHex(MEMBER_SEED)
                 .memberKeysHex(Set.of(signer.publicKeyHex()))
                 .proposerKeyHex(signer.publicKeyHex())
                 .maxBlockMessages(100)
+                .pluginSettings(pluginSettings)
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         EffectsSettings effects = EffectsSettings.from(config);
@@ -766,7 +934,7 @@ class ObservationKernelTest {
                 fixture.profile.digest(), fixture.definition.digest(),
                 round.subscriptionId(), round.roundNumber(), round.membershipDigest(),
                 round.reporterSetDigest(), signer.publicKey(), new byte[]{9}, value,
-                new byte[0], new byte[]{1}, 0, 1, new byte[64]);
+                new byte[0], new byte[]{1}, round.anchorType().code(), round.dueAnchor(), new byte[64]);
         ObservationReport report = new ObservationReport(1,
                 unsigned.chainGenesisId(), unsigned.chainId(), unsigned.consensusProfileDigest(),
                 unsigned.observationProfileDigest(), unsigned.definitionDigest(),

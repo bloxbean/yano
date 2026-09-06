@@ -71,7 +71,7 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
         this.definition = Objects.requireNonNull(definition, "definition");
         Set<String> allowedSettings = mode == Mode.RAW_EXACT
                 ? Set.of("url", "method", "timeout-ms", "source-id", "version-header")
-                : Set.of("url", "method", "timeout-ms");
+                : Set.of("url", "method", "timeout-ms", "source-id");
         if (settings.keySet().stream().anyMatch(key -> !allowedSettings.contains(key))) {
             throw new IllegalArgumentException(
                     "Unclassified observation HTTPS provider setting");
@@ -137,7 +137,8 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
             ObservationMerkleEvidence proof = ObservationMerkleEvidence.decode(body);
             ObservationAttestation root = proof.rootAttestation();
             if (!Arrays.equals(root.subscriptionId(), request.round().subscriptionId())
-                    || root.roundNumber() != request.round().roundNumber()) {
+                    || root.roundNumber() != request.round().roundNumber()
+                    || !Arrays.equals(sourceId, root.sourceId())) {
                 throw new IOException("Observation Merkle root identifies another round");
             }
             return new ObservationCandidate(root.sourceId(), proof.value(), body,
@@ -146,7 +147,8 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
         if (mode == Mode.ATTESTED) {
             ObservationAttestation attestation = ObservationAttestation.decode(body);
             if (!Arrays.equals(attestation.subscriptionId(), request.round().subscriptionId())
-                    || attestation.roundNumber() != request.round().roundNumber()) {
+                    || attestation.roundNumber() != request.round().roundNumber()
+                    || !Arrays.equals(sourceId, attestation.sourceId())) {
                 throw new IOException("Observation attestation identifies another round");
             }
             return new ObservationCandidate(attestation.sourceId(), attestation.claim(), body,

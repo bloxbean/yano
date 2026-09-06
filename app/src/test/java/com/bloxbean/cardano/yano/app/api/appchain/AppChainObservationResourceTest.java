@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class AppChainObservationResourceTest {
     @Test
-    void hintsHaveOnlyBoundedSubscriptionIdentityAndSubmitAccess() throws Exception {
+    void hintsHaveOnlyBoundedSubscriptionIdentityAndPrivilegedAccess() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         var resource = resource(bytes -> {
             assertEquals(32, bytes.length);
@@ -37,7 +37,7 @@ class AppChainObservationResourceTest {
         }
         assertEquals(1, calls.get());
         for (String method : new String[]{"observationWake", "observationReport"}) {
-            assertEquals(AppChainAccess.Level.SUBMIT, AppChainResource.ChainScopedResource.class
+            assertEquals(AppChainAccess.Level.PRIVILEGED, AppChainResource.ChainScopedResource.class
                     .getMethod(method, InputStream.class).getAnnotation(AppChainAccess.class).value());
         }
     }

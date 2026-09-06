@@ -3,6 +3,42 @@
 This guide accompanies ADR-037 qualification. It does not declare the feature
 production-ready or waive the five-node Preprod and independent-review gates.
 
+## Breaking fresh-chain cutover — release approval still required
+
+PR #113 changes every app-chain's consensus context to v3 and commits the
+observation profile at height 1, **including the disabled profile**. Disabling
+observations does not preserve compatibility. An existing pre-ADR-037 app-chain
+ledger without that marker refuses startup. Deleting its local database and
+resyncing the same old chain does not solve the context/state-root mismatch.
+Mixed old/new members cannot participate in the same consensus generation.
+
+This includes older Preprod SCRIPT-anchor deployments. The Phase 5 qualification
+cluster was created on ADR-037 code; its successful restarts are not migration
+evidence for an older ledger. No automatic migration or retained-chain upgrade
+path is provided. Do not delete or reset an existing ledger, signing journal,
+anchor, or settlement identity to get past the guard. Preserve it and continue
+using its matching software generation until an operator-approved replacement
+chain and anchor/settlement transition have been planned.
+
+The PR also starts forwarding `consensus.*` settings that were previously
+ignored by configuration parsing. Audit those settings on every member before
+creating a new generation; dormant fault-bound/quorum values can now become
+effective. Explicit maintainer approval of this fresh-chain-only release is
+still needed; implementation and test results do not supply that approval.
+
+Review remediation pins the logical `source-id` into attested and Merkle source
+digests and isolates result/tick sender-sequence domains. Preview profiles and
+fixtures must be regenerated for a new generation. Old preview stores also lack
+the new derived-index commit-height watermark and fail the startup audit:
+preserve them for exact-version replay/repair, not silent marker backfilling.
+`ObservationLedgerRebuilder` is a library API, not a turnkey operator command;
+repair requires the matching state machine, profiles and height-specific
+membership history, plus root-by-root verification before index installation.
+
+The plugin host API moves from level 4 to 8 across these milestones. Rebuild and
+qualify consumers against matching published/staged host artifacts; level-8
+certified-header consumers cannot safely run with incomplete older proof APIs.
+
 ## Preserve generation identity
 
 Keep an offline backup of the complete app-chain store and matching public

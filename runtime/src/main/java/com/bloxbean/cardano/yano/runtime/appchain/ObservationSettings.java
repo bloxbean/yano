@@ -180,7 +180,10 @@ final class ObservationSettings {
             byte[] expectedSource = (definition.acquisitionAdapterId().equals(ObservationProviders.HTTPS_ATTESTED)
                     || definition.acquisitionAdapterId().equals(ObservationProviders.HTTPS_MERKLE))
                     ? attestedHttpsSource(config.pluginSettings(), definition, keys)
-                    : ObservationSourceConfiguration.attestorSetDigest(keys);
+                    : ObservationSourceConfiguration.attestedSourceDigest(
+                            attestedSourceId(config.pluginSettings(), definition), keys);
+            rawSources.put(definition.id(), attestedSourceId(config.pluginSettings(), definition)
+                    .getBytes(StandardCharsets.US_ASCII));
             if (!Arrays.equals(definition.sourceConfigurationDigest(), expectedSource)) {
                 throw new IllegalArgumentException("Attestor keys for observation definition '"
                         + definition.id() + "' differ from its source configuration digest");
@@ -237,7 +240,8 @@ final class ObservationSettings {
                 return switch (definition.evidenceVerifierId()) {
                     case ObservationMerkleEvidence.VERIFIER_ID -> (ignoredDefinition, round, report) -> {
                         try {
-                            return ObservationMerkleEvidence.decode(report.evidence()).verify(round, report,
+                            return Arrays.equals(rawSources.get(definition.id()), report.sourceId())
+                                    && ObservationMerkleEvidence.decode(report.evidence()).verify(round, report,
                                     attestors.getOrDefault(definition.id(), Set.of()).stream()
                                             .map(ByteKey::value).toList(),
                                     (key, digest, signature) -> AppMessageSigner.verify(signature, digest, key));
@@ -308,6 +312,7 @@ final class ObservationSettings {
         }
         Set<ByteKey> allowed = attestors.getOrDefault(definition.id(), Set.of());
         return allowed.contains(new ByteKey(attestation.signerPublicKey()))
+                && Arrays.equals(rawSources.get(definition.id()), report.sourceId())
                 && Arrays.equals(attestation.definitionDigest(), definition.digest())
                 && Arrays.equals(attestation.subscriptionId(), report.subscriptionId())
                 && attestation.roundNumber() == report.roundNumber()
@@ -398,8 +403,19 @@ final class ObservationSettings {
         String method = settings.getOrDefault(prefix + "method", "GET")
                 .trim().toUpperCase(Locale.ROOT);
         return ObservationProviders.HTTPS_MERKLE.equals(definition.acquisitionAdapterId())
-                ? ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(endpoint.toASCIIString(), method, keys)
-                : ObservationSourceConfiguration.attestedHttpsSourceDigest(endpoint.toASCIIString(), method, keys);
+                ? ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(endpoint.toASCIIString(), method,
+                        attestedSourceId(settings, definition), keys)
+                : ObservationSourceConfiguration.attestedHttpsSourceDigest(endpoint.toASCIIString(), method,
+                        attestedSourceId(settings, definition), keys);
+    }
+
+    private static String attestedSourceId(Map<String, String> settings, ObservationDefinition definition) {
+        String source = settings.get("observations.providers." + definition.id() + ".source-id");
+        if (source == null || source.isBlank() || source.length() > 256
+                || !StandardCharsets.US_ASCII.newEncoder().canEncode(source)) {
+            throw new IllegalArgumentException("Attested observation requires a pinned ASCII source-id (1..256 bytes)");
+        }
+        return source;
     }
 
     private record ByteKey(byte[] value) {

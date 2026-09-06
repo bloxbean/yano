@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.PoolFullException;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
@@ -96,7 +97,7 @@ class ObservationRuntimeTest {
                 filled(1), filled(2), filled(3), filled(4), ObservationReporterMode.ACTIVE_MEMBERS,
                 ObservationHashes.reporterSetDigest(List.of(signer.publicKey())), 0, 1, 1, false,
                 ObservationProviders.HTTPS_MERKLE, ObservationSourceConfiguration.merkleAttestedHttpsSourceDigest(
-                "https://example.com/receipts", "GET", List.of(attestor.publicKey())), "identity-v1",
+                "https://example.com/receipts", "GET", "source", List.of(attestor.publicKey())), "identity-v1",
                 ObservationMerkleEvidence.VERIFIER_ID, ObservationSettings.EXACT_POLICY,
                 filled(6), filled(7), "one-source-v1", "source-version-v1", "inline-v1",
                 1, 1024, 1024, 1024, 1, 1);
@@ -106,6 +107,7 @@ class ObservationRuntimeTest {
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .pluginSettings(Map.of(ObservationSettings.PROFILE_HEX, HexUtil.encodeHexString(profile.encode()),
                         "observations.attestors.delivery", attestor.publicKeyHex(),
+                        "observations.providers.delivery.source-id", "source",
                         "observations.providers.delivery.type", ObservationProviders.HTTPS_MERKLE,
                         "observations.providers.delivery.url", "https://example.com/receipts")).build();
         ObservationSettings settings = ObservationSettings.from(config, members);
@@ -120,7 +122,9 @@ class ObservationRuntimeTest {
             apply(ledger, kernel, machine, 1, List.of());
             try (ObservationRuntime runtime = runtime(settings, request -> {
                 byte[] value = new byte[]{1, 2, 3};
-                byte[] source = filled(9);
+                // A valid signed root/leaf for an unpinned logical source must not qualify.
+                byte[] source = (attempts.incrementAndGet() == 1 ? "other" : "source")
+                        .getBytes(StandardCharsets.US_ASCII);
                 byte[] sibling = filled(10);
                 byte[] leaf = ObservationMerkleEvidence.leafHash(request.round().parametersDigest(), source, value);
                 byte[] root = ObservationMerkleEvidence.branchHash(leaf, sibling);
@@ -129,7 +133,7 @@ class ObservationRuntimeTest {
                 ObservationAttestation signed = new ObservationAttestation(1, definition.digest(), subscription, 0,
                         attestor.publicKey(), source, root, new byte[]{1}, 0, 2, attestor.sign(unsigned.signingDigest()));
                 ObservationMerkleEvidence proof = new ObservationMerkleEvidence(1, signed, value, 0,
-                        List.of(attempts.incrementAndGet() == 1 ? filled(11) : sibling));
+                        List.of(sibling));
                 return new ObservationCandidate(source, value, proof.encode(), new byte[]{1}, 0, 2);
             }, ledger, signer, members, consensus, new CopyOnWriteArrayList<>())) {
                 byte[] before = ledger.stateRoot();
@@ -204,11 +208,11 @@ class ObservationRuntimeTest {
                 runtime.tick();
                 for (int source = 0; source < 3; source++) {
                     for (int reporter = 0; reporter < 4; reporter++) {
-                        runtime.submitExternalReport(externalClaim(round, profile, consensus,
+                        submitWithBackoff(runtime, externalClaim(round, profile, consensus,
                                 reporters.get(reporter), source, new byte[64]).encode()); // Bad signatures add no weight.
                         ObservationReport unsigned = externalClaim(round, profile, consensus,
                                 reporters.get(reporter), source, new byte[64]);
-                        runtime.submitExternalReport(externalClaim(round, profile, consensus,
+                        submitWithBackoff(runtime, externalClaim(round, profile, consensus,
                                 reporters.get(reporter), source,
                                 reporters.get(reporter).sign(unsigned.signingDigest())).encode());
                     }
@@ -386,7 +390,7 @@ class ObservationRuntimeTest {
             assertThat(restarted.status().get("reportsAccepted")).isZero();
             assertThat(restarted.status().get("journalBytes")).isEqualTo(retainedBytes);
             for (int tick = 0; tick < 10; tick++) restarted.tick();
-            assertThat(restartedDiffusion).hasSize(11); // One retained report per periodic tick, not per duplicate.
+            assertThat(restartedDiffusion).hasSize(1); // Repeated ticks cannot bypass the shared diffusion budget.
             assertThat(restarted.readyCertificates(10)).hasSize(1);
             assertThat(restarted.status().get("journalBytes")).isEqualTo(retainedBytes);
 
@@ -401,7 +405,7 @@ class ObservationRuntimeTest {
                 restarted.onReport(retainedReport);
             }
             await(() -> restarted.status().get("coordinatorQueued") == 0, Duration.ofSeconds(5));
-            assertThat(restartedDiffusion).hasSize(11);
+            assertThat(restartedDiffusion).hasSize(1);
             assertThat(restarted.status().get("journalBytes")).isZero();
         }
     }
@@ -505,6 +509,17 @@ class ObservationRuntimeTest {
     private static AppLedgerStore ledger(Path path) {
         return new AppLedgerStore(path.toString(),
                 LoggerFactory.getLogger(ObservationRuntimeTest.class), TestStateCommitments.MPF);
+    }
+
+    private static void submitWithBackoff(ObservationRuntime runtime, byte[] report) throws Exception {
+        await(() -> {
+            try {
+                runtime.submitExternalReport(report);
+                return true;
+            } catch (PoolFullException busy) {
+                return false;
+            }
+        }, Duration.ofSeconds(5));
     }
 
     private static void await(BooleanSupplier condition, Duration timeout) throws Exception {

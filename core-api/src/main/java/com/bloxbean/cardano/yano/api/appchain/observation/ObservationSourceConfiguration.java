@@ -37,19 +37,26 @@ public final class ObservationSourceConfiguration {
         return digest("https-exact-v1", values);
     }
 
-    public static byte[] attestedHttpsSourceDigest(String canonicalUrl, String method,
+    public static byte[] attestedSourceDigest(String sourceId, List<byte[]> publicKeys) {
+        return digest("attested-v1", List.of(boundedAscii(sourceId, 256, "source id"),
+                attestorSetDigest(publicKeys)));
+    }
+
+    public static byte[] attestedHttpsSourceDigest(String canonicalUrl, String method, String sourceId,
                                                    List<byte[]> publicKeys) {
         return digest("https-attested-v1", List.of(
                 boundedAscii(canonicalUrl, 2048, "canonical URL"),
                 boundedAscii(method, 8, "HTTP method"),
+                boundedAscii(sourceId, 256, "source id"),
                 attestorSetDigest(publicKeys)));
     }
 
-    public static byte[] merkleAttestedHttpsSourceDigest(String canonicalUrl, String method,
+    public static byte[] merkleAttestedHttpsSourceDigest(String canonicalUrl, String method, String sourceId,
                                                          List<byte[]> publicKeys) {
         return digest("https-attested-merkle-v1", List.of(
                 boundedAscii(canonicalUrl, 2048, "canonical URL"),
-                boundedAscii(method, 8, "HTTP method"), attestorSetDigest(publicKeys)));
+                boundedAscii(method, 8, "HTTP method"), boundedAscii(sourceId, 256, "source id"),
+                attestorSetDigest(publicKeys)));
     }
 
     private static byte[] digest(String type, List<byte[]> values) {
