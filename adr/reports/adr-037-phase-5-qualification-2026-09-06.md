@@ -1,5 +1,53 @@
 # ADR-037 Phase 5 qualification — 2026-09-06
 
+## Latest checkpoint and CI findings
+
+Host configuration checkpoint `8a0f31f7a6ed42047b78b0a3e7c29b15651d43e3`
+is pushed. Exact Maven Local/JVM ZIP publication and packaged catalog smoke
+passed in 1m18s (`/private/tmp/adr-037-phase-5-config-publication.log`). Remote
+staging [34011585670](https://github.com/bloxbean/yano/actions/runs/34011585670)
+also passed. Phase 4's separate host integration/distribution/native run
+[34010324585](https://github.com/bloxbean/yano/actions/runs/34010324585) passed
+all three jobs; these do not substitute for final Phase 5 gate results.
+The host build workflow now permits explicit milestone dispatch, so its full
+build can be checked before merging a milestone into integration.
+
+The companion's first exact-input remote run
+[34011404923](https://github.com/bloxbean/yano-x/actions/runs/34011404923)
+passed distribution and connector-fault checks, but failed its full build and
+effect-failover gates. Preserve these as real failures:
+
+- The evidence harness could not start: default-enabled Cardano historical
+  projections attempted `/app/history` on its read-only root filesystem.
+  Both harness topology templates now explicitly disable this unprovisioned,
+  out-of-scope historical projection service. App-chain history, L1 state,
+  effects and connectors remain enabled as configured; root filesystem
+  protection was not weakened. The failover behavior itself was not exercised.
+- The retained settlement templates were reproduced locally by an artifact
+  labelled Julc `pre14`, but it differs from published `pre14`. Local compiler
+  SHA-1 was `14b6cf0b2884c441dadc6ad86cdedeabd596bbd4`; published `pre14` was
+  `605e9c7729531078f77f97aa3223fc8b0d285dbe`. This corrects Phase 4's assumption
+  that a version-only local compiler pin was independently reproducible.
+  Excluding **all Julc modules from Maven Local**, published `pre15` reproduced
+  all four templates exactly (zero skips/failures, 2s diagnostic run).
+  Its compiler SHA-1 matches Maven Central:
+  `87ac86fa5cc95c1e04c92419247f691cf2c345c7`. The mandatory isolated verification
+  task now pins published `pre15`; current-compiler conformance remains
+  separate. No settlement source/template/script hash was regenerated.
+
+Logs: `/private/tmp/adr-037-phase-5-effect-failover-remote.log`,
+`/private/tmp/adr-037-phase-5-companion-remote-failure-complete.log`, and
+`/private/tmp/adr-037-phase-5-published-julc-pre15.log`.
+
+Companion local full tests/inventory/JVM-only gates against the new host passed
+in 2m5s (223 tasks, 41 executed, 182 up-to-date) before the remote findings were
+fixed. New fixture generation tests and all devtools tests also passed. The
+schema golden change was diffed against the retained Phase 4 distribution:
+only the two newly declared namespaces differ. The new configuration-only
+fixture refuses existing targets, protects test keys with POSIX permissions,
+uses five validators (`q=4,f=1`) and synthetic reporters, and disables all
+spending/anchors. It does not launch nodes or prove live qualification.
+
 Status: **in progress; not graduated**. Preview and disabled-by-default remain.
 
 Phase 4 merged into Yano integration at `a39025d59` and into the companion
