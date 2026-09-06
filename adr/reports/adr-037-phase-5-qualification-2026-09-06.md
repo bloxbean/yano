@@ -2,7 +2,10 @@
 
 ## Latest checkpoint and CI findings
 
-Current implementation candidate: host `9a0e0ccee`, companion `039abb07`.
+Current executable host candidate: `9a0e0ccee`; companion runtime/package `039abb07`,
+with harness-only follow-ups `5ae5beb0` / `f684181c`. All automated CI gates
+passed for f684/9a0, with one diagnostic rerun of the connector matrix after
+the independently recorded native Kafka crash. Independent review remains open.
 The retained deployment was upgraded to 9a0/039, qualified for restart and
 historical proof recovery, then gracefully stopped at 19:39:31 Singapore.
 The entries below are chronological evidence; older pending/failure statements
@@ -18,14 +21,26 @@ inputs and deployed package checksums remain recorded below.
 | --- | --- |
 | Exact host Maven/JVM input and companion distribution | 9a0 local publication/smoke and remote staging passed; companion 039 local tests/distribution passed |
 | Host CI build / integration / distribution / native | 9a0 passed all gates: `34029408650`, `34029410182`; staging `34029411768` passed |
-| Companion full CI | 039/9a0 `34029688518` failed host bootstrap visibility before scenarios; build/distribution/connector matrix passed. Prior e958/c887 `34028155896` passed |
+| Companion full CI | f684/9a0 `34032472544` passed all five jobs; connector matrix/TLS and release acceptance passed on one diagnostic rerun after native Kafka startup SIGSEGV |
 | Packaged five-node omission, later-view inclusion and automatic heal | Round 11 passed on e958/bd09 |
 | Membership and operator recovery | Live 5→6→5, graceful upgrade and abrupt process recovery evidence retained |
 | 100k indexed-subscription recovery | Final e958 opt-in rerun passed, 9.275s |
 | Sustained cadence / resource qualification | Rounds 0–99 complete; final 88-round run, all 500 historical proofs and bounded idle-tail checks passed |
-| Independent code/protocol review | Outstanding; milestone draft PRs host #118 / companion #10 have no submitted reviews |
+| Independent code/protocol review | Outstanding; milestone PRs host #118 / companion #10 have no submitted reviews; Phase 5 remains unmerged |
 
 ### Latest exact-package upgrade and CI outcome
+
+Observation acquisition scope: the five-node ADA/USD cadence uses the external
+reporter admission path, not live exchange polling. The packaged qualification
+driver creates source values `0.500000`, `0.501000`, `0.502000`, binds each report
+to the actual committed round and pinned source/reporter identities, signs it
+through the honest reporter's durable journal, and submits the encoded report
+through the ordinary REST observation endpoint on rotating nodes. Disagreement,
+delay and unavailability are injected by changing or withholding these reports.
+The expected successful aggregate is `0.501000`. This exercises report admission,
+gossip, certification, application and proofs; it does not establish end-to-end
+correctness or truth of a real exchange adapter. HTTPS acquisition has separate
+provider tests and must be qualified with the intended source before deployment.
 
 Local role workflow passed on 039/9a0, including role authorization, catch-up,
 retained lifecycle idempotency and proofs. All three app/anchor heights were 60.
@@ -65,6 +80,79 @@ Deployment parity and effect-failover contracts passed. This is a diagnostic
 and recovery-budget correction, not evidence that the unidentified L1 stall
 has been fixed. Independent review remains outstanding (draft #118/#10 checked
 again on September 6; no submitted reviews).
+
+Companion `5ae5beb07811c6957a8b8b69c6759d102643f5db` commits this harness-only
+follow-up. The complete launcher profiles/identity/lifecycle/cleanup suite passed
+using the prepared exact 039/9a0 plugin inputs and packaged runner:
+`/private/tmp/adr-037-phase-5-startup-budget-launcher-exact-inputs-test.log`.
+Parity/failover contracts and shell syntax/diff checks passed as well. Full CI
+`34031447151` was dispatched against staged host run `34029411768` and exact
+commit `9a0e0ccee3963dcc563d8a8f44e9e1371c62a00a`. No new Java runtime changes
+were introduced by this follow-up; its CI outcome is not yet asserted.
+
+The updated 5ae5 launcher also passed local live Compose/host composite parity
+with the existing exact 039/9a0 binaries, explicitly selecting the new 900-second
+startup wait. Both deployments passed all-member bootstrap visibility, scenario
+and replay checks, retained restarts, artifact identity and semantic parity.
+Log: `/private/tmp/adr-037-phase-5-5ae5-composite-local-e2e.log`.
+The harness exited zero and removed its owned temporary root and containers.
+This run did not require an observed startup watchdog recovery and does not
+establish the cause of the earlier CI stall.
+
+Full CI `34031447151` passed composite parity, then failed role startup at
+12:09:43 UTC: Docker could not bind `127.0.0.1:48070` (`address already in use`).
+No role Yano node started; this is not a new observer/L1 runtime failure.
+The earlier listening-socket preflight had passed. A transient client-port
+collision is plausible but not proven by the retained log: 48070 lies within
+Linux's [documented default automatic port range](https://docs.kernel.org/networking/ip-sysctl.html#ip-variables)
+32768–60999. The follow-up moves isolated role listener defaults below that
+range and checks the runner's actual range read-only, rejecting overlaps rather
+than altering sysctls or killing a port owner. A behavioral guard regression
+covers old/default/custom ranges and the non-Linux fallback. Log:
+`/private/tmp/adr-037-phase-5-5ae5-companion-ci-failure.log`; full run retained
+in `/private/tmp/adr-037-phase-5-5ae5-companion-ci-full.log`.
+
+Port correction `f684181c90fc272fc8be08b2b9b41129e9529717` passed the parity
+contract and shell/diff checks; full CI `34032472544` uses the same exact 9a0
+staging inputs. Local role E2E passed with the corrected defaults and existing
+039/9a0 runtime package: authorization, recovery, proofs, and one-member
+catch-up all passed. Log: `/private/tmp/adr-037-phase-5-role-ports-local-e2e.log`.
+Its owned containers and temporary root were removed. Remote outcomes are recorded below.
+
+Run `34032472544` then exposed an independent connector fixture failure: native
+Kafka crashed during the unavailable-service restart. The acknowledgement,
+bounded retry, initial restart/reconciliation and unavailable-service assertions
+had passed. On restarting at 12:15:45 UTC the Kafka native setup executable
+segfaulted (SIGSEGV, VM uptime 0.009 s; `KafkaDockerWrapper` / logger class
+initialization). At 12:18:20 the matrix correctly failed `Kafka did not recover
+after unavailable-service test`; TLS/SASL checks were skipped. This is not a
+Yano observation or L1 runtime crash. The deployed broker image has not been
+silently substituted and the failed recovery is not a pass. Completed job log:
+`/private/tmp/adr-037-phase-5-f684-connector-matrix-job.log` (job `101484446846`).
+Other run jobs were allowed to finish so their qualification evidence was retained.
+
+Attempt 1 completed with all other jobs passing, including isolated failover,
+composite parity and role workflow/catch-up. The role preflight recorded the
+actual Linux automatic port range as 32768–60999 and used the corrected lower
+listener defaults. Its final three app/anchor heights were 60, root
+`da9c0d8737b219215f44658d657d43717aca65af6737cf327950ec928f2af572`,
+with healthy peer links and fresh L1 progress. Full first-attempt evidence:
+`/private/tmp/adr-037-phase-5-f684-ci-attempt-1.log`.
+After that run completed, one diagnostic rerun of only the failed matrix job
+and its dependent release gate was accepted on the same f684 commit and pinned
+images. No code, image, assertion or retry policy was changed for that rerun;
+attempt 2 passed the connector fault matrix, TLS/SASL checks and dependent release
+acceptance. All five current-run jobs are green. This does not establish that
+the earlier Kafka crash is fixed: retain it as an external dependency reliability
+finding for independent review, not a Yano runtime defect or an erased failure.
+Successful second-attempt evidence:
+`/private/tmp/adr-037-phase-5-f684-ci-attempt-2-success.log`.
+
+Automated implementation/qualification work is complete at this checkpoint.
+Phases 0–4 remain integrated; Phase 5 must not merge or graduate before independent
+code/protocol review, including assessment of the recorded Kafka dependency
+finding and the ADR's conditional inclusion/expiry limits. No local cluster was
+restarted for browsing; retained Preprod and all owned local E2E processes are stopped.
 
 ### Extended CI distinguishes L1 recovery from missed anchor adoption
 
