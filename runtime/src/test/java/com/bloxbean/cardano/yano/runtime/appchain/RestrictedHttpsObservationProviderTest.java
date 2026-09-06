@@ -17,6 +17,47 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RestrictedHttpsObservationProviderTest {
 
     @Test
+    void headerBoundIncludesTerminatorAndRejectsOneExtraByte() throws Exception {
+        String prefix = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Padding: ";
+        String suffix = "\r\n\r\n";
+        String exact = prefix + "x".repeat(32 * 1024 - prefix.length() - suffix.length()) + suffix;
+        assertThat(RestrictedHttpsObservationProvider.readResponse(
+                new ByteArrayInputStream(exact.getBytes(StandardCharsets.US_ASCII)), 4).body()).isEmpty();
+        String oversized = prefix + "x".repeat(32 * 1024 - prefix.length() - suffix.length() + 1) + suffix;
+        assertThatThrownBy(() -> RestrictedHttpsObservationProvider.readResponse(
+                new ByteArrayInputStream(oversized.getBytes(StandardCharsets.US_ASCII)), 4))
+                .isInstanceOf(IOException.class).hasMessageContaining("headers exceed bound");
+    }
+
+    @Test
+    void rejectsSignedLengthsAndControlsBeforeWhitespaceTrimming() {
+        for (String response : List.of(
+                "HTTP/1.1 200 OK\r\nContent-Length: +3\r\n\r\nabc",
+                "HTTP/1.1 200 OK\r\nContent-Length: -0\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nX-Test: \u0000value\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nX-Test: value\u007f\r\n\r\n",
+                "HTTP/1.1 200 O\u0000K\r\n\r\n")) {
+            assertThatThrownBy(() -> RestrictedHttpsObservationProvider.readResponse(
+                    new ByteArrayInputStream(response.getBytes(StandardCharsets.US_ASCII)), 4))
+                    .isInstanceOf(IOException.class);
+        }
+    }
+
+    @Test
+    void ipv6TransportAndHostHeaderUseExactlyOneCanonicalBracketPair() {
+        URI literal = URI.create("https://[2606:4700:4700::1111]/value");
+        assertThat(RestrictedHttpsObservationProvider.transportHost(literal)).isEqualTo("2606:4700:4700::1111");
+        assertThat(RestrictedHttpsObservationProvider.requestAuthority(literal)).isEqualTo("[2606:4700:4700::1111]");
+        URI explicitPort = URI.create("https://[2606:4700:4700::1111]:443/value");
+        assertThat(RestrictedHttpsObservationProvider.transportHost(explicitPort)).isEqualTo("2606:4700:4700::1111");
+        assertThat(RestrictedHttpsObservationProvider.requestAuthority(explicitPort))
+                .isEqualTo("[2606:4700:4700::1111]:443");
+        URI hostname = URI.create("https://example.test:443/value");
+        assertThat(RestrictedHttpsObservationProvider.transportHost(hostname)).isEqualTo("example.test");
+        assertThat(RestrictedHttpsObservationProvider.requestAuthority(hostname)).isEqualTo("example.test:443");
+    }
+
+    @Test
     void rejectsRedirectsRateLimitsCompressionAndDuplicateEncodingWithoutReadingAClaim() throws Exception {
         for (int status : new int[]{301, 302, 307, 308, 429, 500, 503}) {
             var response = new RestrictedHttpsObservationProvider.Response(status,

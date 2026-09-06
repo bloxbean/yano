@@ -59,6 +59,79 @@ class ObservationKernelTest {
     private static final String MEMBER_SEED = "21".repeat(32);
 
     @Test
+    void callbackCannotOpenANonFutureSubscriptionAndWholeResultRollsBack(@TempDir Path directory) {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        for (boolean recurring : List.of(false, true)) {
+            try (Fixture fixture = fixture(directory.resolve(Boolean.toString(recurring)), signer, recurring)) {
+                AtomicReference<ObservationSubscriptionId> id = new AtomicReference<>();
+                AppStateMachine initial = machine(id, new AtomicInteger());
+                apply(fixture, initial, 1, List.of());
+                apply(fixture, initial, 2, List.of());
+                byte[] root = fixture.ledger.stateRoot();
+                ObservationRound round = fixture.ledger.observationReader().round(id.get().bytes(), 0).orElseThrow();
+                ObservationCertificate certificate = certificate(fixture, signer, round, new byte[]{1});
+                AppStateMachine callback = new AppStateMachine() {
+                    @Override public String id() { return "test-app"; }
+                    @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                                AppEffectEmitter effects) { }
+                    @Override public void onObservationResult(AppBlockExecutionContext context, ObservationResult result,
+                            AppStateWriter writer, AppEffectEmitter effects, AppObservationEmitter observations) {
+                        writer.put(new byte[]{9}, new byte[]{1});
+                        long height = context.block().height();
+                        observations.watch(ObservationIntent.oneShot("delivery", "callback", new byte[0],
+                                ObservationAnchorType.APP_HEIGHT, height, height + 1, height + 1));
+                    }
+                };
+                assertThatThrownBy(() -> apply(fixture, callback, 3, List.of(resultMessage(certificate, 1))))
+                        .hasRootCauseMessage("observation first due height must be later than the current block");
+                assertThat(fixture.ledger.tipHeight()).isEqualTo(2);
+                assertThat(fixture.ledger.stateRoot()).isEqualTo(root);
+                assertThat(fixture.ledger.observationReader().activeCount()).isEqualTo(1);
+                assertThat(fixture.ledger.observationReader().openRoundCount()).isEqualTo(1);
+                fixture.ledger.verifyObservationIndexes();
+            }
+        }
+    }
+
+    @Test
+    void sameDueSubscriptionsOpenInCanonicalOrderAcrossBoundedBatches(@TempDir Path directory) {
+        AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
+        List<byte[]> ids = new ArrayList<>();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "test-app"; }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                        AppEffectEmitter effects) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                        AppEffectEmitter effects, AppObservationEmitter observations) {
+                if (context.block().height() != 1) return;
+                for (int i = 0; i < 12; i++) ids.add(observations.watch(ObservationIntent.oneShot(
+                        "delivery", "same-due", new byte[]{(byte) i}, ObservationAnchorType.APP_HEIGHT,
+                        2, 4, 4)).bytes());
+            }
+        };
+        try (Fixture fixture = fixture(directory, signer, true, false, 20)) {
+            apply(fixture, machine, 1, List.of());
+            ids.sort(Arrays::compareUnsigned);
+            apply(fixture, machine, 2, List.of());
+            assertThat(fixture.ledger.observationReader().openRoundCount()).isEqualTo(10);
+            for (int i = 0; i < ids.size(); i++) {
+                var round = fixture.ledger.observationReader().round(ids.get(i), 0);
+                if (i < 10) assertThat(round.orElseThrow().openingHeight()).isEqualTo(2);
+                else assertThat(round).isEmpty();
+            }
+            apply(fixture, machine, 3, List.of());
+            assertThat(fixture.ledger.observationReader().openRoundCount()).isEqualTo(12);
+            for (int i = 10; i < 12; i++) {
+                assertThat(fixture.ledger.observationReader().round(ids.get(i), 0).orElseThrow().openingHeight())
+                        .isEqualTo(3);
+            }
+            assertThat(fixture.ledger.observationReader().dueAtOrBefore(
+                    ObservationAnchorType.APP_HEIGHT, 3, 20)).isEmpty();
+            fixture.ledger.verifyObservationIndexes();
+        }
+    }
+
+    @Test
     void createsOpensCertifiesAndDeduplicatesOneShotObservation(@TempDir Path directory) {
         AppMessageSigner signer = new AppMessageSigner(MEMBER_SEED);
         Fixture fixture = fixture(directory, signer);

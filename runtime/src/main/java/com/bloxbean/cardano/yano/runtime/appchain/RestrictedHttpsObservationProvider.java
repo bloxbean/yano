@@ -77,6 +77,7 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
                     "Unclassified observation HTTPS provider setting");
         }
         this.endpoint = parseEndpoint(required(settings, "url"));
+        validateEndpointSyntax(endpoint);
         this.method = settings.getOrDefault("method", "GET")
                 .trim().toUpperCase(Locale.ROOT);
         if (!method.equals("GET") && !method.equals("POST")) {
@@ -96,9 +97,8 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
             throw new IllegalArgumentException("Observation HTTPS source-id must be 1..256 bytes");
         }
         this.versionHeader = settings.getOrDefault("version-header", "ETag").trim();
-        if (versionHeader.isEmpty() || versionHeader.length() > 128
-                || versionHeader.chars().anyMatch(character -> character <= 32
-                || character >= 127 || character == ':')) {
+        if (versionHeader.length() > 128
+                || !versionHeader.matches("[A-Za-z0-9!#$%&'*+.^_`|~-]+")) {
             throw new IllegalArgumentException("Invalid observation source version header");
         }
         if (mode == Mode.RAW_EXACT && !Arrays.equals(definition.sourceConfigurationDigest(),
@@ -108,7 +108,6 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
                         versionHeader.toLowerCase(Locale.ROOT)))) {
             throw new IllegalArgumentException("Raw HTTPS settings differ from observation source identity");
         }
-        validateEndpointSyntax(endpoint);
         if (isAddressLiteral(endpoint.getHost())) {
             validatePublicEndpoint(endpoint);
         }
@@ -171,6 +170,7 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
     private Response exchange(InetAddress address, ObservationRequest request,
                               byte[] parameters, int maximum, long deadlineNanos) throws IOException {
         int port = endpoint.getPort() == -1 ? 443 : endpoint.getPort();
+        String peerHost = transportHost(endpoint);
         int timeoutMillis = remainingTimeoutMillis(deadlineNanos);
         try (Socket plain = new Socket()) {
             var deadline = DEADLINES.schedule(() -> {
@@ -184,12 +184,12 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
                 plain.connect(new InetSocketAddress(address, port), timeoutMillis);
                 SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
                 try (SSLSocket tls = (SSLSocket) factory.createSocket(
-                        plain, endpoint.getHost(), port, true)) {
+                        plain, peerHost, port, true)) {
                     tls.setSoTimeout(timeoutMillis);
                     SSLParameters tlsParameters = tls.getSSLParameters();
                     tlsParameters.setEndpointIdentificationAlgorithm("HTTPS");
-                    if (!isAddressLiteral(endpoint.getHost())) {
-                        tlsParameters.setServerNames(List.of(new SNIHostName(endpoint.getHost())));
+                    if (!isAddressLiteral(peerHost)) {
+                        tlsParameters.setServerNames(List.of(new SNIHostName(peerHost)));
                     }
                     tls.setSSLParameters(tlsParameters);
                     tls.startHandshake();
@@ -207,8 +207,7 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
         String path = endpoint.getRawPath();
         if (path == null || path.isEmpty()) path = "/";
         if (endpoint.getRawQuery() != null) path += "?" + endpoint.getRawQuery();
-        String host = endpoint.getHost().indexOf(':') >= 0
-                ? "[" + endpoint.getHost() + "]" : endpoint.getHost();
+        String host = requestAuthority(endpoint);
         StringBuilder headers = new StringBuilder()
                 .append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
                 .append("Host: ").append(host).append("\r\n")
@@ -236,7 +235,9 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
         byte[] headerBytes = readHeaders(input);
         String[] lines = new String(headerBytes, StandardCharsets.ISO_8859_1)
                 .split("\r\n");
-        if (lines.length == 0 || !lines[0].matches("HTTP/1\\.[01] [0-9]{3}( .*)?")) {
+        if (lines.length == 0 || !lines[0].matches("HTTP/1\\.[01] [0-9]{3}( .*)?")
+                || lines[0].chars().anyMatch(character -> character == 127
+                || character < 32 && character != '\t')) {
             throw new IOException("Malformed observation HTTPS status line");
         }
         int status = Integer.parseInt(lines[0].substring(9, 12));
@@ -253,10 +254,12 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
             if (!name.matches("[a-z0-9!#$%&'*+.^_`|~-]+")) {
                 throw new IOException("Malformed observation HTTPS header name");
             }
-            String value = line.substring(colon + 1).trim();
-            if (value.chars().anyMatch(character -> character < 32 && character != '\t')) {
+            String rawValue = line.substring(colon + 1);
+            if (rawValue.chars().anyMatch(character -> character == 127
+                    || character < 32 && character != '\t')) {
                 throw new IOException("Malformed observation HTTPS header value");
             }
+            String value = rawValue.trim();
             headers.computeIfAbsent(name, ignored -> new ArrayList<>()).add(value);
         }
         if (status < 200 || status >= 300) return new Response(status, headers, new byte[0]);
@@ -272,6 +275,9 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
             }
             body = readChunked(input, maximum);
         } else if (!contentLength.isEmpty()) {
+            if (!contentLength.matches("[0-9]+")) {
+                throw new IOException("Malformed observation HTTPS content length");
+            }
             final long length;
             try {
                 length = Long.parseLong(contentLength);
@@ -301,7 +307,19 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
 
     private static List<InetAddress> resolvePublicAddresses(URI endpoint, long deadlineNanos) throws IOException {
         validateEndpointSyntax(endpoint);
-        return validateResolvedAddresses(ObservationDnsResolver.SHARED.resolve(endpoint.getHost(), deadlineNanos));
+        return validateResolvedAddresses(ObservationDnsResolver.SHARED.resolve(transportHost(endpoint), deadlineNanos));
+    }
+
+    static String transportHost(URI endpoint) {
+        validateEndpointSyntax(endpoint);
+        String host = endpoint.getHost();
+        return host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
+    }
+
+    static String requestAuthority(URI endpoint) {
+        validateEndpointSyntax(endpoint);
+        // URI.getHost() already brackets IPv6 literals; preserve exactly one pair and an explicit port.
+        return endpoint.getRawAuthority();
     }
 
     static List<InetAddress> validateResolvedAddresses(InetAddress[] addresses) {
@@ -426,7 +444,7 @@ final class RestrictedHttpsObservationProvider implements ObservationProvider {
     private static byte[] readHeaders(InputStream input) throws IOException {
         ByteArrayOutputStream headers = new ByteArrayOutputStream();
         int matched = 0;
-        while (headers.size() <= 32 * 1024) {
+        while (headers.size() < 32 * 1024) {
             int value = input.read();
             if (value < 0) throw new IOException("Truncated observation HTTPS headers");
             headers.write(value);

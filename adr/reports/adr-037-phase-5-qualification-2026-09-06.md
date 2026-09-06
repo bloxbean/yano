@@ -2,6 +2,44 @@
 
 ## Latest checkpoint and CI findings
 
+### HTTPS framing and scheduling follow-up
+
+The IPv6 transport host is now unbracketed for DNS/TLS, while the HTTP Host
+authority retains exactly one bracket pair and any explicit port. Endpoint
+syntax is checked before consuming its host. Header validation rejects control
+bytes before trimming, DEL, signed Content-Length values, and non-token version
+header names. The 32 KiB header bound includes the complete terminator; an
+exact-boundary response succeeds and a one-byte excess fails.
+
+The focused selection passed in 22s: ten provider tests, six DNS tests and the
+explicitly enabled real HTTPS/three-subsystem test, with zero skips/failures.
+Log: `/private/tmp/adr-037-phase-5-http-framing-tests.log`.
+Additional kernel regressions cover canonical equal-due ordering across bounded
+batches and whole-result rollback for non-future callback subscriptions.
+The complete kernel selection passed in 37s (16 tests, zero skips/failures),
+including the explicitly enabled 100k-subscription case. Log:
+`/private/tmp/adr-037-phase-5-kernel-framing-checkpoint.log`.
+
+Host `7696f2c9d` integration, native and distribution run `34014402584` passed;
+its staging run `34014403520` also passed. The companion exact-pair local test,
+inventory, JVM-only and distribution build at `1cec9dd8` passed in 5m58s
+(`/private/tmp/adr-037-phase-5-dns-companion-package.log`). These checkpoints
+precede this framing follow-up and do not qualify its final artifact.
+
+Companion run `34013848901` passed build, distribution, connector faults and
+the effect-failover step, but failed composite deployment parity with
+`ANCHOR_UNAVAILABLE`. All three app roots matched at height 6; leader and node 2
+had confirmed height-6 anchors while node 1 still exposed no adopted identity.
+The log is retained at
+`/private/tmp/adr-037-phase-5-composite-parity-failure.log`. This gate remains
+failed pending diagnosis; no anchor acceptance condition has been relaxed.
+
+Live delayed-reporter round 3 produced five verified VALUE proofs at height 34,
+result `a907f48c0e06a8cb7326a4edb5559e3d3dfd6556af2f40219228f2400edea319`,
+root `d6a6549219be2d2204e61b098f69fda4383bfb7b48023f6683ea377f6f033e10`.
+All five journals and coordinator queues drained. This remains earlier-package,
+historical-catch-up evidence, not completed Phase 5 qualification.
+
 ### Provider-boundary review iteration
 
 Review of the required failure matrix found that the socket timeout began only
