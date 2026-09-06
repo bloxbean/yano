@@ -58,6 +58,22 @@ adjustment. Neither condition justifies deleting chainstate.
 
 ## Post-upgrade checks
 
+Dedicated app-peer links now leave reconnect ownership with the app subsystem,
+not the transport library's synchronous close callback. A disconnected session
+object is not a live connection: the underlying channel must also be active.
+The existing five-second connection tick supervises one off-loop connector per
+peer and interrupts stalled negotiation after its thirty-second allowance;
+protocol-100 readiness must also arrive within that allowance. Established,
+fully negotiated links do not expire on that timer. Retained replay entries
+remain bounded and are re-offered only after the replacement's InitAck.
+This policy applies only to dedicated app links, not L1 upstream clients.
+
+When testing partitions, verify all directed links actually reconnect after
+healing, then verify same-height certified roots. A four-node result while the
+fifth remains disconnected proves quorum progress, not complete recovery.
+Preserve peer status, logs and thread dumps before any operator restart; do not
+erase prepared locks, certificates or signing journals to force catch-up.
+
 Script-anchor compatibility qualification also found that a member excluded
 from a responsive co-signing subset ignored the advance request, losing the
 exact transaction identity needed for later anchor adoption. Every member now

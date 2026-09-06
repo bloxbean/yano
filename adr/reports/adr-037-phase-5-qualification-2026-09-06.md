@@ -2,6 +2,173 @@
 
 ## Latest checkpoint and CI findings
 
+### Live withholding found an app-peer reconnect defect
+
+Round 10 opened at 102 on the e84/7ce package. The manual prompt selected node 3
+in view 0, but the operator handoff was delayed. No reports were signed while
+waiting. A bounded control loop waited until all five again identified node 3
+as current proposer, then isolated it at actual view 5 (09:01:54 UTC).
+`withholding-round-10/injection-before-status.json` and
+`injection-after-status.jsonl` retain the actual boundary. Node 3 accepted the
+twelve reports and retained a ready certificate with all four directed peer
+connections down; identical signed wires were then delivered to the honest group.
+
+Four honest nodes certified VALUE at height 103 in view 6, proposer
+`6eb5dc55d4eb35df5a5ed96e5ad862e0d040c0541d157dedc03d6eece94511b8`, result
+`63e3eb0ad66950301bc185f233296f9e070cd2419aae6cd93c55d56ee53fa5cd`, root
+`4a8e5ce240d1fa63f4d0e2b18fc0a3b15a24468c7f3e0344fe8e38664c40967e`.
+`honest-certified-before-heal.json` retains all four independently verified full
+proof packages. Their views were explicitly checked as greater than actual
+injection view 5 before healing, not just greater than prompt view 0.
+Companion `2ab900ea` now pins the actual partition view before signing and uses
+that stricter comparison. Seventeen focused qualification tests passed in 2s.
+
+After `heal`, the isolated member did not automatically reconnect. The proxy
+was healed but retained only the twelve unaffected links; node 3 remained at
+102. `partition-node3-thread-dump.txt` shows app-peer Netty threads blocked in
+`Session.handshake -> NodeClient.start -> SessionListenerAdapter.disconnected`.
+The exact Yaci dependency's default auto-reconnect calls blocking start from
+the close callback, and its running predicate only tests whether a session
+object exists. The app wrapper can consequently mistake that stranded session
+for a running transport. The waiting CLI was deliberately terminated, preserving
+all evidence. Honest inclusion/view-change passed; complete automatic healing
+did not. A real TCP reset/heal regression and app-layer-only recovery fix are
+now implemented. The regression failed before the fix after 45 seconds without
+reconnection (51s Gradle run); its full failure XML is preserved as
+`/private/tmp/adr-037-phase-5-app-peer-before-fix.xml`.
+
+Dedicated app transports now disable only their own library auto-reconnect and
+propagate startup failure to the existing off-loop app supervisor. Socket
+liveness, not mere session-object existence, controls replacement. The existing
+five-second tick interrupts one stalled connector after its thirty-second
+negotiation allowance and also replaces an unacknowledged protocol-100 session;
+fully ready connections do not expire on that timer. Replay/ownership guards
+remain intact. No L1 networking source or core validation changed.
+
+The real TCP regression passed after the fix. Expanded peer lifecycle, two-node
+smoke, stale-lock and observation-network tests passed in 2m8s: 19 tests, zero
+failures, one skipped opt-in live HTTPS test
+(`/private/tmp/adr-037-phase-5-app-peer-network-review.log`). The new fixture
+needed the existing Netty dependency on its test compilation path; an older
+mocking library could not instrument the Java-25 TCP class, so the unit uses a
+small concrete transport instead. Those failed fixture iterations remain in
+`app-peer-after-fix*.log`. New exact packages and live requalification remain
+required before claiming the reconnect defect resolved on Preprod.
+
+Companion 7ce full run `34022250059` ultimately failed the role workflow with
+`ANCHOR_UNAVAILABLE`, after composite parity passed. Its initial bootstrap was
+visible and adopted on all three members; the later publish command failed after
+eleven minutes. The role harness did not emit useful failure status/log details
+before cleanup. Bounded pre-cleanup anchor/status diagnostics and their shell
+contract have been added and locally passed. The cause of that role failure is
+not established by the separate live transport finding.
+
+### Live membership activation checkpoint
+
+After node 3 completed historical catch-up, `membership-cadence-retry-2.log`
+completed both rounds, independently verifying all five certified outcomes:
+
+| Round | Scenario / outcome | Height | Result ID | State root |
+| --- | --- | --- | --- | --- |
+| 6 | Source disagreement / EXPIRED | 69 | `8c5040661a3e301c0dd6c97ffc384cb9cb989514caaeac35955b4b4f0f45451c` | `79c233daa663792e391d52540f2e7c661e3de0b349e3f56f7916ae8b33455741` |
+| 7 | Delayed reporter / VALUE | 74 | `2fe5542436caab6cbbef18a6880d7f2aefcea952b1dfb456ef9c0c9a69248650` | `a89b416ae6fac2a51c2ef4ac4d722de89f01d764a3f70ba3b617bc4adc6ae100` |
+
+Evidence: `cadence-rounds-6-7.jsonl`. Round 6 opened under the original five
+members and finalized after six-member activation at height 64; round 7 opened
+under the new context. All observation journals, queues and coordinator
+reservations drained. Node 3 reported `inSync=true`, default validation `none`,
+and no runtime degradation. The explicit `remove-after-rounds` stage has started
+from the verified height-74 checkpoint and completed at height 99.
+Four certified removal approvals finalized at 75, activating the original
+five-member set at 85. Round 8 certified VALUE at 83, result
+`2ca91a6fac60bd39a61fde9e4fd7cc2a486252bef6bc5fc55131b9b7eece65aa`, root
+`da9dcdfd3332d254918a972bceed68f8c1200314079ed49dd264f132f7465093`.
+Round 9 certified EXPIRED at 99, result
+`0bd03505846f8e45486d233a2961ff29189694fadf8f4113b9846ee9ec6d002e`, root
+`ea745b6aaad3abf318da72dd7443a1e06025923919ea6943e16aa78c0bd755cc`.
+Both have five independently verified matching proofs and drained journals.
+Retained evidence: `membership-removal-1.log`, `membership-result.json`,
+`membership-approval-remove-*.json`, `membership-epochs.json`,
+and `cadence-rounds-8-9.jsonl`. The 5 -> 6 -> 5 live drill is complete.
+
+At 16:54 Singapore all five nodes were gracefully upgraded to exact host e84 /
+companion 7ce. Only package/plugin paths and app-peer destinations changed;
+twenty directed loopback proxy links now target the original app servers.
+All five reopened ready at height 99 with the unchanged root. Direct before/after
+nonce captures matched epoch 311 and nonce
+`177fbb46606547da6886817e8f17eb6afab4ff15da37fad6b57951c88d682763` on every node.
+Startup restored body block 5144241 / slot 133001587 on all five. Evidence:
+`upgrade-e84-*`, `node-<n>/cluster-e84-proxy-1.log`, `proxy-control-1.log`.
+The round-10 withholding driver is waiting for an authenticated opening before
+partition/signing; no partition pass is claimed yet.
+
+Companion run `34022250059` passed its mandatory composite deployment-parity
+step on e84, along with build, connector fault matrix and distribution checks.
+The role-workflow/catch-up step remains running. This is the first remote
+composite pass on the reproduced unlisted-anchor adoption fix; retain the older
+intermittent failures rather than substituting a passing rerun for their record.
+
+### Actual crash recovery and exact-package follow-through
+
+At 16:17 Singapore, the cadence driver was stopped before any round-6 signing,
+then the identified node-3 process was killed with SIGKILL. The identical
+bf0/a12 package reopened the same retained stores, restored its committed body
+tip (block 3390923, slot 89285471), and reopened app height 59 with unchanged
+root `b641479219a4f1ab333efc3b4c7652a23a7ec335b5afe20ea7249d359f42bd77`.
+The first successful endpoint poll matched pre-crash epoch 210 and nonce
+`8777bd4839f8711a5b4de80968cad549ee8a0695ed26acbfa4db576972f8cd38`.
+Its response is explicitly transcribed in
+`crash-node-3-first-poll-observation.json`; the later direct capture was already
+epoch 212 and is not a same-epoch comparison. Logs retain both transitions.
+Subsequent body and app advancement resumed without runtime degradation.
+This is a real process-crash recovery during historical catch-up, not a
+certificate-ready signing crash. No L1 core or validation setting changed.
+
+The interrupted empty round-6 attempt is retained as
+`cadence-rounds-6-7-crash-drill-interruption.jsonl`. A new packaged c78 driver
+started after all five converged at height 60; it authenticated round 6 at
+height 62 and submitted its twelve disagreement reports. Membership activation
+and the later removal still require complete certified outcome evidence.
+
+Companion c78 run `34020835218` repeated `ANCHOR_UNAVAILABLE` on the old bf0
+host; failure log: `/private/tmp/adr-037-phase-5-c78-companion-ci-failure.log`.
+Host e84 staging run `34021884882` passed and retained the exact commit-named
+consumer artifact. The initial local publication inadvertently used the default
+snapshot label; it is not the exact e84 input. The explicit
+`-Pversion=0.1.0-pre14-e84f2693b` publication and JVM smoke rerun passed in
+3m21s (`/private/tmp/adr-037-phase-5-e84-exact-publication.log`), and its ZIP
+manifest confirms the matching version. Companion `7ce03187` full CI run
+`34022250059` consumes host e84 from successful staging run `34021884882`.
+Host build `34021882495` and integration/distribution/native `34021883730`
+passed. The companion's local full-suite, artifact inventory, JVM-only and
+distribution gates passed in 3m52s against that exact Maven/ZIP pair
+(`/private/tmp/adr-037-phase-5-7ce-exact-package.log`). All seventeen
+qualification-tool tests have zero failures/skips. The companion ZIP SHA-256 is
+`d2e1566ff81c03b8d2e8eb5bb88c2c5e3130a1a3ca4878dd036b110eff98e459`,
+extracted under `/private/tmp/adr037-7ce-package.2htk96/`; not deployed yet.
+The companion now has a directed-TCP withholding helper with
+caller-pinned proof verification before and after healing, plus bounded
+anchor-adoption diagnostics for failed composite CI. Its live drill remains
+pending; unit tests are not evidence of a live partition pass.
+
+The final e84 focused host qualification rerun passed in 1m35s with
+`YANO_OBSERVATION_SCALE=1`: 69 tests, zero failures/errors, one skipped opt-in
+live HTTPS test. The 100k committed-subscription case ran in 10.849s with no
+skip. This selection includes journal child-process crash boundaries, local L1
+journal compatibility, kernel/runtime, five-node network omission, DNS/HTTPS
+bounds and all nine anchor tests. Log:
+`/private/tmp/adr-037-phase-5-e84-final-qualification-tests.log`.
+
+A bounded, once-per-minute public resource sampler started at 08:36:35 UTC.
+`resource-samples-1.jsonl` retains per-node process RSS, app-store KiB and L1
+tips/default validation. Initial RSS was 1,518,688..1,658,896 KiB and app stores
+1,944..2,412 KiB. These include ongoing historical L1 sync; do not attribute
+whole-process RSS to observations or call a baseline snapshot a completed soak.
+
+At 16:39 Singapore both PR113 and companion PR6 still had no submitted reviews
+or requested reviewers and reported `REVIEW_REQUIRED`. Implementation self-review
+and passing CI do not satisfy the ADR's independent code/protocol review gate.
+
 ### Reproduced app-anchor subset adoption defect
 
 Host checkpoint `86031c3dc` passed build `34020918143` and integration /
@@ -431,6 +598,26 @@ checkout is untouched. The companion integration branch retains the historical
 name `milestone/adr-037-phase-3` because that is PR 6's existing head.
 
 ## Qualification ledger
+
+### Reviewer navigation for ADR section 23
+
+This is an entry-point map, not an independent review sign-off or a claim that
+every listed subcase is live-qualified. Host test names are under `core-api`
+or `runtime`; companion test names are under its stdlib/SDK/devtools modules.
+
+| Matrix area | Concrete evidence entry points | Qualification boundary |
+| --- | --- | --- |
+| Codec / identity | `ObservationWireTest`, `ObservationProfileGuardTest`, `AppChainEngineIdentityValidationTest` | Canonical records, replay/domain guards and malformed envelopes are local tests |
+| Signatures / policy | `ObservationWireTest`, `ObservationAttestationTest`, companion `AdaUsdReferenceRuntimeTest` | Live round 5 additionally retains conflicting fifth-reporter wires and five certified matching outcomes |
+| Scheduling | `ObservationKernelTest`, `AppChainEngineIdentityValidationTest` | Includes same-due batches, non-future callbacks, inclusive grace, restart cadence, ticks and oversized earlier-envelope ordering |
+| Persistence | `ObservationJournalCrashTest`, `ObservationJournalTest`, `ObservationKernelTest`, companion `ObservationReporterJournalTest` | Child-process halt boundaries are distinct from the live node-3 catch-up crash |
+| Transport | `AppChainSystemTopicAdmissionTest`, `ObservationRuntimeTest`, `ObservationRuntimeClusterTest` | Exact allowlists, early activation handling and network diffusion; do not equate a local TCP test with packaged Preprod |
+| Consensus | `ObservationKernelTest`, `ObservationRuntimeClusterTest`, `AppChainStaleLockTest` | Local five-node omission/view-change/recovery passed; packaged withholding is pending |
+| Provider failures / security | `RestrictedHttpsObservationProviderTest`, `ObservationDnsResolverTest`, `ObservationAttestationTest` | DNS bounds, total deadline, address filtering, framing, compression/media-type rejection and forged/replayed attestation |
+| Scale | `ObservationKernelTest.recoversOneHundredThousandCommittedSubscriptionsWithBoundedOpening`, journal/runtime resource tests | Opt-in 100k case was explicitly run; live resource sampling is ongoing, not a completed soak |
+| Compatibility / workflows | Full host tests and packaged catalog smoke; companion full distribution and mandatory deployment-parity gates | Latest companion end-to-end gate must finish on e84; earlier bf0 anchor failures remain retained |
+
+### Historical starting ledger
 
 | Gate | Evidence at start of Phase 5 | Remaining work |
 | --- | --- | --- |
