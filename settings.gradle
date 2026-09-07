@@ -15,6 +15,7 @@ def yanoModules = [
         'consensus'                   : 'consensus',
         'p2p'                         : 'p2p',
         'runtime'                     : 'runtime',
+        'utxo-output-index-example'    : 'examples/utxo-output-index',
         'devnet-toolkit'              : 'devnet-toolkit',
         'testkit'                     : 'testkit',
         'testkit-ccl'                 : 'testkit-ccl',

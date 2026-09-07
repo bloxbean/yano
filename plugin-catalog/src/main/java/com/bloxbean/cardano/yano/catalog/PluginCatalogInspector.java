@@ -222,6 +222,7 @@ public final class PluginCatalogInspector {
                 case L1_OBSERVER -> contribution.name().equals("metadata-label")
                         || contribution.name().equals("address-deposit");
                 case EFFECT_EXECUTOR -> contribution.name().equals("webhook");
+                case UTXO_INDEX_CONTRIBUTOR -> contribution.name().equals("wallet");
                 default -> false;
             };
             if (reserved) {
@@ -265,7 +266,7 @@ public final class PluginCatalogInspector {
                     SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
                     PluginTrustTier.CONSENSUS;
             case SIGNER_PROVIDER, EFFECT_EXECUTOR, OBSERVATION_PROVIDER,
-                    DOMAIN_API, LOCAL_READ_MODEL ->
+                    DOMAIN_API, LOCAL_READ_MODEL, UTXO_INDEX_CONTRIBUTOR ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };

@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,20 @@ class UtxoSubsystemTest {
             subsystem.close();
             scheduler.shutdownNow();
         }
+    }
+
+    @Test
+    void bootstrapWithWalletIsRejectedBeforeStartupMutation() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.Utxo.ENABLED, true,
+                YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, true));
+        try (DirectRocksDBChainState chain = new DirectRocksDBChainState(tempDir.resolve("bootstrap-wallet").toString());
+             UtxoSubsystem subsystem = new UtxoSubsystem(YanoConfig.serverOnly(0).toBuilder().enableBootstrap(true).build(),
+                     options, chain, chain, new NoopEventBus(), scheduler, LoggerFactory.getLogger(getClass()))) {
+            assertThatThrownBy(() -> subsystem.startIndexContributors(PluginProviderRegistry.empty()))
+                    .hasMessageContaining("Bootstrap startup").hasMessageContaining("unsupported");
+        } finally { scheduler.shutdownNow(); }
     }
 
     @Test

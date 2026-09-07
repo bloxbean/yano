@@ -7,7 +7,7 @@ import com.bloxbean.cardano.client.address.CredentialType;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
@@ -80,8 +80,8 @@ public class AddressResource {
         try {
             AddressFirstSeen result = state.getAddressFirstSeen(address);
             var tip = chainQuery != null ? chainQuery.getLocalTip() : null;
-            WalletChainPoint liveTip = tip == null ? WalletChainPoint.ORIGIN
-                    : new WalletChainPoint(tip.getBlockNumber(), tip.getSlot(), HexUtil.encodeHexString(tip.getBlockHash()));
+            ChainPoint liveTip = tip == null ? ChainPoint.ORIGIN
+                    : new ChainPoint(tip.getBlockNumber(), tip.getSlot(), HexUtil.encodeHexString(tip.getBlockHash()));
             return Response.ok(new AddressFirstSeen(result.firstSeenSlot(), result.coverage(), liveTip)).build();
         } catch (WalletIndexUnavailableException unavailable) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)

@@ -15,7 +15,8 @@
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider\\E"},
-      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider\\E"}
+      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider\\E"},
+      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider\\E"}
     ]
   }
 }

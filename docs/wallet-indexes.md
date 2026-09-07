@@ -4,6 +4,20 @@ Implementation is under validation for issue #119. The general node defaults kee
 both indexes disabled. The wallet profile enables both and no longer enables
 archival history projection. Production resource validation remains outstanding.
 
+## Upgrading from the pre-contributor wallet index
+
+The contributor-based wallet index requires a **fresh sync database**. Existing
+wallet tables do not contain the new host-owned availability/rollback metadata;
+their presence does not prove complete index history. Upgrading the executable
+alone will leave these indexes unavailable, and later blocks will not repair them.
+Startup warns when existing wallet history is unavailable under the new gate.
+
+Stop the node, retain the old database as a backup, configure a new storage path,
+and sync with the wallet flags enabled from the beginning. Do not run two nodes
+against the same database. There is no migration or automatic backfill in preview.
+
+## Configuration
+
 Enable the desired capabilities **before the first sync into a fresh database**:
 
 ```yaml
@@ -22,6 +36,31 @@ yano:
   chain:
     block-body-prune-depth: 0
 ```
+
+External indexes use `yano.utxo.index-contributors`, separately from the built-in
+wallet flags above. A JAR in `plugins/` is discovered but does not automatically
+activate its contributor:
+
+```yaml
+yano:
+  utxo:
+    enabled: true
+    index-contributors:
+      - type: example.output-index
+        enabled: true
+        config: {}
+```
+
+`type` is the provider selector; `enabled` defaults to false; `config` contains
+plugin-specific scalar values. `wallet` is reserved and cannot appear in this list.
+Plugin allow/deny policy still applies. Restart after changing selection, and use
+a fresh sync for complete history. See the
+[external example](../examples/utxo-output-index/README.md).
+
+Address-decoding failures retain one representative error per feature and block,
+not a complete list of bad addresses. Good addresses in that block are still
+indexed. Filter scans report incomplete blocks; first-seen queries cannot claim
+historical completeness while a relevant error remains.
 
 `yano.filters.utxo.enabled` controls selective UTxO storage, which must be disabled
 for these indexes. It is unrelated to the new per-block scan filter. Plugin UTxO
@@ -100,7 +139,11 @@ The response is newline-delimited JSON, with these record types:
 - `transaction`: confirmed `txHash`, canonical `point`, `blockTime` (Unix seconds),
   `valid`, effective `inputs` and `outputs`.
 - `progress`: the most recently processed point.
-- `done`: successful completion at the exact pinned end.
+- `warning`: a block whose wallet indexing or scan extraction is incomplete, with
+  its canonical `point`, diagnostic `error`, and `complete: false`.
+- `done`: successful completion at the exact pinned end, with `complete: true`.
+- `incomplete`: terminal partial results at the pinned end, with `complete: false`.
+  No `done` follows this record. Do not advance a durable recovery cursor.
 - `rollback` or `error`: unsuccessful termination; do not advance durable state.
 
 Inputs are outpoints (`txHash`, `index`). Outputs include their outpoint, address,
@@ -113,7 +156,8 @@ Preserve asset quantities as arbitrary-precision integers.
 An origin scan seeds applicable genesis funds. A resumed scan must supply
 `knownOutputs`: the **complete relevant unspent output set at `after`**, using the
 same output objects from prior records. The maximum is 10,000 tracked outputs.
-Save the cursor and this state atomically, only after validating `done`. The node
+Save the cursor and this state atomically, only after validating `done` with
+`complete: true`. The node
 checks structural validity, creation bounds, query relevance and duplicate
 outpoints; it cannot prove that a caller did not deliberately omit a relevant
 output. A cursor alone cannot establish outgoing attribution. Never resume from a
@@ -126,6 +170,28 @@ the scan. Disconnect/cancellation releases request state. Invalid requests retur
 before streaming. Failures discovered after headers produce a terminal error or
 rollback record when possible. EOF, a timeout, or an incomplete final line is
 **not** successful completion, even if some transactions arrived.
+
+Known per-block extraction failures do not stop indexing other addresses or later
+blocks. The same atomic block batch stores successfully decoded first-seen rows,
+a partial credential filter, and a diagnostic in the `wallet_index_errors` RocksDB
+column family. Keys are index-kind plus block number; values contain the block hash
+and a representative failure reason. The repair unit is the full block, so this is
+not a separate queue entry for every failed output. Canonical block bodies retain
+the original transaction/output details. Errors are retained across restarts and
+undo pruning, and removed with reverted blocks in the atomic rollback batch.
+
+A scan crossing a recorded error emits a warning and reads that block regardless
+of filter matches, returning whatever confirmed matches it can extract. Affected
+streams finish with `incomplete`; ranges entirely before or after the error can
+finish with `done` (resumed scans still require complete `knownOutputs`). The
+`ready.coverage` coordinates describe structural index continuity; only the terminal
+record establishes whether the requested scan was complete. First-seen answers
+remain unavailable while their history contains unresolved first-seen errors.
+
+There is no automatic repair operation yet. Upgrading does not reconstruct filters
+or origin completeness already lost by older versions. Unknown gaps, missing block
+bodies, corrupt metadata and reorgs still fail closed rather than returning a
+successful partial scan.
 
 On reorg, discard uncommitted stream changes. Retry an earlier saved canonical
 cursor together with its matching history/outpoint snapshot. If none survives,
@@ -143,6 +209,13 @@ match does not prove payment ownership. DRep support covers the named certificat
 subjects, not all votes or governance events. Byron wallet recovery, epoch rewards,
 nontransaction refunds and arbitrary historical transaction-by-hash lookup are
 outside this API. No global transaction-location index is created.
+
+Address decoding and payment/stake credential extraction use Cardano Client Lib
+(CCL), including its `ByronAddress` decoder. Historical addresses may contain
+trailing bytes: these are retained for exact-address identity without imposing a
+separate strict address parser. Pointer addresses contribute their payment
+credential only; stake-pointer resolution remains unsupported and does not
+invalidate scan coverage.
 
 Planning estimates remain 2–3 GB for filters and roughly 100–200 bytes per distinct
 ever-seen address, plus undo/metadata and temporary WAL/compaction headroom. These

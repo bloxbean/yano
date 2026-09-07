@@ -64,6 +64,9 @@ public final class DevnetSnapshotRestoreService {
 
         void reinitializeUtxoAndReconcileAfterSnapshotRestore();
 
+        /** Drain index read scopes and invalidate streams before any native handles are closed. */
+        void prepareUtxoForStorageReplacement();
+
         void resumeUtxoAfterSnapshotRestore(boolean asyncUtxoHandlerPaused,
                                             boolean utxoPrunePaused,
                                             boolean utxoMetricsSamplerPaused);
@@ -162,6 +165,7 @@ public final class DevnetSnapshotRestoreService {
             }
 
             restoreStarted = true;
+            actions.prepareUtxoForStorageReplacement();
             snapshots.restoreFromSnapshot(checkpointDir.toString());
 
             actions.reinitializeUtxoAndReconcileAfterSnapshotRestore();

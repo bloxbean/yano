@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
 
 import java.util.Arrays;
 
@@ -44,6 +45,8 @@ public enum ContributionKind {
     DOMAIN_API("domain-api", DomainApiProvider.class, true),
     /** Lifecycle-owned node-local derived model; an owning manifest is mandatory. */
     LOCAL_READ_MODEL("local-read-model", LocalReadModelProvider.class, true),
+    /** Transactional UTxO-derived index; requires an owning manifest. */
+    UTXO_INDEX_CONTRIBUTOR("utxo-index-contributor", UtxoIndexContributorProvider.class, true),
     /** Cached health source; schema v1 requires an owning bundle manifest. */
     HEALTH("health", PluginHealthProvider.class, true),
     /** Cached custom-metrics source; schema v1 requires an owning bundle manifest. */

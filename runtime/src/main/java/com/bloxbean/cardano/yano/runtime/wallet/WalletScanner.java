@@ -7,7 +7,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletCredential;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexCoverage;
 import com.bloxbean.cardano.yano.api.wallet.WalletScan;
@@ -27,22 +27,23 @@ public final class WalletScanner implements WalletScan {
     public interface Backend {
         void validate();
         List<WalletIndexStore.FilterRecord> filters(long afterBlock, long toBlock, int limit);
-        Block block(WalletChainPoint point);
+        Block block(ChainPoint point);
         List<Utxo> genesis();
     }
 
     private final Backend backend;
     private final WalletIndexCoverage coverage;
-    private final WalletChainPoint end;
+    private final ChainPoint end;
     private final Set<WalletCredential> credentials;
     private final List<byte[]> elements;
     private final Map<Outpoint, Utxo> tracked = new HashMap<>();
-    private WalletChainPoint cursor;
+    private ChainPoint cursor;
     private boolean ready;
     private boolean finished;
+    private boolean complete = true;
 
     public WalletScanner(Backend backend, WalletScanRequest request,
-                         WalletIndexCoverage coverage, WalletChainPoint end) {
+                         WalletIndexCoverage coverage, ChainPoint end) {
         this.backend = backend;
         this.coverage = coverage;
         this.end = end;
@@ -75,14 +76,16 @@ public final class WalletScanner implements WalletScan {
             List<WalletScanEvent> initial = new ArrayList<>();
             initial.add(new WalletScanEvent("ready", end, coverage, null, null, null, null, null));
             if (cursor.blockNumber() == -1 && !tracked.isEmpty()) {
-                initial.add(new WalletScanEvent("genesis", WalletChainPoint.ORIGIN, null, null,
+                initial.add(new WalletScanEvent("genesis", ChainPoint.ORIGIN, null, null,
                         true, List.of(), List.copyOf(tracked.values()), null));
             }
             return initial;
         }
         if (cursor.equals(end)) {
             finished = true;
-            return List.of(WalletScanEvent.progress("done", end));
+            // Older clients must never mistake a partial scan for a durable recovery boundary.
+            return List.of(new WalletScanEvent(complete ? "done" : "incomplete", end, null, null,
+                    null, null, null, complete ? null : "Wallet indexing gaps; do not advance recovery cursor", complete));
         }
         List<WalletScanEvent> events = new ArrayList<>();
         List<WalletIndexStore.FilterRecord> records = backend.filters(cursor.blockNumber(), end.blockNumber(), 256);
@@ -93,7 +96,8 @@ public final class WalletScanner implements WalletScan {
                     && !(cursor.blockNumber() == -1 && record.point().blockNumber() == 1)) {
                 throw new IllegalStateException("Missing filter inside scan range");
             }
-            if (CredentialFilter.matches(record.filter(), elements)) {
+            if (record.error() != null) warning(record.point(), record.error(), events);
+            if (record.error() != null || CredentialFilter.matches(record.filter(), elements)) {
                 process(backend.block(record.point()), record.point(), events);
             }
             cursor = record.point();
@@ -103,7 +107,7 @@ public final class WalletScanner implements WalletScan {
         return events;
     }
 
-    private void process(Block block, WalletChainPoint point, List<WalletScanEvent> events) {
+    private void process(Block block, ChainPoint point, List<WalletScanEvent> events) {
         Set<Integer> invalid = block.getInvalidTransactions() == null ? Set.of() : Set.copyOf(block.getInvalidTransactions());
         List<TransactionBody> transactions = block.getTransactionBodies() == null ? List.of() : block.getTransactionBodies();
         for (int i = 0; i < transactions.size(); i++) {
@@ -129,14 +133,24 @@ public final class WalletScanner implements WalletScan {
                         tx.getOutputs() == null ? 0 : tx.getOutputs().size(), true, point));
             }
             for (Utxo output : outputs) {
-                if (matchesAddress(output.address())) {
+                boolean owned;
+                try { owned = matchesAddress(output.address()); }
+                catch (RuntimeException failure) {
+                    warning(point, "Cannot decode output " + output.outpoint() + ": " + failure.getMessage(), events);
+                    continue;
+                }
+                if (owned) {
                     remember(output);
                     matched = true;
                 }
             }
             if (valid) {
                 Set<WalletCredential> touched = new HashSet<>();
-                WalletCredentials.events(tx, touched);
+                try { WalletCredentials.events(tx, touched); }
+                catch (RuntimeException failure) {
+                    warning(point, "Cannot extract credentials from transaction " + tx.getTxHash()
+                            + ": " + failure.getMessage(), events);
+                }
                 if (touched.stream().anyMatch(credentials::contains)) matched = true;
             }
             if (matched) events.add(new WalletScanEvent("transaction", point, null, tx.getTxHash(), valid,
@@ -150,13 +164,21 @@ public final class WalletScanner implements WalletScan {
         return touched.stream().anyMatch(credentials::contains);
     }
 
+    private void warning(ChainPoint point, String reason, List<WalletScanEvent> events) {
+        complete = false;
+        // One warning per block per batch is enough; its point identifies the repair unit.
+        if (events.stream().noneMatch(e -> e.type().equals("warning") && point.equals(e.point()))) {
+            events.add(new WalletScanEvent("warning", point, null, null, null, null, null, reason, false));
+        }
+    }
+
     private void remember(Utxo output) {
         tracked.put(output.outpoint(), output);
         if (tracked.size() > 10_000) throw new IllegalStateException("Scan tracked-output limit exceeded");
     }
 
     private static Utxo output(TransactionOutput output, String txHash, int index,
-                               boolean collateralReturn, WalletChainPoint point) {
+                               boolean collateralReturn, ChainPoint point) {
         BigInteger lovelace = BigInteger.ZERO;
         List<AssetAmount> assets = new ArrayList<>();
         if (output.getAmounts() != null) {

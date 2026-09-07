@@ -46,6 +46,7 @@ public final class DevnetFaucetService {
             throw new IllegalArgumentException("Lovelace amount must be positive");
         }
 
+        utxoStore.requireIndexMaintenanceAllowed("Faucet injection");
         try {
             String txHash = utxoStore.injectFaucetUtxo(address, lovelace);
             return new FundResult(txHash, 0, lovelace);

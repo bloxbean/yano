@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "com.example.yano.output-index",
+  "version": "1.0.0",
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 9 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "utxo-index-contributor",
+      "name": "example.output-index",
+      "provider": "com.example.yano.OutputIndexProvider"
+    }
+  ]
+}

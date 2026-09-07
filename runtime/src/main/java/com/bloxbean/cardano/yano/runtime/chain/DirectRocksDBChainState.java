@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
+import com.bloxbean.cardano.yano.runtime.utxo.index.IndexStorage;
+
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.serializers.ByronEbBlockSerializer;
 import java.math.BigInteger;
@@ -248,6 +250,10 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     descriptor(WalletIndexCf.META, tuningEnabled),
                     descriptor(WalletIndexCf.UNDO, tuningEnabled),
                     descriptor(WalletIndexCf.GENESIS, tuningEnabled),
+                    descriptor(WalletIndexCf.ERRORS, tuningEnabled),
+                    descriptor(IndexStorage.DATA, tuningEnabled),
+                    descriptor(IndexStorage.UNDO, tuningEnabled),
+                    descriptor(IndexStorage.META, tuningEnabled),
                     descriptor(UtxoCfNames.SCRIPT_REF, tuningEnabled),
                     new ColumnFamilyDescriptor(
                             UtxoCfNames.UTXO_STAKE_BALANCE.getBytes(),

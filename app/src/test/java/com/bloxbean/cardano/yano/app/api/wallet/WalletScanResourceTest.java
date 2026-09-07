@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.app.api.wallet;
 
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletCredential;
 import com.bloxbean.cardano.yano.api.wallet.WalletScan;
 import com.bloxbean.cardano.yano.api.wallet.WalletScanEvent;
@@ -25,13 +25,13 @@ import static org.mockito.Mockito.when;
 
 class WalletScanResourceTest {
     private final WalletScanRequest request = new WalletScanRequest(1,
-            List.of(new WalletCredential("stake", "key", "01".repeat(28))), WalletChainPoint.ORIGIN, null, null);
+            List.of(new WalletCredential("stake", "key", "01".repeat(28))), ChainPoint.ORIGIN, null, null);
 
     @Test void emitsNdjsonCompletionAndClosesBothSessions() throws Exception {
         WalletScan preflight = mock(WalletScan.class);
         WalletScan streaming = mock(WalletScan.class);
         when(streaming.finished()).thenReturn(false, true);
-        when(streaming.next()).thenReturn(List.of(WalletScanEvent.progress("done", WalletChainPoint.ORIGIN)));
+        when(streaming.next()).thenReturn(List.of(WalletScanEvent.progress("done", ChainPoint.ORIGIN)));
         WalletScanResource resource = resource(preflight, streaming);
         var response = resource.scan(request);
         assertThat(response.getStatus()).isEqualTo(200);
@@ -52,9 +52,27 @@ class WalletScanResourceTest {
         verify(streaming).close();
     }
 
+    @Test void incompleteResultsHaveExplicitWireFlagAndNeverEmitDone() throws Exception {
+        WalletScan streaming = mock(WalletScan.class);
+        when(streaming.finished()).thenReturn(false, true);
+        when(streaming.next()).thenReturn(List.of(
+                new WalletScanEvent("warning", ChainPoint.ORIGIN, null, null, null, null, null, "bad address", false),
+                new WalletScanEvent("incomplete", ChainPoint.ORIGIN, null, null, null, null, null, "indexing gaps", false)));
+        WalletScanResource resource = resource(mock(WalletScan.class), streaming);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ((StreamingOutput) resource.scan(request).getEntity()).write(bytes);
+        var lines = bytes.toString().lines().map(line -> {
+            try { return resource.mapper.readTree(line); }
+            catch (IOException failure) { throw new IllegalStateException(failure); }
+        }).toList();
+        assertThat(lines).extracting(json -> json.get("type").asText()).containsExactly("warning", "incomplete");
+        assertThat(lines).allSatisfy(json -> assertThat(json.get("complete").asBoolean()).isFalse());
+        verify(streaming).close();
+    }
+
     @Test void disconnectClosesSession() {
         WalletScan streaming = mock(WalletScan.class);
-        when(streaming.next()).thenReturn(List.of(WalletScanEvent.progress("progress", WalletChainPoint.ORIGIN)));
+        when(streaming.next()).thenReturn(List.of(WalletScanEvent.progress("progress", ChainPoint.ORIGIN)));
         WalletScanResource resource = resource(mock(WalletScan.class), streaming);
         StreamingOutput stream = (StreamingOutput) resource.scan(request).getEntity();
         assertThatThrownBy(() -> stream.write(new OutputStream() {

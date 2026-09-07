@@ -1,12 +1,14 @@
 package com.bloxbean.cardano.yano.api.wallet;
 
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
+
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 
 import java.util.List;
 
 /** Version-one scan: after is exclusive, to inclusive; resume outputs describe after. */
 public record WalletScanRequest(int version, List<WalletCredential> credentials,
-                                WalletChainPoint after, WalletChainPoint to,
+                                ChainPoint after, ChainPoint to,
                                 List<Utxo> knownOutputs) {
     public WalletScanRequest {
         if (version != 1) throw new IllegalArgumentException("Unsupported scan request version");

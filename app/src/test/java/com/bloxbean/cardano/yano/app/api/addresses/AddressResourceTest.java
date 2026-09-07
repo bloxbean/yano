@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexCoverage;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,8 +23,8 @@ class AddressResourceTest {
     void firstSeenDoesNotRequireArchiveAndPreservesNullAndZero() throws Exception {
         UtxoState state = mock(UtxoState.class);
         when(state.isEnabled()).thenReturn(true);
-        var coverage = new WalletIndexCoverage(true, true, WalletChainPoint.ORIGIN,
-                WalletChainPoint.ORIGIN, "test", null);
+        var coverage = new WalletIndexCoverage(true, true, ChainPoint.ORIGIN,
+                ChainPoint.ORIGIN, "test", null);
         when(state.getAddressFirstSeen("unused")).thenReturn(new AddressFirstSeen(null, coverage));
         when(state.getAddressFirstSeen("genesis")).thenReturn(new AddressFirstSeen(0L, coverage));
         var resource = firstSeenResource(state);

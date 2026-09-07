@@ -641,10 +641,12 @@ public class YanoProducer {
         // Globals: UTXO options
         Map<String, Object> globals = new HashMap<>();
         globals.put(YanoPropertyKeys.RESOURCE_PROFILE, ResourceProfile.current().externalName());
+        globals.put(YanoPropertyKeys.Remote.PROTOCOL_MAGIC, protocolMagic);
         putRollbackRetentionGlobals(globals, rollbackRetentionSettings);
         globals.put(YanoPropertyKeys.Utxo.ENABLED, utxoEnabled);
         globals.put(YanoPropertyKeys.WalletIndex.FIRST_SEEN_ENABLED, walletFirstSeenEnabled);
         globals.put(YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, walletFiltersEnabled);
+        forwardUtxoContributorKeys(globals);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_DEPTH, utxoPruneDepth);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_BATCH_SIZE, utxoPruneBatchSize);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_SCHEDULE_SECONDS, utxoPruneScheduleSeconds);
@@ -961,6 +963,10 @@ public class YanoProducer {
         for (String prefix : APP_CHAIN_DYNAMIC_PREFIXES) {
             forwardDynamicKeys("yano.app-chain." + prefix, globals);
         }
+    }
+
+    void forwardUtxoContributorKeys(Map<String, Object> globals) {
+        forwardDynamicKeys(YanoPropertyKeys.Utxo.INDEX_CONTRIBUTORS + "[", globals);
     }
 
     /** Copy every config property starting with {@code prefix} into globals verbatim. */

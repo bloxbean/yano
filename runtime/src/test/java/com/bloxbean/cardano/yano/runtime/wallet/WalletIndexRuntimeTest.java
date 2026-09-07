@@ -16,7 +16,7 @@ import com.bloxbean.cardano.yano.runtime.utxo.StorageFilterChain;
 import com.bloxbean.cardano.yano.api.wallet.WalletScanRequest;
 import com.bloxbean.cardano.yano.api.wallet.WalletScanRollbackException;
 import com.bloxbean.cardano.yano.api.wallet.WalletCredential;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.chain.BlockPruner;
@@ -60,6 +60,29 @@ class WalletIndexRuntimeTest {
 
     @AfterEach void close() { store.close(); chain.close(); }
 
+    @Test void historicalExtendedAddressKeepsCoverageThroughCreationAndSpending() throws Exception {
+        String historical = WalletCredentialsTest.HISTORICAL_ADDRESS;
+        String canonical = new Address(Arrays.copyOf(WalletIndexStore.addressBytes(historical), 57)).toBech32();
+        apply(1, List.of(tx(1, List.of(), List.of(output(historical)))), List.of());
+        apply(2, List.of(tx(2, List.of(input(1)), List.of(output(B)))), List.of());
+
+        assertThat(store.getAddressFirstSeen(historical).firstSeenSlot()).isEqualTo(10);
+        assertThat(store.getAddressFirstSeen(canonical).firstSeenSlot()).isNull();
+        assertThat(store.getAddressFirstSeen(historical).coverage().completeFromOrigin()).isTrue();
+        var query = List.of(new WalletCredential("payment", "key", WalletCredentialsTest.PAYMENT),
+                new WalletCredential("stake", "key", WalletCredentialsTest.STAKE));
+        for (int block : List.of(1, 2)) {
+            byte[] stored = chain.rocks().db().get(chain.rocks().handle(WalletIndexCf.FILTERS), number(block));
+            for (WalletCredential credential : query) {
+                assertThat(CredentialFilter.matches(Arrays.copyOfRange(stored, 40, stored.length),
+                        List.of(credential.filterElement()))).isTrue();
+            }
+        }
+        try (var scan = store.openWalletScan(new WalletScanRequest(1, query, ChainPoint.ORIGIN, null, List.of()))) {
+            assertThat(scan.next().getFirst().coverage().completeFromOrigin()).isTrue();
+        }
+    }
+
     @Test void spentAddressRemainsSeenAndOutgoingOnlyBlockMatches() throws Exception {
         apply(1, List.of(tx(1, List.of(), List.of(output(A)))), List.of());
         apply(2, List.of(tx(2, List.of(input(1)), List.of(output(B)))), List.of());
@@ -97,6 +120,26 @@ class WalletIndexRuntimeTest {
     @Test void unresolvedScanInputDoesNotInvalidateFirstSeen() {
         apply(1, List.of(tx(1, List.of(input(99)), List.of(output(A)))), List.of());
         assertThat(store.getAddressFirstSeen(A).firstSeenSlot()).isEqualTo(10);
+    }
+
+    @Test void extractionFailureStillIndexesLaterInputsOutputsAndBlocks() throws Exception {
+        apply(1, List.of(tx(1, List.of(), List.of(output(A)))), List.of());
+        apply(2, List.of(tx(2, List.of(input(99)), List.of(output(A))),
+                tx(3, List.of(input(1)), List.of(output(B)))), List.of());
+        apply(3, List.of(tx(4, List.of(), List.of(output(C)))), List.of());
+        assertThat(filterMatches(2, 1)).isTrue();
+        assertThat(filterMatches(2, 2)).isTrue();
+        assertThat(filterMatches(3, 3)).isTrue();
+        assertThat(store.getAddressFirstSeen(B).firstSeenSlot()).isEqualTo(20);
+        var indexes = new WalletIndexStore(chain.rocks(), true, true);
+        var records = indexes.readFilters(-1, 3, 10);
+        assertThat(records.get(0).error()).isNull();
+        assertThat(records.get(1).error()).contains("Input credential extraction failed");
+        assertThat(records.get(2).error()).isNull();
+        assertThat(indexes.coverage(WalletIndexStore.FILTERS, records.getLast().point()).completeFromOrigin()).isTrue();
+        store.rollbackToSlot(10);
+        apply(2, List.of(tx(5, List.of(), List.of(output(B)))), List.of());
+        assertThat(indexes.readFilters(1, 2, 10).getFirst().error()).isNull();
     }
 
     @Test void lateEnablementIsUnavailable() {
@@ -144,7 +187,7 @@ class WalletIndexRuntimeTest {
         assertThatThrownBy(() -> store.getAddressFirstSeen(A)).isInstanceOf(WalletIndexUnavailableException.class);
         WalletIndexStore index = new WalletIndexStore(chain.rocks(), true, true);
         assertThat(index.coverage(WalletIndexStore.FIRST_SEEN,
-                new WalletChainPoint(2, 20, hash(2))).available()).isFalse();
+                new ChainPoint(2, 20, hash(2))).available()).isFalse();
         store.rollbackToSlot(10);
         assertThatThrownBy(() -> store.getAddressFirstSeen(A)).isInstanceOf(WalletIndexUnavailableException.class);
     }
@@ -186,7 +229,7 @@ class WalletIndexRuntimeTest {
         apply(3, List.of(tx(3, List.of(), List.of(output(C)))), List.of());
         apply(4, List.of(), List.of());
         var request = new WalletScanRequest(1, List.of(new WalletCredential("payment", "key", "ff".repeat(28))),
-                WalletChainPoint.ORIGIN, null, List.of());
+                ChainPoint.ORIGIN, null, List.of());
         try (var active = store.openWalletScan(request)) {
             assertThat(active.next()).hasSize(1);
             store.pruneOnce();
@@ -218,7 +261,7 @@ class WalletIndexRuntimeTest {
         apply(1, List.of(tx(1, List.of(), List.of(output(A)))), List.of());
         apply(2, List.of(tx(2, List.of(input(1)), List.of(output(B)))), List.of());
         var request = new WalletScanRequest(1, List.of(new WalletCredential("payment", "key", "ff".repeat(28))),
-                WalletChainPoint.ORIGIN, null, List.of());
+                ChainPoint.ORIGIN, null, List.of());
         try (var active = store.openWalletScan(request)) {
             active.next();
             chain.rollbackTo(new Point(10, hash(1)));
@@ -245,6 +288,25 @@ class WalletIndexRuntimeTest {
         assertThat(store.getAddressFirstSeen(B).firstSeenSlot()).isEqualTo(20);
     }
 
+    @Test void missingHostGateKeepsWalletCoverageDiagnosticsOnUpgrade() throws Exception {
+        apply(1, List.of(tx(1, List.of(), List.of(output(A)))), List.of());
+        try (var iterator = chain.rocks().db().newIterator(chain.rocks().handle("utxo_index_meta"))) {
+            iterator.seekToFirst(); // Wallet is the only participant; its state precedes undo/digest keys.
+            assertThat(iterator.isValid()).isTrue();
+            chain.rocks().db().delete(chain.rocks().handle("utxo_index_meta"), iterator.key());
+        }
+        store.close();
+        store = new DefaultUtxoStore(chain, LoggerFactory.getLogger(getClass()), Map.of(
+                YanoPropertyKeys.WalletIndex.FIRST_SEEN_ENABLED, true,
+                YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, true,
+                YanoPropertyKeys.Metrics.ENABLED, false));
+        assertThatThrownBy(() -> store.getAddressFirstSeen(A)).isInstanceOfSatisfying(WalletIndexUnavailableException.class, failure -> {
+            assertThat(failure.coverage().indexedThrough().blockNumber()).isEqualTo(1);
+            assertThat(failure.coverage().identity()).isNotBlank();
+            assertThat(failure.coverage().unavailableReason()).contains("history missing", "fresh sync");
+        });
+    }
+
     @Test void restoringCheckpointWithoutWalletIndexesCannotFabricateCoverage() {
         Path snapshot = snapshots.resolve("without-wallet-indexes");
         try (var baseline = new DirectRocksDBChainState(snapshots.resolve("source").toString())) {
@@ -264,7 +326,7 @@ class WalletIndexRuntimeTest {
         }
         apply(1, List.of(tx(1, List.of(), List.of(output(A)))), List.of());
         var request = new WalletScanRequest(1, List.of(new WalletCredential("payment", "key", "ff".repeat(28))),
-                WalletChainPoint.ORIGIN, null, List.of());
+                ChainPoint.ORIGIN, null, List.of());
         try (var active = store.openWalletScan(request)) {
             active.next();
             chain.restoreFromSnapshot(snapshot.toString());
@@ -275,8 +337,8 @@ class WalletIndexRuntimeTest {
             assertThatThrownBy(() -> store.openWalletScan(request)).isInstanceOf(WalletIndexUnavailableException.class);
             apply(2, List.of(tx(2, List.of(), List.of(output(C)))), List.of());
             assertThatThrownBy(() -> store.getAddressFirstSeen(C)).isInstanceOf(WalletIndexUnavailableException.class);
-            assertThatThrownBy(() -> store.openWalletScan(request)).isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("outside complete filter coverage");
+            assertThatThrownBy(() -> store.openWalletScan(request)).isInstanceOf(WalletIndexUnavailableException.class)
+                    .hasMessageContaining("Index history gap");
         }
     }
 

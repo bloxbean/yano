@@ -197,6 +197,7 @@ public final class YanoPropertyKeys {
     }
 
     public static final class Utxo {
+        public static final String INDEX_CONTRIBUTORS = "yano.utxo.index-contributors";
         public static final String ENABLED = "yano.utxo.enabled";
         public static final String PRUNE_DEPTH = "yano.utxo.pruneDepth";
         public static final String ROLLBACK_WINDOW = "yano.utxo.rollbackWindow";

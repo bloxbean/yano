@@ -19,6 +19,9 @@ public interface UtxoStoreWriter {
     void reconcile(ChainState chainState);
     boolean isEnabled();
 
+    /** Reject unsupported maintenance before entering a potentially mutating operation. */
+    default void requireIndexMaintenanceAllowed(String operation) { }
+
     /**
      * Store Shelley genesis UTXOs directly using Cardano protocol convention:
      * tx_hash = blake2b-256(address_hex_bytes), outputIndex = 0.

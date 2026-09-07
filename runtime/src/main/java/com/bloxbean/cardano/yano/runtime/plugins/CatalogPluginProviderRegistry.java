@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
+
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
@@ -864,6 +866,9 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 case HEALTH -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((PluginHealthProvider) provider)::id);
+                case UTXO_INDEX_CONTRIBUTOR -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((UtxoIndexContributorProvider) provider)::id);
                 case METRICS -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((PluginMetricsProvider) provider)::id);

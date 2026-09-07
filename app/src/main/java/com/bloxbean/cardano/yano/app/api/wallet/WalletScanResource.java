@@ -7,7 +7,7 @@ import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletCredential;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexCoverage;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
@@ -44,7 +44,7 @@ import java.util.concurrent.Semaphore;
 @ApplicationScoped
 @Extension(name = ApiGroup.CORE, value = "")
 @RegisterForReflection(targets = {WalletScanRequest.class, WalletScanEvent.class,
-        WalletCredential.class, WalletChainPoint.class, WalletIndexCoverage.class,
+        WalletCredential.class, ChainPoint.class, WalletIndexCoverage.class,
         AddressFirstSeen.class, Utxo.class, Outpoint.class, AssetAmount.class})
 public class WalletScanResource {
     @Inject LedgerQuery ledgerQuery;
@@ -103,8 +103,8 @@ public class WalletScanResource {
         if ("transaction".equals(event.type())) json.put("blockTime", ledgerQuery.slotToUnixTime(event.point().slot()));
         if ("ready".equals(event.type()) && chainQuery != null) {
             var tip = chainQuery.getLocalTip();
-            WalletChainPoint point = tip == null ? WalletChainPoint.ORIGIN
-                    : new WalletChainPoint(tip.getBlockNumber(), tip.getSlot(), HexUtil.encodeHexString(tip.getBlockHash()));
+            ChainPoint point = tip == null ? ChainPoint.ORIGIN
+                    : new ChainPoint(tip.getBlockNumber(), tip.getSlot(), HexUtil.encodeHexString(tip.getBlockHash()));
             json.set("liveTip", mapper.valueToTree(point));
         }
         output.write(mapper.writeValueAsBytes(json));
