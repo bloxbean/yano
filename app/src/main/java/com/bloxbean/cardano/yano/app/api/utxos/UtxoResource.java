@@ -3,7 +3,11 @@ package com.bloxbean.cardano.yano.app.api.utxos;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.utxo.UtxoReadView;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.app.api.utxos.dto.UtxoDto;
 import com.bloxbean.cardano.yano.app.api.utxos.dto.UtxoDtoMapper;
@@ -14,6 +18,7 @@ import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Extension(name = ApiGroup.CORE, value = "")
@@ -21,6 +26,7 @@ import java.util.stream.Collectors;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class UtxoResource {
+    private static final Logger LOG = LoggerFactory.getLogger(UtxoResource.class);
 
     @Inject
     LedgerQuery ledgerQuery;
@@ -38,7 +44,8 @@ public class UtxoResource {
                                       @QueryParam("page") @DefaultValue("1") int page,
                                       @QueryParam("count") @DefaultValue("20") int count,
                                       @QueryParam("order") @DefaultValue("asc") String order,
-                                      @QueryParam("use_payment_credential") @DefaultValue("false") boolean usePaymentCredential) {
+                                      @QueryParam("use_payment_credential") @DefaultValue("false") boolean usePaymentCredential,
+                                      @QueryParam("include_mempool") @DefaultValue("false") boolean includeMempool) {
         UtxoState u = utxo();
         if (u == null || !u.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
@@ -46,7 +53,9 @@ public class UtxoResource {
                     .build();
         }
         if (count <= 0) count = 20;
+        if (count > UtxoReadView.MAX_PAGE_SIZE) return invalidCount();
         if (page < 1) page = 1;
+        if (includeMempool) return overlay(address, usePaymentCredential, null, page, count, order);
         var list = usePaymentCredential
                 ? u.getUtxosByPaymentCredential(address, page, count)
                 : u.getUtxosByAddress(address, page, count);
@@ -60,7 +69,8 @@ public class UtxoResource {
                                               @PathParam("asset") String asset,
                                               @QueryParam("page") @DefaultValue("1") int page,
                                               @QueryParam("count") @DefaultValue("20") int count,
-                                              @QueryParam("order") @DefaultValue("asc") String order) {
+                                              @QueryParam("order") @DefaultValue("asc") String order,
+                                              @QueryParam("include_mempool") @DefaultValue("false") boolean includeMempool) {
         UtxoState u = utxo();
         if (u == null || !u.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
@@ -68,11 +78,13 @@ public class UtxoResource {
                     .build();
         }
         if (count <= 0) count = 20;
+        if (count > UtxoReadView.MAX_PAGE_SIZE) return invalidCount();
         if (page < 1) page = 1;
+        if (includeMempool) return overlay(address, false, asset, page, count, order);
 
         // Fetch UTXOs, then filter by asset
         var list = u.getUtxosByAddress(address, page, count);
-        List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> filtered;
+        List<Utxo> filtered;
         if ("lovelace".equalsIgnoreCase(asset)) {
             filtered = list; // All UTXOs have lovelace
         } else {
@@ -111,7 +123,8 @@ public class UtxoResource {
     public Response getUtxosByPaymentCredential(@PathParam("paymentCredential") String paymentCredential,
                                                 @QueryParam("page") @DefaultValue("1") int page,
                                                 @QueryParam("count") @DefaultValue("20") int count,
-                                                @QueryParam("order") @DefaultValue("asc") String order) {
+                                                @QueryParam("order") @DefaultValue("asc") String order,
+                                                @QueryParam("include_mempool") @DefaultValue("false") boolean includeMempool) {
         UtxoState u = utxo();
         if (u == null || !u.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
@@ -119,11 +132,28 @@ public class UtxoResource {
                     .build();
         }
         if (count <= 0) count = 20;
+        if (count > UtxoReadView.MAX_PAGE_SIZE) return invalidCount();
         if (page < 1) page = 1;
+        if (includeMempool) return overlay(paymentCredential, true, null, page, count, order);
         var list = u.getUtxosByPaymentCredential(paymentCredential, page, count);
         List<UtxoDto> body = UtxoDtoMapper.toDtoList(list, ledgerQuery::slotToUnixTime);
         return Response.ok(body).build();
     }
 
 
+    private Response overlay(String query, boolean credential, String asset, int page, int count, String order) {
+        try {
+            var list = mempoolQueryGateway.listUtxos(query, credential, asset, page, count,
+                    "desc".equalsIgnoreCase(order));
+            return Response.ok(UtxoDtoMapper.toDtoList(list, ledgerQuery::slotToUnixTime)).build();
+        } catch (UnsupportedOperationException | IllegalStateException e) {
+            LOG.warn("Mempool UTxO listing unavailable: {}", e.toString());
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity(Map.of("error", "Mempool UTxO listings unavailable")).build();
+        }
+    }
+
+    private static Response invalidCount() {
+        return Response.status(400).entity(Map.of("error", "count must not exceed " + UtxoReadView.MAX_PAGE_SIZE)).build();
+    }
 }

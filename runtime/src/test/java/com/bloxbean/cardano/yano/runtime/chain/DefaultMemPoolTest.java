@@ -14,10 +14,12 @@ import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import org.junit.jupiter.api.Test;
 
+import com.bloxbean.cardano.yano.api.util.AddressKeyUtil;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -34,6 +36,82 @@ class DefaultMemPoolTest {
             "addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp";
     private static final MempoolAdmissionLimits LIMITS =
             new MempoolAdmissionLimits(100, 1_000_000, 1_000);
+
+    @Test
+    void administrativeEvictionRemovesDescendantsAndReleasesReservationsOnlyForThatChain() {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        Outpoint original = seed(canonical, 1);
+        byte[] parent = transaction(original, 200_001, List.of(), List.of());
+        String parentHash = TransactionUtil.getTxHash(parent);
+        byte[] child = transaction(new Outpoint(parentHash, 0), 200_002, List.of(), List.of());
+        String childHash = TransactionUtil.getTxHash(child);
+        byte[] grandchild = transaction(new Outpoint(childHash, 0), 200_003, List.of(), List.of());
+        byte[] unrelated = transaction(seed(canonical, 2), 200_004, List.of(), List.of());
+        for (byte[] tx : List.of(parent, child, grandchild, unrelated)) {
+            assertThat(admit(pool, tx, canonical).accepted()).isTrue();
+        }
+        assertThat(pool.evictTransaction(parentHash)).containsExactlyInAnyOrder(
+                parentHash, childHash, TransactionUtil.getTxHash(grandchild));
+        assertThat(pool.contains(TransactionUtil.getTxHash(unrelated))).isTrue();
+        assertThat(pool.stats().transactions()).isEqualTo(1);
+        assertThat(pool.stats().producedOutputs()).isEqualTo(1);
+        assertThat(pool.stats().spentOutpoints()).isEqualTo(1);
+        assertThat(pool.stats().dependencyEdges()).isZero();
+        assertThat(pool.stats().utxoIndexEntries()).isEqualTo(2);
+        assertThat(pool.stats().cascadedRemovals()).isEqualTo(2);
+        assertThat(pool.evictTransaction(parentHash)).isEmpty();
+        assertThat(admit(pool, parent, canonical).accepted()).isTrue();
+    }
+
+    @Test
+    void scopedSnapshotExcludesOtherSubjectsAndFailsClosedAtOutputLimit() throws Exception {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        byte[] bytes = transaction(seed(canonical, 72), 200_001, List.of(), List.of());
+        assertThat(admit(pool, bytes, canonical).accepted()).isTrue();
+        assertThat(pool.utxoOverlay(AddressKeyUtil.addrHash28("another-address"), false).outputs()).isEmpty();
+        assertThat(pool.utxoOverlay(AddressKeyUtil.paymentCred28(ADDRESS), true).outputs()).hasSize(1);
+        assertThat(pool.revalidate(canonical::get)).isZero();
+        assertThat(pool.utxoOverlay(AddressKeyUtil.addrHash28(ADDRESS), false).outputs()).hasSize(1);
+        pool.evictTransaction(TransactionUtil.getTxHash(bytes));
+        Transaction many = Transaction.deserialize(bytes);
+        many.getBody().setOutputs(Collections.nCopies(1001, many.getBody().getOutputs().getFirst()));
+        assertThat(pool.tryAdmit(many.serialize(), canonical::get, null,
+                MempoolAdmissionLimits.unbounded(), null).accepted()).isTrue();
+        assertThatThrownBy(() -> pool.utxoOverlay(AddressKeyUtil.addrHash28(ADDRESS), false))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("snapshot limit");
+        assertThat(pool.utxoOverlay(AddressKeyUtil.addrHash28("another-address"), false).outputs()).isEmpty();
+    }
+
+    @Test
+    void publicSnapshotAndEvictionDoNotQueueBehindValidation() throws Exception {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        byte[] bytes = transaction(seed(canonical, 73), 200_001, List.of(), List.of());
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var admission = executor.submit(() -> pool.tryAdmit(bytes, canonical::get, (body, hash, resolver) -> {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("test timeout");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+                return List.of();
+            }, LIMITS, null));
+            try {
+                assertThat(entered.await(1, TimeUnit.SECONDS)).isTrue();
+                assertThatThrownBy(() -> pool.utxoOverlay(AddressKeyUtil.addrHash28(ADDRESS), false))
+                        .isInstanceOf(IllegalStateException.class).hasMessageContaining("busy");
+                assertThatThrownBy(() -> pool.evictTransaction(TransactionUtil.getTxHash(bytes)))
+                        .isInstanceOf(IllegalStateException.class).hasMessageContaining("busy");
+            } finally { release.countDown(); }
+            assertThat(admission.get(1, TimeUnit.SECONDS).accepted()).isTrue();
+        }
+    }
 
     @Test
     void admitsArbitraryDepthChainAgainstOrderedOverlay() {
@@ -60,6 +138,14 @@ class DefaultMemPoolTest {
         assertThat(stats.spentOutpoints()).isEqualTo(3);
         assertThat(stats.dependencyEdges()).isEqualTo(2);
         assertThat(stats.utxoIndexEntries()).isEqualTo(10);
+        MemPool.UtxoOverlay overlay = pool.utxoOverlay(AddressKeyUtil.addrHash28(ADDRESS), false);
+        assertThat(overlay.outputs()).extracting(Utxo::outpoint)
+                .containsExactly(new Outpoint(TransactionUtil.getTxHash(grandchild), 0));
+        assertThat(overlay.spent()).containsExactlyInAnyOrder(seed, parentOutput, childOutput);
+        pool.evictTransaction(TransactionUtil.getTxHash(parent));
+        assertThat(pool.utxoOverlay(AddressKeyUtil.addrHash28(ADDRESS), false).outputs()).isEmpty();
+        assertThat(pool.utxoOverlay(AddressKeyUtil.addrHash28(ADDRESS), false).spent()).isEmpty();
+        assertThat(overlay.outputs()).hasSize(1); // detached snapshot
     }
 
     @Test

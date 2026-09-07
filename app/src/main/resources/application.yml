@@ -104,6 +104,11 @@ yaci:
     enabled: true
 
 yano:
+  # Privileged local mempool eviction; never enabled automatically by the wallet profile.
+  mempool:
+    admin:
+      enabled: false
+      # Set yano.mempool.admin.api-key / YANO_MEMPOOL_ADMIN_API_KEY explicitly.
   plugins:
     enabled: true
     directory: plugins

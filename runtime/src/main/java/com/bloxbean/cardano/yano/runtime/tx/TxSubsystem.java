@@ -313,6 +313,12 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
                         ? canonicalState.getUtxo(candidate).orElse(null) : null).get(outpoint));
     }
 
+    public List<Utxo> listUtxos(String query, boolean credential, String asset,
+                               int page, int count, boolean descending) {
+        return MempoolUtxoListing.list(utxoStateSupplier.get(), memPool, query, credential,
+                asset, page, count, descending);
+    }
+
     public Optional<byte[]> getScriptRefBytesByHash(String scriptHash) {
         Objects.requireNonNull(scriptHash, "scriptHash");
         Optional<byte[]> mempoolScript = memPool.getScriptRefBytesByHash(scriptHash);
@@ -320,6 +326,17 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         UtxoState canonicalState = utxoStateSupplier.get();
         return canonicalState != null
                 ? canonicalState.getScriptRefBytesByHash(scriptHash) : Optional.empty();
+    }
+
+    public List<String> evictTransaction(String txHash) {
+        var writeLock = admissionGate.writeLock();
+        if (!writeLock.tryLock()) throw new IllegalStateException("Transaction admission busy; retry eviction");
+        try {
+            ensureAccepting();
+            return memPool.evictTransaction(txHash);
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     public String submitTransaction(byte[] txCbor, BiConsumer<String, byte[]> acceptedSubmitter) {

@@ -13,6 +13,7 @@ public class NoAutoStartTestProfile implements QuarkusTestProfile {
     public Map<String, String> getConfigOverrides() {
         Map<String, String> overrides = new HashMap<>();
         overrides.put("yano.auto-sync-start", "false");
+        overrides.put("yano.mempool.admin.enabled", "false");
         overrides.put("yano.client.enabled", "false");
         overrides.put("yano.server.enabled", "true");
         overrides.put("yano.storage.rocksdb", "false");

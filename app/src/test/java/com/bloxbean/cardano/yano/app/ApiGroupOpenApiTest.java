@@ -33,6 +33,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 @QuarkusTest
 @TestProfile(NoAutoStartTestProfile.class)
 class ApiGroupOpenApiTest {
+    @Test
+    void mempoolAdminIsDisabledByDefault() {
+        given().delete("/api/v1/admin/mempool/transactions/" + "ab".repeat(32)).then().statusCode(404);
+    }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final List<String> GROUPS = List.of("core", "app-chain", "devnet", "admin", "history");
@@ -109,6 +113,7 @@ class ApiGroupOpenApiTest {
         assertOperation(admin, "GET", "/node/tip");
         assertOperation(admin, "GET", "/node/epoch-nonce");
         assertOperation(admin, "GET", "/plugin-operations");
+        assertOperation(admin, "DELETE", "/admin/mempool/transactions/{txHash}");
         assertOperation(admin, "GET", "/api/debug/adapot/{epoch}");
 
         assertNoOperation(admin, "/blocks/latest");

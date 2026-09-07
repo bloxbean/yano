@@ -246,6 +246,8 @@ public final class YanoPropertyKeys {
      * Transaction mempool and transaction diffusion settings.
      */
     public static final class Tx {
+        public static final String MEMPOOL_ADMIN_ENABLED = "yano.mempool.admin.enabled";
+        public static final String MEMPOOL_ADMIN_API_KEY = "yano.mempool.admin.api-key";
         public static final String MEMPOOL_MAX_TXS = "yano.tx.mempool.max-txs";
         public static final String MEMPOOL_MAX_BYTES = "yano.tx.mempool.max-bytes";
         public static final String MEMPOOL_TTL_SECONDS = "yano.tx.mempool.ttl-seconds";

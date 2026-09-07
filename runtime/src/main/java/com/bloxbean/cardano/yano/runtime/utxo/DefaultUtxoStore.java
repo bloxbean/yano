@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.utxo;
 
 import co.nstant.in.cbor.model.Map;
+import com.bloxbean.cardano.yano.api.utxo.UtxoReadView;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressType;
@@ -248,6 +249,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     /** Invalidate open scans and fence contributor reads before replacing native storage. */
     public synchronized void prepareForStorageReplacement() {
+        closeUtxoReadViews();
+        utxoReadsPaused = true;
         storageGeneration++;
         indexes.registry().pauseReadsForStorageReplacement();
     }
@@ -257,6 +260,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
      * The supplier's underlying RocksDB has been closed and reopened.
      */
     public synchronized void reinitialize() {
+        utxoReadsPaused = true;
         storageGeneration++;
         var ctx = supplier.rocks();
         this.rocksContext = ctx;
@@ -279,6 +283,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         indexes.reinitialize();
         this.projectionContributor.reinitializeAfterSnapshotRestore();
         refreshStakeBalanceIndexReady();
+        utxoReadsPaused = false;
         log.info("DefaultUtxoStore reinitialized after snapshot restore");
     }
 
@@ -413,6 +418,34 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             return Collections.emptyList();
         }
     }
+
+
+    private final Set<RocksUtxoReadView> utxoReadViews = new HashSet<>();
+    private boolean utxoReadsPaused;
+
+    @Override
+    public synchronized UtxoReadView openUtxoReadView(String subject, boolean credential, boolean descending) {
+        byte[] prefix = credential ? UtxoKeyUtil.hex28(subject) : UtxoKeyUtil.addrHash28(subject);
+        if (credential && prefix == null) prefix = UtxoKeyUtil.paymentCred28(subject);
+        if (prefix == null) throw new IllegalArgumentException("Invalid UTxO subject");
+        return openSubjectReadView(prefix, descending);
+    }
+
+    private synchronized UtxoReadView openSubjectReadView(byte[] prefix, boolean descending) {
+        if (!enabled || utxoReadsPaused || utxoReadViews.size() >= 2) {
+            throw new IllegalStateException("UTxO read view unavailable or busy");
+        }
+        RocksUtxoReadView view = new RocksUtxoReadView(this, db, cfAddr, cfUnspent, cfMeta, META_LAST_APPLIED_HASH,
+                this::decodeStoredToUtxo, utxoReadViews::remove, prefix, descending);
+        utxoReadViews.add(view);
+        return view;
+    }
+
+    private void closeUtxoReadViews() {
+        for (RocksUtxoReadView view : List.copyOf(utxoReadViews)) view.close();
+    }
+
+
 
     @Override
     public Optional<Utxo> getUtxo(Outpoint outpoint) {
@@ -2522,6 +2555,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     @Override
     public synchronized void close() {
+        closeUtxoReadViews();
+        utxoReadsPaused = true;
         storageGeneration++;
         indexes.registry().close();
         pauseMetricsSampler(Duration.ofSeconds(5));

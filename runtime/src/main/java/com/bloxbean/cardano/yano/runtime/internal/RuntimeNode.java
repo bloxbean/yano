@@ -29,6 +29,7 @@ import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
+import com.bloxbean.cardano.yano.api.MempoolAdminGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
@@ -183,6 +184,7 @@ import java.util.function.Supplier;
 @Slf4j
 public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
         MempoolQueryGateway,
+        MempoolAdminGateway,
         ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider,
         com.bloxbean.cardano.yano.api.events.stream.NodeEventStream {
     // Configuration
@@ -2787,6 +2789,20 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     @Override
     public boolean isTransactionInMemPool(String txHash) {
         return txSubsystem != null && txSubsystem.containsTransaction(txHash);
+    }
+
+    @Override
+    public List<Utxo> listUtxos(String query, boolean credential, String asset,
+                               int page, int count, boolean descending) {
+        return txSubsystem.listUtxos(query, credential, asset, page, count, descending);
+    }
+
+    @Override
+    public List<String> evictTransaction(String txHash) {
+        if (!isRunning.get()) {
+            throw new IllegalStateException("Cannot evict transaction while node is not running");
+        }
+        return txSubsystem.evictTransaction(txHash);
     }
 
     @Override

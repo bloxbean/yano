@@ -42,6 +42,11 @@ public interface UtxoState {
      */
     List<Utxo> getUtxosByPaymentCredential(String credentialHexOrAddress, int page, int pageSize);
 
+    /** Open a bounded, consistent subject read. Caller must close it and validate before returning results. */
+    default UtxoReadView openUtxoReadView(String subject, boolean credential, boolean descending) {
+        throw new UnsupportedOperationException("Consistent UTxO listing unavailable");
+    }
+
     /**
      * Return a specific UTXO by outpoint if it is currently unspent.
      */
