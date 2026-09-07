@@ -78,6 +78,11 @@ quarkus:
       info-title: "Yano Admin API"
       info-version: "${quarkus.application.version:0.1.0}"
       info-description: "Node lifecycle, plugin operations and diagnostics"
+    history:
+      scan-profiles: history
+      info-title: "Yano History API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Historical projection archive coverage and maintenance"
   swagger-ui:
     always-include: ${YANO_SWAGGER_UI_ENABLED:true}
     path: /q/swagger-ui
@@ -87,6 +92,7 @@ quarkus:
       "App Chain API": /q/openapi-app-chain
       "Devnet API": /q/openapi-devnet
       "Admin API": /q/openapi-admin
+      "History API": /q/openapi-history
       "All APIs": /q/openapi
     urls-primary-name: "Core API"
   banner:

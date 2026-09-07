@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-040: the REST surface is published as one OpenAPI document per API
- * group (core / app-chain / devnet / admin) selected by SmallRye scan
+ * group (core / app-chain / devnet / admin / history) selected by SmallRye scan
  * profiles, plus the unchanged "all" document at {@code /q/openapi}.
  * Swagger UI exposes the groups in a "Select a definition" drop-down with
  * Core API pre-selected.
@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ApiGroupOpenApiTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final List<String> GROUPS = List.of("core", "app-chain", "devnet", "admin");
+    private static final List<String> GROUPS = List.of("core", "app-chain", "devnet", "admin", "history");
     private static String prefix;
 
     @Test
@@ -62,6 +62,7 @@ class ApiGroupOpenApiTest {
         assertNoOperation(core, "/api/debug/adapot/{epoch}");
         assertNoOperation(core, "/plugin-operations");
         assertNoOperation(core, "/app-chain/chains");
+        assertNoOperation(core, "/history/coverage");
     }
 
     @Test
@@ -117,6 +118,20 @@ class ApiGroupOpenApiTest {
     }
 
     @Test
+    void historyDocument_containsArchiveSurfaceOnly() {
+        Map<String, Set<String>> history = operations("/q/openapi-history");
+
+        assertOperation(history, "GET", "/history/coverage");
+        assertOperation(history, "POST", "/history/coverage/{dataset}/resume");
+        assertOperation(history, "POST", "/history/coverage/legacy-staging-failure/acknowledge");
+        assertOperation(history, "GET", "/history/watermark");
+
+        assertNoOperation(history, "/blocks/latest");
+        assertNoOperation(history, "/devnet/rollback");
+        assertNoOperation(history, "/plugin-operations");
+    }
+
+    @Test
     void defaultDocument_stillContainsEveryGroup() {
         Map<String, Set<String>> all = operations("/q/openapi");
 
@@ -169,6 +184,7 @@ class ApiGroupOpenApiTest {
         assertThat(index).contains("url: \"/q/openapi-app-chain\", name: \"App Chain API\"");
         assertThat(index).contains("url: \"/q/openapi-devnet\", name: \"Devnet API\"");
         assertThat(index).contains("url: \"/q/openapi-admin\", name: \"Admin API\"");
+        assertThat(index).contains("url: \"/q/openapi-history\", name: \"History API\"");
         assertThat(index).contains("url: \"/q/openapi\", name: \"All APIs\"");
         assertThat(index).contains("\"urls.primaryName\": 'Core API'");
     }
@@ -179,6 +195,7 @@ class ApiGroupOpenApiTest {
         assertThat(info("/q/openapi-app-chain")).isEqualTo("Yano App Chain API");
         assertThat(info("/q/openapi-devnet")).isEqualTo("Yano Devnet API");
         assertThat(info("/q/openapi-admin")).isEqualTo("Yano Admin API");
+        assertThat(info("/q/openapi-history")).isEqualTo("Yano History API");
         assertThat(info("/q/openapi")).isEqualTo("Yano API");
     }
 

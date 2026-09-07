@@ -40,6 +40,9 @@ public final class ApiGroup {
     /** Operator surface: node lifecycle, plugin operations, diagnostics. */
     public static final String ADMIN = PREFIX + "admin";
 
+    /** Archive and historical projection coverage and maintenance. */
+    public static final String HISTORY = PREFIX + "history";
+
     private ApiGroup() {
     }
 }
