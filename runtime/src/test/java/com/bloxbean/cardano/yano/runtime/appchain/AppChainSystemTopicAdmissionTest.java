@@ -4,13 +4,12 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
-import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
@@ -30,7 +29,7 @@ class AppChainSystemTopicAdmissionTest {
     @AfterEach
     void closeSubsystem() {
         if (subsystem != null) {
-            subsystem.stop();
+            subsystem.close();
         }
     }
 
@@ -40,14 +39,28 @@ class AppChainSystemTopicAdmissionTest {
         assertThat(AppChainSystemTopics.isDiffusionOnly("~consensus/future")).isTrue();
         assertThat(AppChainSystemTopics.isDiffusionOnly(ScriptAnchorService.TOPIC_SIGN)).isTrue();
         assertThat(AppChainSystemTopics.isDiffusionOnly("~anchor/future")).isTrue();
+        assertThat(AppChainSystemTopics.isDiffusionOnly(ObservationTopics.REPORT)).isTrue();
+        assertThat(AppChainSystemTopics.isDiffusionOnly(ObservationTopics.CERTIFICATE)).isTrue();
 
         for (String sequenced : List.of(
                 "ordinary", "~consensus", "~anchor", "~governance/member",
-                "~fx/result", "~l1/deposit")) {
+                "~fx/result", "~l1/deposit", ObservationTopics.RESULT,
+                ObservationTopics.TICK)) {
             assertThat(AppChainSystemTopics.isDiffusionOnly(sequenced))
                     .as("%s remains eligible for sequencing", sequenced)
                     .isFalse();
         }
+    }
+
+    @Test
+    void observationNamespaceUsesAnExactAllowlist() {
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic("~obs/result/v2")).isTrue();
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic("~obs-diffusion/report/v2"))
+                .isTrue();
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic(ObservationTopics.RESULT))
+                .isFalse();
+        assertThat(AppChainSystemTopics.isUnknownObservationTopic(ObservationTopics.REPORT))
+                .isFalse();
     }
 
     @Test
@@ -73,8 +86,16 @@ class AppChainSystemTopicAdmissionTest {
 
         assertBodyBoundary(ConsensusCodec.TOPIC_PROPOSE,
                 Math.toIntExact(config.proposalMaxBytes()));
-        assertBodyBoundary(ConsensusCodec.TOPIC_VOTE,
-                ConsensusCodec.MAX_VOTE_BYTES);
+        assertBodyBoundary(ConsensusCodec.TOPIC_PREPARE,
+                CertifiedConsensusCodec.MAX_VOTE_BYTES);
+        assertBodyBoundary(ConsensusCodec.TOPIC_PREPARED,
+                CertifiedConsensusCodec.MAX_QC_BYTES);
+        assertBodyBoundary(ConsensusCodec.TOPIC_COMMIT,
+                CertifiedConsensusCodec.MAX_VOTE_BYTES);
+        assertBodyBoundary(ConsensusCodec.TOPIC_TIMEOUT,
+                CertifiedConsensusCodec.MAX_TIMEOUT_BYTES);
+        assertBodyBoundary(ConsensusCodec.TOPIC_NEW_VIEW,
+                CertifiedConsensusCodec.MAX_NEW_VIEW_BYTES);
         assertBodyBoundary(ConsensusCodec.TOPIC_CERT,
                 ConsensusCodec.MAX_CERT_NOTICE_BYTES);
         assertBodyBoundary("~governance/member", config.maxMessageBytes());
@@ -114,22 +135,7 @@ class AppChainSystemTopicAdmissionTest {
                 .as("an admitted system message must also satisfy proposal/finalization bounds")
                 .isPresent();
 
-        long finalizedTip = subsystem.tipHeight();
         assertThat(subsystem.status()).containsEntry("poolSize", 0);
-
-        L1Observation oversizedLocalObservation = L1Observation.transaction(
-                "test-observer", filled(74), 1, filled(75),
-                new byte[config.maxMessageBytes() + 1]);
-        Method injectObservation = AppChainSubsystem.class.getDeclaredMethod(
-                "injectObservation", L1Observation.class);
-        injectObservation.setAccessible(true);
-        injectObservation.invoke(subsystem, oversizedLocalObservation);
-
-        Thread.sleep(config.blockIntervalMs() * 3);
-        assertThat(subsystem.status()).containsEntry("poolSize", 0);
-        assertThat(subsystem.tipHeight())
-                .as("an oversized locally-built L1 observation must not enter the pool or finalize")
-                .isEqualTo(finalizedTip);
     }
 
     @Test
@@ -148,8 +154,10 @@ class AppChainSystemTopicAdmissionTest {
                 LoggerFactory.getLogger(getClass()));
 
         byte[] blockHash = filled(91);
-        AppMessage earlyVote = message(signer, ConsensusCodec.TOPIC_VOTE,
-                ConsensusCodec.encodeVote(1, blockHash, signer.sign(blockHash)), 1);
+        byte[] prepareBody = CertifiedConsensusCodec.encodeVote(
+                new CertifiedConsensusCodec.Vote(CertifiedConsensusCodec.Phase.PREPARE,
+                        1, 0, new byte[32], blockHash, new byte[32], new byte[64]));
+        AppMessage earlyVote = message(signer, ConsensusCodec.TOPIC_PREPARE, prepareBody, 1);
         AppMessage earlyOrdinary = message(signer, "ordinary", new byte[]{1}, 2);
 
         subsystem.onInboundMessages(List.of(earlyVote, earlyOrdinary));

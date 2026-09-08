@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.catalog;
 
+import com.bloxbean.cardano.yano.api.plugin.PluginApiVersion;
+
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
@@ -55,7 +57,7 @@ class PluginCatalogPackagedCliTest {
         assertThat(validate.exitCode()).isEqualTo(PluginCatalogCli.EXIT_OK);
         assertThat(validate.standardError()).isEmpty();
         assertThat(validate.standardOutput())
-                .startsWith("VALID apiMajor=3 apiLevel=4 bundles=1 selected=1")
+                .startsWith("VALID apiMajor=3 apiLevel=" + PluginApiVersion.CURRENT_LEVEL + " bundles=1 selected=1")
                 .contains("fingerprint=sha256:")
                 .doesNotContain(temporary.toString());
 

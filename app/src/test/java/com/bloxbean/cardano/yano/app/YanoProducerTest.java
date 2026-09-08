@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
+import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.IncompatibleChainStateException;
@@ -14,6 +15,8 @@ import com.bloxbean.cardano.yano.runtime.plugins.PluginCatalogActivationExceptio
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
+import io.smallrye.config.source.yaml.YamlConfigSource;
+import com.bloxbean.cardano.yano.runtime.utxo.index.UtxoContributorPlugins;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigValue;
 import org.eclipse.microprofile.config.spi.ConfigSource;
@@ -22,6 +25,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -81,6 +86,26 @@ class YanoProducerTest {
                 "yano.plugins.bundle.\"com.example.product-passport\".api-key"));
         assertFalse(options.toString().contains("endpoint"));
         assertFalse(options.toString().contains("top-secret-value"));
+    }
+
+    @Test
+    void yamlContributorListIsForwardedInTheShapeTheRuntimeParses() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new SmallRyeConfigBuilder().withSources(new YamlConfigSource("contributors", """
+                yano:
+                  utxo:
+                    index-contributors:
+                      - type: example.output-index
+                        enabled: true
+                        config:
+                          label: demo
+                """)).build();
+        Map<String, Object> globals = new HashMap<>();
+        producer.forwardUtxoContributorKeys(globals);
+        var registration = UtxoContributorPlugins.registrations(globals).getFirst();
+        assertEquals("example.output-index", registration.type());
+        assertTrue(registration.enabled());
+        assertEquals(Map.of("label", "demo"), registration.config());
     }
 
     @Test
@@ -278,16 +303,49 @@ class YanoProducerTest {
     }
 
     @Test
+    void certifiedObservationAndConsensusSettingsReachTheRuntimeParserForBothConfigShapes() {
+        Map<String, String> settings = Map.of(
+                "observations.profile-cbor-hex", "a100",
+                "observations.providers.shipment.endpoint", "https://example.invalid/proof",
+                "observations.reporters.ada-usd", "01".repeat(32),
+                "observations.policy.ada-usd", "a100",
+                "consensus.max-byzantine-members", "1",
+                "consensus.round-timeout-ms", "5000");
+        Map<String, String> properties = new LinkedHashMap<>();
+        settings.forEach((key, value) -> {
+            properties.put("yano.app-chain." + key, value);
+            properties.put("yano.app-chain.chains[0]." + key, value);
+        });
+        properties.put("yano.app-chain.chains[0].chain-id", "observations");
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(properties);
+
+        Map<String, Object> globals = new LinkedHashMap<>();
+        producer.forwardAppChainDynamicKeys(globals);
+        Map<String, Object> flat = new LinkedHashMap<>();
+        flat.put("chain-id", "observations");
+        globals.forEach((key, value) -> flat.put(key.substring("yano.app-chain.".length()), value));
+        var flatConfig = AppChainConfigParser.parse(flat);
+        var indexedConfig = AppChainConfigParser.parse(producer.parseAppChainChains().getFirst());
+        settings.forEach((key, value) -> {
+            assertEquals(value, flatConfig.pluginSettings().get(key), "flat: " + key);
+            assertEquals(value, indexedConfig.pluginSettings().get(key), "indexed: " + key);
+        });
+    }
+
+    @Test
     void dynamicSettingsAreForwardedForFlatAndIndexedAppChains() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
         producer.appConfig = new PresentConfig(Map.ofEntries(
                 Map.entry("yano.app-chain.effects.enabled", "true"),
+                Map.entry("yano.app-chain.observation.l1-network-genesis-id", "01".repeat(32)),
                 Map.entry("yano.app-chain.effects.metrics.types", "cardano.payment,webhook"),
                 Map.entry("yano.app-chain.state.commitment-profile", "mpf-blake2b256-v1"),
                 Map.entry("yano.app-chain.state.l1-proof-consumption-required", "true"),
                 Map.entry("yano.app-chain.capabilities.authenticated-snapshots.enabled", "true"),
                 Map.entry("yano.app-chain.chains[0].chain-id", "payments"),
                 Map.entry("yano.app-chain.chains[0].effects.enabled", "true"),
+                Map.entry("yano.app-chain.chains[0].observation.l1-network-genesis-id", "02".repeat(32)),
                 Map.entry("yano.app-chain.chains[0].effects.executor.enabled", "true"),
                 Map.entry("yano.app-chain.chains[0].state.genesis-id", "ab".repeat(32)),
                 Map.entry("yano.app-chain.chains[0].capabilities.authenticated-snapshots.enabled",
@@ -297,6 +355,8 @@ class YanoProducerTest {
         Map<String, Object> globals = new java.util.LinkedHashMap<>();
         producer.forwardAppChainDynamicKeys(globals);
         assertEquals("true", globals.get("yano.app-chain.effects.enabled"));
+        assertEquals("01".repeat(32),
+                globals.get("yano.app-chain.observation.l1-network-genesis-id"));
         assertEquals("cardano.payment,webhook",
                 globals.get("yano.app-chain.effects.metrics.types"));
         assertEquals("mpf-blake2b256-v1",
@@ -309,6 +369,7 @@ class YanoProducerTest {
         var chain = producer.parseAppChainChains().getFirst();
         assertEquals("payments", chain.get("chain-id"));
         assertEquals("true", chain.get("effects.enabled"));
+        assertEquals("02".repeat(32), chain.get("observation.l1-network-genesis-id"));
         assertEquals("true", chain.get("effects.executor.enabled"));
         assertEquals("ab".repeat(32), chain.get("state.genesis-id"));
         assertEquals("true", chain.get(

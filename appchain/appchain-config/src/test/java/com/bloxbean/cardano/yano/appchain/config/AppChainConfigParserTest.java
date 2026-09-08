@@ -25,6 +25,9 @@ class AppChainConfigParserTest {
         values.put("block.max-messages", "12");
         values.put("effects.enabled", "true");
         values.put("effects.max-per-block", "42");
+        values.put("observation.l1-network-genesis-id", "01".repeat(32));
+        values.put("observations.profile-cbor-hex", "a100");
+        values.put("consensus.max-byzantine-members", "1");
         values.put("state.commitment-profile", "mpf-blake2b256-v1");
         values.put("capabilities.authenticated-snapshots.enabled", "true");
         values.put("unowned.value", "ignored");
@@ -38,6 +41,9 @@ class AppChainConfigParserTest {
                 "sequencer.proposer", MEMBER,
                 "effects.enabled", "true",
                 "effects.max-per-block", "42",
+                "observation.l1-network-genesis-id", "01".repeat(32),
+                "observations.profile-cbor-hex", "a100",
+                "consensus.max-byzantine-members", "1",
                 "state.commitment-profile", "mpf-blake2b256-v1",
                 "capabilities.authenticated-snapshots.enabled", "true"));
         assertThat(AppChainConfigSemantics.validate(config)).containsExactly(MEMBER);

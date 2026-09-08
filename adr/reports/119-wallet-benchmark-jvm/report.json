@@ -1,0 +1,196 @@
+{
+  "kind" : "synthetic-index-storage-spike; excludes ledger/body I/O and credential extraction",
+  "java" : "25.0.2+12-LTS",
+  "os" : "Mac OS X aarch64",
+  "maxHeapBytes" : 1073741824,
+  "blocks" : 1000000,
+  "distinctAddresses" : 1000000,
+  "entropy" : "Java Random seed 119: uniform address credentials and block hashes, identical across modes",
+  "createdAddressesPerBlock" : 4,
+  "filterElementPattern" : [ 0, 8, 40, 80 ],
+  "undoWindowBlocks" : 86400,
+  "scanCacheNote" : "reopened is cold RocksDB cache, not a flushed operating-system page cache",
+  "modes" : [ {
+    "mode" : "baseline",
+    "applySeconds" : 6.14847025,
+    "blocksPerSecond" : 162642.0815811868,
+    "processCpuSeconds" : 6.29336,
+    "mainThreadAllocatedBytes" : 272486040,
+    "gcMillis" : 4,
+    "logicalBatchBytes" : 70000000,
+    "applyP50Micros" : 6.166,
+    "applyP99Micros" : 10.958,
+    "compactedSstBytes" : {
+      "wallet_first_seen" : 0,
+      "wallet_filters" : 0,
+      "wallet_meta" : 0,
+      "wallet_undo" : 0
+    },
+    "sampledPeakDirectoryBytes" : 46532857,
+    "closedDirectoryBytes" : 345360
+  }, {
+    "mode" : "first-seen",
+    "applySeconds" : 181.421969459,
+    "blocksPerSecond" : 5512.0115991574685,
+    "processCpuSeconds" : 156.838549,
+    "mainThreadAllocatedBytes" : 10680284104,
+    "gcMillis" : 28,
+    "logicalBatchBytes" : 614963200,
+    "applyP50Micros" : 29.25,
+    "applyP99Micros" : 1546.833,
+    "compactedSstBytes" : {
+      "wallet_first_seen" : 63481708,
+      "wallet_filters" : 0,
+      "wallet_meta" : 1206,
+      "wallet_undo" : 4592966
+    },
+    "sampledPeakDirectoryBytes" : 234358688,
+    "closedDirectoryBytes" : 68598457
+  }, {
+    "mode" : "filters",
+    "applySeconds" : 13.392889667,
+    "blocksPerSecond" : 74666.48534139678,
+    "processCpuSeconds" : 14.531153,
+    "mainThreadAllocatedBytes" : 7418282744,
+    "gcMillis" : 19,
+    "logicalBatchBytes" : 618845659,
+    "applyP50Micros" : 11.708,
+    "applyP99Micros" : 22.25,
+    "compactedSstBytes" : {
+      "wallet_first_seen" : 0,
+      "wallet_filters" : 107685204,
+      "wallet_meta" : 1208,
+      "wallet_undo" : 4596867
+    },
+    "sampledPeakDirectoryBytes" : 200003659,
+    "closedDirectoryBytes" : 112827499,
+    "scans" : [ {
+      "queryCount" : 1,
+      "cache" : "reopened",
+      "recordsRead" : 1000000,
+      "seconds" : 1.61536725,
+      "cpuSeconds" : 1.757333,
+      "mainThreadAllocatedBytes" : 499559328,
+      "falsePositiveCandidates" : 70,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 1,
+      "cache" : "repeat",
+      "recordsRead" : 1000000,
+      "seconds" : 1.556697458,
+      "cpuSeconds" : 1.557468,
+      "mainThreadAllocatedBytes" : 490281440,
+      "falsePositiveCandidates" : 70,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 10,
+      "cache" : "reopened",
+      "recordsRead" : 1000000,
+      "seconds" : 1.777404833,
+      "cpuSeconds" : 1.937054,
+      "mainThreadAllocatedBytes" : 553101768,
+      "falsePositiveCandidates" : 592,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 10,
+      "cache" : "repeat",
+      "recordsRead" : 1000000,
+      "seconds" : 1.766811125,
+      "cpuSeconds" : 1.773588,
+      "mainThreadAllocatedBytes" : 544281344,
+      "falsePositiveCandidates" : 592,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 200,
+      "cache" : "reopened",
+      "recordsRead" : 1000000,
+      "seconds" : 6.751115041,
+      "cpuSeconds" : 6.780959,
+      "mainThreadAllocatedBytes" : 1684615224,
+      "falsePositiveCandidates" : 12147,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 200,
+      "cache" : "repeat",
+      "recordsRead" : 1000000,
+      "seconds" : 6.712795458,
+      "cpuSeconds" : 6.711264,
+      "mainThreadAllocatedBytes" : 1684281360,
+      "falsePositiveCandidates" : 12147,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    } ]
+  }, {
+    "mode" : "both",
+    "applySeconds" : 175.584452583,
+    "blocksPerSecond" : 5695.265072101375,
+    "processCpuSeconds" : 177.871408,
+    "mainThreadAllocatedBytes" : 17810943544,
+    "gcMillis" : 36,
+    "logicalBatchBytes" : 1163808859,
+    "applyP50Micros" : 74.25,
+    "applyP99Micros" : 450.791,
+    "compactedSstBytes" : {
+      "wallet_first_seen" : 63481709,
+      "wallet_filters" : 107820075,
+      "wallet_meta" : 1215,
+      "wallet_undo" : 9188458
+    },
+    "sampledPeakDirectoryBytes" : 265726344,
+    "closedDirectoryBytes" : 181255664,
+    "scans" : [ {
+      "queryCount" : 1,
+      "cache" : "reopened",
+      "recordsRead" : 1000000,
+      "seconds" : 1.434611709,
+      "cpuSeconds" : 1.43661,
+      "mainThreadAllocatedBytes" : 490281344,
+      "falsePositiveCandidates" : 70,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 1,
+      "cache" : "repeat",
+      "recordsRead" : 1000000,
+      "seconds" : 1.428079875,
+      "cpuSeconds" : 1.426935,
+      "mainThreadAllocatedBytes" : 490281344,
+      "falsePositiveCandidates" : 70,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 10,
+      "cache" : "reopened",
+      "recordsRead" : 1000000,
+      "seconds" : 1.649304583,
+      "cpuSeconds" : 1.651418,
+      "mainThreadAllocatedBytes" : 544281344,
+      "falsePositiveCandidates" : 592,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 10,
+      "cache" : "repeat",
+      "recordsRead" : 1000000,
+      "seconds" : 1.659586083,
+      "cpuSeconds" : 1.661787,
+      "mainThreadAllocatedBytes" : 544281344,
+      "falsePositiveCandidates" : 592,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 200,
+      "cache" : "reopened",
+      "recordsRead" : 1000000,
+      "seconds" : 6.549103958,
+      "cpuSeconds" : 6.556043,
+      "mainThreadAllocatedBytes" : 1684281360,
+      "falsePositiveCandidates" : 12147,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    }, {
+      "queryCount" : 200,
+      "cache" : "repeat",
+      "recordsRead" : 1000000,
+      "seconds" : 6.543124834,
+      "cpuSeconds" : 6.5459,
+      "mainThreadAllocatedBytes" : 1684281360,
+      "falsePositiveCandidates" : 12147,
+      "bodyReads" : "not measured; no bodies in this synthetic spike"
+    } ]
+  } ]
+}

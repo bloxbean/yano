@@ -1,8 +1,10 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.network.TCPNodeClient;
+import com.bloxbean.cardano.yaci.core.network.NodeClientConfig;
 import com.bloxbean.cardano.yaci.core.protocol.Agent;
 import com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent;
+import com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncListener;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionAgent;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionConfig;
@@ -21,7 +23,11 @@ import org.slf4j.Logger;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 
 /**
  * Outbound connection to one app-group peer, carrying the app message
@@ -35,10 +41,11 @@ import java.util.Objects;
 final class AppPeerClient implements AppPeerLink {
     private static final int REPLAY_QUEUE_LIMIT = 200;
     private static final Runnable NOOP = () -> { };
+    private static final long NEGOTIATION_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(30);
 
     /** Callback for catch-up replies fetched over protocol 103. */
     interface CatchUpHandler {
-        void onBlocks(String peerId, java.util.List<byte[]> blocks, long serverTipHeight);
+        void onBlocks(String peerId, List<byte[]> blocks, long serverTipHeight);
     }
 
     /** Small transport boundary used to make publication/start races deterministic in tests. */
@@ -67,6 +74,10 @@ final class AppPeerClient implements AppPeerLink {
     private final PeerTransportFactory transportFactory;
     private final Runnable beforeTransportStart;
     private final Runnable beforeDelegateStart;
+    private final LongSupplier nanoTime;
+    private volatile long transportPublishedAtNanos;
+    private volatile long connectorStartedAtNanos;
+    private volatile Thread connectorThread;
 
     /**
      * Bounded recent-message cache. Entries remain here after being offered so
@@ -83,7 +94,7 @@ final class AppPeerClient implements AppPeerLink {
      */
     private volatile AppMsgSubmissionAgent readyAgent;
     private volatile KeepAliveAgent keepAliveAgent;
-    private volatile com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent syncAgent;
+    private volatile AppChainSyncClientAgent syncAgent;
     private volatile boolean shutdown;
     /** Guarded by {@link #replayQueue}; distinguishes internal reconnects that reuse an agent. */
     private long connectionEpoch;
@@ -115,6 +126,19 @@ final class AppPeerClient implements AppPeerLink {
                   PeerTransportFactory transportFactory,
                   Runnable beforeTransportStart,
                   Runnable beforeDelegateStart) {
+        this(peer, protocolMagic, appMsgConfig, catchUpHandler, log, transportFactory,
+                beforeTransportStart, beforeDelegateStart, System::nanoTime);
+    }
+
+    AppPeerClient(AppChainConfig.AppPeer peer,
+                  long protocolMagic,
+                  AppMsgSubmissionConfig appMsgConfig,
+                  CatchUpHandler catchUpHandler,
+                  Logger log,
+                  PeerTransportFactory transportFactory,
+                  Runnable beforeTransportStart,
+                  Runnable beforeDelegateStart,
+                  LongSupplier nanoTime) {
         this.peer = Objects.requireNonNull(peer, "peer");
         this.protocolMagic = protocolMagic;
         this.appMsgConfig = Objects.requireNonNull(appMsgConfig, "appMsgConfig");
@@ -123,6 +147,7 @@ final class AppPeerClient implements AppPeerLink {
         this.transportFactory = Objects.requireNonNull(transportFactory, "transportFactory");
         this.beforeTransportStart = Objects.requireNonNull(beforeTransportStart, "beforeTransportStart");
         this.beforeDelegateStart = Objects.requireNonNull(beforeDelegateStart, "beforeDelegateStart");
+        this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
     }
 
     /**
@@ -157,13 +182,16 @@ final class AppPeerClient implements AppPeerLink {
     /** A running transport may still be negotiating its app protocols. */
     private boolean isTransportRunning() {
         PeerTransport c = client;
-        return c != null && c.isRunning();
+        AppMsgSubmissionAgent currentAgent = agent;
+        return c != null && c.isRunning()
+                && (currentAgent != null && readyAgent == currentAgent
+                || nanoTime.getAsLong() - transportPublishedAtNanos < NEGOTIATION_TIMEOUT_NANOS);
     }
 
     /**
      * Queue a message for diffusion to this peer. Deliberately NOT on the
      * object monitor: {@link #ensureConnected()} holds that through a blocking
-     * connect attempt (with retry sleeps), and a dead peer must never stall
+     * connect/negotiation attempt, and a dead peer must never stall
      * submitters/relayers (ADR 008.2 delivery note — found by the rotation
      * partial-round test).
      */
@@ -203,30 +231,47 @@ final class AppPeerClient implements AppPeerLink {
         }
     }
 
-    private final java.util.concurrent.atomic.AtomicBoolean connecting =
-            new java.util.concurrent.atomic.AtomicBoolean();
+    private final AtomicBoolean connecting = new AtomicBoolean();
 
     /**
-     * Non-blocking connect: the underlying client start RETRIES an unreachable
-     * peer in a sleep loop, which must never run on the shared subsystem
+     * Non-blocking connect: the underlying client can wait for a handshake,
+     * which must never run on the shared subsystem
      * scheduler — with one dead peer it wedged proposer/anchor/catch-up ticks
      * entirely (found by the 008.2 partial-round test). Attempts run on their
      * own daemon thread, one at a time.
      */
     @Override
     public void ensureConnectedAsync() {
-        if (shutdown || isTransportRunning() || !connecting.compareAndSet(false, true)) {
+        if (shutdown) return;
+        Thread owner = connectorThread;
+        if (owner != null
+                && nanoTime.getAsLong() - connectorStartedAtNanos >= NEGOTIATION_TIMEOUT_NANOS) {
+            // Never block the shared scheduler or a networking event loop on cleanup.
+            // The single registered connector owns its interrupted start/cleanup path.
+            owner.interrupt();
+            return;
+        }
+        if (isTransportRunning() || !connecting.compareAndSet(false, true)) {
             return;
         }
         Thread connector = new Thread(() -> {
             try {
                 ensureConnected();
             } finally {
+                connectorThread = null;
                 connecting.set(false);
             }
         }, "app-peer-connect-" + peer);
         connector.setDaemon(true);
-        connector.start();
+        connectorStartedAtNanos = nanoTime.getAsLong();
+        connectorThread = connector;
+        try {
+            connector.start();
+        } catch (RuntimeException | Error failure) {
+            connectorThread = null;
+            connecting.set(false);
+            throw failure;
+        }
     }
 
     /** Connect if not connected; blocking — use {@link #ensureConnectedAsync()}. */
@@ -281,13 +326,13 @@ final class AppPeerClient implements AppPeerLink {
 
         KeepAliveAgent newKeepAlive = new KeepAliveAgent(true);
 
-        com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent newSyncAgent = null;
+        AppChainSyncClientAgent newSyncAgent = null;
         if (catchUpHandler != null) {
-            var createdSyncAgent = new com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent();
+            var createdSyncAgent = new AppChainSyncClientAgent();
             createdSyncAgent.addListener(
-                    new com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncListener() {
+                    new AppChainSyncListener() {
                         @Override
-                        public void blocksReceived(java.util.List<byte[]> blocks, long serverTipHeight) {
+                        public void blocksReceived(List<byte[]> blocks, long serverTipHeight) {
                             catchUpHandler.onBlocks(peerId(), blocks, serverTipHeight);
                         }
                     });
@@ -323,7 +368,7 @@ final class AppPeerClient implements AppPeerLink {
         boolean published = false;
         try {
             // Publish the complete transport tuple BEFORE start().  start()
-            // retries an unreachable peer indefinitely, so shutdown() must be
+            // can wait for peer negotiation, so shutdown() must be
             // able to reach the in-progress client.  Publish under the same
             // lock as queue hand-off/disposal so enqueue never observes a
             // partially installed connection tuple.
@@ -336,6 +381,7 @@ final class AppPeerClient implements AppPeerLink {
                     this.readyAgent = null;
                     this.keepAliveAgent = newKeepAlive;
                     this.syncAgent = newSyncAgent;
+                    this.transportPublishedAtNanos = nanoTime.getAsLong();
                     this.connectionEpoch++;
                     this.awaitingInitAckEpoch = -1;
                     published = true;
@@ -409,7 +455,7 @@ final class AppPeerClient implements AppPeerLink {
 
     /**
      * Deliberately NOT on the object monitor: a connector thread can hold that
-     * monitor indefinitely while retrying a dead peer inside
+     * monitor while negotiating with a dead peer inside
      * {@link #ensureConnected()} — shutdown must still proceed (it closes the
      * published in-progress client, which breaks the retry loop).
      */
@@ -476,12 +522,18 @@ final class AppPeerClient implements AppPeerLink {
         Agent[] agents = syncAgent == null
                 ? new Agent[] {appMsgAgent, keepAliveAgent}
                 : new Agent[] {appMsgAgent, keepAliveAgent, syncAgent};
+        // Only dedicated app links use this policy. Library auto-reconnect calls
+        // blocking start() from its Netty close callback and can exhaust those
+        // event loops during accepted-then-reset connections. Our periodic app
+        // supervisor owns one bounded off-loop attempt instead. L1 clients are unchanged.
+        NodeClientConfig transportConfig = NodeClientConfig.builder()
+                .autoReconnect(false).propagateStartupFailure(true).build();
         return new YaciPeerTransport(new TCPNodeClient(
-                peer.host(), peer.port(), handshakeAgent, agents));
+                peer.host(), peer.port(), transportConfig, handshakeAgent, agents), appMsgAgent);
     }
 
     /** Thin adapter; terminal lifecycle semantics are supplied by {@link TerminalPeerTransport}. */
-    private record YaciPeerTransport(TCPNodeClient delegate) implements PeerTransport {
+    record YaciPeerTransport(TCPNodeClient delegate, AppMsgSubmissionAgent agent) implements PeerTransport {
         @Override
         public void start() {
             delegate.start();
@@ -489,7 +541,10 @@ final class AppPeerClient implements AppPeerLink {
 
         @Override
         public boolean isRunning() {
-            return delegate.isRunning();
+            // NodeClient.isRunning() only means that a Session object exists,
+            // including a disconnected session with auto-reconnect disabled.
+            var channel = agent.getChannel();
+            return delegate.isRunning() && channel != null && channel.isActive();
         }
 
         @Override

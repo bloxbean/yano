@@ -85,7 +85,8 @@ class AppChainStartupRollbackTest {
         Path ledgerBase = tempDir.resolve("ledger");
         AppChainSubsystem failed = subsystem(ledgerBase, Map.of(
                 "observers.deposits.type", "address-deposit",
-                "observers.deposits.address", "addr_test1_startup_rollback"));
+                "observers.deposits.address", "addr_test1_startup_rollback",
+                "observation.l1-network-genesis-id", "01".repeat(32)));
 
         // Observer construction occurs after RocksDB and AppChainEngine are
         // created; stability-depth=0 then produces a deterministic start error.

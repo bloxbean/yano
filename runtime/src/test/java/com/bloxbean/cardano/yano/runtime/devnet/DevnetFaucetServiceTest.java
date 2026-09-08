@@ -83,11 +83,22 @@ class DevnetFaucetServiceTest {
                 assertThrows(IllegalArgumentException.class, () -> service.fundAddress("addr", 0)).getMessage());
     }
 
+    @Test
+    void contributorPreflightRejectionDoesNotMarkRuntimeDegraded() {
+        FakeUtxoStore store = FakeUtxoStore.enabled();
+        store.rejectMaintenance = true;
+        DevnetFaucetService service = new DevnetFaucetService(() -> true, () -> true, () -> store,
+                (operation, message, failure) -> { throw new AssertionError("Preflight must not degrade runtime"); });
+        assertThrows(IllegalStateException.class, () -> service.fundAddress("addr", 1));
+        assertEquals(null, store.address);
+    }
+
     private static final class FakeUtxoStore implements UtxoStoreWriter {
         private final boolean enabled;
         private final String txHash;
         private String address;
         private long lovelace;
+        private boolean rejectMaintenance;
 
         private FakeUtxoStore(boolean enabled, String txHash) {
             this.enabled = enabled;
@@ -120,6 +131,11 @@ class DevnetFaucetServiceTest {
             this.address = address;
             this.lovelace = lovelace;
             return txHash;
+        }
+
+        @Override
+        public void requireIndexMaintenanceAllowed(String operation) {
+            if (rejectMaintenance) throw new IllegalStateException("Unsupported with contributors");
         }
     }
 

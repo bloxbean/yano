@@ -10,7 +10,7 @@ import java.io.DataOutputStream;
 import java.time.Instant;
 
 final class EpochArtifactGapCodec {
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     private EpochArtifactGapCodec() { }
 
@@ -21,6 +21,7 @@ final class EpochArtifactGapCodec {
                 out.writeInt(VERSION);
                 out.writeUTF(gap.dataset().name());
                 out.writeInt(gap.semanticEpoch());
+                out.writeLong(gap.carrierBlockNumber());
                 out.writeLong(gap.boundaryBlockNumber());
                 out.writeLong(gap.boundarySlot());
                 byte[] hash = gap.boundaryBlockHash();
@@ -42,6 +43,7 @@ final class EpochArtifactGapCodec {
             if (version != VERSION) throw new IllegalArgumentException("unsupported gap version " + version);
             ArchiveDatasetId dataset = ArchiveDatasetId.valueOf(in.readUTF());
             int epoch = in.readInt();
+            long carrierBlock = in.readLong();
             long block = in.readLong();
             long slot = in.readLong();
             int hashLength = in.readInt();
@@ -52,7 +54,8 @@ final class EpochArtifactGapCodec {
             String detail = in.readUTF();
             Instant recordedAt = Instant.ofEpochMilli(in.readLong());
             if (in.available() != 0) throw new IllegalArgumentException("trailing gap bytes");
-            return new EpochArtifactGap(dataset, epoch, block, slot, hash, failureClass, detail, recordedAt);
+            return new EpochArtifactGap(dataset, epoch, carrierBlock, block, slot, hash,
+                    failureClass, detail, recordedAt);
         } catch (Exception e) {
             throw new ProjectionOutboxException("failed to decode epoch-artifact gap", e);
         }

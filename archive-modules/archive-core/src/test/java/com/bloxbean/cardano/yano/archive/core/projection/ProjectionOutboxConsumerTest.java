@@ -1,9 +1,12 @@
 package com.bloxbean.cardano.yano.archive.core.projection;
 
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveSafetyWindows;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionBlockKind;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelopeHeader;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
@@ -30,6 +33,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -117,6 +121,21 @@ class ProjectionOutboxConsumerTest {
     private ProjectionOutboxConsumer consumer(ProjectionConsumerBounds bounds, ProjectionBatchPolicy policy) {
         return new ProjectionOutboxConsumer(store, sink, identity, new ProjectionFinalityGate(WINDOWS),
                 bounds, artifacts, tip::get, rollbackFloor::get, policy);
+    }
+
+    @Test
+    void durableCaptureFailurePausesDrainAcrossRestartInsteadOfLookingIdle() {
+        store.commit(writer -> store.putProjectionCaptureFailure(
+                writer, new CanonicalBlockReference(7, 70, new byte[32]),
+                new IllegalStateException("synthetic capture hole")));
+        restartNode();
+
+        ProjectionConsumerResult result = consumer().drainOnce();
+
+        assertThat(result.outcome()).isEqualTo(ProjectionConsumerResult.Outcome.PAUSED);
+        assertThat(result.detail()).hasValueSatisfying(detail ->
+                assertThat(detail).contains("block 7", "synthetic capture hole"));
+        assertThat(store.projectionCaptureFailureCount()).isEqualTo(1);
     }
 
     /** Production-shaped near-tip policy: preferred target 50 envelopes, hard bound 15 minutes. */
@@ -333,10 +352,11 @@ class ProjectionOutboxConsumerTest {
     @Test
     void retentionViolationPausesRatherThanNarrowingEligibility() {
         // An artifact requiring slot 500 while the common floor has advanced to 900.
-        var artifact = new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
-                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE, 7, 3, 60,
-                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
-                "gen/7", 1, "v1", java.util.OptionalLong.empty(), "", 500);
+        var artifact = new ProjectionArtifactRef(
+                ArchiveDatasetId.EPOCH_STAKE, 7, 3, 60,
+                new byte[] {3},
+                ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
+                "gen/7", 1, "v1", OptionalLong.empty(), "", 500);
         var header = new ProjectionEnvelopeHeader(PREPROD, ProjectionBlockKind.SHELLEY_PLUS, 0,
                 new byte[]{0}, new byte[]{0}, 0, 0, 1L, 1, List.of(), List.of(artifact));
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
@@ -542,10 +562,9 @@ class ProjectionOutboxConsumerTest {
 
     private static ProjectionArtifactRef artifactAt(long block, int epoch) {
         return new ProjectionArtifactRef(
-                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE, epoch, block,
-                block * 20, com.bloxbean.cardano.yano.archive.api.projection
-                        .ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
-                "gen-" + epoch, 1, "state-1", java.util.OptionalLong.of(10), "", block * 20);
+                ArchiveDatasetId.EPOCH_STAKE, epoch, block,
+                block * 20, new byte[] {1}, ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
+                "gen-" + epoch, 1, "state-1", OptionalLong.of(10), "", block * 20);
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
@@ -8,6 +10,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
@@ -22,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -322,6 +326,168 @@ class ScriptAnchorServiceTest {
         assertThat(follower.lastAnchoredHeight()).isZero();
         assertThat(followerLedger.metaBytes("anchor_script_policy_id")).isEmpty();
         assertThat(followerLedger.metaBytes("anchor_script_hash")).isEmpty();
+    }
+
+    @Test
+    void unlistedMemberLearnsVerifiedAdvanceWithoutSigningAndAdoptsOnlyAfterL1Confirmation() throws Exception {
+        AppMessageSigner observerSigner = new AppMessageSigner("33".repeat(32));
+        members = Set.of(leaderSigner.publicKeyHex(), followerSigner.publicKeyHex(), observerSigner.publicKeyHex());
+        AtomicInteger observerDiffusions = new AtomicInteger();
+        try (AppLedgerStore observerLedger = new AppLedgerStore(
+                tempDir.resolve("unlisted-observer").toString(), log, stateIdentity())) {
+            ScriptAnchorService observer = new ScriptAnchorService(CHAIN_ID, "ordered-log",
+                    new AppChainConfig.AnchorConfig(false, "", 0, 0, 0), observerLedger,
+                    cbor -> { throw new AssertionError("Unlisted follower must never submit"); },
+                    () -> utxoState, this::blockAt, () -> tip[0],
+                    new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
+                    observerSigner, () -> members, () -> 2,
+                    (topic, body) -> observerDiffusions.incrementAndGet(), false, 42, log);
+            observer.wireTxPricing(() -> DEVNET_PARAMS, () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+            utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+            Map<String, Object> boot = leader.bootstrap();
+            Transaction bootstrapTx = Transaction.deserialize(submitted.getFirst());
+            String bootstrapHash = (String) boot.get("txHash");
+            String scriptAddress = (String) boot.get("scriptAddress");
+            String policy = (String) boot.get("threadPolicyId");
+            String script = (String) boot.get("scriptHash");
+            leader.onL1Block(100, List.of(bootstrapHash));
+            TransactionOutput bootstrapOut = outputTo(bootstrapTx, scriptAddress);
+            utxoState.put(scriptAddress, List.of(anchorUtxo(bootstrapHash,
+                    bootstrapTx.getBody().getOutputs().indexOf(bootstrapOut), bootstrapOut, policy, 100)));
+            TransactionOutput change = outputTo(bootstrapTx, wallet);
+            utxoState.put(wallet, List.of(walletUtxo(bootstrapHash,
+                    bootstrapTx.getBody().getOutputs().indexOf(change), change.getValue().getCoin().longValue())));
+            tip[0] = 9;
+            Method start = ScriptAnchorService.class.getDeclaredMethod("startCosignRound", Set.class);
+            start.setAccessible(true);
+            start.invoke(leader, Set.of(leaderSigner.publicKeyHex(), followerSigner.publicKeyHex()));
+            assertThat(submitted).hasSize(2);
+            Transaction advance = Transaction.deserialize(submitted.get(1));
+            assertThat(advance.getBody().getRequiredSigners()).hasSize(2);
+
+            // An unlisted observer still applies the full threshold/body verification.
+            Transaction invalid = Transaction.deserialize(submitted.get(1));
+            invalid.getBody().setRequiredSigners(invalid.getBody().getRequiredSigners().subList(0, 1));
+            deliver(observer, leaderSigner.publicKey(), ScriptAnchorService.TOPIC_SIGN,
+                    ScriptAnchorService.encodeSignRequest(CborSerializationUtil.serialize(
+                            invalid.getBody().serialize(Era.Conway)), HexUtil.decodeHexString(policy),
+                            HexUtil.decodeHexString(script)));
+            assertThat(observer.status()).containsEntry("identityCandidatePending", false);
+            deliver(observer, leaderSigner.publicKey(), ScriptAnchorService.TOPIC_SIGN,
+                    ScriptAnchorService.encodeSignRequest(CborSerializationUtil.serialize(
+                            advance.getBody().serialize(Era.Conway)), HexUtil.decodeHexString(policy),
+                            HexUtil.decodeHexString(script)));
+            assertThat(observerDiffusions).hasValue(0);
+            assertThat(observer.status()).containsEntry("identityCandidatePending", true);
+            assertThat(observer.bootstrapped()).isFalse();
+            assertThat(observer.tick()).isNull();
+
+            TransactionOutput next = outputTo(advance, scriptAddress);
+            String advanceHash = txHash(submitted.get(1));
+            utxoState.put(scriptAddress, List.of(anchorUtxo(advanceHash,
+                    advance.getBody().getOutputs().indexOf(next), next, policy, 200)));
+            assertThat(observer.tick()).isNotNull();
+            assertThat(observer.bootstrapped()).isTrue();
+            assertThat(observer.lastAnchoredHeight()).isEqualTo(9);
+            assertThat(observer.status()).containsEntry("lastAnchorTx", advanceHash);
+            assertThat(observerDiffusions).hasValue(0);
+            observer.onL1Rollback(150);
+            assertThat(observer.bootstrapped()).isFalse();
+            assertThat(observer.lastAnchoredHeight()).isZero();
+        }
+    }
+
+    @Test
+    void followerAdoptsVerifiedSpentAdvanceAfterCatchUpWithoutTrustingUnknownCurrentTransaction() throws Exception {
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+        Map<String, Object> boot = leader.bootstrap();
+        Transaction bootstrap = Transaction.deserialize(submitted.getFirst());
+        String bootstrapHash = (String) boot.get("txHash");
+        String address = (String) boot.get("scriptAddress");
+        String policy = (String) boot.get("threadPolicyId");
+        leader.onL1Block(100, List.of(bootstrapHash));
+        TransactionOutput initial = outputTo(bootstrap, address);
+        utxoState.put(address, List.of(anchorUtxo(bootstrapHash,
+                bootstrap.getBody().getOutputs().indexOf(initial), initial, policy, 100)));
+        TransactionOutput change = outputTo(bootstrap, wallet);
+        utxoState.put(wallet, List.of(walletUtxo(bootstrapHash,
+                bootstrap.getBody().getOutputs().indexOf(change), change.getValue().getCoin().longValue())));
+        tip[0] = 4;
+        leader.tick();
+        assertThat(submitted).hasSize(2);
+        Transaction advance = Transaction.deserialize(submitted.get(1));
+        String verifiedTx = txHash(submitted.get(1));
+        TransactionOutput verifiedOutput = outputTo(advance, address);
+        Utxo verified = anchorUtxo(verifiedTx, advance.getBody().getOutputs().indexOf(verifiedOutput),
+                verifiedOutput, policy, 200);
+        AnchorDatumCodec.AnchorDatum first = AnchorDatumCodec.decode(verifiedOutput.getInlineDatum());
+
+        // Catch-up has already applied a later spend before the app's periodic poll.
+        // This transaction was NOT one of the follower's verified sign requests.
+        tip[0] = 9;
+        String laterTx = "99".repeat(32);
+        AnchorDatumCodec.AnchorDatum later = new AnchorDatumCodec.AnchorDatum(
+                first.version(), first.chainId(), first.chainGenesisId(), first.applicationId(),
+                first.commitmentProfileId(), first.formatFingerprint(), 9,
+                AppBlockCodec.blockHash(blockAt(9)),
+                blockAt(9).stateRoot(), first.memberKeys(), first.threshold());
+        utxoState.put(address, List.of(new Utxo(new Outpoint(laterTx, 0), address,
+                verified.lovelace(), verified.assets(), null, AnchorDatumCodec.encode(later).serializeToBytes(),
+                null, null, false, 300, 0, null)));
+        assertThat(follower.tick()).isNull();
+        assertThat(follower.bootstrapped()).isFalse();
+        assertThat(follower.onL1Block(200, List.of(verifiedTx))).isNull();
+        assertThat(follower.tick()).isNull(); // raw callback is not committed authority
+
+        // Restore only persisted candidate metadata, not callback-local state.
+        ScriptAnchorService restarted = new ScriptAnchorService(CHAIN_ID, "ordered-log",
+                new AppChainConfig.AnchorConfig(false, "", 0, 0, 0), followerLedger,
+                cbor -> { throw new AssertionError("Follower must not submit"); },
+                () -> utxoState, this::blockAt, () -> tip[0],
+                new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
+                followerSigner, () -> members, () -> 2, (topic, body) -> { }, false, 42, log);
+        restarted.wireTxPricing(() -> DEVNET_PARAMS, () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+        AnchorDatumCodec.AnchorDatum forged = new AnchorDatumCodec.AnchorDatum(
+                first.version(), first.chainId(), first.chainGenesisId(), first.applicationId(),
+                first.commitmentProfileId(), first.formatFingerprint(), first.height(), first.blockHash(),
+                fill(32, 0x7f), first.memberKeys(), first.threshold());
+        utxoState.historicalByTransaction.put(verifiedTx, List.of(new Utxo(verified.outpoint(), address,
+                verified.lovelace(), verified.assets(), null, AnchorDatumCodec.encode(forged).serializeToBytes(),
+                null, null, false, 200, 0, null)));
+        assertThat(restarted.tick()).isNull(); // retained output still requires exact local app history
+        assertThat(restarted.bootstrapped()).isFalse();
+        utxoState.historicalByTransaction.put(verifiedTx, List.of(new Utxo(verified.outpoint(), address,
+                verified.lovelace(), verified.assets(), null, verified.inlineDatum(),
+                null, null, true, 200, 0, null)));
+        assertThat(restarted.tick()).isNull(); // collateral return is not successful script acceptance
+        utxoState.historicalByTransaction.put(verifiedTx, List.of(new Utxo(verified.outpoint(), address,
+                verified.lovelace(), verified.assets(), null, verified.inlineDatum(),
+                null, null, false, 600, 0, null)));
+        assertThat(restarted.tick()).isNull(); // acceptance cannot be ahead of the committed point
+        utxoState.historicalByTransaction.put(verifiedTx, List.of(verified));
+        utxoState.setAppliedPoint(500, fill(32, 0x66));
+        assertThat(restarted.tick()).isNull(); // same slot on a different fork is insufficient
+        assertThat(restarted.bootstrapped()).isFalse();
+        utxoState.setAppliedPoint(500, L1_TIP_HASH);
+        assertThat(restarted.tick()).isNotNull();
+        assertThat(restarted.bootstrapped()).isTrue();
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(4);
+        assertThat(restarted.status()).containsEntry("lastAnchorTx", verifiedTx);
+        assertThat(followerLedger.metaLong("anchor_script_bootstrap_slot", 0)).isEqualTo(200);
+
+        // Only after exact historical acceptance establishes identity may the
+        // ordinary reconciliation path follow the current thread output.
+        assertThat(restarted.tick()).isNotNull();
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(9);
+        assertThat(restarted.status()).containsEntry("lastAnchorTx", laterTx);
+        assertThat(restarted.tick()).isNull();
+        restarted.onL1Rollback(250);
+        assertThat(restarted.bootstrapped()).isTrue();
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(4);
+        restarted.onL1Rollback(150);
+        assertThat(restarted.bootstrapped()).isFalse();
+        assertThat(restarted.lastAnchoredHeight()).isZero();
+        assertThat(restarted.tick()).isNull(); // stale UTxO history cannot re-establish a cleared candidate
     }
 
     @Test
@@ -737,6 +903,7 @@ class ScriptAnchorServiceTest {
     private static final class AddressedUtxoState
             implements UtxoState, RollbackCapableStore {
         private final Map<String, List<Utxo>> byAddress = new HashMap<>();
+        private final Map<String, List<Utxo>> historicalByTransaction = new HashMap<>();
         private long appliedSlot = 500L;
         private String appliedBlockHash = HexUtil.encodeHexString(L1_TIP_HASH);
 
@@ -772,6 +939,14 @@ class ScriptAnchorServiceTest {
                     .flatMap(List::stream)
                     .filter(u -> u.outpoint().equals(outpoint))
                     .findFirst();
+        }
+
+        @Override
+        public List<Utxo> getOutputsByTxHash(String txHash) {
+            List<Utxo> outputs = new ArrayList<>(historicalByTransaction.getOrDefault(txHash, List.of()));
+            byAddress.values().stream().flatMap(List::stream)
+                    .filter(utxo -> txHash.equals(utxo.outpoint().txHash())).forEach(outputs::add);
+            return outputs;
         }
 
         @Override

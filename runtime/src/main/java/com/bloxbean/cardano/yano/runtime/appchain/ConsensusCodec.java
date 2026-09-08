@@ -14,18 +14,14 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * CBOR codecs for the sequencer's system-topic message bodies
- * (topics {@code ~consensus/propose|vote|cert}). Proposals carry the full
- * block CBOR (AppBlockCodec) directly; votes and cert notices use the small
- * structures below. All ride the ordinary authenticated app-message envelope.
+ * Shared consensus topic names plus the small finalized-certificate notice
+ * codec. ADR-036 prepare, commit, timeout, and new-view bodies are encoded by
+ * {@link CertifiedConsensusCodec}; proposals carry canonical AppBlock bytes.
  */
 final class ConsensusCodec {
-    static final int MAX_VOTE_BYTES = 256;
     static final int MAX_CERT_NOTICE_BYTES =
             AppChainConfig.MAX_FINALITY_CERT_HEADROOM_BYTES + 128;
-    private static final CborStructurePreflight.Limits VOTE_CBOR_LIMITS =
-            new CborStructurePreflight.Limits(
-                    MAX_VOTE_BYTES, 4, 16, 8, AppChainConfig.ED25519_SIGNATURE_BYTES);
+    static final int MAX_NEW_VIEW_BYTES = 256 * 1024;
     private static final CborStructurePreflight.Limits CERT_NOTICE_CBOR_LIMITS =
             new CborStructurePreflight.Limits(
                     MAX_CERT_NOTICE_BYTES, 4, 128, AppChainConfig.MAX_MEMBERS,
@@ -36,45 +32,14 @@ final class ConsensusCodec {
                     4, 64, 16, AppChainConfig.MAX_MESSAGE_BYTES);
 
     static final String TOPIC_PROPOSE = "~consensus/propose";
-    static final String TOPIC_VOTE = "~consensus/vote";
+    static final String TOPIC_PREPARE = "~consensus/prepare";
+    static final String TOPIC_PREPARED = "~consensus/prepared";
+    static final String TOPIC_COMMIT = "~consensus/commit";
+    static final String TOPIC_TIMEOUT = "~consensus/timeout";
+    static final String TOPIC_NEW_VIEW = "~consensus/new-view";
     static final String TOPIC_CERT = "~consensus/cert";
 
     private ConsensusCodec() {
-    }
-
-    /** vote = [height, block-hash, signature-over-block-hash] */
-    static byte[] encodeVote(long height, byte[] blockHash, byte[] signature) {
-        Array arr = new Array();
-        arr.add(new UnsignedInteger(height));
-        arr.add(new ByteString(blockHash));
-        arr.add(new ByteString(signature));
-        return CborSerializationUtil.serialize(arr);
-    }
-
-    static Vote decodeVote(byte[] bytes) {
-        if (!CborStructurePreflight.accepts(bytes, VOTE_CBOR_LIMITS)) {
-            throw invalid("Invalid bounded vote");
-        }
-        try {
-            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes))
-                    .getDataItems();
-            if (items.size() != 3) {
-                throw invalid("Invalid vote shape");
-            }
-            Vote vote = new Vote(
-                    ((UnsignedInteger) items.get(0)).getValue().longValueExact(),
-                    ((ByteString) items.get(1)).getBytes(),
-                    ((ByteString) items.get(2)).getBytes());
-            if (vote.blockHash().length != 32
-                    || vote.signature().length != AppChainConfig.ED25519_SIGNATURE_BYTES
-                    || !Arrays.equals(bytes, encodeVote(
-                    vote.height(), vote.blockHash(), vote.signature()))) {
-                throw invalid("Invalid canonical vote");
-            }
-            return vote;
-        } catch (RuntimeException malformed) {
-            throw invalid("Invalid bounded canonical vote");
-        }
     }
 
     /** cert notice = [height, block-hash, cert-cbor] */
@@ -111,9 +76,6 @@ final class ConsensusCodec {
         } catch (RuntimeException malformed) {
             throw invalid("Invalid bounded canonical certificate notice");
         }
-    }
-
-    record Vote(long height, byte[] blockHash, byte[] signature) {
     }
 
     record CertNotice(long height, byte[] blockHash, byte[] certBytes) {

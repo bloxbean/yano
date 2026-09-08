@@ -22,6 +22,8 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.observation.AppObservationEmitter;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
 import com.bloxbean.cardano.yano.api.appchain.l1view.EpochObservationManifest;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochBoundary;
@@ -31,7 +33,12 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochState;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverConsensusIdentity;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationCandidate;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationRequest;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode.ProposalEligibility;
@@ -54,6 +61,14 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
+import com.bloxbean.cardano.yano.api.genesis.GenesisUtxo;
+import com.bloxbean.cardano.yano.api.utxo.index.IndexRequirements;
+import com.bloxbean.cardano.yano.api.utxo.index.IndexWriter;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoChanges;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContext;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributor;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthCheckDescriptor;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
@@ -389,6 +404,9 @@ final class PluginSpiFacades {
             case L1_EPOCH_OBSERVER -> new EpochObserverProviderFacade(
                     (L1EpochObserverProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
+            case OBSERVATION_PROVIDER -> new ObservationProviderFactoryFacade(
+                    (ObservationProviderFactory) delegate, effectiveLoader, activation,
+                    products, callbacks);
             case SIGNER_PROVIDER -> new SignerFactoryFacade(
                     (SignerProviderFactory) delegate, effectiveLoader, activation,
                     products, callbacks);
@@ -404,6 +422,8 @@ final class PluginSpiFacades {
             case LOCAL_READ_MODEL -> new LocalReadModelProviderFacade(
                     (LocalReadModelProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
+            case UTXO_INDEX_CONTRIBUTOR -> new UtxoIndexProviderFacade(
+                    (UtxoIndexContributorProvider) delegate, effectiveLoader, activation, products, callbacks);
             case HEALTH -> new HealthProviderFacade(
                     (PluginHealthProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
@@ -958,6 +978,36 @@ final class PluginSpiFacades {
         }
     }
 
+    private record UtxoIndexProviderFacade(
+            UtxoIndexContributorProvider delegate, ClassLoader loader, ActivationContext activation,
+            ProductReservations products, CallbackTracker callbacks
+    ) implements UtxoIndexContributorProvider {
+        @Override public String id() { return pluginCall(callbacks, loader, delegate::id); }
+        @Override public int schemaVersion() { return pluginCall(callbacks, loader, delegate::schemaVersion); }
+        @Override public IndexRequirements requirements() { return pluginCall(callbacks, loader, delegate::requirements); }
+        @Override public UtxoIndexContributor create(UtxoIndexContext context) {
+            return activation.call("create UTxO index contributor", () -> callbacks.call(() -> {
+                UtxoIndexContributor value = PluginThreadContext.call(loader, () -> delegate.create(context));
+                return products.facadeForNewInvocation(value, product -> new UtxoIndexContributor() {
+                    @Override public void stageApply(UtxoChanges changes, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stageApply(changes, writer));
+                    }
+                    @Override public void stageRollback(ChainPoint target, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stageRollback(target, writer));
+                    }
+                    @Override public void stageGenesis(String identity, List<GenesisUtxo> outputs, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stageGenesis(identity, outputs, writer));
+                    }
+                    @Override public void stagePruneUndo(ChainPoint point, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stagePruneUndo(point, writer));
+                    }
+                    @Override public void reinitialize() { pluginRun(callbacks, loader, product::reinitialize); }
+                    @Override public void close() { pluginCleanupRun(callbacks, loader, product::close); }
+                });
+            }));
+        }
+    }
+
     private record LocalReadModelProviderFacade(
             LocalReadModelProvider delegate,
             ClassLoader loader,
@@ -1435,6 +1485,28 @@ final class PluginSpiFacades {
                     () -> delegate.query(path, input, state));
             return response != null ? response.clone() : null;
         }
+
+        @Override
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                          AppEffectEmitter effects, AppObservationEmitter observations) {
+            pluginRun(callbacks, loader, () -> delegate.apply(context, writer, effects, observations));
+        }
+
+        @Override
+        public void onEffectResult(AppBlockExecutionContext context, EffectResult result,
+                                   AppStateWriter writer, AppEffectEmitter effects,
+                                   AppObservationEmitter observations) {
+            pluginRun(callbacks, loader,
+                    () -> delegate.onEffectResult(context, result, writer, effects, observations));
+        }
+
+        @Override
+        public void onObservationResult(AppBlockExecutionContext context, ObservationResult result,
+                                        AppStateWriter writer, AppEffectEmitter effects,
+                                        AppObservationEmitter observations) {
+            pluginRun(callbacks, loader,
+                    () -> delegate.onObservationResult(context, result, writer, effects, observations));
+        }
     }
 
     private record SnapshotSourceCommitmentFacade(
@@ -1580,6 +1652,13 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public L1ObserverConsensusIdentity consensusIdentity(
+                String observerId, Map<String, String> settings) {
+            return pluginCall(callbacks, loader,
+                    () -> delegate.consensusIdentity(observerId, settings));
+        }
+
+        @Override
         public L1Observer create(String observerId, Map<String, String> settings) {
             return activation.call("create L1-observer product", () -> callbacks.call(() -> {
                 L1Observer value = PluginThreadContext.call(
@@ -1608,6 +1687,13 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public L1ObserverConsensusIdentity consensusIdentity(
+                String observerId, Map<String, String> settings) {
+            return pluginCall(callbacks, loader,
+                    () -> delegate.consensusIdentity(observerId, settings));
+        }
+
+        @Override
         public L1EpochObserver create(String observerId, Map<String, String> settings) {
             return activation.call("create L1-epoch-observer product", () -> callbacks.call(() -> {
                 L1EpochObserver value = PluginThreadContext.call(
@@ -1616,6 +1702,67 @@ final class PluginSpiFacades {
                         value, observer -> new EpochObserverFacade(
                                 observer, observerId, loader, activation, callbacks));
             }));
+        }
+    }
+
+    private record ObservationProviderFactoryFacade(
+            ObservationProviderFactory delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements ObservationProviderFactory {
+        private ObservationProviderFactoryFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String type() {
+            return pluginCall(callbacks, loader, delegate::type);
+        }
+
+        @Override
+        public ObservationProvider create(String definitionId,
+                                          Map<String, String> operationalSettings) {
+            Map<String, String> snapshot = operationalSettings == null
+                    ? Map.of() : Map.copyOf(operationalSettings);
+            return activation.call("create observation-provider product", () ->
+                    callbacks.call(() -> {
+                        ObservationProvider value = PluginThreadContext.call(loader,
+                                () -> delegate.create(definitionId, snapshot));
+                        return products.facadeForNewInvocation(value,
+                                provider -> new ObservationProviderFacade(
+                                        provider, loader, activation, callbacks));
+                    }));
+        }
+    }
+
+    private record ObservationProviderFacade(
+            ObservationProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            CallbackTracker callbacks
+    ) implements ObservationProvider {
+        private ObservationProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public ObservationCandidate acquire(ObservationRequest request) throws Exception {
+            ObservationCandidate candidate = pluginCall(callbacks, loader,
+                    () -> delegate.acquire(request));
+            if (candidate == null) {
+                throw new IllegalStateException(
+                        "Observation provider returned a null candidate");
+            }
+            return new ObservationCandidate(candidate.sourceId(), candidate.value(),
+                    candidate.evidence(), candidate.sourceVersion(),
+                    candidate.freshnessAnchorType(), candidate.freshnessAnchor());
+        }
+
+        @Override
+        public void close() {
+            pluginCleanupRun(callbacks, loader, delegate::close);
         }
     }
 

@@ -145,6 +145,13 @@ public final class ProjectionOutboxConsumer {
             return ProjectionConsumerResult.idle();
         }
 
+        var captureFailure = store.firstProjectionCaptureFailure();
+        if (captureFailure.isPresent()) {
+            accumulator.reset();
+            return ProjectionConsumerResult.paused(
+                    "durable projection capture failure at " + captureFailure.orElseThrow());
+        }
+
         long acknowledged = store.acknowledgedThrough();
         long complete = store.completeThrough(identity.requiredSections());
         long eligible = Math.min(complete, finalityGate.eligibleThrough(tipBlockNumber.getAsLong()));

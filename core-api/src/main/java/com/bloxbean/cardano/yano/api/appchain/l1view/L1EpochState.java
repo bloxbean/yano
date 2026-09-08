@@ -11,8 +11,13 @@ public interface L1EpochState extends AutoCloseable {
 
     long newEpoch();
 
+    /**
+     * Parameters effective in {@link #newEpoch()}. Hosts may reject any other epoch;
+     * observers must not use this method to infer the era of a previous-epoch dataset.
+     */
     ProtocolParamsView protocolParams(long effectiveEpoch);
 
+    /** Whether the previous-epoch snapshot is available, including a completed empty snapshot. */
     boolean hasStakeSnapshot(long snapshotEpoch);
 
     void forEachStakeEntry(long snapshotEpoch, StakeEntryConsumer consumer);

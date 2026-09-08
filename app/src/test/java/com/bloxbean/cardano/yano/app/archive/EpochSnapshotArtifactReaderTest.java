@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -27,6 +28,7 @@ class EpochSnapshotArtifactReaderTest {
 
     private static ProjectionArtifactRef ref(int epoch, long expectedRows) {
         return new ProjectionArtifactRef(ArchiveDatasetId.EPOCH_STAKE, epoch, 4_800_000L, 100_000L,
+                new byte[] {7, 7, 7, 7},
                 ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
                 "epoch-deleg-snapshot:" + epoch, 1, "state-v1",
                 OptionalLong.of(expectedRows), "", 100_000L);
@@ -78,7 +80,7 @@ class EpochSnapshotArtifactReaderTest {
     void aReaderOnlyServesEpochStake() {
         var reader = new EpochSnapshotArtifactReader(null, new Clamp(), 100, 1, null);
         // A valid ada-pot reference: ATOMIC_EVIDENCE carries its evidence and requires no source.
-        var wrongDataset = new ProjectionArtifactRef(ArchiveDatasetId.ADA_POT, 1, 1, 1,
+        var wrongDataset = new ProjectionArtifactRef(ArchiveDatasetId.ADA_POT, 1, 1, 1, new byte[] {1},
                 ProjectionArtifactRepresentation.ATOMIC_EVIDENCE, "g", 1, "s",
                 OptionalLong.of(1), "", -1L, new byte[8 * Long.BYTES]);
 
@@ -96,9 +98,24 @@ class EpochSnapshotArtifactReaderTest {
                     @Override public long blockTimeSeconds(long slot) { return 0; }
                 });
 
-        assertThatThrownBy(() -> reader.acquire(ref(250, 1), java.time.Instant.now()))
+        assertThatThrownBy(() -> reader.acquire(ref(250, 1), Instant.now()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("no canonical block reference");
+    }
+
+    @Test
+    void aDifferentCanonicalHashRefusesTheSnapshotFromTheRolledBackAnchor() {
+        var reader = new EpochSnapshotArtifactReader(null, new Clamp(), 100, 1,
+                new ArtifactBoundaryFacts() {
+                    @Override public Optional<byte[]> blockHash(long blockNumber) {
+                        return Optional.of(new byte[]{9, 9, 9, 9});
+                    }
+                    @Override public long blockTimeSeconds(long slot) { return 0; }
+                });
+
+        assertThatThrownBy(() -> reader.acquire(ref(250, 1), Instant.now()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("anchor is no longer canonical");
     }
 
     @Test

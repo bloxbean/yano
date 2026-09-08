@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ProjectionContractsTest {
 
     private static ProjectionArtifactRef reward(int epoch, String generation, String contentDigest) {
-        return new ProjectionArtifactRef(ArchiveDatasetId.REWARD, epoch, 100, 2_000,
+        return new ProjectionArtifactRef(ArchiveDatasetId.REWARD, epoch, 100, 2_000, new byte[]{1, 2, 3},
                 ProjectionArtifactRepresentation.STAGED_FILE, generation, 1,
                 "ledger-boundary-v1/reward", java.util.OptionalLong.of(4_887), contentDigest, -1L);
     }
@@ -38,7 +38,7 @@ class ProjectionContractsTest {
     private static ProjectionArtifactRef adaPot(int epoch, byte[] inline) {
         // Mirrors EpochArtifactCollector.contributeAdaPot: empty contentDigest, one row, and a
         // generation fixed by epoch. Everything identifying is identical between two of these.
-        return new ProjectionArtifactRef(ArchiveDatasetId.ADA_POT, epoch, 100, 2_000,
+        return new ProjectionArtifactRef(ArchiveDatasetId.ADA_POT, epoch, 100, 2_000, new byte[]{1, 2, 3},
                 ProjectionArtifactRepresentation.ATOMIC_EVIDENCE, "ada-pot:" + epoch, 1,
                 "ledger-boundary-v1/final", java.util.OptionalLong.of(1), "", -1L, inline);
     }
@@ -67,7 +67,7 @@ class ProjectionContractsTest {
         var here = new ProjectionBatch(identity(),
                 List.of(withArtifacts(100, List.of(reward(42, "gen-a", "aa".repeat(32))))));
         var moved = new ProjectionBatch(identity(), List.of(withArtifacts(100, List.of(
-                new ProjectionArtifactRef(ArchiveDatasetId.REWARD, 42, 999, 9_999,
+                new ProjectionArtifactRef(ArchiveDatasetId.REWARD, 42, 999, 9_999, new byte[]{9, 9, 9},
                         ProjectionArtifactRepresentation.STAGED_FILE, "gen-a", 1,
                         "ledger-boundary-v1/reward", java.util.OptionalLong.of(4_887),
                         "aa".repeat(32), -1L)))));
@@ -79,11 +79,11 @@ class ProjectionContractsTest {
     void artifactSourceVersionAndRetentionRequirementAreReceiptBound() {
         var base = reward(42, "gen-a", "aa".repeat(32));
         var otherState = new ProjectionArtifactRef(base.dataset(), base.semanticEpoch(),
-                base.producingBlockNumber(), base.producingSlot(), base.representation(),
+                base.producingBlockNumber(), base.producingSlot(), base.producingBlockHash(), base.representation(),
                 base.sourceGeneration(), base.sourceCodecVersion(), "ledger-boundary-v2/reward",
                 base.expectedRowCount(), base.contentDigest(), base.oldestRequiredSlot());
         var otherRetention = new ProjectionArtifactRef(base.dataset(), base.semanticEpoch(),
-                base.producingBlockNumber(), base.producingSlot(), base.representation(),
+                base.producingBlockNumber(), base.producingSlot(), base.producingBlockHash(), base.representation(),
                 base.sourceGeneration(), base.sourceCodecVersion(), base.sourceStateVersion(),
                 base.expectedRowCount(), base.contentDigest(), 1_999L);
 

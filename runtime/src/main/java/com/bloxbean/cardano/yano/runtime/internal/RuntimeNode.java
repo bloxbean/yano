@@ -5,6 +5,9 @@ import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.config.YaciConfig;
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.HeaderBody;
+import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
@@ -26,6 +29,7 @@ import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
+import com.bloxbean.cardano.yano.api.MempoolAdminGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
@@ -69,7 +73,9 @@ import com.bloxbean.cardano.yano.runtime.chain.NearestPointLookup;
 import com.bloxbean.cardano.yano.runtime.chronology.ChronologyService;
 import com.bloxbean.cardano.yano.runtime.chronology.ChronologySubsystem;
 import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryFailureTracker;
@@ -178,6 +184,7 @@ import java.util.function.Supplier;
 @Slf4j
 public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
         MempoolQueryGateway,
+        MempoolAdminGateway,
         ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider,
         com.bloxbean.cardano.yano.api.events.stream.NodeEventStream {
     // Configuration
@@ -882,12 +889,41 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     appChainConfig, protocolMagic, eventBus, null, appChainStoragePath.toString(),
                     pluginEnvironment.classLoader(), pluginEnvironment.providers(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            subsystem.wireL1BlockReplay(this::retainedL1Block);
             subsystem.wireTxEvaluation(this);
             subsystem.wireAnchorFees(this::anchorFeeParams);
             subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
             subsystems.add(subsystem);
         }
         return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
+    }
+
+    private BlockAppliedEvent retainedL1Block(long slot) {
+        Long blockNumber = chainState.getBlockNumberBySlot(slot);
+        if (blockNumber == null || !Objects.equals(
+                chainState.getSlotByBlockNumber(blockNumber), slot)) {
+            return null;
+        }
+        byte[] blockBytes = chainState.getBlockByNumber(blockNumber);
+        Era storedEra = chainState.getBlockEra(blockNumber);
+        if (blockBytes == null || StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+            return null;
+        }
+        try {
+            Block block = BlockSerializer.INSTANCE.deserialize(blockBytes);
+            HeaderBody header = block.getHeader() != null
+                    ? block.getHeader().getHeaderBody() : null;
+            if (header == null || header.getSlot() != slot
+                    || header.getBlockNumber() != blockNumber
+                    || header.getBlockHash() == null) {
+                return null;
+            }
+            Era era = block.getEra() != null ? block.getEra() : storedEra;
+            return new BlockAppliedEvent(
+                    era, slot, blockNumber, header.getBlockHash(), block);
+        } catch (RuntimeException malformedRetainedBlock) {
+            return null;
+        }
     }
 
     private String runtimeNetwork() {
@@ -1577,6 +1613,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             utxoSubsystem.initializeFilterChain(
                     pluginManager != null ? pluginManager.getStorageFilters() : List.of(),
                     projectionFilterPreflight);
+            utxoSubsystem.startIndexContributors(pluginEnvironment.providers());
             // Health and metrics may depend on services contributed by the
             // ordinary plugin planes, so construct telemetry only after both
             // NodePlugin and domain products are active.
@@ -1592,6 +1629,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     private void stopDomainAndNodePlugins(boolean stopNodePlugins) {
         Throwable failure = null;
+        try {
+            utxoSubsystem.stopIndexContributors();
+        } catch (Throwable indexFailure) {
+            failure = recordPluginCleanupFailure(failure, indexFailure);
+        }
         try {
             pluginOperationsRegistry.sealAndAwait();
         } catch (Throwable operationsFailure) {
@@ -2750,6 +2792,20 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     @Override
+    public List<Utxo> listUtxos(String query, boolean credential, String asset,
+                               int page, int count, boolean descending) {
+        return txSubsystem.listUtxos(query, credential, asset, page, count, descending);
+    }
+
+    @Override
+    public List<String> evictTransaction(String txHash) {
+        if (!isRunning.get()) {
+            throw new IllegalStateException("Cannot evict transaction while node is not running");
+        }
+        return txSubsystem.evictTransaction(txHash);
+    }
+
+    @Override
     public com.bloxbean.cardano.yano.api.events.stream.NodeEventStream.Subscription subscribe(
             java.util.Set<String> topics) {
         return l1EventFanout.subscribe(topics);
@@ -3409,6 +3465,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     }
 
                     @Override
+                    public void prepareUtxoForStorageReplacement() {
+                        utxoSubsystem.prepareForStorageReplacement();
+                    }
+
+                    @Override
                     public void resumeUtxoAfterSnapshotRestore(boolean asyncUtxoHandlerPaused,
                                                                boolean utxoPrunePaused,
                                                                boolean utxoMetricsSamplerPaused) {
@@ -3702,6 +3763,18 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 failure, "server subsystem", serveSubsystem::stop);
         failure = pauseRuntimeBackgroundServices(failure);
 
+        // Non-client producers may have their own async UTxO queue. It must
+        // drain while index products and plugin callback admission are live.
+        try {
+            if (!utxoSubsystem.drainAsyncHandlerBeforeClose(Duration.ofSeconds(30))) {
+                unsafeLedgerApplyWorker = true;
+                failure = recordPluginCleanupFailure(failure,
+                        new IllegalStateException("Async UTXO handler did not drain during runtime stop"));
+            }
+        } catch (Throwable drainFailure) {
+            unsafeLedgerApplyWorker = true;
+            failure = recordPluginCleanupFailure(failure, drainFailure);
+        }
         if (unsafeLedgerApplyWorker) {
             unsafeLedgerApplyShutdown = true;
         }
@@ -3724,6 +3797,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
             return;
         }
+        failure = attemptRuntimeCleanup(
+                failure, "UTxO index contributors", utxoSubsystem::stopIndexContributors);
         // Close callback admission only after every runtime subsystem has
         // stopped accepting work. Calls already admitted remain valid and are
         // allowed to finish before NodePlugin/provider/loader teardown.
@@ -3802,6 +3877,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             @Override
             public void closeDomainApis() {
                 Throwable failure = null;
+                try {
+                    utxoSubsystem.stopIndexContributors();
+                } catch (Throwable indexFailure) {
+                    failure = recordPluginCleanupFailure(failure, indexFailure);
+                }
                 try {
                     domainApiRegistry.close();
                 } catch (Throwable domainFailure) {

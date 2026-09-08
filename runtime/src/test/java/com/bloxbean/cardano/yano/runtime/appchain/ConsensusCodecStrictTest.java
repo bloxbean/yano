@@ -11,32 +11,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ConsensusCodecStrictTest {
 
     @Test
-    void voteRoundTripRequiresExactCanonicalProfile() {
-        byte[] hash = fill(32, 0x11);
-        byte[] signature = fill(AppChainConfig.ED25519_SIGNATURE_BYTES, 0x22);
-        byte[] encoded = ConsensusCodec.encodeVote(7, hash, signature);
-
-        ConsensusCodec.Vote vote = ConsensusCodec.decodeVote(encoded);
-
-        assertThat(vote.height()).isEqualTo(7);
-        assertThat(vote.blockHash()).isEqualTo(hash);
-        assertThat(vote.signature()).isEqualTo(signature);
-        assertThatThrownBy(() -> ConsensusCodec.decodeVote(
-                ConsensusCodec.encodeVote(7, new byte[31], signature)))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> ConsensusCodec.decodeVote(
-                ConsensusCodec.encodeVote(7, hash, new byte[63])))
-                .isInstanceOf(IllegalArgumentException.class);
-
-        byte[] trailing = Arrays.copyOf(encoded, encoded.length + 1);
-        assertThatThrownBy(() -> ConsensusCodec.decodeVote(trailing))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> ConsensusCodec.decodeVote(
-                withNonMinimalFirstUnsigned(encoded)))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
     void certificateNoticeRoundTripRequiresBoundedCanonicalWrapper() {
         byte[] hash = fill(32, 0x33);
         byte[] certificate = new byte[]{(byte) 0x80};
@@ -68,8 +42,6 @@ class ConsensusCodecStrictTest {
         Arrays.fill(nested, 0, 33, (byte) 0x9f);
         Arrays.fill(nested, 33, 66, (byte) 0xff);
 
-        assertThatThrownBy(() -> ConsensusCodec.decodeVote(nested))
-                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> ConsensusCodec.decodeCertNotice(nested))
                 .isInstanceOf(IllegalArgumentException.class);
     }

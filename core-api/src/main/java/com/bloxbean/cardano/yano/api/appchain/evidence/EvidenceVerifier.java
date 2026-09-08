@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.consensus.ConsensusDigests;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 
 import java.nio.charset.StandardCharsets;
@@ -156,7 +157,7 @@ public final class EvidenceVerifier {
         }
 
         // 2. Every block is validly finalized: at least `threshold` distinct
-        //    valid member signatures over the block hash, and the prev-hash
+        //    valid member signatures over the commit digest, and the prev-hash
         //    chain is intact. The m-of-n threshold rejects a single member
         //    only when the caller independently pins membership and threshold.
         byte[] previousHash = null;
@@ -230,7 +231,7 @@ public final class EvidenceVerifier {
                     && !Arrays.equals(block.prevHash(), AppBlock.GENESIS_PREV_HASH)) {
                 return Result.fail("genesis prev-hash mismatch");
             }
-            int validSignatures = countValidSignatures(block.cert(), blockHash, members);
+            int validSignatures = countValidSignatures(block, members);
             if (validSignatures < threshold) {
                 return Result.fail("block " + block.height() + " has " + validSignatures
                         + " valid member signature(s), below threshold " + threshold);
@@ -302,7 +303,8 @@ public final class EvidenceVerifier {
                 == AppChainConfig.ED25519_SIGNATURE_BYTES);
     }
 
-    private static int countValidSignatures(FinalityCert cert, byte[] blockHash, Set<String> members) {
+    private static int countValidSignatures(AppBlock block, Set<String> members) {
+        FinalityCert cert = block.cert();
         if (cert == null || cert.signatures().isEmpty()
                 || cert.signatures().size() > AppChainConfig.MAX_MEMBERS) {
             return -1;
@@ -323,7 +325,8 @@ public final class EvidenceVerifier {
             }
             try {
                 if (!CryptoConfiguration.INSTANCE.getSigningProvider()
-                        .verify(signature.signature(), blockHash, signature.signer())) {
+                        .verify(signature.signature(), ConsensusDigests.commit(block),
+                                signature.signer())) {
                     return -1;
                 }
                 valid++;

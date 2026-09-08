@@ -1,6 +1,14 @@
 package com.bloxbean.cardano.yano.app.api.addresses;
 
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
+import com.bloxbean.cardano.yano.api.wallet.WalletIndexCoverage;
+import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import org.junit.jupiter.api.Test;
 
@@ -11,6 +19,43 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class AddressResourceTest {
+    @Test
+    void firstSeenDoesNotRequireArchiveAndPreservesNullAndZero() throws Exception {
+        UtxoState state = mock(UtxoState.class);
+        when(state.isEnabled()).thenReturn(true);
+        var coverage = new WalletIndexCoverage(true, true, ChainPoint.ORIGIN,
+                ChainPoint.ORIGIN, "test", null);
+        when(state.getAddressFirstSeen("unused")).thenReturn(new AddressFirstSeen(null, coverage));
+        when(state.getAddressFirstSeen("genesis")).thenReturn(new AddressFirstSeen(0L, coverage));
+        var resource = firstSeenResource(state);
+        assertThat(resource.getFirstSeen("unused").getStatus()).isEqualTo(200);
+        ObjectMapper mapper = new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        var unused = mapper.readTree(mapper.writeValueAsBytes(resource.getFirstSeen("unused").getEntity()));
+        assertThat(unused.has("firstSeenSlot")).isTrue();
+        assertThat(unused.get("firstSeenSlot").isNull()).isTrue();
+        var genesis = mapper.readTree(mapper.writeValueAsBytes(resource.getFirstSeen("genesis").getEntity()));
+        assertThat(genesis.get("firstSeenSlot").longValue()).isZero();
+    }
+
+    @Test
+    void firstSeenIncompleteAndMalformedAreDistinctFromUnused() {
+        UtxoState state = mock(UtxoState.class);
+        when(state.isEnabled()).thenReturn(true);
+        when(state.getAddressFirstSeen("incomplete")).thenThrow(new WalletIndexUnavailableException(
+                new WalletIndexCoverage(true, false, null, null, null, "Fresh sync required")));
+        when(state.getAddressFirstSeen("malformed")).thenThrow(new IllegalArgumentException("bad address"));
+        var resource = firstSeenResource(state);
+        assertThat(resource.getFirstSeen("incomplete").getStatus()).isEqualTo(503);
+        assertThat(resource.getFirstSeen("malformed").getStatus()).isEqualTo(400);
+    }
+
+    private static AddressResource firstSeenResource(UtxoState state) {
+        var resource = new AddressResource();
+        resource.ledgerQuery = mock(LedgerQuery.class);
+        when(resource.ledgerQuery.getUtxoState()).thenReturn(state);
+        return resource;
+    }
+
     @Test
     void unavailableProjectionDatasetIsReportedWithoutLegacyWorkerState() {
         AccountHistoryProvider provider = mock(AccountHistoryProvider.class);

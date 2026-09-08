@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.archive.api.projection;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.OptionalLong;
 
@@ -9,14 +10,14 @@ import java.util.OptionalLong;
  * Reference to a large immutable epoch artifact streamed by the sink rather than
  * copied into the block envelope (ADR-039 §5).
  *
- * <p>{@code producingBlockNumber} is the transition that created the artifact and is
- * the coordinate compared against the rollback-safe cutoff; {@code semanticEpoch} is
- * the epoch the resulting rows are labelled with. They differ by design: the
- * artifact produced at transition {@code E-1 -> E} carries semantic epoch {@code E}
- * but only becomes eligible one safe boundary later.
+ * <p>{@code producingBlockNumber}, {@code producingSlot} and {@code producingBlockHash}
+ * identify the last canonical block of the source epoch. They describe provenance, not
+ * transport: the outbox stores this reference separately under the first applying block of the
+ * new epoch, and that carrier block governs ordering, rollback attachment and finality.
  */
 public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
                                     long producingBlockNumber, long producingSlot,
+                                    byte[] producingBlockHash,
                                     ProjectionArtifactRepresentation representation,
                                     String sourceGeneration, int sourceCodecVersion,
                                     String sourceStateVersion,
@@ -37,6 +38,7 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
                 Integer.toString(semanticEpoch).getBytes(utf8),
                 Long.toString(producingBlockNumber).getBytes(utf8),
                 Long.toString(producingSlot).getBytes(utf8),
+                producingBlockHash,
                 representation.name().getBytes(utf8),
                 sourceGeneration.getBytes(utf8),
                 Integer.toString(sourceCodecVersion).getBytes(utf8),
@@ -59,6 +61,11 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
                     + dataset + " is a block dataset and belongs in a section");
         }
         Objects.requireNonNull(representation, "representation");
+        Objects.requireNonNull(producingBlockHash, "producingBlockHash");
+        if (producingBlockHash.length == 0) {
+            throw new IllegalArgumentException("producingBlockHash is required");
+        }
+        producingBlockHash = producingBlockHash.clone();
         sourceGeneration = Objects.requireNonNull(sourceGeneration, "sourceGeneration").trim();
         sourceStateVersion = Objects.requireNonNull(sourceStateVersion, "sourceStateVersion").trim();
         Objects.requireNonNull(expectedRowCount, "expectedRowCount");
@@ -104,14 +111,20 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
      */
     public ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
                                  long producingBlockNumber, long producingSlot,
+                                 byte[] producingBlockHash,
                                  ProjectionArtifactRepresentation representation,
                                  String sourceGeneration, int sourceCodecVersion,
                                  String sourceStateVersion,
                                  OptionalLong expectedRowCount, String contentDigest,
                                  long oldestRequiredSlot) {
-        this(dataset, semanticEpoch, producingBlockNumber, producingSlot, representation,
+        this(dataset, semanticEpoch, producingBlockNumber, producingSlot, producingBlockHash, representation,
                 sourceGeneration, sourceCodecVersion, sourceStateVersion, expectedRowCount,
                 contentDigest, oldestRequiredSlot, new byte[0]);
+    }
+
+    @Override
+    public byte[] producingBlockHash() {
+        return producingBlockHash.clone();
     }
 
     /**
@@ -133,6 +146,7 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
         return semanticEpoch == ref.semanticEpoch
                 && producingBlockNumber == ref.producingBlockNumber
                 && producingSlot == ref.producingSlot
+                && Arrays.equals(producingBlockHash, ref.producingBlockHash)
                 && sourceCodecVersion == ref.sourceCodecVersion
                 && oldestRequiredSlot == ref.oldestRequiredSlot
                 && dataset == ref.dataset
@@ -141,15 +155,16 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
                 && sourceStateVersion.equals(ref.sourceStateVersion)
                 && expectedRowCount.equals(ref.expectedRowCount)
                 && contentDigest.equals(ref.contentDigest)
-                && java.util.Arrays.equals(inlinePayload, ref.inlinePayload);
+                && Arrays.equals(inlinePayload, ref.inlinePayload);
     }
 
     @Override
     public int hashCode() {
-        return java.util.Objects.hash(dataset, semanticEpoch, producingBlockNumber, producingSlot,
+        return Objects.hash(dataset, semanticEpoch, producingBlockNumber, producingSlot,
+                Arrays.hashCode(producingBlockHash),
                 representation, sourceGeneration, sourceCodecVersion, sourceStateVersion,
                 expectedRowCount, contentDigest, oldestRequiredSlot,
-                java.util.Arrays.hashCode(inlinePayload));
+                Arrays.hashCode(inlinePayload));
     }
 
     @Override

@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
+import com.bloxbean.cardano.yano.runtime.utxo.index.UtxoContributorPlugins;
 import com.bloxbean.cardano.yano.runtime.chain.NearestPointLookup;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
@@ -17,6 +19,7 @@ import org.slf4j.Logger;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -30,6 +33,26 @@ import java.util.concurrent.TimeUnit;
  * metrics, and snapshot-restore pause/resume behavior.
  */
 public final class UtxoSubsystem implements Subsystem {
+    private UtxoContributorPlugins indexPlugins;
+
+    public void startIndexContributors(PluginProviderRegistry providers) {
+        if (indexPlugins == null) {
+            indexPlugins = new UtxoContributorPlugins(utxoStore instanceof DefaultUtxoStore store ? store : null,
+                    runtimeOptions.globals(), providers);
+        }
+        if (config.isEnableBootstrap() && utxoStore instanceof DefaultUtxoStore store) {
+            store.requireIndexMaintenanceAllowed("Bootstrap startup");
+        }
+        indexPlugins.start();
+        if (utxoStore instanceof DefaultUtxoStore store) store.freezeIndexContributors();
+        if (asyncApply && asyncEventHandler == null && !closed) {
+            asyncEventHandler = new UtxoEventHandlerAsync(eventBus, utxoStore);
+        }
+    }
+
+    public void stopIndexContributors() {
+        if (indexPlugins != null) indexPlugins.close();
+    }
     private final YanoConfig config;
     private final RuntimeOptions runtimeOptions;
     private final ChainState chainState;
@@ -41,6 +64,7 @@ public final class UtxoSubsystem implements Subsystem {
     private PruneService pruneService;
     private UtxoEventHandler eventHandler;
     private UtxoEventHandlerAsync asyncEventHandler;
+    private boolean asyncApply;
     private ScheduledFuture<?> lagTask;
     private boolean reconcilePending;
     private boolean closed;
@@ -161,7 +185,8 @@ public final class UtxoSubsystem implements Subsystem {
                 ? genesisConfig.getByronAvvmBalances() : Map.of();
         defaultStore.initializeFreshFullStateGenesis(
                 shelley, networkMagic, nonAvvm, avvm,
-                0L, 0L, "00".repeat(32));
+                0L, 0L, "00".repeat(32),
+                genesisConfig == null ? Map.of() : genesisConfig.getInitialFunds());
         if (config.isEnableBlockProducer() && genesisConfig != null
                 && !genesisConfig.getInitialFunds().isEmpty()) {
             log.info("Deferred {} Shelley genesis UTXOs to the block-producer genesis path",
@@ -232,6 +257,10 @@ public final class UtxoSubsystem implements Subsystem {
         } catch (Throwable t) {
             throw new IllegalStateException("UTXO reconciliation after snapshot restore failed", t);
         }
+    }
+
+    public void prepareForStorageReplacement() {
+        if (utxoStore instanceof DefaultUtxoStore store) store.prepareForStorageReplacement();
     }
 
     public boolean pauseAsyncHandlerAndAwait(Duration timeout) {
@@ -486,7 +515,9 @@ public final class UtxoSubsystem implements Subsystem {
         try {
             boolean utxoEnabled = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.Utxo.ENABLED, false);
             if (utxoEnabled && rocks != null) {
-                utxoStore = UtxoStoreFactory.create(rocks, log, runtimeOptions.globals());
+                Map<String, Object> storeConfig = new HashMap<>(runtimeOptions.globals());
+                storeConfig.put(YanoPropertyKeys.Remote.PROTOCOL_MAGIC, config.getProtocolMagic());
+                utxoStore = UtxoStoreFactory.create(rocks, log, storeConfig);
                 reconcilePending = true;
                 log.info("UTXO store initialized; reconciliation deferred until startup genesis/marker validation");
 
@@ -501,6 +532,7 @@ public final class UtxoSubsystem implements Subsystem {
                     applyAsync = false;
                 }
                 if (applyAsync) {
+                    asyncApply = true;
                     asyncEventHandler = new UtxoEventHandlerAsync(eventBus, utxoStore);
                     log.info("UTXO store initialized ({}); UtxoEventHandlerAsync registered (applyAsync=true)",
                             storeType());

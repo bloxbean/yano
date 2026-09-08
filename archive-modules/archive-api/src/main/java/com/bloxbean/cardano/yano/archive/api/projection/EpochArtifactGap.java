@@ -10,6 +10,7 @@ import java.util.Objects;
 public record EpochArtifactGap(
         ArchiveDatasetId dataset,
         int semanticEpoch,
+        long carrierBlockNumber,
         long boundaryBlockNumber,
         long boundarySlot,
         byte[] boundaryBlockHash,
@@ -19,8 +20,11 @@ public record EpochArtifactGap(
 
     public EpochArtifactGap {
         Objects.requireNonNull(dataset, "dataset");
-        if (semanticEpoch < 0 || boundaryBlockNumber < 0 || boundarySlot < 0) {
+        if (semanticEpoch < 0 || carrierBlockNumber < 0 || boundaryBlockNumber < 0 || boundarySlot < 0) {
             throw new IllegalArgumentException("gap epoch and canonical coordinates must be non-negative");
+        }
+        if (carrierBlockNumber <= boundaryBlockNumber) {
+            throw new IllegalArgumentException("gap carrier must follow its anchor block");
         }
         Objects.requireNonNull(boundaryBlockHash, "boundaryBlockHash");
         if (boundaryBlockHash.length == 0) {
@@ -39,6 +43,7 @@ public record EpochArtifactGap(
 
     public boolean sameOutcome(EpochArtifactGap other) {
         return dataset == other.dataset && semanticEpoch == other.semanticEpoch
+                && carrierBlockNumber == other.carrierBlockNumber
                 && boundaryBlockNumber == other.boundaryBlockNumber
                 && boundarySlot == other.boundarySlot
                 && Arrays.equals(boundaryBlockHash, other.boundaryBlockHash)

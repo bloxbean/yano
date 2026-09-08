@@ -37,10 +37,11 @@ public final class ProjectionEnvelopeCodec {
      *
      * <p>Migration decision: none is offered. With zero artifacts the encoding is byte-identical
      * to v1, and any archive that already holds blocks is refused at startup anyway - epoch
-     * artifacts cannot be added to an archive whose earlier epochs never captured them. So the
-     * only outbox this rejects is one that a fresh sync was already required for.
+     * Version 3 adds the producing anchor hash to every artifact reference. No migration is
+     * offered because projection history is preview-only and already requires a fresh sync when
+     * its persisted reference contract changes.
      */
-    static final int FORMAT_VERSION = 2;
+    static final int FORMAT_VERSION = 3;
 
     private ProjectionEnvelopeCodec() {}
 
@@ -76,6 +77,7 @@ public final class ProjectionEnvelopeCodec {
                 out.writeInt(artifact.semanticEpoch());
                 out.writeLong(artifact.producingBlockNumber());
                 out.writeLong(artifact.producingSlot());
+                writeBytes(out, artifact.producingBlockHash());
                 out.writeUTF(artifact.representation().name());
                 out.writeUTF(artifact.sourceGeneration());
                 out.writeInt(artifact.sourceCodecVersion());
@@ -130,6 +132,7 @@ public final class ProjectionEnvelopeCodec {
                 int semanticEpoch = in.readInt();
                 long producingBlock = in.readLong();
                 long producingSlot = in.readLong();
+                byte[] producingHash = readBytes(in);
                 ProjectionArtifactRepresentation representation =
                         ProjectionArtifactRepresentation.valueOf(in.readUTF());
                 String generation = in.readUTF();
@@ -142,6 +145,7 @@ public final class ProjectionEnvelopeCodec {
                 byte[] payload = new byte[in.readInt()];
                 in.readFully(payload);
                 artifacts.add(new ProjectionArtifactRef(dataset, semanticEpoch, producingBlock, producingSlot,
+                        producingHash,
                         representation, generation, codecVersion, stateVersion,
                         hasRowCount ? OptionalLong.of(rowCount) : OptionalLong.empty(), digest,
                         oldestRequiredSlot, payload));

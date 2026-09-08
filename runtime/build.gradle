@@ -40,6 +40,7 @@ dependencies {
     implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
+    testImplementation libs.netty
 
     // Generate @DomainEventListener bindings at build time
     annotationProcessor libs.yaci.events.processor
@@ -105,9 +106,17 @@ tasks.named('test') {
     dependsOn tasks.named('generateTestPluginCatalogIndex')
     classpath += files(generatedTestPluginCatalogDir)
     catalogSemanticsTestClasses.each { exclude it }
+    doFirst {
+        systemProperty 'yano.test.runtime-classpath', classpath.asPath
+    }
 }
 
 tasks.register('pluginCatalogSemanticsTest', Test) {
+    dependsOn ':utxo-output-index-example:jar'
+    doFirst {
+        systemProperty 'yano.test.utxo-index-example-jar', project(':utxo-output-index-example')
+                .tasks.named('jar').get().archiveFile.get().asFile.absolutePath
+    }
     group = 'verification'
     description = 'Catalog-semantics tests that manage their own catalog inputs (no embedded index)'
     useJUnitPlatform()
@@ -167,4 +176,43 @@ publishing {
             }
         }
     }
+}
+
+// Explicit invocation only; the destination must not exist. This is a synthetic
+// index/storage spike, not a substitute for historical-chain sync measurements.
+tasks.register('benchmarkWalletIndexes', JavaExec) {
+    group = 'verification'
+    description = 'Measures four optional-wallet-index modes on physically stored synthetic blocks'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.runtime.wallet.WalletIndexBenchmark'
+    maxHeapSize = '1g'
+    args providers.gradleProperty('walletBenchmarkDirectory').getOrElse('/private/tmp/yano-wallet-index-benchmark'),
+            providers.gradleProperty('walletBenchmarkBlocks').getOrElse('1000000')
+}
+
+// Read-only source, fresh derived databases. Includes canonical body decode and UTxO
+// processing, but not network/consensus/other ledger-store costs of full-node sync.
+tasks.register('benchmarkWalletHistory', JavaExec) {
+    group = 'verification'
+    description = 'Replays retained historical blocks through the four wallet-index modes'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.runtime.wallet.WalletHistoricalBenchmark'
+    maxHeapSize = '1g'
+    args providers.gradleProperty('walletHistorySource').getOrElse(''),
+            providers.gradleProperty('walletHistoryOutput').getOrElse(''),
+            providers.gradleProperty('walletHistoryGenesis').getOrElse(''),
+            providers.gradleProperty('walletHistoryBlocks').getOrElse('1000000')
+}
+
+// Exports a completed historical replay and real scan results for the raw-CBOR oracle.
+tasks.register('verifyWalletHistory', JavaExec) {
+    group = 'verification'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.runtime.wallet.WalletHistoricalVerifier'
+    maxHeapSize = '1g'
+    args providers.gradleProperty('walletVerifyDatabase').getOrElse(''),
+            providers.gradleProperty('walletVerifyOutput').getOrElse('')
 }

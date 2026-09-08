@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +38,7 @@ public final class EpochSnapshotArtifactReader implements ArchiveArtifactReader 
     private final ArtifactBoundaryFacts boundaryFacts;
 
     /** Resolved once per artifact, not once per row: a snapshot is millions of rows. */
-    private final Map<Integer, Boundary> boundaries = new ConcurrentHashMap<>();
+    private final Map<String, Boundary> boundaries = new ConcurrentHashMap<>();
 
     /** Open leases by artifact, so the clamp can hold the oldest epoch still being read. */
     private final Map<Integer, Integer> openLeasesByEpoch = new ConcurrentHashMap<>();
@@ -70,17 +71,23 @@ public final class EpochSnapshotArtifactReader implements ArchiveArtifactReader 
         // Resolve the boundary before the lease is handed out. A missing canonical reference must
         // fail here: writing the rows with a null boundary_block_hash would produce an archive that
         // differs from the replay path while looking complete.
-        boundaries.computeIfAbsent(ref.semanticEpoch(), epoch -> {
+        boundaries.computeIfAbsent(ref.sourceGeneration(), generation -> {
             var facts = Objects.requireNonNull(boundaryFacts, "boundary facts are required to read artifacts");
             byte[] hash = facts.blockHash(ref.producingBlockNumber()).orElseThrow(() ->
                     new IllegalStateException("no canonical block reference at boundary block "
-                            + ref.producingBlockNumber() + " for epoch-stake artifact of epoch " + epoch));
+                            + ref.producingBlockNumber() + " for epoch-stake artifact of epoch "
+                            + ref.semanticEpoch()));
+            if (!Arrays.equals(hash, ref.producingBlockHash())) {
+                throw new IllegalStateException("epoch-stake anchor is no longer canonical at block "
+                        + ref.producingBlockNumber());
+            }
             return new Boundary(hash, facts.blockTimeSeconds(ref.producingSlot()));
         });
 
-        // Fail closed on an absent generation. Returning an empty stream would be worse than an
-        // error: an epoch legitimately can have no delegators, so an empty read is indistinguishable
-        // from a pruned snapshot, and the archive would record "no stake this epoch" forever.
+        // Fail this drain attempt on an absent generation. The asynchronous drain reports and
+        // retries the failure without stopping L1 sync. Returning an empty stream would be worse:
+        // an epoch legitimately can have no delegators, so an empty read is indistinguishable from
+        // a pruned snapshot, and the archive would record "no stake this epoch" forever.
         var probe = store().readEpochDelegSnapshotPage(ref.semanticEpoch(), null, 1);
         if (probe.rows().isEmpty() && !probe.hasMore()
                 && ref.expectedRowCount().orElse(0) > 0) {
@@ -104,7 +111,7 @@ public final class EpochSnapshotArtifactReader implements ArchiveArtifactReader 
         var page = store().readEpochDelegSnapshotPage(ref.semanticEpoch(), after,
                 limit > 0 ? Math.min(limit, pageSize) : pageSize);
 
-        Boundary boundary = Objects.requireNonNull(boundaries.get(ref.semanticEpoch()),
+        Boundary boundary = Objects.requireNonNull(boundaries.get(ref.sourceGeneration()),
                 "artifact was read without an acquired lease");
         List<byte[]> rows = new ArrayList<>(page.rows().size());
         for (var row : page.rows()) {
@@ -127,7 +134,7 @@ public final class EpochSnapshotArtifactReader implements ArchiveArtifactReader 
         // reference, so a crash in between replays this call.
         require(ref);
         openLeasesByEpoch.remove(ref.semanticEpoch());
-        boundaries.remove(ref.semanticEpoch());
+        boundaries.remove(ref.sourceGeneration());
         pendingEpochs.remove(ref.semanticEpoch());
         clampToOldestOpenLease();
     }

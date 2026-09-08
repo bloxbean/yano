@@ -189,7 +189,15 @@ public final class YanoPropertyKeys {
     /**
      * UTXO tracking, indexing, pruning, and rollback settings.
      */
+    public static final class WalletIndex {
+        public static final String FIRST_SEEN_ENABLED = "yano.address-first-seen.enabled";
+        public static final String FILTERS_ENABLED = "yano.scan.index.enabled";
+
+        private WalletIndex() { }
+    }
+
     public static final class Utxo {
+        public static final String INDEX_CONTRIBUTORS = "yano.utxo.index-contributors";
         public static final String ENABLED = "yano.utxo.enabled";
         public static final String PRUNE_DEPTH = "yano.utxo.pruneDepth";
         public static final String ROLLBACK_WINDOW = "yano.utxo.rollbackWindow";
@@ -238,6 +246,8 @@ public final class YanoPropertyKeys {
      * Transaction mempool and transaction diffusion settings.
      */
     public static final class Tx {
+        public static final String MEMPOOL_ADMIN_ENABLED = "yano.mempool.admin.enabled";
+        public static final String MEMPOOL_ADMIN_API_KEY = "yano.mempool.admin.api-key";
         public static final String MEMPOOL_MAX_TXS = "yano.tx.mempool.max-txs";
         public static final String MEMPOOL_MAX_BYTES = "yano.tx.mempool.max-bytes";
         public static final String MEMPOOL_TTL_SECONDS = "yano.tx.mempool.ttl-seconds";

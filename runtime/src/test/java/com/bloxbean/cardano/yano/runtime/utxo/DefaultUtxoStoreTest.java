@@ -9,9 +9,14 @@ import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
+import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
+import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
+import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -28,8 +33,10 @@ import java.math.BigInteger;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.bloxbean.cardano.yaci.core.util.Constants.LOVELACE;
 import static org.junit.jupiter.api.Assertions.*;
@@ -122,6 +129,48 @@ class DefaultUtxoStoreTest {
 
         assertTrue(ex.getMessage().contains("UTXO apply failed for block 1"));
         assertTrue(ex.getCause() instanceof IllegalStateException);
+    }
+
+    @Test
+    void projectionFailureDiscardsProjectionWritesButCommitsShelleyUtxoState() throws Exception {
+        byte[] markerKey = "projection.must-not-commit".getBytes(StandardCharsets.UTF_8);
+        byte[] failureKey = "projection.failure-must-commit".getBytes(StandardCharsets.UTF_8);
+        AtomicReference<RuntimeException> reported = new AtomicReference<>();
+        store.setProjectionContributor(new CanonicalProjectionContributor() {
+            @Override public boolean enabled() { return true; }
+
+            @Override
+            public void contributeBlock(BlockAppliedEvent event, ProjectionStagingWriter writer) {
+                writer.put(ProjectionCfNames.PROJ_META, markerKey, new byte[]{1});
+                throw new IllegalStateException("synthetic Shelley projection failure");
+            }
+
+            @Override
+            public void contributionFailed(long blockNumber, ProjectionStagingWriter writer,
+                                           RuntimeException failure) {
+                assertEquals(1L, blockNumber);
+                writer.put(ProjectionCfNames.PROJ_META, failureKey, new byte[]{2});
+                reported.set(failure);
+            }
+
+            @Override public void contributeByronBlock(
+                    ByronBlockProjectionEvent event, ProjectionStagingWriter writer) { }
+            @Override public void rollbackFrom(long fromBlockNumber) { }
+        });
+        Block block = Block.builder()
+                .era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList())
+                .build();
+
+        store.applyBlock(new BlockAppliedEvent(Era.Babbage, 10, 1, "bb".repeat(32), block));
+
+        ColumnFamilyHandle projectionMeta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(
+                ProjectionCfNames.PROJ_META);
+        assertNull(store.getDb().get(projectionMeta, markerKey));
+        assertArrayEquals(new byte[]{2}, store.getDb().get(projectionMeta, failureKey));
+        assertEquals(1L, store.getLastAppliedBlock());
+        assertEquals("synthetic Shelley projection failure", reported.get().getMessage());
     }
 
     @Test
@@ -346,17 +395,67 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
-    void advancedOriginRollbackDoesNotClaimUnprovableGenesisCoverage() throws Exception {
-        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "00".repeat(32));
-        publishBlock(100, 1, "c5".repeat(32), Block.builder().era(Era.Babbage)
+    void advancedOriginRollbackPreservesGenesisProofAcrossRestartAndReplay() throws Exception {
+        String genesisHash = "ca".repeat(32);
+        String transactionHash = "c6".repeat(32);
+        String blockHash = "c5".repeat(32);
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, genesisHash);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
                 .transactionBodies(List.of(pointerOutputTransaction(
-                        "c6".repeat(32), 15_000_000L)))
+                        transactionHash, 15_000_000L)))
                 .invalidTransactions(List.of()).build());
+        byte[] outpoint = UtxoKeyUtil.outpointKey(transactionHash, 0);
+        ColumnFamilyHandle pointer = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        assertNotNull(chain.rocks().db().get(pointer, outpoint));
 
         store.rollbackToPoint(Point.ORIGIN);
 
-        assertNull(chain.rocks().db().get(
+        assertNull(chain.rocks().db().get(pointer, outpoint));
+        PointerIndexMarker marker = PointerIndexMarker.decode(chain.rocks().db().get(
                 chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+        assertNotNull(marker);
+        assertEquals(0, marker.blockNumber());
+        assertEquals(0, marker.slot());
+        assertArrayEquals(HexUtil.decodeHexString(genesisHash), marker.blockHash());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+
+        chain.close();
+        chain = new DirectRocksDBChainState(tempDir.getAbsolutePath());
+        store = new DefaultUtxoStore(
+                chain, LoggerFactory.getLogger(DefaultUtxoStoreTest.class),
+                Map.of("yano.utxo.enabled", true));
+        bus = new SimpleEventBus();
+        new UtxoEventHandler(bus, store);
+
+        assertTrue(store.isPointerIndexApplicable());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        transactionHash, 15_000_000L)))
+                .invalidTransactions(List.of()).build());
+
+        assertNotNull(chain.rocks().db().get(
+                chain.rocks().handle(UtxoCfNames.UTXO_POINTER), outpoint));
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+    }
+
+    @Test
+    void originRollbackClearsNonGenesisPointerProof() throws Exception {
+        String blockHash = "cb".repeat(32);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        "cc".repeat(32), 15_000_000L)))
+                .invalidTransactions(List.of()).build());
+        ColumnFamilyHandle meta = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        CanonicalBlockReference nonGenesis = new CanonicalBlockReference(
+                1, 100, HexUtil.decodeHexString(blockHash));
+        chain.rocks().db().put(meta, PointerIndexMarker.KEY,
+                PointerIndexMarker.encode(PointerIndexMarker.at(nonGenesis)));
+
+        store.rollbackToPoint(Point.ORIGIN);
+
+        assertNull(chain.rocks().db().get(meta, PointerIndexMarker.KEY));
         assertFalse(store.isPointerIndexReadyAtCurrentCoordinate());
     }
 
@@ -466,6 +565,92 @@ class DefaultUtxoStoreTest {
 
         RuntimeException ex = assertThrows(RuntimeException.class, store::computeTotalUtxoLovelace);
         assertTrue(ex.getMessage().contains("Failed to decode UTXO while computing total lovelace"));
+    }
+
+    @Test
+    void readViewRejectsCanonicalAdvanceButKeepsSnapshotData() {
+        String address = UtxoTestAddresses.enterprise(10);
+        try (var view = store.openUtxoReadView(address, false, false)) {
+            view.checkCurrent();
+            Block block = Block.builder().era(Era.Babbage)
+                    .transactionBodies(List.of(TransactionBody.builder().txHash("ab".repeat(32))
+                            .outputs(List.of(TransactionOutput.builder().address(address)
+                                    .amounts(List.of(lovelaceAmount(1000))).build())).build()))
+                    .invalidTransactions(Collections.emptyList()).build();
+            publishBlock(10, 1, "cd".repeat(32), block);
+            assertTrue(view.next().isEmpty());
+            assertTrue(view.getUtxo(new Outpoint("ab".repeat(32), 0)).isEmpty());
+            assertThrows(IllegalStateException.class, view::checkCurrent);
+            assertThrows(IllegalStateException.class, view::next);
+        }
+        try (var current = store.openUtxoReadView(address, false, false)) {
+            current.checkCurrent();
+            assertTrue(current.next().isPresent());
+        }
+    }
+
+    private List<Utxo> readUtxos(String subject, boolean credential, int page, int count, boolean descending) {
+        try (var view = store.openUtxoReadView(subject, credential, descending)) {
+            long skip = (long) (page - 1) * count;
+            List<Utxo> outputs = new ArrayList<>();
+            for (var next = view.next(); next.isPresent(); next = view.next()) {
+                if (skip > 0) skip--;
+                else outputs.add(next.get());
+                if (outputs.size() == count) break;
+            }
+            return outputs;
+        }
+    }
+
+    @Test
+    void orderedOverlayReadsReverseWholeSubjectBeforePagination() {
+        String address = UtxoTestAddresses.enterprise(10);
+        String other = UtxoTestAddresses.enterprise(11);
+        TransactionOutput output = TransactionOutput.builder().address(address)
+                .amounts(List.of(lovelaceAmount(1000))).build();
+        TransactionOutput neighbor = TransactionOutput.builder().address(other)
+                .amounts(List.of(lovelaceAmount(1000))).build();
+        String hash = "aa".repeat(32);
+        Block block = Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(TransactionBody.builder().txHash(hash)
+                        .outputs(List.of(output, output, output, neighbor)).build()))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(10, 1, "bb".repeat(32), block);
+
+        var asc = readUtxos(address, false, 1, 10, false);
+        assertEquals(List.of(0, 1, 2), asc.stream().map(u -> u.outpoint().index()).toList());
+        assertEquals(List.of(2, 1), readUtxos(address, false, 1, 2, true)
+                .stream().map(u -> u.outpoint().index()).toList());
+        assertEquals(List.of(0), readUtxos(address, false, 2, 2, true)
+                .stream().map(u -> u.outpoint().index()).toList());
+        assertTrue(readUtxos(address, false, Integer.MAX_VALUE, 256, true).isEmpty());
+        assertEquals(asc, store.getUtxosByAddress(address, 1, 10));
+        try (var forward = store.openUtxoReadView(address, false, false);
+             var reverse = store.openUtxoReadView(address, false, true)) {
+            assertThrows(IllegalStateException.class, () -> store.openUtxoReadView(address, false, false));
+            // Delete a live row after opening the snapshot: both the iterator and point reads stay consistent.
+            try {
+                store.getDb().delete(store.getCfUnspent(), UtxoKeyUtil.outpointKey(hash, 1));
+                assertEquals(0, forward.next().orElseThrow().outpoint().index());
+                assertEquals(1, forward.next().orElseThrow().outpoint().index());
+                assertEquals(2, reverse.next().orElseThrow().outpoint().index());
+                assertTrue(forward.getUtxo(new Outpoint(hash, 1)).isPresent());
+                assertTrue(store.getUtxo(new Outpoint(hash, 1)).isEmpty());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+            store.prepareForStorageReplacement();
+            assertThrows(IllegalStateException.class, forward::next);
+            assertThrows(IllegalStateException.class, reverse::next);
+            assertThrows(IllegalStateException.class, () -> store.openUtxoReadView(address, false, false));
+            store.reinitialize();
+        }
+        // The deleted output remains absent in new views, and stale index rows do not truncate iteration.
+        asc = readUtxos(address, false, 1, 10, false);
+        assertEquals(asc.reversed(), readUtxos(address, true, 1, 10, true));
+        String credential = HexUtil.encodeHexString(UtxoKeyUtil.paymentCred28(address));
+        assertEquals(asc.reversed(), readUtxos(credential, true, 1, 10, true));
+        assertThrows(IllegalArgumentException.class, () -> readUtxos("not-a-credential", true, 1, 10, true));
     }
 
     @Test

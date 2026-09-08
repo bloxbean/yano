@@ -43,6 +43,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private final int stabilityDepth;
     private final int maxMessagesPerOffer;
     private final long maxBytesPerOffer;
+    private final long firstObservableEpoch;
     private final BooleanSupplier scheduledProposer;
     private final Function<L1Observation, Boolean> injector;
     private final Logger log;
@@ -95,6 +96,11 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             throw new IllegalArgumentException("L1 epoch observers require snapshot retention of at least "
                     + MINIMUM_RETENTION_EPOCHS + " epochs");
         }
+        this.firstObservableEpoch = stateProvider.firstObservableEpoch();
+        if (firstObservableEpoch < 1) {
+            throw new IllegalArgumentException(
+                    "L1 epoch observer first observable epoch must be positive");
+        }
         if (stabilityDepth <= 0) {
             throw new IllegalArgumentException(
                     "L1 epoch observers require epoch-stability-depth > 0");
@@ -105,6 +111,9 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         this.stabilityDepth = stabilityDepth;
         this.maxMessagesPerOffer = maxMessagesPerOffer;
         this.maxBytesPerOffer = maxBytesPerOffer;
+        if (!spool.healthy()) {
+            this.unhealthyReason = "OBSERVATION_UNENCODABLE";
+        }
         this.executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(1), runnable -> {
                     Thread thread = new Thread(runnable,
@@ -170,6 +179,11 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             return;
         }
         latestAppliedBlockNumber.accumulateAndGet(blockNumber, Math::max);
+        if (epoch < firstObservableEpoch) {
+            lastObservedEpoch.set(-1);
+            wake();
+            return;
+        }
         long previous = lastObservedEpoch.getAndSet(epoch);
         if (previous >= 0 && epoch > previous) {
             for (long next = previous + 1; next <= epoch; next++) {
@@ -185,7 +199,8 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         pendingRollbackSlot.accumulateAndGet(rollbackToSlot, Math::min);
         pendingBoundaries.entrySet().removeIf(
                 entry -> entry.getValue().boundarySlot() > rollbackToSlot);
-        lastObservedEpoch.set(stateProvider.epochAtSlot(rollbackToSlot));
+        long rollbackEpoch = stateProvider.epochAtSlot(rollbackToSlot);
+        lastObservedEpoch.set(rollbackEpoch >= firstObservableEpoch ? rollbackEpoch : -1);
         latestAppliedBlockNumber.set(-1);
         wake();
     }
@@ -226,6 +241,19 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
 
     boolean healthy() {
         return unhealthyReason == null;
+    }
+
+    List<L1Observation> pendingForProposal(int maxMessages, long maxPayloadBytes) {
+        long latest = latestAppliedBlockNumber.get();
+        if (latest < stabilityDepth) {
+            return List.of();
+        }
+        return spool.pending(latest - stabilityDepth, maxMessages, maxPayloadBytes);
+    }
+
+    void quarantineUnencodable(L1Observation observation) {
+        spool.quarantineObservation(observation, "OBSERVATION_UNENCODABLE");
+        unhealthyReason = "OBSERVATION_UNENCODABLE";
     }
 
     private void wake() {
@@ -271,6 +299,10 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private void reconcile() {
         if (haltReason != null) {
             throw new IllegalStateException(haltReason);
+        }
+        if (!spool.healthy()) {
+            unhealthyReason = "OBSERVATION_UNENCODABLE";
+            return;
         }
         spool.reconcileFinalizedBlocks();
         long rollback = pendingRollbackSlot.getAndSet(Long.MAX_VALUE);
@@ -346,7 +378,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
                                 "L1 epoch observer emitted non-consecutive chunk indexes");
                     }
                     L1Observation encoded = L1Observation.epoch(
-                            manifest.observerId(), boundary.newEpoch(),
+                            manifest.observerId(), boundary.newEpoch(), index,
                             boundary.boundarySlot(), boundary.boundaryBlockHash(), claim);
                     if (encoded.encode().length > maxBytesPerOffer) {
                         throw new IllegalStateException(

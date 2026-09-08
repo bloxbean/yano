@@ -60,4 +60,5 @@ class DurableEpochFileSourceTest {
         assertThat(restarted.pending(10)).containsExactly(retained);
         assertThat(restarted.find(orphaned.jobId())).isEmpty();
     }
+
 }

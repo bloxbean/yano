@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValid
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
@@ -13,6 +14,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
 
 import java.util.Arrays;
 
@@ -31,6 +33,8 @@ public enum ContributionKind {
     L1_OBSERVER("l1-observer", L1ObserverProvider.class, false),
     /** App-chain epoch-boundary L1 observation provider. */
     L1_EPOCH_OBSERVER("l1-epoch-observer", L1EpochObserverProvider.class, false),
+    /** Generic external observation acquisition provider. */
+    OBSERVATION_PROVIDER("observation-provider", ObservationProviderFactory.class, false),
     /** Local signer provider factory. */
     SIGNER_PROVIDER("signer-provider", SignerProviderFactory.class, false),
     /** Local app-effect executor factory. */
@@ -41,6 +45,8 @@ public enum ContributionKind {
     DOMAIN_API("domain-api", DomainApiProvider.class, true),
     /** Lifecycle-owned node-local derived model; an owning manifest is mandatory. */
     LOCAL_READ_MODEL("local-read-model", LocalReadModelProvider.class, true),
+    /** Transactional UTxO-derived index; requires an owning manifest. */
+    UTXO_INDEX_CONTRIBUTOR("utxo-index-contributor", UtxoIndexContributorProvider.class, true),
     /** Cached health source; schema v1 requires an owning bundle manifest. */
     HEALTH("health", PluginHealthProvider.class, true),
     /** Cached custom-metrics source; schema v1 requires an owning bundle manifest. */

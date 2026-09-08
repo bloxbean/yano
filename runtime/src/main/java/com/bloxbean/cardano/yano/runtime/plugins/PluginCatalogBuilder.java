@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValid
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
@@ -20,6 +21,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginSelectionStatus;
 import com.bloxbean.cardano.yano.api.plugin.PluginTrustTier;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
@@ -936,6 +938,7 @@ final class PluginCatalogBuilder {
                 case L1_OBSERVER -> contribution.name().equals("metadata-label")
                         || contribution.name().equals("address-deposit");
                 case EFFECT_EXECUTOR -> contribution.name().equals("webhook");
+                case UTXO_INDEX_CONTRIBUTOR -> contribution.name().equals("wallet");
                 default -> false;
             };
             if (reserved) {
@@ -976,7 +979,8 @@ final class PluginCatalogBuilder {
             case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
                     SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
                     PluginTrustTier.CONSENSUS;
-            case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API, LOCAL_READ_MODEL ->
+            case SIGNER_PROVIDER, EFFECT_EXECUTOR, OBSERVATION_PROVIDER,
+                    DOMAIN_API, LOCAL_READ_MODEL, UTXO_INDEX_CONTRIBUTOR ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };
@@ -1235,11 +1239,14 @@ final class PluginCatalogBuilder {
                     case SEQUENCER_MODE -> ((SequencerModeProvider) provider).id();
                     case L1_OBSERVER -> ((L1ObserverProvider) provider).type();
                     case L1_EPOCH_OBSERVER -> ((L1EpochObserverProvider) provider).type();
+                    case OBSERVATION_PROVIDER ->
+                            ((ObservationProviderFactory) provider).type();
                     case SIGNER_PROVIDER -> ((SignerProviderFactory) provider).scheme();
                     case EFFECT_EXECUTOR -> ((AppEffectExecutorFactory) provider).scheme();
                     case FINALIZED_SINK -> ((FinalizedStreamSinkFactory) provider).scheme();
                     case DOMAIN_API -> ((DomainApiProvider) provider).id();
                     case LOCAL_READ_MODEL -> ((LocalReadModelProvider) provider).id();
+                    case UTXO_INDEX_CONTRIBUTOR -> ((UtxoIndexContributorProvider) provider).id();
                     case HEALTH -> ((PluginHealthProvider) provider).id();
                     case METRICS -> ((PluginMetricsProvider) provider).id();
                 });

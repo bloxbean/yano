@@ -51,7 +51,7 @@ class AppChainTwoNodeSmokeTest {
     void tearDown() {
         for (AppChainSubsystem subsystem : subsystems) {
             try {
-                subsystem.stop();
+                subsystem.close();
             } catch (Exception ignored) {
             }
         }
@@ -165,6 +165,9 @@ class AppChainTwoNodeSmokeTest {
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, log);
         subsystems.add(subsystem);
+        // Admit inbound callbacks before exposing protocol 100. Otherwise the peer can
+        // deliver and acknowledge the replay while this subsystem still rejects startup traffic.
+        subsystem.start();
 
         if (serverPort > 0) {
             NodeServer server = new NodeServer(serverPort,
@@ -180,7 +183,6 @@ class AppChainTwoNodeSmokeTest {
             Thread.sleep(1000);
         }
 
-        subsystem.start();
         return subsystem;
     }
 

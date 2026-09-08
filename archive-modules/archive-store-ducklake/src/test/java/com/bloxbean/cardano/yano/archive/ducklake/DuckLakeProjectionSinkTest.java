@@ -295,7 +295,7 @@ class DuckLakeProjectionSinkTest {
         try (var sink = open("epoch-gap")) {
             var gap = new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
                     com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
-                    450, 9_000, 90_000, new byte[] {7, 7}, "io", "disk write failed",
+                    450, 9_001, 9_000, 90_000, new byte[] {7, 7}, "io", "disk write failed",
                     Instant.parse("2026-08-27T00:00:00Z"));
             sink.recordEpochArtifactGap(gap);
             sink.recordEpochArtifactGap(gap);
@@ -304,7 +304,7 @@ class DuckLakeProjectionSinkTest {
                     .satisfies(stored -> assertThat(stored.sameOutcome(gap)).isTrue());
             assertThatThrownBy(() -> sink.recordEpochArtifactGap(
                     new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
-                            gap.dataset(), gap.semanticEpoch(), 9_001, 90_001, new byte[] {8},
+                            gap.dataset(), gap.semanticEpoch(), 9_002, 9_001, 90_001, new byte[] {8},
                             "capture", "different", Instant.now())))
                     .isInstanceOf(ProjectionSinkException.class)
                     .hasMessageContaining("conflicting");
@@ -340,7 +340,7 @@ class DuckLakeProjectionSinkTest {
             var right = new com.bloxbean.cardano.yano.archive.api.projection
                     .EpochArtifactGapInterval(dataset, 453, 453, 93_000, new byte[] {10},
                     93_000, new byte[] {10}, true, 450, "io");
-            var artifact = new ProjectionArtifactRef(dataset, 452, 4, 4,
+            var artifact = new ProjectionArtifactRef(dataset, 452, 4, 4, new byte[] {4, 9},
                     com.bloxbean.cardano.yano.archive.api.projection
                             .ProjectionArtifactRepresentation.STAGED_FILE,
                     "repair-452", 1, "ledger-boundary-v1/rewards",
@@ -370,6 +370,7 @@ class DuckLakeProjectionSinkTest {
     private static ProjectionArtifactRef stakeArtifact(int epoch, long block, long expectedRows) {
         return new ProjectionArtifactRef(
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE, epoch, block, block,
+                new byte[] {(byte) block, 9},
                 com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation
                         .IMMUTABLE_GENERATION,
                 "epoch-deleg-snapshot:" + epoch, 1, "ledger-boundary-v1/snapshot",
@@ -442,6 +443,23 @@ class DuckLakeProjectionSinkTest {
                     .containsExactly(new com.bloxbean.cardano.yano.archive.api.EpochRange(250, 250));
             assertThat(artifacts.leasesOpened).isEqualTo(1);
             assertThat(artifacts.leasesClosed).as("the lease is released even on success").isEqualTo(1);
+        }
+    }
+
+    @Test
+    void artifactCoverageUsesTheAnchorHashWhenOnlyTheCarrierIsInTheBatch() throws Exception {
+        try (var sink = open("artifact-anchor-before-carrier")) {
+            sink.append(simpleBatch(0, 4), NO_ARTIFACTS);
+            var artifacts = new FakeArtifacts(List.of(stakeRow(250, 4, 0)));
+            var carrierBatch = batchWith(5, 5, simpleBatch(5, 5).rows(),
+                    List.of(stakeArtifact(250, 4, 1)));
+
+            sink.append(carrierBatch, artifacts);
+
+            assertThat(sink.hasCompleteEpochArtifact(
+                    ArchiveDatasetId.EPOCH_STAKE,
+                    250, 4, new byte[] {4, 9})).isTrue();
+            assertThat(count("epoch_stakes")).isEqualTo(1);
         }
     }
 
@@ -528,6 +546,7 @@ class DuckLakeProjectionSinkTest {
                             UUID.nameUUIDFromBytes("pot".getBytes()))));
             var artifact = new ProjectionArtifactRef(
                     com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT, 250, 4, 4,
+                    new byte[] {9},
                     com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation
                             .ATOMIC_EVIDENCE, "ada-pot:250", 1, "ledger-boundary-v1/final",
                     java.util.OptionalLong.of(1), "", -1L, new byte[8 * Long.BYTES]);

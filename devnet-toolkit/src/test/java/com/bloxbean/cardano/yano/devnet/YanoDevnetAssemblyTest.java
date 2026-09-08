@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.devnet;
 
 import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
+import com.bloxbean.cardano.yano.api.MempoolAdminGateway;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
@@ -42,6 +43,8 @@ class YanoDevnetAssemblyTest {
             assertNotSame(DomainApiGateway.empty(), node.domainApis());
             assertNotSame(MempoolQueryGateway.UNAVAILABLE, node.mempoolQueryGateway());
             assertSame(node.txEvaluationGateway(), node.mempoolQueryGateway());
+            assertNotSame(MempoolAdminGateway.UNAVAILABLE, node.mempoolAdminGateway());
+            assertSame(node.txEvaluationGateway(), node.mempoolAdminGateway());
         } finally {
             node.close();
         }

@@ -78,6 +78,11 @@ quarkus:
       info-title: "Yano Admin API"
       info-version: "${quarkus.application.version:0.1.0}"
       info-description: "Node lifecycle, plugin operations and diagnostics"
+    history:
+      scan-profiles: history
+      info-title: "Yano History API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Historical projection archive coverage and maintenance"
   swagger-ui:
     always-include: ${YANO_SWAGGER_UI_ENABLED:true}
     path: /q/swagger-ui
@@ -87,6 +92,7 @@ quarkus:
       "App Chain API": /q/openapi-app-chain
       "Devnet API": /q/openapi-devnet
       "Admin API": /q/openapi-admin
+      "History API": /q/openapi-history
       "All APIs": /q/openapi
     urls-primary-name: "Core API"
   banner:
@@ -98,6 +104,11 @@ yaci:
     enabled: true
 
 yano:
+  # Privileged local mempool eviction; never enabled automatically by the wallet profile.
+  mempool:
+    admin:
+      enabled: false
+      # Set yano.mempool.admin.api-key / YANO_MEMPOOL_ADMIN_API_KEY explicitly.
   plugins:
     enabled: true
     directory: plugins
@@ -218,6 +229,8 @@ yano:
     # L1 observers (ADR 008.4 I3.2): deterministic L1-fact injection on ~l1/<id>.
     # MUST be configured identically on EVERY member (followers verify each
     # observation against their own recomputation before voting — fail-closed):
+    # observation:
+    #   l1-network-genesis-id: "<64 hex chars>"          # required with observers
     # observers:
     #   deposits:
     #     type: address-deposit                           # watch payments to an address
@@ -303,6 +316,13 @@ yano:
     block-body-prune-depth: 0          # blocks to retain (0 = disabled)
     block-prune-batch-size: 500000     # entries per prune pass
     block-prune-interval-seconds: 300
+  # Optional wallet indexes. Complete coverage requires enabling before initial sync.
+  address-first-seen:
+    enabled: false
+  scan:
+    index:
+      enabled: false
+    max-concurrent: 2
   filters:
     utxo:
       enabled: false

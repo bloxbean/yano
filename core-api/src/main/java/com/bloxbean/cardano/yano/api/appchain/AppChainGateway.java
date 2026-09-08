@@ -28,6 +28,16 @@ public interface AppChainGateway {
      */
     String submit(String topic, byte[] body);
 
+    /** Queue a canonical, externally signed observation report; never an ordinary app message. */
+    default String submitObservationReport(byte[] report) {
+        throw new IllegalStateException("External observation ingress is unavailable");
+    }
+
+    /** Best-effort local acquisition hint; never creates work or changes committed scheduling. */
+    default void wakeObservation(byte[] subscriptionId) {
+        throw new IllegalStateException("Observation wake hints unavailable");
+    }
+
     /**
      * Validate and member-sign a state-machine-owned reserved-topic command.
      * Exposed only through privileged operator surfaces; implementations fail
@@ -396,19 +406,6 @@ public interface AppChainGateway {
      */
     default java.util.Map<String, Object> bootstrapScriptAnchor() {
         throw new IllegalStateException("Script anchoring is not supported by this node");
-    }
-
-    /**
-     * Operator escape hatch (stale-lock runbook, ADR 008.2/I4.2): clear THIS
-     * member's vote lock at the pending height so it may vote once more
-     * there. Refused while the locked round is still recoverable. Run only
-     * after confirming no conflicting certificate exists on ANY member — the
-     * at-most-one-vote guarantee is consciously overridden under operator
-     * supervision.
-     * @return true if a stale lock was cleared
-     */
-    default boolean unlockStaleRound() {
-        throw new IllegalStateException("Sequencing is not enabled on this node");
     }
 
     // ------------------------------------------------------------------

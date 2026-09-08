@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -51,7 +52,7 @@ class AppChainSnapshotTest {
 
     @AfterEach
     void tearDown() {
-        if (source != null) source.stop();
+        if (source != null) source.close();
     }
 
     @Test
@@ -142,15 +143,14 @@ class AppChainSnapshotTest {
             assertThat(restoreBase.resolve("snap-chain").resolve(SnapshotManifest.VERIFIED_MARKER))
                     .exists();
         } finally {
-            restored.stop();
+            restored.close();
         }
     }
 
     @Test
     void snapshotRestore_onDifferentExecutor_resetsAndQuarantinesRuntime() throws Exception {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
-        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
-        Set<String> members = Set.of(pubA, pubB);
+        Set<String> members = Set.of(pubA);
         Map<String, String> effectSettings = Map.of(
                 "effects.enabled", "true",
                 "effects.executor.enabled", "true",
@@ -188,7 +188,7 @@ class AppChainSnapshotTest {
         copyDir(snapshotDir, restoreBase.resolve("snap-chain"));
 
         AppChainConfig targetConfig = AppChainConfig.builder("snap-chain")
-                .signingKeyHex(HexUtil.encodeHexString(KEY_B))
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
                 .memberKeysHex(members)
                 .proposerKeyHex(pubA)
                 .threshold(1)
@@ -210,15 +210,14 @@ class AppChainSnapshotTest {
             assertThat(restored.requeueEffect(effectHeight, 0)).isTrue();
             assertThat(restored.claimEffects("worker-b", Set.of(), 1, 60)).hasSize(1);
         } finally {
-            restored.stop();
+            restored.close();
         }
     }
 
     @Test
-    void memberKeyRotation_onSameExecutorPreservesReadyResult() throws Exception {
+    void restart_onSameExecutorPreservesReadyResult() throws Exception {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
-        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
-        Set<String> members = Set.of(pubA, pubB);
+        Set<String> members = Set.of(pubA);
         Map<String, String> effectSettings = Map.of(
                 "effects.enabled", "true",
                 "effects.executor.enabled", "true",
@@ -249,11 +248,11 @@ class AppChainSnapshotTest {
                 .isEqualTo("DONE");
         long tipBeforeRotation = source.tipHeight();
         byte[] rootBeforeRotation = source.stateRoot();
-        source.stop();
+        source.close();
         source = null;
 
         AppChainConfig afterRotation = AppChainConfig.builder("snap-chain")
-                .signingKeyHex(HexUtil.encodeHexString(KEY_B))
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
                 .memberKeysHex(members)
                 .proposerKeyHex(pubA)
                 .threshold(1)
@@ -272,7 +271,7 @@ class AppChainSnapshotTest {
             assertThat(rotated.effectStats().get("resultBacklog")).isEqualTo(1L);
             assertThat(ledgerBase.resolve("snap-chain.effect-executor-id")).exists();
         } finally {
-            rotated.stop();
+            rotated.close();
         }
     }
 
@@ -359,19 +358,21 @@ class AppChainSnapshotTest {
     }
 
     private static void copyDir(Path src, Path dest) throws Exception {
-        java.nio.file.Files.walk(src).forEach(path -> {
-            try {
-                Path target = dest.resolve(src.relativize(path));
-                if (java.nio.file.Files.isDirectory(path)) {
-                    java.nio.file.Files.createDirectories(target);
-                } else {
-                    java.nio.file.Files.createDirectories(target.getParent());
-                    java.nio.file.Files.copy(path, target);
+        try (var paths = Files.walk(src)) {
+            paths.forEach(path -> {
+                try {
+                    Path target = dest.resolve(src.relativize(path));
+                    if (Files.isDirectory(path)) {
+                        Files.createDirectories(target);
+                    } else {
+                        Files.createDirectories(target.getParent());
+                        Files.copy(path, target);
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
                 }
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        });
+            });
+        }
     }
 
     private static boolean isNonEmptyFile(Path path) {

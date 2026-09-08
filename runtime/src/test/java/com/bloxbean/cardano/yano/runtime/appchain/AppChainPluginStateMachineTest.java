@@ -41,7 +41,7 @@ class AppChainPluginStateMachineTest {
     @AfterEach
     void tearDown() {
         if (node != null) {
-            node.stop();
+            node.close();
         }
     }
 

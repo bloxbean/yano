@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Threshold signature certificate over an app block hash. A block is APP_FINAL
+ * Threshold signature certificate over the domain-separated commit digest. A block is APP_FINAL
  * once its cert carries signatures from at least the configured threshold of
  * distinct group members. Every signature is verified against the membership
  * registry — no trust-by-mode shortcuts (ADR app-layer/005 D2).
@@ -28,6 +28,18 @@ public record FinalityCert(int scheme, List<Signature> signatures) {
         public Signature {
             Objects.requireNonNull(signer, "signer");
             Objects.requireNonNull(signature, "signature");
+            signer = signer.clone();
+            signature = signature.clone();
+        }
+
+        @Override
+        public byte[] signer() {
+            return signer.clone();
+        }
+
+        @Override
+        public byte[] signature() {
+            return signature.clone();
         }
     }
 }

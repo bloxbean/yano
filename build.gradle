@@ -274,6 +274,7 @@ tasks.register('verifyLegacyAccountHistoryRemoved') {
         fileTree(rootProject.projectDir) {
             include '**/src/main/**/*.java'
             exclude '**/build/**'
+            exclude '.claude/worktrees/**'
         }.files.each { source ->
             def text = source.getText('UTF-8')
             forbiddenTokens.each { token ->
@@ -336,6 +337,7 @@ tasks.register('verifyLegacyHistoryReplayRemoved') {
         fileTree(rootProject.projectDir) {
             include '**/src/main/**/*.java'
             exclude '**/build/**'
+            exclude '.claude/worktrees/**'
         }.files.each { source ->
             def text = source.getText('UTF-8')
             forbiddenTokens.each { token ->
@@ -426,7 +428,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['app', 'console-ui', 'yano-bom', 'archive-modules'] as Set
+def nonLibraryModules = ['app', 'console-ui', 'yano-bom', 'archive-modules', 'utxo-output-index-example'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)

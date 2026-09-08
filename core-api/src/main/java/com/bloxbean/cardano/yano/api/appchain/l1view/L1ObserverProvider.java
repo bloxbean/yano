@@ -16,6 +16,17 @@ public interface L1ObserverProvider {
     String type();
 
     /**
+     * Returns the complete deterministic identity for this configured observer.
+     * Operational endpoints, credentials, paths, retry, and timeout settings
+     * must not affect observation output and therefore must not be included.
+     */
+    default L1ObserverConsensusIdentity consensusIdentity(
+            String observerId, Map<String, String> settings) {
+        throw new UnsupportedOperationException(
+                "Custom L1 observer providers must declare a consensus identity");
+    }
+
+    /**
      * @param observerId the configured instance id (config key segment)
      * @param settings   the {@code observers.<id>.*} settings (key = suffix)
      * @return a fresh observer owned by this configured instance; it must not

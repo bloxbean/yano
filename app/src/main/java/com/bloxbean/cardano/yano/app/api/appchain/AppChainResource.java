@@ -2,10 +2,13 @@ package com.bloxbean.cardano.yano.app.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockHeader;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.bloxbean.cardano.yano.api.appchain.PoolFullException;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationReport;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentImplementations;
@@ -35,6 +38,8 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -359,13 +364,6 @@ public class AppChainResource {
         return singleChain().bootstrapScriptAnchor();
     }
 
-    @POST
-    @Operation(hidden = true)
-    @Path("admin/unlock-stale-round")
-    public Response unlockStaleRound() {
-        return singleChain().unlockStaleRound();
-    }
-
     @GET
     @Operation(hidden = true)
     @Path("stream")
@@ -545,6 +543,49 @@ public class AppChainResource {
                     return (String) context.handleUnexpectedToken(String.class, parser);
                 }
                 return parser.getText();
+            }
+        }
+
+        @POST
+        @Path("observations/reports")
+        @Consumes(MediaType.APPLICATION_OCTET_STREAM)
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+        public Response observationReport(InputStream input) {
+            if (input == null) return badRequest("Canonical signed report bytes are required");
+            try {
+                byte[] body = input.readNBytes(ObservationReport.MAX_ENCODED_BYTES + 1);
+                if (body.length > ObservationReport.MAX_ENCODED_BYTES) {
+                    return Response.status(413).entity(Map.of("error", "Observation report too large")).build();
+                }
+                String digest = gateway.submitObservationReport(body);
+                return Response.accepted(Map.of("reportDigest", digest, "status", "QUEUED",
+                        "chainId", gateway.chainId())).build();
+            } catch (PoolFullException busy) {
+                return Response.status(429).entity(Map.of("error", busy.getMessage())).build();
+            } catch (IllegalArgumentException | IOException malformed) {
+                return badRequest("Invalid observation report");
+            } catch (IllegalStateException unavailable) {
+                return Response.status(503).entity(Map.of("error", "Observation ingress unavailable")).build();
+            }
+        }
+
+        @POST
+        @Path("observations/wake")
+        @Consumes(MediaType.APPLICATION_OCTET_STREAM)
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+        public Response observationWake(InputStream input) {
+            if (input == null) return badRequest("A subscription ID is required");
+            try {
+                byte[] id = input.readNBytes(33);
+                if (id.length != 32) return badRequest("Expected exactly 32 subscription ID bytes");
+                gateway.wakeObservation(id);
+                return Response.accepted(Map.of("status", "HINT_ACCEPTED", "chainId", gateway.chainId())).build();
+            } catch (PoolFullException busy) {
+                return Response.status(429).entity(Map.of("error", "Observation hint ingress busy")).build();
+            } catch (IllegalArgumentException | IOException malformed) {
+                return badRequest("Invalid observation hint");
+            } catch (IllegalStateException unavailable) {
+                return Response.status(503).entity(Map.of("error", "Observation ingress unavailable")).build();
             }
         }
 
@@ -1244,23 +1285,6 @@ public class AppChainResource {
                 Map<String, Object> result = new java.util.LinkedHashMap<>(gateway.bootstrapScriptAnchor());
                 result.put("chainId", gateway.chainId());
                 return Response.accepted(result).build();
-            } catch (IllegalStateException e) {
-                throw jsonError(Response.Status.CONFLICT, e.getMessage());
-            }
-        }
-
-        /**
-         * Operator escape hatch (stale-lock runbook, ADR 008.2/I4.2): clear
-         * this member's vote lock at the pending height when the locked
-         * proposal is unrecoverable. Run ONLY after confirming no conflicting
-         * certificate exists on any member.
-         */
-        @POST
-        @Path("admin/unlock-stale-round")
-        public Response unlockStaleRound() {
-            try {
-                boolean unlocked = gateway.unlockStaleRound();
-                return Response.ok(Map.of("chainId", gateway.chainId(), "unlocked", unlocked)).build();
             } catch (IllegalStateException e) {
                 throw jsonError(Response.Status.CONFLICT, e.getMessage());
             }
@@ -2221,6 +2245,11 @@ public class AppChainResource {
             result.put("messagesRoot", HexUtil.encodeHexString(block.messagesRoot()));
             result.put("stateRoot", HexUtil.encodeHexString(block.stateRoot()));
             result.put("blockHash", HexUtil.encodeHexString(blockHash));
+            AppBlockHeader header = AppBlockHeader.from(block);
+            result.put("view", header.view());
+            result.put("consensusContextDigest", HexUtil.encodeHexString(header.consensusContextDigest()));
+            result.put("proposer", HexUtil.encodeHexString(header.proposer()));
+            result.put("justificationDigest", HexUtil.encodeHexString(header.justificationDigest()));
             return result;
         }
 

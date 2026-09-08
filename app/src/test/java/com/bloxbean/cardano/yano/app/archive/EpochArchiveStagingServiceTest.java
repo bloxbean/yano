@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.core.dataset.DrepDistributionFact;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
@@ -29,12 +30,15 @@ class EpochArchiveStagingServiceTest {
     void onlyCompletedBoundaryIsRestartVisibleAndFailedBoundaryIsDiscarded() {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(9)).thenReturn(Optional.of(
+                new CanonicalBlockReference(9, 99, new byte[] {1, 2, 3})));
         when(chain.getCanonicalBlockReference(10)).thenReturn(Optional.of(
-                new CanonicalBlockReference(10, 100, new byte[] {1, 2, 3})));
+                new CanonicalBlockReference(10, 109, new byte[] {4, 5, 6})));
         when(chain.getCanonicalBlockReference(11)).thenReturn(Optional.of(
-                new CanonicalBlockReference(11, 110, new byte[] {4, 5, 6})));
-        when(chain.getCanonicalBlockReference(12)).thenReturn(Optional.of(
-                new CanonicalBlockReference(12, 120, new byte[] {7, 8, 9})));
+                new CanonicalBlockReference(11, 119, new byte[] {7, 8, 9})));
+        when(ledger.slotToUnixTime(99)).thenReturn(1_700_000_000L);
+        when(ledger.slotToUnixTime(109)).thenReturn(1_700_000_010L);
+        when(ledger.slotToUnixTime(119)).thenReturn(1_700_000_020L);
         when(ledger.slotToUnixTime(100)).thenReturn(1_700_000_000L);
         when(ledger.slotToUnixTime(110)).thenReturn(1_700_000_010L);
         when(ledger.slotToUnixTime(120)).thenReturn(1_700_000_020L);
@@ -92,9 +96,9 @@ class EpochArchiveStagingServiceTest {
     void virtualDrepsUseNullableCredentialsAndSurviveDurableCodec() {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
-        when(chain.getCanonicalBlockReference(20)).thenReturn(Optional.of(
-                new CanonicalBlockReference(20, 200, new byte[] {1, 2, 3})));
-        when(ledger.slotToUnixTime(200)).thenReturn(1_700_000_000L);
+        when(chain.getCanonicalBlockReference(19)).thenReturn(Optional.of(
+                new CanonicalBlockReference(19, 199, new byte[] {1, 2, 3})));
+        when(ledger.slotToUnixTime(199)).thenReturn(1_700_000_000L);
         var staging = new EpochArchiveStagingService(chain, ledger,
                 new ArchiveNetworkIdentity(1, "genesis"), temp,
                 EnumSet.of(EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION), 0);
@@ -120,15 +124,130 @@ class EpochArchiveStagingServiceTest {
     }
 
     @Test
+    void producerBoundaryUsesCanonicalPredecessorAndIsRestartSafeUntilCarrierArrives() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        byte[] anchorHash = new byte[] {2, 4};
+        when(chain.getCanonicalBlockReference(24)).thenReturn(Optional.of(
+                new CanonicalBlockReference(24, 240, anchorHash)));
+        when(chain.getCanonicalBlockReference(25)).thenReturn(Optional.empty());
+        when(ledger.slotToUnixTime(240)).thenReturn(1_700_000_240L);
+        var network = new ArchiveNetworkIdentity(1, "genesis");
+        var enabled = EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD);
+        Path root = temp.resolve("local");
+        var staging = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        var boundary = new EpochArchiveStagingSink.Boundary(5, 6, 250, 25);
+
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openRewards(6, "rewards")) {
+            writer.append(new EpochArchiveStagingSink.RewardFact(
+                    0, "01", null, "member", 5, 6, BigInteger.TEN, "local"));
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        assertThat(staging.sources().stream()
+                .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())).singleElement()
+                .satisfies(job -> {
+                    assertThat(job.boundaryBlockNumber()).isEqualTo(24);
+                    assertThat(job.boundarySlot()).isEqualTo(240);
+                    assertThat(job.boundaryBlockHash()).containsExactly(anchorHash);
+                });
+        assertThat(staging.hasCompletedCarrier(25)).isTrue();
+
+        var restarted = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        var completed = restarted.completedArtifacts(25);
+        assertThat(completed).singleElement().satisfies(artifact -> {
+            assertThat(artifact.job().boundaryBlockHash()).containsExactly(anchorHash);
+            assertThat(artifact.evidence().rowCount()).isEqualTo(1);
+        });
+        var job = completed.getFirst().job();
+        restarted.release(job.dataset(), job.jobId());
+
+        assertThat(restarted.sources().stream()
+                .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())).isEmpty();
+        assertThat(root.resolve("completed/6-24.properties")).doesNotExist();
+    }
+
+    @Test
+    void chunkedPoolReapEvidenceIsDiscoveredAfterRestart() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        byte[] anchorHash = new byte[] {3, 7};
+        when(chain.getCanonicalBlockReference(36)).thenReturn(Optional.of(
+                new CanonicalBlockReference(36, 360, anchorHash)));
+        when(ledger.slotToUnixTime(360)).thenReturn(1_700_000_360L);
+        var network = new ArchiveNetworkIdentity(1, "genesis");
+        var enabled = EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD);
+        Path root = temp.resolve("chunked-pool-reap");
+        var staging = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        var boundary = new EpochArchiveStagingSink.Boundary(6, 7, 370, 37);
+
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openRewards(7, "pool-reap-000003")) {
+            writer.append(new EpochArchiveStagingSink.RewardFact(
+                    0, "01", "02", "refund", 6, 7, BigInteger.TEN, "pool-reap-test"));
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        var stagedArtifact = staging.completedArtifacts(37).getFirst();
+        assertThat(stagedArtifact.job().sourceReference())
+                .isEqualTo("REWARD/pool-reap-000003/7");
+
+        var restarted = new EpochArchiveStagingService(chain, ledger, network, root, enabled, 0);
+        assertThat(restarted.completedArtifacts(37)).singleElement().satisfies(artifact -> {
+            assertThat(artifact.job().jobId()).isEqualTo(stagedArtifact.job().jobId());
+            assertThat(artifact.evidence().rowCount()).isEqualTo(1);
+        });
+        assertThat(restarted.present(ArchiveDatasetId.REWARD, stagedArtifact.job().jobId())).isTrue();
+
+        assertThat(restarted.discardAfterBlock(35)).isEqualTo(1);
+        assertThat(restarted.present(ArchiveDatasetId.REWARD, stagedArtifact.job().jobId())).isFalse();
+        Path partDirectory = root.resolve("reward/pool-reap-000003");
+        assertThat(partDirectory.resolve(stagedArtifact.job().jobId() + ".rows")).doesNotExist();
+        assertThat(partDirectory.resolve(stagedArtifact.job().jobId() + ".properties")).doesNotExist();
+        assertThat(root.resolve("completed/7-36.properties")).doesNotExist();
+    }
+
+    @Test
+    void skippedEpochsKeepIndependentCompletionMarkersOnOneAnchorAndCarrier() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(24)).thenReturn(Optional.of(
+                new CanonicalBlockReference(24, 240, new byte[] {2, 4})));
+        when(ledger.slotToUnixTime(240)).thenReturn(1_700_000_240L);
+        Path root = temp.resolve("skipped");
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), root,
+                EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD), 0);
+
+        var first = new EpochArchiveStagingSink.Boundary(5, 6, 250, 25);
+        staging.beginBoundary(first);
+        try (var writer = staging.openRewards(6, "rewards")) { writer.commit(); }
+        staging.completeBoundary(first);
+
+        var second = new EpochArchiveStagingSink.Boundary(6, 7, 250, 25);
+        staging.beginBoundary(second);
+        try (var writer = staging.openRewards(7, "rewards")) { writer.commit(); }
+        staging.completeBoundary(second);
+
+        assertThat(staging.completedArtifacts(25)).hasSize(2)
+                .extracting(artifact -> artifact.job().epoch()).containsExactlyInAnyOrder(6L, 7L);
+        assertThat(root.resolve("completed/6-24.properties")).exists();
+        assertThat(root.resolve("completed/7-24.properties")).exists();
+    }
+
+    @Test
     void rollbackDiscardsSameEpochReplacementByBoundaryBlockAndIgnoresTmpMarkers() throws Exception {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(29)).thenReturn(Optional.of(
+                new CanonicalBlockReference(29, 299, new byte[] {3})));
         when(chain.getCanonicalBlockReference(30)).thenReturn(Optional.of(
-                new CanonicalBlockReference(30, 300, new byte[] {3})));
-        when(chain.getCanonicalBlockReference(31)).thenReturn(Optional.of(
-                new CanonicalBlockReference(31, 310, new byte[] {4})));
-        when(ledger.slotToUnixTime(300)).thenReturn(1_700_000_000L);
-        when(ledger.slotToUnixTime(310)).thenReturn(1_700_000_010L);
+                new CanonicalBlockReference(30, 309, new byte[] {4})));
+        when(ledger.slotToUnixTime(299)).thenReturn(1_700_000_000L);
+        when(ledger.slotToUnixTime(309)).thenReturn(1_700_000_010L);
         var enabled = EnumSet.of(EpochArchiveStagingSink.Dataset.EPOCH_STAKE);
         var staging = new EpochArchiveStagingService(chain, ledger,
                 new ArchiveNetworkIdentity(1, "genesis"), temp, enabled, 0);
@@ -138,12 +257,34 @@ class EpochArchiveStagingServiceTest {
 
         var restarted = new EpochArchiveStagingService(chain, ledger,
                 new ArchiveNetworkIdentity(1, "genesis"), temp, enabled, 0);
-        assertThat(restarted.discardAfterBlock(30)).isEqualTo(1);
+        assertThat(restarted.discardAfterBlock(29)).isEqualTo(1);
         var binding = restarted.sources().iterator().next();
         assertThat(restarted.pending(binding, 10)).singleElement()
                 .extracting(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob::boundaryBlockNumber)
-                .isEqualTo(30L);
+                .isEqualTo(29L);
         assertThat(temp.resolve("completed").resolve("orphan.tmp")).doesNotExist();
+    }
+
+    @Test
+    void rollbackKeepsAnchorAtTargetButDiscardsAnAnchorFromTheRolledBackFork() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        byte[] hash = {3};
+        when(chain.getCanonicalBlockReference(29)).thenReturn(Optional.of(
+                new CanonicalBlockReference(29, 299, hash)));
+        when(ledger.slotToUnixTime(299)).thenReturn(1_700_000_299L);
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("point-rollback"),
+                EnumSet.of(EpochArchiveStagingSink.Dataset.REWARD), 0);
+        var boundary = new EpochArchiveStagingSink.Boundary(4, 5, 300, 30);
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openRewards(5, "rewards")) { writer.commit(); }
+        staging.completeBoundary(boundary);
+
+        assertThat(staging.discardAfterPoint(299, hash, false)).isZero();
+        assertThat(staging.completedArtifacts(30)).hasSize(1);
+        assertThat(staging.discardAfterPoint(299, new byte[] {4}, false)).isEqualTo(1);
+        assertThat(staging.completedArtifacts(30)).isEmpty();
     }
 
     @Test
@@ -179,9 +320,9 @@ class EpochArchiveStagingServiceTest {
 
         var firstShelleySourceBoundary = new EpochArchiveStagingSink.Boundary(
                 208, 209, 4_924_800, 4_512_067);
-        when(chain.getCanonicalBlockReference(4_512_067)).thenReturn(Optional.of(
-                new CanonicalBlockReference(4_512_067, 4_924_800, new byte[] {1, 2, 3})));
-        when(ledger.slotToUnixTime(4_924_800)).thenReturn(1_598_402_851L);
+        when(chain.getCanonicalBlockReference(4_512_066)).thenReturn(Optional.of(
+                new CanonicalBlockReference(4_512_066, 4_924_799, new byte[] {1, 2, 3})));
+        when(ledger.slotToUnixTime(4_924_799)).thenReturn(1_598_402_851L);
 
         staging.beginBoundary(firstShelleySourceBoundary);
         assertThat(staging.enabled(EpochArchiveStagingSink.Dataset.REWARD)).isTrue();
@@ -193,7 +334,7 @@ class EpochArchiveStagingServiceTest {
         staging.completeBoundary(firstShelleySourceBoundary);
 
         assertThat(staging.error()).isEmpty();
-        assertThat(root.resolve("completed").resolve("4512067.properties")).exists();
+        assertThat(root.resolve("completed").resolve("209-4512066.properties")).exists();
         assertThat(staging.sources().stream()
                 .flatMap(binding -> staging.pending(binding, 10).stream()))
                 .hasSize(1);
@@ -251,9 +392,9 @@ class EpochArchiveStagingServiceTest {
     void prospectiveEnrollmentDoesNotStageBeforeProjectedFromEpoch() throws Exception {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
-        when(chain.getCanonicalBlockReference(501)).thenReturn(Optional.of(
-                new CanonicalBlockReference(501, 50_100, new byte[] {5, 0, 1})));
-        when(ledger.slotToUnixTime(50_100)).thenReturn(1_700_000_500L);
+        when(chain.getCanonicalBlockReference(500)).thenReturn(Optional.of(
+                new CanonicalBlockReference(500, 50_099, new byte[] {5, 0, 1})));
+        when(ledger.slotToUnixTime(50_099)).thenReturn(1_700_000_500L);
         var dataset = EpochArchiveStagingSink.Dataset.REWARD;
         var staging = new EpochArchiveStagingService(chain, ledger,
                 new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("joined"),
@@ -285,24 +426,20 @@ class EpochArchiveStagingServiceTest {
     void selectedDatasetWithNoProducerRowsPublishesZeroRowCompleteEvidence() {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
-        when(chain.getCanonicalBlockReference(550)).thenReturn(Optional.of(
-                new CanonicalBlockReference(550, 55_000, new byte[] {5, 5, 0})));
-        when(ledger.slotToUnixTime(55_000)).thenReturn(1_700_000_550L);
+        when(chain.getCanonicalBlockReference(549)).thenReturn(Optional.of(
+                new CanonicalBlockReference(549, 54_999, new byte[] {5, 5, 0})));
+        when(ledger.slotToUnixTime(54_999)).thenReturn(1_700_000_550L);
         var reward = EpochArchiveStagingSink.Dataset.REWARD;
         var staging = new EpochArchiveStagingService(chain, ledger,
                 new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("zero-row"),
                 EnumSet.of(reward), 0, java.util.Map.of(reward, 550));
-        var announced = new java.util.ArrayList<
-                com.bloxbean.cardano.yano.archive.core.source.DurableEpochFileSource.StagedEvidence>();
-        staging.setStagedArtifactListener((job, evidence) -> announced.add(evidence));
-
         var boundary = new EpochArchiveStagingSink.Boundary(549, 550, 55_000, 550);
         staging.beginBoundary(boundary);
         // Deliberately do not open a reward writer: this is the legitimate empty-producer path.
         staging.completeBoundary(boundary);
 
-        assertThat(announced).singleElement().satisfies(evidence ->
-                assertThat(evidence.rowCount()).isZero());
+        assertThat(staging.completedArtifacts(550)).singleElement().satisfies(artifact ->
+                assertThat(artifact.evidence().rowCount()).isZero());
         assertThat(staging.sources().stream()
                 .flatMap(binding -> staging.pending(binding, 10).stream())
                 .map(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob::epoch))
@@ -317,22 +454,16 @@ class EpochArchiveStagingServiceTest {
     }
 
     @Test
-    void fastAcknowledgementBeforeBoundaryCompletionDoesNotCreateDuplicateZeroEvidence() {
+    void completedEvidenceIsReleasedOnlyAfterCarrierAcknowledgement() {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
-        when(chain.getCanonicalBlockReference(551)).thenReturn(Optional.of(
-                new CanonicalBlockReference(551, 55_100, new byte[] {5, 5, 1})));
-        when(ledger.slotToUnixTime(55_100)).thenReturn(1_700_000_551L);
+        when(chain.getCanonicalBlockReference(550)).thenReturn(Optional.of(
+                new CanonicalBlockReference(550, 55_099, new byte[] {5, 5, 1})));
+        when(ledger.slotToUnixTime(55_099)).thenReturn(1_700_000_551L);
         var reward = EpochArchiveStagingSink.Dataset.REWARD;
         var staging = new EpochArchiveStagingService(chain, ledger,
                 new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("fast-ack"),
                 EnumSet.of(reward), 0, java.util.Map.of(reward, 551));
-        var announced = new java.util.ArrayList<java.util.UUID>();
-        staging.setStagedArtifactListener((job, evidence) -> {
-            announced.add(job.jobId());
-            staging.release(job.dataset(), job.jobId());
-        });
-
         var boundary = new EpochArchiveStagingSink.Boundary(550, 551, 55_100, 551);
         staging.beginBoundary(boundary);
         try (var writer = staging.openRewards(551, "rewards")) {
@@ -340,20 +471,21 @@ class EpochArchiveStagingServiceTest {
         }
         staging.completeBoundary(boundary);
 
-        assertThat(announced).hasSize(1);
+        var artifact = staging.completedArtifacts(551).getFirst();
+        staging.release(artifact.job().dataset(), artifact.job().jobId());
         assertThat(staging.sources().stream()
                 .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())).isEmpty();
-        assertThat(temp.resolve("fast-ack/completed/551.properties")).doesNotExist();
+        assertThat(temp.resolve("fast-ack/completed/551-550.properties")).doesNotExist();
     }
 
     @Test
     void datasetFailurePausesOnlyThatDatasetAndExplicitResumeKeepsFutureCapturePossible() {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(599)).thenReturn(Optional.of(
+                new CanonicalBlockReference(599, 59_999, new byte[] {6})));
         when(chain.getCanonicalBlockReference(600)).thenReturn(Optional.of(
-                new CanonicalBlockReference(600, 60_000, new byte[] {6})));
-        when(chain.getCanonicalBlockReference(601)).thenReturn(Optional.of(
-                new CanonicalBlockReference(601, 60_100, new byte[] {7})));
+                new CanonicalBlockReference(600, 60_099, new byte[] {7})));
         when(ledger.slotToUnixTime(org.mockito.ArgumentMatchers.anyLong())).thenReturn(1_700_000_600L);
         var rewards = EpochArchiveStagingSink.Dataset.REWARD;
         var dreps = EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION;
@@ -397,8 +529,8 @@ class EpochArchiveStagingServiceTest {
     void sharedBoundaryFailureRecordsEveryDatasetPreciselyWithoutLegacyMarker() throws Exception {
         ChainQuery chain = mock(ChainQuery.class);
         LedgerQuery ledger = mock(LedgerQuery.class);
-        when(chain.getCanonicalBlockReference(700)).thenReturn(Optional.of(
-                new CanonicalBlockReference(700, 70_000, new byte[] {7})));
+        when(chain.getCanonicalBlockReference(699)).thenReturn(Optional.of(
+                new CanonicalBlockReference(699, 69_999, new byte[] {7})));
         when(ledger.slotToUnixTime(70_000)).thenReturn(1_700_000_700L);
         var rewards = EpochArchiveStagingSink.Dataset.REWARD;
         var dreps = EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION;

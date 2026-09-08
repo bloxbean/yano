@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationProfileV1;
+import com.bloxbean.cardano.yano.api.appchain.observation.ObservationTopics;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerContext;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
@@ -20,6 +22,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -39,6 +42,44 @@ class AppChainEngineIdentityValidationTest {
 
     private static final String CHAIN = "identity-chain";
     private static final String FOREIGN_CHAIN = "foreign-chain";
+
+    @Test
+    void oversizedEarlierObservationEnvelopeNeverSkipsToSmallerLaterResult(
+            @TempDir Path directory) throws Exception {
+        AppMessageSigner signer = new AppMessageSigner(HexUtil.encodeHexString(filled(31)));
+        Set<String> members = Set.of(signer.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(31)))
+                .memberKeysHex(members).proposerKeyHex(signer.publicKeyHex()).threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF).build();
+        Logger logger = mock(Logger.class);
+        try (AppLedgerStore ledger = new AppLedgerStore(directory.resolve("ledger").toString(), logger)) {
+            AppChainEngine engine = new AppChainEngine(config, ledger, new AppMsgPool(10),
+                    new NoOpMachine(), signer, new MemberGroup(members, 1), new AlwaysSequencer(),
+                    60_000, 10, config.blockMaxBytes(), (topic, body) -> null, logger);
+            try {
+                // Exercise envelope fitting only, not certificate parsing or consensus validity.
+                AppMessage large = signedMessage(signer, CHAIN, ObservationTopics.RESULT,
+                        new byte[Math.toIntExact(config.blockMaxBytes())], 1);
+                AppMessage small = signedMessage(signer, CHAIN, ObservationTopics.RESULT, new byte[]{1}, 2);
+                AppMessage later = signedMessage(signer, CHAIN, ObservationTopics.RESULT, new byte[]{2}, 3);
+                Method fit = AppChainEngine.class.getDeclaredMethod("fitToBlockBytes", long.class,
+                        byte[].class, AppChainEngine.L1Ref.class, long.class, List.class, int.class);
+                fit.setAccessible(true);
+                List<AppMessage> retained = List.of(large, small);
+                assertThat((List<?>) fit.invoke(engine, 1L, AppBlock.GENESIS_PREV_HASH,
+                        null, 1L, List.of(small), 0)).isEqualTo(List.of(small));
+                assertThat((List<?>) fit.invoke(engine, 1L, AppBlock.GENESIS_PREV_HASH,
+                        null, 1L, retained, 0)).isEmpty();
+                assertThat(retained).containsExactly(large, small);
+                assertThat((List<?>) fit.invoke(engine, 1L, AppBlock.GENESIS_PREV_HASH,
+                        null, 1L, List.of(small, large, later), 0)).isEqualTo(List.of(small));
+            } finally {
+                engine.close();
+                engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
 
     @Test
     void rejectsWrongChainVersionAndInnerMessageIdentityOnLiveAndCatchUpPaths(
@@ -113,7 +154,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onConsensusMessage(proposal(signer, l1SlotWithoutHash, 6));
             engine.onConsensusMessage(proposal(signer, tooManyMessages, 7));
             verify(logger, timeout(5_000).times(4)).warn(
-                    "{} is outside the app-block v2 structural profile — rejecting", "Proposal");
+                    "{} is outside the app-block v3 structural profile — rejecting", "Proposal");
             engine.onConsensusMessage(proposal(signer, duplicateMessages, 8));
             verify(logger, timeout(5_000)).warn(
                     "{} has duplicate or malformed message identities — rejecting", "Proposal");
@@ -136,7 +177,7 @@ class AppChainEngineIdentityValidationTest {
             AppMessage oversizedReservedBody = signedMessage(signer, CHAIN,
                     "~l1/test-observer", oversizedObservationBody, 11);
             AppMessage embeddedConsensus = signedMessage(signer, CHAIN,
-                    ConsensusCodec.TOPIC_VOTE, new byte[]{1}, 12);
+                    ConsensusCodec.TOPIC_PREPARE, new byte[]{1}, 12);
             AppMessage embeddedAnchor = signedMessage(signer, CHAIN,
                     ScriptAnchorService.TOPIC_SIGN, new byte[]{1}, 13);
             List<AppBlock> invalidMessageProfiles = List.of(
@@ -166,7 +207,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onConsensusMessage(signedMessage(signer, CHAIN,
                     ConsensusCodec.TOPIC_PROPOSE, oversizedProposal, proposalSequence));
             verify(logger, timeout(5_000)).warn(
-                    "Proposal exceeds the v1 proposal byte budget ({} > {}) — rejecting",
+                    "Proposal exceeds the v3 proposal byte budget ({} > {}) — rejecting",
                     oversizedProposal.length, config.proposalMaxBytes());
 
             byte[] deeplyNestedCbor = nestedIndefiniteArrays(3_000);
@@ -202,7 +243,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(l1SlotWithoutHash)));
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(tooManyMessages)));
             verify(logger, timeout(5_000).times(4)).warn(
-                    "{} is outside the app-block v2 structural profile — rejecting",
+                "{} is outside the app-block v3 structural profile — rejecting",
                     "Catch-up block");
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(duplicateMessages)));
             verify(logger, timeout(5_000)).warn(
@@ -217,7 +258,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onCertifiedBlocks(List.of(
                     new byte[(int) config.blockMaxBytes() + 1]));
             verify(logger, timeout(5_000)).warn(
-                    "Catch-up block exceeds the configured v1 byte profile — stopping batch");
+                    "Catch-up block exceeds the configured v3 byte profile — stopping batch");
 
             engine.onCertifiedBlocks(List.of(deeplyNestedCbor));
             verify(logger, timeout(5_000)).warn(
@@ -293,7 +334,7 @@ class AppChainEngineIdentityValidationTest {
                 config, ledger, new AppMsgPool(10), new NoOpMachine(), follower,
                 new MemberGroup(members, 2), new AlwaysSequencer(), 60_000, 10,
                 config.blockMaxBytes(), (topic, body) -> {
-                    if (ConsensusCodec.TOPIC_VOTE.equals(topic)) {
+                    if (ConsensusCodec.TOPIC_PREPARE.equals(topic)) {
                         voted.countDown();
                     }
                     return null;
@@ -346,6 +387,7 @@ class AppChainEngineIdentityValidationTest {
         new StateCommitmentGuard(TestStateCommitments.MPF).apply(1, writer);
         new ConsensusProfileGuard(EffectsSettings.from(config).consensusProfile(config))
                 .apply(1, writer);
+        new ObservationProfileGuard(ObservationProfileV1.disabled()).apply(1, writer);
         return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
                 block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
                 trie.getRootHash(), block.messages(), block.proposer(), block.cert());
@@ -366,14 +408,14 @@ class AppChainEngineIdentityValidationTest {
     }
 
     private static AppBlock certify(AppBlock block, AppMessageSigner signer) {
-        byte[] hash = AppBlockCodec.blockHash(block);
+        byte[] hash = AppChainEngine.commitDigest(block);
         return block.withCert(new FinalityCert(FinalityCert.SCHEME_ED25519,
                 List.of(new FinalityCert.Signature(signer.publicKey(), signer.sign(hash)))));
     }
 
     private static List<FinalityCert> invalidCertificates(
             AppBlock block, AppMessageSigner signer, AppMessageSigner otherMember) {
-        byte[] hash = AppBlockCodec.blockHash(block);
+        byte[] hash = AppChainEngine.commitDigest(block);
         FinalityCert.Signature valid = new FinalityCert.Signature(
                 signer.publicKey(), signer.sign(hash));
         FinalityCert.Signature validOther = new FinalityCert.Signature(

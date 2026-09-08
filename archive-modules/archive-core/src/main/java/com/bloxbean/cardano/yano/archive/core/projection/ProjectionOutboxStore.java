@@ -1,10 +1,15 @@
 package com.bloxbean.cardano.yano.archive.core.projection;
 
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap;
+import com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactIntervalRepair;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionBatch;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionCoordinate;
+import com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelope;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelopeHeader;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
@@ -20,8 +25,13 @@ import org.rocksdb.Slice;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +39,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -55,6 +66,9 @@ public final class ProjectionOutboxStore {
     private volatile ColumnFamilyHandle artifactCf;
     private final Supplier<RocksDB> dbSupplier;
     private final Function<String, ColumnFamilyHandle> handleSupplier;
+    private final Set<Long> pendingEpochArtifactCarriers =
+            ConcurrentHashMap.newKeySet();
+    private final Set<Long> pendingEpochGapCarriers = ConcurrentHashMap.newKeySet();
 
     public ProjectionOutboxStore(RocksDB db, ColumnFamilyHandle headerCf, ColumnFamilyHandle sectionCf,
                                  ColumnFamilyHandle metaCf, ColumnFamilyHandle artifactCf) {
@@ -84,10 +98,71 @@ public final class ProjectionOutboxStore {
         this.sectionCf = requiredHandle(ProjectionCfNames.PROJ_SECTION);
         this.metaCf = requiredHandle(ProjectionCfNames.PROJ_META);
         this.artifactCf = requiredHandle(ProjectionCfNames.PROJ_ARTIFACT);
+        refreshPendingEpochArtifactCarriers();
+        refreshPendingEpochGapCarriers();
     }
 
     private ColumnFamilyHandle requiredHandle(String name) {
         return Objects.requireNonNull(handleSupplier.apply(name), "column family " + name);
+    }
+
+    /** Persist an isolated projection failure in the same canonical L1 batch. */
+    public void putProjectionCaptureFailure(ProjectionStagingWriter writer,
+                                            CanonicalBlockReference coordinate,
+                                            RuntimeException failure) {
+        Objects.requireNonNull(writer, "writer");
+        Objects.requireNonNull(coordinate, "coordinate");
+        Objects.requireNonNull(failure, "failure");
+        String detail = failure.getClass().getSimpleName() + ": "
+                + Objects.toString(failure.getMessage(), "");
+        detail = detail.replace('\n', ' ').replace('\r', ' ').trim();
+        if (detail.length() > 1_024) detail = detail.substring(0, 1_024);
+        writer.put(ProjectionCfNames.PROJ_META,
+                ProjectionOutboxKeys.projectionCaptureFailureKey(coordinate.blockNumber()),
+                encodeProjectionCaptureFailure(coordinate, detail));
+    }
+
+    public long projectionCaptureFailureCount() {
+        long count = 0;
+        byte[] prefix = ProjectionOutboxKeys.projectionCaptureFailurePrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                count++;
+            }
+            iterator.status();
+            return count;
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan projection capture failures", e);
+        }
+    }
+
+    public Optional<String> firstProjectionCaptureFailure() {
+        byte[] prefix = ProjectionOutboxKeys.projectionCaptureFailurePrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(prefix);
+            if (!iterator.isValid() || !startsWith(iterator.key(), prefix)) return Optional.empty();
+            long block = ProjectionOutboxKeys.blockFromProjectionCaptureFailureKey(iterator.key());
+            ProjectionCaptureFailure failure = decodeProjectionCaptureFailure(iterator.value());
+            iterator.status();
+            return Optional.of("block " + block + " at slot " + failure.slot()
+                    + ": " + failure.detail());
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to read projection capture failure", e);
+        }
+    }
+
+    public long pendingEpochArtifactGapCount() {
+        long count = 0;
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochGapPrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                count++;
+            }
+            iterator.status();
+            return count;
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan pending epoch-artifact gaps", e);
+        }
     }
 
     // ------------------------------------------------------------------ identity
@@ -182,12 +257,12 @@ public final class ProjectionOutboxStore {
 
     /** Atomically record a canonical point gap and pause future capture for its dataset. */
     public synchronized void recordEpochArtifactGap(
-            com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap gap) {
+            EpochArtifactGap gap) {
         Objects.requireNonNull(gap, "gap");
-        if (gap.boundaryBlockNumber() <= artifactsSealedThrough()
-                || gap.boundaryBlockNumber() <= acknowledgedThrough()) {
+        if (gap.carrierBlockNumber() <= artifactsSealedThrough()
+                || gap.carrierBlockNumber() <= acknowledgedThrough()) {
             throw new ProjectionOutboxException("cannot record epoch-artifact gap for sealed block "
-                    + gap.boundaryBlockNumber());
+                    + gap.carrierBlockNumber());
         }
         byte[] key = ProjectionOutboxKeys.epochGapKey(gap.dataset().name(), gap.semanticEpoch());
         get(metaCf, key).ifPresent(existing -> {
@@ -201,8 +276,8 @@ public final class ProjectionOutboxStore {
             // A dataset may have published one part before a later part failed. The point GAP
             // replaces the whole dataset outcome for this boundary, so remove every earlier
             // reference in the same durable batch before staging is allowed to delete evidence.
-            byte[] lower = ProjectionOutboxKeys.blockKey(gap.boundaryBlockNumber());
-            byte[] upper = ProjectionOutboxKeys.blockKey(gap.boundaryBlockNumber() + 1);
+            byte[] lower = ProjectionOutboxKeys.blockKey(gap.carrierBlockNumber());
+            byte[] upper = ProjectionOutboxKeys.blockKey(gap.carrierBlockNumber() + 1);
             try (Slice upperSlice = new Slice(upper);
                  ReadOptions read = new ReadOptions().setIterateUpperBound(upperSlice);
                  RocksIterator iterator = db.newIterator(artifactCf, read)) {
@@ -224,9 +299,69 @@ public final class ProjectionOutboxStore {
         }
     }
 
-    public List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> epochArtifactGaps() {
+    /** Stage a failed epoch outcome as an intent; the applying carrier supplies its anchor. */
+    public void putPendingEpochArtifactGap(ProjectionStagingWriter writer,
+                                           ArchiveDatasetId dataset, int semanticEpoch,
+                                           long intendedCarrierBlockNumber,
+                                           String failureClass, String detail) {
+        Objects.requireNonNull(writer, "writer");
+        if (intendedCarrierBlockNumber <= artifactsSealedThrough()
+                || intendedCarrierBlockNumber <= acknowledgedThrough()) {
+            throw new ProjectionOutboxException("cannot stage epoch-artifact gap intent for sealed carrier block "
+                    + intendedCarrierBlockNumber);
+        }
+        var pending = new PendingEpochArtifactGap(dataset, semanticEpoch,
+                intendedCarrierBlockNumber, failureClass, detail, Instant.now(), false);
+        writer.put(ProjectionCfNames.PROJ_META,
+                ProjectionOutboxKeys.pendingEpochGapKey(
+                        intendedCarrierBlockNumber, dataset.name(), semanticEpoch),
+                PendingEpochArtifactGapCodec.encode(pending));
+        pendingEpochGapCarriers.add(intendedCarrierBlockNumber);
+    }
+
+    /** Stage one epoch skipped because this dataset is already paused. */
+    public void putPendingPausedEpoch(ProjectionStagingWriter writer,
+                                      ArchiveDatasetId dataset, int semanticEpoch,
+                                      long intendedCarrierBlockNumber) {
+        Objects.requireNonNull(writer, "writer");
+        if (intendedCarrierBlockNumber <= artifactsSealedThrough()
+                || intendedCarrierBlockNumber <= acknowledgedThrough()) {
+            throw new ProjectionOutboxException("cannot stage paused epoch intent for sealed carrier block "
+                    + intendedCarrierBlockNumber);
+        }
+        var pending = new PendingEpochArtifactGap(dataset, semanticEpoch,
+                intendedCarrierBlockNumber, "paused", "capture already paused",
+                Instant.now(), true);
+        writer.put(ProjectionCfNames.PROJ_META,
+                ProjectionOutboxKeys.pendingEpochGapKey(
+                        intendedCarrierBlockNumber, dataset.name(), semanticEpoch),
+                PendingEpochArtifactGapCodec.encode(pending));
+        pendingEpochGapCarriers.add(intendedCarrierBlockNumber);
+    }
+
+    private void putEpochArtifactGap(ProjectionStagingWriter writer,
+                                     EpochArtifactGap gap) {
+        byte[] key = ProjectionOutboxKeys.epochGapKey(gap.dataset().name(), gap.semanticEpoch());
+        get(metaCf, key).ifPresent(existing -> {
+            var decoded = EpochArtifactGapCodec.decode(existing);
+            if (!decoded.sameOutcome(gap)) {
+                throw new ProjectionOutboxException("conflicting epoch-artifact gap for "
+                        + gap.dataset() + " epoch " + gap.semanticEpoch());
+            }
+        });
+        writer.put(ProjectionCfNames.PROJ_META, key, EpochArtifactGapCodec.encode(gap));
+        writer.put(ProjectionCfNames.PROJ_META,
+                ProjectionOutboxKeys.epochStateKey(gap.dataset().name()),
+                com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED
+                        .name().getBytes(StandardCharsets.UTF_8));
+        writer.put(ProjectionCfNames.PROJ_META,
+                ProjectionOutboxKeys.epochPauseCauseKey(gap.dataset().name()),
+                EpochArtifactGapCodec.encode(gap));
+    }
+
+    public List<EpochArtifactGap> epochArtifactGaps() {
         byte[] prefix = ProjectionOutboxKeys.epochGapPrefix();
-        List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> gaps = new ArrayList<>();
+        List<EpochArtifactGap> gaps = new ArrayList<>();
         try (RocksIterator iterator = db.newIterator(metaCf)) {
             iterator.seek(prefix);
             while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
@@ -238,7 +373,7 @@ public final class ProjectionOutboxStore {
             throw new ProjectionOutboxException("failed to scan epoch-artifact gaps", e);
         }
         gaps.sort(java.util.Comparator
-                .comparing((com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap gap) ->
+                .comparing((EpochArtifactGap gap) ->
                         gap.dataset().name())
                 .thenComparingInt(com.bloxbean.cardano.yano.archive.api.projection
                         .EpochArtifactGap::semanticEpoch));
@@ -335,8 +470,7 @@ public final class ProjectionOutboxStore {
                 java.util.stream.Collectors.mapping(ProjectionArtifactRef::semanticEpoch,
                         java.util.stream.Collectors.toSet())));
         if (repaired.isEmpty()) return List.of();
-        var result = new ArrayList<com.bloxbean.cardano.yano.archive.api.projection
-                .EpochArtifactIntervalRepair>();
+        var result = new ArrayList<EpochArtifactIntervalRepair>();
         byte[] prefix = ProjectionOutboxKeys.epochIntervalPrefix();
         try (RocksIterator iterator = db.newIterator(metaCf)) {
             iterator.seek(prefix);
@@ -347,12 +481,11 @@ public final class ProjectionOutboxStore {
                         .anyMatch(point -> epochs.contains(point.epoch()))) {
                     var retained = state.checkpoints().stream()
                             .filter(point -> !epochs.contains(point.epoch())).toList();
-                    var segments = retained.isEmpty() ? List.<com.bloxbean.cardano.yano.archive.api
-                                    .projection.EpochArtifactGapInterval>of()
+                    var segments = retained.isEmpty() ? List.<EpochArtifactGapInterval>of()
                             : new EpochGapIntervalCodec.State(state.dataset(), state.causedByEpoch(),
                                     state.failureClass(), state.open(), retained).intervals();
-                    result.add(new com.bloxbean.cardano.yano.archive.api.projection
-                            .EpochArtifactIntervalRepair(state.dataset(), state.causedByEpoch(), segments));
+                    result.add(new EpochArtifactIntervalRepair(
+                            state.dataset(), state.causedByEpoch(), segments));
                 }
                 iterator.next();
             }
@@ -364,14 +497,14 @@ public final class ProjectionOutboxStore {
     }
 
     public void acknowledgeEpochArtifactRepairs(List<ProjectionArtifactRef> artifacts) {
-        artifacts.stream().map(ref -> java.util.Map.entry(ref.dataset(), ref.semanticEpoch()))
+        artifacts.stream().map(ref -> Map.entry(ref.dataset(), ref.semanticEpoch()))
                 .distinct().forEach(entry -> acknowledgeEpochArtifactRepair(
                         entry.getKey(), entry.getValue()));
     }
 
     @FunctionalInterface
     public interface CompleteEpochArtifactProbe {
-        boolean isComplete(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+        boolean isComplete(ArchiveDatasetId dataset,
                            int epoch, long slot, byte[] hash);
     }
 
@@ -380,7 +513,7 @@ public final class ProjectionOutboxStore {
      */
     public int acknowledgeRepairsAlreadyComplete(CompleteEpochArtifactProbe probe) {
         Objects.requireNonNull(probe, "probe");
-        record Candidate(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+        record Candidate(ArchiveDatasetId dataset,
                          int epoch, long slot, byte[] hash) {
             Candidate { hash = hash.clone(); }
             @Override public byte[] hash() { return hash.clone(); }
@@ -418,8 +551,9 @@ public final class ProjectionOutboxStore {
 
     /** Extend the one compact interval representing boundaries missed while paused. */
     public synchronized void recordPausedEpoch(
-            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
-            int epoch, long slot, byte[] hash) {
+            ArchiveDatasetId dataset,
+            int epoch, long carrierBlockNumber, long slot, byte[] hash) {
+        if (carrierBlockNumber < 0) throw new IllegalArgumentException("carrier block is required");
         if (hash == null || hash.length == 0) throw new IllegalArgumentException("boundary hash is required");
         var cause = get(metaCf, ProjectionOutboxKeys.epochPauseCauseKey(dataset.name()))
                 .map(EpochArtifactGapCodec::decode)
@@ -434,18 +568,20 @@ public final class ProjectionOutboxStore {
             var last = checkpoints.getLast();
             if (epoch < last.epoch()) throw new ProjectionOutboxException("paused epoch moved backward");
             if (epoch == last.epoch()) {
-                if (last.slot() != slot || !java.util.Arrays.equals(last.hash(), hash)) {
+                if (last.carrierBlockNumber() != carrierBlockNumber || last.slot() != slot
+                        || !Arrays.equals(last.hash(), hash)) {
                     throw new ProjectionOutboxException("conflicting paused boundary for " + dataset
                             + " epoch " + epoch);
                 }
                 return;
             }
-            checkpoints.add(new EpochGapIntervalCodec.Checkpoint(epoch, slot, hash));
+            checkpoints.add(new EpochGapIntervalCodec.Checkpoint(epoch, carrierBlockNumber, slot, hash));
             next = new EpochGapIntervalCodec.State(dataset, state.causedByEpoch(),
                     state.failureClass(), true, checkpoints);
         } else {
             next = new EpochGapIntervalCodec.State(dataset, cause.semanticEpoch(), cause.failureClass(),
-                    true, List.of(new EpochGapIntervalCodec.Checkpoint(epoch, slot, hash)));
+                    true, List.of(new EpochGapIntervalCodec.Checkpoint(
+                            epoch, carrierBlockNumber, slot, hash)));
         }
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
             batch.put(metaCf, key, EpochGapIntervalCodec.encode(next));
@@ -455,28 +591,31 @@ public final class ProjectionOutboxStore {
         }
     }
 
-    public List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval>
+    public List<EpochArtifactGapInterval>
             epochArtifactGapIntervals() {
+        return epochArtifactGapIntervals(Long.MAX_VALUE);
+    }
+
+    /** Gap intervals visible through an acknowledged carrier block. */
+    public List<EpochArtifactGapInterval>
+            epochArtifactGapIntervals(long acknowledgedThrough) {
         byte[] prefix = ProjectionOutboxKeys.epochIntervalPrefix();
-        var values = new ArrayList<com.bloxbean.cardano.yano.archive.api.projection
-                .EpochArtifactGapInterval>();
+        var values = new ArrayList<EpochArtifactGapInterval>();
         try (RocksIterator iterator = db.newIterator(metaCf)) {
             iterator.seek(prefix);
             while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
-                values.addAll(EpochGapIntervalCodec.decode(iterator.value()).intervals());
+                values.addAll(EpochGapIntervalCodec.decode(iterator.value()).intervals(acknowledgedThrough));
                 iterator.next();
             }
             iterator.status();
         } catch (RocksDBException e) {
             throw new ProjectionOutboxException("failed to scan paused epoch intervals", e);
         }
-        values.sort(java.util.Comparator
-                .comparing((com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval value)
+        values.sort(Comparator
+                .comparing((EpochArtifactGapInterval value)
                         -> value.dataset().name())
-                .thenComparingInt(com.bloxbean.cardano.yano.archive.api.projection
-                        .EpochArtifactGapInterval::causedByEpoch)
-                .thenComparingInt(com.bloxbean.cardano.yano.archive.api.projection
-                        .EpochArtifactGapInterval::fromEpoch));
+                .thenComparingInt(EpochArtifactGapInterval::causedByEpoch)
+                .thenComparingInt(EpochArtifactGapInterval::fromEpoch));
         return List.copyOf(values);
     }
 
@@ -485,11 +624,11 @@ public final class ProjectionOutboxStore {
         if (!origin && (hash == null || hash.length == 0)) {
             throw new IllegalArgumentException("non-origin rollback requires a hash");
         }
-        List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> all = epochArtifactGaps();
-        List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> remove = all.stream()
+        List<EpochArtifactGap> all = epochArtifactGaps();
+        List<EpochArtifactGap> remove = all.stream()
                 .filter(gap -> origin || gap.boundarySlot() > slot
                         || (gap.boundarySlot() == slot
-                        && !java.util.Arrays.equals(gap.boundaryBlockHash(), hash)))
+                        && !Arrays.equals(gap.boundaryBlockHash(), hash)))
                 .toList();
         var intervalUpdates = new java.util.LinkedHashMap<byte[], byte[]>();
         var intervalDeletes = new java.util.ArrayList<byte[]>();
@@ -503,7 +642,7 @@ public final class ProjectionOutboxStore {
                 var cause = EpochArtifactGapCodec.decode(encoded);
                 boolean retained = !origin && (cause.boundarySlot() < slot
                         || cause.boundarySlot() == slot
-                        && java.util.Arrays.equals(cause.boundaryBlockHash(), hash));
+                        && Arrays.equals(cause.boundaryBlockHash(), hash));
                 if (retained) survivingPauseCauses.add(dataset);
                 else removedPauseCauses.add(dataset);
             });
@@ -515,7 +654,7 @@ public final class ProjectionOutboxStore {
                 }
                 byte[] resumeHash = new byte[length]; buffer.get(resumeHash);
                 if (origin || resumeSlot > slot || (resumeSlot == slot
-                        && !java.util.Arrays.equals(resumeHash, hash))) revertedResumes.add(dataset);
+                        && !Arrays.equals(resumeHash, hash))) revertedResumes.add(dataset);
             });
         }
         byte[] intervalPrefix = ProjectionOutboxKeys.epochIntervalPrefix();
@@ -525,7 +664,7 @@ public final class ProjectionOutboxStore {
                 var state = EpochGapIntervalCodec.decode(iterator.value());
                 var retained = state.checkpoints().stream().filter(point -> !origin
                         && (point.slot() < slot || (point.slot() == slot
-                        && java.util.Arrays.equals(point.hash(), hash)))).toList();
+                        && Arrays.equals(point.hash(), hash)))).toList();
                 byte[] key = iterator.key().clone();
                 if (retained.isEmpty()) intervalDeletes.add(key);
                 else {
@@ -632,13 +771,154 @@ public final class ProjectionOutboxStore {
         }
     }
 
-    /** Stage an epoch-artifact reference alongside its producing block. */
+    /** Stage an epoch-artifact reference alongside the block that carries it. */
     public void putArtifact(ProjectionStagingWriter writer, long blockNumber,
                             com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
         writer.put(ProjectionCfNames.PROJ_ARTIFACT,
                 ProjectionOutboxKeys.artifactKey(blockNumber, ref.dataset().name(), ref.semanticEpoch(),
                         ref.sourceGeneration()),
                 ProjectionSectionCodec.encodeArtifact(ref));
+    }
+
+    /**
+     * Persist transition evidence as an intent, without putting a reference under a future block.
+     * The intent is written atomically with its source state and attached later by
+     * {@link #bindPendingEpochArtifacts} from the carrier block's own batch.
+     */
+    public void putPendingEpochArtifact(ProjectionStagingWriter writer, long carrierBlockNumber,
+                                        ProjectionArtifactRef ref) {
+        if (carrierBlockNumber <= ref.producingBlockNumber()) {
+            throw new ProjectionOutboxException("epoch artifact carrier must follow its anchor");
+        }
+        if (carrierBlockNumber <= artifactsSealedThrough()
+                || carrierBlockNumber <= acknowledgedThrough()) {
+            throw new ProjectionOutboxException("cannot stage epoch artifact intent for sealed carrier block "
+                    + carrierBlockNumber);
+        }
+        writer.put(ProjectionCfNames.PROJ_META,
+                ProjectionOutboxKeys.pendingEpochArtifactKey(carrierBlockNumber,
+                        ref.dataset().name(), ref.semanticEpoch(), ref.sourceGeneration()),
+                ProjectionSectionCodec.encodeArtifact(ref));
+        // The caller commits immediately after contribution. A failed caller batch can leave a
+        // harmless false positive in this cache; bindPendingEpochArtifacts removes it on lookup.
+        pendingEpochArtifactCarriers.add(carrierBlockNumber);
+    }
+
+    /** Copy every durable transition intent into the currently applying carrier block's batch. */
+    public int bindPendingEpochArtifacts(ProjectionStagingWriter writer, long carrierBlockNumber,
+                                         int carrierEpoch) {
+        if (!pendingEpochArtifactCarriers.contains(carrierBlockNumber)) return 0;
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochArtifactPrefix(carrierBlockNumber);
+        int bound = 0;
+        int found = 0;
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                found++;
+                ProjectionArtifactRef ref = ProjectionSectionCodec.decodeArtifact(iterator.value());
+                if (ref.semanticEpoch() > carrierEpoch) continue;
+                putArtifact(writer, carrierBlockNumber, ref);
+                bound++;
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to bind pending epoch artifacts for carrier block "
+                    + carrierBlockNumber, e);
+        }
+        if (found == 0) pendingEpochArtifactCarriers.remove(carrierBlockNumber);
+        return bound;
+    }
+
+    /** Bind pending references and failure outcomes from the currently applying carrier batch. */
+    public int bindPendingEpochArtifacts(ProjectionStagingWriter writer, long carrierBlockNumber,
+                                         int carrierEpoch,
+                                         Supplier<CanonicalBlockReference> anchorSupplier) {
+        int bound = bindPendingEpochArtifacts(writer, carrierBlockNumber, carrierEpoch);
+        if (!pendingEpochGapCarriers.contains(carrierBlockNumber)) return bound;
+
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochGapPrefix(carrierBlockNumber);
+        CanonicalBlockReference anchor = null;
+        Map<ArchiveDatasetId, EpochArtifactGap>
+                stagedCauses = new EnumMap<>(ArchiveDatasetId.class);
+        Map<String, EpochGapIntervalCodec.State> stagedIntervals = new LinkedHashMap<>();
+        int gapsFound = 0;
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                gapsFound++;
+                PendingEpochArtifactGap pending = PendingEpochArtifactGapCodec.decode(iterator.value());
+                if (pending.semanticEpoch() > carrierEpoch) continue;
+                if (anchor == null) {
+                    anchor = Objects.requireNonNull(anchorSupplier.get(), "epoch artifact anchor");
+                }
+                if (pending.pausedContinuation()) {
+                    var cause = stagedCauses.get(pending.dataset());
+                    if (cause == null) {
+                        cause = get(metaCf, ProjectionOutboxKeys.epochPauseCauseKey(
+                                pending.dataset().name()))
+                                .map(EpochArtifactGapCodec::decode)
+                                .orElseThrow(() -> new ProjectionOutboxException(
+                                        "cannot bind a paused epoch without a durable pause cause"));
+                    }
+                    String intervalId = pending.dataset().name() + '/' + cause.semanticEpoch();
+                    EpochGapIntervalCodec.State existing = stagedIntervals.get(intervalId);
+                    if (existing == null) {
+                        existing = get(metaCf, ProjectionOutboxKeys.epochIntervalKey(
+                                pending.dataset().name(), cause.semanticEpoch()))
+                                .map(EpochGapIntervalCodec::decode).orElse(null);
+                    }
+                    EpochGapIntervalCodec.State next = nextPausedEpochState(
+                            existing, cause, pending.semanticEpoch(), carrierBlockNumber,
+                            anchor.slot(), anchor.blockHash());
+                    if (next != null) {
+                        writer.put(ProjectionCfNames.PROJ_META,
+                                ProjectionOutboxKeys.epochIntervalKey(
+                                        pending.dataset().name(), cause.semanticEpoch()),
+                                EpochGapIntervalCodec.encode(next));
+                        stagedIntervals.put(intervalId, next);
+                    }
+                } else {
+                    var gap = new EpochArtifactGap(
+                            pending.dataset(), pending.semanticEpoch(), carrierBlockNumber,
+                            anchor.blockNumber(), anchor.slot(), anchor.blockHash(),
+                            pending.failureClass(), pending.detail(), pending.recordedAt());
+                    putEpochArtifactGap(writer, gap);
+                    stagedCauses.put(pending.dataset(), gap);
+                }
+                bound++;
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to bind pending epoch-artifact gaps for carrier block "
+                    + carrierBlockNumber, e);
+        }
+        if (gapsFound == 0) pendingEpochGapCarriers.remove(carrierBlockNumber);
+        return bound;
+    }
+
+    private static EpochGapIntervalCodec.State nextPausedEpochState(
+            EpochGapIntervalCodec.State existing,
+            EpochArtifactGap cause,
+            int epoch, long carrierBlockNumber, long slot, byte[] hash) {
+        if (existing == null || !existing.open()) {
+            return new EpochGapIntervalCodec.State(cause.dataset(), cause.semanticEpoch(),
+                    cause.failureClass(), true, List.of(new EpochGapIntervalCodec.Checkpoint(
+                            epoch, carrierBlockNumber, slot, hash)));
+        }
+        var checkpoints = new ArrayList<>(existing.checkpoints());
+        var last = checkpoints.getLast();
+        if (epoch < last.epoch()) {
+            throw new ProjectionOutboxException("paused epoch moved backward");
+        }
+        if (epoch == last.epoch()) {
+            if (last.carrierBlockNumber() != carrierBlockNumber || last.slot() != slot
+                    || !Arrays.equals(last.hash(), hash)) {
+                throw new ProjectionOutboxException("conflicting paused boundary for "
+                        + cause.dataset() + " epoch " + epoch);
+            }
+            return null;
+        }
+        checkpoints.add(new EpochGapIntervalCodec.Checkpoint(epoch, carrierBlockNumber, slot, hash));
+        return new EpochGapIntervalCodec.State(cause.dataset(), existing.causedByEpoch(),
+                existing.failureClass(), true, checkpoints);
     }
 
     /**
@@ -921,13 +1201,27 @@ public final class ProjectionOutboxStore {
      * before anything can prune.
      */
     public List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> pendingArtifacts() {
-        List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> refs = new ArrayList<>();
+        Map<String, ProjectionArtifactRef> refs = new LinkedHashMap<>();
         try (RocksIterator it = db.newIterator(artifactCf)) {
             for (it.seekToFirst(); it.isValid(); it.next()) {
-                refs.add(ProjectionSectionCodec.decodeArtifact(it.value()));
+                ProjectionArtifactRef ref = ProjectionSectionCodec.decodeArtifact(it.value());
+                refs.put(ref.canonicalForm(), ref);
             }
+            it.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan pending artifact references", e);
         }
-        return refs;
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochArtifactPrefix();
+        try (RocksIterator it = db.newIterator(metaCf)) {
+            for (it.seek(prefix); it.isValid() && startsWith(it.key(), prefix); it.next()) {
+                ProjectionArtifactRef ref = ProjectionSectionCodec.decodeArtifact(it.value());
+                refs.putIfAbsent(ref.canonicalForm(), ref);
+            }
+            it.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan pending epoch artifact intents", e);
+        }
+        return List.copyOf(refs.values());
     }
 
     /**
@@ -969,8 +1263,30 @@ public final class ProjectionOutboxStore {
             batch.deleteRange(headerCf, lower, upper);
             batch.deleteRange(sectionCf, lower, upper);
             batch.deleteRange(artifactCf, lower, upper);
+            byte[] pendingPrefix = ProjectionOutboxKeys.pendingEpochArtifactPrefix();
+            try (RocksIterator iterator = db.newIterator(metaCf)) {
+                for (iterator.seek(pendingPrefix);
+                     iterator.isValid() && startsWith(iterator.key(), pendingPrefix); iterator.next()) {
+                    if (ProjectionOutboxKeys.carrierFromPendingEpochArtifactKey(iterator.key()) <= throughBlock) {
+                        batch.delete(metaCf, iterator.key());
+                    }
+                }
+                iterator.status();
+            }
+            byte[] pendingGapPrefix = ProjectionOutboxKeys.pendingEpochGapPrefix();
+            try (RocksIterator iterator = db.newIterator(metaCf)) {
+                for (iterator.seek(pendingGapPrefix);
+                     iterator.isValid() && startsWith(iterator.key(), pendingGapPrefix); iterator.next()) {
+                    if (ProjectionOutboxKeys.carrierFromPendingEpochGapKey(iterator.key()) <= throughBlock) {
+                        batch.delete(metaCf, iterator.key());
+                    }
+                }
+                iterator.status();
+            }
             batch.put(metaCf, ProjectionOutboxKeys.META_ACK, ProjectionOutboxKeys.encodeLong(throughBlock));
             db.write(options, batch);
+            pendingEpochArtifactCarriers.removeIf(carrier -> carrier <= throughBlock);
+            pendingEpochGapCarriers.removeIf(carrier -> carrier <= throughBlock);
         } catch (RocksDBException e) {
             throw new ProjectionOutboxException("failed to acknowledge projection range", e);
         }
@@ -1019,21 +1335,181 @@ public final class ProjectionOutboxStore {
             }
         }
         long firstRemoved = -1;
+        long retainedBlock = -1;
         try (RocksIterator it = db.newIterator(headerCf)) {
             for (it.seekToLast(); it.isValid(); it.prev()) {
                 ProjectionEnvelopeHeader header = ProjectionEnvelopeCodec.decodeHeader(it.value());
                 if (!origin && (header.slot() < rollbackSlot
                         || header.slot() == rollbackSlot
                         && (!exact || Arrays.equals(header.blockHash(), rollbackHash)))) {
+                    retainedBlock = header.blockNumber();
                     break;
                 }
                 firstRemoved = header.blockNumber();
             }
         }
-        if (firstRemoved < 0) return 0;
+        long removedPending = rollbackPendingEpochArtifacts(rollbackSlot, rollbackHash, origin, exact);
+        removedPending += rollbackPendingEpochArtifactGaps(retainedBlock, origin);
+        removedPending += rollbackProjectionCaptureFailures(
+                rollbackSlot, rollbackHash, origin, exact);
+        if (firstRemoved < 0) return removedPending;
         long lastBlock = identityCursor();
         rollbackFrom(firstRemoved, requiredSections);
-        return Math.max(0, lastBlock - firstRemoved + 1);
+        return Math.max(0, lastBlock - firstRemoved + 1) + removedPending;
+    }
+
+    /**
+     * Remove transition intents only when their anchor is no longer canonical. An intent whose
+     * carrier was rolled back but whose anchor survives is deliberately retained so the replacement
+     * carrier can attach the same facts without re-running the epoch transition.
+     */
+    private long rollbackPendingEpochArtifacts(long rollbackSlot, byte[] rollbackHash,
+                                               boolean origin, boolean exact) {
+        long removed = 0;
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochArtifactPrefix();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true);
+             RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                ProjectionArtifactRef ref = ProjectionSectionCodec.decodeArtifact(iterator.value());
+                if (origin || ref.producingSlot() > rollbackSlot
+                        || ref.producingSlot() == rollbackSlot
+                        && (!exact || !Arrays.equals(ref.producingBlockHash(), rollbackHash))) {
+                    batch.delete(metaCf, iterator.key());
+                    removed++;
+                }
+            }
+            iterator.status();
+            if (removed > 0) {
+                db.write(options, batch);
+                refreshPendingEpochArtifactCarriers();
+            }
+            return removed;
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to roll back pending epoch artifacts", e);
+        }
+    }
+
+    private void refreshPendingEpochArtifactCarriers() {
+        pendingEpochArtifactCarriers.clear();
+        if (metaCf == null) return;
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochArtifactPrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                pendingEpochArtifactCarriers.add(
+                        ProjectionOutboxKeys.carrierFromPendingEpochArtifactKey(iterator.key()));
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to restore pending epoch artifact carriers", e);
+        }
+    }
+
+    private long rollbackPendingEpochArtifactGaps(long retainedBlock, boolean origin) {
+        long removed = 0;
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochGapPrefix();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true);
+             RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                long carrier = ProjectionOutboxKeys.carrierFromPendingEpochGapKey(iterator.key());
+                if (origin || carrier - 1 > retainedBlock) {
+                    batch.delete(metaCf, iterator.key());
+                    removed++;
+                }
+            }
+            iterator.status();
+            if (removed > 0) {
+                db.write(options, batch);
+                refreshPendingEpochGapCarriers();
+            }
+            return removed;
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to roll back pending epoch-artifact gaps", e);
+        }
+    }
+
+    private void refreshPendingEpochGapCarriers() {
+        pendingEpochGapCarriers.clear();
+        if (metaCf == null) return;
+        byte[] prefix = ProjectionOutboxKeys.pendingEpochGapPrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                pendingEpochGapCarriers.add(
+                        ProjectionOutboxKeys.carrierFromPendingEpochGapKey(iterator.key()));
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to restore pending epoch-artifact gap carriers", e);
+        }
+    }
+
+    private long rollbackProjectionCaptureFailures(long rollbackSlot, byte[] rollbackHash,
+                                                    boolean origin, boolean exact) {
+        long removed = 0;
+        byte[] prefix = ProjectionOutboxKeys.projectionCaptureFailurePrefix();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true);
+             RocksIterator iterator = db.newIterator(metaCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && startsWith(iterator.key(), prefix); iterator.next()) {
+                ProjectionCaptureFailure failure = decodeProjectionCaptureFailure(iterator.value());
+                if (origin || failure.slot() > rollbackSlot
+                        || failure.slot() == rollbackSlot
+                        && (!exact || !Arrays.equals(failure.blockHash(), rollbackHash))) {
+                    batch.delete(metaCf, iterator.key());
+                    removed++;
+                }
+            }
+            iterator.status();
+            if (removed > 0) db.write(options, batch);
+            return removed;
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to roll back projection capture failures", e);
+        }
+    }
+
+    private static byte[] encodeProjectionCaptureFailure(
+            CanonicalBlockReference coordinate, String detail) {
+        byte[] encodedDetail = detail.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(1 + Long.BYTES + 32 + Integer.BYTES + encodedDetail.length)
+                .order(ByteOrder.BIG_ENDIAN)
+                .put((byte) 1)
+                .putLong(coordinate.slot())
+                .put(coordinate.blockHash())
+                .putInt(encodedDetail.length)
+                .put(encodedDetail)
+                .array();
+    }
+
+    private static ProjectionCaptureFailure decodeProjectionCaptureFailure(byte[] encoded) {
+        try {
+            ByteBuffer buffer = ByteBuffer.wrap(encoded).order(ByteOrder.BIG_ENDIAN);
+            if (buffer.get() != 1) {
+                throw new IllegalArgumentException("unsupported projection capture failure version");
+            }
+            long slot = buffer.getLong();
+            byte[] hash = new byte[32];
+            buffer.get(hash);
+            int detailLength = buffer.getInt();
+            if (detailLength < 0 || detailLength != buffer.remaining()) {
+                throw new IllegalArgumentException("invalid projection capture failure detail length");
+            }
+            byte[] detail = new byte[detailLength];
+            buffer.get(detail);
+            return new ProjectionCaptureFailure(slot, hash,
+                    new String(detail, StandardCharsets.UTF_8));
+        } catch (RuntimeException failure) {
+            throw new ProjectionOutboxException(
+                    "failed to decode projection capture failure", failure);
+        }
+    }
+
+    private record ProjectionCaptureFailure(long slot, byte[] blockHash, String detail) {
+        private ProjectionCaptureFailure {
+            blockHash = blockHash.clone();
+        }
+
+        @Override
+        public byte[] blockHash() {
+            return blockHash.clone();
+        }
     }
 
     /**
@@ -1052,6 +1528,16 @@ public final class ProjectionOutboxStore {
             batch.deleteRange(headerCf, lower, upper);
             batch.deleteRange(sectionCf, lower, upper);
             batch.deleteRange(artifactCf, lower, upper);
+            byte[] failurePrefix = ProjectionOutboxKeys.projectionCaptureFailurePrefix();
+            try (RocksIterator iterator = db.newIterator(metaCf)) {
+                for (iterator.seek(failurePrefix);
+                     iterator.isValid() && startsWith(iterator.key(), failurePrefix); iterator.next()) {
+                    if (ProjectionOutboxKeys.blockFromProjectionCaptureFailureKey(iterator.key()) >= fromBlock) {
+                        batch.delete(metaCf, iterator.key());
+                    }
+                }
+                iterator.status();
+            }
             if (identityCursor() > rewound) {
                 batch.put(metaCf, ProjectionOutboxKeys.META_CURSOR_IDENTITY,
                         ProjectionOutboxKeys.encodeLong(rewound));
