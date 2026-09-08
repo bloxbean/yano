@@ -1,0 +1,13 @@
+# Run output. Every comparison writes here; nothing in it belongs in git.
+results/
+
+# Per-stack build and dependency trees.
+ccl/.gradle/
+ccl/build/
+contracts/bls/.gradle/
+contracts/bls/build/
+mesh/node_modules/
+evolution/node_modules/
+
+# Recording-proxy scratch output when the proxy is run by hand.
+proxy-calls.json

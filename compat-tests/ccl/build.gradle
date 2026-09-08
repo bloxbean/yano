@@ -1,0 +1,72 @@
+// Standalone compatibility/load harness for cardano-client-lib against a running
+// Yano devnet. Not part of the Yano Gradle build: this file must never be reached
+// by the root build's conventions. See adr/053-sdk-compatibility-and-load-suite.md.
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://central.sonatype.com/repository/maven-snapshots/' }
+}
+
+// Pinned independently of the repo version catalog on purpose: this suite must
+// test the CCL line an external integrator resolves from Maven Central, not the
+// snapshot Yano itself compiles against. See VERSIONS.md.
+def cclVersion = '0.8.0-pre5'
+
+dependencies {
+    implementation "com.bloxbean.cardano:cardano-client-lib:${cclVersion}"
+    implementation "com.bloxbean.cardano:cardano-client-backend-blockfrost:${cclVersion}"
+
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.2'
+    implementation 'org.slf4j:slf4j-simple:2.0.13'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+// Every entry point needs a live node, so none of these is wired to `check`.
+// The names are also deliberately not `test` / `integrationTest`: if this build
+// is ever added to the root settings.gradle by mistake, nothing collides with
+// the root `extendedTest` aggregator.
+def probe = { String taskName, String mainClassName, String desc ->
+    tasks.register(taskName, JavaExec) {
+        group = 'verification'
+        description = desc
+        classpath = sourceSets.main.runtimeClasspath
+        mainClass = mainClassName
+        systemProperties System.getProperties().findAll { k, v ->
+            k.toString().startsWith('yano.') || k.toString().startsWith('load.')
+        }
+        // A probe that fails must fail the task.
+        if (project.hasProperty('yanoUrl')) {
+            systemProperty 'yano.url', project.property('yanoUrl')
+        }
+    }
+}
+
+probe('compat', 'com.bloxbean.cardano.yano.compat.ccl.CompatProbe',
+        'CCL provider walk: params, funding, query, build/sign/submit, confirm. Pass/fail.')
+probe('blsProbe', 'com.bloxbean.cardano.yano.compat.ccl.BlsProbe',
+        'BLS12-381 evaluate -> submit -> confirm, with a negative control. Pass/fail.')
+probe('plutusProbe', 'com.bloxbean.cardano.yano.compat.ccl.PlutusProbe',
+        'Which Plutus flows this devnet supports (informational).')
+probe('queryOverlayProbe', 'com.bloxbean.cardano.yano.compat.ccl.QueryOverlayProbe',
+        'Which read paths see an unconfirmed mempool output (informational).')
+probe('load', 'com.bloxbean.cardano.yano.compat.ccl.LoadTest',
+        'Mempool load: regular payments + QuickTx chaining. Reports, never asserts.')
+
+tasks.register('scenario', JavaExec) {
+    group = 'verification'
+    description = 'Extra scenario: -Pmode=plutus|exunits|rollback|interval|heap'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.compat.ccl.Scenarios'
+    args = [project.findProperty('mode') ?: 'plutus']
+    systemProperties System.getProperties().findAll { k, v ->
+        k.toString().startsWith('yano.') || k.toString().startsWith('load.')
+    }
+}

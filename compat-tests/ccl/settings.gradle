@@ -1,0 +1,3 @@
+// Standalone build. Deliberately NOT included in the Yano root settings.gradle -
+// see adr/053-sdk-compatibility-and-load-suite.md (D1).
+rootProject.name = 'yano-compat-ccl'

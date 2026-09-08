@@ -1,0 +1,3 @@
+// Standalone. Only needed to regenerate BlsProbe.SCRIPT_CBOR_HEX; the probe
+// itself carries the compiled hex and needs no julc toolchain.
+rootProject.name = 'yano-compat-bls-contract'

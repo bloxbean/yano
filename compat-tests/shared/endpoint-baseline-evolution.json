@@ -1,0 +1,39 @@
+{
+  "GET /api/v1/addresses/{addr}/utxos": {
+    "count": 9,
+    "statuses": {
+      "200": 9
+    }
+  },
+  "GET /api/v1/blocks/latest": {
+    "count": 1,
+    "statuses": {
+      "200": 1
+    }
+  },
+  "GET /api/v1/epochs/latest/parameters": {
+    "count": 3,
+    "statuses": {
+      "200": 3
+    }
+  },
+  "GET /api/v1/utxos/{hash}/{n}": {
+    "count": 2,
+    "statuses": {
+      "200": 1,
+      "404": 1
+    }
+  },
+  "POST /api/v1/devnet/fund": {
+    "count": 1,
+    "statuses": {
+      "200": 1
+    }
+  },
+  "POST /api/v1/tx/submit": {
+    "count": 1,
+    "statuses": {
+      "200": 1
+    }
+  }
+}
