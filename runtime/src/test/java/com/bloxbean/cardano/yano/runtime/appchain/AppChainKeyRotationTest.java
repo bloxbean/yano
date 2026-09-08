@@ -117,7 +117,11 @@ class AppChainKeyRotationTest {
 
         // Restart: the rotated override (A @ threshold 1) wins over the
         // last multi-member epoch.
-        node.stop();
+        // close(), not stop(): stop() hands the ledger close to the deferred
+        // shutdown stage, and its restart guard only fences the *same*
+        // instance. A replacement subsystem on the same path would otherwise
+        // race the still-pending RocksDB close and fail on the LOCK file.
+        node.close();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
         node.start();
