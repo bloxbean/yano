@@ -63,6 +63,25 @@ class TxSubsystemTest {
     }
 
     @Test
+    void administrativeEvictionRequiresActiveSubsystemAndReleasesTransaction() {
+        TxSubsystem subsystem = new TxSubsystem(
+                eventBus, scheduler, RuntimeOptions.defaults(), () -> null,
+                LoggerFactory.getLogger(TxSubsystemTest.class));
+        try {
+            subsystem.start();
+            String hash = subsystem.submitTransaction(sampleTxCbor(), null);
+            assertThat(subsystem.evictTransaction(hash)).containsExactly(hash);
+            assertThat(subsystem.containsTransaction(hash)).isFalse();
+            assertThat(subsystem.evictTransaction(hash)).isEmpty();
+            subsystem.stop();
+            assertThatThrownBy(() -> subsystem.evictTransaction(hash))
+                    .isInstanceOf(IllegalStateException.class);
+        } finally {
+            subsystem.close();
+        }
+    }
+
+    @Test
     void submitTransactionPublishesValidationAndMempoolEventsThenRelaysAcceptedTx() {
         TxSubsystem subsystem = new TxSubsystem(
                 eventBus, scheduler, RuntimeOptions.defaults(), () -> null,

@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import com.bloxbean.cardano.yano.api.util.AddressKeyUtil;
 
 /**
  * In-memory FIFO mempool with one fair mutation lane and a derived, bounded UTXO
@@ -202,6 +203,37 @@ public class DefaultMemPool implements MemPool {
             totalAdmissionHoldNanos += System.nanoTime() - holdStarted;
             lane.unlock();
         }
+    }
+
+    @Override
+    public UtxoOverlay utxoOverlay(byte[] subject, boolean credential) {
+        List<Utxo> selected = new ArrayList<>();
+        Set<IndexedOutpoint> spent;
+        long selectedBytes = 0;
+        if (!lane.tryLock()) throw new IllegalStateException("Mempool busy; retry query");
+        try {
+            if (spentByOutpoint.size() > 100_000 || producedByOutpoint.size() > 100_000) {
+                throw new IllegalStateException("Mempool query snapshot limit exceeded");
+            }
+            for (var entry : producedByOutpoint.entrySet()) {
+                ProducedOutput produced = entry.getValue();
+                SubjectKey key = produced.subject();
+                if (!Arrays.equals(subject, credential ? key.payment() : key.address())
+                        || spentByOutpoint.containsKey(entry.getKey())) continue;
+                selectedBytes += transactionsByHash.get(produced.owner()).transaction().size();
+                if (selected.size() >= 1000 || selectedBytes > 8 * 1024 * 1024) {
+                    throw new IllegalStateException("Mempool subject snapshot limit exceeded");
+                }
+                // Internal projections are immutable-by-convention; copy payloads only after releasing the lane.
+                selected.add(produced.utxo());
+            }
+            spent = Set.copyOf(spentByOutpoint.keySet());
+        } finally {
+            lane.unlock();
+        }
+        Set<Outpoint> externalSpent = new HashSet<>();
+        spent.forEach(key -> externalSpent.add(key.external()));
+        return new UtxoOverlay(selected.stream().map(DefaultMemPool::externalCopy).toList(), externalSpent);
     }
 
     @Override
@@ -545,7 +577,8 @@ public class DefaultMemPool implements MemPool {
                     continue;
                 }
                 projection.outputs().forEach((outpoint, utxo) ->
-                        validProduced.put(outpoint, new ProducedOutput(mapEntry.getKey(), utxo)));
+                        validProduced.put(outpoint, new ProducedOutput(mapEntry.getKey(), utxo,
+                                projection.subjects().get(utxo.address()))));
             }
             return removeInternal(invalidRoots, true, true);
         } finally {
@@ -562,6 +595,8 @@ public class DefaultMemPool implements MemPool {
                     - referenceScriptsByHash.size();
             int dependencyEdges = dependencyIndexRecords / 2;
             long estimatedIndexBytes = (producedByOutpoint.size() * 256L)
+                    + transactionsByHash.values().stream()
+                    .mapToLong(entry -> entry.projection().subjects().size() * 192L).sum()
                     + (spentByOutpoint.size() * 96L)
                     + referenceScriptsByHash.values().stream()
                     .mapToLong(entry -> 96L + entry.scriptRefBytes.length).sum()
@@ -585,7 +620,8 @@ public class DefaultMemPool implements MemPool {
         transactionsByHash.put(id, entry);
         byteSize += entry.transaction().size();
         entry.projection().outputs().forEach((outpoint, utxo) ->
-                producedByOutpoint.put(outpoint, new ProducedOutput(id, utxo)));
+                producedByOutpoint.put(outpoint, new ProducedOutput(id, utxo,
+                        entry.projection().subjects().get(utxo.address()))));
         int newReferenceScripts = addReferenceScripts(entry.projection());
         entry.projection().regularInputs().forEach(outpoint -> spentByOutpoint.put(outpoint, id));
         if (!parents.isEmpty()) {
@@ -637,7 +673,8 @@ public class DefaultMemPool implements MemPool {
                 }
             }
             projection.outputs().forEach((outpoint, utxo) ->
-                    producedByOutpoint.put(outpoint, new ProducedOutput(id, utxo)));
+                    producedByOutpoint.put(outpoint, new ProducedOutput(id, utxo,
+                            projection.subjects().get(utxo.address()))));
             addReferenceScripts(projection);
             if (!parents.isEmpty()) {
                 parentsByTransaction.put(id, new HashSet<>(parents));
@@ -649,7 +686,24 @@ public class DefaultMemPool implements MemPool {
         indexEntryCount = calculateIndexEntryCount();
     }
 
+    @Override
+    public List<String> evictTransaction(String txHash) {
+        if (!lane.tryLock()) throw new IllegalStateException("Mempool busy; retry eviction");
+        try {
+            List<String> removedHashes = new ArrayList<>();
+            removeInternal(toIds(Set.of(txHash)), true, true, removedHashes);
+            return List.copyOf(removedHashes);
+        } finally {
+            lane.unlock();
+        }
+    }
+
     private int removeInternal(Set<TxId> requested, boolean cascade, boolean countCascade) {
+        return removeInternal(requested, cascade, countCascade, null);
+    }
+
+    private int removeInternal(Set<TxId> requested, boolean cascade, boolean countCascade,
+                               List<String> removedHashes) {
         if (requested == null || requested.isEmpty()) return 0;
         Set<TxId> direct = new LinkedHashSet<>();
         requested.forEach(id -> {
@@ -672,6 +726,7 @@ public class DefaultMemPool implements MemPool {
         for (TxId id : removals) {
             Entry entry = transactionsByHash.remove(id);
             if (entry == null) continue;
+            if (removedHashes != null) removedHashes.add(id.hex());
             byteSize -= entry.transaction().size();
             for (IndexedOutpoint outpoint : entry.projection().outputs().keySet()) {
                 if (producedByOutpoint.remove(outpoint) != null) removedIndexEntries++;
@@ -853,8 +908,11 @@ public class DefaultMemPool implements MemPool {
                         txHash, index, transaction.getBody().getOutputs().get(index)));
             }
         }
+        Map<String, SubjectKey> subjects = new HashMap<>();
+        outputs.values().forEach(output -> subjects.computeIfAbsent(output.address(), address ->
+                new SubjectKey(AddressKeyUtil.addrHash28(address), AddressKeyUtil.paymentCred28(address))));
         return new Projection(txId, txHash, Set.copyOf(regularInputs),
-                Set.copyOf(allInputs), Collections.unmodifiableMap(outputs));
+                Set.copyOf(allInputs), Collections.unmodifiableMap(outputs), Map.copyOf(subjects));
     }
 
     private static Set<IndexedOutpoint> projectInputs(Collection<TransactionInput> inputs) {
@@ -944,10 +1002,13 @@ public class DefaultMemPool implements MemPool {
                               String txHash,
                               Set<IndexedOutpoint> regularInputs,
                               Set<IndexedOutpoint> allInputs,
-                              Map<IndexedOutpoint, Utxo> outputs) {
+                              Map<IndexedOutpoint, Utxo> outputs,
+                              Map<String, SubjectKey> subjects) {
     }
 
-    private record ProducedOutput(TxId owner, Utxo utxo) {
+    private record SubjectKey(byte[] address, byte[] payment) { }
+
+    private record ProducedOutput(TxId owner, Utxo utxo, SubjectKey subject) {
     }
 
     private static final class ReferenceScriptEntry {

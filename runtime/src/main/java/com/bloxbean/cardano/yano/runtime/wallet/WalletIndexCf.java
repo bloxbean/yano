@@ -6,6 +6,7 @@ public final class WalletIndexCf {
     public static final String META = "wallet_meta";
     public static final String UNDO = "wallet_undo";
     public static final String GENESIS = "wallet_genesis";
+    public static final String ERRORS = "wallet_index_errors";
 
     private WalletIndexCf() { }
 }

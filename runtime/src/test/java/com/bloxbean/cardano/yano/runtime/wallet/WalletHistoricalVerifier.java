@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletCredential;
 import com.bloxbean.cardano.yano.api.wallet.WalletScanRequest;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
@@ -41,14 +41,14 @@ public final class WalletHistoricalVerifier {
         Files.createDirectory(output);
         RocksDB.loadLibrary();
         try (Source source = new Source(args[0])) {
-            WalletChainPoint end = source.last();
+            ChainPoint end = source.last();
             var coverage = source.indexes.coverage(WalletIndexStore.FILTERS, end);
             if (!coverage.available() || !coverage.completeFromOrigin()) throw new IllegalStateException("Complete origin coverage required: " + coverage);
             if (!source.indexes.scanGenesis().isEmpty()) throw new IllegalStateException("This preprod oracle requires empty Shelley initial funds");
             Set<WalletCredential> selected = new LinkedHashSet<>();
             try (var frames = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(output.resolve("blocks.bin"))))) {
                 for (long number = 1; number <= end.blockNumber(); number++) {
-                    WalletChainPoint point = source.point(number);
+                    ChainPoint point = source.point(number);
                     byte[] body = source.bytes(point);
                     frames.writeLong(number);
                     frames.writeLong(point.slot());
@@ -89,7 +89,7 @@ public final class WalletHistoricalVerifier {
                 long transactions = 0, confirmedBlocks = 0, previousBlock = -1;
                 source.bodyReads = 0;
                 long start = System.nanoTime();
-                try (var scan = new WalletScanner(source, new WalletScanRequest(1, query, WalletChainPoint.ORIGIN, null, List.of()), coverage, end)) {
+                try (var scan = new WalletScanner(source, new WalletScanRequest(1, query, ChainPoint.ORIGIN, null, List.of()), coverage, end)) {
                     while (!scan.finished()) {
                         for (var event : scan.next()) {
                             if (!event.type().equals("transaction")) continue;
@@ -141,21 +141,21 @@ public final class WalletHistoricalVerifier {
             for (int i = 0; i < handles.size(); i++) columns.put(new String(descriptors.get(i).getName(), StandardCharsets.UTF_8), handles.get(i));
             indexes = new WalletIndexStore(new RocksDbContext(db, columns), false, true);
         }
-        WalletChainPoint last() throws Exception {
+        ChainPoint last() throws Exception {
             try (var it = db.newIterator(columns.get("slot_by_number"))) {
                 it.seekToLast();
                 if (!it.isValid()) throw new IllegalStateException("No canonical blocks");
                 return point(ByteBuffer.wrap(it.key()).getLong());
             }
         }
-        WalletChainPoint point(long number) throws Exception {
+        ChainPoint point(long number) throws Exception {
             byte[] slot = db.get(columns.get("slot_by_number"), ByteBuffer.allocate(8).putLong(number).array());
             if (slot == null) throw new IllegalStateException("Missing block " + number);
             byte[] hash = db.get(columns.get("slot_to_hash"), slot);
             if (hash == null) throw new IllegalStateException("Missing hash " + number);
-            return new WalletChainPoint(number, ByteBuffer.wrap(slot).getLong(), HexFormat.of().formatHex(hash));
+            return new ChainPoint(number, ByteBuffer.wrap(slot).getLong(), HexFormat.of().formatHex(hash));
         }
-        byte[] bytes(WalletChainPoint point) throws Exception {
+        byte[] bytes(ChainPoint point) throws Exception {
             byte[] body = db.get(columns.get("blocks"), HexFormat.of().parseHex(point.blockHash()));
             if (body == null) throw new IllegalStateException("Missing body " + point);
             return body;
@@ -165,7 +165,7 @@ public final class WalletHistoricalVerifier {
             try { return indexes.readFilters(after, to, limit); }
             catch (Exception failure) { throw new IllegalStateException(failure); }
         }
-        @Override public Block block(WalletChainPoint point) {
+        @Override public Block block(ChainPoint point) {
             try {
                 if (!point.equals(point(point.blockNumber()))) throw new IllegalStateException("Noncanonical filter point");
                 bodyReads++;

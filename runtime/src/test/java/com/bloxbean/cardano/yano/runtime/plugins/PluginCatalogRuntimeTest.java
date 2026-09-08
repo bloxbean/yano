@@ -23,6 +23,17 @@ import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
+import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
+import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
+import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
+import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
+import com.bloxbean.cardano.yano.runtime.utxo.index.UtxoIndexes;
+import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yaci.events.api.EventMetadata;
+import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import org.junit.jupiter.api.Timeout;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.api.plugin.PluginBundleInfo;
@@ -36,6 +47,25 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
+import com.bloxbean.cardano.yano.api.utxo.index.IndexWriter;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoChanges;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContext;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributor;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.TransactionOutput;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore;
+import com.bloxbean.cardano.yano.runtime.utxo.index.IndexStorage;
+import com.bloxbean.cardano.yano.runtime.utxo.index.UtxoContributorPlugins;
+import org.slf4j.LoggerFactory;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
@@ -1514,6 +1544,7 @@ class PluginCatalogRuntimeTest {
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[0], getClass().getClassLoader())) {
             List<ReservedContribution> reserved = List.of(
+                    new ReservedContribution(ContributionKind.UTXO_INDEX_CONTRIBUTOR, "wallet"),
                     new ReservedContribution(ContributionKind.APP_STATE_MACHINE, "ordered-log"),
                     new ReservedContribution(ContributionKind.SEQUENCER_MODE, "fixed"),
                     new ReservedContribution(ContributionKind.SEQUENCER_MODE, "rotating"),
@@ -3210,6 +3241,110 @@ class PluginCatalogRuntimeTest {
                 .toList(), source.legacyProviders());
     }
 
+    @Test
+    void directoryUtxoIndexExampleStagesRestartsAndRollsBackWithoutOwnerFeatureCode() throws Exception {
+        Path directory = Files.createDirectory(tempDirectory.resolve("utxo-contributors"));
+        Files.copy(Path.of(System.getProperty("yano.test.utxo-index-example-jar")), directory.resolve("outputs.jar"));
+        try (PluginRuntimeEnvironment environment = PluginRuntimeEnvironment.open(PluginsOptions.defaults(),
+                PluginLoaderHandle.directory(directory, getClass().getClassLoader()));
+             DirectRocksDBChainState chain = new DirectRocksDBChainState(tempDirectory.resolve("utxo-db").toString());
+             DefaultUtxoStore store = new DefaultUtxoStore(chain, LoggerFactory.getLogger(getClass()),
+                     Map.of(YanoPropertyKeys.Metrics.ENABLED, false))) {
+            assertThat(environment.providers().names(UtxoIndexContributorProvider.class)).contains("example.output-index");
+            try (UtxoContributorPlugins plugins = new UtxoContributorPlugins(store,
+                    Map.of(UtxoContributorPlugins.CONFIG_KEY, List.of(Map.of("type", "example.output-index", "enabled", true))),
+                    environment.providers())) {
+                plugins.start();
+                store.wireAllegraBootstrapRemoval(chain);
+                store.initializeFreshFullStateGenesis(Map.of(), 42, Map.of(), Map.of(), 0, 0, "00".repeat(32));
+                String address = new Address(new byte[57]).toBech32();
+                TransactionBody tx = TransactionBody.builder().txHash("11".repeat(32)).inputs(Set.of())
+                        .outputs(List.of(TransactionOutput.builder().address(address).build())).build();
+                Block block = Block.builder().transactionBodies(List.of(tx)).invalidTransactions(List.of()).build();
+                store.applyBlock(new BlockAppliedEvent(Era.Babbage, 10, 1, "22".repeat(32), block));
+                try (var reader = new IndexStorage(chain::rocks, "example.output-index").open(null)) {
+                    assertThat(reader.scanCommitted("outputs", new byte[0], null, 10).entries()).hasSize(1);
+                }
+                plugins.close();
+                assertThat(environment.providers().hasPendingContributionCleanup()).isFalse();
+                plugins.start();
+                store.rollbackToPoint(Point.ORIGIN);
+                try (var reader = new IndexStorage(chain::rocks, "example.output-index").open(null)) {
+                    assertThat(reader.scanCommitted("outputs", new byte[0], null, 10).entries()).isEmpty();
+                }
+            }
+        }
+    }
+
+    @Test
+    @Timeout(20)
+    void runtimeCloseDrainsExternalIndexProductsBeforeAwaitingTheirCleanup() throws Exception {
+        Path directory = Files.createDirectory(tempDirectory.resolve("runtime-contributors"));
+        Files.copy(Path.of(System.getProperty("yano.test.utxo-index-example-jar")), directory.resolve("outputs.jar"));
+        PluginRuntimeEnvironment environment = PluginRuntimeEnvironment.open(PluginsOptions.defaults(),
+                PluginLoaderHandle.directory(directory, getClass().getClassLoader()));
+        YanoConfig config = YanoConfig.builder().enableClient(false).enableServer(false)
+                .useRocksDB(true).rocksDBPath(tempDirectory.resolve("runtime-index-db").toString()).build();
+        RuntimeOptions options = new RuntimeOptions(EventsOptions.defaults(), PluginsOptions.defaults(),
+                Map.of(YanoPropertyKeys.Utxo.ENABLED, true, UtxoContributorPlugins.CONFIG_KEY,
+                        List.of(Map.of("type", "example.output-index", "enabled", true))));
+        RuntimeNode node = new RuntimeNode(config, options, null, null, new Schedulers(),
+                BodyValidator.none(), environment);
+        try {
+            node.start();
+            assertThat(environment.hasPendingContributionCleanup()).isTrue();
+        } finally {
+            node.close();
+        }
+        assertThatThrownBy(environment::hasPendingContributionCleanup)
+                .isInstanceOf(IllegalStateException.class).hasMessage("Plugin runtime environment is closed");
+    }
+
+    @Test
+    @Timeout(20)
+    void asyncApplyDrainsBeforePluginAdmissionIsSealedAndRestartsCleanly() throws Exception {
+        Path directory = Files.createDirectory(tempDirectory.resolve("async-contributors"));
+        Files.copy(Path.of(System.getProperty("yano.test.utxo-index-example-jar")), directory.resolve("outputs.jar"));
+        PluginRuntimeEnvironment environment = PluginRuntimeEnvironment.open(PluginsOptions.defaults(),
+                PluginLoaderHandle.directory(directory, getClass().getClassLoader()));
+        YanoConfig config = YanoConfig.builder().enableClient(false).enableServer(false)
+                .useRocksDB(true).rocksDBPath(tempDirectory.resolve("async-index-db").toString()).build();
+        RuntimeOptions options = new RuntimeOptions(EventsOptions.defaults(), PluginsOptions.defaults(),
+                Map.of(YanoPropertyKeys.Utxo.ENABLED, true, YanoPropertyKeys.Utxo.APPLY_ASYNC, true,
+                        UtxoContributorPlugins.CONFIG_KEY, List.of(Map.of("type", "example.output-index", "enabled", true))));
+        try (RuntimeNode node = new RuntimeNode(config, options, null, null, new Schedulers(), BodyValidator.none(), environment)) {
+            node.start();
+            EventBus bus = (EventBus) privateField(node, "eventBus");
+            DefaultUtxoStore store = (DefaultUtxoStore) privateField(privateField(node, "utxoSubsystem"), "utxoStore");
+            UtxoIndexes indexes = (UtxoIndexes) privateField(store, "indexes");
+            CompletableFuture<Void> stopped;
+            synchronized (store) {
+                bus.publish(new BlockAppliedEvent(Era.Babbage, 10, 1, "11".repeat(32),
+                                Block.builder().transactionBodies(List.of()).invalidTransactions(List.of()).build()),
+                        EventMetadata.builder().build(), PublishOptions.builder().build());
+                stopped = CompletableFuture.runAsync(node::stop);
+                Thread.sleep(200); // Leave the queued writer blocked while stop reaches its drain barrier.
+                assertThat(stopped.isDone()).isFalse();
+                assertThat(environment.providers().require(UtxoIndexContributorProvider.class, "example.output-index").id())
+                        .isEqualTo("example.output-index");
+            }
+            stopped.get(5, TimeUnit.SECONDS);
+            indexes.registry().requireAvailable("example.output-index");
+            node.start();
+            bus.publish(new BlockAppliedEvent(Era.Babbage, 20, 2, "22".repeat(32),
+                            Block.builder().transactionBodies(List.of()).invalidTransactions(List.of()).build()),
+                    EventMetadata.builder().build(), PublishOptions.builder().build());
+            node.stop();
+            indexes.registry().requireAvailable("example.output-index");
+        }
+    }
+
+    private static Object privateField(Object owner, String name) throws Exception {
+        var field = owner.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(owner);
+    }
+
     private static Class<?> parityProvider(ContributionKind kind) {
         return switch (kind) {
             case NODE_PLUGIN -> ParityNodePlugin.class;
@@ -3224,6 +3359,7 @@ class PluginCatalogRuntimeTest {
             case FINALIZED_SINK -> ParitySinkProvider.class;
             case DOMAIN_API -> ParityDomainApiProvider.class;
             case LOCAL_READ_MODEL -> ParityLocalReadModelProvider.class;
+            case UTXO_INDEX_CONTRIBUTOR -> ParityUtxoIndexProvider.class;
             case HEALTH -> ParityHealthProvider.class;
             case METRICS -> ParityMetricsProvider.class;
         };
@@ -4003,6 +4139,16 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
         @Override
         public DomainApi create(DomainApiContext context) {
             throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityUtxoIndexProvider implements UtxoIndexContributorProvider {
+        @Override public String id() { return "parity-utxo-index-contributor"; }
+        @Override public UtxoIndexContributor create(UtxoIndexContext context) {
+            return new UtxoIndexContributor() {
+                @Override public void stageApply(UtxoChanges changes, IndexWriter writer) { }
+                @Override public void stageRollback(ChainPoint target, IndexWriter writer) { }
+            };
         }
     }
 

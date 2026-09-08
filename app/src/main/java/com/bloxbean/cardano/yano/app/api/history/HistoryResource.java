@@ -22,7 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 /** Finalized cross-dataset archive consistency metadata. */
-@Extension(name = ApiGroup.CORE, value = "")
+@Extension(name = ApiGroup.HISTORY, value = "")
 @Path("history")
 @Produces(MediaType.APPLICATION_JSON)
 public class HistoryResource {

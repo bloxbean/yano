@@ -1,7 +1,9 @@
 package com.bloxbean.cardano.yano.runtime.wallet;
 
+import com.bloxbean.cardano.client.address.util.AddressUtil;
+import com.bloxbean.cardano.client.exception.AddressExcepion;
 import com.bloxbean.cardano.yano.api.wallet.AddressFirstSeen;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexCoverage;
 import com.bloxbean.cardano.yano.api.wallet.WalletIndexUnavailableException;
 import com.bloxbean.cardano.yano.api.genesis.GenesisUtxo;
@@ -13,7 +15,7 @@ import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
-import org.rocksdb.WriteBatch;
+import com.bloxbean.cardano.yano.api.utxo.index.IndexWriter;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -21,6 +23,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -43,6 +46,7 @@ public final class WalletIndexStore {
     private final ColumnFamilyHandle meta;
     private final ColumnFamilyHandle undo;
     private final ColumnFamilyHandle genesis;
+    private final ColumnFamilyHandle errors;
     private final boolean firstSeenEnabled;
     private final boolean filtersEnabled;
 
@@ -53,9 +57,10 @@ public final class WalletIndexStore {
         this.meta = context.handle(WalletIndexCf.META);
         this.undo = context.handle(WalletIndexCf.UNDO);
         this.genesis = context.handle(WalletIndexCf.GENESIS);
+        this.errors = context.handle(WalletIndexCf.ERRORS);
         this.firstSeenEnabled = firstSeenEnabled;
         this.filtersEnabled = filtersEnabled;
-        if (enabled() && (firstSeen == null || filters == null || meta == null || undo == null)) {
+        if (enabled() && (firstSeen == null || filters == null || meta == null || undo == null || errors == null)) {
             throw new IllegalStateException("Wallet index column families are missing");
         }
     }
@@ -63,7 +68,42 @@ public final class WalletIndexStore {
     public boolean enabled() { return firstSeenEnabled || filtersEnabled; }
     public boolean filtersEnabled() { return filtersEnabled; }
 
-    public record FilterRecord(WalletChainPoint point, byte[] filter) { }
+    public boolean hasStoredMetadata() {
+        try { return db.get(meta, new byte[]{FIRST_SEEN}) != null || db.get(meta, new byte[]{FILTERS}) != null; }
+        catch (RocksDBException failure) { throw new IllegalStateException("Cannot read wallet metadata", failure); }
+    }
+
+    public record FilterRecord(ChainPoint point, byte[] filter, String error) {
+        public FilterRecord(ChainPoint point, byte[] filter) { this(point, filter, null); }
+    }
+
+    private void stageError(IndexWriter batch, byte feature, ChainPoint point, String reason) throws RocksDBException {
+        byte[] detail = reason.getBytes(StandardCharsets.UTF_8);
+        batch.put(WalletIndexCf.ERRORS, undoKey(feature, point.blockNumber()), ByteBuffer.allocate(32 + detail.length)
+                .put(HexFormat.of().parseHex(point.blockHash())).put(detail).array());
+    }
+
+    private String blockError(ChainPoint point) throws RocksDBException {
+        for (byte feature : new byte[]{FILTERS, FIRST_SEEN}) {
+            byte[] value = db.get(errors, undoKey(feature, point.blockNumber()));
+            if (value == null) continue;
+            if (value.length < 32 || !HexFormat.of().formatHex(value, 0, 32).equals(point.blockHash())) {
+                throw new IllegalStateException("Wallet error record does not match canonical filter");
+            }
+            return new String(value, 32, value.length - 32, StandardCharsets.UTF_8);
+        }
+        return null;
+    }
+
+    private boolean hasFirstSeenErrors(long through) throws RocksDBException {
+        try (RocksIterator it = db.newIterator(errors)) {
+            it.seek(undoKey(FIRST_SEEN, 0));
+            boolean found = it.isValid() && it.key()[0] == FIRST_SEEN
+                    && ByteBuffer.wrap(it.key(), 1, 8).getLong() <= through;
+            it.status();
+            return found;
+        }
+    }
 
     /** Short-lived iterator: no native handles survive an owner snapshot reinitialization. */
     public List<FilterRecord> readFilters(long afterBlock, long toBlock, int limit) throws RocksDBException {
@@ -76,16 +116,40 @@ public final class WalletIndexStore {
                 if (block > toBlock) break;
                 byte[] value = it.value();
                 if (value.length < 61) throw new IllegalStateException("Truncated filter record");
-                records.add(new FilterRecord(new WalletChainPoint(block, ByteBuffer.wrap(value).getLong(),
-                        HexFormat.of().formatHex(value, 8, 40)), Arrays.copyOfRange(value, 40, value.length)));
+                ChainPoint point = new ChainPoint(block, ByteBuffer.wrap(value).getLong(),
+                        HexFormat.of().formatHex(value, 8, 40));
+                records.add(new FilterRecord(point, Arrays.copyOfRange(value, 40, value.length)));
                 it.next();
             }
             it.status();
         }
+        if (!records.isEmpty() && hasErrorsBetween(records.getFirst().point().blockNumber(),
+                records.getLast().point().blockNumber())) {
+            for (int i = 0; i < records.size(); i++) {
+                FilterRecord record = records.get(i);
+                records.set(i, new FilterRecord(record.point(), record.filter(), blockError(record.point())));
+            }
+        }
         return records;
     }
 
-    public void stageScanGenesis(WriteBatch batch, List<GenesisUtxo> outputs) throws RocksDBException {
+    /** Two prefix probes per page; the normal error-free scan does no per-block error gets. */
+    private boolean hasErrorsBetween(long from, long through) throws RocksDBException {
+        try (ReadOptions options = new ReadOptions().setFillCache(false);
+             RocksIterator iterator = db.newIterator(errors, options)) {
+            for (byte feature : new byte[]{FILTERS, FIRST_SEEN}) {
+                iterator.seek(undoKey(feature, from));
+                boolean found = iterator.isValid() && iterator.key().length == 9
+                        && iterator.key()[0] == feature
+                        && ByteBuffer.wrap(iterator.key(), 1, 8).getLong() <= through;
+                iterator.status();
+                if (found) return true;
+            }
+            return false;
+        }
+    }
+
+    public void stageScanGenesis(IndexWriter batch, List<GenesisUtxo> outputs) throws RocksDBException {
         if (!filtersEnabled) return;
         for (GenesisUtxo output : outputs) {
             if (output.isByron()) continue; // No supported payment/stake credentials in Byron genesis.
@@ -94,7 +158,7 @@ public final class WalletIndexStore {
                 DataOutputStream out = new DataOutputStream(bytes);
                 out.writeUTF(output.address());
                 out.writeUTF(output.amount().toString());
-                batch.put(genesis, HexFormat.of().parseHex(output.txHash()), bytes.toByteArray());
+                batch.put(WalletIndexCf.GENESIS, HexFormat.of().parseHex(output.txHash()), bytes.toByteArray());
             } catch (IOException impossible) { throw new IllegalStateException(impossible); }
         }
     }
@@ -108,7 +172,7 @@ public final class WalletIndexStore {
                     DataInputStream in = new DataInputStream(new ByteArrayInputStream(it.value()));
                     outputs.add(new Utxo(new Outpoint(HexFormat.of().formatHex(it.key()), 0), in.readUTF(),
                             new BigInteger(in.readUTF()), List.of(), null, null, null, null, false,
-                            0, 0, WalletChainPoint.ORIGIN.blockHash()));
+                            0, 0, ChainPoint.ORIGIN.blockHash()));
                     if (in.available() != 0) throw new IOException("Trailing scan genesis bytes");
                 } catch (IOException failure) { throw new IllegalStateException("Invalid scan genesis", failure); }
             }
@@ -117,35 +181,35 @@ public final class WalletIndexStore {
         return outputs;
     }
 
-    public void stagePruneUndo(WriteBatch batch, long blockNumber) throws RocksDBException {
+    public void stagePruneUndo(IndexWriter batch, long blockNumber) throws RocksDBException {
         if (undo == null) return;
-        if (db.get(meta, new byte[]{FIRST_SEEN}) != null) batch.delete(undo, undoKey(FIRST_SEEN, blockNumber));
-        if (db.get(meta, new byte[]{FILTERS}) != null) batch.delete(undo, undoKey(FILTERS, blockNumber));
+        if (db.get(meta, new byte[]{FIRST_SEEN}) != null) batch.delete(WalletIndexCf.UNDO, undoKey(FIRST_SEEN, blockNumber));
+        if (db.get(meta, new byte[]{FILTERS}) != null) batch.delete(WalletIndexCf.UNDO, undoKey(FILTERS, blockNumber));
     }
 
     /** Only called by the owner's fresh, atomic genesis initialization. */
-    public void stageGenesis(WriteBatch batch, String identity, Collection<String> addresses)
+    public void stageGenesis(IndexWriter batch, String identity, Collection<String> addresses)
             throws RocksDBException {
         for (byte feature : new byte[]{FIRST_SEEN, FILTERS}) {
             if (!enabled(feature)) continue;
             if (db.get(meta, new byte[]{feature}) != null) {
                 throw new IllegalStateException("Wallet genesis coverage already exists");
             }
-            batch.put(meta, new byte[]{feature}, encodeState(new State(true,
-                    WalletChainPoint.ORIGIN, WalletChainPoint.ORIGIN, identity, null)));
+            batch.put(WalletIndexCf.META, new byte[]{feature}, encodeState(new State(true,
+                    ChainPoint.ORIGIN, ChainPoint.ORIGIN, identity, null)));
         }
         if (firstSeenEnabled) {
-            for (String address : addresses) batch.put(firstSeen, addressBytes(address), number(0));
+            for (String address : addresses) batch.put(WalletIndexCf.FIRST_SEEN, addressBytes(address), number(0));
         }
     }
 
-    public void stageBlock(WriteBatch batch, WalletChainPoint previous, WalletChainPoint point,
+    public void stageBlock(IndexWriter batch, ChainPoint previous, ChainPoint point,
                            Collection<String> createdAddresses, byte[] filter, String failure)
             throws RocksDBException {
         stageBlock(batch, previous, point, createdAddresses, filter, failure, failure);
     }
 
-    public void stageBlock(WriteBatch batch, WalletChainPoint previous, WalletChainPoint point,
+    public void stageBlock(IndexWriter batch, ChainPoint previous, ChainPoint point,
                            Collection<String> createdAddresses, byte[] filter,
                            String firstSeenFailure, String filterFailure) throws RocksDBException {
         for (byte feature : new byte[]{FIRST_SEEN, FILTERS}) {
@@ -153,73 +217,70 @@ public final class WalletIndexStore {
             byte[] key = new byte[]{feature};
             byte[] old = db.get(meta, key);
             State prior = old == null ? null : decodeState(old);
-            boolean nextCanonicalNumber = previous.equals(WalletChainPoint.ORIGIN)
+            boolean nextCanonicalNumber = previous.equals(ChainPoint.ORIGIN)
                     ? point.blockNumber() == 0 || point.blockNumber() == 1
                     : point.blockNumber() == previous.blockNumber() + 1;
             boolean contiguous = prior != null && prior.through.equals(previous)
                     && prior.reason == null && nextCanonicalNumber;
-            String reason = feature == FIRST_SEEN ? firstSeenFailure : filterFailure;
-            if (feature == FIRST_SEEN && (!contiguous || !prior.complete)) {
-                reason = "First-seen history is incomplete; enable before a fresh sync";
-            }
-            if (feature == FILTERS && filter == null && reason == null) reason = "Filter extraction failed";
+            String blockFailure = feature == FIRST_SEEN ? firstSeenFailure : filterFailure;
+            if (feature == FILTERS && filter == null && blockFailure == null) blockFailure = "Filter extraction failed";
+            if (blockFailure != null) stageError(batch, feature, point, blockFailure);
+            // Known block errors are separate from structural history gaps (late enablement, etc.).
+            String reason = feature == FIRST_SEEN && (!contiguous || !prior.complete)
+                    ? "First-seen history is incomplete; enable before a fresh sync" : null;
             State next = new State(contiguous && prior.complete, contiguous ? prior.from : point,
                     point, prior == null ? "uninitialized" : prior.identity, reason);
             List<byte[]> inserted = new ArrayList<>();
-            if (feature == FIRST_SEEN && reason == null) {
+            if (feature == FIRST_SEEN) {
                 TreeSet<byte[]> distinct = new TreeSet<>(Arrays::compareUnsigned);
-                for (String address : createdAddresses) distinct.add(addressBytes(address));
+                boolean recordedError = blockFailure != null;
+                for (String address : createdAddresses) {
+                    try { distinct.add(addressBytes(address)); }
+                    catch (IllegalArgumentException failure) {
+                        if (!recordedError) {
+                            stageError(batch, FIRST_SEEN, point, "Address decoding failed: " + address);
+                            recordedError = true;
+                        }
+                    }
+                }
                 for (byte[] address : distinct) {
                     if (db.get(firstSeen, address) == null) {
-                        batch.put(firstSeen, address, number(point.slot()));
+                        batch.put(WalletIndexCf.FIRST_SEEN, address, number(point.slot()));
                         inserted.add(address);
                     }
                 }
             }
-            if (feature == FILTERS && reason == null) {
+            if (feature == FILTERS) {
+                if (filter == null) filter = CredentialFilter.encode(new byte[16], List.of());
                 byte[] hash = HexFormat.of().parseHex(point.blockHash());
-                batch.put(filters, number(point.blockNumber()), ByteBuffer.allocate(40 + filter.length)
+                batch.put(WalletIndexCf.FILTERS, number(point.blockNumber()), ByteBuffer.allocate(40 + filter.length)
                         .putLong(point.slot()).put(hash).put(filter).array());
             }
-            batch.put(undo, undoKey(feature, point.blockNumber()), encodeUndo(old, inserted));
-            batch.put(meta, key, encodeState(next));
+            batch.put(WalletIndexCf.UNDO, undoKey(feature, point.blockNumber()), encodeUndo(old, inserted));
+            batch.put(WalletIndexCf.META, key, encodeState(next));
         }
     }
 
-    /** Fail closed even when the previous derived metadata cannot be decoded. */
-    public void stageUnavailable(WriteBatch batch, WalletChainPoint point, String reason) throws RocksDBException {
-        for (byte feature : new byte[]{FIRST_SEEN, FILTERS}) {
-            if (!enabled(feature)) continue;
-            byte[] key = new byte[]{feature};
-            byte[] old = db.get(meta, key);
-            State prior = null;
-            if (old != null) {
-                try { prior = decodeState(old); }
-                catch (RuntimeException invalidMetadata) { old = null; }
-            }
-            State unavailable = new State(false, prior == null ? point : prior.from, point,
-                    prior == null ? "unknown" : prior.identity, reason);
-            batch.put(undo, undoKey(feature, point.blockNumber()), encodeUndo(old, List.of()));
-            batch.put(meta, key, encodeState(unavailable));
-        }
-    }
 
     /** Stage all inverse operations, including indexes temporarily disabled in config. */
-    public void stageRollback(WriteBatch batch, WalletChainPoint target) throws RocksDBException {
+    public void stageRollback(IndexWriter batch, ChainPoint target) throws RocksDBException {
         if (meta == null) return;
         for (byte feature : new byte[]{FIRST_SEEN, FILTERS}) {
+            // Also remove failures when undo retention is insufficient; coverage still fails closed below.
+            batch.deleteRange(WalletIndexCf.ERRORS, undoKey(feature, Math.max(0, target.blockNumber() + 1)),
+                    undoKey((byte) (feature + 1), 0));
             try {
                 stageFeatureRollback(batch, target, feature);
             } catch (IllegalStateException invalidDerivedRecord) {
                 // Malformed derived records must not prevent the canonical UTxO rollback.
                 // Partial staged cleanup is safe because this feature is now unavailable.
-                batch.put(meta, new byte[]{feature}, encodeState(new State(false, target, target,
+                batch.put(WalletIndexCf.META, new byte[]{feature}, encodeState(new State(false, target, target,
                         "unknown", "Wallet rollback metadata or undo invalid; fresh sync required")));
             }
         }
     }
 
-    private void stageFeatureRollback(WriteBatch batch, WalletChainPoint target, byte feature)
+    private void stageFeatureRollback(IndexWriter batch, ChainPoint target, byte feature)
             throws RocksDBException {
         byte[] stateBytes = db.get(meta, new byte[]{feature});
         if (stateBytes == null) return;
@@ -240,10 +301,10 @@ public final class WalletIndexStore {
                 }
                 found = true;
                 Undo entry = decodeUndo(it.value());
-                for (byte[] address : entry.inserted) batch.delete(firstSeen, address);
-                if (feature == FILTERS) batch.delete(filters, number(block));
+                for (byte[] address : entry.inserted) batch.delete(WalletIndexCf.FIRST_SEEN, address);
+                if (feature == FILTERS) batch.delete(WalletIndexCf.FILTERS, number(block));
                 stateBytes = entry.previous;
-                batch.delete(undo, it.key());
+                batch.delete(WalletIndexCf.UNDO, it.key());
                 it.prev();
             }
             it.status();
@@ -257,22 +318,30 @@ public final class WalletIndexStore {
             restored = new State(false, current.from, target, current.identity,
                     "Wallet rollback hash mismatch; fresh sync required");
         }
-        if (restored == null) batch.delete(meta, new byte[]{feature});
-        else batch.put(meta, new byte[]{feature}, encodeState(restored));
+        if (restored == null) batch.delete(WalletIndexCf.META, new byte[]{feature});
+        else batch.put(WalletIndexCf.META, new byte[]{feature}, encodeState(restored));
     }
 
-    public WalletIndexCoverage coverage(byte feature, WalletChainPoint applied) throws RocksDBException {
+    public WalletIndexCoverage coverage(byte feature, ChainPoint applied) throws RocksDBException {
         if (!enabled(feature)) return new WalletIndexCoverage(false, false, null, null, null, "Index disabled");
         byte[] encoded = db.get(meta, new byte[]{feature});
         if (encoded == null) return new WalletIndexCoverage(true, false, null, null, null,
                 "Index missing; enable before a fresh sync");
-        State state = decodeState(encoded);
+        State state;
+        try { state = decodeState(encoded); }
+        catch (IllegalStateException invalid) {
+            return new WalletIndexCoverage(true, false, null, null, null,
+                    "Invalid wallet index metadata; fresh sync required");
+        }
         String reason = state.reason;
+        if (feature == FIRST_SEEN && hasFirstSeenErrors(applied.blockNumber())) {
+            reason = "First-seen history contains wallet indexing errors";
+        }
         if (!state.through.equals(applied)) reason = "Index is not at the applied canonical point";
         return new WalletIndexCoverage(true, state.complete, state.from, state.through, state.identity, reason);
     }
 
-    public AddressFirstSeen firstSeen(String address, WalletChainPoint applied) throws RocksDBException {
+    public AddressFirstSeen firstSeen(String address, ChainPoint applied) throws RocksDBException {
         byte[] key = addressBytes(address);
         WalletIndexCoverage coverage = coverage(FIRST_SEEN, applied);
         if (!coverage.available() || !coverage.completeFromOrigin()) {
@@ -289,7 +358,14 @@ public final class WalletIndexStore {
     }
 
     public static byte[] addressBytes(String value) {
-        return WalletAddresses.decode(value);
+        try {
+            // CCL dispatches to Address or ByronAddress. Preserve the full historical identity.
+            byte[] bytes = AddressUtil.addressToBytes(value);
+            if (bytes == null || bytes.length == 0) throw new IllegalArgumentException("Empty address");
+            return bytes;
+        } catch (AddressExcepion | RuntimeException failure) {
+            throw new IllegalArgumentException("Invalid address", failure);
+        }
     }
 
     private boolean enabled(byte feature) {
@@ -305,7 +381,7 @@ public final class WalletIndexStore {
         return ByteBuffer.allocate(9).put(feature).putLong(block).array();
     }
 
-    private record State(boolean complete, WalletChainPoint from, WalletChainPoint through,
+    private record State(boolean complete, ChainPoint from, ChainPoint through,
                          String identity, String reason) { }
     private record Undo(byte[] previous, List<byte[]> inserted) { }
 
@@ -328,12 +404,12 @@ public final class WalletIndexStore {
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes));
             if (in.readInt() != VERSION) throw new IOException("Unsupported wallet index format");
             boolean complete = in.readBoolean();
-            WalletChainPoint from = readPoint(in);
-            WalletChainPoint through = readPoint(in);
+            ChainPoint from = readPoint(in);
+            ChainPoint through = readPoint(in);
             String identity = in.readUTF();
             String reason = in.readUTF();
             if (in.available() != 0) throw new IOException("Trailing wallet coverage bytes");
-            if (identity.isBlank() || complete && !from.equals(WalletChainPoint.ORIGIN)
+            if (identity.isBlank() || complete && !from.equals(ChainPoint.ORIGIN)
                     || from.blockNumber() > through.blockNumber() || from.slot() > through.slot()) {
                 throw new IOException("Inconsistent wallet coverage");
             }
@@ -341,14 +417,14 @@ public final class WalletIndexStore {
         } catch (IOException | IllegalArgumentException failure) { throw new IllegalStateException("Invalid wallet index coverage", failure); }
     }
 
-    private static void writePoint(DataOutputStream out, WalletChainPoint point) throws IOException {
+    private static void writePoint(DataOutputStream out, ChainPoint point) throws IOException {
         out.writeLong(point.blockNumber());
         out.writeLong(point.slot());
         out.writeUTF(point.blockHash());
     }
 
-    private static WalletChainPoint readPoint(DataInputStream in) throws IOException {
-        return new WalletChainPoint(in.readLong(), in.readLong(), in.readUTF());
+    private static ChainPoint readPoint(DataInputStream in) throws IOException {
+        return new ChainPoint(in.readLong(), in.readLong(), in.readUTF());
     }
 
     private static byte[] encodeUndo(byte[] previous, List<byte[]> inserted) {

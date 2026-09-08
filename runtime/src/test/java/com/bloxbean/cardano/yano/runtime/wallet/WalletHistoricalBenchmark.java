@@ -5,7 +5,7 @@ import com.bloxbean.cardano.yaci.core.model.serializers.ByronBlockSerializer;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.api.wallet.WalletCredential;
 import com.bloxbean.cardano.yano.api.wallet.WalletScanRequest;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
@@ -89,7 +89,7 @@ public final class WalletHistoricalBenchmark {
                 long[] latency = new long[count];
                 long bytes = 0, peakDisk = 0;
                 long start = System.nanoTime(), cpu = OS.getProcessCpuTime(), allocated = allocated(), gc = gcMillis();
-                WalletChainPoint last = WalletChainPoint.ORIGIN;
+                ChainPoint last = ChainPoint.ORIGIN;
                 for (int number = 1; number <= count; number++) {
                     long before = System.nanoTime();
                     byte[] slotBytes = source.get("slot_by_number", number(number));
@@ -123,7 +123,7 @@ public final class WalletHistoricalBenchmark {
                     if (number % 500 == 0) store.pruneOnce();
                     latency[number - 1] = System.nanoTime() - before;
                     bytes += body.length + header.length;
-                    last = new WalletChainPoint(number, slot, hashHex);
+                    last = new ChainPoint(number, slot, hashHex);
                     if (number % 10000 == 0) {
                         peakDisk = Math.max(peakDisk, disk(directory));
                         System.out.println(name + " block=" + number + " seconds=" + ((System.nanoTime() - start) / 1e9));
@@ -166,7 +166,7 @@ public final class WalletHistoricalBenchmark {
                         if (size > credentials.size()) continue;
                         long scanStart = System.nanoTime(), scanCpu = OS.getProcessCpuTime();
                         long matches = 0;
-                        var request = new WalletScanRequest(1, credentials.subList(0, size), WalletChainPoint.ORIGIN, null, List.of());
+                        var request = new WalletScanRequest(1, credentials.subList(0, size), ChainPoint.ORIGIN, null, List.of());
                         String resourceLimit = "";
                         try (var scan = store.openWalletScan(request)) {
                             while (!scan.finished()) for (var event : scan.next()) if (event.type().equals("transaction")) matches++;

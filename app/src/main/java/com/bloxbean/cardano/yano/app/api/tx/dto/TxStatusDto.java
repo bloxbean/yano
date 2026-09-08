@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app.api.tx.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.quarkus.runtime.annotations.RegisterForReflection;
 
 /**
  * Wallet-facing transaction status (ADR-033 M2): distinguishes a transaction
@@ -14,6 +15,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * searched; an uncovered range is reported explicitly as unavailable.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
+@RegisterForReflection
 public record TxStatusDto(
         @JsonProperty("tx_hash") String txHash,
         @JsonProperty("status") String status,

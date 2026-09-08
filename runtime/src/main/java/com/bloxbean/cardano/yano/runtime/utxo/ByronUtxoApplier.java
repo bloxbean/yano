@@ -57,6 +57,11 @@ final class ByronUtxoApplier {
 
     ApplyResult stageBlock(ByronMainBlockAppliedEvent event, WriteBatch batch,
                            ConsumedAddressCapture consumedAddresses) throws RocksDBException {
+        return stageBlock(event, batch, consumedAddresses, null);
+    }
+
+    ApplyResult stageBlock(ByronMainBlockAppliedEvent event, WriteBatch batch,
+                           ConsumedAddressCapture consumedAddresses, UtxoChangeBuilder changes) throws RocksDBException {
         List<UtxoDeltaCodec.OutRef> created = new ArrayList<>();
         List<UtxoDeltaCodec.OutRef> spent = new ArrayList<>();
         Map<String, byte[]> intraBlockOutputs = new HashMap<>();
@@ -87,6 +92,7 @@ final class ByronUtxoApplier {
                     }
                     String address = output.getAddress().getBase58Raw();
                     BigInteger lovelace = output.getAmount();
+                    consumedAddresses.recordCreated(tx.getTxHash(), outputIndex, address);
                     StorageFilterChain filters = filterChainSupplier.get();
                     if (filters != null && !filters.isEmpty()) {
                         UtxoFilterContext context = new UtxoFilterContext(
@@ -103,9 +109,9 @@ final class ByronUtxoApplier {
                     stageOutput(batch, tx.getTxHash(), outputIndex, address,
                             event.slot(), value, created);
                     intraBlockOutputs.put(outpointId(tx.getTxHash(), outputIndex), value);
-                    consumedAddresses.recordCreated(tx.getTxHash(), outputIndex, address);
                 }
             }
+            if (changes != null) changes.transaction(tx, consumedAddresses);
         }
         return new ApplyResult(created, spent, filteredOutputs, consumedAddresses.view());
     }

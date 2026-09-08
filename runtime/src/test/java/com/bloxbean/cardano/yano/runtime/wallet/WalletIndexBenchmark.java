@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.wallet;
 
 import com.bloxbean.cardano.client.address.Address;
-import com.bloxbean.cardano.yano.api.wallet.WalletChainPoint;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.management.OperatingSystemMXBean;
@@ -10,6 +10,7 @@ import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.FlushOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.WriteBatch;
+import com.bloxbean.cardano.yano.runtime.utxo.index.IndexStorage;
 import org.rocksdb.WriteOptions;
 
 import java.lang.management.ManagementFactory;
@@ -79,11 +80,11 @@ public final class WalletIndexBenchmark {
              WriteOptions writes = new WriteOptions()) {
             RocksDB db = chain.rocks().db();
             WalletIndexStore index = new WalletIndexStore(chain.rocks(), firstSeen, filters);
-            try (WriteBatch batch = new WriteBatch()) {
-                index.stageGenesis(batch, "synthetic-119", List.of());
+            try (WriteBatch batch = new WriteBatch(); var writer = new IndexStorage(chain::rocks, "wallet", WalletUtxoIndexContributor.tables()).open(batch)) {
+                index.stageGenesis(writer, "synthetic-119", List.of());
                 db.write(writes, batch);
             }
-            WalletChainPoint previous = WalletChainPoint.ORIGIN;
+            ChainPoint previous = ChainPoint.ORIGIN;
             long[] latency = new long[count];
             long logicalBytes = 0;
             long start = System.nanoTime();
@@ -95,16 +96,16 @@ public final class WalletIndexBenchmark {
                 byte[] hash = new byte[32];
                 random.nextBytes(hash);
                 byte[] seed = Arrays.copyOf(hash, 16);
-                WalletChainPoint point = new WalletChainPoint(block, block * 20L, HexFormat.of().formatHex(hash));
+                ChainPoint point = new ChainPoint(block, block * 20L, HexFormat.of().formatHex(hash));
                 byte[] filter = filters ? CredentialFilter.encode(seed, elements(block)) : null;
                 List<String> created = firstSeen ? List.of(addresses[(int) ((block * 4L) % count)],
                         addresses[(int) ((block * 4L + 1) % count)], addresses[(int) ((block * 4L + 2) % count)],
                         addresses[(int) ((block * 4L + 3) % count)]) : List.of();
-                try (WriteBatch batch = new WriteBatch()) {
+                try (WriteBatch batch = new WriteBatch(); var writer = new IndexStorage(chain::rocks, "wallet", WalletUtxoIndexContributor.tables()).open(batch)) {
                     // Every mode makes the same base progress write and one durable batch.
                     batch.put(BASELINE_CURSOR, hash);
-                    index.stageBlock(batch, previous, point, created, filter, null);
-                    if (block > UNDO_WINDOW) index.stagePruneUndo(batch, block - UNDO_WINDOW);
+                    index.stageBlock(writer, previous, point, created, filter, null);
+                    if (block > UNDO_WINDOW) index.stagePruneUndo(writer, block - UNDO_WINDOW);
                     logicalBytes += batch.getDataSize();
                     db.write(writes, batch);
                 }

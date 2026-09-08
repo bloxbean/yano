@@ -112,6 +112,11 @@ tasks.named('test') {
 }
 
 tasks.register('pluginCatalogSemanticsTest', Test) {
+    dependsOn ':utxo-output-index-example:jar'
+    doFirst {
+        systemProperty 'yano.test.utxo-index-example-jar', project(':utxo-output-index-example')
+                .tasks.named('jar').get().archiveFile.get().asFile.absolutePath
+    }
     group = 'verification'
     description = 'Catalog-semantics tests that manage their own catalog inputs (no embedded index)'
     useJUnitPlatform()

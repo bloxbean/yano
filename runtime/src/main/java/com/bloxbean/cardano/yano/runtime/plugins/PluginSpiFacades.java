@@ -61,6 +61,14 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
+import com.bloxbean.cardano.yano.api.chain.ChainPoint;
+import com.bloxbean.cardano.yano.api.genesis.GenesisUtxo;
+import com.bloxbean.cardano.yano.api.utxo.index.IndexRequirements;
+import com.bloxbean.cardano.yano.api.utxo.index.IndexWriter;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoChanges;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContext;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributor;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthCheckDescriptor;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
@@ -414,6 +422,8 @@ final class PluginSpiFacades {
             case LOCAL_READ_MODEL -> new LocalReadModelProviderFacade(
                     (LocalReadModelProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
+            case UTXO_INDEX_CONTRIBUTOR -> new UtxoIndexProviderFacade(
+                    (UtxoIndexContributorProvider) delegate, effectiveLoader, activation, products, callbacks);
             case HEALTH -> new HealthProviderFacade(
                     (PluginHealthProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
@@ -964,6 +974,36 @@ final class PluginSpiFacades {
                 return products.facadeForNewInvocation(
                         value, api -> new DomainApiFacade(
                                 api, loader, activation, callbacks));
+            }));
+        }
+    }
+
+    private record UtxoIndexProviderFacade(
+            UtxoIndexContributorProvider delegate, ClassLoader loader, ActivationContext activation,
+            ProductReservations products, CallbackTracker callbacks
+    ) implements UtxoIndexContributorProvider {
+        @Override public String id() { return pluginCall(callbacks, loader, delegate::id); }
+        @Override public int schemaVersion() { return pluginCall(callbacks, loader, delegate::schemaVersion); }
+        @Override public IndexRequirements requirements() { return pluginCall(callbacks, loader, delegate::requirements); }
+        @Override public UtxoIndexContributor create(UtxoIndexContext context) {
+            return activation.call("create UTxO index contributor", () -> callbacks.call(() -> {
+                UtxoIndexContributor value = PluginThreadContext.call(loader, () -> delegate.create(context));
+                return products.facadeForNewInvocation(value, product -> new UtxoIndexContributor() {
+                    @Override public void stageApply(UtxoChanges changes, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stageApply(changes, writer));
+                    }
+                    @Override public void stageRollback(ChainPoint target, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stageRollback(target, writer));
+                    }
+                    @Override public void stageGenesis(String identity, List<GenesisUtxo> outputs, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stageGenesis(identity, outputs, writer));
+                    }
+                    @Override public void stagePruneUndo(ChainPoint point, IndexWriter writer) {
+                        pluginRun(callbacks, loader, () -> product.stagePruneUndo(point, writer));
+                    }
+                    @Override public void reinitialize() { pluginRun(callbacks, loader, product::reinitialize); }
+                    @Override public void close() { pluginCleanupRun(callbacks, loader, product::close); }
+                });
             }));
         }
     }

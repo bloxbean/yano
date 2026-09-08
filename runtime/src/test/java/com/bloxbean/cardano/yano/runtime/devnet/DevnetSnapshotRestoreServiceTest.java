@@ -41,6 +41,7 @@ class DevnetSnapshotRestoreServiceTest {
                 "pauseUtxoPrune:PT5S",
                 "pauseUtxoMetrics:PT5S",
                 "stopBlockPrune:PT5S",
+                "prepareUtxoStorage",
                 "restore",
                 "reinitializeUtxo",
                 "reinitializeLedger",
@@ -118,7 +119,7 @@ class DevnetSnapshotRestoreServiceTest {
         }
 
         assertEquals("restore failed", error.getMessage());
-        assertEquals(List.of("restore"), calls);
+        assertEquals(List.of("prepareUtxoStorage", "restore"), calls);
         assertTrue(gate.isDegraded());
         assertEquals("restore", gate.degradation().operation());
         assertEquals("Snapshot 'snap' failed after RocksDB replacement started; runtime remains paused "
@@ -142,6 +143,7 @@ class DevnetSnapshotRestoreServiceTest {
 
         assertEquals("Snapshot restored but runtime services did not resume; restart required", error.getMessage());
         assertEquals(List.of(
+                "prepareUtxoStorage",
                 "restore",
                 "reinitializeUtxo",
                 "reinitializeLedger",
@@ -355,6 +357,9 @@ class DevnetSnapshotRestoreServiceTest {
         public void reinitializeUtxoAndReconcileAfterSnapshotRestore() {
             calls.add("reinitializeUtxo");
         }
+
+        @Override
+        public void prepareUtxoForStorageReplacement() { calls.add("prepareUtxoStorage"); }
 
         @Override
         public void resumeUtxoAfterSnapshotRestore(boolean asyncUtxoHandlerPaused,

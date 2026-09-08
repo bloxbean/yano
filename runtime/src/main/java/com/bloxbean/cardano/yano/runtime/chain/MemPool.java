@@ -14,6 +14,19 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 public interface MemPool {
+    /** A detached snapshot: produced outputs include only those not consumed by another pending transaction. */
+    record UtxoOverlay(List<Utxo> outputs, Set<Outpoint> spent) {
+        public UtxoOverlay {
+            outputs = List.copyOf(outputs);
+            spent = Set.copyOf(spent);
+        }
+    }
+
+    /** Bounded subject snapshot used by public listing endpoints. */
+    default UtxoOverlay utxoOverlay(byte[] subject, boolean credential) {
+        throw new UnsupportedOperationException("Scoped mempool snapshot unavailable");
+    }
+
     @FunctionalInterface
     interface AdmissionValidator {
         List<VetoableEvent.Rejection> validate(byte[] txBytes, String txHash,
@@ -82,6 +95,9 @@ public interface MemPool {
 
     /** Remove invalid transactions and all dependent descendants. */
     int removeInvalidated(Set<String> txHashes);
+
+    /** Evict one transaction and its descendants atomically, returning all removed hashes. */
+    List<String> evictTransaction(String txHash);
 
     /** Evict the oldest N transactions. Returns actual count evicted. */
     int evictOldest(int count);

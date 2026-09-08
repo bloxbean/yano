@@ -15,6 +15,8 @@ import com.bloxbean.cardano.yano.runtime.plugins.PluginCatalogActivationExceptio
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
+import io.smallrye.config.source.yaml.YamlConfigSource;
+import com.bloxbean.cardano.yano.runtime.utxo.index.UtxoContributorPlugins;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigValue;
 import org.eclipse.microprofile.config.spi.ConfigSource;
@@ -24,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -83,6 +86,26 @@ class YanoProducerTest {
                 "yano.plugins.bundle.\"com.example.product-passport\".api-key"));
         assertFalse(options.toString().contains("endpoint"));
         assertFalse(options.toString().contains("top-secret-value"));
+    }
+
+    @Test
+    void yamlContributorListIsForwardedInTheShapeTheRuntimeParses() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new SmallRyeConfigBuilder().withSources(new YamlConfigSource("contributors", """
+                yano:
+                  utxo:
+                    index-contributors:
+                      - type: example.output-index
+                        enabled: true
+                        config:
+                          label: demo
+                """)).build();
+        Map<String, Object> globals = new HashMap<>();
+        producer.forwardUtxoContributorKeys(globals);
+        var registration = UtxoContributorPlugins.registrations(globals).getFirst();
+        assertEquals("example.output-index", registration.type());
+        assertTrue(registration.enabled());
+        assertEquals(Map.of("label", "demo"), registration.config());
     }
 
     @Test

@@ -21,6 +21,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginSelectionStatus;
 import com.bloxbean.cardano.yano.api.plugin.PluginTrustTier;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
+import com.bloxbean.cardano.yano.api.utxo.index.UtxoIndexContributorProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
@@ -937,6 +938,7 @@ final class PluginCatalogBuilder {
                 case L1_OBSERVER -> contribution.name().equals("metadata-label")
                         || contribution.name().equals("address-deposit");
                 case EFFECT_EXECUTOR -> contribution.name().equals("webhook");
+                case UTXO_INDEX_CONTRIBUTOR -> contribution.name().equals("wallet");
                 default -> false;
             };
             if (reserved) {
@@ -978,7 +980,7 @@ final class PluginCatalogBuilder {
                     SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
                     PluginTrustTier.CONSENSUS;
             case SIGNER_PROVIDER, EFFECT_EXECUTOR, OBSERVATION_PROVIDER,
-                    DOMAIN_API, LOCAL_READ_MODEL ->
+                    DOMAIN_API, LOCAL_READ_MODEL, UTXO_INDEX_CONTRIBUTOR ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };
@@ -1244,6 +1246,7 @@ final class PluginCatalogBuilder {
                     case FINALIZED_SINK -> ((FinalizedStreamSinkFactory) provider).scheme();
                     case DOMAIN_API -> ((DomainApiProvider) provider).id();
                     case LOCAL_READ_MODEL -> ((LocalReadModelProvider) provider).id();
+                    case UTXO_INDEX_CONTRIBUTOR -> ((UtxoIndexContributorProvider) provider).id();
                     case HEALTH -> ((PluginHealthProvider) provider).id();
                     case METRICS -> ((PluginMetricsProvider) provider).id();
                 });

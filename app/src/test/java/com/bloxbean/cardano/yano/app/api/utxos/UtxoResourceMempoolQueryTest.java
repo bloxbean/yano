@@ -15,8 +15,43 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 class UtxoResourceMempoolQueryTest {
+    @Test
+    void listingsUseOverlayOnlyWhenRequestedAndPreserveAllSelectors() {
+        UtxoState state = mock(UtxoState.class);
+        when(state.isEnabled()).thenReturn(true);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(ledger.getUtxoState()).thenReturn(state);
+        MempoolQueryGateway mempool = mock(MempoolQueryGateway.class);
+        UtxoResource resource = new UtxoResource();
+        resource.ledgerQuery = ledger;
+        resource.mempoolQueryGateway = mempool;
+        assertThat(resource.getUtxosByAddress("address", 1, 101, "asc", false, true).getStatus()).isEqualTo(400);
+        assertThat(resource.getUtxosByAddressAndAsset("address", "asset", 1, 101, "asc", true).getStatus()).isEqualTo(400);
+        assertThat(resource.getUtxosByPaymentCredential("credential", 1, 101, "asc", false).getStatus()).isEqualTo(400);
+        verifyNoInteractions(mempool);
+        resource.getUtxosByAddress("address", 1, 20, "asc", false, false);
+        resource.getUtxosByAddressAndAsset("address", "lovelace", 1, 20, "asc", false);
+        resource.getUtxosByPaymentCredential("credential", 1, 20, "asc", false);
+        verifyNoInteractions(mempool);
+
+        resource.getUtxosByAddress("address", 2, 10, "desc", false, true);
+        resource.getUtxosByAddress("credential", 2, 10, "asc", true, true);
+        resource.getUtxosByAddressAndAsset("address", "asset", 2, 10, "asc", true);
+        resource.getUtxosByPaymentCredential("credential", 0, 0, "asc", true);
+        verify(mempool).listUtxos("address", false, null, 2, 10, true);
+        verify(mempool).listUtxos("credential", true, null, 2, 10, false);
+        verify(mempool).listUtxos("address", false, "asset", 2, 10, false);
+        verify(mempool).listUtxos("credential", true, null, 1, 20, false);
+
+        resource.mempoolQueryGateway = MempoolQueryGateway.UNAVAILABLE;
+        assertThat(resource.getUtxosByAddress("address", 1, 20, "asc", false, true).getStatus())
+                .isEqualTo(503);
+    }
+
     @Test
     void pointLookupUsesTransientViewOnlyWhenRequested() {
         Outpoint outpoint = new Outpoint("11".repeat(32), 0);

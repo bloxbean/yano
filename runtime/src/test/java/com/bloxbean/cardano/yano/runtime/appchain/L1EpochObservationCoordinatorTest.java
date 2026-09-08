@@ -403,7 +403,8 @@ class L1EpochObservationCoordinatorTest {
             }
             completed.set(true);
             coordinator.onBlockApplied(86_400, 100, bytes(0x04));
-            await(() -> coordinator.status().toString().contains("ready=1"),
+            // A record becomes READY before the whole job completes; wait for the asserted state.
+            await(() -> Long.valueOf(1L).equals(coordinator.status().get("completedJobs")),
                     coordinator::status);
 
             assertThat(coordinator.healthy()).isTrue();

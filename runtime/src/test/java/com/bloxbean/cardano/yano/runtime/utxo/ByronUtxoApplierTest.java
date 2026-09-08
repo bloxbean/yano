@@ -124,6 +124,11 @@ class ByronUtxoApplierTest {
         seedMainnetAvvmOutput();
         String firstHash = hex(0x71);
         String secondHash = hex(0x72);
+        store.setFilterChain(new StorageFilterChain(List.of(new StorageFilter() {
+            @Override public boolean acceptByronUtxoOutput(UtxoFilterContext context, ByronMainBlock block, ByronTx tx) {
+                return !firstHash.equals(tx.getTxHash());
+            }
+        })));
         AtomicReference<String> genesisAddress = new AtomicReference<>();
         AtomicReference<String> intraBlockAddress = new AtomicReference<>();
         byte[] markerKey = "adr042.atomic".getBytes(StandardCharsets.UTF_8);

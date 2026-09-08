@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -564,6 +565,92 @@ class DefaultUtxoStoreTest {
 
         RuntimeException ex = assertThrows(RuntimeException.class, store::computeTotalUtxoLovelace);
         assertTrue(ex.getMessage().contains("Failed to decode UTXO while computing total lovelace"));
+    }
+
+    @Test
+    void readViewRejectsCanonicalAdvanceButKeepsSnapshotData() {
+        String address = UtxoTestAddresses.enterprise(10);
+        try (var view = store.openUtxoReadView(address, false, false)) {
+            view.checkCurrent();
+            Block block = Block.builder().era(Era.Babbage)
+                    .transactionBodies(List.of(TransactionBody.builder().txHash("ab".repeat(32))
+                            .outputs(List.of(TransactionOutput.builder().address(address)
+                                    .amounts(List.of(lovelaceAmount(1000))).build())).build()))
+                    .invalidTransactions(Collections.emptyList()).build();
+            publishBlock(10, 1, "cd".repeat(32), block);
+            assertTrue(view.next().isEmpty());
+            assertTrue(view.getUtxo(new Outpoint("ab".repeat(32), 0)).isEmpty());
+            assertThrows(IllegalStateException.class, view::checkCurrent);
+            assertThrows(IllegalStateException.class, view::next);
+        }
+        try (var current = store.openUtxoReadView(address, false, false)) {
+            current.checkCurrent();
+            assertTrue(current.next().isPresent());
+        }
+    }
+
+    private List<Utxo> readUtxos(String subject, boolean credential, int page, int count, boolean descending) {
+        try (var view = store.openUtxoReadView(subject, credential, descending)) {
+            long skip = (long) (page - 1) * count;
+            List<Utxo> outputs = new ArrayList<>();
+            for (var next = view.next(); next.isPresent(); next = view.next()) {
+                if (skip > 0) skip--;
+                else outputs.add(next.get());
+                if (outputs.size() == count) break;
+            }
+            return outputs;
+        }
+    }
+
+    @Test
+    void orderedOverlayReadsReverseWholeSubjectBeforePagination() {
+        String address = UtxoTestAddresses.enterprise(10);
+        String other = UtxoTestAddresses.enterprise(11);
+        TransactionOutput output = TransactionOutput.builder().address(address)
+                .amounts(List.of(lovelaceAmount(1000))).build();
+        TransactionOutput neighbor = TransactionOutput.builder().address(other)
+                .amounts(List.of(lovelaceAmount(1000))).build();
+        String hash = "aa".repeat(32);
+        Block block = Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(TransactionBody.builder().txHash(hash)
+                        .outputs(List.of(output, output, output, neighbor)).build()))
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(10, 1, "bb".repeat(32), block);
+
+        var asc = readUtxos(address, false, 1, 10, false);
+        assertEquals(List.of(0, 1, 2), asc.stream().map(u -> u.outpoint().index()).toList());
+        assertEquals(List.of(2, 1), readUtxos(address, false, 1, 2, true)
+                .stream().map(u -> u.outpoint().index()).toList());
+        assertEquals(List.of(0), readUtxos(address, false, 2, 2, true)
+                .stream().map(u -> u.outpoint().index()).toList());
+        assertTrue(readUtxos(address, false, Integer.MAX_VALUE, 256, true).isEmpty());
+        assertEquals(asc, store.getUtxosByAddress(address, 1, 10));
+        try (var forward = store.openUtxoReadView(address, false, false);
+             var reverse = store.openUtxoReadView(address, false, true)) {
+            assertThrows(IllegalStateException.class, () -> store.openUtxoReadView(address, false, false));
+            // Delete a live row after opening the snapshot: both the iterator and point reads stay consistent.
+            try {
+                store.getDb().delete(store.getCfUnspent(), UtxoKeyUtil.outpointKey(hash, 1));
+                assertEquals(0, forward.next().orElseThrow().outpoint().index());
+                assertEquals(1, forward.next().orElseThrow().outpoint().index());
+                assertEquals(2, reverse.next().orElseThrow().outpoint().index());
+                assertTrue(forward.getUtxo(new Outpoint(hash, 1)).isPresent());
+                assertTrue(store.getUtxo(new Outpoint(hash, 1)).isEmpty());
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            }
+            store.prepareForStorageReplacement();
+            assertThrows(IllegalStateException.class, forward::next);
+            assertThrows(IllegalStateException.class, reverse::next);
+            assertThrows(IllegalStateException.class, () -> store.openUtxoReadView(address, false, false));
+            store.reinitialize();
+        }
+        // The deleted output remains absent in new views, and stale index rows do not truncate iteration.
+        asc = readUtxos(address, false, 1, 10, false);
+        assertEquals(asc.reversed(), readUtxos(address, true, 1, 10, true));
+        String credential = HexUtil.encodeHexString(UtxoKeyUtil.paymentCred28(address));
+        assertEquals(asc.reversed(), readUtxos(credential, true, 1, 10, true));
+        assertThrows(IllegalArgumentException.class, () -> readUtxos("not-a-credential", true, 1, 10, true));
     }
 
     @Test
