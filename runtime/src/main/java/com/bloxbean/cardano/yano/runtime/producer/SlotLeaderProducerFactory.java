@@ -62,6 +62,20 @@ public final class SlotLeaderProducerFactory {
                                                               int slotLengthMillis,
                                                               int blockTimeMillis,
                                                               long sequentialScanLimitSlots) {
+        return createTimeTravel(signedBlockBuilder, epochNonceState, slotLeaderCheck, stakeDataProvider, poolHash,
+                resolvedGenesisTimestamp, slotLengthMillis, blockTimeMillis, sequentialScanLimitSlots, 1);
+    }
+
+    public SlotLeaderTimeTravelBlockProducer createTimeTravel(SignedBlockBuilder signedBlockBuilder,
+                                                              EpochNonceState epochNonceState,
+                                                              SlotLeaderCheck slotLeaderCheck,
+                                                              StakeDataProvider stakeDataProvider,
+                                                              String poolHash,
+                                                              long resolvedGenesisTimestamp,
+                                                              int slotLengthMillis,
+                                                              int blockTimeMillis,
+                                                              long sequentialScanLimitSlots,
+                                                              int backfillBlockIntervalSlots) {
         var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(
                 dependencies.chainState(),
                 dependencies.transactions(),
@@ -77,6 +91,7 @@ public final class SlotLeaderProducerFactory {
                 slotLengthMillis,
                 blockTimeMillis,
                 sequentialScanLimitSlots);
+        producer.setBackfillBlockIntervalSlots(backfillBlockIntervalSlots);
         dependencies.producerSubsystem().installSlotLeaderTimeTravel(producer);
         return producer;
     }
