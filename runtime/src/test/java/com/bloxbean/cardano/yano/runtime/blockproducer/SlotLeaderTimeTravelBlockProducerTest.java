@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -91,6 +92,42 @@ class SlotLeaderTimeTravelBlockProducerTest {
             releaseStakeRead.countDown();
             producer.stop();
         }
+    }
+
+    @Test
+    void forgeFirstBlockNowScansForTheFirstEligibleSlotWithoutWaitingForATick() {
+        List<Long> checkedSlots = new ArrayList<>();
+        SlotLeaderCheck countingNeverLeader = new SlotLeaderCheck(new byte[64], BigDecimal.ONE, null) {
+            @Override
+            public BlockSigner.VrfSignResult checkAndProve(long slot, byte[] epochNonce, BigDecimal sigma) {
+                checkedSlots.add(slot);
+                return null;
+            }
+        };
+        StakeDataProvider fullStake = new StakeDataProvider() {
+            @Override
+            public BigInteger getPoolStake(String poolHash, int epoch) {
+                return BigInteger.ONE;
+            }
+
+            @Override
+            public BigInteger getTotalStake(int epoch) {
+                return BigInteger.ONE;
+            }
+        };
+        EpochNonceState nonceState = new EpochNonceState(10_000, 1, 1.0);
+        nonceState.initFromGenesisHash(new byte[32]);
+        var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(
+                new InMemoryChainState(), emptyTransactions(), () -> null, new NoopEventBus(), scheduler,
+                null, nonceState, countingNeverLeader, fullStake,
+                "pool", System.currentTimeMillis() - 3_600_000, 1000, 60_000, 50);
+
+        int forged = producer.forgeFirstBlockNow();
+
+        // no eligible slot in the 50-slot scan window: nothing forged, but the scan happened at once
+        assertThat(forged).isEqualTo(0);
+        assertThat(checkedSlots).containsExactly(java.util.stream.LongStream.rangeClosed(0, 49).boxed().toArray(Long[]::new));
+        assertThat(producer.getLastCheckedSlot()).isEqualTo(49);
     }
 
     private static BlockTransactionSelector emptyTransactions() {

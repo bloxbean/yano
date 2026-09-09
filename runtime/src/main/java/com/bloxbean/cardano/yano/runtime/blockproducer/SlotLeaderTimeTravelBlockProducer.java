@@ -193,6 +193,22 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
         return produceToSlot(targetSlot, false);
     }
 
+    /**
+     * Forge the chain's first block right now instead of waiting for the first scheduled tick:
+     * scan from the last checked slot for the first eligible slot (bounded by the sequential scan
+     * limit and wall clock) and forge it. A fresh past-time-travel chain has no block until an
+     * eligible slot is found, and genesis UTXOs must bind to a real block, so the shift path calls
+     * this before storing them. Returns the number of blocks forged (0 when a tip already exists
+     * or no eligible slot was found in range).
+     */
+    public synchronized int forgeFirstBlockNow() {
+        if (chainState.getTip() != null) {
+            return 0;
+        }
+        long targetSlot = Math.min(lastCheckedSlot + sequentialScanLimitSlots, calculateWallClockSlot());
+        return produceToSlot(targetSlot, true);
+    }
+
     public long getLastCheckedSlot() {
         return lastCheckedSlot;
     }

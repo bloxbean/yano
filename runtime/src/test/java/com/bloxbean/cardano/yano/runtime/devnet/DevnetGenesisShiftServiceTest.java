@@ -63,6 +63,23 @@ class DevnetGenesisShiftServiceTest {
     }
 
     @Test
+    void freshSlotLeaderTimeTravelShiftForgesBeforeStoringGenesisUtxos() {
+        FakeActions actions = new FakeActions(genesisConfig(shelleyGenesis(5, 1.0)), true);
+
+        service(
+                true,
+                new ProducerStartupPlan(ProducerMode.SLOT_LEADER_TIME_TRAVEL, true),
+                false,
+                50_000,
+                actions)
+                .shiftGenesisAndStartProducer(3);
+
+        assertTrue(actions.slotLeaderTimeTravelStarted);
+        assertTrue(actions.genesisUtxosStoredForFreshStart);
+        assertEquals("start-slot-leader,store-utxos", actions.startupOrder.toString());
+    }
+
+    @Test
     void preservesValidationOrderAndMessages() {
         FakeActions actions = new FakeActions(genesisConfig(shelleyGenesis(10, 1.0)), true);
 
