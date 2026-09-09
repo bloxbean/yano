@@ -253,4 +253,14 @@ public final class BlockProducerHelper {
         if (epochProvider == null) return -1;
         return epochProvider.getEpochSlotCalc().slotToEpoch(slot);
     }
+
+    /**
+     * First slot of the epoch after the one containing {@code slot}, or -1 when no epoch
+     * provider is installed. Used by sparse backfills so every epoch starts with a block.
+     */
+    public static long firstSlotOfNextEpoch(long slot) {
+        if (epochProvider == null || slot < 0) return -1;
+        var calc = epochProvider.getEpochSlotCalc();
+        return calc.epochToStartSlot(calc.slotToEpoch(slot) + 1);
+    }
 }

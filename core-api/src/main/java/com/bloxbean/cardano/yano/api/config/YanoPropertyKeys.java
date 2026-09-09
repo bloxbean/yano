@@ -525,6 +525,8 @@ public final class YanoPropertyKeys {
                 "yano.block-producer.past-time-travel-slot-leader-mode";
         public static final String PROCESS_SKIPPED_EPOCHS =
                 "yano.block-producer.process-skipped-epochs";
+        public static final String BACKFILL_BLOCK_INTERVAL_SLOTS =
+                "yano.block-producer.backfill-block-interval-slots";
 
         private BlockProducer() {
         }

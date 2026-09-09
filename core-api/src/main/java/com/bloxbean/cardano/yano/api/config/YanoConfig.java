@@ -106,6 +106,13 @@ public class YanoConfig implements NodeConfig {
     @Builder.Default
     private boolean pastTimeTravelSlotLeaderMode = false;
 
+    // Empty-block backfills (catch-up, time advance, epoch fast-forward) place one block every
+    // this many slots instead of every slot. The first slot of every epoch and the target slot
+    // always get a block. Keep it below the stability window (3k/f) so a Haskell relay can
+    // still validate the chain. 1 = one block per slot (default).
+    @Builder.Default
+    private int backfillBlockIntervalSlots = 1;
+
     // Epoch/slot config — set from genesis at runtime via propagateGenesisToConfig().
     // No defaults: fail fast if not initialized from genesis.
     private Long epochLength;           // From shelley-genesis.json epochLength
@@ -571,6 +578,11 @@ public class YanoConfig implements NodeConfig {
             if (!enableBlockProducer) {
                 throw new IllegalArgumentException("Past time travel mode requires block producer to be enabled");
             }
+        }
+
+        if (backfillBlockIntervalSlots < 1) {
+            throw new IllegalArgumentException("Backfill block interval must be at least 1 slot, got: "
+                    + backfillBlockIntervalSlots);
         }
 
         if (pastTimeTravelSlotLeaderMode) {

@@ -44,6 +44,7 @@ public class DevnetBlockProducer implements BlockProducerService {
     private long lastUsedSlot = -1;
     private volatile boolean running;
     private volatile boolean forceSequentialSlots = false;
+    private volatile int backfillBlockIntervalSlots = 1;
 
     public DevnetBlockProducer(ChainState chainState, MemPool memPool, NodeServer nodeServer,
                          EventBus eventBus, ScheduledExecutorService scheduler,
@@ -351,8 +352,44 @@ public class DevnetBlockProducer implements BlockProducerService {
     }
 
     /**
+     * Set how many slots apart empty-block backfills place their blocks. 1 (default) places a block
+     * in every slot. Larger values thin the backfill; the first slot of every epoch and the target
+     * slot always get a block. Keep it below the stability window (3k/f) so a Haskell relay can
+     * still validate the chain.
+     */
+    public void setBackfillBlockIntervalSlots(int backfillBlockIntervalSlots) {
+        if (backfillBlockIntervalSlots < 1) {
+            throw new IllegalArgumentException("backfillBlockIntervalSlots must be at least 1, got "
+                    + backfillBlockIntervalSlots);
+        }
+        this.backfillBlockIntervalSlots = backfillBlockIntervalSlots;
+    }
+
+    public int getBackfillBlockIntervalSlots() {
+        return backfillBlockIntervalSlots;
+    }
+
+    /**
+     * Slot of the next backfill block after {@code fromSlot}: {@code fromSlot + interval}, pulled back
+     * to the first slot of the next epoch when the step would cross an epoch boundary, and never past
+     * {@code targetSlot}. With interval 1 this is always {@code fromSlot + 1}.
+     */
+    long nextBackfillSlot(long fromSlot, long targetSlot) {
+        long next = Math.min(fromSlot + backfillBlockIntervalSlots, targetSlot);
+        if (backfillBlockIntervalSlots > 1) {
+            long epochStart = BlockProducerHelper.firstSlotOfNextEpoch(fromSlot);
+            if (epochStart > fromSlot && epochStart < next) {
+                next = epochStart;
+            }
+        }
+        return next;
+    }
+
+    /**
      * Produce empty blocks rapidly from the current tip slot up to (and including) targetSlot.
-     * Each block advances by one slot step. Used for time/slot advance in devnet mode.
+     * By default each block advances by one slot; with a backfill block interval above 1, blocks are
+     * placed every interval slots plus the first slot of each epoch and the target slot.
+     * Used for time/slot advance and catch-up in devnet mode.
      *
      * @param targetSlot the slot to advance to
      * @return number of blocks produced
@@ -364,7 +401,11 @@ public class DevnetBlockProducer implements BlockProducerService {
         }
 
         int blocksProduced = 0;
-        long currentSlot = lastUsedSlot + 1;
+        long currentSlot = nextBackfillSlot(lastUsedSlot, targetSlot);
+        if (backfillBlockIntervalSlots > 1) {
+            log.info("Sparse backfill: one block every {} slots from slot {} to {}",
+                    backfillBlockIntervalSlots, lastUsedSlot + 1, targetSlot);
+        }
 
         while (currentSlot <= targetSlot) {
             BlockProducerHelper.prepareEpochTransitionBeforeBlock(
@@ -385,7 +426,10 @@ public class DevnetBlockProducer implements BlockProducerService {
                 log.info("Time advance progress: {} blocks produced, current slot={}", blocksProduced, currentSlot);
             }
 
-            currentSlot++;
+            if (currentSlot >= targetSlot) {
+                break;
+            }
+            currentSlot = nextBackfillSlot(currentSlot, targetSlot);
         }
 
         // Notify server once at the end

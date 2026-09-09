@@ -2471,7 +2471,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 config.isLazyBlockProduction(),
                 resolvedGenesisTimestamp,
                 config.getSlotLengthMillis(),
-                genesisConfig);
+                genesisConfig,
+                config.getBackfillBlockIntervalSlots());
     }
 
     private DevnetBlockBuilderFactory devnetBlockBuilderFactory() {
