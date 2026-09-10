@@ -48,6 +48,7 @@ All config is in `application.yml` under the `%devnet` profile. Key properties:
 | `yano.block-producer.lazy` | false | If true, skip empty blocks |
 | `yano.block-producer.genesis-timestamp` | 0 (auto) | Genesis time; 0 = use current time |
 | `yano.block-producer.slot-length-millis` | 0 (auto) | Slot length; 0 = derive from genesis |
+| `yano.block-producer.backfill-block-interval-slots` | 1 | Backfills place one block every N slots instead of every slot. Empty-block backfills (catch-up, time advance, epoch fast-forward) always add the first slot of each epoch and the target slot; the slot-leader catch-up forges the first eligible slot after each interval and after each epoch start, skipping leadership checks in between. Keep N below the stability window (3k/f) so a Haskell relay can validate the chain |
 | `yano.dev-mode` | true | Enables devnet REST APIs |
 
 Genesis files are at `config/network/devnet/`.

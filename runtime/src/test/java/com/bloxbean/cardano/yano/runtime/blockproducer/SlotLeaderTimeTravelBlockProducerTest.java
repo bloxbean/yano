@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -17,6 +18,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SlotLeaderTimeTravelBlockProducerTest {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -90,6 +92,112 @@ class SlotLeaderTimeTravelBlockProducerTest {
         } finally {
             releaseStakeRead.countDown();
             producer.stop();
+        }
+    }
+
+    @Test
+    void nextSparseCandidateSlot_stepsByIntervalButNeverPastAnEpochStart() {
+        BlockProducerHelper.setEpochParamProvider(new EpochLengthProvider(250));
+        try {
+            assertThat(SlotLeaderTimeTravelBlockProducer.nextSparseCandidateSlot(1, 0, 100)).isEqualTo(100);
+            assertThat(SlotLeaderTimeTravelBlockProducer.nextSparseCandidateSlot(201, 200, 100)).isEqualTo(250);
+            assertThat(SlotLeaderTimeTravelBlockProducer.nextSparseCandidateSlot(251, 250, 100)).isEqualTo(350);
+            // an interval longer than an epoch still visits every epoch start
+            assertThat(SlotLeaderTimeTravelBlockProducer.nextSparseCandidateSlot(1, 0, 1_000)).isEqualTo(250);
+            // never earlier than the slot being scanned, and interval 1 or no tip means no skipping
+            assertThat(SlotLeaderTimeTravelBlockProducer.nextSparseCandidateSlot(400, 0, 100)).isEqualTo(400);
+            assertThat(SlotLeaderTimeTravelBlockProducer.nextSparseCandidateSlot(7, 6, 1)).isEqualTo(7);
+            assertThat(SlotLeaderTimeTravelBlockProducer.nextSparseCandidateSlot(7, -1, 100)).isEqualTo(7);
+        } finally {
+            BlockProducerHelper.setEpochParamProvider(null);
+        }
+    }
+
+    @Test
+    void catchUpSkipsLeadershipChecksInsideTheIntervalButScheduledScanDoesNot() {
+        InMemoryChainState chainState = new InMemoryChainState();
+        var existing = new DevnetBlockBuilder().buildBlock(0, 0, null, List.of());
+        chainState.storeBlock(existing.blockHash(), 0L, 0L, existing.blockCbor());
+        chainState.storeBlockHeader(existing.blockHash(), 0L, 0L, existing.wrappedHeaderCbor());
+
+        List<Long> checkedSlots = new ArrayList<>();
+        SlotLeaderCheck countingNeverLeader = new SlotLeaderCheck(new byte[64], BigDecimal.ONE, null) {
+            @Override
+            public BlockSigner.VrfSignResult checkAndProve(long slot, byte[] epochNonce, BigDecimal sigma) {
+                checkedSlots.add(slot);
+                return null;
+            }
+        };
+        StakeDataProvider fullStake = new StakeDataProvider() {
+            @Override
+            public BigInteger getPoolStake(String poolHash, int epoch) {
+                return BigInteger.ONE;
+            }
+
+            @Override
+            public BigInteger getTotalStake(int epoch) {
+                return BigInteger.ONE;
+            }
+        };
+        EpochNonceState nonceState = new EpochNonceState(10_000, 1, 1.0);
+        nonceState.initFromGenesisHash(new byte[32]);
+        var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(
+                chainState, emptyTransactions(), () -> null, new NoopEventBus(), scheduler,
+                null, nonceState, countingNeverLeader, fullStake,
+                "pool", System.currentTimeMillis() - 60_000, 1000, 1, 1);
+        producer.setBackfillBlockIntervalSlots(100);
+
+        producer.produceToSlot(1_000);
+
+        assertThat(checkedSlots).isNotEmpty();
+        assertThat(checkedSlots.get(0)).isEqualTo(100L);
+        assertThat(checkedSlots).hasSize(901);
+        assertThat(producer.getLastCheckedSlot()).isEqualTo(1_000);
+
+        // a catch-up that ends inside the interval forges nothing and lands on the target
+        checkedSlots.clear();
+        producer.setBackfillBlockIntervalSlots(5_000);
+        producer.produceToSlot(1_500);
+        assertThat(checkedSlots).isEmpty();
+        assertThat(producer.getLastCheckedSlot()).isEqualTo(1_500);
+    }
+
+    @Test
+    void setBackfillBlockIntervalSlots_rejectsValuesBelowOne() {
+        var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(
+                new InMemoryChainState(), emptyTransactions(), () -> null, new NoopEventBus(), scheduler,
+                null, new EpochNonceState(10, 1, 1.0), null, null,
+                "pool", System.currentTimeMillis() - 60_000, 1000, 1, 1);
+        assertThatThrownBy(() -> producer.setBackfillBlockIntervalSlots(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(producer.getBackfillBlockIntervalSlots()).isEqualTo(1);
+    }
+
+    private static final class EpochLengthProvider implements com.bloxbean.cardano.yano.api.EpochParamProvider {
+        private final long epochLength;
+
+        private EpochLengthProvider(long epochLength) {
+            this.epochLength = epochLength;
+        }
+
+        @Override
+        public BigInteger getKeyDeposit(long epoch) {
+            return BigInteger.ZERO;
+        }
+
+        @Override
+        public BigInteger getPoolDeposit(long epoch) {
+            return BigInteger.ZERO;
+        }
+
+        @Override
+        public long getEpochLength() {
+            return epochLength;
+        }
+
+        @Override
+        public long getByronSlotsPerEpoch() {
+            return epochLength;
         }
     }
 

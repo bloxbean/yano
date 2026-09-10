@@ -450,6 +450,100 @@ class DevnetBlockProducerTest {
         assertThat(chainState.getTip().getBlockNumber()).isEqualTo(0);
     }
 
+    @Test
+    void produceEmptyBlocksToSlot_defaultIntervalPlacesABlockInEverySlot() {
+        RecordingEventBus eventBus = new RecordingEventBus();
+        blockProducer = createDevnetBlockProducerAtTip(0, new DevnetBlockBuilder(), eventBus);
+        blockProducer.stop();
+
+        int produced = blockProducer.produceEmptyBlocksToSlot(20);
+
+        assertThat(produced).isEqualTo(20);
+        assertThat(chainState.getTip().getSlot()).isEqualTo(20);
+        assertThat(chainState.getTip().getBlockNumber()).isEqualTo(20);
+        assertThat(producedSlots(eventBus)).hasSize(20).startsWith(1L, 2L, 3L).endsWith(19L, 20L);
+    }
+
+    @Test
+    void produceEmptyBlocksToSlot_sparseIntervalPlacesBlocksEveryNSlotsAndAtTheTarget() {
+        RecordingEventBus eventBus = new RecordingEventBus();
+        blockProducer = createDevnetBlockProducerAtTip(0, new DevnetBlockBuilder(), eventBus);
+        blockProducer.stop();
+        blockProducer.setBackfillBlockIntervalSlots(100);
+
+        int produced = blockProducer.produceEmptyBlocksToSlot(1_050);
+
+        assertThat(produced).isEqualTo(11);
+        assertThat(producedSlots(eventBus)).containsExactly(
+                100L, 200L, 300L, 400L, 500L, 600L, 700L, 800L, 900L, 1_000L, 1_050L);
+        assertThat(chainState.getTip().getSlot()).isEqualTo(1_050);
+        assertThat(chainState.getTip().getBlockNumber()).isEqualTo(11);
+    }
+
+    @Test
+    void produceEmptyBlocksToSlot_sparseIntervalStillStartsEveryEpochWithABlock() {
+        BlockProducerHelper.setEpochParamProvider(new TestEpochParamProvider(250));
+        RecordingEventBus eventBus = new RecordingEventBus();
+        blockProducer = createDevnetBlockProducerAtTip(0, new DevnetBlockBuilder(), eventBus);
+        blockProducer.stop();
+        blockProducer.setBackfillBlockIntervalSlots(100);
+
+        int produced = blockProducer.produceEmptyBlocksToSlot(620);
+
+        assertThat(produced).isEqualTo(8);
+        assertThat(producedSlots(eventBus)).containsExactly(100L, 200L, 250L, 350L, 450L, 500L, 600L, 620L);
+        assertThat(eventBus.events().stream().filter(EpochTransitionEvent.class::isInstance).count()).isEqualTo(2);
+    }
+
+    @Test
+    void produceEmptyBlocksToSlot_intervalLongerThanAnEpochStillVisitsEveryEpoch() {
+        BlockProducerHelper.setEpochParamProvider(new TestEpochParamProvider(50));
+        RecordingEventBus eventBus = new RecordingEventBus();
+        blockProducer = createDevnetBlockProducerAtTip(0, new DevnetBlockBuilder(), eventBus);
+        blockProducer.stop();
+        blockProducer.setBackfillBlockIntervalSlots(1_000);
+
+        blockProducer.produceEmptyBlocksToSlot(175);
+
+        assertThat(producedSlots(eventBus)).containsExactly(50L, 100L, 150L, 175L);
+    }
+
+    @Test
+    void produceEmptyBlocksToSlot_afterSparseBackfillLiveProductionContinuesFromTheTip() {
+        // Running producer with a one-minute schedule, so only the explicit produceBlock() call below forges.
+        var existing = new DevnetBlockBuilder().buildBlock(0, 0, null, List.of());
+        chainState.storeBlock(existing.blockHash(), 0L, 0L, existing.blockCbor());
+        chainState.storeBlockHeader(existing.blockHash(), 0L, 0L, existing.wrappedHeaderCbor());
+        blockProducer = new DevnetBlockProducer(
+                chainState, memPool, null, new NoopEventBus(), scheduler, new DevnetBlockBuilder(),
+                60_000, false, System.currentTimeMillis(), 1000, null,
+                new DummyTransactionValidationService(null, null), null);
+        blockProducer.setForceSequentialSlots(true);
+        blockProducer.start();
+        blockProducer.setBackfillBlockIntervalSlots(40);
+        blockProducer.produceEmptyBlocksToSlot(90);
+
+        blockProducer.produceBlock();
+
+        assertThat(chainState.getTip().getSlot()).isEqualTo(91);
+        assertThat(chainState.getTip().getBlockNumber()).isEqualTo(4);
+    }
+
+    @Test
+    void setBackfillBlockIntervalSlots_rejectsValuesBelowOne() {
+        blockProducer = createDevnetBlockProducer(1000, false);
+
+        assertThrows(IllegalArgumentException.class, () -> blockProducer.setBackfillBlockIntervalSlots(0));
+        assertThat(blockProducer.getBackfillBlockIntervalSlots()).isEqualTo(1);
+    }
+
+    private static List<Long> producedSlots(RecordingEventBus eventBus) {
+        return eventBus.events().stream()
+                .filter(BlockProducedEvent.class::isInstance)
+                .map(event -> ((BlockProducedEvent) event).slot())
+                .toList();
+    }
+
     private DevnetBlockProducer createDevnetBlockProducer(int blockTimeMillis, boolean lazy) {
         return new DevnetBlockProducer(
                 chainState, memPool, null, new NoopEventBus(), scheduler,

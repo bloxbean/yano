@@ -46,6 +46,7 @@ public final class DevnetProducerFactory {
                 settings.resolvedGenesisTimestamp(),
                 settings.slotLengthMillis(),
                 settings.genesisConfig());
+        producer.setBackfillBlockIntervalSlots(settings.backfillBlockIntervalSlots());
         dependencies.producerSubsystem().installDevnet(producer, timeTravel);
         return producer;
     }
@@ -58,7 +59,22 @@ public final class DevnetProducerFactory {
             boolean lazyBlockProduction,
             long resolvedGenesisTimestamp,
             int slotLengthMillis,
-            GenesisConfig genesisConfig) {
+            GenesisConfig genesisConfig,
+            int backfillBlockIntervalSlots) {
+        public Settings {
+            if (backfillBlockIntervalSlots < 1) {
+                throw new IllegalArgumentException(
+                        "backfillBlockIntervalSlots must be at least 1, got " + backfillBlockIntervalSlots);
+            }
+        }
+
+        public Settings(int blockTimeMillis,
+                        boolean lazyBlockProduction,
+                        long resolvedGenesisTimestamp,
+                        int slotLengthMillis,
+                        GenesisConfig genesisConfig) {
+            this(blockTimeMillis, lazyBlockProduction, resolvedGenesisTimestamp, slotLengthMillis, genesisConfig, 1);
+        }
     }
 
     /**

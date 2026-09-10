@@ -351,6 +351,50 @@ class YanoConfigTest {
     }
 
     @Test
+    void validate_backfillBlockIntervalSlots_defaultsToOneBlockPerSlot() {
+        YanoConfig config = YanoConfig.builder()
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .enableBlockProducer(true)
+                .devMode(true)
+                .pastTimeTravelMode(true)
+                .protocolMagic(42)
+                .build();
+
+        assertThat(config.getBackfillBlockIntervalSlots()).isEqualTo(1);
+        assertThatCode(config::validate).doesNotThrowAnyException();
+    }
+
+    @Test
+    void validate_backfillBlockIntervalSlots_acceptsSparseIntervalAndRejectsZero() {
+        YanoConfig sparse = YanoConfig.builder()
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .enableBlockProducer(true)
+                .devMode(true)
+                .pastTimeTravelMode(true)
+                .backfillBlockIntervalSlots(900)
+                .protocolMagic(42)
+                .build();
+        assertThatCode(sparse::validate).doesNotThrowAnyException();
+
+        YanoConfig zero = YanoConfig.builder()
+                .enableClient(false)
+                .enableServer(true)
+                .serverPort(13337)
+                .enableBlockProducer(true)
+                .devMode(true)
+                .backfillBlockIntervalSlots(0)
+                .protocolMagic(42)
+                .build();
+        assertThatThrownBy(zero::validate)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Backfill block interval");
+    }
+
+    @Test
     void validate_pastTimeTravelMode_shouldThrowWhenDevModeDisabled() {
         YanoConfig config = YanoConfig.builder()
                 .enableClient(false)

@@ -2471,7 +2471,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 config.isLazyBlockProduction(),
                 resolvedGenesisTimestamp,
                 config.getSlotLengthMillis(),
-                genesisConfig);
+                genesisConfig,
+                config.getBackfillBlockIntervalSlots());
     }
 
     private DevnetBlockBuilderFactory devnetBlockBuilderFactory() {
@@ -2590,7 +2591,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     resolvedGenesisTimestamp,
                     config.getSlotLengthMillis(),
                     config.getBlockTimeMillis(),
-                    sequentialScanLimitSlots);
+                    sequentialScanLimitSlots,
+                    config.getBackfillBlockIntervalSlots());
         } catch (Exception e) {
             throw new RuntimeException("Failed to create past-time-travel slot-leader block producer", e);
         }
