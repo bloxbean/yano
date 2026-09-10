@@ -367,7 +367,7 @@ class YanoConfigTest {
     }
 
     @Test
-    void validate_backfillBlockIntervalSlots_acceptsSparseIntervalAndRejectsZero() {
+    void validate_backfillBlockIntervalSlots_acceptsSparseIntervalAndRejectsNegative() {
         YanoConfig sparse = YanoConfig.builder()
                 .enableClient(false)
                 .enableServer(true)
@@ -379,6 +379,8 @@ class YanoConfigTest {
                 .protocolMagic(42)
                 .build();
         assertThatCode(sparse::validate).doesNotThrowAnyException();
+        sparse.setBackfillBlockIntervalSlots(0);
+        assertThatCode(sparse::validate).doesNotThrowAnyException();
 
         YanoConfig zero = YanoConfig.builder()
                 .enableClient(false)
@@ -386,7 +388,7 @@ class YanoConfigTest {
                 .serverPort(13337)
                 .enableBlockProducer(true)
                 .devMode(true)
-                .backfillBlockIntervalSlots(0)
+                .backfillBlockIntervalSlots(-1)
                 .protocolMagic(42)
                 .build();
         assertThatThrownBy(zero::validate)

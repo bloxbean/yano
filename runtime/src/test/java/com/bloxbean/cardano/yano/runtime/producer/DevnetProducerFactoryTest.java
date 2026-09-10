@@ -67,8 +67,8 @@ class DevnetProducerFactoryTest {
     }
 
     @Test
-    void settingsRejectABackfillBlockIntervalBelowOne() {
-        assertThatThrownBy(() -> new DevnetProducerFactory.Settings(60_000, true, System.currentTimeMillis(), 1000, null, 0))
+    void settingsRejectANegativeBackfillBlockInterval() {
+        assertThatThrownBy(() -> new DevnetProducerFactory.Settings(60_000, true, System.currentTimeMillis(), 1000, null, -1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("backfillBlockIntervalSlots");
     }

@@ -47,8 +47,34 @@ All config is in `application.yml` under the `%devnet` profile. Key properties:
 | `yano.block-producer.block-time-millis` | 0 (auto) | Block interval; 0 = derive from genesis |
 | `yano.block-producer.lazy` | false | If true, skip empty blocks |
 | `yano.block-producer.genesis-timestamp` | 0 (auto) | Genesis time; 0 = use current time |
-| `yano.block-producer.slot-length-millis` | 0 (auto) | Slot length; 0 = derive from genesis |
-| `yano.block-producer.backfill-block-interval-slots` | 1 | Backfills place one block every N slots instead of every slot. Empty-block backfills (catch-up, time advance, epoch fast-forward) always add the first slot of each epoch and the target slot; the slot-leader catch-up forges the first eligible slot after each interval and after each epoch start, skipping leadership checks in between. Keep N below the stability window (3k/f) so a Haskell relay can validate the chain |
+| `yano.block-producer.slot-length-millis` | 0 | Legacy compatibility property; does not override Shelley genesis `slotLength`. Conflicting values are ignored with a warning. |
+| `yano.block-producer.backfill-block-interval-slots` | 1 | `0` selects automatic sparse backfill from genesis; `1` preserves dense backfill; larger values specify slot spacing below the `floor(3k/f)` forecast window. Empty-block backfill includes epoch starts and the target. Slot-leader backfill searches for eligibility after each interval and at epoch starts. Live scheduling is unchanged. |
+
+Slot duration always comes from Shelley genesis: set `slotLength` to `0.3` for
+300 ms slots. The internal millisecond value is derived from it for live production,
+leadership checks, catch-up, and time advance. Genesis must provide a positive
+slot duration representable as whole milliseconds. `block-time-millis` remains
+a separate live scheduling setting and does not redefine slot duration.
+
+For fast-forwarding a devkit devnet from three epochs in the past, set
+`yano.block-producer.backfill-block-interval-slots=0`. Backfill builds historical
+blocks without waiting for the configured block timer. Slot timestamps and the
+wall-clock target still use the configured slot length, including 300 ms slots.
+For example, three 1,200-slot epochs at 300 ms span 1,080,000 ms, not 3,600 seconds.
+
+Automatic empty-block spacing is `floor(3k/f) - 1` slots. Slot-leader backfill
+starts its eligibility search halfway through that window to leave search
+headroom. With `k=100` and `f=1`, these intervals are 299 and 150 slots respectively.
+Epoch boundaries can shorten either interval. Slot-leader backfill may finish
+with a tip behind the processed target because the target need not be eligible.
+Its VRF cost depends on relative stake; sparse catch-up fails if no eligible
+block is found before the forecast window expires, or stake/nonce prerequisites
+are unavailable. Reduce spacing or increase devnet producer stake in that case.
+
+The forecast window is measured in **slots**, while `k` is measured in blocks.
+Staying within the forecast horizon addresses header forecasting; it is not a
+guarantee of chain density, finality, or compatibility with every relay mode.
+Validate the chosen genesis and relay configuration together before relying on it.
 | `yano.dev-mode` | true | Enables devnet REST APIs |
 
 Genesis files are at `config/network/devnet/`.

@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.blockproducer;
 
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.client.crypto.BlockProducerKeys;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.runtime.tx.BlockTransactionSelector;
 import org.junit.jupiter.api.AfterEach;
@@ -8,8 +10,9 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.util.List;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -114,7 +117,7 @@ class SlotLeaderTimeTravelBlockProducerTest {
     }
 
     @Test
-    void catchUpSkipsLeadershipChecksInsideTheIntervalButScheduledScanDoesNot() {
+    void catchUpSkipsSlotsThenScansUntilEligibleOrTarget() {
         InMemoryChainState chainState = new InMemoryChainState();
         var existing = new DevnetBlockBuilder().buildBlock(0, 0, null, List.of());
         chainState.storeBlock(existing.blockHash(), 0L, 0L, existing.blockCbor());
@@ -139,7 +142,7 @@ class SlotLeaderTimeTravelBlockProducerTest {
                 return BigInteger.ONE;
             }
         };
-        EpochNonceState nonceState = new EpochNonceState(10_000, 1, 1.0);
+        EpochNonceState nonceState = new EpochNonceState(10_000, 1_000, 1.0);
         nonceState.initFromGenesisHash(new byte[32]);
         var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(
                 chainState, emptyTransactions(), () -> null, new NoopEventBus(), scheduler,
@@ -173,7 +176,76 @@ class SlotLeaderTimeTravelBlockProducerTest {
         assertThat(producer.getBackfillBlockIntervalSlots()).isEqualTo(1);
     }
 
-    private static final class EpochLengthProvider implements com.bloxbean.cardano.yano.api.EpochParamProvider {
+    @Test
+    void sparseCatchUpForgesSignedBlocksAcrossThreeEpochsThenResumesDenseScheduling() throws Exception {
+        Path base = Path.of("src/test/resources/devnet");
+        var keys = BlockProducerKeys.load(base.resolve("vrf.skey"), base.resolve("kes.skey"), base.resolve("opcert.cert"));
+        var nonce = new EpochNonceState(1_200, 100, 1);
+        nonce.initFromGenesisHash(new byte[32]);
+        var builder = new SignedBlockBuilder(keys, 129_600, 60, nonce, null);
+        var chain = new InMemoryChainState();
+        var genesis = builder.buildBlock(0, 0, null, List.of());
+        BlockProducerHelper.storeProducedBlock(chain, builder, genesis);
+        List<Long> checked = new ArrayList<>();
+        CountDownLatch liveCheck = new CountDownLatch(1);
+        var check = new SlotLeaderCheck(keys.getVrfSkey(), BigDecimal.ONE, builder.getBlockSigner()) {
+            @Override
+            public BlockSigner.VrfSignResult checkAndProve(long slot, byte[] epochNonce, BigDecimal sigma) {
+                checked.add(slot);
+                if (slot > 3_600) liveCheck.countDown();
+                return super.checkAndProve(slot, epochNonce, sigma);
+            }
+        };
+        var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(chain, emptyTransactions(),
+                () -> null, new NoopEventBus(), scheduler, builder, nonce, check, fullStake(), "pool",
+                System.currentTimeMillis() - 3_610 * 300L, 300, 10, 1);
+        producer.setBackfillBlockIntervalSlots(BackfillPolicy.resolveInterval(0, 100, 1, true));
+        assertThat(producer.produceToSlot(3_600)).isEqualTo(24);
+        assertThat(checked).hasSize(24).contains(1_200L, 2_400L, 3_600L);
+        assertThat(chain.getTip().getSlot()).isEqualTo(3_600);
+        assertThat(nonce.getCurrentEpoch()).isEqualTo(3);
+        producer.start();
+        try {
+            assertThat(liveCheck.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            producer.stop();
+        }
+        assertThat(checked.get(24)).isEqualTo(3_601L);
+    }
+
+    @Test
+    void sparseCatchUpStopsBeforeExceedingForecastWindow() {
+        var chain = new InMemoryChainState();
+        var genesis = new DevnetBlockBuilder().buildBlock(0, 0, null, List.of());
+        chain.storeBlock(genesis.blockHash(), 0L, 0L, genesis.blockCbor());
+        var nonce = new EpochNonceState(1_200, 100, 1);
+        nonce.initFromGenesisHash(new byte[32]);
+        List<Long> checked = new ArrayList<>();
+        var check = new SlotLeaderCheck(new byte[64], BigDecimal.ONE, null) {
+            @Override
+            public BlockSigner.VrfSignResult checkAndProve(long slot, byte[] epochNonce, BigDecimal sigma) {
+                checked.add(slot);
+                return null;
+            }
+        };
+        var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(chain, emptyTransactions(),
+                () -> null, new NoopEventBus(), scheduler, null, nonce, check, fullStake(), "pool",
+                0, 300, 300, 1);
+        producer.setBackfillBlockIntervalSlots(150);
+        assertThatThrownBy(() -> producer.produceToSlot(3_600))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("forecast window");
+        assertThat(checked).hasSize(150).startsWith(150L).endsWith(299L);
+        assertThat(producer.getLastCheckedSlot()).isEqualTo(299);
+    }
+
+    private static StakeDataProvider fullStake() {
+        return new StakeDataProvider() {
+            public BigInteger getPoolStake(String poolHash, int epoch) { return BigInteger.ONE; }
+            public BigInteger getTotalStake(int epoch) { return BigInteger.ONE; }
+        };
+    }
+
+    private static final class EpochLengthProvider implements EpochParamProvider {
         private final long epochLength;
 
         private EpochLengthProvider(long epochLength) {
