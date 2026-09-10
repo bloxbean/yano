@@ -90,6 +90,9 @@ python3 genesis_server.py &
 
 ## Step 2: Build and Start Yano
 
+Slot duration comes from Shelley genesis `slotLength` (seconds). Configure the
+genesis file for the desired duration; `slot-length-millis` no longer overrides it.
+
 ```bash
 # Build uber-jar (add type: uber-jar under quarkus.package.jar in application.yml)
 ./gradlew :app:quarkusBuild -x test
@@ -104,7 +107,6 @@ java \
   -Dyano.block-producer.block-time-millis=2000 \
   -Dyano.block-producer.lazy=false \
   -Dyano.block-producer.genesis-timestamp=0 \
-  -Dyano.block-producer.slot-length-millis=1000 \
   -Dyano.storage.rocksdb=false \
   -jar app/build/yano.jar
 ```

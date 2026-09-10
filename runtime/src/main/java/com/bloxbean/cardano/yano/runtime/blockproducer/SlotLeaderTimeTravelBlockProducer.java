@@ -203,8 +203,8 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
      * Set how many slots apart the catch-up backfill places its blocks. 1 (default) forges every
      * eligible slot. Above 1, after each block the scan jumps to the earlier of {@code block + interval}
      * and the next epoch start, and forges the first eligible slot from there. Leadership checks are
-     * skipped for the slots jumped over, so a multi-day catch-up costs a few dozen VRF evaluations.
-     * Keep it below the stability window (3k/f) so a Haskell relay can still validate the chain.
+     * skipped for the slots jumped over. Search cost depends on pool stake and eligibility.
+     * Sparse catch-up fails if it cannot find a block before the forecast window expires.
      * Scheduled (wall-clock and sequential-scan) production is not affected.
      */
     public void setBackfillBlockIntervalSlots(int backfillBlockIntervalSlots) {
@@ -274,41 +274,74 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
         }
 
         int blocksProduced = 0;
+        long leadershipChecks = 0;
+        long started = System.nanoTime();
         long slot = lastCheckedSlot + 1;
         while (slot <= targetSlot) {
             if (interval > 1) {
                 ChainTip tip = chainState.getTip();
                 long candidate = nextSparseCandidateSlot(slot, tip != null ? tip.getSlot() : -1, interval);
+                if (tip != null) {
+                    long epochStart = epochNonceState.firstSlotOfEpoch(epochNonceState.epochForSlot(tip.getSlot()) + 1);
+                    candidate = Math.max(slot, Math.min(candidate, epochStart));
+                }
                 if (candidate > targetSlot) {
                     // Nothing more to forge before the target: count the rest as checked.
                     lastCheckedSlot = targetSlot;
                     break;
                 }
                 slot = candidate;
+                if (tip != null && slot - tip.getSlot() >= epochNonceState.forecastWindowSlots()) {
+                    throw new IllegalStateException("Sparse backfill found no eligible block within the forecast window; "
+                            + "reduce the interval or increase the devnet producer stake (tip=" + tip.getSlot()
+                            + ", candidate=" + slot + ")");
+                }
             }
-            lastCheckedSlot = slot;
             int epoch = epochNonceState.epochForSlot(slot);
             refreshStakeData(epoch);
+
+            if (interval > 1 && sigma.signum() <= 0) {
+                throw new IllegalStateException("Sparse backfill requires available positive producer stake in epoch " + epoch);
+            }
 
             if (sigma.signum() > 0) {
                 byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
                 if (epochNonce == null) {
+                    if (interval > 1) {
+                        throw new IllegalStateException("Sparse backfill requires an epoch nonce at slot " + slot);
+                    }
                     log.warn("Epoch nonce not available, skipping leader check for slot {}", slot);
                 } else {
+                    leadershipChecks++;
                     BlockSigner.VrfSignResult vrfResult = slotLeaderCheck.checkAndProve(slot, epochNonce, sigma);
                     if (vrfResult != null) {
-                        produceBlock(slot, vrfResult);
-                        blocksProduced++;
+                        if (produceBlock(slot, vrfResult, !sparse)) {
+                            blocksProduced++;
+                            if (sparse && blocksProduced % 100 == 0) {
+                                log.info("Slot-leader backfill progress: blocks={}, checks={}, slot={}, target={}",
+                                        blocksProduced, leadershipChecks, slot, targetSlot);
+                            }
+                        }
                         if (stopAfterFirstBlock) {
+                            lastCheckedSlot = slot;
                             break;
                         }
                     }
                 }
             }
 
+            lastCheckedSlot = slot;
             slot++;
         }
 
+        if (sparse && blocksProduced > 0) {
+            BlockProducerHelper.notifyServer(nodeServerSupplier.get());
+        }
+        if (sparse) {
+            log.info("Slot-leader backfill complete: blocks={}, checks={}, processedSlot={}, elapsedMillis={}",
+                    blocksProduced, leadershipChecks, lastCheckedSlot,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+        }
         return blocksProduced;
     }
 
@@ -332,7 +365,7 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
                 epoch, poolStake, totalStake, sigma);
     }
 
-    private void produceBlock(long slot, BlockSigner.VrfSignResult vrfResult) {
+    private boolean produceBlock(long slot, BlockSigner.VrfSignResult vrfResult, boolean notifyServer) {
         ChainTip tip = chainState.getTip();
         long blockNumber = tip != null ? tip.getBlockNumber() + 1 : 0;
         byte[] prevHash = tip != null ? tip.getBlockHash() : null;
@@ -345,12 +378,15 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
             var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
             BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
-            log.info("Slot-leader time-travel block #{} produced: slot={}, txs={}, hash={}",
+            log.debug("Slot-leader time-travel block #{} produced: slot={}, txs={}, hash={}",
                     blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
 
             BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-time-travel");
             transactions.blockCandidatePublished();
-            BlockProducerHelper.notifyServer(nodeServerSupplier.get());
+            if (notifyServer) {
+                BlockProducerHelper.notifyServer(nodeServerSupplier.get());
+            }
+            return true;
         } catch (UnfitBlockTransactionException e) {
             int removed;
             try {
@@ -360,6 +396,7 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
             }
             log.warn("Discarded {} mempool transaction(s) after block resource rejection: {}",
                     removed, e.getMessage());
+            return false;
         } catch (RuntimeException | Error e) {
             transactions.blockSelectionFailed();
             throw e;

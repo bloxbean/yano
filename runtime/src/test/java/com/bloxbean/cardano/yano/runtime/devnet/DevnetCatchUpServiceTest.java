@@ -15,6 +15,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DevnetCatchUpServiceTest {
     @Test
+    void threeEpochCatchUpUsesThreeHundredMillisecondSlots() {
+        InMemoryChainState chainState = new InMemoryChainState();
+        storeTip(chainState, 0, 0);
+        ProducerSubsystem subsystem = new ProducerSubsystem();
+        FakeProduction production = new FakeProduction(chainState, ProducerMode.DEVNET, 15, 0);
+        subsystem.install(production);
+        var result = service(chainState, subsystem, false, 1_000, 300, 1_081_000).catchUpToWallClock();
+        assertEquals(3_600, production.emptyTargetSlot);
+        assertEquals(3_600, result.newSlot());
+    }
+
+    @Test
     void devnetCatchUpStopsProducerProducesToWallClockSlotAndRestarts() {
         InMemoryChainState chainState = new InMemoryChainState();
         storeTip(chainState, 10, 3);

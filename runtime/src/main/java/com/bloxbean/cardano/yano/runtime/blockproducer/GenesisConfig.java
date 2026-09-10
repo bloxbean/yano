@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,6 +40,22 @@ public class GenesisConfig {
     private final ByronGenesisData byronGenesisData;
 
     private transient JsonNode parsedProtocolParameters;
+
+    /** Authoritative producer slot duration, derived from Shelley genesis in whole milliseconds. */
+    public int getSlotLengthMillis() {
+        if (shelleyGenesisData == null) {
+            throw new IllegalArgumentException("Shelley genesis is required to determine producer slot duration");
+        }
+        double seconds = shelleyGenesisData.slotLength();
+        if (!Double.isFinite(seconds) || seconds <= 0) {
+            throw new IllegalArgumentException("Genesis slotLength must be positive and finite: " + seconds);
+        }
+        try {
+            return BigDecimal.valueOf(seconds).movePointRight(3).intValueExact();
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("Genesis slotLength must fit in positive whole milliseconds: " + seconds, e);
+        }
+    }
 
     private GenesisConfig(Map<String, BigInteger> initialFunds, String protocolParameters,
                           Map<String, BigInteger> byronBalances, ShelleyGenesisData shelleyGenesisData,

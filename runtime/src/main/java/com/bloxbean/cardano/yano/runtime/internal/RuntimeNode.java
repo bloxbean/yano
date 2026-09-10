@@ -2396,20 +2396,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private void autoDeriveSlotLengthMillis() {
-        if (config.getSlotLengthMillis() <= 0) {
-            if (genesisConfig.getShelleyGenesisData() != null
-                    && genesisConfig.getShelleyGenesisData().slotLength() > 0) {
-                int derivedSlotLength = (int) (genesisConfig.getShelleyGenesisData().slotLength() * 1000);
-                config.setSlotLengthMillis(derivedSlotLength);
-                log.info("Auto-derived slotLengthMillis={} from genesis slotLength={}",
-                        derivedSlotLength, genesisConfig.getShelleyGenesisData().slotLength());
-            } else {
-                config.setSlotLengthMillis(1000);
-                log.info("No genesis data available, using default slotLengthMillis=1000");
-            }
-        } else {
-            log.info("Using explicit slotLengthMillis={}", config.getSlotLengthMillis());
+        int genesisSlotLength = genesisConfig.getSlotLengthMillis();
+        int legacySlotLength = config.getSlotLengthMillis();
+        if (legacySlotLength != 0 && legacySlotLength != genesisSlotLength) {
+            log.warn("Ignoring legacy yano.block-producer.slot-length-millis={}; genesis slotLength defines {}ms slots",
+                    legacySlotLength, genesisSlotLength);
         }
+        config.setSlotLengthMillis(genesisSlotLength);
+        log.info("Derived slotLengthMillis={} from genesis slotLength={}",
+                genesisSlotLength, genesisConfig.getShelleyGenesisData().slotLength());
     }
 
     /**
@@ -2592,7 +2587,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     config.getSlotLengthMillis(),
                     config.getBlockTimeMillis(),
                     sequentialScanLimitSlots,
-                    config.getBackfillBlockIntervalSlots());
+                    BackfillPolicy.resolveInterval(config.getBackfillBlockIntervalSlots(),
+                            shelleyData.securityParam(), activeSlotsCoeff, true));
         } catch (Exception e) {
             throw new RuntimeException("Failed to create past-time-travel slot-leader block producer", e);
         }

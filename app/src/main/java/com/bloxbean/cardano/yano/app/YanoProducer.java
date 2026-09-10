@@ -425,7 +425,8 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.BlockProducer.GENESIS_TIMESTAMP, defaultValue = "0")
     long genesisTimestamp;
 
-    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LENGTH_MILLIS, defaultValue = "1000")
+    // Retained for compatibility; runtime always uses the Shelley genesis slotLength.
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LENGTH_MILLIS, defaultValue = "0")
     int slotLengthMillis;
 
     @ConfigProperty(name = YanoPropertyKeys.BlockProducer.TX_EVALUATION, defaultValue = "true")
