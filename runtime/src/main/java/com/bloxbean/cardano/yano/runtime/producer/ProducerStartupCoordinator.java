@@ -86,6 +86,7 @@ public final class ProducerStartupCoordinator {
         actions.setConwayEraStartIfFreshStart(freshStart);
 
         DevnetBlockProducer producer = actions.createLiveDevnetProducer(blockBuilder);
+        actions.storeGenesisUtxosIfNeeded(freshStart);
         producer.start();
 
         if (freshStart && config.getStartEpoch() > 0) {
@@ -98,7 +99,6 @@ public final class ProducerStartupCoordinator {
             }
         }
 
-        actions.storeGenesisUtxosIfNeeded(freshStart);
         log.info("Block producer started (devnet mode)");
     }
 
@@ -197,6 +197,7 @@ public final class ProducerStartupCoordinator {
             var stakeDataProvider = StakeDataProviderFactory.createLiveSlotLeaderProvider(config);
 
             if (config.isDevMode() && freshStart) {
+                actions.storeGenesisUtxosIfNeeded(freshStart);
                 var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, java.util.List.of());
                 try {
                     BlockProducerHelper.publishGenesisBlockEvent(
@@ -209,7 +210,6 @@ public final class ProducerStartupCoordinator {
                 log.info("Genesis block produced (slot-leader devnet): hash={}",
                         HexUtil.encodeHexString(genesisResult.blockHash()));
 
-                actions.storeGenesisUtxosIfNeeded(freshStart);
                 actions.setConwayEraStartIfFreshStart(freshStart);
 
                 BlockProducerHelper.publishEvent(

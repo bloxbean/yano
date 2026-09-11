@@ -2409,15 +2409,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     /**
      * Store genesis UTXOs in the UTXO store using blake2b(address) tx hash convention.
-     * Must be called AFTER genesis block is stored in chainState (so getTip() returns the correct hash/slot).
+     * Genesis funds belong to the initial ledger state, not to the first produced block.
      */
     private void storeGenesisUtxosIfNeeded(boolean freshStart) {
-        if (freshStart && genesisConfig.hasInitialFunds() && utxoStore != null) {
-            var tip = chainState.getTip();
-            String blockHash = tip != null ? HexUtil.encodeHexString(tip.getBlockHash()) : "";
-            long slot = tip != null ? tip.getSlot() : 0;
+        if (freshStart && utxoStore != null) {
             utxoStore.storeGenesisUtxos(genesisConfig.getInitialFunds(),
-                    config.getProtocolMagic(), slot, 0, blockHash);
+                    config.getProtocolMagic(), 0, 0, "");
         }
     }
 

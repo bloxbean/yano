@@ -90,6 +90,9 @@ def main():
     parser.add_argument("--yano-base-url", required=True)
     parser.add_argument("--expect-slots", required=True,
                         help="comma-separated slots that must be adopted (genesis, epoch starts, target)")
+    parser.add_argument("--first-slot", type=int, default=0)
+    parser.add_argument("--max-tip-lag", type=int, default=-1,
+                        help="maximum allowed lag behind Yano's tip sampled before the CLI query")
     parser.add_argument("--phase", default="initial", choices=["initial", "live"])
     parser.add_argument("--min-live-slot", type=int, default=-1,
                         help="live phase: Haskell tip slot must exceed this")
@@ -122,8 +125,8 @@ def main():
     direct = [s for s in expected if s in adopted]
     by_prefix = [s for s in expected if s not in adopted and s <= max_adopted]
     uncovered = [s for s in expected if s not in adopted and s > max_adopted]
-    add("genesis adopted from slot 0", 0 in adopted,
-        "slot 0 %s in the adopted tips" % ("is" if 0 in adopted else "is NOT"))
+    add("first block covered", (0 in adopted if args.first_slot == 0 else args.first_slot <= max_adopted),
+        "first slot=%s, max adopted=%s (identical prefix checked below)" % (args.first_slot, max_adopted))
     add("required slots covered", not uncovered,
         "uncovered=%s (directly adopted=%s, covered by prefix=%s, max adopted slot=%s)"
         % (uncovered[:10], direct, by_prefix, max_adopted))
@@ -147,10 +150,16 @@ def main():
     add("adopted hashes exist in Yano at the same slot", not hash_mismatch and bool(hash_checked),
         "checked=%d mismatches=%s" % (len(hash_checked), json.dumps(hash_mismatch[:3])))
 
+    live_tip_before = (get_json(args.yano_base_url.rstrip("/") + "/api/v1/node/tip")
+                       if args.max_tip_lag >= 0 else None)
     tip = query_tip(args.cli, args.node_dir, args.magic)
     add("cardano-cli query tip succeeded", "error" not in tip, tip.get("error", ""))
     tip_compare = None
     if "error" not in tip:
+        if live_tip_before is not None:
+            lag = int(live_tip_before["slot"]) - int(tip["slot"])
+            add("Haskell stays close to Yano live tip", lag <= args.max_tip_lag,
+                "sampled slot lag=%s, maximum=%s" % (lag, args.max_tip_lag))
         yano_tip_block = yano_block(args.yano_base_url, str(tip["block"]))
         ok = ("error" not in yano_tip_block
               and int(yano_tip_block["slot"]) == int(tip["slot"])

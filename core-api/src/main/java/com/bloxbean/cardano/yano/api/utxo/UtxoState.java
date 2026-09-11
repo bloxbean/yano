@@ -193,9 +193,9 @@ public interface UtxoState {
      * Whether this store configuration can use the pointer UTXO index for
      * epoch-boundary stake input. Disabled, filtered, and incomplete UTXO
      * stores return false and must not be subjected to the pointer-index
-     * chainstate version gate. A completely uninitialized store also returns
-     * false until genesis establishes its canonical coordinate and readiness
-     * marker.
+     * chainstate version gate. A completely uninitialized store, or explicitly
+     * initialized genesis state with no applied blocks, also returns false:
+     * there is no canonical block checkpoint to require yet.
      */
     default boolean isPointerIndexApplicable() {
         return false;
@@ -205,8 +205,8 @@ public interface UtxoState {
      * Whether the pointer index has a valid completeness marker at the UTXO
      * store's current coordinate. Startup uses this to reject chainstates that
      * predate the index; boundary reads still fail closed to the historical
-     * scan if a later rollback clears the marker. A restart after such a deep
-     * rollback rejects an applicable preview chainstate until it is rebuilt.
+     * scan if a later rollback clears the marker. A restart with applied blocks
+     * but no usable marker rejects an applicable chainstate until it is rebuilt.
      */
     default boolean isPointerIndexReadyAtCurrentCoordinate() {
         return false;

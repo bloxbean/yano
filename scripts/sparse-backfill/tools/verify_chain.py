@@ -144,12 +144,16 @@ def main():
         Path(args.out).write_text(json.dumps({"status": "FAIL", "checks": checks.items}, indent=2))
         print("FAIL: catch-up log line missing", file=sys.stderr)
         return 1
-    initial_slot = int(catching_up[-1][1])
+    logged_initial_slot = int(catching_up[-1][1])
     target_slot = int(catching_up[-1][2])
 
     derived_initial_block = final_block - produced
-    checks.add("initial tip agrees with block arithmetic", derived_initial_block == initial_slot,
-               "log current=%d, new_block_number-blocks_produced=%d" % (initial_slot, derived_initial_block))
+    # The service logs before stopping the scheduler. A scheduled block can finish
+    # between those operations. The prefix is dense (independently checked below),
+    # so response arithmetic gives the actual starting slot of the stopped producer.
+    initial_slot = derived_initial_block
+    checks.add("actual initial tip is not before the pre-stop log", initial_slot >= logged_initial_slot,
+               "pre-stop log=%d, actual initial=%d" % (logged_initial_slot, initial_slot))
     checks.add("catch-up response tip equals recorded target", final_slot == target_slot,
                "response new_slot=%d target=%d" % (final_slot, target_slot))
 

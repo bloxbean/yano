@@ -1,6 +1,12 @@
 package com.bloxbean.cardano.yano.runtime.ledger;
 
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
@@ -11,11 +17,17 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
+import com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore;
+import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -26,6 +38,42 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LedgerStateSubsystemTest {
+
+    @Test
+    void originRollbackRestartPassesGateButMissingAppliedCheckpointDoesNot(@TempDir Path directory)
+            throws Exception {
+        var log = LoggerFactory.getLogger(LedgerStateSubsystemTest.class);
+        String hash = "ab".repeat(32);
+        Block block = Block.builder().era(Era.Conway)
+                .transactionBodies(List.of()).invalidTransactions(List.of()).build();
+        try (var chain = new DirectRocksDBChainState(directory.toString())) {
+            var store = new DefaultUtxoStore(chain, log, Map.of("yano.utxo.enabled", true));
+            store.storeGenesisUtxos(Map.of("60" + "01".repeat(28), BigInteger.TEN), 42, 0, 0, "");
+            store.applyBlock(new BlockAppliedEvent(Era.Conway, 7, 0, hash, block));
+            assertThat(store.isPointerIndexReadyAtCurrentCoordinate()).isTrue();
+            store.rollbackToPoint(Point.ORIGIN);
+        }
+        try (var chain = new DirectRocksDBChainState(directory.toString())) {
+            var store = new DefaultUtxoStore(chain, log, Map.of("yano.utxo.enabled", true));
+            AtomicReference<Boolean> readiness = new AtomicReference<>();
+            assertThat(store.isPointerIndexApplicable()).isFalse();
+            assertThat(store.isPointerIndexReadyAtCurrentCoordinate()).isFalse();
+            assertThat(store.preparePointerIndex(
+                    new CanonicalBlockReference(0, 9, HexUtil.decodeHexString(hash)), 9).ready()).isFalse();
+            LedgerStateSubsystem.requirePointerIndexReadyIfApplicable(store, readiness::set, log);
+            assertThat(readiness.get()).isNull();
+
+            store.applyBlock(new BlockAppliedEvent(Era.Conway, 9, 0, hash, block));
+            LedgerStateSubsystem.requirePointerIndexReadyIfApplicable(store, readiness::set, log);
+            assertThat(readiness.get()).isTrue();
+
+            // The origin exception must not hide a missing checkpoint once blocks exist.
+            chain.rocks().db().delete(chain.rocks().handle(UtxoCfNames.UTXO_META),
+                    "meta.utxo_pointer.ready.v1".getBytes(StandardCharsets.UTF_8));
+            LedgerStateSubsystem.requirePointerIndexReadyIfApplicable(store, readiness::set, log);
+            assertThat(readiness.get()).isFalse();
+        }
+    }
 
     @Test
     void disabledLedgerStateStartsWithoutStoresAndClosesCleanly() {

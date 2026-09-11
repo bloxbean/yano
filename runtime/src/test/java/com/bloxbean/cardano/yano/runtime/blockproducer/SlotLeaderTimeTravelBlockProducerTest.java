@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -286,4 +287,40 @@ class SlotLeaderTimeTravelBlockProducerTest {
             }
         };
     }
+    @Test
+    void denseCatchUpScansEligibleSlotsWithoutWaitingForATick() {
+        List<Long> checkedSlots = new ArrayList<>();
+        SlotLeaderCheck countingNeverLeader = new SlotLeaderCheck(new byte[64], BigDecimal.ONE, null) {
+            @Override
+            public BlockSigner.VrfSignResult checkAndProve(long slot, byte[] epochNonce, BigDecimal sigma) {
+                checkedSlots.add(slot);
+                return null;
+            }
+        };
+        StakeDataProvider fullStake = new StakeDataProvider() {
+            @Override
+            public BigInteger getPoolStake(String poolHash, int epoch) {
+                return BigInteger.ONE;
+            }
+
+            @Override
+            public BigInteger getTotalStake(int epoch) {
+                return BigInteger.ONE;
+            }
+        };
+        EpochNonceState nonceState = new EpochNonceState(10_000, 1, 1.0);
+        nonceState.initFromGenesisHash(new byte[32]);
+        var producer = SlotLeaderTimeTravelBlockProducer.withTransactionSelector(
+                new InMemoryChainState(), emptyTransactions(), () -> null, new NoopEventBus(), scheduler,
+                null, nonceState, countingNeverLeader, fullStake,
+                "pool", System.currentTimeMillis() - 3_600_000, 1000, 60_000, 50);
+
+        int forged = producer.produceToSlot(49);
+
+        // no eligible slot in the 50-slot scan window: nothing forged, but the scan happened at once
+        assertThat(forged).isEqualTo(0);
+        assertThat(checkedSlots).containsExactly(LongStream.rangeClosed(0, 49).boxed().toArray(Long[]::new));
+        assertThat(producer.getLastCheckedSlot()).isEqualTo(49);
+    }
+
 }

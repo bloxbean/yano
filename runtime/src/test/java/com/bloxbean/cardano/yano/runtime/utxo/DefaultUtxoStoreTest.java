@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
 import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
+import com.bloxbean.cardano.yano.api.genesis.GenesisUtxos;
 import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -313,6 +314,71 @@ class DefaultUtxoStoreTest {
 
         store.rollbackToPoint(Point.ORIGIN);
         assertNull(chain.rocks().db().get(pointerCf, outpoint));
+    }
+
+    @Test
+    void originGenesisIsSpendableInFirstNonzeroSlotAndSurvivesRollbackAndRestart() throws Exception {
+        String address = HexUtil.encodeHexString(new Address(POINTER_ADDRESS).getBytes());
+        BigInteger amount = BigInteger.valueOf(11_000_000L);
+        String txHash = GenesisUtxos.shelley(address, amount, 1, 0, 0, "").txHash();
+        Outpoint outpoint = new Outpoint(txHash, 0);
+        store.storeGenesisUtxos(Map.of(address, amount), 1, 0, 0, "");
+        assertTrue(store.getUtxo(outpoint).isPresent());
+        assertFalse(store.isPointerIndexReadyAtCurrentCoordinate());
+        assertNull(chain.rocks().db().get(chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+
+        // Restart before the first block: genesis contents, not a fabricated block,
+        // must be sufficient to recover the deferred checkpoint initialization.
+        chain.close();
+        chain = new DirectRocksDBChainState(tempDir.getAbsolutePath());
+        store = new DefaultUtxoStore(chain, LoggerFactory.getLogger(DefaultUtxoStoreTest.class),
+                Map.of("yano.utxo.enabled", true));
+        bus = new SimpleEventBus();
+        new UtxoEventHandler(bus, store);
+        TransactionBody spend = TransactionBody.builder().txHash("ed".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(txHash).index(0).build()))
+                .outputs(List.of()).build();
+        Block first = Block.builder().era(Era.Babbage).transactionBodies(List.of(spend))
+                .invalidTransactions(List.of()).build();
+        publishBlock(7, 0, "ef".repeat(32), first);
+        assertTrue(store.getUtxo(outpoint).isEmpty());
+        store.storeGenesisUtxos(Map.of(address, amount), 1, 0, 0, "");
+        assertTrue(store.getUtxo(outpoint).isEmpty(), "reinitialization must not resurrect spent genesis funds");
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+        PointerIndexMarker marker = PointerIndexMarker.decode(chain.rocks().db().get(
+                chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+        assertEquals(7, marker.slot());
+
+        store.rollbackToPoint(Point.ORIGIN);
+        assertTrue(store.getUtxo(outpoint).isPresent());
+        assertFalse(store.isPointerIndexReadyAtCurrentCoordinate());
+        assertNull(chain.rocks().db().get(chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+        assertNotNull(chain.rocks().db().get(chain.rocks().handle(UtxoCfNames.UTXO_POINTER),
+                UtxoKeyUtil.outpointKey(txHash, 0)));
+        publishBlock(9, 0, "ee".repeat(32), first);
+        assertTrue(store.getUtxo(outpoint).isEmpty());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+    }
+
+    @Test
+    void emptyOriginGenesisDefersCheckpointUntilFirstApply() throws Exception {
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, "");
+        assertNull(chain.rocks().db().get(chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY));
+        publishBlock(17, 0, "ec".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of()).invalidTransactions(List.of()).build());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+    }
+
+    @Test
+    void originInitializationDoesNotRelaxCanonicalBlockHashValidation() {
+        assertThrows(RuntimeException.class,
+                () -> store.storeGenesisUtxos(Map.of(), 1, 7, 0, ""));
+        assertThrows(RuntimeException.class,
+                () -> store.storeGenesisUtxos(Map.of(), 1, 0, 0, "ab"));
+        publishBlock(7, 0, "ef".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of()).invalidTransactions(List.of()).build());
+        assertThrows(RuntimeException.class,
+                () -> store.storeGenesisUtxos(Map.of(), 1, 0, 0, ""));
     }
 
     @Test
