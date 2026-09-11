@@ -129,18 +129,13 @@ public final class DevnetGenesisShiftService {
 
             switch (plan.mode()) {
                 case SLOT_LEADER_TIME_TRAVEL -> {
-                    // Slot-leader deployments normally restore an existing genesis tip.
-                    // Preserve that ordering until the deferred producer owns fresh-genesis
-                    // creation itself.
+                    // Initial ledger state must exist before any eligible block is applied.
                     actions.storeGenesisUtxosIfNeeded(freshStart);
                     actions.startSlotLeaderTimeTravel(freshStart);
                 }
                 case DEVNET_TIME_TRAVEL -> {
-                    // DevnetBlockProducer.start() creates and stores block zero
-                    // synchronously. Genesis UTXOs must bind their indexes to that real
-                    // block hash, never to a placeholder coordinate.
-                    actions.startDevnetTimeTravel(freshStart);
                     actions.storeGenesisUtxosIfNeeded(freshStart);
+                    actions.startDevnetTimeTravel(freshStart);
                 }
                 default -> throw new IllegalStateException(
                         "Unsupported deferred producer startup mode: " + plan.mode());

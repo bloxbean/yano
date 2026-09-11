@@ -51,7 +51,7 @@ usage() {
   sed -n '2,15p' "$0"
   cat <<'USAGE'
 Options:
-  --cases <list>       dense,interval2,auto,auto-1s,reject | all (default: all but slot-leader)
+  --cases <list>       dense,interval2,auto,auto-1s,reject,slot-leader,slot-leader-dense | all
   --slot-leader        also run the optional slot-leader scenario
   --no-haskell         skip the downstream Haskell node (Yano-side checks only)
   --run-dir <dir>      output directory (default: test-data-dir/sparse-backfill/<timestamp>)
@@ -508,11 +508,11 @@ PY
   log "case reject: $(case_status "$case_dir")"
 }
 
-slot_leader_meta() { # <slot-ms> <catch-up-elapsed-ms or empty>
-  python3 - "$1" "${2:-}" "$SL_SECURITY_PARAM" "$SL_ACTIVE_SLOTS_COEFF" <<'META'
+slot_leader_meta() { # <slot-ms> <catch-up-elapsed-ms or empty> [requested]
+  python3 - "$1" "${2:-}" "$SL_SECURITY_PARAM" "$SL_ACTIVE_SLOTS_COEFF" "${3:-0}" <<'META'
 import json, sys
 slot_ms, elapsed, k, f = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-meta = {"case": "slot-leader", "kind": "slot-leader", "requested_interval": 0,
+meta = {"case": "slot-leader-" + sys.argv[5], "kind": "slot-leader", "requested_interval": int(sys.argv[5]),
         "slot_length_ms": int(slot_ms), "security_param": int(k),
         "active_slots_coeff": float(f)}
 if elapsed:
@@ -523,7 +523,8 @@ META
 
 # --- optional slot-leader scenario -----------------------------------------
 run_slot_leader_case() {
-  local case_dir="$RUN_DIR/case-slot-leader"
+  local requested="${1:-0}"
+  local case_dir="$RUN_DIR/case-slot-leader-$requested"
   local genesis="$case_dir/genesis"
   mkdir -p "$case_dir"
   : > "$case_dir/stages.tsv"
@@ -547,7 +548,7 @@ run_slot_leader_case() {
   expected_target=$(json_get "$case_dir/genesis-params.json" expected_target_slot)
 
   local pid
-  pid=$(start_yano "$case_dir" "$genesis" "$http" "$n2n" 0 slot-leader-time-travel \
+  pid=$(start_yano "$case_dir" "$genesis" "$http" "$n2n" "$requested" slot-leader-time-travel \
     "$case_dir/yano.log" "slot-leader")
   if ! wait_yano_ready "$http" 180 "$case_dir/yano.log" "$pid"; then
     record_stage "$case_dir" yano-start FAIL "node did not become ready"
@@ -570,7 +571,7 @@ run_slot_leader_case() {
       record_stage "$case_dir" slot-leader-shift FAIL "HTTP $status: $(head -c 300 "$case_dir/shift.json")"
     fi
     stop_tracked_pid "$pid" "yano:slot-leader" 60
-    write_meta "$case_dir" "$(slot_leader_meta "$slot_ms" "")"
+    write_meta "$case_dir" "$(slot_leader_meta "$slot_ms" "" "$requested")"
     log "case slot-leader: $(case_status "$case_dir")"
     return
   fi
@@ -590,7 +591,7 @@ run_slot_leader_case() {
     # Slot-leader backfill forges only ELIGIBLE slots, so the tip may sit behind the
     # processed target and the spacing is a lower bound, not an equality.
     if python3 - "$case_dir" "$EPOCH_LENGTH" "$SL_SECURITY_PARAM" "$SL_ACTIVE_SLOTS_COEFF" \
-        "http://127.0.0.1:$http" <<'PY' > "$case_dir/slot-leader-verify.log" 2>&1
+        "http://127.0.0.1:$http" "$expected_target" <<'PY' > "$case_dir/slot-leader-verify.log" 2>&1
 import json, re, sys, urllib.request
 case_dir, epoch_length, k, f, base = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), sys.argv[5]
 log = open(case_dir + "/yano.log", errors="replace").read()
@@ -609,7 +610,7 @@ widest = max(gaps) if gaps else 0
 print(json.dumps({"blocks": blocks, "leadership_checks": checks, "processed_slot": processed,
                   "backfill_millis": millis, "tip": tip, "widest_gap": widest,
                   "forecast_window": window}, indent=2))
-ok = blocks > 0 and checks > 0 and widest < window
+ok = blocks > 0 and checks > 0 and widest < window and processed >= int(sys.argv[6])
 print("PASS" if ok else "FAIL: widest gap %d vs forecast window %d, blocks=%d checks=%d"
       % (widest, window, blocks, checks))
 sys.exit(0 if ok else 1)
@@ -623,21 +624,48 @@ PY
   fi
 
   if [ "$WITH_HASKELL" = "1" ]; then
-    local hdir="$case_dir/haskell" hpid
+    local hdir="$case_dir/haskell" hpid first_slot target_slot
+    curl -fsS "http://127.0.0.1:$http/api/v1/node/tip" > "$case_dir/backfilled-tip.json"
+    curl -fsS "http://127.0.0.1:$http/api/v1/blocks/0" > "$case_dir/first-block.json"
+    target_slot=$(json_get "$case_dir/backfilled-tip.json" slot)
+    first_slot=$(json_get "$case_dir/first-block.json" slot)
     ensure_haskell_binary > "$case_dir/haskell-version.txt" 2>&1
     create_haskell_instance "$hdir" "$genesis" "$n2n" "$ekg" "$prom"
+    local genesis_name
+    for genesis_name in shelley byron alonzo conway; do
+      if cmp -s "$genesis/$genesis_name-genesis.json" "$hdir/files/$genesis_name-genesis.json"; then
+        record_stage "$case_dir" "$genesis_name-genesis-identical" PASS
+      else
+        record_stage "$case_dir" "$genesis_name-genesis-identical" FAIL
+      fi
+    done
     hpid=$(start_haskell_instance "$hdir" "$hnode" "$case_dir/haskell.log" "slot-leader")
     if wait_haskell_socket "$hdir" 120 "$hpid" && \
-       wait_haskell_slot "$hdir" "$MAGIC" "$((expected_target / 2))" 900; then
-      record_stage "$case_dir" haskell-accepts-slot-leader-history PASS
+       wait_haskell_slot "$hdir" "$MAGIC" "$target_slot" 900; then
+      record_stage "$case_dir" haskell-accepts-slot-leader-history PASS "reached full backfilled tip $target_slot"
     else
       record_stage "$case_dir" haskell-accepts-slot-leader-history FAIL "see haskell.log"
     fi
+    local phase
+    for phase in initial live; do
+      [ "$phase" = live ] && sleep "$LIVE_FOLLOW_SECONDS"
+      if python3 "$TOOLS/haskell_check.py" --haskell-log "$case_dir/haskell.log" \
+          --cli "$HASKELL_SHARED_DIR/bin/cardano-cli" --node-dir "$hdir" \
+          --magic "$MAGIC" --yano-base-url "http://127.0.0.1:$http" \
+          --first-slot "$first_slot" --expect-slots "$first_slot,$target_slot" \
+          --phase "$phase" --reach-slot "$target_slot" --min-live-slot "$target_slot" \
+          --out "$case_dir/haskell-$phase.json" > "$case_dir/haskell-$phase.log" 2>&1; then
+        record_stage "$case_dir" "haskell-$phase-hash-match" PASS
+      else
+        record_stage "$case_dir" "haskell-$phase-hash-match" FAIL "see haskell-$phase.log"
+      fi
+    done
     stop_tracked_pid "$hpid" "haskell:slot-leader" 60
   fi
   stop_tracked_pid "$pid" "yano:slot-leader" 60
 
-  write_meta "$case_dir" "$(slot_leader_meta "$slot_ms" "$elapsed")"
+  record_crash_check "$case_dir" final-shutdown-clean "$case_dir" "$case_dir/yano.log"
+  write_meta "$case_dir" "$(slot_leader_meta "$slot_ms" "$elapsed" "$requested")"
   log "case slot-leader: $(case_status "$case_dir")"
 }
 
@@ -650,7 +678,8 @@ for case_name in "${CASE_LIST[@]}"; do
     auto)        run_backfill_case auto 0 0.3 1 ;;
     auto-1s)     run_backfill_case auto-1s 0 1.0 0 ;;
     reject)      run_reject_case ;;
-    slot-leader) run_slot_leader_case ;;
+    slot-leader) run_slot_leader_case 0 ;;
+    slot-leader-dense) run_slot_leader_case 1 ;;
     "") ;;
     *) die "unknown case: $case_name" ;;
   esac

@@ -811,10 +811,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
 
         try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
-            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
-            requireSameCoordinate(expectedCoordinate, actual);
             PointerIndexMarker marker = PointerIndexMarker.decode(
                     db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            if (marker == null) return PointerIndexPreparation.unavailable();
+            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
+            requireSameCoordinate(expectedCoordinate, actual);
             if (marker != null && marker.isUsableAt(actual)) {
                 return PointerIndexPreparation.available();
             }
@@ -830,10 +831,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (!enabled || cfPointer == null || !hasCompleteStakeBalanceSource()) {
             return false;
         }
-        return !isCompletelyUninitialized();
+        return !isBeforePointerCheckpoint();
     }
 
-    private boolean isCompletelyUninitialized() {
+    private boolean isBeforePointerCheckpoint() {
         if (db == null || cfMeta == null || cfUnspent == null || cfDelta == null) {
             return false;
         }
@@ -844,8 +845,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     || db.get(cfMeta, readOptions, PointerIndexMarker.KEY) != null) {
                 return false;
             }
-            return isColumnFamilyEmpty(cfUnspent, readOptions)
-                    && isColumnFamilyEmpty(cfDelta, readOptions);
+            // No checkpoint is required before the first applied block, including
+            // after rollback to an explicitly initialized genesis state.
+            return isColumnFamilyEmpty(cfDelta, readOptions)
+                    && (db.get(cfMeta, readOptions, META_POINTER_GENESIS_INITIALIZED) != null
+                        || isColumnFamilyEmpty(cfUnspent, readOptions));
         } catch (RocksDBException e) {
             throw new StakeBalanceConsistencyException(
                     "Failed to inspect pointer index initialization state", e);
@@ -865,10 +869,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             return false;
         }
         try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
-            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
             PointerIndexMarker marker = PointerIndexMarker.decode(
                     db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
-            return marker != null && marker.isUsableAt(actual);
+            if (marker == null) return false;
+            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
+            return marker.isUsableAt(actual);
         } catch (RocksDBException e) {
             throw new StakeBalanceConsistencyException(
                     "Failed to inspect pointer index marker", e);
@@ -1030,6 +1035,20 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 blockNumber, slot, decodeCanonicalHash(blockHash));
         batch.put(cfMeta, PointerIndexMarker.KEY,
                 PointerIndexMarker.encode(PointerIndexMarker.at(coordinate)));
+    }
+
+    private void stageGenesisPointerIndex(WriteBatch batch, long blockNumber,
+                                          long slot, String blockHash) throws RocksDBException {
+        if (blockHash == null || blockHash.isBlank()) {
+            if (blockNumber != 0 || slot != 0 || db.get(cfMeta, META_LAST_APPLIED_BLOCK) != null) {
+                throw new IllegalArgumentException("Origin genesis initialization requires an unapplied chain");
+            }
+            // Contents are initialized, but origin is not a canonical block. The first
+            // successful apply publishes the checkpoint in the same batch as its delta.
+            batch.put(cfMeta, META_POINTER_GENESIS_INITIALIZED, new byte[]{1});
+        } else {
+            stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
+        }
     }
 
     private void markPointerIndexReadyNow(long blockNumber, long slot, String blockHash) {
@@ -1756,6 +1775,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                      String blockHash,
                                      List<UtxoDeltaCodec.OutRef> created,
                                      List<UtxoDeltaCodec.OutRef> spent) throws RocksDBException {
+        if (db.get(cfMeta, META_LAST_APPLIED_BLOCK) == null
+                && db.get(cfMeta, META_POINTER_GENESIS_INITIALIZED) != null) {
+            stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
+        }
         byte[] delta = UtxoDeltaCodec.encode(blockNumber, slot, blockHash, created, spent);
         byte[] key = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array();
         batch.put(cfDelta, key, delta);
@@ -1886,30 +1909,22 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             indexes.registry().validateGenesisMaterialization(GenesisUtxos.of(shelleyFunds, java.util.Map.of(),
                     networkMagic, 0, 0, ChainPoint.ORIGIN.blockHash()));
         }
-        if (shelleyFunds == null || shelleyFunds.isEmpty()) {
-            markStakeBalanceIndexReadyNow();
-            markPointerIndexReadyNow(blockNumber, slot, blockHash);
-            return;
-        }
-
-        boolean isMainnet = (networkMagic == Constants.MAINNET_PROTOCOL_MAGIC);
-        String addrPrefix = isMainnet ? "addr" : "addr_test";
         int stored = 0;
 
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            if (indexes.registry().enabled()) {
-                if (db.get(cfMeta, META_SHELLEY_GENESIS_MATERIALIZED) != null) return;
-                batch.put(cfMeta, META_SHELLEY_GENESIS_MATERIALIZED, new byte[]{1});
-            }
+            // A restart before the first block still looks fresh to ChainState.
+            // Do not duplicate balances or resurrect funds already spent after bootstrap.
+            if (db.get(cfMeta, META_SHELLEY_GENESIS_MATERIALIZED) != null) return;
+            batch.put(cfMeta, META_SHELLEY_GENESIS_MATERIALIZED, new byte[]{1});
             java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
-            for (var entry : shelleyFunds.entrySet()) {
+            for (var entry : (shelleyFunds == null ? java.util.Map.<String, BigInteger>of() : shelleyFunds).entrySet()) {
                 String hexAddr = entry.getKey();
                 BigInteger lovelace = entry.getValue();
 
                 // Normalised once, shared. The tx-hash convention, the bech32 form and the
                 // output index live in GenesisUtxos so the ADR-039 projection derives exactly
                 // the same outputs rather than reimplementing them.
-                var genesisUtxo = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.shelley(
+                var genesisUtxo = GenesisUtxos.shelley(
                         hexAddr, lovelace, networkMagic, blockNumber, slot, blockHash);
                 String txHash = genesisUtxo.txHash();
                 int outputIndex = genesisUtxo.outputIndex();
@@ -1943,7 +1958,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             }
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             markStakeBalanceIndexReady(batch);
-            stagePointerIndexMarker(batch, blockNumber, slot, blockHash);
+            stageGenesisPointerIndex(batch, blockNumber, slot, blockHash);
             db.write(wo, batch);
             if (stakeBalanceIndexEnabled) stakeBalanceIndexReady = true;
             log.info("Stored {} Shelley genesis UTXOs (tx_hash = blake2b(address), outputIndex=0)", stored);
@@ -2765,6 +2780,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     private static final byte[] META_LAST_APPLIED_SLOT = "meta.last_applied_slot".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_SHELLEY_GENESIS_MATERIALIZED = "meta.shelley_genesis_materialized".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_POINTER_GENESIS_INITIALIZED = "meta.utxo_pointer.genesis_initialized".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_applied_block".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_HASH = "meta.last_applied_hash".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_PRUNE_DELTA_CURSOR = "prune.delta.cursor".getBytes(StandardCharsets.UTF_8);
@@ -2873,6 +2889,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     private void restorePointerMarkerAfterRollback(
             WriteBatch batch, UtxoDeltaCodec.Decoded retained) throws RocksDBException {
+        if (retained == null && db.get(cfMeta, META_POINTER_GENESIS_INITIALIZED) != null) {
+            // Genesis contents survive rollback; there is no block checkpoint at origin.
+            batch.delete(cfMeta, PointerIndexMarker.KEY);
+            return;
+        }
         PointerIndexMarker marker;
         CanonicalBlockReference current;
         try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {

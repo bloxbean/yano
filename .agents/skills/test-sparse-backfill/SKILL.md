@@ -18,6 +18,7 @@ blocks.
 ./scripts/sparse-backfill/run-sparse-backfill-test.sh --cases auto    # one interval
 ./scripts/sparse-backfill/run-sparse-backfill-test.sh --no-haskell    # Yano-side only, fast
 ./scripts/sparse-backfill/run-sparse-backfill-test.sh --slot-leader   # + optional slot-leader scenario
+./scripts/sparse-backfill/run-sparse-backfill-test.sh --cases slot-leader-dense,slot-leader
 ```
 
 Default cases: `dense,interval2,auto,auto-1s,reject`. The runner prints a combined
@@ -55,14 +56,17 @@ self-test, never against a live API call (see below).
 A live `/epochs/catch-up` never starts at slot 0: the past-time-travel scheduler forges
 sequential blocks (slot *i* = block *i*) while the test issues its HTTP calls, and the
 target is `(now − genesisTimestamp) / slotLength` at the moment of the call. The runner
-therefore records the real values after the fact and derives the expectation, from three
-sources that must agree:
+therefore records the real values after the fact and derives the expectation from:
 
 1. runtime log — `Catching up to wall-clock: N slots (current=S0, target=T)`
 2. runtime log — `Sparse backfill: one block every I slots from slot S0+1 to T`
    (absent when the resolved interval is 1)
 3. arithmetic — `S0 = new_block_number − blocks_produced` from the catch-up response,
-   cross-checked against the slot of block `S0`
+   cross-checked against the dense prefix and the slot of block `S0`. This is the actual
+   starting slot. The service's `current` log is emitted before stopping the scheduler,
+   so it may be earlier if a scheduled block completes in between. Require logged
+   `current <= S0`, not equality; the sparse producer's own start log must still equal
+   `S0 + 1`.
 
 `tools/backfill_expect.py` then reproduces `DevnetBlockProducer.nextBackfillSlot` for
 `(S0, T, resolved interval, epochLength)` — including the epoch-boundary pull-back and the
@@ -212,11 +216,16 @@ Genesis for this case uses `k=50`, `f=0.5` so that both `3k/f` and `10k/f` stay 
 `epochLength=1200`; cardano-node validates the Shelley genesis against those bounds and
 refuses it otherwise. Verify the bound from the Haskell startup log if you change `k`/`f`.
 
-**Known blocker:** a fresh slot-leader devnet fails at `/epochs/shift`, before any backfill,
-with `Canonical block hash is required` — `DevnetGenesisShiftService` calls
-`storeGenesisUtxosIfNeeded` before `startSlotLeaderTimeTravel`, which does not synchronously
-create a genesis block. The runner detects this and records the case **BLOCKED**. Never
-disable UTXOs to make it pass, and never report it as PASS.
+Genesis UTXOs must initialize at origin before the producer starts, without a canonical
+block hash. The pointer checkpoint is established by the first successful block apply.
+The first eligible block may be after slot zero; do not force a slot-zero block or disable
+UTXOs to make bootstrap pass. A `Canonical block hash is required` failure at shift is a
+bootstrap regression, not justification for forging before initializing genesis funds.
+
+`slot-leader-dense` uses interval 1; `slot-leader` uses automatic interval 0. Both wait for
+the full observed backfilled tip (not half the target), compare downstream hashes against
+Yano, check identical genesis files, and verify continued live following. Nonzero first
+slots are accepted through the matching-prefix proof from a fresh Haskell database.
 
 ## Isolation and cleanup
 

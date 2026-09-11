@@ -37,7 +37,7 @@ class DevnetGenesisShiftServiceTest {
         assertTrue(actions.genesisUtxosStoredForFreshStart);
         assertTrue(actions.devnetTimeTravelStarted);
         assertFalse(actions.slotLeaderTimeTravelStarted);
-        assertEquals("start-devnet,store-utxos", actions.startupOrder.toString());
+        assertEquals("store-utxos,start-devnet", actions.startupOrder.toString());
     }
 
     @Test
@@ -60,6 +60,23 @@ class DevnetGenesisShiftServiceTest {
         assertTrue(actions.slotLeaderTimeTravelStarted);
         assertFalse(actions.devnetTimeTravelStarted);
         assertEquals("start-slot-leader", actions.startupOrder.toString());
+    }
+
+    @Test
+    void freshSlotLeaderTimeTravelShiftStoresGenesisUtxosBeforeStartingProducer() {
+        FakeActions actions = new FakeActions(genesisConfig(shelleyGenesis(5, 1.0)), true);
+
+        service(
+                true,
+                new ProducerStartupPlan(ProducerMode.SLOT_LEADER_TIME_TRAVEL, true),
+                false,
+                50_000,
+                actions)
+                .shiftGenesisAndStartProducer(3);
+
+        assertTrue(actions.slotLeaderTimeTravelStarted);
+        assertTrue(actions.genesisUtxosStoredForFreshStart);
+        assertEquals("store-utxos,start-slot-leader", actions.startupOrder.toString());
     }
 
     @Test
