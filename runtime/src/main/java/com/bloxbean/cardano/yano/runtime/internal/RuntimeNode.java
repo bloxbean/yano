@@ -2409,15 +2409,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     /**
      * Store genesis UTXOs in the UTXO store using blake2b(address) tx hash convention.
-     * Must be called AFTER genesis block is stored in chainState (so getTip() returns the correct hash/slot).
+     * Genesis funds belong to the initial ledger state, not to the first produced block.
      */
     private void storeGenesisUtxosIfNeeded(boolean freshStart) {
-        if (freshStart && genesisConfig.hasInitialFunds() && utxoStore != null) {
-            var tip = chainState.getTip();
-            String blockHash = tip != null ? HexUtil.encodeHexString(tip.getBlockHash()) : "";
-            long slot = tip != null ? tip.getSlot() : 0;
+        if (freshStart && utxoStore != null) {
             utxoStore.storeGenesisUtxos(genesisConfig.getInitialFunds(),
-                    config.getProtocolMagic(), slot, 0, blockHash);
+                    config.getProtocolMagic(), 0, 0, "");
         }
     }
 
@@ -3649,16 +3646,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         SlotLeaderTimeTravelBlockProducer producer = createSlotLeaderTimeTravelProducer(freshStart);
         producerSubsystem.setForceSequentialSlots(true, "Past time travel");
         producer.start();
-        if (freshStart) {
-            // A fresh chain has no block zero until the first eligible slot is forged. Do it now so
-            // the genesis UTXOs stored right after this bind to a real block hash.
-            int forged = producer.forgeFirstBlockNow();
-            if (chainState.getTip() == null) {
-                throw new IllegalStateException(
-                        "Past-time-travel slot-leader producer found no eligible slot for the first block");
-            }
-            log.info("First slot-leader time-travel block forged during epoch shift (blocks={})", forged);
-        }
     }
 
     private void startShiftedDevnetTimeTravelProducer(boolean freshStart) {

@@ -29,9 +29,9 @@ public interface UtxoStoreWriter {
      *
      * @param shelleyFunds  hex-encoded address → lovelace (from shelley initialFunds)
      * @param networkMagic  protocol magic for bech32 prefix selection
-     * @param slot          slot number for the genesis block
-     * @param blockNumber   block number (typically 0)
-     * @param blockHash     block hash hex
+     * @param slot          0 for origin initialization; retained for legacy block-bound callers
+     * @param blockNumber   0 for origin initialization
+     * @param blockHash     empty at origin (before any block); otherwise a canonical block hash
      */
     default void storeGenesisUtxos(Map<String, BigInteger> shelleyFunds, long networkMagic,
                                    long slot, long blockNumber, String blockHash) {

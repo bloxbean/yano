@@ -288,7 +288,7 @@ class SlotLeaderTimeTravelBlockProducerTest {
         };
     }
     @Test
-    void forgeFirstBlockNowScansForTheFirstEligibleSlotWithoutWaitingForATick() {
+    void denseCatchUpScansEligibleSlotsWithoutWaitingForATick() {
         List<Long> checkedSlots = new ArrayList<>();
         SlotLeaderCheck countingNeverLeader = new SlotLeaderCheck(new byte[64], BigDecimal.ONE, null) {
             @Override
@@ -315,7 +315,7 @@ class SlotLeaderTimeTravelBlockProducerTest {
                 null, nonceState, countingNeverLeader, fullStake,
                 "pool", System.currentTimeMillis() - 3_600_000, 1000, 60_000, 50);
 
-        int forged = producer.forgeFirstBlockNow();
+        int forged = producer.produceToSlot(49);
 
         // no eligible slot in the 50-slot scan window: nothing forged, but the scan happened at once
         assertThat(forged).isEqualTo(0);
