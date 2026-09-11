@@ -129,11 +129,12 @@ public final class DevnetGenesisShiftService {
 
             switch (plan.mode()) {
                 case SLOT_LEADER_TIME_TRAVEL -> {
-                    // Slot-leader deployments normally restore an existing genesis tip.
-                    // Preserve that ordering until the deferred producer owns fresh-genesis
-                    // creation itself.
-                    actions.storeGenesisUtxosIfNeeded(freshStart);
+                    // On a fresh start the producer forges the first eligible block
+                    // synchronously, so the genesis UTXOs stored next bind their indexes to a
+                    // real block hash (the pointer index marker rejects an empty one). A restart
+                    // restores the existing tip and stores nothing.
                     actions.startSlotLeaderTimeTravel(freshStart);
+                    actions.storeGenesisUtxosIfNeeded(freshStart);
                 }
                 case DEVNET_TIME_TRAVEL -> {
                     // DevnetBlockProducer.start() creates and stores block zero

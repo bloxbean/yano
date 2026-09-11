@@ -3649,6 +3649,16 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         SlotLeaderTimeTravelBlockProducer producer = createSlotLeaderTimeTravelProducer(freshStart);
         producerSubsystem.setForceSequentialSlots(true, "Past time travel");
         producer.start();
+        if (freshStart) {
+            // A fresh chain has no block zero until the first eligible slot is forged. Do it now so
+            // the genesis UTXOs stored right after this bind to a real block hash.
+            int forged = producer.forgeFirstBlockNow();
+            if (chainState.getTip() == null) {
+                throw new IllegalStateException(
+                        "Past-time-travel slot-leader producer found no eligible slot for the first block");
+            }
+            log.info("First slot-leader time-travel block forged during epoch shift (blocks={})", forged);
+        }
     }
 
     private void startShiftedDevnetTimeTravelProducer(boolean freshStart) {
