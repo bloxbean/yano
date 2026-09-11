@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yano.runtime.blockproducer.DevnetBlockBuilder;
+import com.bloxbean.cardano.yano.runtime.blockproducer.BackfillPolicy;
 import com.bloxbean.cardano.yano.runtime.blockproducer.DevnetBlockProducer;
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import com.bloxbean.cardano.yano.runtime.tx.BlockTransactionSelector;
@@ -46,6 +47,15 @@ public final class DevnetProducerFactory {
                 settings.resolvedGenesisTimestamp(),
                 settings.slotLengthMillis(),
                 settings.genesisConfig());
+        int interval = settings.backfillBlockIntervalSlots();
+        if (settings.genesisConfig() != null && settings.genesisConfig().getShelleyGenesisData() != null) {
+            interval = BackfillPolicy.resolveInterval(interval,
+                    settings.genesisConfig().getShelleyGenesisData().securityParam(),
+                    settings.genesisConfig().getActiveSlotsCoeff(), false);
+        } else if (interval == 0) {
+            throw new IllegalArgumentException("Automatic backfill requires Shelley genesis");
+        }
+        producer.setBackfillBlockIntervalSlots(interval);
         dependencies.producerSubsystem().installDevnet(producer, timeTravel);
         return producer;
     }
@@ -58,7 +68,22 @@ public final class DevnetProducerFactory {
             boolean lazyBlockProduction,
             long resolvedGenesisTimestamp,
             int slotLengthMillis,
-            GenesisConfig genesisConfig) {
+            GenesisConfig genesisConfig,
+            int backfillBlockIntervalSlots) {
+        public Settings {
+            if (backfillBlockIntervalSlots < 0) {
+                throw new IllegalArgumentException(
+                        "backfillBlockIntervalSlots must be non-negative, got " + backfillBlockIntervalSlots);
+            }
+        }
+
+        public Settings(int blockTimeMillis,
+                        boolean lazyBlockProduction,
+                        long resolvedGenesisTimestamp,
+                        int slotLengthMillis,
+                        GenesisConfig genesisConfig) {
+            this(blockTimeMillis, lazyBlockProduction, resolvedGenesisTimestamp, slotLengthMillis, genesisConfig, 1);
+        }
     }
 
     /**

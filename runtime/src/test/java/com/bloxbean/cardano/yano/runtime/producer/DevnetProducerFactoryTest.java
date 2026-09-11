@@ -13,6 +13,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DevnetProducerFactoryTest {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -51,6 +52,25 @@ class DevnetProducerFactoryTest {
         assertThat(producerSubsystem.modeOrNull()).isEqualTo(ProducerMode.DEVNET_TIME_TRAVEL);
         assertThat(producerSubsystem.isRunning()).isFalse();
         assertThat(producerSubsystem.slotLengthMillis("test")).isEqualTo(1000);
+    }
+
+    @Test
+    void settingsCarryTheBackfillBlockIntervalToTheProducer() {
+        ProducerSubsystem producerSubsystem = new ProducerSubsystem();
+        var sparse = new DevnetProducerFactory.Settings(60_000, true, System.currentTimeMillis(), 1000, null, 7);
+
+        var producer = factory(producerSubsystem).createTimeTravel(new DevnetBlockBuilder(), sparse);
+
+        assertThat(producer.getBackfillBlockIntervalSlots()).isEqualTo(7);
+        assertThat(factory(new ProducerSubsystem()).createLive(new DevnetBlockBuilder(), settings())
+                .getBackfillBlockIntervalSlots()).isEqualTo(1);
+    }
+
+    @Test
+    void settingsRejectANegativeBackfillBlockInterval() {
+        assertThatThrownBy(() -> new DevnetProducerFactory.Settings(60_000, true, System.currentTimeMillis(), 1000, null, -1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("backfillBlockIntervalSlots");
     }
 
     private DevnetProducerFactory factory(ProducerSubsystem producerSubsystem) {

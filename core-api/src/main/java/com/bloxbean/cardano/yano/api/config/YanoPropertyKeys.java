@@ -499,6 +499,7 @@ public final class YanoPropertyKeys {
         public static final String LAZY = "yano.block-producer.lazy";
         public static final String GENESIS_TIMESTAMP =
                 "yano.block-producer.genesis-timestamp";
+        /** Legacy compatibility key. Producer slot duration is always derived from Shelley genesis. */
         public static final String SLOT_LENGTH_MILLIS =
                 "yano.block-producer.slot-length-millis";
         public static final String TX_EVALUATION =
@@ -525,6 +526,8 @@ public final class YanoPropertyKeys {
                 "yano.block-producer.past-time-travel-slot-leader-mode";
         public static final String PROCESS_SKIPPED_EPOCHS =
                 "yano.block-producer.process-skipped-epochs";
+        public static final String BACKFILL_BLOCK_INTERVAL_SLOTS =
+                "yano.block-producer.backfill-block-interval-slots";
 
         private BlockProducer() {
         }

@@ -97,7 +97,7 @@ yano:
 #    block-time-millis: 0
 #    lazy: false
 #    genesis-timestamp: 0
-#    slot-length-millis: 0
+#    # Slot duration comes from Shelley genesis slotLength (legacy slot-length-millis is ignored).
 #    vrf-skey-file: config/network/devnet/vrf.skey
 #    kes-skey-file: config/network/devnet/kes.skey
 #    opcert-file: config/network/devnet/opcert.cert

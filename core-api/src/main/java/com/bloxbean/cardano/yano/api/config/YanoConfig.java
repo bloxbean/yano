@@ -60,6 +60,7 @@ public class YanoConfig implements NodeConfig {
     private int blockTimeMillis;
     private boolean lazyBlockProduction;
     private long genesisTimestamp;
+    // Resolved from Shelley genesis by runtime. Legacy builder/property values cannot override genesis.
     private int slotLengthMillis;
     private String shelleyGenesisHash;     // Hex-encoded blake2b-256 of shelley-genesis.json (optional, overrides file hashing)
     private String shelleyGenesisFile;     // Path to shelley-genesis.json
@@ -105,6 +106,13 @@ public class YanoConfig implements NodeConfig {
     // devnets where node-1 should only produce slots it is eligible for.
     @Builder.Default
     private boolean pastTimeTravelSlotLeaderMode = false;
+
+    // Empty-block backfills (catch-up, time advance, epoch fast-forward) place one block every
+    // this many slots instead of every slot. 0 selects automatic genesis-derived spacing;
+    // 1 preserves dense production (default). Slot-leader searches require eligibility,
+    // so the last processed slot can be ahead of the last produced block.
+    @Builder.Default
+    private int backfillBlockIntervalSlots = 1;
 
     // Epoch/slot config — set from genesis at runtime via propagateGenesisToConfig().
     // No defaults: fail fast if not initialized from genesis.
@@ -540,7 +548,7 @@ public class YanoConfig implements NodeConfig {
                 throw new IllegalArgumentException("Block producer mode requires server to be enabled");
             }
             // blockTimeMillis == 0 is valid: means auto-derive from genesis in Yano.
-            // slotLengthMillis == 0 is valid: means auto-derive from genesis in Yano.
+            // slotLengthMillis is always resolved from Shelley genesis by runtime.
         }
 
         if (slotLeaderMode) {
@@ -571,6 +579,11 @@ public class YanoConfig implements NodeConfig {
             if (!enableBlockProducer) {
                 throw new IllegalArgumentException("Past time travel mode requires block producer to be enabled");
             }
+        }
+
+        if (backfillBlockIntervalSlots < 0) {
+            throw new IllegalArgumentException("Backfill block interval must be non-negative (0 = automatic), got: "
+                    + backfillBlockIntervalSlots);
         }
 
         if (pastTimeTravelSlotLeaderMode) {

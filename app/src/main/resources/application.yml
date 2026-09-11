@@ -356,7 +356,7 @@ yano:
     block-time-millis: 0
     lazy: false
     genesis-timestamp: 0
-    slot-length-millis: 0
+    slot-length-millis: 0 # Legacy compatibility only; Shelley genesis slotLength is authoritative.
     start-epoch: 0
     past-time-travel-mode: false
     past-time-travel-slot-leader-mode: false
@@ -411,7 +411,7 @@ yano:
       block-time-millis: 0
       lazy: false
       genesis-timestamp: 0
-      slot-length-millis: 0
+      slot-length-millis: 0 # Legacy compatibility only; Shelley genesis slotLength is authoritative.
       vrf-skey-file: config/network/devnet/vrf.skey
       kes-skey-file: config/network/devnet/kes.skey
       opcert-file: config/network/devnet/opcert.cert
@@ -452,7 +452,7 @@ yano:
       slot-leader-mode: true
       lazy: false
       genesis-timestamp: 0
-      slot-length-millis: 0
+      slot-length-millis: 0 # Legacy compatibility only; Shelley genesis slotLength is authoritative.
       start-epoch: 0
       vrf-skey-file: config/network/devnet/vrf.skey
       kes-skey-file: config/network/devnet/kes.skey

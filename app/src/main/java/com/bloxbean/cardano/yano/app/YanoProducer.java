@@ -425,7 +425,8 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.BlockProducer.GENESIS_TIMESTAMP, defaultValue = "0")
     long genesisTimestamp;
 
-    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LENGTH_MILLIS, defaultValue = "1000")
+    // Retained for compatibility; runtime always uses the Shelley genesis slotLength.
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LENGTH_MILLIS, defaultValue = "0")
     int slotLengthMillis;
 
     @ConfigProperty(name = YanoPropertyKeys.BlockProducer.TX_EVALUATION, defaultValue = "true")
@@ -466,6 +467,9 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.BlockProducer.PAST_TIME_TRAVEL_SLOT_LEADER_MODE, defaultValue = "false")
     boolean pastTimeTravelSlotLeaderMode;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.BACKFILL_BLOCK_INTERVAL_SLOTS, defaultValue = "1")
+    int backfillBlockIntervalSlots;
 
     // Bootstrap config
     @ConfigProperty(name = YanoPropertyKeys.Bootstrap.ENABLED, defaultValue = "false")
@@ -579,6 +583,7 @@ public class YanoProducer {
                 .startEpoch(startEpoch)
                 .pastTimeTravelMode(pastTimeTravelMode)
                 .pastTimeTravelSlotLeaderMode(pastTimeTravelSlotLeaderMode)
+                .backfillBlockIntervalSlots(backfillBlockIntervalSlots)
                 .shelleyGenesisHash(shelleyGenesisHash.orElse(null))
                 .shelleyGenesisFile(resolvedShelleyGenesis)
                 .byronGenesisFile(resolvedByronGenesis)

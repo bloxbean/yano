@@ -111,6 +111,10 @@ public class EpochNonceState {
         return buildEpochSlotCalc().epochToStartSlot(epoch);
     }
 
+    public long forecastWindowSlots() {
+        return preConwayStabilityWindow;
+    }
+
     private com.bloxbean.cardano.yano.api.util.EpochSlotCalc buildEpochSlotCalc() {
         return new com.bloxbean.cardano.yano.api.util.EpochSlotCalc(epochLength, byronSlotsPerEpoch, shelleyStartSlot);
     }

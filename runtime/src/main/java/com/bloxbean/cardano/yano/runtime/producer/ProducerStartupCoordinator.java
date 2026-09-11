@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.runtime.blockproducer.BlockProducerHelper;
+import com.bloxbean.cardano.yano.runtime.blockproducer.BackfillPolicy;
 import com.bloxbean.cardano.yano.runtime.blockproducer.DevnetBlockBuilder;
 import com.bloxbean.cardano.yano.runtime.blockproducer.DevnetBlockProducer;
 import com.bloxbean.cardano.yano.runtime.blockproducer.EpochNonceEvolver;
@@ -224,16 +225,31 @@ public final class ProducerStartupCoordinator {
                             initialTarget);
                     int produced = 0;
                     long slot = 1;
+                    int backfillInterval = BackfillPolicy.resolveInterval(config.getBackfillBlockIntervalSlots(),
+                            securityParam, activeSlotsCoeff, true);
+                    long forecastWindow = BackfillPolicy.forecastWindowSlots(securityParam, activeSlotsCoeff);
                     while (true) {
                         long currentWallClockSlot =
                                 (System.currentTimeMillis() - actions.resolvedGenesisTimestamp())
                                         / config.getSlotLengthMillis();
+                        ChainTip previousTip = chainState.getTip();
+                        if (backfillInterval > 1 && previousTip != null) {
+                            long nextEpoch = epochNonceState.firstSlotOfEpoch(
+                                    epochNonceState.epochForSlot(previousTip.getSlot()) + 1);
+                            slot = Math.max(slot, Math.min(previousTip.getSlot() + backfillInterval, nextEpoch));
+                        }
                         if (slot > currentWallClockSlot) break;
+                        if (backfillInterval > 1 && previousTip != null
+                                && slot - previousTip.getSlot() >= forecastWindow) {
+                            throw new IllegalStateException("Startup backfill found no eligible block within forecast window");
+                        }
 
                         byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
                         var vrfResult = slotLeaderCheck.checkAndProve(slot, epochNonce, java.math.BigDecimal.ONE);
                         if (vrfResult != null) {
                             ChainTip tip = chainState.getTip();
+                            BlockProducerHelper.prepareEpochTransitionBeforeBlock(
+                                    actions.eventBus(), slot, tip.getBlockNumber() + 1, "slot-leader-catch-up");
                             var result = signedBlockBuilder.buildBlock(
                                     tip.getBlockNumber() + 1,
                                     slot,
