@@ -24,7 +24,7 @@ npm run build
 
 ## Branding
 
-`static/logo-dark.svg` remains the original artwork and is the source for `www/public/favicon.ico`. `static/logo-docs.svg` is the lime/mint documentation variant, with the same geometry, a transparent background, and a tighter viewBox. Its copy in `www/public/logo.svg` serves the site; the social card embeds the same artwork.
+`static/logo-dark.svg` remains the original artwork. `static/logo-docs.svg` is the lime/mint documentation variant, with the same geometry, a transparent background, and a tighter viewBox. It is the source for `www/public/favicon.ico`, its copy in `www/public/logo.svg` serves the site, and the social card embeds the same artwork.
 
 ## Content
 
