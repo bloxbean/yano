@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@500&family=Space+Grotesk:wght@400;700&display=swap');
+
 :root {
   --sl-color-accent-low: #152e20;
   --sl-color-accent: #80b94f;
@@ -9,10 +11,6 @@
   --sl-color-accent-low: #e7f7da;
   --sl-color-accent: #365f1e;
   --sl-color-accent-high: #214110;
-}
-.site-title {
-  font-weight: 750;
-  letter-spacing: -0.04em;
 }
 h1,
 h2,
