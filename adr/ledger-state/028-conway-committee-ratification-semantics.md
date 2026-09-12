@@ -359,9 +359,9 @@ Run focused governance tests:
 
 ```bash
 ./gradlew :ledger-state:test \
-  --tests 'com.bloxbean.cardano.yano.ledgerstate.governance.*' \
-  --tests 'com.bloxbean.cardano.yano.ledgerstate.governance.epoch.*' \
-  --tests 'com.bloxbean.cardano.yano.ledgerstate.governance.ratification.*'
+  --tests 'org.yanoproject.ledgerstate.governance.*' \
+  --tests 'org.yanoproject.ledgerstate.governance.epoch.*' \
+  --tests 'org.yanoproject.ledgerstate.governance.ratification.*'
 ```
 
 Validate with Yano-only devkit:

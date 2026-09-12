@@ -375,7 +375,7 @@ default void onEffectResult(AppBlock block, EffectResult result, AppStateWriter 
 ```
 
 ```java
-// core-api — com.bloxbean.cardano.yano.api.appchain.effects
+// core-api — org.yanoproject.api.appchain.effects
 public interface AppEffectEmitter {
     /**
      * Record one effect intent; returns its deterministic id. Throws

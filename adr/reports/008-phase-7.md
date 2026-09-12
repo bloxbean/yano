@@ -24,4 +24,4 @@
 - `MultiPeerScaffoldingTest.peerGovernorPrefersTrustedAndHigherScore`
 - `MultiPeerScaffoldingTest.fileBackedPeerStoreReloadsPersistedPeers`
 - `SyncSubsystemTest.staticMultiFallsBackWhenPreferredObserverFailsToStart`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest" --console=plain`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest" --console=plain`

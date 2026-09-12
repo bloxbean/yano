@@ -9,7 +9,7 @@
     from './claim-verification';
   import { authenticatedParameter, authenticatedStake } from './authenticated-facts';
 
-  const BUNDLE = 'com.bloxbean.cardano.yano.appchain.cardano-history';
+  const BUNDLE = 'org.yanoproject.x.cardano-history';
   const STAKE_SERIES = 'l1-epoch-stake-v1.distribution';
   const DREP_SERIES = 'l1-epoch-governance-v1.drep-distribution';
   type View = 'overview' | 'parameters' | 'stake' | 'governance' | 'verify';

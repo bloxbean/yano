@@ -93,7 +93,7 @@ separate roots. `yano.storage.path` defaults to `./chainstate`, while
 Rebuildable app-chain indexes use a third root. The default
 The optional EUTxO index bundle defaults its rebuildable storage to
 `./appchain-indexers`. Override it with
-`yano.plugins.bundle."com.bloxbean.cardano.yano.appchain.eutxo.indexer".storage-path`.
+`yano.plugins.bundle."org.yanoproject.x.eutxo.indexer".storage-path`.
 
 For a separate chainstate directory, set a property or environment override:
 

@@ -91,11 +91,11 @@ Use explicit options (records) — do not rely on `System.setProperty`.
 ### Embedding in plain Java
 
 ```java
-import com.bloxbean.cardano.yano.api.config.*;
+import org.yanoproject.api.config.*;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
-import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.Yano;
+import org.yanoproject.runtime.assembly.YanoAssembly;
+import org.yanoproject.runtime.assembly.Yano;
 
 EventsOptions ev = new EventsOptions(true, 8192, SubscriptionOptions.Overflow.BLOCK);
 PluginsOptions pl = new PluginsOptions(true, false, java.util.Set.of(), java.util.Set.of(), java.util.Map.of());
@@ -209,7 +209,7 @@ rejected between cycles and after close.
 
 2) Add the ServiceLoader descriptor in your resources:
 
-- `META-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin`:
+- `META-INF/services/org.yanoproject.api.plugin.NodePlugin`:
 
 ```
 com.example.MyPlugin
@@ -259,7 +259,7 @@ You can annotate methods on your plugin (or any object you register) to receive 
 
 ```java
 import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
-import com.bloxbean.cardano.yano.api.events.*;
+import org.yanoproject.api.events.*;
 
 public final class MyPlugin implements NodePlugin {
   @DomainEventListener(order = 0)
@@ -340,7 +340,7 @@ SubscriptionOptions opts = SubscriptionOptions.builder()
     .build();
 
 SubscriptionHandle h = bus.subscribe(
-    com.bloxbean.cardano.yano.runtime.events.BlockAppliedEvent.class,
+    org.yanoproject.runtime.events.BlockAppliedEvent.class,
     ctx -> { /* handle ctx.event(), ctx.metadata() */ },
     opts
 );

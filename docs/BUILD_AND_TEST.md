@@ -47,10 +47,10 @@ Run one ordinary test or method with Gradle's standard filter:
 
 ```bash
 ./gradlew :runtime:test \
-  --tests 'com.bloxbean.cardano.yano.runtime.appchain.AppChainTwoNodeSmokeTest'
+  --tests 'org.yanoproject.runtime.appchain.AppChainTwoNodeSmokeTest'
 
 ./gradlew :runtime:test \
-  --tests 'com.bloxbean.cardano.yano.runtime.appchain.AppChainTwoNodeSmokeTest.twoNodes_exchangeAuthenticatedMessages_bothDirections'
+  --tests 'org.yanoproject.runtime.appchain.AppChainTwoNodeSmokeTest.twoNodes_exchangeAuthenticatedMessages_bothDirections'
 ```
 
 ## Extended tests
@@ -62,7 +62,7 @@ Run every retained integration suite, or select a module/test:
 ./gradlew :runtime:integrationTest
 
 ./gradlew :runtime:integrationTest \
-  --tests 'com.bloxbean.cardano.yano.runtime.appchain.GovernedMembershipIntegrationTest'
+  --tests 'org.yanoproject.runtime.appchain.GovernedMembershipIntegrationTest'
 ```
 
 ## Distribution verification

@@ -114,7 +114,7 @@ Implement Yano-side peer-session recovery first.
 
 Phase 1 will add a focused package inside the existing `runtime` module:
 
-- `com.bloxbean.cardano.yano.runtime.peer`
+- `org.yanoproject.runtime.peer`
 
 The first implementation remains single-active-peer. With one configured
 upstream, recovery means rebuilding the same peer. Later, the same lifecycle can

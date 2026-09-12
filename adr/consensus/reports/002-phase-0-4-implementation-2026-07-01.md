@@ -58,10 +58,10 @@ Two implementation gaps were found and fixed during review:
 The following checks passed:
 
 ```bash
-./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest
-./gradlew :consensus:test :runtime:test --tests com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest
+./gradlew :runtime:test --tests org.yanoproject.runtime.config.UpstreamConfigTest
+./gradlew :consensus:test :runtime:test --tests org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest
 ./gradlew :consensus:test
-./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.sync.validation.ShelleyHeaderValidatorTest --tests com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationPipelineTest --tests com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest --tests com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest
+./gradlew :runtime:test --tests org.yanoproject.runtime.sync.validation.ShelleyHeaderValidatorTest --tests org.yanoproject.runtime.sync.validation.HeaderValidationPipelineTest --tests org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest --tests org.yanoproject.runtime.config.UpstreamConfigTest
 ./gradlew :consensus:test :p2p:test :runtime:test
 ./gradlew :app:quarkusBuild
 ```

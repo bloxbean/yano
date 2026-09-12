@@ -48,8 +48,8 @@ the test.
 ## JUnit Usage
 
 ```java
-import com.bloxbean.cardano.yano.testkit.devnet.YanoDevnetExtension;
-import com.bloxbean.cardano.yano.testkit.devnet.YanoDevnetTestKit;
+import org.yanoproject.testkit.devnet.YanoDevnetExtension;
+import org.yanoproject.testkit.devnet.YanoDevnetTestKit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -77,8 +77,8 @@ class MyDevnetTest {
 ## Plain Java Usage
 
 ```java
-import com.bloxbean.cardano.yano.testkit.devnet.YanoDevnetTestConfig;
-import com.bloxbean.cardano.yano.testkit.devnet.YanoDevnetTestKit;
+import org.yanoproject.testkit.devnet.YanoDevnetTestConfig;
+import org.yanoproject.testkit.devnet.YanoDevnetTestKit;
 
 try (YanoDevnetTestConfig config = YanoDevnetTestConfig.builder()
              .temporaryRocksDbStorage()

@@ -20,5 +20,5 @@ Date: 2026-06-30
 
 ## Verification
 
-- `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest.allHotTrustedTxForwardingTargetsActiveAndTrustedObserverPeers --tests com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest.txDiffusionSuppressesRepeatedLocalSubmitForwardToSamePeer`
+- `./gradlew :runtime:test --tests org.yanoproject.runtime.sync.SyncSubsystemTest.allHotTrustedTxForwardingTargetsActiveAndTrustedObserverPeers --tests org.yanoproject.runtime.sync.SyncSubsystemTest.txDiffusionSuppressesRepeatedLocalSubmitForwardToSamePeer`
 

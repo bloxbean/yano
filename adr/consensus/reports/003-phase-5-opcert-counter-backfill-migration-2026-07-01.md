@@ -19,7 +19,7 @@ Date: 2026-07-01
 ## Tests
 
 ```text
-./gradlew :ledger-state:test --tests com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStoreOpCertCounterTest
+./gradlew :ledger-state:test --tests org.yanoproject.ledgerstate.DefaultAccountStateStoreOpCertCounterTest
 ```
 
 Result: passed.

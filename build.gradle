@@ -6,7 +6,10 @@ plugins {
     id 'signing'
     id 'org.unbroken-dome.test-sets' version("4.1.0")
     id 'org.ajoberstar.grgit' version '5.2.0'
-    id 'io.github.gradle-nexus.publish-plugin' version '2.0.0'
+    // The root publishes the org.yanoproject:yano starter, so it applies nmcp
+    // as well as the aggregation plugin.
+    id 'com.gradleup.nmcp' version '1.6.2'
+    id 'com.gradleup.nmcp.aggregation' version '1.6.2'
     id 'com.gradleup.shadow' version '9.4.1' apply false
     id 'org.cyclonedx.bom' version '3.3.0'
 }
@@ -254,11 +257,11 @@ tasks.register('verifyLegacyAccountHistoryRemoved') {
 
     doLast {
         def forbiddenPaths = [
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCborCodec.java',
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCfNames.java',
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryEventHandler.java',
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryStore.java',
-                'runtime/src/main/java/com/bloxbean/cardano/yano/runtime/ledger/AccountHistorySubsystem.java'
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryCborCodec.java',
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryCfNames.java',
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryEventHandler.java',
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryStore.java',
+                'runtime/src/main/java/org/yanoproject/runtime/ledger/AccountHistorySubsystem.java'
         ]
         def failures = forbiddenPaths.findAll { file(it).exists() }
                 .collect { "removed file exists: ${it}" }
@@ -309,15 +312,15 @@ tasks.register('verifyLegacyHistoryReplayRemoved') {
 
     doLast {
         def forbiddenPaths = [
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveConfiguration.java',
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveStartMode.java',
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/AddressTransactionDataset.java',
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/UtxoHistoryDataset.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveMaintenanceBudget.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveWriteSession.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveReceipt.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveRetentionCutoff.java',
-                'archive-modules/archive-store-ducklake/src/main/java/com/bloxbean/cardano/yano/archive/ducklake/DuckLakeWriteSession.java'
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/config/ArchiveConfiguration.java',
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/config/ArchiveStartMode.java',
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/dataset/AddressTransactionDataset.java',
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/dataset/UtxoHistoryDataset.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveMaintenanceBudget.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveWriteSession.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveReceipt.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveRetentionCutoff.java',
+                'archive-modules/archive-store-ducklake/src/main/java/org/yanoproject/archive/ducklake/DuckLakeWriteSession.java'
         ]
         def failures = forbiddenPaths.findAll { file(it).exists() }
                 .collect { "removed replay path exists: ${it}" }
@@ -364,8 +367,31 @@ def stagingRepository = providers.gradleProperty('stagingRepository')
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            from components.java
+            // Starter aggregate, not a code artifact: the payload is the
+            // dependency list, so there is deliberately no jar. The root has no
+            // sources, and a jar-packaged component with neither sources nor
+            // javadoc is rejected by the Central Portal; `pom` packaging is
+            // exempt, which is how :yano-bom already publishes.
+            //
+            // yano-runtime api-depends on plugin-catalog, consensus, p2p,
+            // ledger-rules and ledger-state, so these two coordinates give a
+            // downstream application the whole node stack transitively.
+            // Optional modules -- scalus-bridge, ccl-ledger-rules, archive-*,
+            // tx-services, bootstrap-providers -- stay opt-in, and the testkits
+            // must never reach an application's compile classpath. Use
+            // :yano-bom to align versions when adding them.
             pom {
+                packaging = 'pom'
+                withXml {
+                    def dependencies = asNode().appendNode('dependencies')
+                    ['yano-core-api', 'yano-runtime'].each { artifact ->
+                        def dependency = dependencies.appendNode('dependency')
+                        dependency.appendNode('groupId', project.group)
+                        dependency.appendNode('artifactId', artifact)
+                        dependency.appendNode('version', project.version)
+                        dependency.appendNode('scope', 'compile')
+                    }
+                }
                 name = 'yano'
                 description = 'Yano - A Cardano Node implementation in Java built on Yaci'
                 url = 'https://github.com/bloxbean/yano'
@@ -390,27 +416,24 @@ publishing {
         }
     }
 
-    repositories {
-        maven {
-            def releasesRepoUrl = "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/"
-            def snapshotsRepoUrl = "https://central.sonatype.com/repository/maven-snapshots/"
-            url = version.endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
-            credentials {
-                username ossrhUsername
-                password ossrhPassword
-            }
-        }
-    }
 }
 
-nexusPublishing {
-    repositories {
-        sonatype {
-            nexusUrl.set(uri("https://ossrh-staging-api.central.sonatype.com/service/local/"))
-            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
-            username = ossrhUsername
-            password = ossrhPassword
-        }
+// Central Portal publishing through the native publisher API (nmcp), replacing
+// the legacy OSSRH staging API. `USER_MANAGED` uploads the deployment and stops
+// at VALIDATED: nothing reaches Maven Central until a human publishes it, from
+// the portal UI or through the approval-gated .github/workflows/publish-central.yml.
+// Do not set `publishingTimeout` here -- nmcp rejects it under USER_MANAGED.
+nmcpAggregation {
+    centralPortal {
+        username = ossrhUsername
+        password = ossrhPassword
+        publishingType = 'USER_MANAGED'
+        // Names the pending deployment in the portal list. The deployment id
+        // itself is assigned by the server and reported by the upload task.
+        publicationName = "yano:${project.version}"
+        // The aggregate carries every module, its sources and its javadoc; the
+        // 10 minute default validation wait is tight for it.
+        validationTimeout = java.time.Duration.ofMinutes(30)
     }
 }
 
@@ -436,6 +459,10 @@ subprojects {
         apply plugin: 'java-library'
         apply plugin: 'maven-publish'
         apply plugin: 'signing'
+        // Exposes this project's publications to the root nmcpAggregation.
+        // Which of them actually reach Central is decided by the aggregation
+        // dependencies below, not by this apply.
+        apply plugin: 'com.gradleup.nmcp'
         apply plugin: 'org.unbroken-dome.test-sets'
     }
 
@@ -486,6 +513,11 @@ subprojects {
 
         tasks.withType(Javadoc) {
             options.encoding = 'UTF-8'
+            // JDK 21+ embeds ~3.9 MB of DejaVu web fonts in every javadoc output.
+            // Across the published modules that is ~86 MB of byte-identical fonts,
+            // most of the Central deployment, for a page style that falls back to
+            // system fonts without them.
+            options.addBooleanOption('-no-fonts', true)
         }
 
         task sourceJar(type: Jar) {
@@ -625,6 +657,63 @@ allprojects { candidate ->
             }
         }
     }
+}
+
+// The Maven Central deployment scope. Derived from the projects that own a
+// publication rather than restated by hand, so it cannot drift from what the
+// build actually publishes: `nonLibraryModules` holds the application and
+// aggregator projects, `:yano-bom` publishes through its own build script, and
+// the conformance fixture deliberately removes its publication (see
+// appchain/fixtures/appchain-plugin-conformance/build.gradle).
+//
+// The root is included: it publishes org.yanoproject:yano, the POM-only starter
+// aggregate that gives a downstream application the node stack in one
+// coordinate.
+def centralDeploymentExclusions = nonLibraryModules +
+        ['appchain-plugin-conformance'] as Set
+def centralDeploymentProjects = ([rootProject] + subprojects.toList()).findAll { candidate ->
+    !(candidate.name in centralDeploymentExclusions)
+} + project(':yano-bom')
+
+dependencies {
+    centralDeploymentProjects.each { candidate ->
+        nmcpAggregation(project(candidate.path))
+    }
+}
+
+// A deployment that silently loses a module is worse than one that fails, so
+// the resolved scope is asserted against the publications the build declares.
+tasks.register('verifyMavenReleasePublicationScope') {
+    group = 'verification'
+    description = 'Asserts the Central deployment covers every Maven publication the build declares.'
+    def expected = centralDeploymentProjects.collect { it.path }.toSet()
+    doLast {
+        def declared = allprojects.findAll { candidate ->
+            candidate.pluginManager.hasPlugin('maven-publish') &&
+                    !candidate.publishing.publications.withType(MavenPublication).isEmpty()
+        }.collect { it.path }.toSet()
+        def missing = declared - expected
+        def extra = expected - declared
+        if (!missing.isEmpty() || !extra.isEmpty()) {
+            throw new GradleException(
+                    'Central deployment scope does not match declared publications. ' +
+                            "Publishing but not deployed: ${missing.sort()}; " +
+                            "deployed but publishes nothing: ${extra.sort()}")
+        }
+    }
+}
+
+// The scope check must gate the work itself, not the lifecycle alias.
+// `publishAggregationToCentralPortal` is an alias whose dependencies are
+// unordered relative to each other, so hanging the check off it lets the upload
+// run first. Attaching it to the zip -- which every portal task depends on --
+// puts the check ahead of both the bundle and the network calls.
+tasks.matching {
+    it.name in ['nmcpZipAggregation',
+                'nmcpPublishAggregationToCentralPortal',
+                'nmcpPublishAggregationToCentralPortalSnapshots']
+}.configureEach {
+    dependsOn 'verifyMavenReleasePublicationScope'
 }
 
 tasks.register('distributionCheck') {

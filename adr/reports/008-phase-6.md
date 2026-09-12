@@ -22,4 +22,4 @@
 ## Verification
 
 - `SyncSubsystemTest.allHotTrustedTxForwardingTargetsActiveAndTrustedObserverPeers`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest" --console=plain`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.sync.SyncSubsystemTest" --console=plain`

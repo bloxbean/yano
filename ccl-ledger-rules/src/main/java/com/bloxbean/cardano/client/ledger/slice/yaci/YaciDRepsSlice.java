@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.client.ledger.slice.yaci;
 
 import com.bloxbean.cardano.client.ledger.slice.DRepsSlice;
-import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import org.yanoproject.api.account.LedgerStateProvider;
 
 import java.math.BigInteger;
 import java.util.Optional;

@@ -207,6 +207,6 @@ Candidate-store behavior is covered by:
 Run:
 
 ```bash
-./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest" --console=plain
-./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest.p2pRelayCanBootstrapActivePeerFromPeerSnapshotWithoutConfiguredPeers" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest.p2pRelayFallsBackToDiscoveredPeerWhenConfiguredPeerFails" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest.p2pRelaySkipsRecentlyFailedConfiguredPeerWhenDiscoveredPeerAlsoFails" --console=plain
+./gradlew :runtime:test --tests "org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest" --console=plain
+./gradlew :runtime:test --tests "org.yanoproject.runtime.config.UpstreamConfigTest" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest.p2pRelayCanBootstrapActivePeerFromPeerSnapshotWithoutConfiguredPeers" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest.p2pRelayFallsBackToDiscoveredPeerWhenConfiguredPeerFails" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest.p2pRelaySkipsRecentlyFailedConfiguredPeerWhenDiscoveredPeerAlsoFails" --console=plain
 ```

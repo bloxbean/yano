@@ -12,7 +12,7 @@ The pure candidate-header and chain-selection policy classes now live in the
 new `:consensus` module under:
 
 ```text
-com.bloxbean.cardano.yano.consensus.selection
+org.yanoproject.consensus.selection
 ```
 
 Runtime remains the owner of Yaci listener adapters, header validation,
@@ -57,7 +57,7 @@ Added consensus tests:
 Extended p2p tests:
 
 - `P2pArchitectureTest` now also rejects p2p imports of
-  `com.bloxbean.cardano.yano.consensus..`.
+  `org.yanoproject.consensus..`.
 
 Reduced runtime `MultiPeerScaffoldingTest` to runtime-owned adapter behavior:
 
@@ -79,8 +79,8 @@ Phase-level verification:
 
 ```text
 ./gradlew :consensus:test :p2p:test :runtime:compileJava
-./gradlew :consensus:test :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest'
-./gradlew :consensus:test :p2p:test :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest'
+./gradlew :consensus:test :runtime:test --tests 'org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest'
+./gradlew :consensus:test :p2p:test :runtime:test --tests 'org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest'
 ```
 
 Final verification:

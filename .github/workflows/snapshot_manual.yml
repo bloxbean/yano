@@ -21,8 +21,10 @@ jobs:
         run: chmod +x gradlew
       - name: Build with Gradle
         run: ./gradlew clean fullBuild -PskipSigning=true --stacktrace
+      # Snapshots go straight to the Central Portal snapshot repository; unlike a
+      # release there is no staged deployment and nothing to approve.
       - name: Publish package to SNAPSHOT repository
-        run: ./gradlew publishToSonatype -PskipSigning=true --warn --stacktrace
+        run: ./gradlew publishAggregationToCentralPortalSnapshots -PskipSigning=true --warn --stacktrace
         env:
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}

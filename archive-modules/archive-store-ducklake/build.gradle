@@ -24,7 +24,7 @@ def generatedExtensions = layout.buildDirectory.dir('generated/duckdb-extensions
 def generatedNativeSidecar = layout.buildDirectory.dir('generated/duckdb-native-sidecar')
 def duckDbExtensionNames = ['ducklake', 'sqlite_scanner']
 def duckDbExtensionMetadataPath =
-        'META-INF/native-image/com.bloxbean.cardano/yano-archive-store-ducklake-extensions/resource-config.json'
+        'META-INF/native-image/org.yanoproject/yano-archive-store-ducklake-extensions/resource-config.json'
 
 def nativeBuildTarget = providers.provider { yanoNativeTarget() }
 def duckDbExtensionPlatform = nativeBuildTarget.map { it.extensionPlatform }

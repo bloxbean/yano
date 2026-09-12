@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "id": "org.yanoproject.fixture.plugin-conformance",
+  "version": "${pluginVersion}",
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 9 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "node-plugin",
+      "name": "org.yanoproject.fixture.plugin-conformance",
+      "provider": "org.yanoproject.appchain.conformance.NativePluginConformanceVerifier"
+    },
+    {
+      "kind": "app-state-machine",
+      "name": "conformance-machine",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceStateMachineProvider"
+    },
+    {
+      "kind": "authenticated-map-validator",
+      "name": "conformance-map-validator",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceAuthenticatedMapValidatorFactory"
+    },
+    {
+      "kind": "sequencer-mode",
+      "name": "conformance-mode",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceSequencerModeProvider"
+    },
+    {
+      "kind": "l1-observer",
+      "name": "conformance-observer",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceL1ObserverProvider"
+    },
+    {
+      "kind": "signer-provider",
+      "name": "conformance-signer",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceSignerProviderFactory"
+    },
+    {
+      "kind": "effect-executor",
+      "name": "conformance-effect",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceEffectExecutorFactory"
+    },
+    {
+      "kind": "observation-provider",
+      "name": "conformance-observation",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceObservationProviderFactory"
+    },
+    {
+      "kind": "finalized-sink",
+      "name": "conformance-sink",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceFinalizedSinkFactory"
+    },
+    {
+      "kind": "domain-api",
+      "name": "org.yanoproject.fixture.plugin-conformance",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceDomainApiProvider"
+    },
+    {
+      "kind": "health",
+      "name": "org.yanoproject.fixture.plugin-conformance",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceHealthProvider"
+    },
+    {
+      "kind": "metrics",
+      "name": "org.yanoproject.fixture.plugin-conformance",
+      "provider": "org.yanoproject.appchain.conformance.ConformanceMetricsProvider"
+    }
+  ]
+}

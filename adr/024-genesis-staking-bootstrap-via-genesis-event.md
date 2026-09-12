@@ -462,11 +462,11 @@ Regression checks:
 
 ## References
 
-- `core-api/src/main/java/com/bloxbean/cardano/yano/api/events/GenesisBlockEvent.java`
-- `ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountStateEventHandler.java`
-- `ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/DefaultAccountStateStore.java`
-- `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/genesis/ShelleyGenesisParser.java`
-- `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/genesis/ShelleyGenesisData.java`
+- `core-api/src/main/java/org/yanoproject/api/events/GenesisBlockEvent.java`
+- `ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountStateEventHandler.java`
+- `ledger-state/src/main/java/org/yanoproject/ledgerstate/DefaultAccountStateStore.java`
+- `runtime/src/main/java/org/yanoproject/runtime/genesis/ShelleyGenesisParser.java`
+- `runtime/src/main/java/org/yanoproject/runtime/genesis/ShelleyGenesisData.java`
 - Haskell ledger:
   `/Users/satya/work/cardano-comm-projects/cardano-ledger/eras/shelley/impl/src/Cardano/Ledger/Shelley/Transition.hs`
 - Haskell ledger:

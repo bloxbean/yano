@@ -29,4 +29,4 @@
 - `MultiPeerScaffoldingTest.trustedLongerCandidateCanBeAdopted`
 - `MultiPeerScaffoldingTest.untrustedQuorumCanBeAdopted`
 - `MultiPeerScaffoldingTest.untrustedLongerCandidateDoesNotBlockTrustedCandidate`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest" --tests "com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest" --console=plain`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest" --tests "org.yanoproject.runtime.config.UpstreamConfigTest" --console=plain`

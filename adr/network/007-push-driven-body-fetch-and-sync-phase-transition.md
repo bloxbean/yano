@@ -180,7 +180,7 @@ Add a small runtime-local interface. This keeps `HeaderSyncManager` decoupled
 from the concrete `BodyFetchManager` class.
 
 ```java
-package com.bloxbean.cardano.yano.runtime;
+package org.yanoproject.runtime;
 
 public interface HeaderAppliedSignal {
     /**

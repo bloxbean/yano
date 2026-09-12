@@ -104,7 +104,7 @@ Expected properties:
 
 ### Verification
 
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.*"`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.peer.*"`
 - `./gradlew :runtime:compileJava`
 
 ### Review Notes
@@ -149,7 +149,7 @@ same.
 - Compile runtime.
 - Manual code review of startup/stop path.
 - `./gradlew :runtime:compileJava`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest"`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.peer.*" --tests "org.yanoproject.runtime.HeaderSyncManagerSimpleTest" --tests "org.yanoproject.runtime.BodyFetchManagerSimpleTest"`
 
 ### Review Notes
 
@@ -185,7 +185,7 @@ Expose health snapshot in a simple status object.
 - Unit tests around `PeerHealth`.
 - Focused tests for listener callbacks updating health.
 - `./gradlew :runtime:compileJava`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest"`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.peer.*" --tests "org.yanoproject.runtime.PipelineDataListenerHealthTest" --tests "org.yanoproject.runtime.HeaderSyncManagerSimpleTest" --tests "org.yanoproject.runtime.BodyFetchManagerSimpleTest"`
 
 ### Review Notes
 
@@ -237,7 +237,7 @@ Add `PeerSessionSupervisor`:
 - Fresh keepalive does not mask stale application progress.
 - Cooldown and configured jitter prevent repeated recoveries.
 - `./gradlew :runtime:compileJava`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisorTest" --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest"`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.peer.PeerSessionSupervisorTest" --tests "org.yanoproject.runtime.peer.*" --tests "org.yanoproject.runtime.PipelineDataListenerHealthTest" --tests "org.yanoproject.runtime.HeaderSyncManagerSimpleTest" --tests "org.yanoproject.runtime.BodyFetchManagerSimpleTest"`
 
 ### Review Notes
 
@@ -284,7 +284,7 @@ Add `PeerSessionSupervisor`:
 - Recovery does not leave old batch state blocking new session.
 - Rollback and disconnect clear body-fetch health state.
 - `./gradlew :runtime:compileJava`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisorTest" --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest"`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.peer.PeerSessionSupervisorTest" --tests "org.yanoproject.runtime.peer.*" --tests "org.yanoproject.runtime.PipelineDataListenerHealthTest" --tests "org.yanoproject.runtime.BodyFetchManagerSimpleTest" --tests "org.yanoproject.runtime.HeaderSyncManagerSimpleTest"`
 
 ### Review Notes
 
@@ -320,9 +320,9 @@ Add `PeerSessionSupervisor`:
 - Status exposes recovery state.
 - No log spam in normal operation.
 - `./gradlew :core-api:compileJava`
-- `./gradlew :core-api:test --tests "com.bloxbean.cardano.yano.api.model.NodeStatusTest"`
+- `./gradlew :core-api:test --tests "org.yanoproject.api.model.NodeStatusTest"`
 - `./gradlew :runtime:compileJava`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.peer.*" --tests "com.bloxbean.cardano.yano.runtime.PipelineIntegrationTest" --tests "com.bloxbean.cardano.yano.runtime.PipelineDataListenerHealthTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest" --tests "com.bloxbean.cardano.yano.runtime.HeaderSyncManagerSimpleTest"`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.peer.*" --tests "org.yanoproject.runtime.PipelineIntegrationTest" --tests "org.yanoproject.runtime.PipelineDataListenerHealthTest" --tests "org.yanoproject.runtime.BodyFetchManagerSimpleTest" --tests "org.yanoproject.runtime.HeaderSyncManagerSimpleTest"`
 
 ### Review Notes
 
@@ -483,7 +483,7 @@ To avoid a tight reconnect loop against unhealthy public relays:
 
 ## Current Design Decisions
 
-- Phase 1 package is `com.bloxbean.cardano.yano.runtime.peer`.
+- Phase 1 package is `org.yanoproject.runtime.peer`.
 - New Gradle module is deferred.
 - Recovery replaces the whole active session, not only `PeerClient`.
 - Failover peers are deferred until single-peer recovery is stable.

@@ -214,15 +214,15 @@ Add module-owned Native Image metadata under a non-colliding path such as:
 
 ```text
 archive-store-ducklake/src/main/resources/META-INF/native-image/
-  com.bloxbean.cardano/yano-archive-store-ducklake/
+  org.yanoproject/yano-archive-store-ducklake/
     reflect-config.json
     resource-config.json
 ```
 
 The reflection configuration retains, at minimum, the declared constructors of:
 
-- `com.bloxbean.cardano.yano.archive.ducklake.DuckLakeProjectionSinkProvider`;
-- `com.bloxbean.cardano.yano.archive.ducklake.DuckLakeArchiveBackendProvider`.
+- `org.yanoproject.archive.ducklake.DuckLakeProjectionSinkProvider`;
+- `org.yanoproject.archive.ducklake.DuckLakeArchiveBackendProvider`.
 
 The resource configuration names, at minimum, the corresponding
 `META-INF/services/...ProjectionSinkProvider` and

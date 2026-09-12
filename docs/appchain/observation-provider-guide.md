@@ -11,7 +11,7 @@ Implement `ObservationProviderFactory`: `type()` is the exact configured
 `observations.providers.<definition-id>.type` selector; `create()` receives
 the definition ID and operational settings and returns an `ObservationProvider`.
 Register the factory's class in the normal Java service descriptor for
-`com.bloxbean.cardano.yano.api.appchain.observation.ObservationProviderFactory`
+`org.yanoproject.api.appchain.observation.ObservationProviderFactory`
 and declare the same selector/class as an `observation-provider` contribution
 in the schema-1 plugin manifest. Use the normal catalog, not ad-hoc class loading.
 

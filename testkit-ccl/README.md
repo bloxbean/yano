@@ -27,9 +27,9 @@ results.
 
 ```java
 import com.bloxbean.cardano.client.backend.api.BackendService;
-import com.bloxbean.cardano.yano.testkit.ccl.YanoBackendService;
-import com.bloxbean.cardano.yano.testkit.devnet.YanoDevnetExtension;
-import com.bloxbean.cardano.yano.testkit.devnet.YanoDevnetTestKit;
+import org.yanoproject.testkit.ccl.YanoBackendService;
+import org.yanoproject.testkit.devnet.YanoDevnetExtension;
+import org.yanoproject.testkit.devnet.YanoDevnetTestKit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 

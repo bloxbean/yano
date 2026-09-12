@@ -1,0 +1,1231 @@
+package org.yanoproject.ledgerstate.governance.epoch;
+
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.api.era.EraProvider;
+import org.yanoproject.ledgerstate.AdaPotTracker;
+import org.yanoproject.ledgerstate.DefaultAccountStateStore;
+import org.yanoproject.ledgerstate.DefaultAccountStateStore.DeltaOp;
+import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
+import org.yanoproject.ledgerstate.EpochParamTracker;
+import org.yanoproject.ledgerstate.governance.ratification.ProtocolParamGroupClassifier;
+import org.yanoproject.ledgerstate.governance.GovernanceCborCodec.CommitteeThreshold;
+import org.yanoproject.ledgerstate.governance.GovernanceStateStore;
+import org.yanoproject.ledgerstate.governance.GovernanceStateStore.CredentialKey;
+import org.yanoproject.ledgerstate.governance.epoch.DRepDistributionCalculator.DRepDistKey;
+import java.util.Set;
+import org.yanoproject.ledgerstate.governance.model.CommitteeMemberRecord;
+import org.yanoproject.ledgerstate.governance.model.DRepStateRecord;
+import org.yanoproject.ledgerstate.governance.model.GovActionRecord;
+import org.yanoproject.ledgerstate.governance.model.ProposalLifecycleRecord;
+import org.yanoproject.ledgerstate.governance.model.RatificationResult;
+import org.yanoproject.ledgerstate.governance.ratification.EnactmentProcessor;
+import org.yanoproject.ledgerstate.governance.ratification.ProposalDropService;
+import org.yanoproject.ledgerstate.governance.ratification.RatificationEngine;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.RocksDB;
+import org.rocksdb.RocksDBException;
+import org.rocksdb.WriteBatch;
+import org.rocksdb.WriteOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.*;
+
+/**
+ * Orchestrates all governance processing at epoch boundaries.
+ * Called from EpochBoundaryProcessor.processEpochBoundary() BEFORE reward calculation.
+ * <p>
+ * Processing order (must match Haskell ledger):
+ * <ol>
+ *   <li>Calculate DRep distribution</li>
+ *   <li>RATIFY: Evaluate all active proposals against vote thresholds</li>
+ *   <li>ENACT: Apply ratified actions</li>
+ *   <li>Remove expired + conflicting proposals, refund deposits</li>
+ *   <li>Update DRep expiry</li>
+ *   <li>Update dormant epoch tracking</li>
+ *   <li>Process donations</li>
+ * </ol>
+ */
+public class GovernanceEpochProcessor {
+    private static final Logger log = LoggerFactory.getLogger(GovernanceEpochProcessor.class);
+
+    private RocksDB db;
+    private ColumnFamilyHandle cfState;
+    private ColumnFamilyHandle cfDelta;
+    private final GovernanceStateStore governanceStore;
+    private final DRepDistributionCalculator drepDistCalculator;
+    private final DRepExpiryCalculator drepExpiryCalculator;
+    private final RatificationEngine ratificationEngine;
+    private final EnactmentProcessor enactmentProcessor;
+    private final ProposalDropService proposalDropService;
+    private final EpochParamProvider paramProvider;
+    private final EpochParamTracker paramTracker;
+    private final AdaPotTracker adaPotTracker;
+    private final PoolStakeResolver poolStakeResolver;
+    private final RewardRestStore rewardRestStore;
+
+    // Era provider for Conway detection — uses era metadata instead of protocolMajor.
+    private volatile EraProvider eraProvider;
+
+    private org.yanoproject.api.archive.EpochArchiveStagingSink archiveStaging =
+            org.yanoproject.api.archive.EpochArchiveStagingSink.NOOP;
+    private volatile org.yanoproject.api.archive.EpochArchiveStagingSink.Boundary archiveBoundary;
+
+    /**
+     * Commits boundary delta journal entries. Injected from DefaultAccountStateStore.
+     */
+    @FunctionalInterface
+    public interface BoundaryDeltaWriter {
+        void commit(long slot, byte phase, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
+    }
+
+    /**
+     * Adjusts AdaPot treasury in a WriteBatch for atomic commit with governance phase.
+     */
+    @FunctionalInterface
+    public interface AdaPotBatchAdjuster {
+        void adjustTreasury(int epoch, BigInteger treasuryDelta, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
+    }
+
+    private volatile BoundaryDeltaWriter boundaryDeltaWriter;
+    private volatile AdaPotBatchAdjuster adaPotBatchAdjuster;
+
+    public void setBoundaryDeltaWriter(BoundaryDeltaWriter writer) {
+        this.boundaryDeltaWriter = writer;
+    }
+
+    public void setAdaPotBatchAdjuster(AdaPotBatchAdjuster adjuster) {
+        this.adaPotBatchAdjuster = adjuster;
+    }
+
+    // Conway era first epoch — resolved from EraProvider at bootstrap time and cached
+    private int conwayFirstEpoch = -1;
+    private volatile boolean genesisBootstrapped = false;
+    private final org.yanoproject.ledgerstate.governance.ConwayGenesisBootstrap genesisBootstrap;
+
+    /**
+     * Resolves pool stake distribution and pool-to-DRep delegation mapping for SPO voting.
+     * Implemented by the caller (DefaultAccountStateStore) which has access to epoch snapshots.
+     */
+    public interface PoolStakeResolver {
+        PoolStakeData resolvePoolStake(int epoch) throws RocksDBException;
+    }
+
+    /** Pool stake distribution and DRep delegation data for SPO voting. */
+    public record PoolStakeData(
+            Map<String, BigInteger> poolStakes,
+            Map<String, Integer> poolDRepDelegations
+    ) {
+        public static final PoolStakeData EMPTY = new PoolStakeData(Map.of(), Map.of());
+    }
+
+    /**
+     * Stores a deferred reward (reward_rest) that becomes spendable and counts toward
+     * stake at a future epoch. Used for proposal deposit refunds and treasury withdrawals.
+     */
+    public interface RewardRestStore {
+        /**
+         * Store a reward_rest entry.
+         *
+         * @param spendableEpoch   Epoch when this reward becomes part of the stake snapshot
+         * @param type             Reward type byte (REWARD_REST_PROPOSAL_REFUND, etc.)
+         * @param rewardAccountHex Reward account in hex (header + credential hash)
+         * @param amount           Amount in lovelace
+         * @param earnedEpoch      Epoch when the reward was earned
+         * @param slot             Slot of the triggering event
+         * @param batch            WriteBatch for atomic writes
+         * @param deltaOps         Delta ops for rollback
+         * @return true if stored (valid address), false if invalid
+         */
+        boolean storeRewardRest(int spendableEpoch, byte type, String rewardAccountHex,
+                                BigInteger amount, int earnedEpoch, long slot,
+                                WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
+
+        /** Get all spendable reward_rest entries with spendableEpoch &lt;= epoch. */
+        java.util.Map<String, BigInteger> getSpendableRewardRest(int epoch);
+    }
+
+    /** Result of governance Phase 1 (enactment + treasury withdrawals + deposit refunds). */
+    record EnactmentResult(BigInteger treasuryDelta, BigInteger depositRefunds,
+                           Map<GovActionId, ProposalLifecycleRecord> lifecycleUpdates) {}
+
+    public GovernanceEpochProcessor(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfDelta,
+                                    GovernanceStateStore governanceStore,
+                                    DRepDistributionCalculator drepDistCalculator,
+                                    DRepExpiryCalculator drepExpiryCalculator,
+                                    RatificationEngine ratificationEngine,
+                                    EnactmentProcessor enactmentProcessor,
+                                    ProposalDropService proposalDropService,
+                                    EpochParamProvider paramProvider,
+                                    EpochParamTracker paramTracker,
+                                    AdaPotTracker adaPotTracker,
+                                    PoolStakeResolver poolStakeResolver,
+                                    RewardRestStore rewardRestStore,
+                                    String conwayGenesisFilePath) {
+        this.db = db;
+        this.cfState = cfState;
+        this.cfDelta = cfDelta;
+        this.governanceStore = governanceStore;
+        this.drepDistCalculator = drepDistCalculator;
+        this.drepExpiryCalculator = drepExpiryCalculator;
+        this.ratificationEngine = ratificationEngine;
+        this.enactmentProcessor = enactmentProcessor;
+        this.proposalDropService = proposalDropService;
+        this.paramProvider = paramProvider;
+        this.paramTracker = paramTracker;
+        this.adaPotTracker = adaPotTracker;
+        this.poolStakeResolver = poolStakeResolver;
+        this.rewardRestStore = rewardRestStore;
+        this.genesisBootstrap = new org.yanoproject.ledgerstate.governance.ConwayGenesisBootstrap(
+                governanceStore, conwayGenesisFilePath);
+    }
+
+    /**
+     * Refresh RocksDB handles after snapshot restore. Shared governance helpers keep
+     * their object identity, but must point at the reopened database handles.
+     */
+    public void reinitialize(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfDelta,
+                             ColumnFamilyHandle cfEpochSnapshot) {
+        this.db = db;
+        this.cfState = cfState;
+        this.cfDelta = cfDelta;
+        governanceStore.reinitialize(db, cfState);
+        drepDistCalculator.reinitialize(db, cfState, cfEpochSnapshot);
+        log.info("GovernanceEpochProcessor reinitialized after snapshot restore");
+    }
+
+    /**
+     * Set the era provider for Conway-era detection.
+     */
+    public void setEraProvider(EraProvider eraProvider) {
+        this.eraProvider = eraProvider;
+    }
+
+    public void setEpochArchiveStagingSink(
+            org.yanoproject.api.archive.EpochArchiveStagingSink sink) {
+        this.archiveStaging = sink != null ? sink
+                : org.yanoproject.api.archive.EpochArchiveStagingSink.NOOP;
+    }
+
+    public void setBoundaryCoordinates(
+            org.yanoproject.api.archive.EpochArchiveStagingSink.Boundary boundary) {
+        this.archiveBoundary = boundary;
+    }
+
+    /**
+     * Process governance epoch boundary in two phases with a commit between.
+     * Phase 1 (Enact): applies previously ratified proposals → commits so committee/params
+     *                   changes are visible to subsequent reads.
+     * Phase 2 (Ratify + rest): evaluates current proposals, stores new pending, updates DReps.
+     * Called from EpochBoundaryProcessor.
+     */
+    public GovernanceEpochResult processEpochBoundaryAndCommit(int previousEpoch, int newEpoch,
+            Map<org.yanoproject.ledgerstate.UtxoBalanceAggregator.CredentialKey,
+                    BigInteger> utxoBalances,
+            Map<String, BigInteger> spendableRewardRest) throws RocksDBException {
+
+        int protocolVersion = resolveProtocolMajor(newEpoch);
+        if (protocolVersion < 9) return GovernanceEpochResult.EMPTY;
+
+        // Phase 1: Bootstrap + Enact pending proposals + treasury withdrawal reward_rest
+        //          + deposit refunds for enacted/dropped proposals.
+        // Committed BEFORE Phase 2 so that:
+        //   1. Ratification reads current committee/params/lastEnacted
+        //   2. DRep distribution includes treasury withdrawal amounts (via spendableRewardRest)
+        // This matches Haskell: ENACT creates reward_rest → committed → DRep dist sees them.
+        // Resolve boundary slot for delta journal — first slot of the new epoch
+        long boundarySlot = paramProvider.getEpochSlotCalc().epochToStartSlot(newEpoch);
+
+        EnactmentResult enactment;
+        List<org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<?>> enactmentWriters =
+                new ArrayList<>();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            List<DeltaOp> deltaOps = new ArrayList<>();
+            enactment = processEnactmentPhase(previousEpoch, newEpoch, batch, deltaOps, enactmentWriters);
+            if (boundaryDeltaWriter != null) {
+                boundaryDeltaWriter.commit(boundarySlot, DefaultAccountStateStore.PHASE_GOV_ENACT, batch, deltaOps);
+            }
+            db.write(wo, batch);
+            commitArchiveWriters(enactmentWriters);
+        } finally {
+            closeArchiveWriters(enactmentWriters);
+        }
+
+        // Read spendable reward_rest AFTER Phase 1 commit.
+        // Treasury withdrawal and enacted/dropped proposal refund entries are now in DB.
+        // This is passed to DRep distribution so voting power includes these amounts.
+        if (spendableRewardRest == null && rewardRestStore != null) {
+            spendableRewardRest = rewardRestStore.getSpendableRewardRest(newEpoch);
+        }
+
+        // Phase 2: DRep distribution + Ratification + newly expired proposals + donations
+        List<org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<?>> ratificationWriters =
+                new ArrayList<>();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            List<DeltaOp> deltaOps = new ArrayList<>();
+            GovernanceEpochResult result = processRatificationPhase(previousEpoch, newEpoch,
+                    enactment, batch, deltaOps, utxoBalances, spendableRewardRest, ratificationWriters);
+            // Include AdaPot treasury adjustment atomically in Phase 2 batch
+            if (adaPotBatchAdjuster != null) {
+                BigInteger govTreasuryDelta = result.treasuryDelta().add(result.donations());
+                if (govTreasuryDelta.signum() != 0) {
+                    adaPotBatchAdjuster.adjustTreasury(newEpoch, govTreasuryDelta, batch, deltaOps);
+                }
+            }
+            if (boundaryDeltaWriter != null) {
+                boundaryDeltaWriter.commit(boundarySlot, DefaultAccountStateStore.PHASE_GOV_RATIFY, batch, deltaOps);
+            }
+            db.write(wo, batch);
+            commitArchiveWriters(ratificationWriters);
+            return result;
+        } finally {
+            closeArchiveWriters(ratificationWriters);
+        }
+    }
+
+    /**
+     * Phase 1: Bootstrap Conway genesis + enact previously ratified proposals + create reward_rest
+     * for treasury withdrawals and deposit refunds (enacted + dropped proposals).
+     * <p>
+     * Must be committed BEFORE Phase 2 so that:
+     * <ol>
+     *   <li>Ratification reads current committee/params/lastEnacted</li>
+     *   <li>DRep distribution includes treasury withdrawal reward_rest via spendableRewardRest</li>
+     * </ol>
+     * This matches Haskell NEWEPOCH: ENACT creates reward_rest → committed → DRep dist sees them.
+     */
+    private EnactmentResult processEnactmentPhase(int previousEpoch, int newEpoch,
+                                                   WriteBatch batch, List<DeltaOp> deltaOps,
+                                                   List<org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<?>> archiveWriters)
+            throws RocksDBException {
+        var governanceArchive = archiveStaging.enabled(
+                org.yanoproject.api.archive.EpochArchiveStagingSink.Dataset.GOVERNANCE_PROPOSAL_STATUS)
+                ? archiveStaging.openGovernance(newEpoch, "lifecycle") : null;
+        var rewardArchive = archiveStaging.enabled(
+                org.yanoproject.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
+                ? archiveStaging.openRewards(newEpoch, "governance") : null;
+        if (governanceArchive != null) archiveWriters.add(governanceArchive);
+        if (rewardArchive != null) archiveWriters.add(rewardArchive);
+        Set<GovActionId> archivedLifecycle = new java.util.HashSet<>();
+
+        // Bootstrap Conway genesis once when Conway is reachable. Fresh devnets can start
+        // directly in Conway at epoch 0, so there is no Byron/Babbage -> Conway boundary.
+        if (!genesisBootstrapped && eraProvider != null) {
+            Integer resolvedConwayEpoch = eraProvider.resolveFirstConwayEpochOrNull();
+            if (resolvedConwayEpoch != null && newEpoch >= resolvedConwayEpoch) {
+                if (conwayFirstEpoch < 0) {
+                    conwayFirstEpoch = resolvedConwayEpoch;
+                }
+                if (isConwayGenesisBootstrapPersisted(resolvedConwayEpoch)) {
+                    log.info("Conway genesis already bootstrapped (firstConwayEpoch={}, epoch {}), skipping",
+                            resolvedConwayEpoch, newEpoch);
+                    genesisBootstrapped = true;
+                } else if (genesisBootstrap.bootstrap(conwayFirstEpoch, batch, deltaOps)) {
+                    governanceStore.storeEraFirstEpoch(9, conwayFirstEpoch, batch, deltaOps);
+                    genesisBootstrapped = true;
+                }
+            }
+            // If resolvedConwayEpoch is null: Conway not reached yet, no bootstrap
+        }
+
+        // 1. Enact pending proposals (ratified at previous epoch boundary)
+        BigInteger treasuryDelta = BigInteger.ZERO;
+        List<GovActionId> pendingEnactmentIds = governanceStore.getPendingEnactments();
+        List<GovActionId> pendingDropIds = governanceStore.getPendingDrops();
+        Map<GovActionId, GovActionRecord> allProposals = governanceStore.getAllActiveProposals();
+
+        if (!pendingEnactmentIds.isEmpty()) {
+            log.info("Phase 1 enact: {} pending enactments at {} → {}",
+                    pendingEnactmentIds.size(), previousEpoch, newEpoch);
+        }
+
+        for (GovActionId id : pendingEnactmentIds) {
+            GovActionRecord proposal = allProposals.get(id);
+            if (proposal != null) {
+                BigInteger delta = enactmentProcessor.enact(id, proposal, newEpoch, batch, deltaOps);
+                treasuryDelta = treasuryDelta.add(delta);
+                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, proposal,
+                        newEpoch, "enactment", "enacted", "pending_enactment_applied");
+                log.info("Phase 1 enacted: {}/{} type={}", id.getTransactionId().substring(0, 8),
+                        id.getGov_action_index(), proposal.actionType());
+            }
+        }
+
+        // 2. Store treasury withdrawal amounts as reward_rest (for enacted TreasuryWithdrawalsAction).
+        //    Created here (Phase 1) so DRep distribution in Phase 2 includes them via spendableRewardRest.
+        if (rewardRestStore != null) {
+            Map<String, BigInteger> aggregatedWithdrawals = new java.util.HashMap<>();
+            List<ArchiveRewardRest> withdrawalArchiveRows = rewardArchive != null ? new ArrayList<>() : null;
+            for (GovActionId id : pendingEnactmentIds) {
+                GovActionRecord enactedProposal = allProposals.get(id);
+                if (enactedProposal != null && enactedProposal.govAction()
+                        instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction twa) {
+                    if (twa.getWithdrawals() != null) {
+                        for (var entry : twa.getWithdrawals().entrySet()) {
+                            aggregatedWithdrawals.merge(entry.getKey(), entry.getValue(), BigInteger::add);
+                            if (withdrawalArchiveRows != null) {
+                                withdrawalArchiveRows.add(governanceArchiveRow(
+                                        "governance-treasury", id, entry.getKey(), entry.getValue()));
+                            }
+                        }
+                    }
+                }
+            }
+            Set<String> storedWithdrawalAccounts = rewardArchive != null ? new java.util.HashSet<>() : null;
+            for (var entry : aggregatedWithdrawals.entrySet()) {
+                boolean stored = rewardRestStore.storeRewardRest(
+                        newEpoch,
+                        org.yanoproject.ledgerstate.DefaultAccountStateStore.REWARD_REST_TREASURY_WITHDRAWAL,
+                        entry.getKey(), entry.getValue(), previousEpoch, 0,
+                        batch, deltaOps);
+                if (!stored) {
+                    treasuryDelta = treasuryDelta.add(entry.getValue());
+                    log.info("Treasury withdrawal to {} unclaimed, returned to treasury",
+                            entry.getKey().substring(0, Math.min(16, entry.getKey().length())));
+                }
+                if (stored && storedWithdrawalAccounts != null) storedWithdrawalAccounts.add(entry.getKey());
+            }
+            if (withdrawalArchiveRows != null) {
+                for (ArchiveRewardRest row : withdrawalArchiveRows) {
+                    if (storedWithdrawalAccounts.contains(row.rewardAccount())) {
+                        appendRewardRest(rewardArchive, row.rewardAccount(), row.amount(), previousEpoch,
+                                newEpoch, "treasury_withdrawal", row.sourceId());
+                    }
+                }
+            }
+        }
+
+        // 3. Deposit refunds for enacted, expired, and sibling/descendant proposals.
+        //    Created here (Phase 1) so DRep distribution includes proposal deposit refund amounts.
+        //    De-dup set prevents double-refund when a proposal appears in multiple categories
+        //    (pending enactment, pending drop, sibling, descendant).
+        //    IMPORTANT: allProposals is an immutable in-memory snapshot — do NOT mutate it.
+        //    removeProposal() writes to the WriteBatch only, so allProposals remains valid
+        //    for sibling/descendant discovery throughout Phase 1.
+        BigInteger depositRefunds = BigInteger.ZERO;
+        Map<String, BigInteger> aggregatedRefunds = new java.util.HashMap<>();
+        List<ArchiveRewardRest> refundArchiveRows = rewardArchive != null ? new ArrayList<>() : null;
+        Set<GovActionId> removedIds = new java.util.LinkedHashSet<>();
+        Map<GovActionId, ProposalLifecycleRecord> lifecycleUpdates = new LinkedHashMap<>();
+
+        // 3a. Enacted proposals: refund deposit + remove
+        for (GovActionId id : pendingEnactmentIds) {
+            putLifecycleUpdate(lifecycleUpdates, id, allProposals,
+                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.ENACTED,
+                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.ENACTED);
+            depositRefunds = depositRefunds.add(
+                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
+                            batch, deltaOps));
+        }
+
+        // 3b. Expired proposals (pending drops from previous boundary): refund deposit + remove
+        for (GovActionId id : pendingDropIds) {
+            appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, allProposals.get(id),
+                    newEpoch, "removal", "dropped_expired", "expired_at_prior_boundary");
+            putLifecycleUpdate(lifecycleUpdates, id, allProposals,
+                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.EXPIRED,
+                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.EXPIRED);
+            depositRefunds = depositRefunds.add(
+                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
+                            batch, deltaOps));
+        }
+
+        // 3c. Siblings and descendants of enacted proposals.
+        //     Haskell's RATIFY rule returns rsRemoved which includes ratified + siblings + descendants.
+        //     In Yano's deferred architecture, sibling/descendant discovery happens here in Phase 1
+        //     against the full active proposal set (which includes fresh-epoch proposals that were
+        //     excluded from ratification in Phase 2 via prevGovSnapshots filtering).
+        int siblingDropCount = 0;
+        for (GovActionId id : pendingEnactmentIds) {
+            GovActionRecord proposal = allProposals.get(id);
+            if (proposal == null) continue;
+            Set<GovActionId> siblings = proposalDropService.findSiblings(id, proposal, allProposals);
+            for (GovActionId sibId : siblings) {
+                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, sibId, allProposals.get(sibId),
+                        newEpoch, "removal", "dropped_sibling", "sibling_of_enacted_action");
+                putLifecycleUpdate(lifecycleUpdates, sibId, allProposals,
+                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
+                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.SUPERSEDED);
+                BigInteger refunded = refundAndRemove(sibId, allProposals, removedIds, aggregatedRefunds,
+                        refundArchiveRows, batch, deltaOps);
+                depositRefunds = depositRefunds.add(refunded);
+                if (refunded.signum() > 0) siblingDropCount++;
+                // Descendants of each dropped sibling
+                GovActionRecord sib = allProposals.get(sibId);
+                if (sib != null) {
+                    for (GovActionId descId : proposalDropService.findDescendants(sibId, sib, allProposals)) {
+                        appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
+                                newEpoch, "removal", "dropped_descendant", "descendant_of_dropped_sibling");
+                        putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
+                                org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
+                                org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
+                        refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds,
+                                refundArchiveRows, batch, deltaOps);
+                        depositRefunds = depositRefunds.add(refunded);
+                        if (refunded.signum() > 0) siblingDropCount++;
+                    }
+                }
+            }
+        }
+
+        // 3d. Descendants of expired proposals
+        for (GovActionId id : pendingDropIds) {
+            GovActionRecord proposal = allProposals.get(id);
+            if (proposal == null) continue;
+            for (GovActionId descId : proposalDropService.findDescendants(id, proposal, allProposals)) {
+                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
+                        newEpoch, "removal", "dropped_descendant", "descendant_of_expired_action");
+                putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
+                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
+                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
+                BigInteger refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds,
+                        refundArchiveRows, batch, deltaOps);
+                depositRefunds = depositRefunds.add(refunded);
+                if (refunded.signum() > 0) siblingDropCount++;
+            }
+        }
+
+        if (siblingDropCount > 0) {
+            log.info("Phase 1: dropped {} siblings/descendants of enacted/expired proposals", siblingDropCount);
+        }
+
+        // Clear processed pending enactments/drops
+        governanceStore.clearPending(batch, deltaOps);
+
+        // Store aggregated refunds as reward_rest
+        BigInteger unclaimedRefunds = BigInteger.ZERO;
+        Set<String> storedRefundAccounts = rewardArchive != null ? new java.util.HashSet<>() : null;
+        if (rewardRestStore != null) {
+            for (var entry : aggregatedRefunds.entrySet()) {
+                boolean stored = rewardRestStore.storeRewardRest(
+                        newEpoch,
+                        org.yanoproject.ledgerstate.DefaultAccountStateStore.REWARD_REST_PROPOSAL_REFUND,
+                        entry.getKey(), entry.getValue(), previousEpoch, 0,
+                        batch, deltaOps);
+                if (!stored) {
+                    unclaimedRefunds = unclaimedRefunds.add(entry.getValue());
+                }
+                if (stored && storedRefundAccounts != null) storedRefundAccounts.add(entry.getKey());
+            }
+            if (refundArchiveRows != null) {
+                for (ArchiveRewardRest row : refundArchiveRows) {
+                    if (storedRefundAccounts.contains(row.rewardAccount())) {
+                        appendRewardRest(rewardArchive, row.rewardAccount(), row.amount(), previousEpoch,
+                                newEpoch, "proposal_refund", row.sourceId());
+                    }
+                }
+            }
+        }
+
+        if (unclaimedRefunds.signum() > 0) {
+            treasuryDelta = treasuryDelta.add(unclaimedRefunds);
+            log.info("Unclaimed proposal deposit refunds going to treasury: {}", unclaimedRefunds);
+        }
+
+        // Phase 1 removes enacted/dropped proposals before Phase 2. Persist the
+        // terminal facts now, without the public snapshot marker, so a crash and
+        // Phase-2 retry can recover them after the active records are gone.
+        governanceStore.storeProposalLifecycleEntries(newEpoch, lifecycleUpdates, batch, deltaOps);
+
+        return new EnactmentResult(treasuryDelta, depositRefunds, Map.copyOf(lifecycleUpdates));
+    }
+
+    private static void putLifecycleUpdate(Map<GovActionId, ProposalLifecycleRecord> updates,
+                                           GovActionId id,
+                                           Map<GovActionId, GovActionRecord> proposals,
+                                           org.yanoproject.api.appchain.l1view.GovernanceProposalStatus status,
+                                           org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason reason) {
+        GovActionRecord proposal = proposals.get(id);
+        if (proposal != null) updates.putIfAbsent(id, lifecycle(proposal, status, reason));
+    }
+
+    private void appendGovernanceLifecycle(
+            org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<
+                    org.yanoproject.api.archive.EpochArchiveStagingSink.GovernanceFact> writer,
+            Set<GovActionId> seen, GovActionId id, GovActionRecord proposal, int epoch,
+            String phase, String status, String reason) {
+        if (writer == null || proposal == null || !seen.add(id)) return;
+        writer.append(new org.yanoproject.api.archive.EpochArchiveStagingSink.GovernanceFact(
+                id.getTransactionId(), id.getGov_action_index(), proposal.actionType().name(), phase,
+                status, reason, proposal.deposit(), proposal.returnAddress(), proposal.proposedInEpoch(),
+                proposal.expiresAfterEpoch()));
+    }
+
+    private void appendRewardRest(
+            org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<
+                    org.yanoproject.api.archive.EpochArchiveStagingSink.RewardFact> writer,
+            String rewardAccount, BigInteger amount, int earnedEpoch, int spendableEpoch,
+            String type, String sourceId) {
+        if (writer == null || rewardAccount == null || rewardAccount.length() < 58) return;
+        try {
+            int header = Integer.parseInt(rewardAccount.substring(0, 2), 16);
+            int credentialType = (header & 0x10) != 0 ? 1 : 0;
+            writer.append(new org.yanoproject.api.archive.EpochArchiveStagingSink.RewardFact(
+                    credentialType, rewardAccount.substring(2, 58), null, type, earnedEpoch,
+                    spendableEpoch, amount, sourceId));
+        } catch (RuntimeException ignored) {
+            // storeRewardRest has already rejected malformed reward accounts.
+        }
+    }
+
+    private static void commitArchiveWriters(
+            List<org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<?>> writers) {
+        writers.forEach(org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter::commit);
+    }
+
+    private static void closeArchiveWriters(
+            List<org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<?>> writers) {
+        for (var writer : writers) {
+            try {
+                writer.close();
+            } catch (Exception ignored) {
+                // Capture failures are recorded by the staging sink and never
+                // replace an authoritative ledger exception.
+            }
+        }
+    }
+
+    /**
+     * Refund a proposal's deposit and remove it from the active store, with de-dup protection.
+     * Returns the refunded deposit amount (BigInteger.ZERO if the proposal was missing or already processed).
+     * <p>
+     * IMPORTANT: checks proposal existence BEFORE adding to removedIds — a missing/stale pending id
+     * is not marked as removed, so it won't block a later valid occurrence.
+     */
+    private BigInteger refundAndRemove(GovActionId id, Map<GovActionId, GovActionRecord> allProposals,
+                                       Set<GovActionId> removedIds, Map<String, BigInteger> aggregatedRefunds,
+                                       List<ArchiveRewardRest> refundArchiveRows,
+                                       WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        GovActionRecord proposal = allProposals.get(id);
+        if (proposal == null) return BigInteger.ZERO;
+        if (!removedIds.add(id)) return BigInteger.ZERO;
+        BigInteger deposit = proposal.deposit();
+        if (deposit.signum() > 0) {
+            aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
+            if (refundArchiveRows != null) {
+                refundArchiveRows.add(governanceArchiveRow(
+                        "governance-refund", id, proposal.returnAddress(), deposit));
+            }
+        }
+        governanceStore.removeProposal(id, batch, deltaOps);
+        governanceStore.removeVotesForProposal(id.getTransactionId(),
+                id.getGov_action_index(), batch, deltaOps);
+        return deposit;
+    }
+
+    static String governanceRewardSourceId(String prefix, GovActionId id) {
+        return prefix + ':' + id.getTransactionId() + '#' + id.getGov_action_index();
+    }
+
+    static ArchiveRewardRest governanceArchiveRow(String prefix, GovActionId id,
+                                                   String rewardAccount, BigInteger amount) {
+        return new ArchiveRewardRest(rewardAccount, amount, governanceRewardSourceId(prefix, id));
+    }
+
+    record ArchiveRewardRest(String rewardAccount, BigInteger amount, String sourceId) {}
+
+    /**
+     * Phase 2: DRep distribution + Ratification + newly expired proposals + donations.
+     * Reads committed state (including Phase 1 enactment + reward_rest writes).
+     * Treasury withdrawal and enacted/dropped deposit refund reward_rest were already created in Phase 1,
+     * so spendableRewardRest includes them for DRep distribution.
+     * <p>
+     * Uses prevGovSnapshots filtering: only proposals with {@code proposedInEpoch <= previousEpoch}
+     * are eligible for ratification and expiry. Haskell RATIFY uses prevGovSnapshots, which at
+     * boundary previousEpoch → newEpoch contains proposals accumulated in curGovSnapshots through
+     * the end of previousEpoch — including proposals submitted during previousEpoch. Proposals
+     * submitted during newEpoch are not processed until the next boundary.
+     * Sibling/descendant drops are NOT done here — they are deferred to Phase 1 at the next boundary.
+     */
+    private GovernanceEpochResult processRatificationPhase(int previousEpoch, int newEpoch,
+                                                            EnactmentResult enactment,
+                                                            WriteBatch batch, List<DeltaOp> deltaOps,
+                                                            Map<org.yanoproject.ledgerstate.UtxoBalanceAggregator.CredentialKey,
+                                                                    BigInteger> utxoBalances,
+                                                            Map<String, BigInteger> spendableRewardRest,
+                                                            List<org.yanoproject.api.archive.EpochArchiveStagingSink.FactWriter<?>> archiveWriters)
+            throws RocksDBException {
+        long start = System.currentTimeMillis();
+        int protocolVersion = resolveProtocolMajor(newEpoch);
+        boolean isBootstrapPhase = protocolVersion < 10;
+
+        log.info("Governance epoch boundary {} → {} (protocolVersion={}, bootstrap={})",
+                previousEpoch, newEpoch, protocolVersion, isBootstrapPhase);
+
+        BigInteger treasuryDelta = enactment.treasuryDelta();
+        BigInteger depositRefunds = enactment.depositRefunds();
+
+        // 1. Calculate DRep distribution.
+        // spendableRewardRest includes treasury withdrawal + deposit refund amounts from Phase 1.
+        Map<DRepDistKey, BigInteger> drepDist =
+                drepDistCalculator.calculate(previousEpoch, utxoBalances, spendableRewardRest);
+
+        // Store DRep distribution snapshot (skip virtual DReps — they have synthetic non-hex hashes)
+        for (var entry : drepDist.entrySet()) {
+            DRepDistKey dk = entry.getKey();
+            if (dk.drepType() <= 1) {
+                governanceStore.storeDRepDistEntry(newEpoch, dk.drepType(),
+                        dk.drepHash(), entry.getValue(), batch, deltaOps);
+            }
+        }
+        governanceStore.storeDRepDistributionSnapshotMarker(newEpoch, batch, deltaOps);
+
+        if (archiveStaging.enabled(
+                org.yanoproject.api.archive.EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION)) {
+            int numDormant = governanceStore.getNumDormantEpochs();
+            var allDRepStates = governanceStore.getAllDRepStates();
+            var writer = archiveStaging.openDrep(newEpoch);
+            archiveWriters.add(writer);
+                for (var e : drepDist.entrySet()) {
+                        DRepDistKey dk = e.getKey();
+                        if (dk.drepType() > 1) {
+                            writer.append(new org.yanoproject.api.archive.EpochArchiveStagingSink.DrepFact(
+                                    dk.drepType(), dk.drepHash(), e.getValue(), null, numDormant, null, true));
+                            continue;
+                        }
+                        DRepStateRecord state = allDRepStates.get(new CredentialKey(dk.drepType(), dk.drepHash()));
+                        int storedExpiry = (state != null) ? state.expiryEpoch() : -1;
+                        int effectiveExpiry = storedExpiry + numDormant;
+                        boolean active = isDRepActiveForExport(effectiveExpiry, newEpoch);
+                        writer.append(new org.yanoproject.api.archive.EpochArchiveStagingSink.DrepFact(
+                                dk.drepType(), dk.drepHash(), e.getValue(),
+                                storedExpiry, numDormant, effectiveExpiry, active));
+                }
+        }
+
+        // Build set of ACTIVE (non-expired) DRep keys for ratification tally.
+        Set<DRepDistKey> activeDRepKeys = buildActiveDRepKeys(drepDist, newEpoch);
+
+        // 2. Get active proposals and apply prevGovSnapshots filter.
+        //    Haskell RATIFY uses prevGovSnapshots. At boundary previousEpoch -> newEpoch,
+        //    prevGovSnapshots contains proposals present in curGovSnapshots at the end of
+        //    previousEpoch, including proposals submitted during previousEpoch. It excludes
+        //    proposals submitted during newEpoch, which are not processed until the next boundary.
+        Map<GovActionId, GovActionRecord> activeProposals = governanceStore.getAllActiveProposals();
+        Map<GovActionId, GovActionRecord> ratifiableProposals = new java.util.LinkedHashMap<>();
+        for (var entry : activeProposals.entrySet()) {
+            if (entry.getValue().proposedInEpoch() <= previousEpoch) {
+                ratifiableProposals.put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        // 3. Ratify — reads committed state (committee/params/lastEnacted updated by Phase 1).
+        Map<CredentialKey, CommitteeMemberRecord> committeeMembers = governanceStore.getAllCommitteeMembers();
+        BigDecimal committeeThreshold = resolveCommitteeThreshold();
+        String committeeState = resolveCommitteeState(committeeMembers, newEpoch);
+        Map<GovActionType, GovActionId> lastEnactedActions = resolveLastEnactedActions();
+        Map<GovActionType, BigDecimal> drepThresholds =
+                resolveDRepThresholds(isBootstrapPhase, newEpoch, committeeState);
+        Map<GovActionType, BigDecimal> spoThresholds = resolveSPOThresholds(newEpoch, committeeState);
+        int committeeMinSize = resolveCommitteeMinSize(newEpoch);
+        int committeeMaxTermLength = resolveCommitteeMaxTermLength(newEpoch);
+
+        PoolStakeData poolData = PoolStakeData.EMPTY;
+        if (poolStakeResolver != null) {
+            poolData = poolStakeResolver.resolvePoolStake(previousEpoch);
+            if (poolData == null) poolData = PoolStakeData.EMPTY;
+        }
+        Map<String, BigInteger> poolStakeDist = poolData.poolStakes();
+        Map<String, Integer> poolDRepDelegation = poolData.poolDRepDelegations();
+
+        BigInteger treasury = BigInteger.ZERO;
+        if (adaPotTracker != null && adaPotTracker.isEnabled()) {
+            var prevPot = adaPotTracker.getAdaPot(previousEpoch);
+            if (prevPot.isPresent()) {
+                treasury = prevPot.get().treasury();
+            }
+        }
+
+        var effectiveDrepThresholds = effectiveDrepVotingThresholds(newEpoch);
+        List<RatificationResult> results = ratificationEngine.evaluateAll(
+                ratifiableProposals, drepDist, activeDRepKeys, poolStakeDist, poolDRepDelegation,
+                committeeMembers, committeeThreshold, lastEnactedActions,
+                newEpoch, isBootstrapPhase, committeeMinSize, committeeMaxTermLength,
+                committeeState, treasury, drepThresholds, spoThresholds, effectiveDrepThresholds);
+
+        // Store NEW ratified proposals as pending for next boundary
+        for (RatificationResult result : results) {
+            if (result.isRatified()) {
+                governanceStore.storePendingEnactment(result.govActionId(), batch, deltaOps);
+                log.info("Phase 2: ratified → pending enactment {}/{} at {} → {}",
+                        result.govActionId().getTransactionId().substring(0, 8),
+                        result.govActionId().getGov_action_index(), previousEpoch, newEpoch);
+            }
+        }
+
+        // Persist a complete epoch-pinned lifecycle snapshot. Begin with the previous
+        // boundary so terminal states remain directly provable, apply Phase 1 terminal
+        // transitions, then overlay the status of every proposal present at this boundary.
+        Map<GovActionId, ProposalLifecycleRecord> lifecycleSnapshot =
+                new LinkedHashMap<>(governanceStore.getProposalLifecycleSnapshot(previousEpoch));
+        lifecycleSnapshot.putAll(governanceStore.getProposalLifecycleSnapshot(newEpoch));
+        lifecycleSnapshot.putAll(enactment.lifecycleUpdates());
+        for (var entry : activeProposals.entrySet()) {
+            lifecycleSnapshot.put(entry.getKey(), lifecycle(entry.getValue(),
+                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.ACTIVE,
+                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.NONE));
+        }
+        for (RatificationResult result : results) {
+            var status = switch (result.status()) {
+                case ACTIVE -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.ACTIVE;
+                case RATIFIED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.RATIFIED;
+                case EXPIRED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.EXPIRED;
+            };
+            var reason = switch (result.status()) {
+                case ACTIVE -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.NONE;
+                case RATIFIED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.RATIFIED;
+                case EXPIRED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.EXPIRED;
+            };
+            lifecycleSnapshot.put(result.govActionId(), lifecycle(result.proposal(), status, reason));
+        }
+        governanceStore.storeProposalLifecycleSnapshot(newEpoch, lifecycleSnapshot, batch, deltaOps);
+
+        if (archiveStaging.enabled(
+                org.yanoproject.api.archive.EpochArchiveStagingSink.Dataset.GOVERNANCE_PROPOSAL_STATUS)) {
+            var writer = archiveStaging.openGovernance(newEpoch, "ratification");
+            archiveWriters.add(writer);
+            for (var r : results) {
+                writer.append(new org.yanoproject.api.archive.EpochArchiveStagingSink.GovernanceFact(
+                            r.govActionId().getTransactionId(), r.govActionId().getGov_action_index(),
+                            r.proposal().actionType().name(), "ratification", r.status().name(), r.decisionReason(),
+                            r.proposal().deposit(), r.proposal().returnAddress(),
+                            r.proposal().proposedInEpoch(), r.proposal().expiresAfterEpoch()));
+            }
+        }
+
+        // 4. Store NEWLY expired proposals as pending drops for next boundary.
+        //    Sibling/descendant drops are NOT done here — they are deferred to Phase 1
+        //    at the next boundary, where the full active proposal set (including fresh-epoch
+        //    proposals excluded by prevGovSnapshots) is available for sibling discovery.
+        for (RatificationResult result : results) {
+            if (result.isExpired()) {
+                governanceStore.storePendingDrop(result.govActionId(), batch, deltaOps);
+            }
+        }
+
+        // 5. Dormant epoch tracking (needed before DRep expiry calculation).
+        //    Haskell: wasPrevEpochDormant = Seq.null prevGovSnapshots
+        //    An epoch that HAD proposals in prevGovSnapshots is non-dormant, regardless of
+        //    whether those proposals all ratified/expired in the same boundary.
+        boolean epochHadActiveProposals = !ratifiableProposals.isEmpty();
+        governanceStore.storeEpochHadActiveProposals(newEpoch, epochHadActiveProposals, batch, deltaOps);
+
+        Set<Integer> dormantEpochs = governanceStore.getDormantEpochs();
+        if (!epochHadActiveProposals) {
+            dormantEpochs.add(newEpoch);
+        }
+        if (conwayFirstEpoch >= 0 && newEpoch == conwayFirstEpoch && !dormantEpochs.contains(newEpoch)) {
+            dormantEpochs.add(newEpoch);
+        }
+        governanceStore.storeDormantEpochs(dormantEpochs, batch, deltaOps);
+
+        // 6. Update DRep expiry (after dormant tracking so dormant set is current)
+        updateDRepExpiry(newEpoch, epochHadActiveProposals, batch, deltaOps);
+
+        // 7. Process epoch donations
+        BigInteger donations = governanceStore.getEpochDonations(previousEpoch);
+
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("Governance epoch boundary complete ({} → {}) in {}ms: {} ratified, {} expired, " +
+                        "depositRefunds={}, donations={}, dormant={}, prevSnapshot={}",
+                previousEpoch, newEpoch, elapsed,
+                results.stream().filter(RatificationResult::isRatified).count(),
+                results.stream().filter(RatificationResult::isExpired).count(),
+                depositRefunds, donations, !epochHadActiveProposals, ratifiableProposals.size());
+
+        return new GovernanceEpochResult(treasuryDelta, depositRefunds, donations);
+    }
+
+    private static ProposalLifecycleRecord lifecycle(
+            GovActionRecord proposal,
+            org.yanoproject.api.appchain.l1view.GovernanceProposalStatus status,
+            org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason reason) {
+        return new ProposalLifecycleRecord(actionType(proposal.actionType()), status, reason,
+                proposal.proposedInEpoch(), proposal.expiresAfterEpoch());
+    }
+
+    private static org.yanoproject.api.appchain.l1view.GovernanceActionType actionType(
+            GovActionType type) {
+        return switch (type) {
+            case PARAMETER_CHANGE_ACTION ->
+                    org.yanoproject.api.appchain.l1view.GovernanceActionType.PARAMETER_CHANGE;
+            case HARD_FORK_INITIATION_ACTION ->
+                    org.yanoproject.api.appchain.l1view.GovernanceActionType.HARD_FORK_INITIATION;
+            case TREASURY_WITHDRAWALS_ACTION ->
+                    org.yanoproject.api.appchain.l1view.GovernanceActionType.TREASURY_WITHDRAWALS;
+            case NO_CONFIDENCE ->
+                    org.yanoproject.api.appchain.l1view.GovernanceActionType.NO_CONFIDENCE;
+            case UPDATE_COMMITTEE ->
+                    org.yanoproject.api.appchain.l1view.GovernanceActionType.UPDATE_COMMITTEE;
+            case NEW_CONSTITUTION ->
+                    org.yanoproject.api.appchain.l1view.GovernanceActionType.NEW_CONSTITUTION;
+            case INFO_ACTION ->
+                    org.yanoproject.api.appchain.l1view.GovernanceActionType.INFO_ACTION;
+        };
+    }
+
+    // ===== Active DRep Keys =====
+
+    /**
+     * Build set of ACTIVE DRep keys for ratification.
+     * Effective expiry = stored expiry + pending dormant counter.
+     * Haskell ratification uses reCurrentEpoch = eNo - 1, so a DRep with expiry E
+     * remains active at boundary previousEpoch -> newEpoch when E >= newEpoch - 1.
+     */
+    private Set<DRepDistKey> buildActiveDRepKeys(Map<DRepDistKey, BigInteger> drepDist, int newEpoch) {
+        Set<DRepDistKey> activeDRepKeys = new java.util.HashSet<>();
+        try {
+            int numDormant = governanceStore.getNumDormantEpochs();
+            var allDRepStates = governanceStore.getAllDRepStates();
+            for (var distKey : drepDist.keySet()) {
+                if (distKey.drepType() > 1) continue; // Skip virtual DReps (abstain, no_confidence)
+                CredentialKey ck = new CredentialKey(distKey.drepType(), distKey.drepHash());
+                DRepStateRecord rec = allDRepStates.get(ck);
+                if (rec == null) continue;
+                int effectiveExpiry = rec.expiryEpoch() + numDormant;
+                if (isDRepActiveForRatification(effectiveExpiry, newEpoch)) {
+                    activeDRepKeys.add(distKey);
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to build active DRep set", e);
+        }
+        return activeDRepKeys;
+    }
+
+    // ===== DRep Expiry Update (Haskell Flush Semantics) =====
+
+    /**
+     * Update DRep expiry using Haskell's incremental counter approach.
+     * At epoch boundaries with active proposals, flush the counter to all stored expiries.
+     * At dormant epochs (no active proposals), increment the counter.
+     */
+    private void updateDRepExpiry(int newEpoch, boolean epochHadActiveProposals,
+                                   WriteBatch batch, List<DeltaOp> deltaOps)
+            throws RocksDBException {
+        int numDormant = governanceStore.getNumDormantEpochs();
+
+        if (epochHadActiveProposals && numDormant > 0) {
+            // Flush: add numDormant to every registered DRep stored expiry,
+            // with Haskell's non-revival guard (Certs.hs updateDormantDRepExpiry):
+            // if actualExpiry < currentEpoch, keep currentExpiry so already-expired
+            // DReps don't accumulate stored-value drift. Haskell's currentEpoch at
+            // flush time is the TX's epoch (certsCurrentEpoch); Yano flushes at the
+            // boundary before any TX of newEpoch, so the aligned value is newEpoch.
+            Map<CredentialKey, DRepStateRecord> allDReps = governanceStore.getAllDRepStates();
+            for (var entry : allDReps.entrySet()) {
+                CredentialKey ck = entry.getKey();
+                DRepStateRecord state = entry.getValue();
+                // Skip deregistered tombstone records; flush applies to currently registered DReps.
+                // (Haskell removes deregistered DReps from vsDReps; Yano keeps tombstones.)
+                Long prevDeregSlot = state.previousDeregistrationSlot();
+                if (prevDeregSlot != null && state.registeredAtSlot() <= prevDeregSlot) {
+                    continue;
+                }
+                int newExpiry = applyDormantFlushNonRevivalGuard(state.expiryEpoch(), numDormant, newEpoch);
+                boolean active = isDRepActiveForRatification(newExpiry, newEpoch);
+                if (newExpiry != state.expiryEpoch() || active != state.active()) {
+                    DRepStateRecord updated = state.withExpiry(newExpiry, active);
+                    governanceStore.storeDRepState(ck.credType(), ck.hash(), updated, batch, deltaOps);
+                }
+            }
+            governanceStore.storeNumDormantEpochs(0, batch, deltaOps);
+
+        } else if (!epochHadActiveProposals) {
+            // Dormant epoch: increment counter
+            governanceStore.storeNumDormantEpochs(numDormant + 1, batch, deltaOps);
+        }
+        // If epochHadActiveProposals && numDormant == 0: nothing to do (no change)
+    }
+
+    /**
+     * Find the latest governance proposal submitted at or before the given slot.
+     * Uses permanent PREFIX_PROPOSAL_SUBMISSION store (survives proposal removal).
+     */
+    private DRepExpiryCalculator.ProposalSubmissionInfo findLatestProposalUpToSlot(long maxSlot) {
+        try {
+            return governanceStore.findLatestProposalUpToSlot(maxSlot);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to find latest governance proposal up to slot " + maxSlot, e);
+        }
+    }
+
+    static int applyDormantFlushNonRevivalGuard(int currentExpiry, int numDormant, int currentEpoch) {
+        int actualExpiry = currentExpiry + numDormant;
+        return actualExpiry < currentEpoch ? currentExpiry : actualExpiry;
+    }
+
+    static boolean isDRepActiveForRatification(int effectiveExpiry, int newEpoch) {
+        return effectiveExpiry >= newEpoch - 1;
+    }
+
+    static boolean isDRepActiveForExport(int effectiveExpiry, int epoch) {
+        return effectiveExpiry >= epoch;
+    }
+
+    // ===== Resolution Helpers =====
+
+    private int resolveProtocolMajor(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getProtocolMajor(epoch);
+        }
+        return paramProvider.getProtocolMajor(epoch);
+    }
+
+    int resolveCommitteeMinSize(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getCommitteeMinSize(epoch);
+        }
+        return paramProvider.getCommitteeMinSize(epoch);
+    }
+
+    int resolveCommitteeMaxTermLength(int epoch) {
+        if (paramTracker != null && paramTracker.isEnabled()) {
+            return paramTracker.getCommitteeMaxTermLength(epoch);
+        }
+        return paramProvider.getCommitteeMaxTermLength(epoch);
+    }
+
+    /**
+     * Get the set of currently registered DRep IDs (format: "drepType:drepHash").
+     * Uses the tombstone rule: include if previousDeregistrationSlot == null
+     * OR registeredAtSlot > previousDeregistrationSlot.
+     * Used by EpochBoundaryProcessor for the PV10 hardfork reverse-index rebuild.
+     */
+    public Set<String> getRegisteredDRepIds() throws RocksDBException {
+        var allDRepStates = governanceStore.getAllDRepStates();
+        Set<String> registered = new java.util.HashSet<>();
+        for (var entry : allDRepStates.entrySet()) {
+            var rec = entry.getValue();
+            Long prevDeregSlot = rec.previousDeregistrationSlot();
+            if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
+                registered.add(entry.getKey().credType() + ":" + entry.getKey().hash());
+            }
+        }
+        return registered;
+    }
+
+    private BigDecimal resolveCommitteeThreshold() throws RocksDBException {
+        var threshold = governanceStore.getCommitteeThreshold();
+        if (threshold.isEmpty() || threshold.get().denominator().signum() <= 0) {
+            log.warn("No committee threshold available — ConwayGenesisBootstrap may have been " +
+                    "skipped or committee was not updated via UPDATE_COMMITTEE. Committee check " +
+                    "will fail (threshold = 1.0) until threshold is stored.");
+        }
+        return decideCommitteeThreshold(threshold);
+    }
+
+    /**
+     * Pure helper: decide committee quorum threshold from the stored value.
+     * Fail-safe semantics mirror resolveDRepThresholds / resolveSPOThresholds —
+     * when the store is empty or denominator is zero, return {@link BigDecimal#ONE}
+     * so a missing Conway-genesis committee threshold fails ratification loudly
+     * rather than silently using a hardcoded 2/3 default (the bug-class that
+     * surfaced at preview epoch 967 for drep/pool thresholds).
+     */
+    static BigDecimal decideCommitteeThreshold(Optional<CommitteeThreshold> threshold) {
+        if (threshold.isPresent()) {
+            var t = threshold.get();
+            if (t.denominator().signum() > 0) {
+                return new BigDecimal(t.numerator()).divide(
+                        new BigDecimal(t.denominator()), java.math.MathContext.DECIMAL128);
+            }
+        }
+        return BigDecimal.ONE;
+    }
+
+    private boolean isConwayGenesisBootstrapPersisted(int resolvedConwayEpoch) throws RocksDBException {
+        int storedConwayEpoch = governanceStore.getConwayFirstEpoch();
+        return storedConwayEpoch == resolvedConwayEpoch && governanceStore.getCommitteeThreshold().isPresent();
+    }
+
+    private String resolveCommitteeState(Map<CredentialKey, CommitteeMemberRecord> members,
+                                         int epoch) throws RocksDBException {
+        boolean committeePresent = governanceStore == null || governanceStore.isCommitteePresent();
+        if (!committeePresent) return "NO_CONFIDENCE";
+        return "NORMAL";
+    }
+
+    private Map<GovActionType, GovActionId> resolveLastEnactedActions() throws RocksDBException {
+        Map<GovActionType, GovActionId> result = new HashMap<>();
+        for (GovActionType type : GovActionType.values()) {
+            var last = governanceStore.getLastEnactedAction(type);
+            if (last.isPresent()) {
+                result.put(type, new GovActionId(last.get().txHash(), last.get().govActionIndex()));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Effective DRep voting thresholds for an epoch. Priority:
+     * <ol>
+     *   <li>Tracker params (on-chain updates take effect here once plumbed)</li>
+     *   <li>Conway genesis via {@code EpochParamProvider.getDrepVotingThresholds(epoch)}</li>
+     *   <li>{@code null} — no hard-coded defaults; callers must handle this case explicitly</li>
+     * </ol>
+     */
+    // Package-private for testability — behavioral tests exercise the priority chain
+    // (tracker → provider → null).
+    com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds effectiveDrepVotingThresholds(int epoch) {
+        if (paramTracker instanceof EpochParamTracker ept) {
+            ProtocolParamUpdate params = ept.getResolvedParams(epoch);
+            if (params != null && params.getDrepVotingThresholds() != null) {
+                return params.getDrepVotingThresholds();
+            }
+        }
+        return paramProvider.getDrepVotingThresholds(epoch);
+    }
+
+    /**
+     * Effective SPO voting thresholds for an epoch. Priority same as DRep:
+     * tracker → Conway genesis → null.
+     */
+    // Package-private for testability.
+    com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds effectivePoolVotingThresholds(int epoch) {
+        if (paramTracker instanceof EpochParamTracker ept) {
+            ProtocolParamUpdate params = ept.getResolvedParams(epoch);
+            if (params != null && params.getPoolVotingThresholds() != null) {
+                return params.getPoolVotingThresholds();
+            }
+        }
+        return paramProvider.getPoolVotingThresholds(epoch);
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveDRepThresholds(boolean isBootstrapPhase, int epoch) {
+        return resolveDRepThresholds(isBootstrapPhase, epoch, "NORMAL");
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveDRepThresholds(boolean isBootstrapPhase, int epoch, String committeeState) {
+        var dt = effectiveDrepVotingThresholds(epoch);
+        if (dt == null && !isBootstrapPhase) {
+            // No Conway thresholds available AND not bootstrap — log WARN (only the instance
+            // method does this; the pure static helper stays silent so tests can assert shape
+            // without log-capture plumbing).
+            log.warn("No DRep voting thresholds available for epoch {} and bootstrap=false. " +
+                    "Conway genesis thresholds are likely not loaded. Ratification will fail " +
+                    "unconditionally (threshold = 1.0) for this epoch.", epoch);
+        }
+        return buildDRepThresholdMap(isBootstrapPhase, dt, !"NO_CONFIDENCE".equals(committeeState));
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveSPOThresholds(int epoch) {
+        return resolveSPOThresholds(epoch, "NORMAL");
+    }
+
+    // Package-private for testability.
+    Map<GovActionType, BigDecimal> resolveSPOThresholds(int epoch, String committeeState) {
+        var pt = effectivePoolVotingThresholds(epoch);
+        if (pt == null) {
+            log.warn("No SPO voting thresholds available for epoch {}. Conway genesis thresholds " +
+                    "likely not loaded. SPO checks will fail unconditionally (threshold = 1.0).", epoch);
+        }
+        return buildSPOThresholdMap(pt, !"NO_CONFIDENCE".equals(committeeState));
+    }
+
+    /**
+     * Pure mapping from {@link com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds} to the
+     * per-action threshold map used by the RatificationEngine. Returns all-zero when in
+     * bootstrap (PV9) phase — DReps don't vote in bootstrap. Returns all-1.0 when thresholds
+     * are null in non-bootstrap — fail-safe so ratification cannot silently succeed with a
+     * wrong hardcoded default (regression guard for preview epoch-967 root cause).
+     * <p>
+     * The PARAMETER_CHANGE_ACTION value is a placeholder (ppGovGroup, the highest) — the
+     * real threshold is computed per-proposal in {@link org.yanoproject.ledgerstate.governance.ratification.RatificationEngine#evaluateParameterChange}
+     * via {@link org.yanoproject.ledgerstate.governance.ratification.ProtocolParamGroupClassifier#computeDRepThreshold}.
+     */
+    static Map<GovActionType, BigDecimal> buildDRepThresholdMap(
+            boolean isBootstrapPhase,
+            com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds dt) {
+        return buildDRepThresholdMap(isBootstrapPhase, dt, true);
+    }
+
+    static Map<GovActionType, BigDecimal> buildDRepThresholdMap(
+            boolean isBootstrapPhase,
+            com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds dt,
+            boolean committeePresent) {
+        Map<GovActionType, BigDecimal> thresholds = new HashMap<>();
+        if (isBootstrapPhase) {
+            for (GovActionType type : GovActionType.values()) {
+                thresholds.put(type, BigDecimal.ZERO);
+            }
+            return thresholds;
+        }
+        if (dt == null) {
+            for (GovActionType type : GovActionType.values()) {
+                thresholds.put(type, BigDecimal.ONE);
+            }
+            return thresholds;
+        }
+        thresholds.put(GovActionType.NO_CONFIDENCE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtMotionNoConfidence()));
+        thresholds.put(GovActionType.UPDATE_COMMITTEE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(committeePresent
+                        ? dt.getDvtCommitteeNormal()
+                        : dt.getDvtCommitteeNoConfidence()));
+        thresholds.put(GovActionType.NEW_CONSTITUTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtUpdateToConstitution()));
+        thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtHardForkInitiation()));
+        thresholds.put(GovActionType.TREASURY_WITHDRAWALS_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtTreasuryWithdrawal()));
+        thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(dt.getDvtPPGovGroup()));
+        return thresholds;
+    }
+
+    /**
+     * Pure mapping from {@link com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds} to
+     * the per-action SPO threshold map. Fail-safe to all-1.0 when thresholds are null.
+     */
+    static Map<GovActionType, BigDecimal> buildSPOThresholdMap(
+            com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds pt) {
+        return buildSPOThresholdMap(pt, true);
+    }
+
+    static Map<GovActionType, BigDecimal> buildSPOThresholdMap(
+            com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds pt,
+            boolean committeePresent) {
+        Map<GovActionType, BigDecimal> thresholds = new HashMap<>();
+        if (pt == null) {
+            thresholds.put(GovActionType.NO_CONFIDENCE, BigDecimal.ONE);
+            thresholds.put(GovActionType.UPDATE_COMMITTEE, BigDecimal.ONE);
+            thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION, BigDecimal.ONE);
+            thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION, BigDecimal.ONE);
+            return thresholds;
+        }
+        thresholds.put(GovActionType.NO_CONFIDENCE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtMotionNoConfidence()));
+        thresholds.put(GovActionType.UPDATE_COMMITTEE,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(committeePresent
+                        ? pt.getPvtCommitteeNormal()
+                        : pt.getPvtCommitteeNoConfidence()));
+        thresholds.put(GovActionType.HARD_FORK_INITIATION_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtHardForkInitiation()));
+        thresholds.put(GovActionType.PARAMETER_CHANGE_ACTION,
+                ProtocolParamGroupClassifier.ratioToBigDecimal(pt.getPvtPPSecurityGroup()));
+        return thresholds;
+    }
+
+    // ===== Result =====
+
+    /**
+     * Result of governance epoch boundary processing.
+     *
+     * @param treasuryDelta  Net change to treasury (negative = withdrawals, positive = donations)
+     * @param depositRefunds Total proposal deposits refunded
+     * @param donations      Total donations in the previous epoch
+     */
+    public record GovernanceEpochResult(BigInteger treasuryDelta, BigInteger depositRefunds,
+                                        BigInteger donations) {
+        public static final GovernanceEpochResult EMPTY =
+                new GovernanceEpochResult(BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO);
+    }
+}

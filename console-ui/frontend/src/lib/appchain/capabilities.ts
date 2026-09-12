@@ -14,7 +14,7 @@ export interface ChainCapabilities {
   sources: string[];
 }
 
-const ROLE_BUNDLE = 'com.bloxbean.cardano.yano.appchain.role-workflow';
+const ROLE_BUNDLE = 'org.yanoproject.x.role-workflow';
 const hasCapability = (manifest: AppCapabilityManifest | undefined, id: string) =>
   manifest?.crossCutting.some((capability) => capability.enabled && capability.capabilityId === id) === true;
 const hasComponent = (manifest: AppCapabilityManifest | undefined, id: string) =>

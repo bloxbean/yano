@@ -135,8 +135,8 @@ the broader contract, not just an interface rename.
 | Wallet query service | Existing first-seen and scan behavior through host-controlled read scopes. |
 | `DefaultUtxoStore` | Core processing, transaction/read-lock ownership, storage generation, registry calls, and existing wallet API delegation. |
 
-Use `com.bloxbean.cardano.yano.api.chain.ChainPoint` and place the contributor SPI
-in `com.bloxbean.cardano.yano.api.utxo.index`. Method signatures still need API
+Use `org.yanoproject.api.chain.ChainPoint` and place the contributor SPI
+in `org.yanoproject.api.utxo.index`. Method signatures still need API
 review. The following signatures describe
 the main seam, not the entire lifecycle API:
 
@@ -561,8 +561,8 @@ existing event handler into a contributor.
 - [ADR-042: Byron projection through the UTxO batch](../042-byron-projection-through-utxo-batch.md)
 - [ADR-052: Native projection/history providers](../052-native-projection-history-service-providers.md)
 - [Wallet index API and partial-result behavior](../../docs/wallet-indexes.md)
-- [CanonicalProjectionContributor](../../core-api/src/main/java/com/bloxbean/cardano/yano/api/archive/CanonicalProjectionContributor.java)
-- [ProjectionStagingWriter](../../core-api/src/main/java/com/bloxbean/cardano/yano/api/archive/ProjectionStagingWriter.java)
-- [UTxO event acknowledgements](../../runtime/src/main/java/com/bloxbean/cardano/yano/runtime/utxo/UtxoEventHandler.java)
-- [Plugin contribution kinds](../../plugin-catalog/src/main/java/com/bloxbean/cardano/yano/catalog/ContributionKind.java)
-- [Plugin provider registry](../../runtime/src/main/java/com/bloxbean/cardano/yano/runtime/plugins/PluginProviderRegistry.java)
+- [CanonicalProjectionContributor](../../core-api/src/main/java/org/yanoproject/api/archive/CanonicalProjectionContributor.java)
+- [ProjectionStagingWriter](../../core-api/src/main/java/org/yanoproject/api/archive/ProjectionStagingWriter.java)
+- [UTxO event acknowledgements](../../runtime/src/main/java/org/yanoproject/runtime/utxo/UtxoEventHandler.java)
+- [Plugin contribution kinds](../../plugin-catalog/src/main/java/org/yanoproject/catalog/ContributionKind.java)
+- [Plugin provider registry](../../runtime/src/main/java/org/yanoproject/runtime/plugins/PluginProviderRegistry.java)

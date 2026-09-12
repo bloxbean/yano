@@ -17,5 +17,5 @@
 
 ## Verification
 
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest" --tests "com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest"`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.config.UpstreamConfigTest" --tests "org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest"`
 - `./gradlew :app:compileJava`

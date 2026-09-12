@@ -1,0 +1,258 @@
+package org.yanoproject.runtime.appchain;
+
+import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.AppBlock;
+import org.yanoproject.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.api.appchain.AppStateMachine;
+import org.yanoproject.api.appchain.AppCapabilityManifest;
+import org.yanoproject.api.appchain.AppStateWriter;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BooleanSupplier;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * ADR-006 E5.4 admin API: pause/resume local submissions, drain the pending
+ * pool, force-anchor (no-op without anchoring).
+ */
+@Timeout(60)
+class AppChainAdminTest {
+
+    private static final Logger log = LoggerFactory.getLogger(AppChainAdminTest.class);
+    private static final byte[] KEY_A = seed(191);
+    private static final byte[] KEY_B = seed(192);
+
+    @TempDir
+    Path tempDir;
+
+    private AppChainSubsystem node;
+
+    @AfterEach
+    void tearDown() {
+        if (node != null) node.close();
+    }
+
+    @Test
+    void pauseDrainResume_andForceAnchorNoop() throws Exception {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
+        // Proposer is the OTHER member (pubB, not running) so submitted messages
+        // stay in the pool — lets us observe drainPool() deterministically.
+        AppChainConfig config = AppChainConfig.builder("admin-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA, pubB))
+                .proposerKeyHex(pubB)
+                .threshold(2)
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        node = new AppChainSubsystem(config, 42, null, null,
+                tempDir.resolve("ledger").toString(), null, log);
+        node.start();
+
+        // Not paused by default
+        assertThat(node.submissionsPaused()).isFalse();
+        assertThat(node.status().get("submissionsPaused")).isEqualTo(false);
+        assertThat(node.status())
+                .containsEntry("membershipMode", "static")
+                .containsEntry("membershipEpochFromHeight", 0L)
+                .containsEntry("membershipEpochActive", true)
+                .containsEntry("membershipActiveMembers", 2)
+                .containsEntry("membershipActiveThreshold", 2)
+                .containsEntry("memberActiveForNextBlock", true)
+                .containsEntry("configuredBlockIntervalMs", 300L)
+                .doesNotContainKey("blockIntervalMs");
+
+        // Submissions land in the pool (no proposer running → not finalized)
+        node.submit("t", "m1".getBytes(StandardCharsets.UTF_8));
+        node.submit("t", "m2".getBytes(StandardCharsets.UTF_8));
+        awaitTrue("pool has 2", () -> (int) node.status().get("poolSize") == 2);
+
+        // Pause → submit rejected
+        node.pauseSubmissions();
+        assertThat(node.submissionsPaused()).isTrue();
+        assertThatThrownBy(() -> node.submit("t", "m3".getBytes(StandardCharsets.UTF_8)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("paused");
+
+        // Drain → pending dropped
+        assertThat(node.drainPool()).isEqualTo(2);
+        assertThat((int) node.status().get("poolSize")).isZero();
+
+        // Resume → submissions accepted again
+        node.resumeSubmissions();
+        assertThat(node.submissionsPaused()).isFalse();
+        node.submit("t", "m4".getBytes(StandardCharsets.UTF_8));
+        awaitTrue("pool has 1", () -> (int) node.status().get("poolSize") == 1);
+
+        // Force-anchor without anchoring configured → false, no exception
+        assertThat(node.forceAnchor()).isFalse();
+
+        // Idempotent pause/resume
+        node.pauseSubmissions();
+        node.pauseSubmissions();
+        node.resumeSubmissions();
+        node.resumeSubmissions();
+        assertThat(node.submissionsPaused()).isFalse();
+    }
+
+    @Test
+    void privilegedSystemSubmissionFailsClosedAndUsesMachineAdmission() throws Exception {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
+        AppChainConfig config = AppChainConfig.builder("privileged-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA, pubB)).proposerKeyHex(pubB).threshold(2)
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "privileged-test"; }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
+            @Override
+            public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
+                return "~governance/test".equals(topic) && Arrays.equals(body, new byte[]{1})
+                        ? AdmissionResult.accept() : AdmissionResult.reject("not locally ready");
+            }
+        };
+        node = new AppChainSubsystem(config, 42, null, machine,
+                tempDir.resolve("privileged-ledger").toString(), null, log);
+        node.start();
+
+        assertThatThrownBy(() -> node.submit("~governance/test", new byte[]{1}))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("reserved");
+        assertThatThrownBy(() -> node.submitPrivilegedSystemMessage(
+                "~governance/other", new byte[]{1}))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not locally ready");
+        assertThatThrownBy(() -> node.submitPrivilegedSystemMessage(
+                "~governance/test", new byte[]{2}))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not locally ready");
+
+        assertThat(node.submitPrivilegedSystemMessage("~governance/test", new byte[]{1}))
+                .hasSize(64);
+        awaitTrue("privileged command is pooled", () -> (int) node.status().get("poolSize") == 1);
+    }
+
+    @Test
+    void governedCompositeProfileDisablesNodeLocalMembershipReset() {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        AppChainConfig config = AppChainConfig.builder("governed-profile-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA)).proposerKeyHex(pubA).threshold(1)
+                .pluginSettings(Map.of(
+                        "membership.mode", "governed",
+                        "machines.composite.profile-mode", "governed"))
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        node = new AppChainSubsystem(config, 42, null, new AppStateMachine() {
+            @Override public String id() { return "composite-test"; }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
+        }, tempDir.resolve("governed-profile-ledger").toString(), null, log);
+        node.start();
+
+        assertThatThrownBy(node::resetMembers)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("disabled while composite profile governance is active");
+    }
+
+    @Test
+    void governedMembershipDoesNotImplyBusinessAuthorizationOrApproval() {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        AppChainConfig config = AppChainConfig.builder("membership-only-governed-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA)).proposerKeyHex(pubA).threshold(1)
+                .pluginSettings(Map.of("membership.mode", "governed"))
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "document-only"; }
+            @Override public Map<String, Object> operationalStatus() {
+                return Map.of("businessAuthorization", "none", "businessApproval", "none");
+            }
+            @Override
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                              AppEffectEmitter effects) { }
+        };
+        node = new AppChainSubsystem(config, 42, null, machine,
+                tempDir.resolve("membership-only-governed-ledger").toString(), null, log);
+        node.start();
+
+        assertThat(node.status())
+                .containsEntry("membershipMode", "governed")
+                .containsEntry("stateMachine", "document-only");
+        assertThat(node.status().get("stateMachineStatus")).isEqualTo(Map.of(
+                "businessAuthorization", "none", "businessApproval", "none"));
+        assertThat(node.status().get("capabilityManifest"))
+                .isInstanceOfSatisfying(AppCapabilityManifest.class, manifest -> {
+                    assertThat(manifest.applicationId()).isEqualTo("document-only");
+                    assertThat(manifest.crossCutting())
+                            .extracting(capability -> capability.capabilityId())
+                            .containsExactly("state-commitment:mpf-blake2b256-v1",
+                                    "state-index:finalized-block-messages-v1");
+                });
+    }
+
+    @Test
+    void finalizedMessageIndexWrapsLibrarySuppliedStateMachine() {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        AppChainConfig config = AppChainConfig.builder("library-indexed-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA)).proposerKeyHex(pubA).threshold(1)
+                .pluginSettings(Map.of(
+                        "machines.finalized-message-index.enabled", "true",
+                        "machines.finalized-message-index.policy", "APPLICATION_ONLY"))
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "library-custom"; }
+            @Override
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                              AppEffectEmitter effects) { }
+        };
+        node = new AppChainSubsystem(config, 42, null, machine,
+                tempDir.resolve("library-indexed-ledger").toString(), null, log);
+        node.start();
+
+        assertThat(node.status().get("capabilityManifest"))
+                .isInstanceOfSatisfying(AppCapabilityManifest.class, manifest ->
+                        assertThat(manifest.crossCutting())
+                                .extracting(capability -> capability.capabilityId())
+                                .contains("state-index:finalized-message-v1"));
+        assertThat(node.stateCommitmentIdentity().orElseThrow().genesisId())
+                .isNotEqualTo(TestStateCommitments.MPF.genesisId());
+    }
+
+    private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 20_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean())
+                return;
+            Thread.sleep(150);
+        }
+        throw new AssertionError("Timed out waiting for: " + what);
+    }
+
+    private static byte[] seed(int fill) {
+        byte[] seed = new byte[32];
+        Arrays.fill(seed, (byte) fill);
+        return seed;
+    }
+}

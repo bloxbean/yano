@@ -23,4 +23,4 @@ Date: 2026-06-30
 
 ## Verification
 
-- `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandlerTest`
+- `./gradlew :runtime:test --tests org.yanoproject.runtime.handlers.YaciTxSubmissionHandlerTest`

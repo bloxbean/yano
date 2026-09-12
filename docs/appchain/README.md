@@ -16,7 +16,7 @@ Start with:
 
 Additional state machines, capabilities, connectors, products, examples, and
 JVM-only tooling live in [Yano X](https://github.com/bloxbean/yano-x). They use
-the stable Java package namespace `com.bloxbean.cardano.yano.appchain.*` and are
+the stable Java package namespace `org.yanoproject.appchain.*` and are
 loaded through Yano's plugin contracts.
 
 The console UI remains in Yano temporarily; UI extraction is outside the

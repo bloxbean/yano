@@ -58,7 +58,7 @@ def declaredPluginManifestVersion = project.version.toString()
 // with includeProvided also add non-annotation compileOnly dependencies because
 // those are supplied by the host at execution time rather than by the bundle JAR.
 def buildTimePluginBundles = [
-        'com.bloxbean.cardano.yano.plugins.logging':
+        'org.yanoproject.plugins.logging':
                 [projectPath: ':runtime', includeProvided: false,
                  expectedManifestVersion: '1.0.0']
 ]
@@ -168,7 +168,7 @@ test {
 // ADR-011.2: preserve artifact ownership before Quarkus flattens dependencies.
 def generatedPluginCatalogDir = layout.buildDirectory.dir('generated/plugin-catalog-resources')
 def generatedPluginReflectionPath =
-        'META-INF/native-image/com.bloxbean.cardano/yano-plugin-catalog/reflect-config.json'
+        'META-INF/native-image/org.yanoproject/yano-plugin-catalog/reflect-config.json'
 sourceSets.main.resources.srcDir(generatedPluginCatalogDir)
 
 // RESTEasy fixes its application path during Quarkus augmentation. Generate a
@@ -287,7 +287,7 @@ tasks.register('generatePluginCatalogIndex', JavaExec) {
     // runtime file set. The serialized component/edge/artifact inventory above
     // makes that ownership an explicit incremental and build-cache input.
     classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
+    mainClass = 'org.yanoproject.catalog.PluginIndexGenerator'
     doFirst {
         def output = generatedPluginCatalogDir.get()
                 .file('META-INF/yano-plugin-index-v1.json').asFile
@@ -449,7 +449,7 @@ tasks.register('cleanupLegacyAccountHistory', JavaExec) {
     group = 'maintenance'
     description = 'Offline removal of unreleased PR-era account_history column families'
     classpath = sourceSets.main.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.app.archive.LegacyAccountHistoryCleanup'
+    mainClass = 'org.yanoproject.app.archive.LegacyAccountHistoryCleanup'
     doFirst {
         if (!project.hasProperty('database') || project.findProperty('confirm') != 'DROP_LEGACY_ACCOUNT_HISTORY') {
             throw new GradleException('requires -Pdatabase=/explicit/path '
@@ -531,6 +531,15 @@ tasks.register('normalizeYanoReleaseSbom') {
         body.remove('serialNumber')
         body.metadata.remove('timestamp')
         def mitLicense = [[license: [id: 'MIT']]]
+        // Yano publishes under org.yanoproject; the sibling BloxBean projects it
+        // depends on (yaci, cardano-client-lib, julc, zeroj) stayed on
+        // com.bloxbean.cardano. Both families are first-party MIT, so ownership
+        // is decided by either prefix rather than by the single group Yano used
+        // to share with them.
+        def firstPartyGroup = { component ->
+            def group = component.group?.toString()
+            group?.startsWith('org.yanoproject') || group?.startsWith('com.bloxbean.cardano')
+        }
         def repositoryReference = [[
                 type: 'vcs',
                 url: 'https://github.com/bloxbean/yano.git'
@@ -540,7 +549,7 @@ tasks.register('normalizeYanoReleaseSbom') {
         body.metadata.component.licenses = mitLicense
         body.metadata.component.externalReferences = repositoryReference
         body.components.findAll { component ->
-            component.group?.toString()?.startsWith('com.bloxbean.cardano')
+            firstPartyGroup(component)
         }.each { component ->
             component.remove('licenses')
             component.remove('externalReferences')
@@ -589,7 +598,7 @@ tasks.register('normalizeYanoReleaseSbom') {
                             + (licenseOverrides.keySet() - usedLicenseOverrides).sort())
         }
         def externalWithoutLicense = body.components.findAll { component ->
-            !component.group?.toString()?.startsWith('com.bloxbean.cardano')
+            !firstPartyGroup(component)
                     && (!(component.licenses instanceof Collection)
                     || component.licenses.isEmpty())
         }.collect { component ->
@@ -726,7 +735,7 @@ def verifyDuckDbExtensionsMatchNativeTarget = {
                            'sqlite_scanner.duckdb_extension', 'sqlite_scanner.sha256']
             .collect { extensionRoot + it }
             .toSet()
-    def metadataPath = 'META-INF/native-image/com.bloxbean.cardano/' +
+    def metadataPath = 'META-INF/native-image/org.yanoproject/' +
             'yano-archive-store-ducklake-extensions/resource-config.json'
 
     new java.util.zip.ZipFile(duckDbExtensionArchive()).withCloseable { archive ->
@@ -818,7 +827,7 @@ def duckDbNativeSidecarTask = tasks.register('bundleDuckDbNativeSidecar', Sync) 
 // provider-callback TCCL, so successful product callbacks also prove facade
 // mediation rather than raw ServiceLoader reachability.
 def pluginConformanceBundleId =
-        'com.bloxbean.cardano.yano.fixture.plugin-conformance'
+        'org.yanoproject.fixture.plugin-conformance'
 def pluginConformanceMemberKey = '00' * 32
 def pluginOperationsSmokeApiKey = 'plugin-operations-smoke-full-key'
 def bakedApiPathPrefix = {
@@ -1267,7 +1276,7 @@ tasks.register('generateNativePluginCatalogExpectation', JavaExec) {
     description = 'Computes current packaged-JVM catalog provenance for the native smoke test'
     dependsOn tasks.named('testClasses')
     classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.app.PluginCatalogProvenanceProbe'
+    mainClass = 'org.yanoproject.app.PluginCatalogProvenanceProbe'
     outputs.file(nativePluginCatalogExpectationFile)
     outputs.upToDateWhen { false }
     doFirst {
@@ -2256,7 +2265,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             }
             if (!(index.bundles instanceof Collection) || index.bundles.size() != 1
                     || index.bundles[0].manifest?.id
-                    != 'com.bloxbean.cardano.yano.plugins.logging') {
+                    != 'org.yanoproject.plugins.logging') {
                 throw new GradleException(
                         'Final uber-JAR aggregate index must contain only the core logging bundle')
             }
@@ -2268,7 +2277,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                         'Final uber-JAR must retain exactly one core bundle manifest')
             }
             if (index.bundles.any {
-                it.manifest?.id == 'com.bloxbean.cardano.yano.fixture.plugin-conformance'
+                it.manifest?.id == 'org.yanoproject.fixture.plugin-conformance'
             }) {
                 throw new GradleException(
                         'JVM directory smoke fixture was unexpectedly embedded in the uber-JAR')
@@ -2346,7 +2355,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                 'YANO_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
                 'YANO_PLUGINS_ENABLED'    : 'true',
                 'YANO_PLUGINS_ALLOW_LIST' :
-                        'com.bloxbean.cardano.yano.fixture.plugin-conformance'
+                        'org.yanoproject.fixture.plugin-conformance'
         ])
 
         Process process = null

@@ -6,7 +6,7 @@ machines, capabilities, connectors, products, examples, and JVM-only tools are
 built in [Yano X](https://github.com/bloxbean/yano-x).
 
 The Java namespace remains stable across both repositories:
-`com.bloxbean.cardano.yano.appchain.*`.
+`org.yanoproject.appchain.*`.
 
 ## Retained modules
 

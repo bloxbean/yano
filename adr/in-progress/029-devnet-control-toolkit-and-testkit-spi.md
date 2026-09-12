@@ -91,7 +91,7 @@ storage handles.
 Add a runtime-owned SPI package, for example:
 
 ```text
-com.bloxbean.cardano.yano.runtime.devnet.spi
+org.yanoproject.runtime.devnet.spi
 ```
 
 The SPI must be capability-oriented and stable. It must not expose `RuntimeNode`,
@@ -359,7 +359,7 @@ Current implementation status:
 Validation completed for the initial split and runtime adapter cleanup:
 
 - `./gradlew :runtime:compileJava :devnet-toolkit:compileJava --console=plain`
-- `./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.assembly.YanoAssemblyTest' --tests 'com.bloxbean.cardano.yano.runtime.YanoStartupMaintenanceTest' --tests 'com.bloxbean.cardano.yano.runtime.YanoProducerStartupPlanTest' :devnet-toolkit:test :testkit:test :app:compileJava :app:compileTestJava --console=plain`
+- `./gradlew :runtime:test --tests 'org.yanoproject.runtime.assembly.YanoAssemblyTest' --tests 'org.yanoproject.runtime.YanoStartupMaintenanceTest' --tests 'org.yanoproject.runtime.YanoProducerStartupPlanTest' :devnet-toolkit:test :testkit:test :app:compileJava :app:compileTestJava --console=plain`
 - `./gradlew :runtime:test :devnet-toolkit:test :testkit:test :app:test --console=plain`
 - `./gradlew :runtime:test :devnet-toolkit:test :testkit:test --console=plain`
 - `./gradlew :app:quarkusBuild --console=plain`

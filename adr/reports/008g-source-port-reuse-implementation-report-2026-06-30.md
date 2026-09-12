@@ -32,7 +32,7 @@ an OS-assigned source port for that dial so sync can continue.
 - Yaci local publish:
   `./gradlew publishToMavenLocal -PskipSigning`
 - Yano targeted regression/build:
-  `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.peer.DefaultPeerClientFactoryTest --tests com.bloxbean.cardano.yano.runtime.connection.DefaultRelayConnectionManagerTest --tests com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest :app:quarkusBuild`
+  `./gradlew :runtime:test --tests org.yanoproject.runtime.peer.DefaultPeerClientFactoryTest --tests org.yanoproject.runtime.connection.DefaultRelayConnectionManagerTest --tests org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest :app:quarkusBuild`
 
 ## Live Preprod Verification
 

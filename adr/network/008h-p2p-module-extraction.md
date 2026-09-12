@@ -71,7 +71,7 @@ yano-p2p
 The base Java package should be:
 
 ```text
-com.bloxbean.cardano.yano.p2p
+org.yanoproject.p2p
 ```
 
 The `p2p` module will own reusable Cardano N2N peer-management and relay policy
@@ -260,13 +260,13 @@ The target package should not keep the `.runtime` prefix.
 For example:
 
 ```text
-com.bloxbean.cardano.yano.runtime.connection.ConnectionKey
+org.yanoproject.runtime.connection.ConnectionKey
 ```
 
 becomes:
 
 ```text
-com.bloxbean.cardano.yano.p2p.connection.ConnectionKey
+org.yanoproject.p2p.connection.ConnectionKey
 ```
 
 This is noisier than keeping the old package names, but it prevents a misleading
@@ -287,7 +287,7 @@ Status: completed on 2026-07-01.
 - Give `:p2p` only the dependencies allowed by this ADR.
 - Make `:runtime` depend on `:p2p`.
 - Add an ArchUnit test in `:p2p` that fails if any `p2p` class imports
-  `com.bloxbean.cardano.yano.runtime..`.
+  `org.yanoproject.runtime..`.
 
 Acceptance:
 

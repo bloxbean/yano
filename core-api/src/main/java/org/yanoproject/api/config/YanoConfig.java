@@ -1,0 +1,652 @@
+package org.yanoproject.api.config;
+
+import com.bloxbean.cardano.yaci.core.common.Constants;
+import lombok.Builder;
+import lombok.Data;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+
+/**
+ * Configuration for Yano.
+ * Provides comprehensive configuration options for both client and server modes.
+ */
+@Data
+@Builder(toBuilder = true)
+public class YanoConfig implements NodeConfig {
+
+    public static final String DEFAULT_APP_CHAIN_STORAGE_PATH = "appchain-chainstate";
+
+    // Remote node configuration (client mode)
+    private String remoteHost;
+    private int remotePort;
+    private long protocolMagic;
+    private UpstreamConfig upstream;
+
+    // Server configuration
+    private int serverPort;
+    private boolean enableServer;
+    private boolean enableClient;
+
+    // Storage configuration
+    private boolean useRocksDB;
+    private String rocksDBPath;
+    @Builder.Default
+    private String appChainStoragePath = DEFAULT_APP_CHAIN_STORAGE_PATH;
+
+    // Sync configuration
+    private long fullSyncThreshold; // If behind by more than this many slots, do full sync
+
+    // Pipeline configuration
+    private boolean enablePipelinedSync; // Enable/disable pipelined sync (false = use sequential sync)
+    private int headerPipelineDepth;
+    private int bodyBatchSize;
+    private int maxParallelBodies;
+    private boolean enableSelectiveBodyFetch;
+    private int selectiveBodyFetchRatio; // Fetch every Nth body during bulk sync (0 = all, 10 = every 10th)
+
+    // Monitoring configuration
+    private boolean enableMonitoring;
+    private int monitoringPort;
+
+    private long syncStartSlot;
+    private String syncStartBlockHash;
+
+    // Block producer configuration (devnet mode)
+    private boolean enableBlockProducer;
+    private boolean devMode;
+    private int blockTimeMillis;
+    private boolean lazyBlockProduction;
+    private long genesisTimestamp;
+    // Resolved from Shelley genesis by runtime. Legacy builder/property values cannot override genesis.
+    private int slotLengthMillis;
+    private String shelleyGenesisHash;     // Hex-encoded blake2b-256 of shelley-genesis.json (optional, overrides file hashing)
+    private String shelleyGenesisFile;     // Path to shelley-genesis.json
+    private String byronGenesisFile;       // Path to byron-genesis.json (optional, for relay mode)
+    private String alonzoGenesisFile;      // Path to alonzo-genesis.json (optional)
+    private String conwayGenesisFile;      // Path to conway-genesis.json (optional)
+    private String protocolParametersFile; // Path to protocol params JSON
+    private boolean txEvaluationEnabled;   // Enable ledger rule validation for submitted transactions
+
+    // Block producer crypto key files (for signed blocks)
+    private String vrfSkeyFile;            // Path to VRF secret key file (TextEnvelope JSON)
+    private String kesSkeyFile;            // Path to KES secret key file (TextEnvelope JSON)
+    private String opCertFile;             // Path to operational certificate file (TextEnvelope JSON)
+
+    // Slot leader mode (public network block production)
+    private boolean slotLeaderMode;                // Enable Praos slot leader selection instead of devnet fixed-interval
+    private String stakeDataProviderUrl;            // yaci-store base URL for stake data (e.g. http://localhost:8080/api/v1)
+    private String initialEpochNonce;               // Hex-encoded 32-byte nonce for bootstrap seeding
+    @Builder.Default
+    private int initialEpoch = -1;                  // Epoch number for the seed nonce (-1 = not set)
+
+    // Bootstrap configuration (lightweight relay mode)
+    private boolean enableBootstrap;
+    @Builder.Default
+    private long bootstrapBlockNumber = -1;  // -1 = "latest"
+    private List<String> bootstrapAddresses;
+    private List<BootstrapOutpointConfig> bootstrapUtxos;
+    private String bootstrapProvider;       // "blockfrost" or "koios"
+    private String bootstrapBlockfrostApiKey;
+    private String bootstrapBlockfrostBaseUrl;
+    private String bootstrapKoiosBaseUrl;
+    private String network;                 // "mainnet", "preprod", "preview" — used for provider URL auto-detection
+
+    // Epoch fast-forward configuration
+    @Builder.Default
+    private int startEpoch = 0;            // Target epoch for fast-forward on fresh start (0 = disabled)
+
+    // Past time travel mode: defer block production until /epochs/shift is called
+    @Builder.Default
+    private boolean pastTimeTravelMode = false;
+
+    // Past time travel mode with Praos slot-leader checks. Used by companion multi-node
+    // devnets where node-1 should only produce slots it is eligible for.
+    @Builder.Default
+    private boolean pastTimeTravelSlotLeaderMode = false;
+
+    // Empty-block backfills (catch-up, time advance, epoch fast-forward) place one block every
+    // this many slots instead of every slot. 0 selects automatic genesis-derived spacing;
+    // 1 preserves dense production (default). Slot-leader searches require eligibility,
+    // so the last processed slot can be ahead of the last produced block.
+    @Builder.Default
+    private int backfillBlockIntervalSlots = 1;
+
+    // Epoch/slot config — set from genesis at runtime via propagateGenesisToConfig().
+    // No defaults: fail fast if not initialized from genesis.
+    private Long epochLength;           // From shelley-genesis.json epochLength
+    private Long byronSlotsPerEpoch;    // From Byron k * 10 or Shelley securityParam * 10
+    private Long firstNonByronSlot;     // From known-network table or era metadata (0 is valid for preview/sanchonet)
+
+    // Implement NodeConfig interface
+    @Override
+    public boolean isClientEnabled() {
+        return enableClient;
+    }
+
+    @Override
+    public boolean isServerEnabled() {
+        return enableServer;
+    }
+
+    @Override
+    public long getEpochLength() {
+        if (epochLength == null || epochLength <= 0) {
+            throw new IllegalStateException(
+                    "epochLength must be loaded from Shelley genesis before use");
+        }
+        return epochLength;
+    }
+
+    /**
+     * Returns the raw configured epoch length, or null before genesis-derived
+     * epoch parameters are initialized.
+     */
+    public Long getConfiguredEpochLength() {
+        return epochLength;
+    }
+
+    @Override
+    public long getByronSlotsPerEpoch() {
+        if (byronSlotsPerEpoch == null || byronSlotsPerEpoch <= 0) {
+            throw new IllegalStateException(
+                    "byronSlotsPerEpoch must be loaded from Byron genesis or derived from Shelley securityParam before use");
+        }
+        return byronSlotsPerEpoch;
+    }
+
+    /**
+     * Returns the raw configured Byron slots per epoch, or null before
+     * genesis-derived epoch parameters are initialized.
+     */
+    public Long getConfiguredByronSlotsPerEpoch() {
+        return byronSlotsPerEpoch;
+    }
+
+    @Override
+    public long getFirstNonByronSlot() {
+        if (firstNonByronSlot == null || firstNonByronSlot < 0) {
+            throw new IllegalStateException(
+                    "firstNonByronSlot must be resolved from known-network rules, era metadata, or explicit config before use");
+        }
+        return firstNonByronSlot;
+    }
+
+    /**
+     * Returns the raw configured first non-Byron slot, or null before
+     * genesis-derived epoch parameters are initialized.
+     */
+    public Long getConfiguredFirstNonByronSlot() {
+        return firstNonByronSlot;
+    }
+
+    /**
+     * Check whether epoch/slot parameters have been loaded from genesis.
+     * If false, calling getEpochLength(), getByronSlotsPerEpoch(), or getFirstNonByronSlot() will throw.
+     */
+    public boolean isEpochParamsInitialized() {
+        return epochLength != null && epochLength > 0
+                && byronSlotsPerEpoch != null && byronSlotsPerEpoch > 0
+                && firstNonByronSlot != null && firstNonByronSlot >= 0;
+    }
+
+    /**
+     * Creates an independent copy of a runtime configuration.
+     * <p>
+     * Lombok's generated {@code toBuilder()} preserves future scalar fields, while
+     * the mutable bootstrap collections are explicitly duplicated.
+     *
+     * @param source config to copy
+     * @return copied config
+     */
+    public static YanoConfig copyOf(YanoConfig source) {
+        Objects.requireNonNull(source, "source");
+        return source.toBuilder()
+                .bootstrapAddresses(copyStrings(source.getBootstrapAddresses()))
+                .bootstrapUtxos(copyBootstrapUtxos(source.getBootstrapUtxos()))
+                .upstream(copyUpstream(source.getUpstream()))
+                .build();
+    }
+
+    private static List<String> copyStrings(List<String> source) {
+        return source != null ? new ArrayList<>(source) : null;
+    }
+
+    private static List<BootstrapOutpointConfig> copyBootstrapUtxos(List<BootstrapOutpointConfig> source) {
+        if (source == null) {
+            return null;
+        }
+        List<BootstrapOutpointConfig> copy = new ArrayList<>(source.size());
+        for (BootstrapOutpointConfig outpoint : source) {
+            copy.add(outpoint != null ? outpoint.toBuilder().build() : null);
+        }
+        return copy;
+    }
+
+    private static UpstreamConfig copyUpstream(UpstreamConfig source) {
+        if (source == null) {
+            return null;
+        }
+        return source.toBuilder()
+                .peers(source.getPeers() != null
+                        ? source.getPeers().stream()
+                        .map(peer -> peer != null ? peer.toBuilder().build() : null)
+                        .toList()
+                        : null)
+                .selection(source.getSelection() != null ? source.getSelection().toBuilder().build() : null)
+                .validation(source.getValidation() != null ? source.getValidation().toBuilder().build() : null)
+                .sync(source.getSync() != null ? source.getSync().toBuilder().build() : null)
+                .failover(source.getFailover() != null ? source.getFailover().toBuilder().build() : null)
+                .tx(source.getTx() != null ? source.getTx().toBuilder().build() : null)
+                .governor(source.getGovernor() != null ? source.getGovernor().toBuilder().build() : null)
+                .discovery(source.getDiscovery() != null ? source.getDiscovery().toBuilder().build() : null)
+                .build();
+    }
+
+    /**
+     * Select a default configuration for a known network name.
+     * Unknown, blank, or null network names fall back to preprod. Epoch/slot
+     * values remain unset and are loaded from genesis at runtime.
+     */
+    public static YanoConfig defaultForNetwork(String network) {
+        String normalized = network == null ? "preprod" : network.trim().toLowerCase(Locale.ROOT);
+        String selected = switch (normalized) {
+            case "mainnet", "preview", "sanchonet", "preprod" -> normalized;
+            default -> "preprod";
+        };
+        YanoConfig config = switch (selected) {
+            case "mainnet" -> mainnetDefault();
+            case "preview" -> previewDefault();
+            case "sanchonet" -> sanchonetDefault();
+            default -> preprodDefault();
+        };
+        config.setNetwork(selected);
+        return config;
+    }
+
+    /**
+     * Create a default configuration for preprod.
+     * Epoch/slot values are loaded from genesis at runtime.
+     */
+    public static YanoConfig preprodDefault() {
+        return YanoConfig.builder()
+                .remoteHost("localhost")
+                .remotePort(32000)
+                .protocolMagic(Constants.PREPROD_PROTOCOL_MAGIC)
+                .serverPort(13337)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate")
+                .fullSyncThreshold(1800) // 30 minutes worth of slots
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(200)
+                .bodyBatchSize(200)
+                .maxParallelBodies(50)
+                .enableSelectiveBodyFetch(false)
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                // Epoch/slot fields intentionally NOT set — must come from genesis at runtime
+                .build();
+    }
+
+    /**
+     * Create a default configuration for preview.
+     * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
+     */
+    public static YanoConfig previewDefault() {
+        return YanoConfig.builder()
+                .remoteHost(Constants.PREVIEW_PUBLIC_RELAY_ADDR)
+                .remotePort(Constants.PREVIEW_PUBLIC_RELAY_PORT)
+                .protocolMagic(Constants.PREVIEW_PROTOCOL_MAGIC)
+                .serverPort(13337)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate")
+                .fullSyncThreshold(1800)
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(200)
+                .bodyBatchSize(200)
+                .maxParallelBodies(50)
+                .enableSelectiveBodyFetch(false)
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                .build();
+    }
+
+    /**
+     * Create a default configuration for sanchonet.
+     * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
+     */
+    public static YanoConfig sanchonetDefault() {
+        return YanoConfig.builder()
+                .remoteHost(Constants.SANCHONET_PUBLIC_RELAY_ADDR)
+                .remotePort(Constants.SANCHONET_PUBLIC_RELAY_PORT)
+                .protocolMagic(Constants.SANCHONET_PROTOCOL_MAGIC)
+                .serverPort(13337)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate")
+                .fullSyncThreshold(1800)
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(200)
+                .bodyBatchSize(200)
+                .maxParallelBodies(50)
+                .enableSelectiveBodyFetch(false)
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                .build();
+    }
+
+    /**
+     * Create a default configuration for mainnet.
+     * Epoch/slot values are loaded from genesis at runtime via propagateGenesisToConfig().
+     */
+    public static YanoConfig mainnetDefault() {
+        return YanoConfig.builder()
+                .remoteHost(Constants.MAINNET_PUBLIC_RELAY_ADDR)
+                .remotePort(Constants.MAINNET_PUBLIC_RELAY_PORT)
+                .protocolMagic(Constants.MAINNET_PROTOCOL_MAGIC)
+                .serverPort(13337)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate")
+                .fullSyncThreshold(1800) // 30 minutes worth of slots
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(300)
+                .bodyBatchSize(100)
+                .maxParallelBodies(15)
+                .enableSelectiveBodyFetch(true)
+                .selectiveBodyFetchRatio(5)  // More aggressive for mainnet
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                // Epoch/slot fields intentionally NOT set — must come from genesis at runtime
+                .build();
+    }
+
+    /**
+     * Create a server-only configuration (no client sync)
+     */
+    public static YanoConfig serverOnly(int serverPort) {
+        return YanoConfig.builder()
+                .remoteHost(null)
+                .remotePort(0)
+                .protocolMagic(Constants.PREPROD_PROTOCOL_MAGIC)
+                .serverPort(serverPort)
+                .enableServer(true)
+                .enableClient(false)
+                .useRocksDB(false)
+                .rocksDBPath(null)
+                .fullSyncThreshold(1800)
+                .enablePipelinedSync(false)  // Server-only doesn't sync
+                .headerPipelineDepth(0)
+                .bodyBatchSize(0)
+                .maxParallelBodies(0)
+                .enableSelectiveBodyFetch(false)
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                .build();
+    }
+
+    /**
+     * Create a client-only configuration (no server)
+     */
+    public static YanoConfig clientOnly(String remoteHost, int remotePort, long protocolMagic) {
+        return YanoConfig.builder()
+                .remoteHost(remoteHost)
+                .remotePort(remotePort)
+                .protocolMagic(protocolMagic)
+                .serverPort(0)
+                .enableServer(false)
+                .enableClient(true)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate")
+                .fullSyncThreshold(1800)
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(150)
+                .bodyBatchSize(30)
+                .maxParallelBodies(8)
+                .enableSelectiveBodyFetch(false)  // Fetch all for client-only
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                .build();
+    }
+
+    /**
+     * Create a default configuration for a standalone devnet with block production.
+     * No upstream node needed — produces its own blocks.
+     */
+    public static YanoConfig devnetDefault(int serverPort) {
+        return YanoConfig.builder()
+                .remoteHost(null)
+                .remotePort(0)
+                .protocolMagic(42) // Custom devnet magic
+                .serverPort(serverPort)
+                .enableServer(true)
+                .enableClient(false)
+                .enableBlockProducer(true)
+                .devMode(true)
+                .blockTimeMillis(0)
+                .lazyBlockProduction(false)
+                .genesisTimestamp(0)
+                .slotLengthMillis(0)
+                .useRocksDB(true)
+                .rocksDBPath("./chainstate-devnet")
+                .fullSyncThreshold(0)
+                .enablePipelinedSync(false)
+                .headerPipelineDepth(0)
+                .bodyBatchSize(0)
+                .maxParallelBodies(0)
+                .enableSelectiveBodyFetch(false)
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                // Epoch/slot fields intentionally NOT set — must come from genesis at runtime
+                .build();
+    }
+
+    /**
+     * Create a configuration for performance testing with pipeline toggle
+     */
+    public static YanoConfig performanceTestConfig(String remoteHost, int remotePort, long protocolMagic,
+                                                   int serverPort, boolean useRocksDB, boolean enablePipeline) {
+        return YanoConfig.builder()
+                .remoteHost(remoteHost)
+                .remotePort(remotePort)
+                .protocolMagic(protocolMagic)
+                .serverPort(serverPort)
+                .enableServer(false)  // Disable server for pure sync testing
+                .enableClient(true)
+                .useRocksDB(useRocksDB)
+                .rocksDBPath(useRocksDB ? "./perf-test-chainstate" : null)
+                .fullSyncThreshold(100)
+                .enablePipelinedSync(enablePipeline)
+                .headerPipelineDepth(enablePipeline ? 50 : 0)
+                .bodyBatchSize(enablePipeline ? 10 : 0)
+                .maxParallelBodies(enablePipeline ? 5 : 0)
+                .enableSelectiveBodyFetch(false)  // Fetch all for fair comparison
+                .selectiveBodyFetchRatio(0)
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                .build();
+    }
+
+    /**
+     * Create a configuration for testing with custom parameters
+     */
+    public static YanoConfig testConfig(String remoteHost, int remotePort, long protocolMagic,
+                                        int serverPort, boolean useRocksDB) {
+        return YanoConfig.builder()
+                .remoteHost(remoteHost)
+                .remotePort(remotePort)
+                .protocolMagic(protocolMagic)
+                .serverPort(serverPort)
+                .enableServer(true)
+                .enableClient(true)
+                .useRocksDB(useRocksDB)
+                .rocksDBPath(useRocksDB ? "./test-chainstate" : null)
+                .fullSyncThreshold(100) // Lower threshold for testing
+                .enablePipelinedSync(true)
+                .headerPipelineDepth(20)  // Smaller values for testing
+                .bodyBatchSize(5)
+                .maxParallelBodies(2)
+                .enableSelectiveBodyFetch(true)
+                .selectiveBodyFetchRatio(4)  // Test selective fetching
+                .enableMonitoring(false)
+                .monitoringPort(8080)
+                .build();
+    }
+
+    /**
+     * Validate the configuration
+     */
+    @Override
+    public void validate() {
+        if (enableClient) {
+            boolean hasConfiguredUpstreamPeers = upstream != null
+                    && upstream.getPeers() != null
+                    && !upstream.getPeers().isEmpty();
+            boolean hasRemote = remoteHost != null && !remoteHost.trim().isEmpty();
+            boolean discoveryBootstrap = upstream != null && upstream.discoveryBootstrapEnabled();
+            if (!hasConfiguredUpstreamPeers && !hasRemote && !discoveryBootstrap) {
+                throw new IllegalArgumentException("Remote host must be specified when client is enabled");
+            }
+            if (!hasConfiguredUpstreamPeers && hasRemote && (remotePort <= 0 || remotePort > 65535)) {
+                throw new IllegalArgumentException("Remote port must be between 1 and 65535");
+            }
+        }
+
+        if (enableServer) {
+            if (serverPort <= 0 || serverPort > 65535) {
+                throw new IllegalArgumentException("Server port must be between 1 and 65535");
+            }
+        }
+
+        if (!enableClient && !enableServer && !enableBlockProducer) {
+            throw new IllegalArgumentException("At least one of client, server, or block producer must be enabled");
+        }
+
+        if (enableBootstrap && enableBlockProducer) {
+            throw new IllegalArgumentException("Bootstrap mode cannot be combined with block producer mode");
+        }
+
+        if (enableBlockProducer) {
+            if (!slotLeaderMode && enableClient) {
+                throw new IllegalArgumentException("Devnet block producer mode cannot be used with client mode");
+            }
+            if (!enableServer) {
+                throw new IllegalArgumentException("Block producer mode requires server to be enabled");
+            }
+            // blockTimeMillis == 0 is valid: means auto-derive from genesis in Yano.
+            // slotLengthMillis is always resolved from Shelley genesis by runtime.
+        }
+
+        if (slotLeaderMode) {
+            if (!enableBlockProducer) {
+                throw new IllegalArgumentException("Slot leader mode requires block producer to be enabled");
+            }
+            if (!enableClient && !devMode) {
+                throw new IllegalArgumentException("Slot leader mode requires client to be enabled (to sync chain), unless dev-mode is enabled");
+            }
+            if ((stakeDataProviderUrl == null || stakeDataProviderUrl.isBlank()) && !devMode) {
+                throw new IllegalArgumentException("Slot leader mode requires stake-data-provider-url (unless dev-mode is enabled)");
+            }
+            if (vrfSkeyFile == null || vrfSkeyFile.isBlank()
+                    || kesSkeyFile == null || kesSkeyFile.isBlank()
+                    || opCertFile == null || opCertFile.isBlank()) {
+                throw new IllegalArgumentException("Slot leader mode requires VRF, KES, and OpCert key files");
+            }
+        }
+
+        if (devMode && !enableBlockProducer) {
+            throw new IllegalArgumentException("Dev mode requires block producer to be enabled");
+        }
+
+        if (pastTimeTravelMode) {
+            if (!devMode) {
+                throw new IllegalArgumentException("Past time travel mode requires dev mode to be enabled");
+            }
+            if (!enableBlockProducer) {
+                throw new IllegalArgumentException("Past time travel mode requires block producer to be enabled");
+            }
+        }
+
+        if (backfillBlockIntervalSlots < 0) {
+            throw new IllegalArgumentException("Backfill block interval must be non-negative (0 = automatic), got: "
+                    + backfillBlockIntervalSlots);
+        }
+
+        if (pastTimeTravelSlotLeaderMode) {
+            if (!pastTimeTravelMode) {
+                throw new IllegalArgumentException("Past time travel slot-leader mode requires past-time-travel-mode=true");
+            }
+            if (slotLeaderMode) {
+                throw new IllegalArgumentException("Past time travel slot-leader mode must not be combined with slot-leader-mode=true");
+            }
+            if (vrfSkeyFile == null || vrfSkeyFile.isBlank()
+                    || kesSkeyFile == null || kesSkeyFile.isBlank()
+                    || opCertFile == null || opCertFile.isBlank()) {
+                throw new IllegalArgumentException("Past time travel slot-leader mode requires VRF, KES, and OpCert key files");
+            }
+        }
+
+        if (useRocksDB && (rocksDBPath == null || rocksDBPath.trim().isEmpty())) {
+            throw new IllegalArgumentException("RocksDB path must be specified when RocksDB is enabled");
+        }
+
+        effectiveUpstream().validate(enableClient, remoteHost, remotePort, protocolMagic);
+
+        if (fullSyncThreshold < 0) {
+            throw new IllegalArgumentException("Full sync threshold must be non-negative");
+        }
+
+        if (enableMonitoring && (monitoringPort <= 0 || monitoringPort > 65535)) {
+            throw new IllegalArgumentException("Monitoring port must be between 1 and 65535");
+        }
+
+        // Validate pipeline configuration (only when pipelining is enabled)
+        if (enableClient && enablePipelinedSync) {
+            if (headerPipelineDepth <= 0) {
+                throw new IllegalArgumentException("Header pipeline depth must be positive when pipelining is enabled");
+            }
+            if (bodyBatchSize <= 0) {
+                throw new IllegalArgumentException("Body batch size must be positive when pipelining is enabled");
+            }
+            if (maxParallelBodies <= 0) {
+                throw new IllegalArgumentException("Max parallel bodies must be positive when pipelining is enabled");
+            }
+            if (selectiveBodyFetchRatio < 0) {
+                throw new IllegalArgumentException("Selective body fetch ratio must be non-negative");
+            }
+        }
+    }
+
+    public UpstreamConfig effectiveUpstream() {
+        if (upstream != null) {
+            return upstream;
+        }
+        if (remoteHost != null && !remoteHost.isBlank() && remotePort > 0) {
+            return UpstreamConfig.trustedSingleFromRemote(remoteHost, remotePort);
+        }
+        return UpstreamConfig.builder().build();
+    }
+
+    @Override
+    public String toString() {
+        return String.format(
+                "YanoConfig{client=%s, server=%s, remote=%s:%d, serverPort=%d, storage=%s, magic=%d}",
+                enableClient, enableServer, remoteHost, remotePort, serverPort,
+                useRocksDB ? "RocksDB" : "Memory", protocolMagic
+        );
+    }
+}

@@ -1,0 +1,127 @@
+package org.yanoproject.runtime.appchain;
+
+import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.AppStateMachineProvider;
+import org.yanoproject.api.plugin.PluginActivationException;
+import org.yanoproject.runtime.plugins.PluginProviderRegistry;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * M5: a custom state machine is resolved by id through the
+ * {@link org.yanoproject.api.appchain.AppStateMachineProvider}
+ * catalog provider registry and drives the sequenced ledger.
+ */
+@Timeout(60)
+class AppChainPluginStateMachineTest {
+
+    private static final Logger log = LoggerFactory.getLogger(AppChainPluginStateMachineTest.class);
+    private static final byte[] KEY_A = seed(41);
+
+    @TempDir
+    Path tempDir;
+
+    private AppChainSubsystem node;
+
+    @AfterEach
+    void tearDown() {
+        if (node != null) {
+            node.close();
+        }
+    }
+
+    @Test
+    void customStateMachine_loadedViaCatalogRegistry_andApplied() throws Exception {
+        String pubA = pubHex(KEY_A);
+        AppChainConfig config = AppChainConfig.builder("plugin-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA))
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(300)
+                .maxBlockMessages(100)
+                .stateMachineId(TestKvStateMachineProvider.ID)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+
+        node = new AppChainSubsystem(config, 42, null, null,
+                tempDir.resolve("ledger").toString(), null,
+                stateMachineRegistry(), log);
+        node.start();
+
+        node.submit("kv", "color=blue".getBytes(StandardCharsets.UTF_8));
+
+        long deadline = System.currentTimeMillis() + 20_000;
+        while (node.tipHeight() < 1 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(200);
+        }
+        assertThat(node.tipHeight()).isGreaterThanOrEqualTo(1);
+
+        // The custom machine interpreted the opaque body and wrote key -> value
+        assertThat(node.stateValue("color".getBytes(StandardCharsets.UTF_8)))
+                .contains("blue".getBytes(StandardCharsets.UTF_8));
+        assertThat(node.stateProof("color".getBytes(StandardCharsets.UTF_8))).isPresent();
+
+        // Unknown ids fail fast with the available list
+        AppChainConfig badConfig = AppChainConfig.builder("bad-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA))
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(300)
+                .maxBlockMessages(100)
+                .stateMachineId("no-such-machine")
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        new AppChainSubsystem(badConfig, 42, null, null,
+                                tempDir.resolve("ledger2").toString(), null,
+                                stateMachineRegistry(), log))
+                .isInstanceOf(PluginActivationException.class)
+                .hasMessageContaining("no-such-machine")
+                .hasMessageContaining(TestKvStateMachineProvider.ID);
+    }
+
+    private static PluginProviderRegistry stateMachineRegistry() {
+        AppStateMachineProvider provider = new TestKvStateMachineProvider();
+        return new PluginProviderRegistry() {
+            @Override
+            public <P> Optional<P> find(Class<P> providerType, String selector) {
+                return providerType == AppStateMachineProvider.class
+                        && provider.id().equals(selector)
+                        ? Optional.of(providerType.cast(provider)) : Optional.empty();
+            }
+
+            @Override
+            public <P> List<String> names(Class<P> providerType) {
+                return providerType == AppStateMachineProvider.class
+                        ? List.of(provider.id()) : List.of();
+            }
+        };
+    }
+
+    private static byte[] seed(int fill) {
+        byte[] seed = new byte[32];
+        Arrays.fill(seed, (byte) fill);
+        return seed;
+    }
+
+    private static String pubHex(byte[] privateKey) {
+        return HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(privateKey));
+    }
+}

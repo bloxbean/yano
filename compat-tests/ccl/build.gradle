@@ -49,22 +49,22 @@ def probe = { String taskName, String mainClassName, String desc ->
     }
 }
 
-probe('compat', 'com.bloxbean.cardano.yano.compat.ccl.CompatProbe',
+probe('compat', 'org.yanoproject.compat.ccl.CompatProbe',
         'CCL provider walk: params, funding, query, build/sign/submit, confirm. Pass/fail.')
-probe('blsProbe', 'com.bloxbean.cardano.yano.compat.ccl.BlsProbe',
+probe('blsProbe', 'org.yanoproject.compat.ccl.BlsProbe',
         'BLS12-381 evaluate -> submit -> confirm, with a negative control. Pass/fail.')
-probe('plutusProbe', 'com.bloxbean.cardano.yano.compat.ccl.PlutusProbe',
+probe('plutusProbe', 'org.yanoproject.compat.ccl.PlutusProbe',
         'Which Plutus flows this devnet supports (informational).')
-probe('queryOverlayProbe', 'com.bloxbean.cardano.yano.compat.ccl.QueryOverlayProbe',
+probe('queryOverlayProbe', 'org.yanoproject.compat.ccl.QueryOverlayProbe',
         'Which read paths see an unconfirmed mempool output (informational).')
-probe('load', 'com.bloxbean.cardano.yano.compat.ccl.LoadTest',
+probe('load', 'org.yanoproject.compat.ccl.LoadTest',
         'Mempool load: regular payments + QuickTx chaining. Reports, never asserts.')
 
 tasks.register('scenario', JavaExec) {
     group = 'verification'
     description = 'Extra scenario: -Pmode=plutus|exunits|rollback|interval|heap'
     classpath = sourceSets.main.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.compat.ccl.Scenarios'
+    mainClass = 'org.yanoproject.compat.ccl.Scenarios'
     args = [project.findProperty('mode') ?: 'plutus']
     systemProperties System.getProperties().findAll { k, v ->
         k.toString().startsWith('yano.') || k.toString().startsWith('load.')

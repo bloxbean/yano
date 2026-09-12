@@ -174,7 +174,7 @@ public class MyPlugin implements NodePlugin {
 ## Plugin System
 
 Plugins extend node behavior without modifying core code. Discovered via
-`ServiceLoader` (`META-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin`).
+`ServiceLoader` (`META-INF/services/org.yanoproject.api.plugin.NodePlugin`).
 
 ### Capabilities
 

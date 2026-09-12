@@ -210,7 +210,7 @@ and dependency tests.
 - The default anchor implementation and `appchain-anchor-onchain`; anchoring is part of the minimum
   host profile for this split. No anchor-provider SPI is introduced now.
 - A small implementation-neutral app-chain proof-verifier module used by the host, published as
-  `com.bloxbean.cardano:yano-appchain-proof-verifier`, with no stdlib, composite, product, or HTTP
+  `org.yanoproject:yano-appchain-proof-verifier`, with no stdlib, composite, product, or HTTP
   client dependency.
 - A split core app-chain testkit sufficient for OrderedLog, host SPI, and plugin conformance tests.
 - `console-ui`, as the explicit temporary exception in this ADR.
@@ -465,7 +465,7 @@ requires its own ADR and must not be hidden in extraction commits.
 
 The repository and Maven-coordinate change does not rename the app-chain technical domain. Keep:
 
-- Java packages: `com.bloxbean.cardano.yano.appchain.*`;
+- Java packages: `org.yanoproject.appchain.*`;
 - host/engine configuration: `yano.app-chain.*`;
 - existing state-machine ids, plugin bundle ids, contribution names, consensus/profile identifiers,
   REST paths, and persisted state keys.
@@ -677,11 +677,11 @@ A runtime extension may publish a thin Java artifact for compile-time use and a 
 dependency-complete deployable artifact:
 
 ```text
-com.bloxbean.cardano:yano-x-stdlib
-com.bloxbean.cardano:yano-x-stdlib-bundle
+org.yanoproject:yano-x-stdlib
+org.yanoproject:yano-x-stdlib-bundle
 
-com.bloxbean.cardano:yano-x-kafka
-com.bloxbean.cardano:yano-x-kafka-bundle
+org.yanoproject:yano-x-kafka
+org.yanoproject:yano-x-kafka-bundle
 ```
 
 Use a distinct `-bundle` artifact id rather than a Maven classifier. The Yano X JVM distribution and
@@ -690,5 +690,5 @@ artifacts. Pure contracts, clients, testkits, CLIs, on-chain artifacts, and tool
 bundle unless they contain a runtime plugin contribution.
 
 Changing a Maven artifact id does not change a plugin manifest id. Existing reverse-DNS bundle ids
-under `com.bloxbean.cardano.yano.appchain.*` remain stable unless a separate compatibility ADR
+under `org.yanoproject.appchain.*` remain stable unless a separate compatibility ADR
 changes their runtime identity.

@@ -41,11 +41,11 @@ This review covers the app-chain feature as a whole:
 The review traced the implementation from the public API through runtime construction, network ingress, consensus, storage, L1 integration, and application surfaces. It also ran this focused cross-module suite:
 
     ./gradlew :core-api:test \
-      :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.appchain.*' \
+      :runtime:test --tests 'org.yanoproject.runtime.appchain.*' \
       :appchain-stdlib:test :appchain-client:test :appchain-testkit:test \
       :appchain-kafka-sink:test :appchain-zk:test \
       :appchain-spring-boot-starter:test :appchain-anchor-onchain:test \
-      :app:test --tests 'com.bloxbean.cardano.yano.app.*AppChain*' --continue
+      :app:test --tests 'org.yanoproject.app.*AppChain*' --continue
 
 Result: **BUILD SUCCESSFUL in 3m25s**.
 

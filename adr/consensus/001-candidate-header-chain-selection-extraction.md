@@ -86,7 +86,7 @@ This rule must be enforced symmetrically: `consensus` cannot import `p2p`, and
 | Phase | Status | Notes |
 | --- | --- | --- |
 | 0 | Implemented | Added `:consensus`, a consensus architecture guard, and a symmetric `:p2p` guard that forbids p2p-to-consensus imports. |
-| 1 | Implemented | Moved candidate-header state and `HeaderFanIn` to `com.bloxbean.cardano.yano.consensus.selection`; moved focused store/fan-in tests to `:consensus`. |
+| 1 | Implemented | Moved candidate-header state and `HeaderFanIn` to `org.yanoproject.consensus.selection`; moved focused store/fan-in tests to `:consensus`. |
 | 2 | Implemented | Moved chain-selection context, decision, strategy SPI, and conservative trusted-or-quorum strategy to `:consensus`; moved strategy tests to `:consensus`. |
 | 3 | Implemented | Runtime adapters now depend on consensus candidate models while keeping Yaci listener adapters and header validation in runtime. Runtime tests cover accepted and rejected observer headers. |
 | 4 | Evaluated / Deferred | No `ChainSelectionController` was introduced in this iteration. Evaluation coalescing, selected-upstream switching, and generation-fenced recovery remain in `SyncSubsystem` until a later ADR adds explicit execution ports. |
@@ -204,10 +204,10 @@ Future policy work should preserve these invariants:
 
 - Add `:consensus`.
 - Add an architecture test that prevents imports from
-  `com.bloxbean.cardano.yano.runtime..` and
-  `com.bloxbean.cardano.yano.p2p..`.
+  `org.yanoproject.runtime..` and
+  `org.yanoproject.p2p..`.
 - Extend the existing `:p2p` architecture guard so `p2p` cannot import
-  `com.bloxbean.cardano.yano.consensus..`.
+  `org.yanoproject.consensus..`.
 - Keep `:consensus` production dependencies empty initially. Add the
   `runtime -> consensus` project dependency when the first classes move in
   Phase 1.
@@ -217,7 +217,7 @@ Acceptance:
 - `./gradlew :consensus:test :p2p:test :runtime:compileJava` passes.
 - `:consensus` has no runtime, p2p, core-api, RocksDB, Quarkus, or app
   dependency.
-- `:p2p` tests fail if a p2p class imports `com.bloxbean.cardano.yano.consensus..`.
+- `:p2p` tests fail if a p2p class imports `org.yanoproject.consensus..`.
 
 ### Phase 1: Pure Candidate Header State
 

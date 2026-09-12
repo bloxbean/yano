@@ -17,20 +17,20 @@ Historical review report — findings superseded by later ADRs and delivery work
 
 ## Reviewed Implementation Areas
 - Runtime app-chain subsystem:
-  - `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainSubsystem.java`
-  - `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainEngine.java`
-  - `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/appchain/AppLedgerStore.java`
-  - `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/appchain/AnchorService.java`
-  - `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/appchain/AppPeerClient.java`
-  - `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/appchain/AppChainManager.java`
-  - `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/appchain/MemberGroup.java`
+  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppChainSubsystem.java`
+  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppChainEngine.java`
+  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppLedgerStore.java`
+  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AnchorService.java`
+  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppPeerClient.java`
+  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppChainManager.java`
+  - `runtime/src/main/java/org/yanoproject/runtime/appchain/MemberGroup.java`
 - Core API, codec, evidence, proof APIs:
-  - `core-api/src/main/java/com/bloxbean/cardano/yano/api/appchain/`
-  - `core-api/src/main/java/com/bloxbean/cardano/yano/api/appchain/evidence/EvidenceVerifier.java`
-  - `core-api/src/main/java/com/bloxbean/cardano/yano/api/appchain/codec/AppBlockCodec.java`
+  - `core-api/src/main/java/org/yanoproject/api/appchain/`
+  - `core-api/src/main/java/org/yanoproject/api/appchain/evidence/EvidenceVerifier.java`
+  - `core-api/src/main/java/org/yanoproject/api/appchain/codec/AppBlockCodec.java`
 - REST/API layer:
-  - `app/src/main/java/com/bloxbean/cardano/yano/app/api/appchain/AppChainResource.java`
-  - `app/src/main/java/com/bloxbean/cardano/yano/app/api/appchain/AppChainApiKeyFilter.java`
+  - `app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java`
+  - `app/src/main/java/org/yanoproject/app/api/appchain/AppChainApiKeyFilter.java`
 - Extension modules:
   - `appchain/appchain-client`
   - `appchain/appchain-stdlib`
@@ -44,14 +44,14 @@ Historical review report — findings superseded by later ADRs and delivery work
 Focused app-chain test command:
 
 ```bash
-./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.appchain.*' \
+./gradlew :runtime:test --tests 'org.yanoproject.runtime.appchain.*' \
   :appchain-stdlib:test \
   :appchain-client:test \
   :appchain-testkit:test \
   :appchain-kafka-sink:test \
   :appchain-zk:test \
   :appchain-spring-boot-starter:test \
-  :app:test --tests 'com.bloxbean.cardano.yano.app.AppChainApiKeyFilterTest'
+  :app:test --tests 'org.yanoproject.app.AppChainApiKeyFilterTest'
 ```
 
 Result:
