@@ -41,7 +41,7 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRuleExceptionRejectsTransaction() {
         LedgerStateProvider provider = new MinimalLedgerStateProvider();
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 provider, null);
         var tx = Transaction.builder().body(null).build();
 
@@ -116,7 +116,7 @@ class ScalusBasedTransactionValidatorTest {
         pp.setEMax(5);
 
         var validator = new ScalusBasedTransactionValidator(
-                slot -> pp, null, new SlotConfig(1000, 0, 0), 0,
+                slot -> pp, null, testSlotConfig(), 0,
                 new RegisteredPoolLedgerStateProvider(), () -> 12_345L, slot -> 10);
 
         var result = validator.runSupplementaryRules(poolRetirementTx(10), 12_345L, pp);
@@ -163,7 +163,7 @@ class ScalusBasedTransactionValidatorTest {
         ProtocolParams pp = new ProtocolParams();
         pp.setEMax(5);
         var validator = new ScalusBasedTransactionValidator(
-                slot -> pp, null, new SlotConfig(1000, 0, 0), 0,
+                slot -> pp, null, testSlotConfig(), 0,
                 new RegisteredPoolLedgerStateProvider(), () -> 0L, slot -> 0);
 
         var result = validator.runSupplementaryRules(poolRetirementTx(0), 0, pp);
@@ -178,7 +178,7 @@ class ScalusBasedTransactionValidatorTest {
         ProtocolParams pp = new ProtocolParams();
         pp.setEMax(5);
         var validator = new ScalusBasedTransactionValidator(
-                slot -> pp, null, new SlotConfig(1000, 0, 0), 0,
+                slot -> pp, null, testSlotConfig(), 0,
                 new RegisteredPoolLedgerStateProvider(), () -> 12_345L, slot -> null);
 
         var result = validator.runSupplementaryRules(poolRetirementTx(11), 12_345L, pp);
@@ -192,7 +192,7 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesValidateGovernanceVoteTargetsAndDisallowedVoters() {
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 new GovernanceProposalLedgerStateProvider("PARAMETER_CHANGE_ACTION", true, true));
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.STAKING_POOL_KEY_HASH), 0, new ProtocolParams());
@@ -205,7 +205,7 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesRejectVotingForInactiveGovernanceAction() {
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 new GovernanceProposalLedgerStateProvider("INFO_ACTION", false, true));
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.STAKING_POOL_KEY_HASH), 0, new ProtocolParams());
@@ -218,7 +218,7 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesValidateCommitteeHotVoterAuthorizationWhenAvailable() {
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 new GovernanceProposalLedgerStateProvider("INFO_ACTION", true, false));
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH),
@@ -233,7 +233,7 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRulesUseCurrentTransactionHashForLocalProposalVotes() {
         String txHash = filledHex(32, 9);
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 new RegisteredPoolLedgerStateProvider());
 
         var result = validator.runSupplementaryRules(localProposalVoteTx(txHash), 0, new ProtocolParams(), txHash);
@@ -247,7 +247,7 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRulesRejectPrevGovActionWithDifferentPurpose() {
         String prevHash = filledHex(32, 7);
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 new GovernanceProposalLedgerStateProvider("INFO_ACTION", false, true));
 
         var result = validator.runSupplementaryRules(proposalWithPreviousAction(prevHash), 0, new ProtocolParams());
@@ -261,7 +261,7 @@ class ScalusBasedTransactionValidatorTest {
     void supplementaryRulesDoNotUseLocalProposalsForPreviousActionReferences() {
         String txHash = filledHex(32, 9);
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 new RegisteredPoolLedgerStateProvider());
 
         var result = validator.runSupplementaryRules(proposalWithPreviousAction(txHash), 0, new ProtocolParams(),
@@ -275,13 +275,27 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void supplementaryRulesUseTypedCommitteeHotCredentialAuthorization() {
         var validator = new ScalusBasedTransactionValidator(
-                slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+                slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                 new ScriptCommitteeHotLedgerStateProvider());
 
         var result = validator.runSupplementaryRules(votingTx(VoterType.CONSTITUTIONAL_COMMITTEE_HOT_SCRIPT_HASH),
                 0, new ProtocolParams());
 
         assertTrue(result.valid());
+    }
+
+    private static SlotConfigSupplier testSlotConfig() {
+        return new SlotConfigSupplier() {
+            @Override
+            public SlotConfig getSlotConfig() {
+                return new SlotConfig(1_000, 0, 0);
+            }
+
+            @Override
+            public EpochSlotCalc getEpochSlotCalc() {
+                return new EpochSlotCalc(1_200, 1_200, 0);
+            }
+        };
     }
 
     private static Transaction poolRetirementTx(long retireEpoch) {
@@ -405,7 +419,7 @@ class ScalusBasedTransactionValidatorTest {
 
         ScalusSuccessValidator(LedgerStateProvider provider, LongSupplier currentSlotSupplier,
                                boolean supplementaryRulesEnabled) {
-            super(slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0,
+            super(slot -> new ProtocolParams(), null, testSlotConfig(), 0,
                     provider, currentSlotSupplier, null, supplementaryRulesEnabled);
         }
 
@@ -429,7 +443,7 @@ class ScalusBasedTransactionValidatorTest {
 
     private static class BlstFailingValidator extends ScalusBasedTransactionValidator {
         BlstFailingValidator() {
-            super(slot -> new ProtocolParams(), null, new SlotConfig(1000, 0, 0), 0, null);
+            super(slot -> new ProtocolParams(), null, testSlotConfig(), 0, null);
         }
 
         @Override

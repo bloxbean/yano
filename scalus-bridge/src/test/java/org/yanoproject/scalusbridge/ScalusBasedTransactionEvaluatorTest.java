@@ -38,7 +38,7 @@ class ScalusBasedTransactionEvaluatorTest {
                 slot -> {
                     throw new AssertionError("protocol parameters should not be requested");
                 },
-                null, slotConfig, 0, () -> -1L);
+                null, slotConfigSupplier(slotConfig, new EpochSlotCalc(1_200, 1_200, 0)), 0, () -> -1L);
 
         var ex = assertThrows(IllegalStateException.class,
                 () -> evaluator.evaluate(new byte[0], Set.of()));
@@ -53,7 +53,7 @@ class ScalusBasedTransactionEvaluatorTest {
                 slot -> {
                     throw new AssertionError("protocol parameters should not be requested");
                 },
-                null, slotConfig, 0, () -> {
+                null, slotConfigSupplier(slotConfig, new EpochSlotCalc(1_200, 1_200, 0)), 0, () -> {
             throw new IllegalStateException("tip unavailable");
         });
 
@@ -70,7 +70,7 @@ class ScalusBasedTransactionEvaluatorTest {
                 slot -> {
                     throw new IllegalStateException("resolved slot " + slot);
                 },
-                null, slotConfig, 0, () -> 123L);
+                null, slotConfigSupplier(slotConfig, new EpochSlotCalc(1_200, 1_200, 0)), 0, () -> 123L);
 
         var ex = assertThrows(IllegalStateException.class,
                 () -> evaluator.evaluate(new byte[0], Set.of()));
@@ -84,7 +84,7 @@ class ScalusBasedTransactionEvaluatorTest {
                 slot -> {
                     throw new IllegalStateException("resolved slot " + slot);
                 },
-                null, slotConfig, 0, null);
+                null, slotConfigSupplier(slotConfig, new EpochSlotCalc(1_200, 1_200, 0)), 0, null);
 
         var ex = assertThrows(IllegalStateException.class,
                 () -> evaluator.evaluate(new byte[0], Set.of()));

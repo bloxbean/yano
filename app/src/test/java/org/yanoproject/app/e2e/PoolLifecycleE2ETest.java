@@ -105,6 +105,10 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
             }
         }
         awaitTransactions(submitTogether(stakeRegistrations));
+        awaitState("all delegator stake registrations visible", () -> pools.values().stream()
+                .flatMap(pool -> pool.delegators().stream())
+                .allMatch(delegator -> getJson("accounts/" + delegator.stakeAddress())
+                        .path("registered").asBoolean()));
 
         List<Transaction> delegations = new ArrayList<>();
         for (PoolFixture fixture : pools.values()) {
@@ -122,7 +126,8 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
         awaitState("scenario E DRep delegation visible",
                 () -> hasDRepDelegation(retainedDRepDelegator));
 
-        advanceToEpoch(currentEpoch() + 17);
+        // Even +1 retirements must exceed the old adapter's inclusive epoch-18 ceiling.
+        advanceToEpoch(currentEpoch() + 18);
     }
 
     @Test
