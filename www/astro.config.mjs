@@ -10,7 +10,7 @@ export default defineConfig({
       description:
         'The Cardano data node you can build with. Query, test, embed, and create app chains.',
       logo: { src: './public/logo.svg' },
-      favicon: '/favicon.svg',
+      favicon: '/favicon.ico',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/bloxbean/yano' }],
       customCss: ['./src/styles/docs.css'],
       components: { PageTitle: './src/components/DocTitle.astro' },
