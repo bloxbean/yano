@@ -44,6 +44,13 @@ public final class PoolLifecycleDevnetTestProfile extends DevnetTestProfile {
 
     @Override
     public Map<String, String> getConfigOverrides() {
+        // External-URL mode runs the `test` profile against a node this test does not own.
+        // Contributing devnet genesis here would leave shelley=42 paired with the profile's
+        // inherited preprod byron=1, which NetworkGenesisConfig.load rejects. The parent
+        // already returns no overrides in that mode; honour it instead of layering on top.
+        if (System.getProperty("yano.e2e.baseUrl") != null) {
+            return Map.of();
+        }
         Map<String, String> overrides = new HashMap<>(super.getConfigOverrides());
         overrides.put("yano.storage.path", STORAGE_DIR.toString());
         overrides.put("yano.history.dir", HISTORY_DIR.toString());

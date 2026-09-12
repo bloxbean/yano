@@ -81,19 +81,25 @@ public final class DefaultTransactionServicesFactory {
                 return tip != null ? tip.getSlot() : -1L;
             };
             RuntimeSlotConfigSupplier runtimeSlotConfigSupplier = new RuntimeSlotConfigSupplier(
-                    yaciConfig, context::resolvedGenesisTimestamp, genesis);
+                    yaciConfig, context::resolvedGenesisTimestamp, genesis, epochSlotCalc);
             slotConfigSupplier = runtimeSlotConfigSupplier;
 
             long magic = yaciConfig.getProtocolMagic();
 
             if (runtimeSlotConfigSupplier.canResolveZeroTimeNow()) {
                 var initialSlotConfig = runtimeSlotConfigSupplier.getSlotConfig();
-                log.info("Yano transaction slot config: slotLengthMillis={}, zeroSlot={}, zeroTimeMillis={}",
+                log.info("Yano transaction slot config: slotLengthMillis={}, zeroSlot={}, zeroTimeMillis={}, "
+                                + "epochLength={}, zeroEpoch={}",
                         initialSlotConfig.getSlotLength(),
                         initialSlotConfig.getZeroSlot(),
-                        initialSlotConfig.getZeroTime());
+                        initialSlotConfig.getZeroTime(),
+                        epochSlotCalc.shelleyEpochLength(),
+                        epochSlotCalc.firstNonByronEpoch());
             } else {
-                log.info("Yano transaction slot config supplier prepared; zeroTime will resolve at runtime");
+                log.info("Yano transaction slot config supplier prepared; zeroTime will resolve at runtime, "
+                                + "epochLength={}, zeroEpoch={}",
+                        epochSlotCalc.shelleyEpochLength(),
+                        epochSlotCalc.firstNonByronEpoch());
             }
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;

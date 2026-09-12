@@ -5,7 +5,6 @@ import com.bloxbean.cardano.client.api.common.OrderEnum;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.api.model.Utxo;
-import com.bloxbean.cardano.client.common.model.SlotConfig;
 import org.yanoproject.ledgerrules.EpochProtocolParamsSupplier;
 import org.yanoproject.ledgerrules.SlotConfigSupplier;
 import org.yanoproject.ledgerrules.TransactionEvaluator;
@@ -28,13 +27,6 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
     private final SlotConfigSupplier slotConfigSupplier;
     private final int networkId;
     private final LongSupplier currentSlotSupplier;
-
-    ScalusBasedTransactionEvaluator(EpochProtocolParamsSupplier protocolParamsSupplier,
-                                    com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
-                                    SlotConfig slotConfig, int networkId,
-                                    LongSupplier currentSlotSupplier) {
-        this(protocolParamsSupplier, scriptSupplier, () -> slotConfig, networkId, currentSlotSupplier);
-    }
 
     ScalusBasedTransactionEvaluator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                     com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
@@ -68,7 +60,7 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
         };
 
         ProtocolParams protocolParams = protocolParamsSupplier.getProtocolParams(resolveCurrentSlot());
-        var scalusSlotConfig = SlotConfigAdapters.toScalus(slotConfigSupplier.getSlotConfig());
+        var scalusSlotConfig = SlotConfigAdapters.toScalus(slotConfigSupplier);
         Result<List<com.bloxbean.cardano.client.api.model.EvaluationResult>> result;
         try {
             result = evaluateWithScalus(scalusSlotConfig, protocolParams, utxoSupplier, txCbor, inputUtxos);
