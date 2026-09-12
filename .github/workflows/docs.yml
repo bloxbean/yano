@@ -2,10 +2,10 @@ name: Documentation
 
 on:
   pull_request:
-    paths: ['www/**', '.github/workflows/docs.yml', 'app/config/**', 'app/src/main/**', 'core-api/src/main/**', 'gradle.properties']
+    paths: ['www/**', 'gradle.properties']
   push:
     branches: [main]
-    paths: ['www/**', '.github/workflows/docs.yml', 'app/config/**', 'app/src/main/**', 'core-api/src/main/**', 'gradle.properties']
+    paths: ['www/**', 'gradle.properties']
   workflow_dispatch:
 
 permissions:
