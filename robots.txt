@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://getyano.dev/sitemap-index.xml

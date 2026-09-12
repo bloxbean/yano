@@ -1,0 +1,326 @@
+{
+  "schemaVersion": 1,
+  "site": "https://getyano.dev",
+  "version": "0.1.0-pre15-dev1",
+  "sourceRevision": "6e277757f7567cf35e45898d897f18fbeee37bd3",
+  "sourceRepository": "https://github.com/bloxbean/yano",
+  "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
+  "pages": [
+    {
+      "title": "Build with AI",
+      "description": "Give coding agents compact, accurate, versioned Yano context.",
+      "url": "https://getyano.dev/ai/overview/",
+      "markdown": "https://getyano.dev/ai/pages/ai/overview.md",
+      "sha256": "7d4a59df8e99b9f3cb6901c77c7d4dba3faacfa6355296546a9a42d5209478b5"
+    },
+    {
+      "title": "Consensus & chain configuration",
+      "description": "Member consensus, execution, commitments, and anchoring.",
+      "url": "https://getyano.dev/app-chains/consensus/",
+      "markdown": "https://getyano.dev/ai/pages/app-chains/consensus.md",
+      "sha256": "c8591ec9af970e4f878f8c1a7090b01dd0cdedb79e769b8cd0bed0a16b961222"
+    },
+    {
+      "title": "State machines & extensions",
+      "description": "Extend Yano through deterministic state machines and public plugin contracts.",
+      "url": "https://getyano.dev/app-chains/extensions/",
+      "markdown": "https://getyano.dev/ai/pages/app-chains/extensions.md",
+      "sha256": "3d578fe2fa9124499203df4e8c2dd0548a9acae8bbab4afabafb29d444640f0d"
+    },
+    {
+      "title": "Certified observations",
+      "description": "Understand the preview observation framework and its trust model.",
+      "url": "https://getyano.dev/app-chains/observations/",
+      "markdown": "https://getyano.dev/ai/pages/app-chains/observations.md",
+      "sha256": "61e005175950edba9247e61be688d57307909a2c9f1ab510720ad1c72d573464"
+    },
+    {
+      "title": "Ordered log in depth",
+      "description": "Record events, query positions, and verify ordered-log state.",
+      "url": "https://getyano.dev/app-chains/ordered-log/",
+      "markdown": "https://getyano.dev/ai/pages/app-chains/ordered-log.md",
+      "sha256": "0dadb056d4e884f538c000bea1f7d26459d5430a09ddaf4e4dad3e49a63086a8"
+    },
+    {
+      "title": "What is an app chain?",
+      "description": "Understand application ledgers, member finality, proofs, and Cardano anchoring.",
+      "url": "https://getyano.dev/app-chains/overview/",
+      "markdown": "https://getyano.dev/ai/pages/app-chains/overview.md",
+      "sha256": "f1756e2838004bddffe5c8afe93c35a0143bc339ccf9a460a7470133316159cf"
+    },
+    {
+      "title": "Finality, proofs & L1 anchors",
+      "description": "Distinguish message inclusion, state proofs, certificates, and Cardano confirmation.",
+      "url": "https://getyano.dev/app-chains/proofs/",
+      "markdown": "https://getyano.dev/ai/pages/app-chains/proofs.md",
+      "sha256": "b478a25c64b12b44cebf03287f3b1a299001f1c82da1cb6ef4590355d0d83418"
+    },
+    {
+      "title": "Your first app chain",
+      "description": "Start the built-in ordered log and submit your first event.",
+      "url": "https://getyano.dev/app-chains/quickstart/",
+      "markdown": "https://getyano.dev/ai/pages/app-chains/quickstart.md",
+      "sha256": "87d689716a457d1826c4eda4152b1a2a1b65a8c29136718e2dcc7a1f03ad93eb"
+    },
+    {
+      "title": "Building & testing",
+      "description": "Run the build tiers and packaging checks.",
+      "url": "https://getyano.dev/contribute/build-and-test/",
+      "markdown": "https://getyano.dev/ai/pages/contribute/build-and-test.md",
+      "sha256": "f30e8b5d50a306f35ab6883d64f5176aedb39b8b15d811a9add265dae8f2d01e"
+    },
+    {
+      "title": "Build from source",
+      "description": "Optional source builds for contributors and advanced users.",
+      "url": "https://getyano.dev/contribute/build-from-source/",
+      "markdown": "https://getyano.dev/ai/pages/contribute/build-from-source.md",
+      "sha256": "00b620f0492c1f61c9bc3101c13555f85b5c572bbcb90b1b8f0a0d0f9eff0a96"
+    },
+    {
+      "title": "Contribute to Yano",
+      "description": "Build, test, and improve Yano through its public modules and contracts.",
+      "url": "https://getyano.dev/contribute/guide/",
+      "markdown": "https://getyano.dev/ai/pages/contribute/guide.md",
+      "sha256": "616a64d99e351872b0580e26a19732a781309f5f87eeaeace9c7514f644323dc"
+    },
+    {
+      "title": "App-chain testkit",
+      "description": "Test your state machine with an embedded cluster of Yano members.",
+      "url": "https://getyano.dev/develop/app-chain-testkit/",
+      "markdown": "https://getyano.dev/ai/pages/develop/app-chain-testkit.md",
+      "sha256": "ad6bf13227a97deeab9e69c21401762593dc2764cf19e4acfbeddd77037089b2"
+    },
+    {
+      "title": "Build with any SDK",
+      "description": "Connect your preferred Cardano SDK to Yano's Blockfrost-compatible transaction APIs.",
+      "url": "https://getyano.dev/develop/blockfrost/",
+      "markdown": "https://getyano.dev/ai/pages/develop/blockfrost.md",
+      "sha256": "25f9dc76eb2991844a12464aea4463bbc9715ff7e3edc4c4d94fdadfbe73ef80"
+    },
+    {
+      "title": "Cardano Client Lib adapter",
+      "description": "Use an embedded CCL BackendService in integration tests.",
+      "url": "https://getyano.dev/develop/ccl/",
+      "markdown": "https://getyano.dev/ai/pages/develop/ccl.md",
+      "sha256": "4673e7a706cec70cda028019fadd259e169eab154d12af7ae607b9d6cc999291"
+    },
+    {
+      "title": "Yano in use",
+      "description": "Use Yano as part of a complete local Cardano development environment.",
+      "url": "https://getyano.dev/develop/devkit/",
+      "markdown": "https://getyano.dev/ai/pages/develop/devkit.md",
+      "sha256": "79258e953ee0b76648f0ce1ecd8b0d4465d34e7810c4e1368c82710766905e7f"
+    },
+    {
+      "title": "Embed Yano in Java",
+      "description": "Use public node roles and the runtime assembly API in your application.",
+      "url": "https://getyano.dev/develop/embed/",
+      "markdown": "https://getyano.dev/ai/pages/develop/embed.md",
+      "sha256": "f20f12b5cd2573223d87429bf4ece2e1b87a68240bba56d393c5ebfd62f95c6d"
+    },
+    {
+      "title": "Java testkit",
+      "description": "Run isolated Cardano devnets in JUnit and plain Java.",
+      "url": "https://getyano.dev/develop/java-testkit/",
+      "markdown": "https://getyano.dev/ai/pages/develop/java-testkit.md",
+      "sha256": "3d1a2bceb42564394fb885131b61df03684f7be32af1aa3884d48d4b338eae71"
+    },
+    {
+      "title": "JavaScript & TypeScript testkit",
+      "description": "Manage a native devnet process from JavaScript tests.",
+      "url": "https://getyano.dev/develop/javascript-testkit/",
+      "markdown": "https://getyano.dev/ai/pages/develop/javascript-testkit.md",
+      "sha256": "98e4c6309c11bbe425d21f1b6d99df9cb722f9a032a8f4a27ef1e101f446467c"
+    },
+    {
+      "title": "Snapshots, rollback & time",
+      "description": "Make local Cardano history reproducible in development and tests.",
+      "url": "https://getyano.dev/develop/time-travel/",
+      "markdown": "https://getyano.dev/ai/pages/develop/time-travel.md",
+      "sha256": "3e16fdfe1d44be83b517e7a61b7dbfbd25fc6272bc006d001258340aa06a7815"
+    },
+    {
+      "title": "Query and submit transactions",
+      "description": "Use the REST API with your existing Cardano transaction library.",
+      "url": "https://getyano.dev/develop/transactions/",
+      "markdown": "https://getyano.dev/ai/pages/develop/transactions.md",
+      "sha256": "0d43bc3d90c268dfb0fc48c843a45d07afb184ae3d81d68ac85cb2551c7e1667"
+    },
+    {
+      "title": "Historical archive",
+      "description": "Enable Yano's DuckLake archive and query its history with DuckDB.",
+      "url": "https://getyano.dev/node/history/",
+      "markdown": "https://getyano.dev/ai/pages/node/history.md",
+      "sha256": "34e024d4678d2c0f250fb231c020bee938ff18d16f769e5b651b9d124f9d03cd"
+    },
+    {
+      "title": "Ledger state and storage",
+      "description": "Understand local state, rollback, filtering, pruning, and partial bootstrap.",
+      "url": "https://getyano.dev/node/ledger/",
+      "markdown": "https://getyano.dev/ai/pages/node/ledger.md",
+      "sha256": "dd0a982c62f571d064f2a8368542f8e823ce158277cefa0177f53555766f51a5"
+    },
+    {
+      "title": "Mempool-aware UTxOs",
+      "description": "Understand unconfirmed transactions and spendable-output views.",
+      "url": "https://getyano.dev/node/mempool/",
+      "markdown": "https://getyano.dev/ai/pages/node/mempool.md",
+      "sha256": "a7bdac80795bd89ae274d320124ffd82560f5a773a3525a9ed7e4a4eaa99d2f7"
+    },
+    {
+      "title": "Connect to Cardano",
+      "description": "Configure public-network profiles and upstream peers.",
+      "url": "https://getyano.dev/node/networks/",
+      "markdown": "https://getyano.dev/ai/pages/node/networks.md",
+      "sha256": "434d336abf84571dd08342288111dab2277763d98c68f03193cbe394089ff64a"
+    },
+    {
+      "title": "Upstream peers and validation",
+      "description": "Choose peer selection and inspect validation without overstating trust.",
+      "url": "https://getyano.dev/node/upstream/",
+      "markdown": "https://getyano.dev/ai/pages/node/upstream.md",
+      "sha256": "3c3fdf0e8cd6a92c013c98a0108d89a3f3bc442f1e9941cfb2431e43df27d1dd"
+    },
+    {
+      "title": "Wallet discovery & scans",
+      "description": "Coverage-aware first-seen lookup and streaming wallet scans.",
+      "url": "https://getyano.dev/node/wallet-indexes/",
+      "markdown": "https://getyano.dev/ai/pages/node/wallet-indexes.md",
+      "sha256": "0c8b6f027fdb48ce83a79e412d63840cf77400df93eb882b540cf546724da1bc"
+    },
+    {
+      "title": "Console & observability",
+      "description": "Explore the embedded console and persistent metrics.",
+      "url": "https://getyano.dev/operate/console/",
+      "markdown": "https://getyano.dev/ai/pages/operate/console.md",
+      "sha256": "04aae7f9a43cf446537487e91f8ac9a4c1eb2c1333f5206350455594319fa047"
+    },
+    {
+      "title": "Mempool administration",
+      "description": "Configure and use privileged local mempool eviction.",
+      "url": "https://getyano.dev/operate/mempool/",
+      "markdown": "https://getyano.dev/ai/pages/operate/mempool.md",
+      "sha256": "c2bfa7652d8eb304b5e6cfe6fe9fbabf5f09a90d4361b5c712af19375e378a1f"
+    },
+    {
+      "title": "Plugin operations",
+      "description": "Validate, install, secure, and observe JVM plugins.",
+      "url": "https://getyano.dev/operate/plugins/",
+      "markdown": "https://getyano.dev/ai/pages/operate/plugins.md",
+      "sha256": "c3c1bdae5756c0d0fd4686f58b4343c3b54843a517636c97f05fc9721f44271a"
+    },
+    {
+      "title": "Troubleshooting",
+      "description": "Diagnose startup, synchronization, unavailable data, and app-chain progress.",
+      "url": "https://getyano.dev/operate/troubleshooting/",
+      "markdown": "https://getyano.dev/ai/pages/operate/troubleshooting.md",
+      "sha256": "c434d18f1c726e919097a19e3ad110f04311683d4b77621cb6d75e356d35a0e8"
+    },
+    {
+      "title": "Versions & upgrades",
+      "description": "Keep source, artifacts, storage, and plugins compatible.",
+      "url": "https://getyano.dev/operate/upgrades/",
+      "markdown": "https://getyano.dev/ai/pages/operate/upgrades.md",
+      "sha256": "fb9c9b46ed40feeee0ed5f573335311f55e630b541f6ca13b6f5d922bdea3838"
+    },
+    {
+      "title": "Account state & rollback",
+      "description": "Account state, rewards, governance, and rollback behavior.",
+      "url": "https://getyano.dev/reference/account-state/",
+      "markdown": "https://getyano.dev/ai/pages/reference/account-state.md",
+      "sha256": "ecf34edac6f21c230721fd8c62555e6038d716ccb81f07f73cb8bad8c73486ed"
+    },
+    {
+      "title": "Configuration catalog",
+      "description": "Active packaged configuration values and declared property keys, generated from source.",
+      "url": "https://getyano.dev/reference/configuration-catalog/",
+      "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
+      "sha256": "16ce5c807af432765ab8739ced46192cd397c9f517f250d034059db6c318c843"
+    },
+    {
+      "title": "Configuration guide",
+      "description": "Understand configuration layers, defaults, profiles, and build-time settings.",
+      "url": "https://getyano.dev/reference/configuration/",
+      "markdown": "https://getyano.dev/ai/pages/reference/configuration.md",
+      "sha256": "1fe386c2b5034c8756d1d0f6242fc9a03a0bc3d1cf71c98eacd1c7f7d2d4f3f8"
+    },
+    {
+      "title": "HTTP API",
+      "description": "Discover release-matched OpenAPI schemas and the main API groups.",
+      "url": "https://getyano.dev/reference/http-api/",
+      "markdown": "https://getyano.dev/ai/pages/reference/http-api.md",
+      "sha256": "5b1086c1cc4a0b6ad32be448f1f180667ddc55960676c9b399d6acb55cbf4c10"
+    },
+    {
+      "title": "JavaScript testkit reference",
+      "description": "Lifecycle, helper APIs, and native process options for JavaScript.",
+      "url": "https://getyano.dev/reference/javascript/",
+      "markdown": "https://getyano.dev/ai/pages/reference/javascript.md",
+      "sha256": "8c2d4ea07fc6eedc3d13dae4bd5e92b159018db8ef047cf628896a3aee62a0ee"
+    },
+    {
+      "title": "Plugin query & domain APIs",
+      "description": "Implement committed queries and bounded domain APIs.",
+      "url": "https://getyano.dev/reference/plugin-contract/",
+      "markdown": "https://getyano.dev/ai/pages/reference/plugin-contract.md",
+      "sha256": "6b14e7caf12885e0f36237bac4fbe8dace07682ac2338180a89992ed8a1fa986"
+    },
+    {
+      "title": "Release migration details",
+      "description": "Storage and behavior changes across preview versions.",
+      "url": "https://getyano.dev/reference/upgrading/",
+      "markdown": "https://getyano.dev/ai/pages/reference/upgrading.md",
+      "sha256": "73c1ef5a91f92fe5bd447fabce9e95ae0352060b0cab7be0bb01f4f986d4cbd9"
+    },
+    {
+      "title": "Capability guide",
+      "description": "See which Yano features fit your runtime and workflow.",
+      "url": "https://getyano.dev/start/capabilities/",
+      "markdown": "https://getyano.dev/ai/pages/start/capabilities.md",
+      "sha256": "559cdce1f50b9cefaf9018621a720862918afde8dabe6331022f8ce47776caac"
+    },
+    {
+      "title": "Download & install Yano",
+      "description": "Choose and run a JVM or platform-specific Yano release.",
+      "url": "https://getyano.dev/start/installation/",
+      "markdown": "https://getyano.dev/ai/pages/start/installation.md",
+      "sha256": "a6f43c5eff176662d6849d3e168426520b614fc70ca68bdf8783357a6a13ee73"
+    },
+    {
+      "title": "What is Yano?",
+      "description": "Understand Yano, choose a starting point, and build your first Cardano workflow.",
+      "url": "https://getyano.dev/start/overview/",
+      "markdown": "https://getyano.dev/ai/pages/start/overview.md",
+      "sha256": "bf1d331a6a5f8f639104d57c6766a53e61634e62823a530493f43e2e055d208a"
+    },
+    {
+      "title": "Your first local node",
+      "description": "Download Yano and start a local Cardano development network.",
+      "url": "https://getyano.dev/start/quickstart/",
+      "markdown": "https://getyano.dev/ai/pages/start/quickstart.md",
+      "sha256": "97111e854c34e0b47afa4d43f6139cdc2a8e3915d2d5d0907f78b6e35d780c21"
+    }
+  ],
+  "artifacts": [
+    {
+      "url": "https://getyano.dev/llms.txt",
+      "sha256": "11fc8665e04b55f54f3ea11e7480a8d75275103050a4c971d861260cfed1d72c"
+    },
+    {
+      "url": "https://getyano.dev/llms-full.txt",
+      "sha256": "20d340927dffc156248d68e58921842de7d600583b8b36d4159f45d5f6d5af35"
+    },
+    {
+      "url": "https://getyano.dev/ai/agent-instructions.md",
+      "sha256": "4dd9b125080eff8c7b042773405d78764e2c35cbd1812c2eaa4e653f7efc7adf"
+    },
+    {
+      "url": "https://getyano.dev/ai/configuration.json",
+      "sha256": "51449f7ca8c03ebef33496da466d860adb4273791db6a57529cf1dc07f280e79"
+    },
+    {
+      "url": "https://getyano.dev/ai/routes.json",
+      "sha256": "d9c2e54f307d7f961e671b617e3cec660c6595a486a847a8b20af800d129d717"
+    }
+  ]
+}

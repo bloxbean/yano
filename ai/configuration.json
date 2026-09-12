@@ -1,0 +1,1971 @@
+{
+  "sourceRevision": "6e277757f7567cf35e45898d897f18fbeee37bd3",
+  "version": "0.1.0-pre15-dev1",
+  "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
+  "configuration": [
+    {
+      "source": "app/src/main/resources/application.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "quarkus.http.port",
+          "value": 7070
+        },
+        {
+          "key": "quarkus.http.cors.enabled",
+          "value": "${YANO_HTTP_CORS_ENABLED:false}"
+        },
+        {
+          "key": "quarkus.http.test-port",
+          "value": 0
+        },
+        {
+          "key": "quarkus.http.filter.plugin-dashboard-security.matches",
+          "value": "/ui/plugins/.*"
+        },
+        {
+          "key": "quarkus.http.filter.plugin-dashboard-security.header.Content-Security-Policy",
+          "value": "connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        },
+        {
+          "key": "quarkus.http.filter.plugin-dashboard-security.header.X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "quarkus.http.filter.plugin-dashboard-security.header.X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "quarkus.http.filter.plugin-dashboard-security.header.Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "quarkus.http.filter.plugin-dashboard-security.header.Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "quarkus.http.filter.console-security.matches",
+          "value": "/ui(?!/plugins/).*"
+        },
+        {
+          "key": "quarkus.http.filter.console-security.header.Content-Security-Policy",
+          "value": "connect-src 'self'${YANO_CONSOLE_CONNECT_SRC_EXTRA:}; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        },
+        {
+          "key": "quarkus.http.filter.console-security.header.X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "quarkus.http.filter.console-security.header.X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "quarkus.http.filter.console-security.header.Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "quarkus.http.filter.console-security.header.Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "quarkus.swagger-ui.always-include",
+          "value": "${YANO_SWAGGER_UI_ENABLED:true}"
+        },
+        {
+          "key": "quarkus.swagger-ui.path",
+          "value": "/q/swagger-ui"
+        },
+        {
+          "key": "quarkus.swagger-ui.urls.Core API",
+          "value": "/q/openapi-core"
+        },
+        {
+          "key": "quarkus.swagger-ui.urls.App Chain API",
+          "value": "/q/openapi-app-chain"
+        },
+        {
+          "key": "quarkus.swagger-ui.urls.Devnet API",
+          "value": "/q/openapi-devnet"
+        },
+        {
+          "key": "quarkus.swagger-ui.urls.Admin API",
+          "value": "/q/openapi-admin"
+        },
+        {
+          "key": "quarkus.swagger-ui.urls.History API",
+          "value": "/q/openapi-history"
+        },
+        {
+          "key": "quarkus.swagger-ui.urls.All APIs",
+          "value": "/q/openapi"
+        },
+        {
+          "key": "quarkus.swagger-ui.urls-primary-name",
+          "value": "Core API"
+        },
+        {
+          "key": "yano.mempool.admin.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.plugins.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.plugins.directory",
+          "value": "plugins"
+        },
+        {
+          "key": "yano.plugins.allow-list",
+          "value": []
+        },
+        {
+          "key": "yano.plugins.deny-list",
+          "value": []
+        },
+        {
+          "key": "yano.plugins.auto-register-annotated",
+          "value": false
+        },
+        {
+          "key": "yano.plugins.logging.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.network",
+          "value": "preprod"
+        },
+        {
+          "key": "yano.auto-sync-start",
+          "value": true
+        },
+        {
+          "key": "yano.client.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "preprod-node.world.dev.cardano.org"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 30000
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 1
+        },
+        {
+          "key": "yano.upstream.validation.level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.body-level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.opcert-counter-mode",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        },
+        {
+          "key": "yano.upstream.validation.start.slot",
+          "value": 69638426
+        },
+        {
+          "key": "yano.upstream.validation.start.hash",
+          "value": "ecde79b23e343becca15618fc26281ba1aaea2eb1b66ab8828d7a127f5dbc30f"
+        },
+        {
+          "key": "yano.relay.auto-discovery",
+          "value": false
+        },
+        {
+          "key": "yano.relay.advertised-host",
+          "value": "auto"
+        },
+        {
+          "key": "yano.relay.advertised-port",
+          "value": 0
+        },
+        {
+          "key": "yano.relay.allow-private-addresses",
+          "value": false
+        },
+        {
+          "key": "yano.relay.connection.max-inbound-connections",
+          "value": 100
+        },
+        {
+          "key": "yano.relay.connection.max-connections-per-ip",
+          "value": 5
+        },
+        {
+          "key": "yano.relay.connection.source-port-reuse",
+          "value": true
+        },
+        {
+          "key": "yano.tx.mempool.max-txs",
+          "value": 10000
+        },
+        {
+          "key": "yano.tx.mempool.max-bytes",
+          "value": 134217728
+        },
+        {
+          "key": "yano.tx.mempool.max-utxo-index-entries",
+          "value": 100000
+        },
+        {
+          "key": "yano.tx.mempool.ttl-seconds",
+          "value": 10800
+        },
+        {
+          "key": "yano.tx.diffusion.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.tx.diffusion.limits.max-in-flight-txs-per-peer",
+          "value": 100
+        },
+        {
+          "key": "yano.tx.diffusion.limits.max-in-flight-bytes-per-peer",
+          "value": 1048576
+        },
+        {
+          "key": "yano.tx.diffusion.limits.peer-cooldown-ms",
+          "value": 60000
+        },
+        {
+          "key": "yano.app-chain.storage.path",
+          "value": "${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}"
+        },
+        {
+          "key": "yano.dns.cache",
+          "value": null
+        },
+        {
+          "key": "yano.server.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.server.port",
+          "value": 13337
+        },
+        {
+          "key": "yano.storage.rocksdb",
+          "value": true
+        },
+        {
+          "key": "yano.storage.path",
+          "value": "./chainstate"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/preprod/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/preprod/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/preprod/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/preprod/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/preprod/protocol-param.json"
+        },
+        {
+          "key": "yano.dev-mode",
+          "value": false
+        },
+        {
+          "key": "yano.account-state.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.account.stake-balance-index-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.epoch-boundary.reward-mode",
+          "value": "streaming"
+        },
+        {
+          "key": "yano.epoch-boundary.max-batch-operations",
+          "value": 10000
+        },
+        {
+          "key": "yano.epoch-boundary.max-batch-bytes",
+          "value": 4194304
+        },
+        {
+          "key": "yano.history.dir",
+          "value": "./history"
+        },
+        {
+          "key": "yano.history.archive.engine",
+          "value": "ducklake"
+        },
+        {
+          "key": "yano.history.archive.finality-blocks",
+          "value": "auto"
+        },
+        {
+          "key": "yano.history.archive.wait-warn-seconds",
+          "value": 30
+        },
+        {
+          "key": "yano.history.archive.stuck-operation-seconds",
+          "value": 300
+        },
+        {
+          "key": "yano.history.archive.ducklake.target-file-size",
+          "value": "4MB"
+        },
+        {
+          "key": "yano.history.archive.ducklake.row-group-size",
+          "value": 100000
+        },
+        {
+          "key": "yano.history.archive.ducklake.snapshot-retention-hours",
+          "value": 168
+        },
+        {
+          "key": "yano.history.archive.ducklake.cleanup-grace-hours",
+          "value": 24
+        },
+        {
+          "key": "yano.history.rollback.retention-blocks",
+          "value": "auto"
+        },
+        {
+          "key": "yano.history.duckdb.max-total-memory",
+          "value": "256MB"
+        },
+        {
+          "key": "yano.history.duckdb.max-concurrent-queries",
+          "value": 2
+        },
+        {
+          "key": "yano.history.duckdb.max-temp-directory-size",
+          "value": "2GB"
+        },
+        {
+          "key": "yano.history.duckdb.steady-state.memory-limit",
+          "value": "128MB"
+        },
+        {
+          "key": "yano.history.duckdb.steady-state.threads",
+          "value": 1
+        },
+        {
+          "key": "yano.history.duckdb.bulk-catch-up.memory-limit",
+          "value": "128MB"
+        },
+        {
+          "key": "yano.history.duckdb.bulk-catch-up.threads",
+          "value": 1
+        },
+        {
+          "key": "yano.history.duckdb.bulk-catch-up.max-concurrent-jobs",
+          "value": 1
+        },
+        {
+          "key": "yano.epoch-snapshot.amounts-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.adapot.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.rewards.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.epoch-params.tracking-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.governance.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.chain.block-body-prune-depth",
+          "value": 0
+        },
+        {
+          "key": "yano.chain.block-prune-batch-size",
+          "value": 500000
+        },
+        {
+          "key": "yano.chain.block-prune-interval-seconds",
+          "value": 300
+        },
+        {
+          "key": "yano.address-first-seen.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.scan.index.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.scan.max-concurrent",
+          "value": 2
+        },
+        {
+          "key": "yano.filters.utxo.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.filters.utxo.addresses",
+          "value": []
+        },
+        {
+          "key": "yano.filters.utxo.payment-credentials",
+          "value": []
+        },
+        {
+          "key": "yano.metrics.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.metrics.sample.rocksdb.seconds",
+          "value": 30
+        },
+        {
+          "key": "yano.validation.default-validator-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.validation.supplementary-rules-enabled",
+          "value": false
+        },
+        {
+          "key": "yano.utxo.rebuild-unmarked-from-genesis",
+          "value": false
+        },
+        {
+          "key": "yano.utxo.prune.schedule.seconds",
+          "value": 5
+        },
+        {
+          "key": "yano.utxo.metrics.lag.logSeconds",
+          "value": 10
+        },
+        {
+          "key": "yano.utxo.lag.failIfAbove",
+          "value": -1
+        },
+        {
+          "key": "yano.block-producer.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.block-producer.block-time-millis",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.lazy",
+          "value": false
+        },
+        {
+          "key": "yano.block-producer.genesis-timestamp",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.slot-length-millis",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.start-epoch",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.past-time-travel-mode",
+          "value": false
+        },
+        {
+          "key": "yano.block-producer.past-time-travel-slot-leader-mode",
+          "value": false
+        },
+        {
+          "key": "yano.block-producer.tx-evaluation",
+          "value": true
+        }
+      ]
+    },
+    {
+      "source": "app/src/main/resources/application.yml",
+      "profile": "devnet",
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "devnet"
+        },
+        {
+          "key": "yano.auto-sync-start",
+          "value": true
+        },
+        {
+          "key": "yano.dev-mode",
+          "value": true
+        },
+        {
+          "key": "yano.client.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 42
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/devnet/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": ""
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/devnet/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/devnet/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/devnet/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/devnet/protocol-param.json"
+        },
+        {
+          "key": "yano.account-state.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.history.projection.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.history.projection.sink",
+          "value": "ducklake"
+        },
+        {
+          "key": "yano.epoch-snapshot.amounts-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.adapot.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.rewards.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.epoch-params.tracking-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.governance.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.utxo.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.block-time-millis",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.lazy",
+          "value": false
+        },
+        {
+          "key": "yano.block-producer.genesis-timestamp",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.slot-length-millis",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.vrf-skey-file",
+          "value": "config/network/devnet/vrf.skey"
+        },
+        {
+          "key": "yano.block-producer.kes-skey-file",
+          "value": "config/network/devnet/kes.skey"
+        },
+        {
+          "key": "yano.block-producer.opcert-file",
+          "value": "config/network/devnet/opcert.cert"
+        },
+        {
+          "key": "yano.block-producer.past-time-travel-slot-leader-mode",
+          "value": false
+        }
+      ]
+    },
+    {
+      "source": "app/src/main/resources/application.yml",
+      "profile": "devnet-slotleader",
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "devnet"
+        },
+        {
+          "key": "yano.auto-sync-start",
+          "value": true
+        },
+        {
+          "key": "yano.dev-mode",
+          "value": true
+        },
+        {
+          "key": "yano.client.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 42
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/devnet/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": ""
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/devnet/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/devnet/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/devnet/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/devnet/protocol-param.json"
+        },
+        {
+          "key": "yano.account-state.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.epoch-snapshot.amounts-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.adapot.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.rewards.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.epoch-params.tracking-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.governance.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.utxo.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.slot-leader-mode",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.lazy",
+          "value": false
+        },
+        {
+          "key": "yano.block-producer.genesis-timestamp",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.slot-length-millis",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.start-epoch",
+          "value": 0
+        },
+        {
+          "key": "yano.block-producer.vrf-skey-file",
+          "value": "config/network/devnet/vrf.skey"
+        },
+        {
+          "key": "yano.block-producer.kes-skey-file",
+          "value": "config/network/devnet/kes.skey"
+        },
+        {
+          "key": "yano.block-producer.opcert-file",
+          "value": "config/network/devnet/opcert.cert"
+        },
+        {
+          "key": "yano.block-producer.past-time-travel-slot-leader-mode",
+          "value": false
+        }
+      ]
+    },
+    {
+      "source": "app/src/main/resources/application.yml",
+      "profile": "mainnet",
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "mainnet"
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        },
+        {
+          "key": "yano.upstream.validation.start.slot",
+          "value": 133660855
+        },
+        {
+          "key": "yano.upstream.validation.start.hash",
+          "value": "9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c"
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "backbone.cardano.iog.io"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 3001
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 764824073
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/mainnet/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/mainnet/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/mainnet/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/mainnet/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/mainnet/protocol-param.json"
+        }
+      ]
+    },
+    {
+      "source": "app/src/main/resources/application.yml",
+      "profile": "preview",
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "preview"
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        },
+        {
+          "key": "yano.upstream.validation.start.slot",
+          "value": 34905604
+        },
+        {
+          "key": "yano.upstream.validation.start.hash",
+          "value": "cbc88c5f633ace6671f6cbb54a0913e4d7c57697869e951bc032e093f6db5f46"
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "preview-node.play.dev.cardano.org"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 3001
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 2
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/preview/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "363498d1024f84bb39d3fa9593ce391483cb40d479b87233f868d6e57c3a400d"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/preview/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/preview/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/preview/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/preview/protocol-param.json"
+        }
+      ]
+    },
+    {
+      "source": "app/src/main/resources/application.yml",
+      "profile": "sanchonet",
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "sanchonet"
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "sanchonet-node.play.dev.cardano.org"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 3001
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 4
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/sanchonet/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "f94457ec45a0c6773057a529533cf7ccf746cb44dabd56ae970e1dbfb55bfdb2"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/sanchonet/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/sanchonet/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/sanchonet/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/sanchonet/protocol-param.json"
+        }
+      ]
+    },
+    {
+      "source": "app/src/main/resources/application.yml",
+      "profile": "test",
+      "values": [
+        {
+          "key": "yano.plugins.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.plugins.logging.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.auto-sync-start",
+          "value": false
+        },
+        {
+          "key": "yano.client.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.server.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.storage.rocksdb",
+          "value": false
+        },
+        {
+          "key": "yano.storage.path",
+          "value": "./chainstate-test"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-appchain.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.app-chain.storage.path",
+          "value": "${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}"
+        },
+        {
+          "key": "yano.app-chain.chains[0].chain-id",
+          "value": "orders-chain"
+        },
+        {
+          "key": "yano.app-chain.chains[0].signing-key",
+          "value": "<configure privately; see local demo profile for test-only identity>"
+        },
+        {
+          "key": "yano.app-chain.chains[0].members",
+          "value": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        },
+        {
+          "key": "yano.app-chain.chains[0].threshold",
+          "value": 1
+        },
+        {
+          "key": "yano.app-chain.chains[0].state-machine",
+          "value": "ordered-log"
+        },
+        {
+          "key": "yano.app-chain.chains[0].state.commitment-profile",
+          "value": "mpf-blake2b256-v1"
+        },
+        {
+          "key": "yano.app-chain.chains[0].state.format-fingerprint",
+          "value": "91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b"
+        },
+        {
+          "key": "yano.app-chain.chains[0].state.genesis-id",
+          "value": "c2b9c92a865dfa7c218a1a6e49f1dd88163372e40466009876458c01609d0d70"
+        },
+        {
+          "key": "yano.app-chain.chains[0].membership.mode",
+          "value": "governed"
+        },
+        {
+          "key": "yano.app-chain.chains[0].block.interval-ms",
+          "value": 1000
+        },
+        {
+          "key": "yano.app-chain.chains[0].sequencer.proposer",
+          "value": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-header-signature.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.upstream.validation.level",
+          "value": "header-signature"
+        },
+        {
+          "key": "yano.upstream.validation.body-level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.opcert-counter-mode",
+          "value": "none"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-mainnet.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "mainnet"
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "backbone.mainnet.cardanofoundation.org"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 3001
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 764824073
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/mainnet/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/mainnet/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/mainnet/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/mainnet/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/mainnet/protocol-param.json"
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-urls",
+          "value": [
+            "https://book.play.dev.cardano.org/environments/mainnet/peer-snapshot.json"
+          ]
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        },
+        {
+          "key": "yano.upstream.validation.start.slot",
+          "value": 133660855
+        },
+        {
+          "key": "yano.upstream.validation.start.hash",
+          "value": "9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-opcert-strict.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.upstream.validation.opcert-counter-mode",
+          "value": "strict"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-praos-ledger.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.upstream.validation.level",
+          "value": "praos-ledger"
+        },
+        {
+          "key": "yano.upstream.validation.body-level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.opcert-counter-mode",
+          "value": "compat"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-praos-lite.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.upstream.validation.level",
+          "value": "praos-lite"
+        },
+        {
+          "key": "yano.upstream.validation.body-level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.opcert-counter-mode",
+          "value": "none"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-preprod.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "preprod"
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "preprod-node.world.dev.cardano.org"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 30000
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 1
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/preprod/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/preprod/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/preprod/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/preprod/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/preprod/protocol-param.json"
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-urls",
+          "value": [
+            "https://book.play.dev.cardano.org/environments/preprod/peer-snapshot.json"
+          ]
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        },
+        {
+          "key": "yano.upstream.validation.start.slot",
+          "value": 69638426
+        },
+        {
+          "key": "yano.upstream.validation.start.hash",
+          "value": "ecde79b23e343becca15618fc26281ba1aaea2eb1b66ab8828d7a127f5dbc30f"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-preview.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "preview"
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "preview-node.play.dev.cardano.org"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 3001
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 2
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/preview/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "363498d1024f84bb39d3fa9593ce391483cb40d479b87233f868d6e57c3a400d"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/preview/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/preview/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/preview/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/preview/protocol-param.json"
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-urls",
+          "value": [
+            "https://book.play.dev.cardano.org/environments/preview/peer-snapshot.json"
+          ]
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        },
+        {
+          "key": "yano.upstream.validation.start.slot",
+          "value": 34905604
+        },
+        {
+          "key": "yano.upstream.validation.start.hash",
+          "value": "cbc88c5f633ace6671f6cbb54a0913e4d7c57697869e951bc032e093f6db5f46"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-projection.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.history.dir",
+          "value": "${YANO_HISTORY_DIR:./history}"
+        },
+        {
+          "key": "yano.history.projection.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.history.projection.sink",
+          "value": "${YANO_PROJECTION_SINK:ducklake}"
+        },
+        {
+          "key": "yano.history.projection.drain-interval-millis",
+          "value": "${YANO_PROJECTION_DRAIN_INTERVAL_MILLIS:250}"
+        },
+        {
+          "key": "yano.history.projection.maintenance.housekeeping-interval-minutes",
+          "value": "${YANO_PROJECTION_HOUSEKEEPING_INTERVAL_MINUTES:30}"
+        },
+        {
+          "key": "yano.history.projection.maintenance.housekeeping-budget-seconds",
+          "value": "${YANO_PROJECTION_HOUSEKEEPING_BUDGET_SECONDS:30}"
+        },
+        {
+          "key": "yano.history.projection.maintenance.compaction-interval-minutes",
+          "value": "${YANO_PROJECTION_COMPACTION_INTERVAL_MINUTES:360}"
+        },
+        {
+          "key": "yano.history.projection.maintenance.compaction-budget-seconds",
+          "value": "${YANO_PROJECTION_COMPACTION_BUDGET_SECONDS:300}"
+        },
+        {
+          "key": "yano.history.projection.maintenance.compaction-rewrite-bytes",
+          "value": "${YANO_PROJECTION_COMPACTION_REWRITE_BYTES:8589934592}"
+        },
+        {
+          "key": "yano.history.projection.sink-options.target-file-size-bytes",
+          "value": "${YANO_PROJECTION_TARGET_FILE_SIZE_BYTES:4194304}"
+        },
+        {
+          "key": "yano.history.projection.sink-options.snapshot-retention-hours",
+          "value": "${YANO_PROJECTION_SNAPSHOT_RETENTION_HOURS:168}"
+        },
+        {
+          "key": "yano.history.projection.sink-options.cleanup-grace-hours",
+          "value": "${YANO_PROJECTION_CLEANUP_GRACE_HOURS:24}"
+        },
+        {
+          "key": "yano.history.projection.disk.soft-bytes",
+          "value": "${YANO_PROJECTION_DISK_SOFT_BYTES:8589934592}"
+        },
+        {
+          "key": "yano.history.projection.disk.hard-bytes",
+          "value": "${YANO_PROJECTION_DISK_HARD_BYTES:34359738368}"
+        },
+        {
+          "key": "yano.history.projection.disk.low-water-bytes",
+          "value": "${YANO_PROJECTION_DISK_LOW_WATER_BYTES:4294967296}"
+        },
+        {
+          "key": "yano.history.projection.disk.free-space-reserve-bytes",
+          "value": "${YANO_PROJECTION_DISK_FREE_RESERVE_BYTES:17179869184}"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-relay.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.client.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.server.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.server.port",
+          "value": 13337
+        },
+        {
+          "key": "yano.relay.auto-discovery",
+          "value": true
+        },
+        {
+          "key": "yano.relay.advertised-host",
+          "value": "auto"
+        },
+        {
+          "key": "yano.relay.advertised-port",
+          "value": 0
+        },
+        {
+          "key": "yano.relay.allow-private-addresses",
+          "value": false
+        },
+        {
+          "key": "yano.relay.connection.max-inbound-connections",
+          "value": 100
+        },
+        {
+          "key": "yano.relay.connection.max-connections-per-ip",
+          "value": 5
+        },
+        {
+          "key": "yano.relay.connection.source-port-reuse",
+          "value": true
+        },
+        {
+          "key": "yano.upstream.mode",
+          "value": "p2p-relay"
+        },
+        {
+          "key": "yano.upstream.sync.bulk-source",
+          "value": "single-trusted"
+        },
+        {
+          "key": "yano.upstream.sync.fan-in-start",
+          "value": "near-tip"
+        },
+        {
+          "key": "yano.upstream.discovery.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.upstream.discovery.peer-sharing",
+          "value": true
+        },
+        {
+          "key": "yano.upstream.discovery.seeds",
+          "value": []
+        },
+        {
+          "key": "yano.upstream.discovery.topology-file",
+          "value": ""
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-limit",
+          "value": 64
+        },
+        {
+          "key": "yano.upstream.discovery.ledger-peers",
+          "value": false
+        },
+        {
+          "key": "yano.upstream.discovery.use-ledger-after-slot",
+          "value": -1
+        },
+        {
+          "key": "yano.upstream.discovery.allow-private-addresses",
+          "value": false
+        },
+        {
+          "key": "yano.upstream.selection.policy",
+          "value": "trusted-or-quorum-within-rollback-window"
+        },
+        {
+          "key": "yano.upstream.selection.quorum",
+          "value": 2
+        },
+        {
+          "key": "yano.upstream.selection.tie-break",
+          "value": "deterministic"
+        },
+        {
+          "key": "yano.upstream.governor.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.upstream.governor.targets.cold",
+          "value": 150
+        },
+        {
+          "key": "yano.upstream.governor.targets.warm",
+          "value": 8
+        },
+        {
+          "key": "yano.upstream.governor.targets.hot",
+          "value": 3
+        },
+        {
+          "key": "yano.upstream.governor.max-concurrent-dials",
+          "value": 4
+        },
+        {
+          "key": "yano.tx.diffusion.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.tx.diffusion.limits.max-in-flight-txs-per-peer",
+          "value": 100
+        },
+        {
+          "key": "yano.tx.diffusion.limits.max-in-flight-bytes-per-peer",
+          "value": 1048576
+        },
+        {
+          "key": "yano.tx.diffusion.limits.peer-cooldown-ms",
+          "value": 60000
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-sanchonet.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "sanchonet"
+        },
+        {
+          "key": "yano.remote.host",
+          "value": "sanchonet-node.play.dev.cardano.org"
+        },
+        {
+          "key": "yano.remote.port",
+          "value": 3001
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 4
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/sanchonet/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": "f94457ec45a0c6773057a529533cf7ccf746cb44dabd56ae970e1dbfb55bfdb2"
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/sanchonet/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/sanchonet/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/sanchonet/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/sanchonet/protocol-param.json"
+        },
+        {
+          "key": "yano.upstream.validation.start.mode",
+          "value": "era"
+        },
+        {
+          "key": "yano.upstream.validation.start.era",
+          "value": "conway"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-static-multi.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.upstream.mode",
+          "value": "static-multi"
+        },
+        {
+          "key": "yano.upstream.sync.bulk-source",
+          "value": "single-trusted"
+        },
+        {
+          "key": "yano.upstream.sync.fan-in-start",
+          "value": "near-tip"
+        },
+        {
+          "key": "yano.upstream.discovery.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.upstream.discovery.peer-sharing",
+          "value": false
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-urls",
+          "value": []
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-files",
+          "value": []
+        },
+        {
+          "key": "yano.upstream.discovery.seeds",
+          "value": []
+        },
+        {
+          "key": "yano.upstream.selection.policy",
+          "value": "trusted-or-quorum-within-rollback-window"
+        },
+        {
+          "key": "yano.upstream.selection.quorum",
+          "value": 2
+        },
+        {
+          "key": "yano.upstream.selection.tie-break",
+          "value": "deterministic"
+        },
+        {
+          "key": "yano.upstream.governor.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.upstream.governor.targets.cold",
+          "value": 32
+        },
+        {
+          "key": "yano.upstream.governor.targets.warm",
+          "value": 4
+        },
+        {
+          "key": "yano.upstream.governor.targets.hot",
+          "value": 3
+        },
+        {
+          "key": "yano.upstream.governor.max-concurrent-dials",
+          "value": 2
+        },
+        {
+          "key": "yano.tx.diffusion.enabled",
+          "value": true
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-structural-validation.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.upstream.validation.level",
+          "value": "structural"
+        },
+        {
+          "key": "yano.upstream.validation.body-level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.opcert-counter-mode",
+          "value": "none"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-trusted-peers.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.upstream.mode",
+          "value": "trusted-failover"
+        },
+        {
+          "key": "yano.upstream.sync.bulk-source",
+          "value": "single-trusted"
+        },
+        {
+          "key": "yano.upstream.sync.fan-in-start",
+          "value": "disabled"
+        },
+        {
+          "key": "yano.upstream.discovery.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.upstream.discovery.peer-sharing",
+          "value": false
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-urls",
+          "value": []
+        },
+        {
+          "key": "yano.upstream.discovery.peer-snapshot-files",
+          "value": []
+        },
+        {
+          "key": "yano.upstream.discovery.seeds",
+          "value": []
+        },
+        {
+          "key": "yano.upstream.governor.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.upstream.validation.level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.body-level",
+          "value": "none"
+        },
+        {
+          "key": "yano.upstream.validation.opcert-counter-mode",
+          "value": "none"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-wallet.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.scan.index.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.address-first-seen.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.chain.block-body-prune-depth",
+          "value": 0
+        },
+        {
+          "key": "yano.utxo.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.filters.utxo.enabled",
+          "value": false
+        }
+      ]
+    },
+    {
+      "source": "app/config/application.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "quarkus.http.port",
+          "value": 7070
+        },
+        {
+          "key": "yano.exit-on-epoch-calc-error",
+          "value": false
+        },
+        {
+          "key": "yano.epoch-boundary.reward-mode",
+          "value": "streaming"
+        },
+        {
+          "key": "yano.epoch-boundary.max-batch-operations",
+          "value": 10000
+        },
+        {
+          "key": "yano.epoch-boundary.max-batch-bytes",
+          "value": 4194304
+        }
+      ]
+    }
+  ],
+  "declaredKeys": [
+    "yano.account-state.enabled",
+    "yano.account-state.epoch-block-data-retention-lag",
+    "yano.account-state.snapshot-retention-epochs",
+    "yano.account.stake-balance-index-enabled",
+    "yano.adapot.enabled",
+    "yano.address-first-seen.enabled",
+    "yano.api-prefix",
+    "yano.app-chain.anchor.enabled",
+    "yano.app-chain.anchor.every-blocks",
+    "yano.app-chain.anchor.fallback-fee-lovelace",
+    "yano.app-chain.anchor.max-interval-minutes",
+    "yano.app-chain.anchor.metadata-label",
+    "yano.app-chain.anchor.mode",
+    "yano.app-chain.anchor.script.thread-policy",
+    "yano.app-chain.anchor.script.validator",
+    "yano.app-chain.anchor.signing-key",
+    "yano.app-chain.anchor.validity-slots",
+    "yano.app-chain.api.auth.enabled",
+    "yano.app-chain.api.keys",
+    "yano.app-chain.api.snapshot-admin-keys",
+    "yano.app-chain.block.interval-ms",
+    "yano.app-chain.block.max-bytes",
+    "yano.app-chain.block.max-messages",
+    "yano.app-chain.chain-id",
+    "yano.app-chain.chains",
+    "yano.app-chain.default-ttl-seconds",
+    "yano.app-chain.dx.release-catalog-digest",
+    "yano.app-chain.dx.resolved-config-digest",
+    "yano.app-chain.enabled",
+    "yano.app-chain.l1.stability-depth",
+    "yano.app-chain.max-message-bytes",
+    "yano.app-chain.max-ttl-seconds",
+    "yano.app-chain.members",
+    "yano.app-chain.message.enforce-sender-seq",
+    "yano.app-chain.peers",
+    "yano.app-chain.pool.max-messages",
+    "yano.app-chain.retention.enabled",
+    "yano.app-chain.retention.keep-blocks",
+    "yano.app-chain.sequencer.proposer",
+    "yano.app-chain.signing-key",
+    "yano.app-chain.state-machine",
+    "yano.app-chain.state.l1-proof-consumption-required",
+    "yano.app-chain.state.proof-pruning.enabled",
+    "yano.app-chain.state.proof-pruning.interval-seconds",
+    "yano.app-chain.state.proof-pruning.retain-heights",
+    "yano.app-chain.storage.path",
+    "yano.app-chain.threshold",
+    "yano.app-chain.transport.mode",
+    "yano.app-chain.validation.strict",
+    "yano.app-chain.webhooks",
+    "yano.auto-checkpoint-interval",
+    "yano.auto-sync-start",
+    "yano.block-producer.backfill-block-interval-slots",
+    "yano.block-producer.block-time-millis",
+    "yano.block-producer.enabled",
+    "yano.block-producer.genesis-timestamp",
+    "yano.block-producer.initial-epoch",
+    "yano.block-producer.initial-epoch-nonce",
+    "yano.block-producer.kes-skey-file",
+    "yano.block-producer.lazy",
+    "yano.block-producer.opcert-file",
+    "yano.block-producer.past-time-travel-mode",
+    "yano.block-producer.past-time-travel-slot-leader-mode",
+    "yano.block-producer.process-skipped-epochs",
+    "yano.block-producer.script-evaluator",
+    "yano.block-producer.slot-leader-mode",
+    "yano.block-producer.slot-length-millis",
+    "yano.block-producer.stake-data-provider-url",
+    "yano.block-producer.start-epoch",
+    "yano.block-producer.tx-evaluation",
+    "yano.block-producer.vrf-skey-file",
+    "yano.bodyFetch.maxBatchSize",
+    "yano.bodyFetch.realtimeFallbackPollMs",
+    "yano.bodyFetch.slowEpochTransitionWarnMs",
+    "yano.bootstrap.addresses",
+    "yano.bootstrap.block-number",
+    "yano.bootstrap.blockfrost.api-key",
+    "yano.bootstrap.blockfrost.base-url",
+    "yano.bootstrap.enabled",
+    "yano.bootstrap.koios.base-url",
+    "yano.bootstrap.provider",
+    "yano.bootstrap.utxos",
+    "yano.chain.block-body-prune-depth",
+    "yano.chain.block-prune-batch-size",
+    "yano.chain.block-prune-interval-seconds",
+    "yano.chainstate.recoveryHeaderScanBlocks",
+    "yano.client.enabled",
+    "yano.debug.rollback-to-epoch",
+    "yano.debug.rollback-to-slot",
+    "yano.dev-mode",
+    "yano.dns.cache.negative.ttl",
+    "yano.dns.cache.ttl",
+    "yano.epoch-boundary.max-batch-bytes",
+    "yano.epoch-boundary.max-batch-operations",
+    "yano.epoch-boundary.reward-mode",
+    "yano.epoch-params.tracking-enabled",
+    "yano.epoch-snapshot.amounts-enabled",
+    "yano.epoch-snapshot.balance-mode",
+    "yano.exit-on-epoch-calc-error",
+    "yano.filters.utxo.addresses",
+    "yano.filters.utxo.enabled",
+    "yano.filters.utxo.payment-credentials",
+    "yano.genesis.alonzo-genesis-file",
+    "yano.genesis.byron-genesis-file",
+    "yano.genesis.conway-genesis-file",
+    "yano.genesis.protocol-parameters-file",
+    "yano.genesis.shelley-genesis-file",
+    "yano.genesis.shelley-genesis-hash",
+    "yano.governance.enabled",
+    "yano.headerAppliedEvent.queueCapacity",
+    "yano.history.",
+    "yano.ledger-apply.max-queued-decoded-bytes",
+    "yano.ledger-apply.max-queued-items",
+    "yano.ledger-apply.reserved-control-slots",
+    "yano.mempool.admin.api-key",
+    "yano.mempool.admin.enabled",
+    "yano.metrics.enabled",
+    "yano.metrics.sample.rocksdb.seconds",
+    "yano.network",
+    "yano.pipeline.epochBoundaryFallbackWaitMs",
+    "yano.pipeline.headerContinuityValidationBlocks",
+    "yano.pipeline.nonRecoveringRollbackWaitMs",
+    "yano.pipeline.slowBodyCallbackWarnMs",
+    "yano.plugins.allow-list",
+    "yano.plugins.auto-register-annotated",
+    "yano.plugins.deny-list",
+    "yano.plugins.directory",
+    "yano.plugins.enabled",
+    "yano.plugins.logging.enabled",
+    "yano.relay.advertised-host",
+    "yano.relay.advertised-port",
+    "yano.relay.allow-private-addresses",
+    "yano.relay.auto-discovery",
+    "yano.relay.connection.max-connections-per-ip",
+    "yano.relay.connection.max-inbound-connections",
+    "yano.relay.connection.source-port-reuse",
+    "yano.remote.host",
+    "yano.remote.port",
+    "yano.remote.protocol-magic",
+    "yano.resource-profile",
+    "yano.rewards.enabled",
+    "yano.rocksdb.atomic_flush",
+    "yano.rocksdb.block-cache-bytes",
+    "yano.rocksdb.max-background-jobs",
+    "yano.rocksdb.max-open-files",
+    "yano.rocksdb.pipelined_write",
+    "yano.rocksdb.target-file-size-bytes",
+    "yano.rocksdb.tuning.enabled",
+    "yano.rocksdb.write-buffer-allow-stall",
+    "yano.rocksdb.write-buffer-bytes",
+    "yano.rollback-retention-epochs",
+    "yano.scan.index.enabled",
+    "yano.server.enabled",
+    "yano.server.port",
+    "yano.storage.path",
+    "yano.storage.rocksdb",
+    "yano.tx.diffusion.enabled",
+    "yano.tx.diffusion.limits.max-in-flight-bytes-per-peer",
+    "yano.tx.diffusion.limits.max-in-flight-txs-per-peer",
+    "yano.tx.diffusion.limits.peer-cooldown-ms",
+    "yano.tx.diffusion.mode",
+    "yano.tx.mempool.max-bytes",
+    "yano.tx.mempool.max-txs",
+    "yano.tx.mempool.max-utxo-index-entries",
+    "yano.tx.mempool.ttl-seconds",
+    "yano.upstream.discovery.allow-private-addresses",
+    "yano.upstream.discovery.allowlist",
+    "yano.upstream.discovery.denylist",
+    "yano.upstream.discovery.enabled",
+    "yano.upstream.discovery.ledger-peers",
+    "yano.upstream.discovery.peer-sharing",
+    "yano.upstream.discovery.peer-snapshot-files",
+    "yano.upstream.discovery.peer-snapshot-limit",
+    "yano.upstream.discovery.peer-snapshot-urls",
+    "yano.upstream.discovery.seeds",
+    "yano.upstream.discovery.topology-file",
+    "yano.upstream.discovery.use-ledger-after-slot",
+    "yano.upstream.failover.cooldown-ms",
+    "yano.upstream.failover.max-failures-before-cooldown",
+    "yano.upstream.governor.enabled",
+    "yano.upstream.governor.max-concurrent-dials",
+    "yano.upstream.governor.targets.cold",
+    "yano.upstream.governor.targets.hot",
+    "yano.upstream.governor.targets.warm",
+    "yano.upstream.mode",
+    "yano.upstream.peers",
+    "yano.upstream.selection.policy",
+    "yano.upstream.selection.quorum",
+    "yano.upstream.selection.require-body-before-adoption",
+    "yano.upstream.selection.rollback-window-slots",
+    "yano.upstream.selection.tie-break",
+    "yano.upstream.selection.trust-policy",
+    "yano.upstream.sync.bulk-source",
+    "yano.upstream.sync.fan-in-start",
+    "yano.upstream.tx.forwarding",
+    "yano.upstream.validation.body-level",
+    "yano.upstream.validation.level",
+    "yano.upstream.validation.opcert-counter-mode",
+    "yano.upstream.validation.start.era",
+    "yano.upstream.validation.start.hash",
+    "yano.upstream.validation.start.mode",
+    "yano.upstream.validation.start.slot",
+    "yano.utxo.applyAsync",
+    "yano.utxo.delta.selfContained",
+    "yano.utxo.enabled",
+    "yano.utxo.index-contributors",
+    "yano.utxo.index.address_hash",
+    "yano.utxo.index.payment_credential",
+    "yano.utxo.indexingStrategy",
+    "yano.utxo.lag.failIfAbove",
+    "yano.utxo.metrics.lag.logSeconds",
+    "yano.utxo.prune.schedule.seconds",
+    "yano.utxo.pruneBatchSize",
+    "yano.utxo.pruneDepth",
+    "yano.utxo.rebuild-unmarked-from-genesis",
+    "yano.utxo.rollbackWindow",
+    "yano.validation.default-validator-enabled",
+    "yano.validation.supplementary-rules-enabled"
+  ]
+}

@@ -1,0 +1,1296 @@
+{
+  "sourceRevision": "6e277757f7567cf35e45898d897f18fbeee37bd3",
+  "version": "0.1.0-pre15-dev1",
+  "apiPrefix": "/api/v1",
+  "note": "Static literal JAX-RS annotation inventory. Not OpenAPI; excludes generated/dynamic plugin routes and does not encode schemas, authentication, feature gates, or availability. Obtain /q/openapi?format=json from your actual artifact.",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}",
+      "handler": "getAccount",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/delegations",
+      "handler": "getDelegationHistory",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/mirs",
+      "handler": "getMirs",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/registrations",
+      "handler": "getRegistrationHistory",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/rewards",
+      "handler": "getRewards",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/stake",
+      "handler": "getCurrentStake",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/stake/{epoch}",
+      "handler": "getStakeByEpoch",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/transactions",
+      "handler": "getAccountTransactions",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/{stakeAddress}/withdrawals",
+      "handler": "getWithdrawals",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/delegations",
+      "handler": "listDelegations",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/drep-delegations",
+      "handler": "listDRepDelegations",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/pool-retirements",
+      "handler": "listPoolRetirements",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/pools",
+      "handler": "listPools",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/accounts/registrations",
+      "handler": "listRegistrations",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/AccountStateResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/addresses/{address}",
+      "handler": "getAddressSummary",
+      "source": "app/src/main/java/org/yanoproject/app/api/addresses/AddressResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/addresses/{address}/first-seen",
+      "handler": "getFirstSeen",
+      "source": "app/src/main/java/org/yanoproject/app/api/addresses/AddressResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/addresses/{address}/transactions",
+      "handler": "getAddressTransactions",
+      "source": "app/src/main/java/org/yanoproject/app/api/addresses/AddressResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/addresses/{address}/utxos",
+      "handler": "getUtxosByAddress",
+      "source": "app/src/main/java/org/yanoproject/app/api/utxos/UtxoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/addresses/{address}/utxos/{asset}",
+      "handler": "getUtxosByAddressAndAsset",
+      "source": "app/src/main/java/org/yanoproject/app/api/utxos/UtxoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/mempool/transactions/{txHash}",
+      "handler": "evict",
+      "source": "app/src/main/java/org/yanoproject/app/api/tx/MempoolAdminResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/adapot-chain",
+      "handler": "getAdaPotChain",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/adapot/{epoch}",
+      "handler": "getAdaPot",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/deregistered-accounts/{epoch}",
+      "handler": "getDeregisteredAccounts",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/epoch-block-counts/{epoch}",
+      "handler": "getEpochBlockCounts",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/epoch-fees/{epoch}",
+      "handler": "getEpochFees",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/epoch-snapshot/{epoch}",
+      "handler": "getEpochSnapshot",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/pool-params/{poolHash}",
+      "handler": "getPoolParams",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/pool-params/{poolHash}/epoch/{epoch}",
+      "handler": "getPoolParamsAtEpoch",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/retired-pools/{epoch}",
+      "handler": "getRetiredPools",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/reward-inputs/{epoch}",
+      "handler": "getRewardInputs",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/utxo-balance/{credHash}",
+      "handler": "getUtxoBalance",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/anchor/bootstrap",
+      "handler": "bootstrapScriptAnchor",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/anchor/bootstrap",
+      "handler": "bootstrapScriptAnchor",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/drain-pool",
+      "handler": "drainPool",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/drain-pool",
+      "handler": "drainPool",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/force-anchor",
+      "handler": "forceAnchor",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/force-anchor",
+      "handler": "forceAnchor",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/admin/members",
+      "handler": "listMembers",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/members/add",
+      "handler": "addMember",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/members/remove",
+      "handler": "removeMember",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/members/reset",
+      "handler": "resetMembers",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/pause",
+      "handler": "pause",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/pause",
+      "handler": "pause",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/resume",
+      "handler": "resume",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/resume",
+      "handler": "resume",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/snapshots/{series}/{sequence}/{operation:archive|restore|evict}",
+      "handler": "snapshotAdmin",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/admin/snapshots/jobs",
+      "handler": "snapshotJobs",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/admin/snapshots/jobs/{jobId}",
+      "handler": "snapshotJob",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/threshold",
+      "handler": "setThreshold",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/anchor/commitment",
+      "handler": "latestAnchorCommitment",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/anchor/commitment",
+      "handler": "latestAnchorCommitment",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/blocks",
+      "handler": "blocks",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/blocks",
+      "handler": "blocks",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/blocks/{height}",
+      "handler": "block",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/blocks/{height}",
+      "handler": "block",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/chains",
+      "handler": "chains",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects",
+      "handler": "effects",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects",
+      "handler": "effects",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}",
+      "handler": "effect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}",
+      "handler": "effect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/cancel",
+      "handler": "cancelEffect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/cancel",
+      "handler": "cancelEffect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/proof",
+      "handler": "effectProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/proof",
+      "handler": "effectProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/report",
+      "handler": "reportEffect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/report",
+      "handler": "reportEffect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/requeue",
+      "handler": "requeueEffect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/{height}/{ordinal}/requeue",
+      "handler": "requeueEffect",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/claim",
+      "handler": "claimEffects",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/effects/claim",
+      "handler": "claimEffects",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects/stats",
+      "handler": "effectStats",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/effects/stats",
+      "handler": "effectStats",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/evidence/{messageIdHex}",
+      "handler": "evidence",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/evidence/{messageIdHex}",
+      "handler": "evidence",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/identity",
+      "handler": "identity",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages",
+      "handler": "messages",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages",
+      "handler": "messages",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/messages",
+      "handler": "submit",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/messages",
+      "handler": "submit",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/{messageIdHex}",
+      "handler": "messageById",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/{messageIdHex}",
+      "handler": "messageById",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/{messageIdHex}/proof",
+      "handler": "messageProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/{messageIdHex}/proof",
+      "handler": "messageProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/{messageIdHex}/proof-package",
+      "handler": "messageProofPackage",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/{messageIdHex}/proof-package",
+      "handler": "messageProofPackage",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/by-sender/{senderHex}",
+      "handler": "messagesBySender",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/by-sender/{senderHex}",
+      "handler": "messagesBySender",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/by-topic/{topic}",
+      "handler": "messagesByTopic",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/messages/by-topic/{topic}",
+      "handler": "messagesByTopic",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/observations/reports",
+      "handler": "observationReport",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/observations/wake",
+      "handler": "observationWake",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/proof-subjects",
+      "handler": "proofSubjects",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/proof-subjects/{subjectId}/package",
+      "handler": "typedProofPackage",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/proof-subjects/{subjectId}/proof",
+      "handler": "typedProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/proof/verify",
+      "handler": "verifyProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/proof/verify",
+      "handler": "verifyProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/query/{path: .+}",
+      "handler": "query",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/snapshot",
+      "handler": "snapshot",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/snapshot",
+      "handler": "snapshot",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/snapshots",
+      "handler": "snapshots",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/snapshots/{series}/{sequence}",
+      "handler": "snapshotDescriptor",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/snapshots/{series}/{sequence}/proof",
+      "handler": "snapshotProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/snapshots/proof/verify",
+      "handler": "verifySnapshotProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/snapshots/status",
+      "handler": "snapshotStatus",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/entry/{keyHex}",
+      "handler": "stateEntry",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/entry/{keyHex}",
+      "handler": "stateEntry",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/identity",
+      "handler": "stateIdentity",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/identity",
+      "handler": "stateIdentity",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/integrity",
+      "handler": "stateIntegrity",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/integrity",
+      "handler": "stateIntegrity",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/oldest-provable",
+      "handler": "oldestProvableHeight",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/oldest-provable",
+      "handler": "oldestProvableHeight",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/proof/{keyHex}",
+      "handler": "stateProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/state/proof/{keyHex}",
+      "handler": "stateProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/status",
+      "handler": "status",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/status",
+      "handler": "status",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/stream",
+      "handler": "stream",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/stream",
+      "handler": "stream",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/tip",
+      "handler": "tip",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/tip",
+      "handler": "tip",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/blocks/{hashOrNumber}",
+      "handler": "getBlock",
+      "source": "app/src/main/java/org/yanoproject/app/api/blocks/BlockResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/blocks/latest",
+      "handler": "getLatestBlock",
+      "source": "app/src/main/java/org/yanoproject/app/api/blocks/BlockResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/credentials/{paymentCredential}/utxos",
+      "handler": "getUtxosByPaymentCredential",
+      "source": "app/src/main/java/org/yanoproject/app/api/utxos/UtxoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/devnet/epochs/catch-up",
+      "handler": "catchUpToWallClock",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/devnet/epochs/shift",
+      "handler": "shiftEpochs",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/devnet/fund",
+      "handler": "fundAddress",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/devnet/genesis/download",
+      "handler": "downloadGenesis",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/devnet/restore/{name}",
+      "handler": "restoreDevnetSnapshot",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/devnet/rollback",
+      "handler": "rollback",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/devnet/snapshot",
+      "handler": "createDevnetSnapshot",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/devnet/snapshot/{name}",
+      "handler": "deleteDevnetSnapshot",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/devnet/snapshots",
+      "handler": "listDevnetSnapshots",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/devnet/time/advance",
+      "handler": "advanceTime",
+      "source": "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/{number}/adapot",
+      "handler": "getAdaPot",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/{number}/parameters",
+      "handler": "getParametersByEpoch",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/{number}/stake/pool/{poolId}",
+      "handler": "getPoolStake",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/{number}/stake/total",
+      "handler": "getTotalStake",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/{number}/stakes/{poolId}",
+      "handler": "getPoolStakeDelegators",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/adapots",
+      "handler": "listAdaPots",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/latest",
+      "handler": "getLatestEpoch",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/latest/adapot",
+      "handler": "getLatestAdaPot",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/latest/parameters",
+      "handler": "getLatestParameters",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/epochs/latest/stake/total",
+      "handler": "getLatestTotalStake",
+      "source": "app/src/main/java/org/yanoproject/app/api/epochs/EpochResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events",
+      "handler": "stream",
+      "source": "app/src/main/java/org/yanoproject/app/api/events/EventsResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/genesis",
+      "handler": "getGenesis",
+      "source": "app/src/main/java/org/yanoproject/app/api/genesis/GenesisResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/governance/dreps",
+      "handler": "listDReps",
+      "source": "app/src/main/java/org/yanoproject/app/api/governance/GovernanceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/governance/dreps/{drepId}",
+      "handler": "getDRep",
+      "source": "app/src/main/java/org/yanoproject/app/api/governance/GovernanceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/governance/dreps/{drepId}/distribution",
+      "handler": "getCurrentDRepDistribution",
+      "source": "app/src/main/java/org/yanoproject/app/api/governance/GovernanceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/governance/dreps/{drepId}/distribution/{epoch}",
+      "handler": "getDRepDistribution",
+      "source": "app/src/main/java/org/yanoproject/app/api/governance/GovernanceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/governance/proposals",
+      "handler": "listProposals",
+      "source": "app/src/main/java/org/yanoproject/app/api/governance/GovernanceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/governance/proposals/{txHash}/{certIndex}",
+      "handler": "getProposal",
+      "source": "app/src/main/java/org/yanoproject/app/api/governance/GovernanceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/governance/proposals/{txHash}/{certIndex}/votes",
+      "handler": "getProposalVotes",
+      "source": "app/src/main/java/org/yanoproject/app/api/governance/GovernanceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/history/coverage",
+      "handler": "coverage",
+      "source": "app/src/main/java/org/yanoproject/app/api/history/HistoryResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/history/coverage/{dataset}/resume",
+      "handler": "resume",
+      "source": "app/src/main/java/org/yanoproject/app/api/history/HistoryResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/history/coverage/legacy-staging-failure/acknowledge",
+      "handler": "acknowledgeLegacyStagingFailure",
+      "source": "app/src/main/java/org/yanoproject/app/api/history/HistoryResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/history/watermark",
+      "handler": "watermark",
+      "source": "app/src/main/java/org/yanoproject/app/api/history/HistoryResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/network",
+      "handler": "getNetwork",
+      "source": "app/src/main/java/org/yanoproject/app/api/network/NetworkResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/node/config",
+      "handler": "getConfig",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/node/epoch-calc-status",
+      "handler": "getEpochCalcStatus",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/node/epoch-nonce",
+      "handler": "getCurrentEpochNonce",
+      "source": "app/src/main/java/org/yanoproject/app/api/nonce/EpochNonceResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/node/peers",
+      "handler": "getPeers",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/node/protocol-params",
+      "handler": "getProtocolParameters",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/node/recover",
+      "handler": "recoverChain",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/node/start",
+      "handler": "start",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/node/status",
+      "handler": "getStatus",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/node/stop",
+      "handler": "stop",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/node/tip",
+      "handler": "getLocalTip",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/node/tx/submit",
+      "handler": "submitTransaction",
+      "source": "app/src/main/java/org/yanoproject/app/YanoResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/plugin-operations",
+      "handler": "summary",
+      "source": "app/src/main/java/org/yanoproject/app/api/plugin/PluginOperationsResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/plugin-operations/bundles",
+      "handler": "bundles",
+      "source": "app/src/main/java/org/yanoproject/app/api/plugin/PluginOperationsResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/plugin-operations/bundles/{bundleId}",
+      "handler": "bundle",
+      "source": "app/src/main/java/org/yanoproject/app/api/plugin/PluginOperationsResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/plugins/{bundleId}/{path: .+}",
+      "handler": "get",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/PluginDomainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/plugins/{bundleId}/{path: .+}",
+      "handler": "post",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/PluginDomainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/scan",
+      "handler": "scan",
+      "source": "app/src/main/java/org/yanoproject/app/api/wallet/WalletScanResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/scripts/{script_hash}/cbor",
+      "handler": "getScriptCbor",
+      "source": "app/src/main/java/org/yanoproject/app/api/scripts/ScriptResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/status",
+      "handler": "status",
+      "source": "app/src/main/java/org/yanoproject/app/api/status/StatusResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tx/submit",
+      "handler": "submitCbor",
+      "source": "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tx/submit",
+      "handler": "submitHex",
+      "source": "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/txs/{txHash}",
+      "handler": "getTxInfo",
+      "source": "app/src/main/java/org/yanoproject/app/api/tx/TransactionResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/txs/{txHash}/status",
+      "handler": "getTxStatus",
+      "source": "app/src/main/java/org/yanoproject/app/api/tx/TransactionResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/txs/{txHash}/utxos",
+      "handler": "getTxUtxos",
+      "source": "app/src/main/java/org/yanoproject/app/api/tx/TransactionResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/utils/txs/evaluate",
+      "handler": "evaluateCbor",
+      "source": "app/src/main/java/org/yanoproject/app/api/utils/EvaluationResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/utils/txs/evaluate",
+      "handler": "evaluateHex",
+      "source": "app/src/main/java/org/yanoproject/app/api/utils/EvaluationResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/utxos/{txHash}/{index}",
+      "handler": "getUtxo",
+      "source": "app/src/main/java/org/yanoproject/app/api/utxos/UtxoResource.java",
+      "hidden": false
+    }
+  ]
+}

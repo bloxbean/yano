@@ -1,0 +1,58 @@
+# Yano
+
+> A pre-release Cardano data node in Java: query chain state, test on local devnets, embed the runtime, and host app chains.
+
+Java 25. Maven group org.yanoproject. Built-in machine: ordered-log. Additional stock extensions: Yano X. No claim of complete production consensus validation.
+
+## Machine-readable resources
+
+- [Full docs](https://getyano.dev/llms-full.txt)
+- [Agent instructions](https://getyano.dev/ai/agent-instructions.md)
+- [Build manifest](https://getyano.dev/ai/manifest.json)
+- [Configuration](https://getyano.dev/ai/configuration.json)
+- [Route inventory](https://getyano.dev/ai/routes.json)
+
+## Guides
+
+- [Build with AI](https://getyano.dev/ai/pages/ai/overview.md): Give coding agents compact, accurate, versioned Yano context.
+- [Consensus & chain configuration](https://getyano.dev/ai/pages/app-chains/consensus.md): Member consensus, execution, commitments, and anchoring.
+- [State machines & extensions](https://getyano.dev/ai/pages/app-chains/extensions.md): Extend Yano through deterministic state machines and public plugin contracts.
+- [Certified observations](https://getyano.dev/ai/pages/app-chains/observations.md): Understand the preview observation framework and its trust model.
+- [Ordered log in depth](https://getyano.dev/ai/pages/app-chains/ordered-log.md): Record events, query positions, and verify ordered-log state.
+- [What is an app chain?](https://getyano.dev/ai/pages/app-chains/overview.md): Understand application ledgers, member finality, proofs, and Cardano anchoring.
+- [Finality, proofs & L1 anchors](https://getyano.dev/ai/pages/app-chains/proofs.md): Distinguish message inclusion, state proofs, certificates, and Cardano confirmation.
+- [Your first app chain](https://getyano.dev/ai/pages/app-chains/quickstart.md): Start the built-in ordered log and submit your first event.
+- [Building & testing](https://getyano.dev/ai/pages/contribute/build-and-test.md): Run the build tiers and packaging checks.
+- [Build from source](https://getyano.dev/ai/pages/contribute/build-from-source.md): Optional source builds for contributors and advanced users.
+- [Contribute to Yano](https://getyano.dev/ai/pages/contribute/guide.md): Build, test, and improve Yano through its public modules and contracts.
+- [App-chain testkit](https://getyano.dev/ai/pages/develop/app-chain-testkit.md): Test your state machine with an embedded cluster of Yano members.
+- [Build with any SDK](https://getyano.dev/ai/pages/develop/blockfrost.md): Connect your preferred Cardano SDK to Yano's Blockfrost-compatible transaction APIs.
+- [Cardano Client Lib adapter](https://getyano.dev/ai/pages/develop/ccl.md): Use an embedded CCL BackendService in integration tests.
+- [Yano in use](https://getyano.dev/ai/pages/develop/devkit.md): Use Yano as part of a complete local Cardano development environment.
+- [Embed Yano in Java](https://getyano.dev/ai/pages/develop/embed.md): Use public node roles and the runtime assembly API in your application.
+- [Java testkit](https://getyano.dev/ai/pages/develop/java-testkit.md): Run isolated Cardano devnets in JUnit and plain Java.
+- [JavaScript & TypeScript testkit](https://getyano.dev/ai/pages/develop/javascript-testkit.md): Manage a native devnet process from JavaScript tests.
+- [Snapshots, rollback & time](https://getyano.dev/ai/pages/develop/time-travel.md): Make local Cardano history reproducible in development and tests.
+- [Query and submit transactions](https://getyano.dev/ai/pages/develop/transactions.md): Use the REST API with your existing Cardano transaction library.
+- [Historical archive](https://getyano.dev/ai/pages/node/history.md): Enable Yano's DuckLake archive and query its history with DuckDB.
+- [Ledger state and storage](https://getyano.dev/ai/pages/node/ledger.md): Understand local state, rollback, filtering, pruning, and partial bootstrap.
+- [Mempool-aware UTxOs](https://getyano.dev/ai/pages/node/mempool.md): Understand unconfirmed transactions and spendable-output views.
+- [Connect to Cardano](https://getyano.dev/ai/pages/node/networks.md): Configure public-network profiles and upstream peers.
+- [Upstream peers and validation](https://getyano.dev/ai/pages/node/upstream.md): Choose peer selection and inspect validation without overstating trust.
+- [Wallet discovery & scans](https://getyano.dev/ai/pages/node/wallet-indexes.md): Coverage-aware first-seen lookup and streaming wallet scans.
+- [Console & observability](https://getyano.dev/ai/pages/operate/console.md): Explore the embedded console and persistent metrics.
+- [Mempool administration](https://getyano.dev/ai/pages/operate/mempool.md): Configure and use privileged local mempool eviction.
+- [Plugin operations](https://getyano.dev/ai/pages/operate/plugins.md): Validate, install, secure, and observe JVM plugins.
+- [Troubleshooting](https://getyano.dev/ai/pages/operate/troubleshooting.md): Diagnose startup, synchronization, unavailable data, and app-chain progress.
+- [Versions & upgrades](https://getyano.dev/ai/pages/operate/upgrades.md): Keep source, artifacts, storage, and plugins compatible.
+- [Account state & rollback](https://getyano.dev/ai/pages/reference/account-state.md): Account state, rewards, governance, and rollback behavior.
+- [Configuration catalog](https://getyano.dev/ai/pages/reference/configuration-catalog.md): Active packaged configuration values and declared property keys, generated from source.
+- [Configuration guide](https://getyano.dev/ai/pages/reference/configuration.md): Understand configuration layers, defaults, profiles, and build-time settings.
+- [HTTP API](https://getyano.dev/ai/pages/reference/http-api.md): Discover release-matched OpenAPI schemas and the main API groups.
+- [JavaScript testkit reference](https://getyano.dev/ai/pages/reference/javascript.md): Lifecycle, helper APIs, and native process options for JavaScript.
+- [Plugin query & domain APIs](https://getyano.dev/ai/pages/reference/plugin-contract.md): Implement committed queries and bounded domain APIs.
+- [Release migration details](https://getyano.dev/ai/pages/reference/upgrading.md): Storage and behavior changes across preview versions.
+- [Capability guide](https://getyano.dev/ai/pages/start/capabilities.md): See which Yano features fit your runtime and workflow.
+- [Download & install Yano](https://getyano.dev/ai/pages/start/installation.md): Choose and run a JVM or platform-specific Yano release.
+- [What is Yano?](https://getyano.dev/ai/pages/start/overview.md): Understand Yano, choose a starting point, and build your first Cardano workflow.
+- [Your first local node](https://getyano.dev/ai/pages/start/quickstart.md): Download Yano and start a local Cardano development network.
