@@ -125,6 +125,7 @@
   ],
   "node/history": [
     "archive-modules/README.md",
+    "docs/archive/DUCKLAKE_PROJECTION_SCHEMA.md",
     "app/config/application-projection.yml",
     "app/config/application-wallet.yml"
   ],
