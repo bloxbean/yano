@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630"><rect width="1200" height="630" fill="#0b100d"/><g fill="none" stroke="#344b2d"><circle cx="990" cy="340" r="260"/><circle cx="990" cy="340" r="180"/><circle cx="990" cy="340" r="100"/></g><svg xmlns="http://www.w3.org/2000/svg" viewBox="90 70 240 240" x="70" y="55" width="60" height="60">
+    <defs>
+      <linearGradient id="t2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ddffc1"></stop><stop offset="100%" stop-color="#b9f57d"></stop></linearGradient>
+      <linearGradient id="b2" x1="0" y1="0" x2="0.5" y2="1"><stop offset="0%" stop-color="#91cd5e"></stop><stop offset="100%" stop-color="#4f8b49"></stop></linearGradient>
+      <linearGradient id="r2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#4f8b49"></stop><stop offset="100%" stop-color="#d5f5a6"></stop></linearGradient>
+    </defs>
+    <g transform="translate(90 90) scale(1.05)">
+      <path d="M 110 30 L 200 90 L 130 110 L 110 80 Z" fill="url(#t2)"></path>
+      <path d="M 110 30 L 30 100 L 90 100 L 110 80 Z" fill="url(#t2)" opacity="0.85"></path>
+      <path d="M 110 80 L 130 110 L 90 160 L 70 130 Z" fill="url(#b2)"></path>
+      <path d="M 130 110 L 200 90 L 150 150 Z" fill="url(#r2)" opacity="0.95"></path>
+      <path d="M 110 30 L 110 80 L 90 160" stroke="rgba(255,255,255,0.55)" stroke-width="2.5" fill="none"></path>
+    </g>
+  </svg><text x="135" y="102" font-family="sans-serif" font-size="40" font-weight="700" fill="#f2f5ef">yano</text><text x="70" y="245" font-family="sans-serif" font-size="74" font-weight="600" fill="#f2f5ef">Your foundation</text><text x="70" y="335" font-family="sans-serif" font-size="74" font-weight="600" fill="#f2f5ef">for building on</text><text x="70" y="425" font-family="sans-serif" font-size="74" font-weight="600" fill="#b9f57d">Cardano.</text><text x="70" y="540" font-family="sans-serif" font-size="22" fill="#9da99f">DATA NODE   /   DEVNET &amp; TESTKIT   /   APP CHAINS</text><text x="990" y="570" font-family="sans-serif" font-size="20" fill="#b9f57d">getyano.dev</text></svg>

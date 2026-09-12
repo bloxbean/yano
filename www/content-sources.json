@@ -1,0 +1,162 @@
+{
+  "develop/java-testkit": [
+    "testkit/README.md"
+  ],
+  "develop/ccl": [
+    "testkit-ccl/README.md"
+  ],
+  "reference/javascript": [
+    "npm/yano-testkit/JS_USER_GUIDE.md"
+  ],
+  "operate/plugins": [
+    "docs/PLUGIN_OPERATIONS.md"
+  ],
+  "reference/plugin-contract": [
+    "docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md"
+  ],
+  "reference/account-state": [
+    "docs/ACCOUNT_STATE_AND_ROLLBACK.md"
+  ],
+  "reference/upgrading": [
+    "docs/UPGRADING.md"
+  ],
+  "contribute/build-and-test": [
+    "docs/BUILD_AND_TEST.md"
+  ],
+  "node/wallet-indexes": [
+    "docs/wallet-indexes.md"
+  ],
+  "node/mempool": [
+    "docs/mempool-utxos.md"
+  ],
+  "operate/mempool": [
+    "docs/mempool-administration.md"
+  ],
+  "app-chains/ordered-log": [
+    "docs/appchain/state-machines/ordered-log.md"
+  ],
+  "app-chains/consensus": [
+    "docs/APP_CHAIN_CONSENSUS_GUIDE.md"
+  ],
+  "operate/console": [
+    "docs/console-ui.md"
+  ],
+  "develop/devkit": [
+    "README.md",
+    "https://docs.uverify.io/sandbox",
+    "https://uverify.io/blog/sandbox-yano-yaci-store"
+  ],
+  "develop/javascript-testkit": [
+    "npm/yano-testkit/README.md",
+    "npm/yano-testkit/src/index.js"
+  ],
+  "develop/embed": [
+    "devnet-toolkit/README.md",
+    "runtime/src/main/java/org/yanoproject/runtime/assembly/YanoAssembly.java"
+  ],
+  "develop/time-travel": [
+    "testkit/README.md",
+    "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java"
+  ],
+  "develop/app-chain-testkit": [
+    "appchain/appchain-testkit/README.md"
+  ],
+  "develop/transactions": [
+    "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
+    "app/bin/yano.sh"
+  ],
+  "app-chains/overview": [
+    "appchain/README.md",
+    "docs/appchain/state-machines/ordered-log.md"
+  ],
+  "app-chains/extensions": [
+    "appchain/README.md",
+    "docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md"
+  ],
+  "app-chains/proofs": [
+    "docs/appchain/state-machines/ordered-log.md",
+    "docs/APP_CHAIN_CONSENSUS_GUIDE.md",
+    "docs/console-ui.md"
+  ],
+  "app-chains/quickstart": [
+    "app/config/application-appchain.yml",
+    "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java"
+  ],
+  "app-chains/observations": [
+    "docs/appchain/observations.md"
+  ],
+  "start/overview": [
+    "README.md",
+    "app/src/main/resources/application.yml"
+  ],
+  "start/quickstart": [
+    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12",
+    "app/bin/yano.sh"
+  ],
+  "start/installation": [
+    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12",
+    "app/bin/yano.sh"
+  ],
+  "operate/troubleshooting": [
+    "README.md",
+    "app/src/main/resources/application.yml"
+  ],
+  "operate/upgrades": [
+    "docs/UPGRADING.md",
+    "docs/wallet-indexes.md",
+    "gradle.properties"
+  ],
+  "ai/overview": [
+    "www/scripts/generate.mjs"
+  ],
+  "contribute/guide": [
+    "settings.gradle",
+    "AGENTS.md",
+    "docs/BUILD_AND_TEST.md"
+  ],
+  "node/upstream": [
+    "app/src/main/resources/application.yml",
+    "core-api/src/main/java/org/yanoproject/api/config/YanoPropertyKeys.java"
+  ],
+  "node/networks": [
+    "app/src/main/resources/application.yml",
+    "app/config/application-preprod.yml",
+    "app/bin/yano.sh"
+  ],
+  "node/history": [
+    "archive-modules/README.md",
+    "app/config/application-projection.yml",
+    "app/config/application-wallet.yml"
+  ],
+  "node/ledger": [
+    "runtime/src/main/java/org/yanoproject/runtime/assembly/YanoAssembly.java",
+    "app/config/application.yml"
+  ],
+  "reference/http-api": [
+    "app/src/main/resources/application.yml",
+    "app/src/main/java/org/yanoproject/app/api/ApiGroup.java"
+  ],
+  "reference/configuration": [
+    "app/src/main/resources/application.yml",
+    "docs/BUILD_DISTRIBUTIONS.md"
+  ],
+  "start/capabilities": [
+    "app/src/main/resources/application.yml",
+    "app/config/application-wallet.yml",
+    "app/config/application-projection.yml",
+    "appchain/README.md"
+  ],
+  "contribute/build-from-source": [
+    "docs/BUILD_DISTRIBUTIONS.md"
+  ],
+  "develop/blockfrost": [
+    "app/src/main/java/org/yanoproject/app/api/utils/EvaluationResource.java",
+    "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
+    "runtime/src/main/java/org/yanoproject/runtime/tx/TxSubsystem.java",
+    "runtime/src/main/java/org/yanoproject/runtime/sync/SyncSubsystem.java",
+    "compat-tests/ccl/src/main/java/org/yanoproject/compat/ccl/CompatProbe.java",
+    "compat-tests/mesh/src/compat.mjs",
+    "compat-tests/evolution/src/compat.mjs",
+    "compat-tests/KNOWN-FAILS.md"
+  ]
+}
