@@ -5,6 +5,8 @@ import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.api.model.Utxo;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
+import org.yanoproject.api.util.EpochSlotCalc;
+import org.yanoproject.ledgerrules.SlotConfigSupplier;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -121,6 +123,48 @@ class ScalusBasedTransactionEvaluatorTest {
         assertEquals(1_780_000_000_000L, scalus.zeroTime());
         assertEquals(42L, scalus.zeroSlot());
         assertEquals(2_000L, scalus.slotLength());
+    }
+
+    @Test
+    void scalusSlotConfigAdapterPreservesDevnetEpochGeometry() {
+        var supplier = new SlotConfigSupplier() {
+            @Override
+            public SlotConfig getSlotConfig() {
+                return new SlotConfig(1_000, 0, 1_780_000_000_000L);
+            }
+
+            @Override
+            public EpochSlotCalc getEpochSlotCalc() {
+                return new EpochSlotCalc(1_200, 1_200, 0);
+            }
+        };
+
+        var scalus = SlotConfigAdapters.toScalus(supplier);
+
+        assertEquals(1_200L, scalus.epochLength());
+        assertEquals(0L, scalus.zeroEpoch());
+        assertEquals(55L, scalus.epochOf(66_166));
+    }
+
+    @Test
+    void scalusSlotConfigAdapterPreservesMainnetEpochAndTimeOrigin() {
+        var supplier = new SlotConfigSupplier() {
+            @Override
+            public SlotConfig getSlotConfig() {
+                return new SlotConfig(1_000, 4_492_800, 1_596_059_091_000L);
+            }
+
+            @Override
+            public EpochSlotCalc getEpochSlotCalc() {
+                return new EpochSlotCalc(432_000, 21_600, 4_492_800);
+            }
+        };
+
+        var scalus = SlotConfigAdapters.toScalus(supplier);
+
+        assertEquals(208L, scalus.epochOf(4_492_800));
+        assertEquals(550L, scalus.epochOf(152_236_800));
+        assertEquals(1_596_059_091_000L, scalus.slotToTime(4_492_800));
     }
 
     private class BlstFailingEvaluator extends ScalusBasedTransactionEvaluator {

@@ -68,7 +68,7 @@ public class ScalusBasedTransactionEvaluator implements TransactionEvaluator {
         };
 
         ProtocolParams protocolParams = protocolParamsSupplier.getProtocolParams(resolveCurrentSlot());
-        var scalusSlotConfig = SlotConfigAdapters.toScalus(slotConfigSupplier.getSlotConfig());
+        var scalusSlotConfig = SlotConfigAdapters.toScalus(slotConfigSupplier);
         Result<List<com.bloxbean.cardano.client.api.model.EvaluationResult>> result;
         try {
             result = evaluateWithScalus(scalusSlotConfig, protocolParams, utxoSupplier, txCbor, inputUtxos);

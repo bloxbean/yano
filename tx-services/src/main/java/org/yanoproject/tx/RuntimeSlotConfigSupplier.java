@@ -3,6 +3,7 @@ package org.yanoproject.tx;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
+import org.yanoproject.api.util.EpochSlotCalc;
 import org.yanoproject.ledgerrules.SlotConfigSupplier;
 import org.yanoproject.runtime.blockproducer.GenesisConfig;
 import org.slf4j.Logger;
@@ -26,20 +27,28 @@ final class RuntimeSlotConfigSupplier implements SlotConfigSupplier {
     private final YanoConfig config;
     private final LongSupplier resolvedGenesisTimestampSupplier;
     private final GenesisConfig genesisConfig;
+    private final EpochSlotCalc epochSlotCalc;
     private final AtomicBoolean slotLengthFallbackLogged = new AtomicBoolean();
 
     RuntimeSlotConfigSupplier(YanoConfig config,
                               LongSupplier resolvedGenesisTimestampSupplier,
-                              GenesisConfig genesisConfig) {
+                              GenesisConfig genesisConfig,
+                              EpochSlotCalc epochSlotCalc) {
         this.config = Objects.requireNonNull(config, "config must not be null");
         this.resolvedGenesisTimestampSupplier = Objects.requireNonNull(
                 resolvedGenesisTimestampSupplier, "resolvedGenesisTimestampSupplier must not be null");
         this.genesisConfig = genesisConfig;
+        this.epochSlotCalc = Objects.requireNonNull(epochSlotCalc, "epochSlotCalc must not be null");
     }
 
     @Override
     public SlotConfig getSlotConfig() {
-        return new SlotConfig(resolveSlotLengthMillis(), 0, resolveZeroTimeMillis());
+        return new SlotConfig(resolveSlotLengthMillis(), epochSlotCalc.firstNonByronSlot(), resolveZeroTimeMillis());
+    }
+
+    @Override
+    public EpochSlotCalc getEpochSlotCalc() {
+        return epochSlotCalc;
     }
 
     boolean canResolveZeroTimeNow() {

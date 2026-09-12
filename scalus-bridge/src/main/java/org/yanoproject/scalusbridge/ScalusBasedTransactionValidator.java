@@ -251,7 +251,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
     }
 
     protected SlotConfig resolveScalusSlotConfig() {
-        return SlotConfigAdapters.toScalus(resolveCclSlotConfig());
+        return SlotConfigAdapters.toScalus(slotConfigSupplier);
     }
 
     private long resolveCurrentSlot(Transaction tx) {
