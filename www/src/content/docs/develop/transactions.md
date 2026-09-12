@@ -7,6 +7,8 @@ sidebar:
 
 Yano supplies chain queries, transaction submission, and script evaluation. Your application or Cardano library owns address generation, keys, transaction construction, and signing.
 
+For provider setup with CCL, MeshJS, or Evolution SDK, start with [Build with any SDK](/develop/blockfrost/).
+
 ## Query spendable outputs
 
 Replace `<address>` with a real address on your selected network:

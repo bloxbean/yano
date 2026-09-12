@@ -5,11 +5,7 @@ sidebar:
   order: 1
 ---
 
-Start from [the repository](https://github.com/bloxbean/yano), use JDK 25, and run the Gradle wrapper. For an ordinary source build:
-
-```bash
-./gradlew build -PskipSigning=true
-```
+To run Yano, [download a release](/start/installation/). To change the node itself, follow [build from source](/contribute/build-from-source/) for the checkout, Java prerequisites, and build commands.
 
 [Building and testing](/contribute/build-and-test/) explains the test tiers and extended checks. Use the suite that exercises your change; native packaging and multi-node behavior have additional gates.
 

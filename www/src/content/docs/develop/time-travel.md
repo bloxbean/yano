@@ -25,12 +25,12 @@ try (YanoDevnetTestConfig config = YanoDevnetTestConfig.builder()
 
 ## Start in the past
 
-From `app/`, with the application JAR built:
+From your extracted [JVM release](/start/installation/) directory:
 
 ```bash
 java -Dquarkus.profile=devnet \
   -Dyano.block-producer.past-time-travel-mode=true \
-  -jar build/yano.jar
+  -jar yano.jar
 ```
 
 Production is deferred until you shift the genesis:

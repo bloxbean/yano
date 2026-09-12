@@ -1,48 +1,62 @@
 ---
-title: "Install and package Yano"
-description: "Choose a JVM distribution, native binary, source build, or embedded library."
+title: "Download & install Yano"
+description: "Choose and run a JVM or platform-specific Yano release."
 sidebar:
   order: 3
 ---
 
-## Choose a distribution
+Download a ready-to-run ZIP from [Yano v0.1.0-pre12](https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12). Extract the complete archive; keep the executable, launcher, and `config/` directory together.
 
-| Form | Requirements | Use it for |
+## Choose your download
+
+| Distribution | Download | Requirements |
 | --- | --- | --- |
-| JVM ZIP | JDK 25 | Node operation, dynamic plugins, optional DuckLake history |
-| Native ZIP | Matching OS and architecture | Fast startup with retained core providers |
-| Source checkout | JDK 25 and bundled Gradle wrapper | Contributions and unreleased source changes |
-| Maven libraries | JDK 25, Maven or Gradle | In-process node and testkit integration |
+| **JVM — recommended for app chains** | [yano-0.1.0-pre12.zip](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-0.1.0-pre12.zip) | Java 25 |
+| Linux x64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-linux-x64.zip) | Linux on x64 |
+| Linux arm64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-linux-arm64.zip) | Linux on arm64 |
+| macOS arm64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-macos-arm64.zip) | Apple silicon Mac |
+| Windows x64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-windows-x64.zip) | Windows on x64 |
 
-Check [GitHub releases](https://github.com/bloxbean/yano/releases) for published assets. Documentation for a source revision is not a guarantee that a matching release has already been published.
+For app-chain onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
 
-## Build a JVM distribution
+## Start on macOS or Linux
 
-From the repository root:
-
-```bash
-./gradlew :app:yanoDistZip -PskipSigning=true
-```
-
-Find `yano-<version>.zip` in `app/build/distributions/`. Extract it, enter the extracted directory, and run:
+For the JVM ZIP:
 
 ```bash
+unzip yano-0.1.0-pre12.zip
+cd yano-0.1.0-pre12
 ./yano.sh start:devnet
 ```
 
-The archive includes the launcher, JAR, configuration, genesis files, license, SBOM, and JVM plugin tooling.
-
-## Build a native distribution
-
-Use Oracle GraalVM 25.3 with `native-image`:
+For a native ZIP, enter the corresponding extracted directory and use the same launcher. To connect to a public network instead:
 
 ```bash
-./gradlew :app:yanoNativeDistZip \
-  -Dquarkus.native.enabled=true \
-  -Dquarkus.package.jar.enabled=false \
-  -PskipSigning=true
+./yano.sh start:preprod
 ```
 
-The output is `app/build/distributions/yano-native-<version>-<platform>.zip`. Extract and use its `yano.sh` launcher. Native images cannot dynamically load plugin JARs. Optional Yano X extensions and DuckLake history use the JVM distribution.
+Use separate storage for different networks. The launcher runs with configuration from the extracted distribution. See [network configuration](/node/networks/) before changing networks or peers.
 
-For container packaging and build-time API prefixes, see [distribution details](/reference/distributions/).
+## Start on Windows
+
+Extract the ZIP with Explorer or PowerShell, then open PowerShell in the extracted directory. Native distribution:
+
+```powershell
+.\yano.exe -Dquarkus.profile=devnet -Dyano.block-producer.script-evaluator=scalus
+```
+
+JVM distribution, with Java 25 installed:
+
+```powershell
+java -Dquarkus.profile=devnet -jar yano.jar
+```
+
+For JVM app chains, use `java "-Dquarkus.profile=devnet,appchain" -jar yano.jar`.
+
+## Releases and documentation versions
+
+The download links above select **pre12**, a published release. This site's advanced reference follows the current `org.yanoproject` source line, which is newer. The namespace rename, newer wallet/history features, plugin contracts, and proof APIs are not all present in pre12. Use your release's bundled configuration and `/q/swagger-ui` as the reference for its available endpoints.
+
+Pre12 also predates the current split of additional stock app-chain extensions into Yano X. Do not infer a release's bundled machines from the current-source module map. Use release-matched SDKs and verifiers, and check [upgrade notes](/operate/upgrades/) before reusing stored state.
+
+You can browse [all releases](https://github.com/bloxbean/yano/releases) for later artifacts. To modify Yano itself or use unreleased changes, see [build from source](/contribute/build-from-source/); building is not required for the download workflow.

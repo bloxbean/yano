@@ -1,11 +1,27 @@
 ---
-title: "Distribution build reference"
-description: "Build JVM, native, and Docker distributions."
+title: "Build from source"
+description: "Optional source builds for contributors and advanced users."
 sidebar:
-  order: 9
+  order: 3
 ---
 
-This guide builds Yano release-style distributions from the checked-out source tree.
+Most users should [download a release](/start/installation/). This page is for contributors, custom artifacts, and unreleased changes.
+
+## Get the source and build the application
+
+Install JDK 25, then:
+
+```bash
+git clone https://github.com/bloxbean/yano.git
+cd yano
+./gradlew :app:quarkusBuild -PskipSigning=true
+cd app
+./yano.sh start:devnet
+```
+
+Choose the branch or tag containing the changes you want before building. For current namespace examples, use a checkout containing `org.yanoproject`; pre12 predates that rename.
+
+The remaining commands build release-style distributions from the checked-out source tree.
 
 Run commands from the repository root.
 
@@ -305,3 +321,13 @@ cd /tmp/yano-docker/yano-docker-<version>
 curl -fsS http://localhost:7070/q/health/ready
 ./yano.sh stop
 ```
+
+## Standalone console artifact
+
+The normal node distribution includes its own UI where supported by the release. For a separately hosted console built from current source:
+
+```bash
+./gradlew :console-ui:consoleZip
+```
+
+Extract `console-ui/build/distributions/yano-console-ui-<version>.zip` under the static server's `/ui` path. See [console hosting](/operate/console/) for API routing and CORS.

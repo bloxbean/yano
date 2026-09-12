@@ -23,6 +23,10 @@ The same project also gives you a local, block-producing development network, in
 
 See [Yano in use](/develop/devkit/) for Yaci DevKit and UVerify Sandbox integrations.
 
+## Use your favorite language and SDK
+
+Yano runs in Java, but your dApp does not have to. Use its [Blockfrost-compatible HTTP API](/develop/blockfrost/) from CCL, MeshJS, Evolution SDK, or another language’s HTTP client to query data, evaluate scripts, and submit signed transactions.
+
 ## Three capabilities, one foundation
 
 **Data node.** Synchronize Cardano blocks, maintain UTxOs and ledger state, query REST endpoints, evaluate scripts, and submit transactions. Choose upstream peers and optional indexes for your workload.

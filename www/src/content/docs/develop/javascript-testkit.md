@@ -46,17 +46,19 @@ describe('Cardano integration', () => {
 
 The helper starts the process in `beforeAll` and stops it in `afterAll`.
 
-## Local binary and storage
+## Downloaded binary and storage
 
 ```js
 const yano = await startYanoDevnet({
-  binaryPath: '/absolute/path/to/yano/app/build/yano',
-  cwd: '/absolute/path/to/yano/app',
+  binaryPath: '/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64/yano',
+  cwd: '/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64',
   blockTimeMillis: 200,
   httpPort: 0,
   n2nPort: 0,
 });
 ```
+
+The example uses the downloaded macOS arm64 archive; substitute your own platform directory and use `yano.exe` on Windows. Match the testkit version to the binary; newer helpers can require newer endpoints.
 
 Port `0` allocates an available port. The default temporary RocksDB mode isolates each run; persistent mode is available when a test needs to retain state. Set `YANO_TESTKIT_BINARY` to override binary discovery.
 

@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-Yano's runnable application uses Quarkus configuration. The bundled defaults are in `app/src/main/resources/application.yml`; operator files are in `app/config/`.
+Yano's runnable application uses Quarkus configuration. Edit `config/application.yml` in your extracted release directory for operator overrides. The application also carries bundled defaults; the generated catalog describes the current source version, so check your downloaded release's config for supported settings.
 
 ## Layering
 
-Run from the extracted distribution directory or `app/`. Put persistent local overrides in `config/application.yml`; compose optional `application-<profile>.yml` files through the launcher:
+Run from the extracted distribution directory. Put persistent local overrides in `config/application.yml`; compose optional `application-<profile>.yml` files through the launcher:
 
 ```bash
 ./yano.sh start:preprod,relay,praos-lite
@@ -18,7 +18,7 @@ Run from the extracted distribution directory or `app/`. Put persistent local ov
 System properties use the full property name, such as `-Dquarkus.http.port=7071`. When invoking Java directly, JVM `-D` arguments go **before** `-jar`.
 
 ```bash
-java -Dquarkus.profile=devnet -Dquarkus.http.port=7071 -jar build/yano.jar
+java -Dquarkus.profile=devnet -Dquarkus.http.port=7071 -jar yano.jar
 ```
 
 Environment aliases explicitly supplied by packaged YAML are preserved in the [generated configuration catalog](/reference/configuration-catalog/). That catalog separates each file/profile; a profile value is not a universal default.
@@ -46,4 +46,4 @@ Download [configuration JSON](/ai/configuration.json) for tooling. Comments and 
 
 `/api/v1` is the normal REST prefix. A custom prefix is selected when building using `-PyanoApiPrefix=/your-prefix`. It is fixed in the artifact and cannot be changed at launch by setting `yano.api-prefix`, `quarkus.resteasy.path`, or `quarkus.http.root-path`.
 
-See [distribution details](/reference/distributions/) before building a custom-prefix artifact.
+See [distribution details](/contribute/build-from-source/) before building a custom-prefix artifact.

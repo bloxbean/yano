@@ -5,13 +5,13 @@ sidebar:
   order: 2
 ---
 
-First [build Yano](/start/quickstart/) or extract a matching distribution. From `app/` or the extracted distribution directory:
+Download and extract the **[JVM distribution](/start/installation/)**, recommended for app chains for now. From its extracted directory:
 
 ```bash
 ./yano.sh start:devnet,appchain
 ```
 
-This activates the bundled `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
+This activates the bundled app-chain profile, including `orders-chain`, a **single-member** `ordered-log` demo. Pre12 also includes a `registry-chain`; the current-source profile keeps `orders-chain` only. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
 
 ## 1. Submit an event
 

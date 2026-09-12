@@ -18,14 +18,7 @@ its privileged key in the current tab's `sessionStorage`.
 
 ## Standalone hosting
 
-Build the standalone artifact with:
-
-```bash
-./gradlew :console-ui:consoleZip
-```
-
-Extract `console-ui/build/distributions/yano-console-ui-<version>.zip` below
-the `/ui` path of a static HTTP server. The archive has no Node.js runtime and
+Use the embedded console in your installed release where available. A separately hosted console is an advanced deployment; see [the source-build page](/contribute/build-from-source/#standalone-console-artifact) to produce its ZIP and extract it below `/ui` on a static server. The archive has no Node.js runtime and
 contains no credentials. For the plugin page, route `/api/v1` to the Yano node
 on the same origin (the archive's fixed plugin discovery document intentionally
 does not accept a query-controlled remote base).

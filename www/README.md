@@ -22,6 +22,10 @@ npm run build
 
 `build` regenerates public AI artifacts, builds static HTML and Pagefind search, and verifies internal links/assets. No Java build or running node is required to build this site. Examples are source-reviewed; building the website does not execute devnet or integration examples.
 
+## Branding
+
+`static/logo-dark.svg` remains the original artwork. `static/logo-docs.svg` is the lime/mint documentation variant, with the same geometry, a transparent background, and a tighter viewBox. Its copies in `www/public/logo.svg` and `favicon.svg` serve the site; the social card embeds the same artwork.
+
 ## Content
 
 - `src/pages/index.astro`: bespoke landing page with keyboard-accessible example tabs and copy controls.

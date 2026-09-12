@@ -500,42 +500,20 @@ try {
 }
 ```
 
-## Local Yano Binary
+## Use a downloaded native binary
 
-Use `YANO_TESTKIT_BINARY` only when testing a local build or an unsupported
-platform. Published npm packages include the platform binary automatically.
-
-Build a native binary from this repository:
-
-```bash
-./gradlew :app:quarkusBuild \
-  -Dquarkus.native.enabled=true \
-  -Dquarkus.package.jar.enabled=false \
-  -PskipSigning=true
-```
-
-Run a JS test with the local binary:
-
-```bash
-YANO_TESTKIT_BINARY=/path/to/yano/app/build/yano node my-test.mjs
-```
-
-When the binary is from `app/build`, set `cwd` to the app directory so Yano can
-find `config/`:
+The npm platform package normally supplies the native binary. To select a particular release, [download and extract a matching native ZIP](/start/installation/), then point the testkit at that binary and its containing directory:
 
 ```js
 const yano = await startYanoDevnet({
-  binaryPath: "/path/to/yano/app/build/yano",
-  cwd: "/path/to/yano/app"
+  binaryPath: "/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64/yano",
+  cwd: "/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64"
 });
 ```
 
-Windows PowerShell:
+Use the path for your platform; on Windows the executable is `yano.exe`. Keep `config/` beside the executable. Choose a testkit version compatible with the selected binary; overriding it does not add newer endpoints to an older release.
 
-```powershell
-$env:YANO_TESTKIT_BINARY="C:\path\to\yano\app\build\yano.exe"
-node my-test.mjs
-```
+`YANO_TESTKIT_BINARY` can also override binary discovery. If you need an unreleased native build, follow the separate [source-build guide](/contribute/build-from-source/).
 
 ## TypeScript
 

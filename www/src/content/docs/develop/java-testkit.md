@@ -23,7 +23,7 @@ test {
 }
 ```
 
-Keep your JUnit Jupiter and test engine dependencies in the test project. See [installation](/start/installation/) for source builds and [embedding](/develop/embed/) for repository setup.
+Keep your JUnit Jupiter and test engine dependencies in the test project. See [embedding](/develop/embed/) for dependency repository setup. Building Yano itself is optional; contributors can use the separate [source-build guide](/contribute/build-from-source/).
 
 ## What It Provides
 

@@ -7,7 +7,7 @@ const paths = [
     number: '01',
     title: 'Read the chain.',
     label: 'Data node',
-    text: 'Bring Cardano data closer to your application. Sync blocks, query ledger state, and submit transactions through a familiar API.',
+    text: 'Connect your favorite off-chain SDK in any language. Query Cardano state, evaluate scripts, and let Yano handle network submission.',
     href: '/node/networks/',
     cta: 'Explore the data node',
     file: 'terminal',
@@ -33,7 +33,7 @@ const paths = [
     number: '03',
     title: 'Build your own chain.',
     label: 'App chains',
-    text: 'Turn application events into a shared, verifiable history. Start with an ordered log, then extend the rules with your own state machine.',
+    text: 'Start with the JVM release and turn application events into a shared, verifiable history. Begin with an ordered log, then extend the rules.',
     href: '/app-chains/quickstart/',
     cta: 'Create an app chain',
     file: 'terminal',
@@ -45,10 +45,10 @@ const paths = [
 const features = [
   [
     '01',
-    'A useful view of Cardano',
-    'UTxOs, accounts, protocol parameters, and governance state. Query what your application needs.',
-    '/node/ledger/',
-    'Ledger & queries',
+    'Your SDK. Your language.',
+    'Keep your favorite off-chain SDK. Query chain data, evaluate scripts, and submit transactions through a Blockfrost-compatible API.',
+    '/develop/blockfrost/',
+    'Connect your SDK',
   ],
   [
     '02',
@@ -142,8 +142,7 @@ const features = [
       <section class="hero wrap">
         <div class="hero-copy">
           <a href="/operate/upgrades/" class="release">
-            <span class="status-dot"></span> OPEN SOURCE · PRE-RELEASE{' '}
-            <span aria-hidden="true">↗</span>
+            <span class="status-dot"></span> OPEN SOURCE <span aria-hidden="true">↗</span>
           </a>
           <h1>
             Your foundation
@@ -155,8 +154,8 @@ const features = [
           <p class="hero-description">
             A data node. A real devnet. Your app chain.
             <br />
-            Yano brings the chain to your application — with the tools to query, test, and build in
-            Java and beyond.
+            Build your dApp in any language, with your favorite SDK. Query, evaluate, and submit
+            transactions through Yano’s Blockfrost-compatible API.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="/start/quickstart/">
@@ -333,7 +332,7 @@ const features = [
               <div class="code-note">
                 {path.id === 'test'
                   ? 'Excerpt · full imports and setup in the guide'
-                  : 'Run from an extracted distribution or the app directory'}
+                  : 'Run from an extracted release directory'}
               </div>
             </div>
           </div>

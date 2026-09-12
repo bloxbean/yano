@@ -17,9 +17,6 @@
   "reference/account-state": [
     "docs/ACCOUNT_STATE_AND_ROLLBACK.md"
   ],
-  "reference/distributions": [
-    "docs/BUILD_DISTRIBUTIONS.md"
-  ],
   "reference/upgrading": [
     "docs/UPGRADING.md"
   ],
@@ -93,13 +90,12 @@
     "app/src/main/resources/application.yml"
   ],
   "start/quickstart": [
-    "app/start-devnet.sh",
-    "app/src/main/resources/application.yml",
-    "app/build.gradle"
+    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12",
+    "app/bin/yano.sh"
   ],
   "start/installation": [
-    "docs/BUILD_DISTRIBUTIONS.md",
-    "README.md"
+    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12",
+    "app/bin/yano.sh"
   ],
   "operate/troubleshooting": [
     "README.md",
@@ -149,5 +145,18 @@
     "app/config/application-wallet.yml",
     "app/config/application-projection.yml",
     "appchain/README.md"
+  ],
+  "contribute/build-from-source": [
+    "docs/BUILD_DISTRIBUTIONS.md"
+  ],
+  "develop/blockfrost": [
+    "app/src/main/java/org/yanoproject/app/api/utils/EvaluationResource.java",
+    "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
+    "runtime/src/main/java/org/yanoproject/runtime/tx/TxSubsystem.java",
+    "runtime/src/main/java/org/yanoproject/runtime/sync/SyncSubsystem.java",
+    "compat-tests/ccl/src/main/java/org/yanoproject/compat/ccl/CompatProbe.java",
+    "compat-tests/mesh/src/compat.mjs",
+    "compat-tests/evolution/src/compat.mjs",
+    "compat-tests/KNOWN-FAILS.md"
   ]
 }

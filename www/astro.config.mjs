@@ -3,6 +3,7 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
   site: 'https://getyano.dev',
   trailingSlash: 'always',
+  redirects: { '/reference/distributions/': '/contribute/build-from-source/' },
   integrations: [
     starlight({
       title: 'Yano',

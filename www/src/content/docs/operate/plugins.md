@@ -73,13 +73,7 @@ The prefix is fixed when the artifact is built. Its only supported input is
 `-PyanoApiPrefix=<path>` (default `/api/v1`); do not put a public prefix in
 launch configuration. The path is limited to 256 characters and must be `/` or
 a canonical absolute path of unescaped `[A-Za-z0-9._~-]+` segments, with no
-empty, `.` or `..` segment or trailing slash. A custom artifact is built, for
-example, with:
-
-```bash
-./gradlew :app:yanoDistZip -PyanoApiPrefix=/desired/path \
-  -PskipSigning=true
-```
+empty, `.` or `..` segment or trailing slash. For a custom prefix, follow [the advanced source-build instructions](/contribute/build-from-source/#artifact-api-prefix). The normal release download uses `/api/v1`.
 
 The build generates literal REST configuration, the raw
 `META-INF/yano-api-prefix-v1` marker, and the immutable dashboard discovery

@@ -57,8 +57,7 @@ with `~` are reserved for Yano.
 
 ## Start the out-of-the-box demo
 
-From an extracted release directory, or from `app/` after building the source
-tree:
+From an extracted **JVM release** directory (recommended for app chains):
 
 ```bash
 ./yano.sh start:devnet,appchain

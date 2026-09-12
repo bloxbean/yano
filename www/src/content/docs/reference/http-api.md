@@ -7,6 +7,8 @@ sidebar:
 
 The default application API prefix is `/api/v1`. Management endpoints under `/q` and the console under `/ui/` sit outside that prefix.
 
+For transaction-building SDK integrations, see [Build with any SDK](/develop/blockfrost/).
+
 ## Explore the running node
 
 Open `http://localhost:7070/q/swagger-ui`. The node supplies these OpenAPI documents:
