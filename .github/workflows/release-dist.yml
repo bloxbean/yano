@@ -11,6 +11,7 @@ jobs:
     outputs:
       is_final: ${{ steps.version.outputs.is_final }}
       version: ${{ steps.version.outputs.version }}
+      npm_publish: ${{ steps.version.outputs.npm_publish }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +47,11 @@ jobs:
 
           echo "is_final=$IS_FINAL" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # An npm version is public and immutable once published, so it is
+          # opt-in per release rather than an automatic consequence of tagging.
+          NPM_PUBLISH=$(./gradlew -q properties | awk '/^npm_publish:/ { print $2; exit }')
+          echo "npm_publish=${NPM_PUBLISH:-false}" >> "$GITHUB_OUTPUT"
+          echo "npm publish for this tag: ${NPM_PUBLISH:-false}"
 
   jar-dist:
     needs: validate
@@ -138,6 +144,8 @@ jobs:
 
   npm-publish:
     needs: [validate, native-dist]
+    # Gated by npm_publish in gradle.properties; see the validate job.
+    if: needs.validate.outputs.npm_publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -235,6 +243,14 @@ jobs:
 
   release:
     needs: [validate, jar-dist, native-dist, npm-publish]
+    # npm-publish is skipped when npm_publish is false, and a skipped dependency
+    # would otherwise skip this job too. The GitHub release still ships the jar
+    # and native distributions; only a genuine npm failure blocks it.
+    if: >-
+      !cancelled()
+      && needs.jar-dist.result == 'success'
+      && needs.native-dist.result == 'success'
+      && needs.npm-publish.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: write

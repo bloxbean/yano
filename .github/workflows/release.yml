@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      docker_publish: ${{ steps.version.outputs.docker_publish }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 25
@@ -31,6 +32,12 @@ jobs:
             exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          # A Docker image is public the moment it is pushed and can never be
+          # replaced under the same tag, so it is opt-in per release rather than
+          # an automatic consequence of tagging.
+          DOCKER_PUBLISH=$(./gradlew -q properties | awk '/^docker_publish:/ { print $2; exit }')
+          echo "docker_publish=${DOCKER_PUBLISH:-false}" >> "$GITHUB_OUTPUT"
+          echo "Docker publish for this tag: ${DOCKER_PUBLISH:-false}"
       - name: Build with Gradle
         run: ./gradlew clean fullBuild
       - name: Decode GPG Key
@@ -38,13 +45,62 @@ jobs:
           mkdir -p ~/.gradle/
           echo "${{secrets.SIGNING_KEY}}" > ~/.gradle/secring.gpg.b64
           base64 -d ~/.gradle/secring.gpg.b64 > ~/.gradle/secring.gpg
-      - name: Publish package
-        run: ./gradlew publishToSonatype closeSonatypeStagingRepository  -Psigning.keyId=${{ secrets.SIGNING_KEY_ID }} -Psigning.password=${{ secrets.SIGNING_PASSWORD }} -Psigning.secretKeyRingFile=$(echo ~/.gradle/secring.gpg) --warn --stacktrace
+      # Uploads a USER_MANAGED deployment and waits for Sonatype validation. It
+      # stops there: nothing is on Maven Central until a human publishes it, via
+      # publish-central.yml or the portal. See nmcpAggregation in build.gradle.
+      - name: Upload deployment to Maven Central staging
+        id: upload
         env:
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Do not add --warn here. It lowers Gradle below LIFECYCLE, which is
+          # the level nmcp reports the deployment id at, and the grep below
+          # would then fail every release after a successful upload.
+          ./gradlew publishAggregationToCentralPortal \
+            -Psigning.keyId=${{ secrets.SIGNING_KEY_ID }} \
+            -Psigning.password=${{ secrets.SIGNING_PASSWORD }} \
+            -Psigning.secretKeyRingFile=$HOME/.gradle/secring.gpg \
+            --stacktrace 2>&1 | tee upload.log
+          # The deployment id exists only in nmcp's output. Fail loudly if the
+          # log format changes rather than reporting a release with no id.
+          id=$(grep -oE "deployment bundle '[0-9a-f-]{36}'" upload.log \
+            | head -1 | grep -oE '[0-9a-f-]{36}' || true)
+          if [[ -z "$id" ]]; then
+            echo "::error::Upload succeeded but no deployment id was found in the log." >&2
+            exit 1
+          fi
+          echo "deployment-id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Record the pending deployment
+        env:
+          DEPLOYMENT_ID: ${{ steps.upload.outputs.deployment-id }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Maven Central deployment staged - NOT published"
+            echo
+            echo "Deployment \`$DEPLOYMENT_ID\` (\`yano:$VERSION\`) passed validation"
+            echo "and is waiting for a human."
+            echo
+            echo "Publish it through the approval-gated workflow:"
+            echo "https://github.com/$GITHUB_REPOSITORY/actions/workflows/publish-central.yml"
+            echo
+            echo "Or from the portal: https://central.sonatype.com/publishing/deployments"
+            echo
+            echo "Note: the Docker release below runs regardless."
+            echo "Maven Central does not, until the deployment above is published."
+          } >> "$GITHUB_STEP_SUMMARY"
   docker-release:
     needs: publish
+    # Gated by docker_publish in gradle.properties. Unlike the Central
+    # deployment, which is staged and waits for a human, a pushed image is
+    # immediately public and permanent.
+    if: needs.publish.outputs.docker_publish == 'true'
     permissions:
       contents: write
     uses: ./.github/workflows/release-docker.yml
