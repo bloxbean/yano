@@ -52,27 +52,34 @@ final class RuntimeSlotConfigSupplier implements SlotConfigSupplier {
     }
 
     boolean canResolveZeroTimeNow() {
-        if (epochSlotCalc.firstNonByronSlot() > 0) {
-            return genesisConfig != null && genesisConfig.getSystemStartEpochMillis() > 0;
-        }
         if (config.getGenesisTimestamp() > 0) {
             return true;
         }
         if (resolvedGenesisTimestampSupplier.getAsLong() > 0) {
             return true;
         }
-        return genesisConfig != null && genesisConfig.getSystemStartEpochMillis() > 0;
+        return genesisConfig != null && (epochSlotCalc.firstNonByronSlot() > 0
+                ? genesisConfig.getNetworkStartTimeSeconds() > 0
+                : genesisConfig.getSystemStartEpochMillis() > 0);
     }
 
     long resolveZeroTimeMillis() {
+        long networkStartMillis = resolveNetworkStartMillis();
+        // Shelley genesis systemStart is the network start, including the Byron period.
+        // zeroTime must instead identify zeroSlot, the first post-Byron slot.
         if (epochSlotCalc.firstNonByronSlot() > 0) {
             if (genesisConfig == null) {
                 throw new IllegalStateException(
-                        "Cannot resolve Shelley transition time without Shelley genesis configuration");
+                        "Cannot resolve Shelley transition time without genesis configuration");
             }
-            return requireEpochMillis(genesisConfig.getSystemStartEpochMillis(), "Shelley systemStart");
+            long byronSlotMillis = Math.multiplyExact(genesisConfig.getByronSlotDurationSeconds(), 1_000L);
+            return Math.addExact(networkStartMillis,
+                    Math.multiplyExact(epochSlotCalc.firstNonByronSlot(), byronSlotMillis));
         }
+        return networkStartMillis;
+    }
 
+    private long resolveNetworkStartMillis() {
         long configured = config.getGenesisTimestamp();
         if (configured > 0) {
             return requireEpochMillis(configured, YanoPropertyKeys.BlockProducer.GENESIS_TIMESTAMP);
@@ -84,9 +91,12 @@ final class RuntimeSlotConfigSupplier implements SlotConfigSupplier {
         }
 
         if (genesisConfig != null) {
-            long systemStart = genesisConfig.getSystemStartEpochMillis();
+            // Keep millisecond precision on devnets; public Byron networks use Byron startTime.
+            long systemStart = epochSlotCalc.firstNonByronSlot() > 0
+                    ? Math.multiplyExact(genesisConfig.getNetworkStartTimeSeconds(), 1_000L)
+                    : genesisConfig.getSystemStartEpochMillis();
             if (systemStart > 0) {
-                return requireEpochMillis(systemStart, "Shelley systemStart");
+                return requireEpochMillis(systemStart, "genesis network start");
             }
         }
 
