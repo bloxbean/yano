@@ -38,12 +38,15 @@ Generated artifacts are ignored in Git and recreated for every build. A manifest
 
 ## GitHub Pages
 
-`.github/workflows/docs.yml` builds PRs and uploads a downloadable preview artifact. Only builds from `main` can deploy. To publish after merging:
+`.github/workflows/docs.yml` builds PRs and uploads a downloadable preview artifact. Only builds from `main` can publish the generated site to the `gh-pages` branch. GitHub Pages deploys that branch through the existing `github-pages` environment and its approval rules.
 
-1. In repository **Settings → Pages**, choose **GitHub Actions** as the source.
-2. Set the custom domain to `getyano.dev` and verify domain ownership with GitHub.
-3. Configure its DNS using the current [GitHub Pages custom-domain instructions](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site), then enable HTTPS.
-4. Merge to `main` or run the workflow on `main`.
+For the first publication:
+
+1. Merge a documentation change to `main` or run the Documentation workflow on `main`. The publish job creates `gh-pages`.
+2. In repository **Settings → Pages**, choose **Deploy from a branch**, then select `gh-pages` and `/(root)`.
+3. Set the custom domain to `getyano.dev` and verify domain ownership with GitHub.
+4. Configure its DNS using the current [GitHub Pages custom-domain instructions](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site), then enable HTTPS.
+5. Approve the pending deployment in the `github-pages` environment.
 
 The site uses the domain root (no `/yano` base path). `public/CNAME` contains only `getyano.dev`. A PR artifact is downloadable for local preview; GitHub Pages does not create a separate preview URL for every PR with this workflow.
 
@@ -60,4 +63,4 @@ curl -I 'https://yanoprojects.org/start/quickstart/?source=redirect-check'
 
 The second response's `Location` should be `https://getyano.dev/start/quickstart/?source=redirect-check`. DNS and edge-provider changes are deployment setup outside this repository; this PR does not activate them.
 
-The deployment workflow follows the [Astro GitHub Pages guide](https://docs.astro.build/en/guides/deploy/github/) with explicit install/check/build steps.
+The deployment workflow uses explicit install/check/build steps and publishes only `www/dist` to `gh-pages`. Generated site files are not committed to `main`.
