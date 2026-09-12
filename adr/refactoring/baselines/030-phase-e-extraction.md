@@ -27,7 +27,7 @@ allocation manifest and remains reachable independently of the Phase E merge com
 ## Outcome
 
 - All 52 downstream modules now live in their final hierarchical Yano X folders. Their Java package
-  domain remains `com.bloxbean.cardano.yano.appchain.*`, while publications use the final
+  domain remains `org.yanoproject.appchain.*`, while publications use the final
   `yano-x-*` artifact ids.
 - The 18 runtime extensions remain dependency-complete plugin bundles. Yano X's plugin pack and JVM
   distribution resolve them by published Maven coordinates; no sibling-project task or source path

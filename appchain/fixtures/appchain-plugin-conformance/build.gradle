@@ -19,10 +19,10 @@ tasks.register('generatePluginVersionSource') {
     outputs.dir(generatedVersionSources)
     doLast {
         def target = generatedVersionSources.get().file(
-                'com/bloxbean/cardano/yano/appchain/conformance/'
+                'org/yanoproject/appchain/conformance/'
                         + 'NativePluginConformanceVersion.java').asFile
         target.parentFile.mkdirs()
-        target.setText("""package com.bloxbean.cardano.yano.appchain.conformance;
+        target.setText("""package org.yanoproject.appchain.conformance;
 
 final class NativePluginConformanceVersion {
     static final String VERSION = \"${project.version}\";

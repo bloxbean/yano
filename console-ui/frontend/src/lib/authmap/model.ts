@@ -1,6 +1,6 @@
 import type { AppChainStatus, AuthMapCollection, AuthMapEnvelope } from '$lib/api/types';
 
-export const AUTHMAP_BUNDLE_ID = 'com.bloxbean.cardano.yano.appchain.stdlib';
+export const AUTHMAP_BUNDLE_ID = 'org.yanoproject.x.stdlib';
 export const AUTHMAP_STATE_MACHINE_ID = 'authenticated-map';
 export const AUTHMAP_API_VERSION = 'authenticated-map-domain-v1';
 export const AUTHMAP_COMMAND_TOPIC = 'authenticated-map.command.v1';

@@ -71,7 +71,7 @@ the static file projection.
 Promote protocol parameters to a top-level domain model and move effective
 source selection into `NodeAPI` / `Yano`.
 
-Create `com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot` as a
+Create `org.yanoproject.api.model.ProtocolParamsSnapshot` as a
 top-level record. It replaces `LedgerStateProvider.ProtocolParamsSnapshot` and
 keeps the existing scalar protocol-parameter fields.
 

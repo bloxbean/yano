@@ -24,9 +24,9 @@ Date: 2026-07-01
 ```text
 ./gradlew :ledger-state:test --tests '*OpCertCounter*' \
   :runtime:test \
-    --tests com.bloxbean.cardano.yano.runtime.sync.validation.ShelleyHeaderValidatorTest \
-    --tests com.bloxbean.cardano.yano.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProviderTest \
-    --tests com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest
+    --tests org.yanoproject.runtime.sync.validation.ShelleyHeaderValidatorTest \
+    --tests org.yanoproject.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProviderTest \
+    --tests org.yanoproject.runtime.config.UpstreamConfigTest
 ```
 
 Result: passed.
@@ -39,7 +39,7 @@ Result: passed.
 
 ```text
 ./gradlew :app:haskellSyncTest \
-  --tests com.bloxbean.cardano.yano.app.e2e.haskellsync.RegularBPSyncTest \
+  --tests org.yanoproject.app.e2e.haskellsync.RegularBPSyncTest \
   -Dyano.uber.jar=/Users/satya/work/bloxbean/yano/app/build/yano.jar
 ```
 

@@ -17,8 +17,8 @@ Full pull-based peer tx-id/body diffusion is not part of this phase.
 
 ## Verification
 
-- `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.tx.TxSubsystemTest`
-- `./gradlew :app:test --tests com.bloxbean.cardano.yano.app.YanoProducerTest`
+- `./gradlew :runtime:test --tests org.yanoproject.runtime.tx.TxSubsystemTest`
+- `./gradlew :app:test --tests org.yanoproject.app.YanoProducerTest`
 - `./gradlew :app:test`
 - `./gradlew :app:quarkusBuild`
 - `./gradlew test`

@@ -14,7 +14,7 @@ suite scope:     ./gradlew test -x :testkit:test  (14m 3s wall)
 
 ## Failure
 ```
-classname="com.bloxbean.cardano.yano.archive.ducklake.DuckLakeProjectionSinkTest" time="42.311">
+classname="org.yanoproject.archive.ducklake.DuckLakeProjectionSinkTest" time="42.311">
     java.lang.AssertionError: [the diagnostic must say why nothing was reclaimed] 
 Expecting actual:
   "projection_receipts: TransactionContext Error: Failed to commit: Failed to commit DuckLake transaction.
@@ -26,7 +26,7 @@ Error: Invalid Error: Failed to query most recent snapshot for DuckLake: Failed 
 Error: Invalid Error: Failed to query most recent snapshot for DuckLake: Failed to prepare query "SELECT type FROM sqlite_master WHERE lower(name)=lower('ducklake_snapshot');": database is locked"
 to contain:
   "expire_snapshots" 
-	at com.bloxbean.cardano.yano.archive.ducklake.DuckLakeProjectionSinkTest.aPinnedReaderSurvivesSnapshotExpirationAndFileCleanup(DuckLakeProjectionSinkTest.java:492)
+	at org.yanoproject.archive.ducklake.DuckLakeProjectionSinkTest.aPinnedReaderSurvivesSnapshotExpirationAndFileCleanup(DuckLakeProjectionSinkTest.java:492)
 	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
 	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
 	at org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:725)

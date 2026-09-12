@@ -39,10 +39,10 @@ Final validation:
 
 - `git diff --check`
 - `./gradlew :core-api:test :runtime:test :app:test :testkit:test --console=plain`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationPipelineTest" --tests "com.bloxbean.cardano.yano.runtime.BodyFetchManagerSimpleTest.customBodyValidatorCanRejectBeforeStorage" --tests "com.bloxbean.cardano.yano.runtime.assembly.YanoAssemblyTest" --tests "com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest" :app:test --tests "com.bloxbean.cardano.yano.app.YanoProducerTest" --console=plain`
-- `./gradlew :app:test --tests "com.bloxbean.cardano.yano.app.YanoProducerTest" :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.validation.ShelleyHeaderValidatorTest" --tests "com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest" --console=plain`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.sync.validation.BodyValidationPipelineTest" --tests "org.yanoproject.runtime.BodyFetchManagerSimpleTest.customBodyValidatorCanRejectBeforeStorage" --tests "org.yanoproject.runtime.assembly.YanoAssemblyTest" --tests "org.yanoproject.runtime.config.UpstreamConfigTest" :app:test --tests "org.yanoproject.app.YanoProducerTest" --console=plain`
+- `./gradlew :app:test --tests "org.yanoproject.app.YanoProducerTest" :runtime:test --tests "org.yanoproject.runtime.sync.validation.ShelleyHeaderValidatorTest" --tests "org.yanoproject.runtime.config.UpstreamConfigTest" --console=plain`
 - `./gradlew :app:quarkusBuild --console=plain`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest" --tests "com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest" --console=plain`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest" --tests "org.yanoproject.runtime.config.UpstreamConfigTest" --console=plain`
 - `./gradlew :runtime:test --console=plain`
 - `./gradlew :app:haskellSyncTest --console=plain`
 

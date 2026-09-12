@@ -1,0 +1,4848 @@
+package org.yanoproject.runtime.internal;
+
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
+import com.bloxbean.cardano.yaci.core.common.Constants;
+import com.bloxbean.cardano.yaci.core.common.TxBodyType;
+import com.bloxbean.cardano.yaci.core.config.YaciConfig;
+import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.HeaderBody;
+import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
+import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yaci.events.api.*;
+import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
+import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
+import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
+import com.bloxbean.cardano.yaci.helper.*;
+import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
+import org.yanoproject.api.ChainQuery;
+import org.yanoproject.api.BlockBodyRetentionBoundary;
+import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.api.LedgerQuery;
+import org.yanoproject.api.NodeLifecycle;
+import org.yanoproject.api.ProducerControl;
+import org.yanoproject.api.SyncPhase;
+import org.yanoproject.api.TxEvaluationGateway;
+import org.yanoproject.api.MempoolQueryGateway;
+import org.yanoproject.api.MempoolAdminGateway;
+import org.yanoproject.api.TxGateway;
+import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.appchain.config.AppChainConfigParser;
+import org.yanoproject.api.config.RuntimeOptions;
+import org.yanoproject.api.config.UpstreamPeerConfig;
+import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.config.YanoPropertyKeys;
+import org.yanoproject.api.db.RocksDbAccess;
+import org.yanoproject.api.genesis.GenesisBootstrapData;
+import org.yanoproject.api.listener.NodeEventListener;
+import org.yanoproject.api.model.DevnetRollbackResult;
+import org.yanoproject.api.model.DevnetRollbackTarget;
+import org.yanoproject.api.model.DevnetRestoreResult;
+import org.yanoproject.api.model.FundResult;
+import org.yanoproject.api.model.GenesisParameters;
+import org.yanoproject.api.model.NodePeers;
+import org.yanoproject.api.model.NodeStatus;
+import org.yanoproject.api.model.ProtocolParamsSnapshot;
+import org.yanoproject.api.model.SnapshotInfo;
+import org.yanoproject.api.model.TimeAdvanceResult;
+import org.yanoproject.api.model.TxEvaluationResult;
+import org.yanoproject.api.utxo.UtxoState;
+import org.yanoproject.api.utxo.model.Outpoint;
+import org.yanoproject.api.utxo.model.Utxo;
+import org.yanoproject.ledgerrules.TransactionEvaluator;
+import org.yanoproject.ledgerrules.TransactionValidator;
+import org.yanoproject.api.bootstrap.BootstrapDataProvider;
+import org.yanoproject.api.bootstrap.BootstrapOutpoint;
+import org.yanoproject.runtime.bootstrap.BootstrapResult;
+import org.yanoproject.runtime.bootstrap.BootstrapService;
+import org.yanoproject.runtime.blockproducer.*;
+import org.yanoproject.runtime.BodyFetchManager;
+import org.yanoproject.runtime.HeaderSyncManager;
+import org.yanoproject.runtime.chain.BootstrapChainStateWriter;
+import org.yanoproject.runtime.chain.ByronGenesisUtxoMetadataStore;
+import org.yanoproject.runtime.chain.ChainStateRecovery;
+import org.yanoproject.runtime.chain.ChainStateRollback;
+import org.yanoproject.runtime.chain.ChainStateSnapshots;
+import org.yanoproject.runtime.chain.EraMetadataStore;
+import org.yanoproject.runtime.chain.NearestPointLookup;
+import org.yanoproject.runtime.chronology.ChronologyService;
+import org.yanoproject.runtime.chronology.ChronologySubsystem;
+import org.yanoproject.api.events.NodeStartedEvent;
+import org.yanoproject.api.events.BlockAppliedEvent;
+import org.yanoproject.api.events.RollbackEvent;
+import org.yanoproject.api.util.StoredBlockUtil;
+import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
+import org.yanoproject.runtime.util.LifecycleFailures;
+import org.yanoproject.p2p.peer.PeerRecoveryFailureTracker;
+import org.yanoproject.p2p.peer.PeerRecoveryReason;
+import org.yanoproject.p2p.peer.PeerSessionStatus;
+import org.yanoproject.runtime.producer.DevnetBlockBuilderFactory;
+import org.yanoproject.runtime.producer.DevnetProducerFactory;
+import org.yanoproject.runtime.producer.NonceEvolutionListenerFactory;
+import org.yanoproject.runtime.producer.ProducerStartupCoordinator;
+import org.yanoproject.runtime.producer.ProducerStartupPlan;
+import org.yanoproject.runtime.producer.ProducerSubsystem;
+import org.yanoproject.runtime.producer.SlotLeaderKeyMaterial;
+import org.yanoproject.runtime.producer.SlotLeaderProducerFactory;
+import org.yanoproject.runtime.producer.SlotLeaderSigningComponents;
+import org.yanoproject.runtime.producer.StakeDataProviderFactory;
+import org.yanoproject.runtime.plugins.PluginManager;
+import org.yanoproject.runtime.plugins.DomainApiRegistry;
+import org.yanoproject.runtime.plugins.PluginRuntimeEnvironment;
+import org.yanoproject.runtime.plugins.PluginOperationsRegistry;
+import org.yanoproject.api.account.AccountStateReadStore;
+import org.yanoproject.api.account.LedgerStateProvider;
+import org.yanoproject.api.rollback.RollbackCapableStore;
+import org.yanoproject.api.rollback.PointRollbackCapableStore;
+import org.yanoproject.api.account.AccountStateStore;
+import org.yanoproject.ledgerstate.DefaultAccountStateStore;
+import org.yanoproject.ledgerstate.EpochParamTracker;
+import org.yanoproject.runtime.config.DefaultEpochParamProvider;
+import org.yanoproject.runtime.config.DnsCachePolicy;
+import org.yanoproject.runtime.config.InMemoryDevnetGenesis;
+import org.yanoproject.runtime.config.NetworkGenesisConfig;
+import org.yanoproject.runtime.PipelineDataListener;
+import org.yanoproject.runtime.SlotTimeCalculator;
+import org.yanoproject.p2p.connection.DefaultRelayConnectionManager;
+import org.yanoproject.p2p.connection.ProtocolCapabilities;
+import org.yanoproject.p2p.connection.RelayConnectionInfo;
+import org.yanoproject.p2p.connection.RelayConnectionManager;
+import org.yanoproject.p2p.connection.RelayConnectionSnapshot;
+import org.yanoproject.runtime.debug.DebugLedgerStateAccess;
+import org.yanoproject.runtime.devnet.DevnetCatchUpService;
+import org.yanoproject.runtime.devnet.DevnetFaucetService;
+import org.yanoproject.runtime.devnet.DevnetGenesisShiftService;
+import org.yanoproject.runtime.devnet.DevnetSnapshotCatalogService;
+import org.yanoproject.runtime.devnet.DevnetSnapshotRestoreService;
+import org.yanoproject.runtime.devnet.DevnetTimeAdvanceService;
+import org.yanoproject.runtime.devnet.spi.DevnetRuntime;
+import org.yanoproject.runtime.devnet.spi.DevnetRuntimeProvider;
+import org.yanoproject.runtime.events.PropagatingEventBus;
+import org.yanoproject.api.util.EpochSlotCalc;
+import org.yanoproject.runtime.kernel.KernelLifecycleException;
+import org.yanoproject.runtime.kernel.KernelState;
+import org.yanoproject.runtime.kernel.NodeKernel;
+import org.yanoproject.runtime.kernel.RuntimeKernelProvider;
+import org.yanoproject.runtime.kernel.Schedulers;
+import org.yanoproject.runtime.kernel.ServiceRegistry;
+import org.yanoproject.runtime.kernel.Subsystem;
+import org.yanoproject.runtime.kernel.SubsystemContext;
+import org.yanoproject.runtime.kernel.SubsystemHealth;
+import org.yanoproject.runtime.ledger.LedgerStateSubsystem;
+import org.yanoproject.p2p.peer.DefaultPeerClientFactory;
+import org.yanoproject.p2p.peer.LocalBindAddressResolver;
+import org.yanoproject.p2p.peer.PeerClientFactory;
+import org.yanoproject.runtime.server.ServeSubsystem;
+import org.yanoproject.runtime.sync.validation.HeaderValidationLedgerViewProvider;
+import org.yanoproject.runtime.sync.validation.HeaderValidationCustomizer;
+import org.yanoproject.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProvider;
+import org.yanoproject.runtime.storage.ChainStorageSubsystem;
+import org.yanoproject.p2p.governor.PeerDescriptor;
+import org.yanoproject.p2p.governor.PeerGovernorPeerInfo;
+import org.yanoproject.p2p.governor.PeerGovernorSnapshot;
+import org.yanoproject.runtime.sync.SyncSubsystem;
+import org.yanoproject.runtime.sync.UpstreamStatus;
+import org.yanoproject.p2p.governor.PeerStoreEntry;
+import org.yanoproject.runtime.sync.validation.BodyValidator;
+import org.yanoproject.runtime.db.RocksDbSupplier;
+import org.yanoproject.runtime.tx.TxSubsystem;
+import org.yanoproject.p2p.tx.diffusion.TxDiffusionStats;
+import org.yanoproject.runtime.utxo.UtxoSubsystem;
+import org.yanoproject.runtime.utxo.UtxoStoreWriter;
+import org.yanoproject.runtime.validation.DefaultConsensusListener;
+import lombok.extern.slf4j.Slf4j;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Deque;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
+
+/**
+ * Legacy-compatible runtime facade that now delegates major responsibilities to
+ * subsystem classes while preserving the public node role interfaces.
+ */
+@Slf4j
+public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
+        MempoolQueryGateway,
+        MempoolAdminGateway,
+        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider,
+        org.yanoproject.api.events.stream.NodeEventStream {
+    // Configuration
+    private final YanoConfig config;
+
+    // Client components (for syncing with remote nodes)
+    private final String remoteCardanoHost;
+    private final int remoteCardanoPort;
+    private final long protocolMagic;
+    private final ChainStorageSubsystem chainStorage;
+    private final ChainState chainState;
+
+    // Server components (for serving other clients)
+    private final ServeSubsystem serveSubsystem;
+    private final org.yanoproject.runtime.appchain.AppChainManager appChainManager;
+    private final DomainApiRegistry domainApiRegistry;
+    private final org.yanoproject.runtime.plugins.LocalReadModelRegistry
+            localReadModels;
+    private final org.yanoproject.runtime.plugins.LocalReadModelContributionRegistry
+            localReadModelContributions;
+    private final PluginOperationsRegistry pluginOperationsRegistry;
+    private final RelayConnectionManager relayConnectionManager;
+    private final int serverPort;
+
+    // Block producer (devnet, slot-leader, or time-travel strategy)
+    private final ProducerSubsystem producerSubsystem = new ProducerSubsystem();
+    private final ProducerStartupCoordinator producerStartupCoordinator;
+    private final ProducerStartupPlan producerStartupPlanOverride;
+    private volatile EpochNonceState epochNonceState; // shared nonce state (accessible for REST endpoint)
+    private volatile GenesisConfig genesisConfig;
+    private volatile StaticProtocolParamsSnapshotCache staticProtocolParamsSnapshotCache;
+    private volatile long resolvedGenesisTimestamp;
+    private final ChronologySubsystem chronologySubsystem;
+    private final TxSubsystem txSubsystem;
+    private final DevnetRuntime devnetRuntime;
+    // Status tracking
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private volatile boolean unsafeLedgerApplyShutdown;
+
+    @FunctionalInterface
+    interface SyncShutdownAction {
+        boolean stopForShutdown() throws Throwable;
+    }
+
+    /** Safety-critical resource actions executed after ordinary runtime services stop. */
+    interface RuntimeCloseActions {
+        void closeSync();
+
+        boolean drainUtxo();
+
+        void markUnsafe();
+
+        void closePluginManager();
+
+        void closeDomainApis();
+
+        default void closePluginOperations() {
+        }
+
+        void closePluginEnvironment();
+
+        void closeUtxoEventHandlers();
+
+        void closeLedgerEventHandlers();
+
+        void closeEventBus();
+
+        void closeUtxo();
+
+        void closeLedger();
+
+        void closeSchedulers();
+
+        void closeChainStorage(boolean unsafeLedgerApplyWorker);
+    }
+
+    record RuntimeCloseOutcome(boolean unsafeLedgerApplyWorker, Throwable failure) {
+    }
+
+    /**
+     * Cached static protocol-parameter snapshot keyed by the source JSON.
+     */
+    private record StaticProtocolParamsSnapshotCache(String json, ProtocolParamsSnapshot snapshot) {}
+
+    private record SourcePortProbeTarget(String host, int port) {}
+
+    private final Schedulers schedulers;
+    private final ScheduledExecutorService scheduler;
+    private final NodeKernel kernel;
+
+    private final CopyOnWriteArrayList<BlockChainDataListener> blockChainDataListeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<NodeEventListener> nodeEventListeners = new CopyOnWriteArrayList<>();
+
+    // Events & Plugins
+    private final RuntimeOptions runtimeOptions;
+    private final BodyValidator bodyValidator;
+    private final EventBus eventBus;
+    private final org.yanoproject.runtime.events.L1EventFanout l1EventFanout;
+    private final PluginRuntimeEnvironment pluginEnvironment;
+    private PluginManager pluginManager;
+    private final UtxoSubsystem utxoSubsystem;
+    private final LedgerStateSubsystem ledgerStateSubsystem;
+    private final SyncSubsystem syncSubsystem;
+    private volatile UtxoStoreWriter utxoStore;
+    private volatile List<String> projectionFilterPreflight;
+    private BootstrapDataProvider bootstrapDataProvider;
+    private volatile List<SubscriptionHandle> nonceListenerSubscriptions = List.of();
+
+    // In-memory devnet genesis — set before start() for devnet mode without genesis files
+    private InMemoryDevnetGenesis inMemoryDevnetGenesis;
+
+    // Adhoc rollback — one-shot rollback on startup, before chain sync.
+    // Set via command line, NOT application.yml (to avoid accidental re-rollback).
+    private long adhocRollbackToSlot = -1;
+    private int adhocRollbackToEpoch = -1;
+
+    public RuntimeNode(YanoConfig config) {
+        this(config, RuntimeOptions.defaults(), null);
+    }
+
+    public RuntimeNode(YanoConfig config, RuntimeOptions options) {
+        this(config, options, null);
+    }
+
+    /**
+     * @param inMemoryGenesis in-memory devnet genesis (nullable — only for devnet block-producer mode)
+     */
+    public RuntimeNode(YanoConfig config, RuntimeOptions options, InMemoryDevnetGenesis inMemoryGenesis) {
+        this(config, options, inMemoryGenesis, null);
+    }
+
+    /**
+     * Constructor used by explicit runtime assembly recipes.
+     *
+     * @param inMemoryGenesis in-memory devnet genesis (nullable — only for devnet block-producer mode)
+     * @param producerStartupPlan recipe-selected block producer startup plan; {@code null} derives a plan from config
+     */
+    public RuntimeNode(YanoConfig config,
+                       RuntimeOptions options,
+                       InMemoryDevnetGenesis inMemoryGenesis,
+                       ProducerStartupPlan producerStartupPlan) {
+        this(config, options, inMemoryGenesis, producerStartupPlan, new Schedulers());
+    }
+
+    /**
+     * Constructor used by explicit runtime assembly recipes that already own a
+     * kernel scheduler context.
+     *
+     * @param inMemoryGenesis in-memory devnet genesis (nullable — only for devnet block-producer mode)
+     * @param producerStartupPlan recipe-selected block producer startup plan; {@code null} derives a plan from config
+     * @param schedulers kernel scheduler context shared by runtime subsystems
+     */
+    public RuntimeNode(YanoConfig config,
+                       RuntimeOptions options,
+                       InMemoryDevnetGenesis inMemoryGenesis,
+                       ProducerStartupPlan producerStartupPlan,
+                       Schedulers schedulers) {
+        this(config, options, inMemoryGenesis, producerStartupPlan, schedulers, BodyValidator.none());
+    }
+
+    public RuntimeNode(YanoConfig config,
+                       RuntimeOptions options,
+                       InMemoryDevnetGenesis inMemoryGenesis,
+                       ProducerStartupPlan producerStartupPlan,
+                       Schedulers schedulers,
+                       BodyValidator bodyValidator) {
+        this(config, options, inMemoryGenesis, producerStartupPlan, schedulers,
+                bodyValidator, null);
+    }
+
+    /** Runtime composition entry that transfers ownership of a validated plugin environment. */
+    public RuntimeNode(YanoConfig config,
+                       RuntimeOptions options,
+                       InMemoryDevnetGenesis inMemoryGenesis,
+                       ProducerStartupPlan producerStartupPlan,
+                       Schedulers schedulers,
+                       BodyValidator bodyValidator,
+                       PluginRuntimeEnvironment pluginEnvironment) {
+        if (inMemoryGenesis != null && (!config.isDevMode() || !config.isEnableBlockProducer())) {
+            throw new IllegalStateException(
+                    "In-memory devnet genesis is only valid when devMode=true and enableBlockProducer=true");
+        }
+        if (producerStartupPlan != null && !config.isEnableBlockProducer()) {
+            throw new IllegalStateException(
+                    "Producer startup plan is only valid when enableBlockProducer=true");
+        }
+        this.inMemoryDevnetGenesis = inMemoryGenesis;
+        this.config = config;
+        this.runtimeOptions = options != null ? options : RuntimeOptions.defaults();
+        this.bodyValidator = bodyValidator != null ? bodyValidator : BodyValidator.none();
+        this.producerStartupPlanOverride = producerStartupPlan;
+        this.schedulers = Objects.requireNonNull(schedulers, "schedulers");
+        this.scheduler = this.schedulers.scheduled();
+        DnsCachePolicy.configureForClientMode(this.runtimeOptions.globals(), config.isEnableClient());
+        this.remoteCardanoHost = config.getRemoteHost();
+        this.remoteCardanoPort = config.getRemotePort();
+        this.protocolMagic = config.getProtocolMagic();
+        this.serverPort = config.getServerPort();
+
+        this.chainStorage = new ChainStorageSubsystem(config, this.runtimeOptions, log);
+        this.chainState = chainStorage.chainState();
+        // Configure Yaci
+        YaciConfig.INSTANCE.setReturnBlockCbor(true);
+        YaciConfig.INSTANCE.setReturnTxBodyCbor(true);
+
+        log.info("Yano initialized");
+        log.info("Remote: {}:{} (magic: {})", remoteCardanoHost, remoteCardanoPort, protocolMagic);
+        log.info("Server port: {}", serverPort);
+        log.info("Storage: {}", config.isUseRocksDB() ? "RocksDB" : "InMemory");
+
+        // Event bus
+        EventsOptions ev = this.runtimeOptions.events();
+        this.eventBus = ev.enabled() ? new PropagatingEventBus() : new NoopEventBus();
+        this.l1EventFanout = new org.yanoproject.runtime.events.L1EventFanout(
+                ev.enabled() ? this.eventBus : null);
+        this.txSubsystem = new TxSubsystem(eventBus, scheduler, this.runtimeOptions, this::getUtxoState, log);
+        AtomicReference<Supplier<List<PeerStoreEntry>>> peerStoreSupplierRef =
+                new AtomicReference<>(List::of);
+        this.relayConnectionManager = new DefaultRelayConnectionManager(
+                (int) parseLong(
+                        this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS),
+                        DefaultRelayConnectionManager.DEFAULT_MAX_INBOUND_CONNECTIONS),
+                (int) parseLong(
+                        this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP),
+                        DefaultRelayConnectionManager.DEFAULT_MAX_CONNECTIONS_PER_IP),
+                log);
+        this.serveSubsystem = new ServeSubsystem(
+                serverPort,
+                protocolMagic,
+                chainState,
+                txSubsystem,
+                config.isEnableBlockProducer(),
+                txSubsystem::txDiffusion,
+                resolveBoolean(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.AUTO_DISCOVERY, false),
+                resolveString(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.ADVERTISED_HOST, ""),
+                (int) parseLong(this.runtimeOptions.globals().get(YanoPropertyKeys.Relay.ADVERTISED_PORT), serverPort),
+                resolveBoolean(this.runtimeOptions.globals(), YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, false),
+                () -> peerStoreSupplierRef.get().get(),
+                relayConnectionManager,
+                log);
+
+        try {
+            this.pluginEnvironment = pluginEnvironment != null
+                    ? pluginEnvironment
+                    : PluginRuntimeEnvironment.classpath(this.runtimeOptions.plugins(),
+                            Thread.currentThread().getContextClassLoader());
+        } catch (Throwable failure) {
+            Throwable outcome = failure;
+            outcome = closeConstructionResource(
+                    outcome, "server subsystem", serveSubsystem::close);
+            outcome = closeConstructionResource(
+                    outcome, "transaction subsystem", txSubsystem::close);
+            outcome = closeConstructionResource(outcome, "event bus", eventBus::close);
+            outcome = closeConstructionResource(
+                    outcome, "chain storage", chainStorage::close);
+            outcome = closeConstructionResource(outcome, "schedulers", schedulers::close);
+            throw propagateConstructionFailure(outcome);
+        }
+
+        Deque<Runnable> constructionCleanup = new ArrayDeque<>();
+        constructionCleanup.addLast(this.pluginEnvironment::close);
+        constructionCleanup.addLast(schedulers::close);
+        constructionCleanup.addLast(chainStorage::close);
+        constructionCleanup.addLast(eventBus::close);
+        constructionCleanup.addLast(txSubsystem::close);
+        constructionCleanup.addLast(serveSubsystem::close);
+        try {
+            this.pluginOperationsRegistry = new PluginOperationsRegistry(
+                    this.pluginEnvironment, log);
+            constructionCleanup.addLast(pluginOperationsRegistry::close);
+            // Discover/init plugins before sync assembly so validation customizers can
+            // participate in header-validator construction. startAll() still runs at startup.
+            if (this.runtimeOptions.plugins().enabled()) {
+                pluginManager = this.pluginEnvironment.createNodePluginManager(
+                        eventBus, scheduler, pluginOperationsRegistry);
+                constructionCleanup.addLast(pluginManager::close);
+                pluginManager.discoverAndInit();
+            }
+
+            this.appChainManager = buildAppChainManager();
+            if (appChainManager != null) {
+                constructionCleanup.addLast(appChainManager::stop);
+                serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
+            }
+            this.localReadModels =
+                    new org.yanoproject.runtime.plugins.LocalReadModelRegistry();
+            constructionCleanup.addLast(localReadModels::close);
+            this.localReadModelContributions =
+                    new org.yanoproject.runtime.plugins
+                            .LocalReadModelContributionRegistry(
+                            this.pluginEnvironment, runtimeNetwork(),
+                            appChainGateways(), localReadModels);
+            constructionCleanup.addLast(localReadModelContributions::close);
+            this.domainApiRegistry = new DomainApiRegistry(
+                    this.pluginEnvironment,
+                    appChainGateways(),
+                    log,
+                    localReadModels,
+                    new org.yanoproject.runtime.appchain.hostbridge
+                            .DefaultL1TransactionBuilderService(
+                            this::getUtxoState,
+                            this::anchorCclProtocolParams,
+                            () -> chainState.getTip() == null
+                                    ? 0 : chainState.getTip().getSlot()),
+                    pluginOperationsRegistry);
+            constructionCleanup.addLast(domainApiRegistry::close);
+
+            // Register default consensus listener (accept-all placeholder).
+            var consensusListener = new DefaultConsensusListener();
+            AnnotationListenerRegistrar.register(eventBus, consensusListener,
+                    SubscriptionOptions.builder().build());
+
+            chainStorage.runStartupMigrations();
+
+            this.utxoSubsystem = new UtxoSubsystem(
+                    config,
+                    this.runtimeOptions,
+                    chainState,
+                    rocksDbSupplierOrNull(),
+                    eventBus,
+                    scheduler,
+                    log);
+            constructionCleanup.addLast(utxoSubsystem::close);
+            this.utxoStore = utxoSubsystem.store();
+            this.ledgerStateSubsystem = new LedgerStateSubsystem(
+                    config,
+                    this.runtimeOptions,
+                    chainState,
+                    eventBus,
+                    log,
+                    rocksDbAccessOrNull(),
+                    eraMetadataStoreOrNull(),
+                    byronGenesisUtxoMetadataStoreOrNull(),
+                    chainState instanceof ChainStateSnapshots snapshots ? snapshots : null,
+                    () -> this.utxoStore,
+                    utxoSubsystem::state,
+                    this::resolveGenesisHash,
+                    inMemoryDevnetGenesis);
+            constructionCleanup.addLast(ledgerStateSubsystem::close);
+            if (appChainManager != null) {
+                getDefaultAccountStateStore().ifPresent(store -> {
+                    EpochParamProvider params = getEpochParamProvider();
+                    if (params != null) {
+                        appChainManager.wireL1EpochState(
+                                new org.yanoproject.runtime.appchain.hostbridge
+                                        .DefaultL1EpochStateProvider(store, chainState, params));
+                    }
+                });
+            }
+            this.chronologySubsystem = new ChronologySubsystem(
+                    new ChronologyService(this.chainState),
+                    eventBus,
+                    ledgerStateSubsystem);
+            PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
+                    createPeerClientFactory());
+            if (appChainManager != null && config.isClientEnabled()) {
+                // Shared app transport (ADR 005 M1 unification): when the L1
+                // upstream is also an app-group peer, app protocols ride its
+                // session instead of a second dedicated connection.
+                String appTransportMode = stringOf(this.runtimeOptions.globals()
+                        .get(YanoPropertyKeys.AppChain.TRANSPORT_MODE), "shared");
+                peerClientFactory = appChainManager.wrapPeerClientFactory(
+                        peerClientFactory, appTransportMode, remoteCardanoHost, remoteCardanoPort);
+            }
+            this.syncSubsystem = new SyncSubsystem(
+                    config,
+                    chainState,
+                    eventBus,
+                    scheduler,
+                    this.schedulers.tasks(),
+                    serveSubsystem,
+                    ledgerStateSubsystem,
+                    chainStorage,
+                    isRunning::get,
+                    this::getEpochParamProvider,
+                    this::currentGenesisBootstrapData,
+                    remoteCardanoHost,
+                    remoteCardanoPort,
+                    protocolMagic,
+                    log,
+                    this.bodyValidator,
+                    txSubsystem::txDiffusion,
+                    peerClientFactory,
+                    this::epochNonceForHeaderValidation,
+                    headerValidationLedgerViewProvider(),
+                    headerValidationCustomizers());
+            constructionCleanup.addLast(syncSubsystem::close);
+            relayConnectionManager.addListener(this.syncSubsystem.peerGovernorConnectionListener());
+            peerStoreSupplierRef.set(this.syncSubsystem::sharablePeerEntries);
+            this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());
+            this.devnetRuntime = RuntimeDevnetRuntime.create(
+                    this::rollbackDevnet,
+                    producerSubsystem::hasProduction,
+                    producerSubsystem::modeOrNull,
+                    this::advanceTimeBySlots,
+                    this::advanceTimeUntilSlot,
+                    this::advanceTimeBySeconds,
+                    this::catchUpToWallClock,
+                    this::shiftGenesisAndStartProducer,
+                    this::fundAddress,
+                    this::createDevnetSnapshot,
+                    this::restoreDevnetSnapshotAndGetTip,
+                    this::listDevnetSnapshots,
+                    this::deleteDevnetSnapshot);
+            this.kernel = new NodeKernel(
+                    runtimeKernelSubsystems(),
+                    new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
+            constructionCleanup.clear();
+        } catch (Throwable failure) {
+            throw propagateConstructionFailure(
+                    cleanupConstructionFailure(failure, constructionCleanup));
+        }
+    }
+
+    private Throwable cleanupConstructionFailure(
+            Throwable primary,
+            Deque<Runnable> cleanup
+    ) {
+        Throwable outcome = primary;
+        while (!cleanup.isEmpty()) {
+            try {
+                cleanup.removeLast().run();
+            } catch (Throwable cleanupFailure) {
+                outcome = recordPluginCleanupFailure(outcome, cleanupFailure);
+                log.warn("Runtime assembly cleanup failed (errorType={})",
+                        cleanupFailure.getClass().getName());
+            }
+        }
+        return outcome;
+    }
+
+    private Throwable closeConstructionResource(
+            Throwable primary,
+            String name,
+            Runnable cleanup
+    ) {
+        try {
+            cleanup.run();
+            return primary;
+        } catch (Throwable cleanupFailure) {
+            Throwable outcome = recordPluginCleanupFailure(primary, cleanupFailure);
+            log.warn("Runtime assembly cleanup failed for {} (errorType={})",
+                    name, cleanupFailure.getClass().getName());
+            return outcome;
+        }
+    }
+
+    private static RuntimeException propagateConstructionFailure(Throwable failure) {
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtime) return runtime;
+        return new IllegalStateException("Runtime construction cleanup failed", failure);
+    }
+
+    private RocksDbSupplier rocksDbSupplierOrNull() {
+        return chainStorage.rocksDbSupplierOrNull();
+    }
+
+    private RocksDbAccess rocksDbAccessOrNull() {
+        return chainStorage.rocksDbAccessOrNull();
+    }
+
+    /**
+     * Install an external hold on canonical ingestion for ADR-039 disk backpressure.
+     *
+     * <p>Applied to the header sync manager, which is where the node already implements a
+     * pause/resume loop. The same predicate governs both directions, so cleanup freeing disk
+     * resumes ingestion automatically without a second mechanism.
+     *
+     * @return false when no header sync manager is active yet
+     */
+    public boolean installArchiveIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+        if (syncSubsystem == null) return false;
+        // Registered on the subsystem rather than on the current manager: the manager belongs
+        // to a peer session that is replaced on every reconnect, and it does not exist at all
+        // before the node starts. The subsystem remembers the hold and re-applies it.
+        syncSubsystem.setIngestHold(hold, reason);
+        return true;
+    }
+
+    /**
+     * Authoritative pointer-address mapping for ADR-039 projection history.
+     *
+     * <p>Owned by the account-state store, which writes it while applying registration
+     * certificates. The archive therefore no longer needs its own sequential pointer
+     * lifecycle for the projection path.
+     */
+    /**
+     * Record that the as-of pointer index is maintained from genesis.
+     *
+     * <p>Called by projection history when it starts on an empty chainstate. The store refuses
+     * this on a chainstate that has already advanced, so a mid-chain activation cannot claim
+     * completeness it does not have.
+     *
+     * @return false when there is no account-state store to mark
+     */
+    public boolean markPointerIndexFromGenesis() {
+        var store = getDefaultAccountStateStore();
+        if (store.isEmpty()) return false;
+        store.get().markPointerIndexFromGenesis();
+        return true;
+    }
+
+    /**
+     * The complete genesis distribution, normalised once.
+     *
+     * <p>Reads the genesis configuration this node already loaded rather than re-parsing the
+     * files, and never the live UTXO column family - that is mutable and reflects spends, so
+     * reconstructing the original distribution from it would be wrong the moment a genesis
+     * output is spent.
+     */
+    public org.yanoproject.api.genesis.GenesisUtxoProvider genesisUtxoProvider() {
+        // Resolved when INVOKED, not when handed out. The projection asks for this during
+        // initialize(), which runs before the genesis configuration is loaded, so capturing the
+        // field here closed over null and produced a silently empty distribution - the exact
+        // failure this whole path exists to prevent.
+        return (blockNumber, slot, blockHash) -> {
+            var genesis = genesisConfig;
+            if (genesis == null) {
+                // Loud, not empty. An empty distribution is legitimate only when the
+                // configuration says so; "not loaded yet" must never be recorded as "none".
+                throw new IllegalStateException("genesis configuration is not loaded; refusing to"
+                        + " record an empty genesis distribution for this archive");
+            }
+            return org.yanoproject.api.genesis.GenesisUtxos.of(
+                    genesis.hasInitialFunds() ? genesis.getInitialFunds() : java.util.Map.of(),
+                    genesis.hasByronBalances() ? genesis.getByronBalances() : java.util.Map.of(),
+                    config.getProtocolMagic(), blockNumber, slot, blockHash);
+        };
+    }
+
+    /**
+     * Install the ADR-039 epoch artifact hook on the account-state store.
+     *
+     * <p>Returns false rather than silently doing nothing when the store is absent: a projection
+     * that believed it was capturing epoch artifacts and was not would produce an archive claiming
+     * epochs it never captured.
+     */
+    public boolean installEpochArtifactContributor(
+            org.yanoproject.api.archive.EpochArtifactContributor contributor) {
+        var store = getDefaultAccountStateStore();
+        if (store.isEmpty()) return false;
+        store.get().setEpochArtifactContributor(contributor);
+        return true;
+    }
+
+    /** The account-state store as a snapshot retention clamp, for artifact protection. */
+    public org.yanoproject.api.archive.SnapshotRetentionClamp snapshotRetentionClamp() {
+        return getDefaultAccountStateStore()
+                .map(store -> (org.yanoproject.api.archive.SnapshotRetentionClamp) store)
+                .orElse(org.yanoproject.api.archive.SnapshotRetentionClamp.NONE);
+    }
+
+    /** The account-state store itself, for reading epoch generations under lease. */
+    public java.util.Optional<org.yanoproject.ledgerstate.DefaultAccountStateStore>
+            accountStateStoreForArtifacts() {
+        return getDefaultAccountStateStore();
+    }
+
+    public org.yanoproject.api.archive.PointerCredentialSource pointerCredentialSource() {
+        return getDefaultAccountStateStore()
+                .map(store -> (org.yanoproject.api.archive.PointerCredentialSource) store)
+                .orElse(org.yanoproject.api.archive.PointerCredentialSource.NONE);
+    }
+
+    /**
+     * Install the ADR-039 projection contributor on the UTXO subsystem.
+     *
+     * <p>Routed through the node rather than {@code NodeKernel.subsystem(...)} because the
+     * kernel is composed of lifecycle stages, not the subsystem instances themselves, so a
+     * type lookup there would silently find nothing.
+     *
+     * @return false when no contributing UTXO store is present, so a caller can fail closed
+     *         rather than assume history is being captured
+     */
+    public boolean installProjectionContributor(
+            org.yanoproject.api.archive.CanonicalProjectionContributor contributor) {
+        return utxoSubsystem != null && utxoSubsystem.installProjectionContributor(contributor);
+    }
+
+    public List<String> configuredUtxoStorageFilters() {
+        List<String> resolved = utxoSubsystem.configuredStorageFilterNames(
+                pluginManager != null ? pluginManager.getStorageFilters() : List.of());
+        projectionFilterPreflight = List.copyOf(resolved);
+        return projectionFilterPreflight;
+    }
+
+    /**
+     * Shared chainstate RocksDB handles for optional host-side components.
+     *
+     * <p>Exposed for the ADR-039 projection outbox, whose column families live in this
+     * same database precisely so a contributor's projection write is atomic with the
+     * state it derives from. Empty for non-RocksDB chain states.
+     */
+    public java.util.Optional<RocksDbAccess> chainstateRocksAccess() {
+        return java.util.Optional.ofNullable(rocksDbAccessOrNull());
+    }
+
+    private EraMetadataStore eraMetadataStoreOrNull() {
+        return chainStorage.eraMetadataStoreOrNull();
+    }
+
+    private ByronGenesisUtxoMetadataStore byronGenesisUtxoMetadataStoreOrNull() {
+        return chainStorage.byronGenesisUtxoMetadataStoreOrNull();
+    }
+
+    @Override
+    public NodeKernel kernel() {
+        return kernel;
+    }
+
+    private List<Subsystem> runtimeKernelSubsystems() {
+        List<Subsystem> prePublication = appChainManager == null
+                ? List.of()
+                : List.of(appChainManager, localReadModelSubsystem());
+        return RuntimeKernelStages.create(runtimeKernelActions(), prePublication);
+    }
+
+    /**
+     * Starts derived read models only after every app-chain gateway is live.
+     * Reverse kernel shutdown then seals the read models before their source
+     * gateways stop, preserving both startup discovery and teardown ordering.
+     */
+    private Subsystem localReadModelSubsystem() {
+        return new Subsystem() {
+            private static final String NAME = "local-read-models";
+
+            @Override
+            public String name() {
+                return NAME;
+            }
+
+            @Override
+            public void start() {
+                localReadModelContributions.resume();
+            }
+
+            @Override
+            public void stop() {
+                localReadModelContributions.sealAndAwait();
+            }
+
+            @Override
+            public void close() {
+                // RuntimeNode owns and closes the registry with runtime resources.
+            }
+
+            @Override
+            public SubsystemHealth health() {
+                return SubsystemHealth.up(NAME);
+            }
+        };
+    }
+
+    /**
+     * Builds the app-chain manager from runtime globals when enabled
+     * (adr/app-layer/005; multi-chain per adr/app-layer/006 E5.2).
+     * Chains come from the indexed list (yano.app-chain.chains) when present,
+     * otherwise from the flat yano.app-chain.* keys (single chain).
+     * Returns null when disabled.
+     */
+    private org.yanoproject.runtime.appchain.AppChainManager buildAppChainManager() {
+        Map<String, Object> globals = this.runtimeOptions.globals();
+        if (!resolveBoolean(globals, YanoPropertyKeys.AppChain.ENABLED, false)) {
+            return null;
+        }
+
+        // Each chain: (suffix getter, prefix collector for plugin sub-maps like sinks.*)
+        List<java.util.function.Function<String, Object>> chainLookups = new java.util.ArrayList<>();
+        List<java.util.function.Function<String, Map<String, String>>> chainCollectors =
+                new java.util.ArrayList<>();
+        Object chainList = globals.get(YanoPropertyKeys.AppChain.CHAINS);
+        if (chainList instanceof List<?> entries && !entries.isEmpty()) {
+            for (Object entry : entries) {
+                if (entry instanceof Map<?, ?> chainMap) {
+                    chainLookups.add(suffix -> chainMap.get(suffix));
+                    chainCollectors.add(prefix -> collectPrefixed(chainMap, "", prefix));
+                }
+            }
+        } else {
+            // Flat single-chain config: full keys are "yano.app-chain." + suffix
+            chainLookups.add(suffix -> globals.get("yano.app-chain." + suffix));
+            chainCollectors.add(prefix -> collectPrefixed(globals, "yano.app-chain.", prefix));
+        }
+
+        String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
+        Path appChainStoragePath = AppChainStoragePaths.resolve(
+                rocksPath, config.getAppChainStoragePath());
+        log.info("App-chain storage root: {}", appChainStoragePath);
+        boolean strictValidation = resolveBoolean(
+                globals, YanoPropertyKeys.AppChain.VALIDATION_STRICT, false);
+        List<org.yanoproject.runtime.appchain.AppChainSubsystem> subsystems =
+                new java.util.ArrayList<>();
+        for (int i = 0; i < chainLookups.size(); i++) {
+            var appChainConfig = buildAppChainConfig(
+                    chainLookups.get(i), chainCollectors.get(i), strictValidation);
+            log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
+                    appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
+                    appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
+                    appChainConfig.anchoringEnabled());
+            var subsystem = new org.yanoproject.runtime.appchain.AppChainSubsystem(
+                    appChainConfig, protocolMagic, eventBus, null, appChainStoragePath.toString(),
+                    pluginEnvironment.classLoader(), pluginEnvironment.providers(), log);
+            subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            subsystem.wireL1BlockReplay(this::retainedL1Block);
+            subsystem.wireTxEvaluation(this);
+            subsystem.wireAnchorFees(this::anchorFeeParams);
+            subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
+            subsystems.add(subsystem);
+        }
+        return new org.yanoproject.runtime.appchain.AppChainManager(subsystems, log);
+    }
+
+    private BlockAppliedEvent retainedL1Block(long slot) {
+        Long blockNumber = chainState.getBlockNumberBySlot(slot);
+        if (blockNumber == null || !Objects.equals(
+                chainState.getSlotByBlockNumber(blockNumber), slot)) {
+            return null;
+        }
+        byte[] blockBytes = chainState.getBlockByNumber(blockNumber);
+        Era storedEra = chainState.getBlockEra(blockNumber);
+        if (blockBytes == null || StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+            return null;
+        }
+        try {
+            Block block = BlockSerializer.INSTANCE.deserialize(blockBytes);
+            HeaderBody header = block.getHeader() != null
+                    ? block.getHeader().getHeaderBody() : null;
+            if (header == null || header.getSlot() != slot
+                    || header.getBlockNumber() != blockNumber
+                    || header.getBlockHash() == null) {
+                return null;
+            }
+            Era era = block.getEra() != null ? block.getEra() : storedEra;
+            return new BlockAppliedEvent(
+                    era, slot, blockNumber, header.getBlockHash(), block);
+        } catch (RuntimeException malformedRetainedBlock) {
+            return null;
+        }
+    }
+
+    private String runtimeNetwork() {
+        String configured = config.getNetwork();
+        if (configured != null && !configured.isBlank()) {
+            return configured.trim().toLowerCase(java.util.Locale.ROOT);
+        }
+        String known = org.yanoproject.runtime.config.GenesisFileResolver
+                .networkDirForMagic(protocolMagic);
+        if (known != null) {
+            return known;
+        }
+        return config.isDevMode() ? "devnet" : "custom-" + protocolMagic;
+    }
+
+    /** Collect config entries whose full key starts with base+prefix, keyed by (key minus base). */
+    private static Map<String, String> collectPrefixed(Map<?, ?> source, String base, String prefix) {
+        Map<String, String> result = new java.util.LinkedHashMap<>();
+        String full = base + prefix;
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            String key = String.valueOf(entry.getKey());
+            if (key.startsWith(full) && entry.getValue() != null) {
+                result.put(key.substring(base.length()), String.valueOf(entry.getValue()));
+            }
+        }
+        return result;
+    }
+
+    /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
+    private org.yanoproject.api.appchain.AppChainConfig buildAppChainConfig(
+            java.util.function.Function<String, Object> get,
+            java.util.function.Function<String, Map<String, String>> collectPrefixed,
+            boolean strictValidation) {
+        Map<String, Object> settings = new java.util.LinkedHashMap<>();
+        for (String suffix : AppChainConfigParser.frameworkSuffixes()) {
+            Object value = get.apply(suffix);
+            if (value != null) {
+                settings.put(suffix, value);
+            }
+        }
+        for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
+            settings.putAll(collectPrefixed.apply(prefix));
+        }
+        if (strictValidation) {
+            AppChainConfigParser.validateStrict(settings);
+        }
+        return AppChainConfigParser.parse(settings);
+    }
+
+    /**
+     * Current linear-fee protocol params for anchor tx pricing (ADR 008.1
+     * I1.5); null when unavailable (the anchor falls back to its configured
+     * fee). Resolves the ledger-tracked params for the current epoch, or the
+     * static/genesis params on nodes without epoch-param tracking.
+     */
+    private org.yanoproject.runtime.appchain.AppChainSubsystem.AnchorFeeParams anchorFeeParams() {
+        try {
+            int epoch = epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0;
+            var params = getProtocolParameters(Math.max(epoch, 0)).orElse(null);
+            if (params != null && params.minFeeA() != null && params.minFeeB() != null) {
+                // Script-anchor pricing (008.4): ex-unit prices + PlutusV3 cost
+                // model; null fields fall back to Conway defaults in the anchor
+                long[] costModelV3 = null;
+                if (params.costModelsRaw() != null && params.costModelsRaw().get("PlutusV3") != null) {
+                    costModelV3 = params.costModelsRaw().get("PlutusV3").stream()
+                            .mapToLong(Long::longValue).toArray();
+                }
+                return new org.yanoproject.runtime.appchain.AppChainSubsystem.AnchorFeeParams(
+                        params.minFeeA(), params.minFeeB(),
+                        params.priceMem(), params.priceStep(), costModelV3);
+            }
+        } catch (Exception e) {
+            log.debug("Anchor fee params unavailable: {}", e.toString());
+        }
+        return null;
+    }
+
+    /** Memoized parse of the configured static protocol-param.json for the anchor fallback. */
+    private volatile com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams;
+    private volatile boolean anchorStaticCclParamsLoaded;
+
+    /**
+     * Current protocol parameters as the cardano-client-lib model, for
+     * QuickTx-based anchor tx construction (Iteration 4). Tracked / L1-derived
+     * params for the current epoch are primary; when those are unavailable
+     * (epoch-param tracking disabled or not yet resolved), fall back to the
+     * configured static {@code protocol-param.json}
+     * ({@code yano.genesis.protocol-parameters-file}). Returns {@code null} only
+     * when neither source is available — the anchor then fails closed.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorCclProtocolParams() {
+        try {
+            int epoch = Math.max(epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0, 0);
+            var ccl = ProtocolParamsMapper.toCardanoClient(getProtocolParameters(epoch).orElse(null));
+            if (ccl != null) {
+                return ccl;
+            }
+            return anchorStaticCclParams(epoch);
+        } catch (Exception e) {
+            log.debug("Anchor protocol params unavailable: {}", e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * The configured static {@code protocol-param.json} mapped to the CCL model
+     * (with the full raw PlutusV3 cost model), read directly regardless of
+     * epoch-param tracking mode and memoized. {@code null} when no file is
+     * configured.
+     */
+    private com.bloxbean.cardano.client.api.model.ProtocolParams anchorStaticCclParams(int epoch) {
+        if (anchorStaticCclParamsLoaded) {
+            return anchorStaticCclParams;
+        }
+        com.bloxbean.cardano.client.api.model.ProtocolParams result = null;
+        String file = config.getProtocolParametersFile();
+        if (file != null && !file.isBlank()) {
+            try {
+                String json = Files.readString(Path.of(file));
+                result = ProtocolParamsMapper.fromNodeProtocolParamToCardanoClient(json, epoch);
+            } catch (Exception e) {
+                log.debug("Anchor static protocol params unavailable from {}: {}", file, e.toString());
+            }
+        }
+        anchorStaticCclParams = result;
+        anchorStaticCclParamsLoaded = true;
+        return result;
+    }
+
+    /** All extension namespaces copied into {@link AppChainConfig#pluginSettings()}. */
+    static Map<String, String> appChainPluginSettings(
+            java.util.function.Function<String, Map<String, String>> collectPrefixed) {
+        Map<String, Object> settings = new java.util.LinkedHashMap<>();
+        for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
+            settings.putAll(collectPrefixed.apply(prefix));
+        }
+        return AppChainConfigParser.pluginSettings(settings);
+    }
+
+    private static String stringOf(Object value, String def) {
+        return value != null && !String.valueOf(value).isBlank() ? String.valueOf(value).trim() : def;
+    }
+
+    /** Single app-chain gateway (back-compat), or null when disabled or multiple chains. */
+    public org.yanoproject.api.appchain.AppChainGateway appChainGateway() {
+        return appChainManager != null ? appChainManager.single().orElse(null) : null;
+    }
+
+    /** All hosted app chains; empty registry when disabled. */
+    public org.yanoproject.api.appchain.AppChainGateways appChainGateways() {
+        return appChainManager != null
+                ? appChainManager
+                : org.yanoproject.api.appchain.AppChainGateways.empty();
+    }
+
+    /** Constrained ADR-011.3 domain API dispatcher. */
+    public org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
+        return domainApiRegistry;
+    }
+
+    public org.yanoproject.api.plugin.domain.LocalReadModelHost
+            localReadModels() {
+        return localReadModels;
+    }
+
+    /** Cached ADR-011.4 operations view; reading it never invokes plugin code. */
+    public org.yanoproject.api.plugin.operations.PluginOperationsView
+            pluginOperations() {
+        return pluginOperationsRegistry;
+    }
+
+    private SubsystemHealth runtimeHealth(String name) {
+        try {
+            NodeStatus status = getStatus();
+            if (status != null && status.isRuntimeDegraded()) {
+                return SubsystemHealth.degraded(name, status.getRuntimeDegradedReason());
+            }
+            if (status != null && status.isPeerRecoveryTerminal()) {
+                return SubsystemHealth.down(name, status.getPeerTerminalFailureMessage());
+            }
+            if (status != null && status.getStatusMessage() != null
+                    && status.getStatusMessage().toLowerCase().contains("error")) {
+                return SubsystemHealth.down(name, status.getStatusMessage());
+            }
+            return SubsystemHealth.up(name);
+        } catch (Exception e) {
+            return SubsystemHealth.down(name, e.toString());
+        }
+    }
+
+    private RuntimeKernelStages.Actions runtimeKernelActions() {
+        return new RuntimeKernelStages.Actions() {
+            @Override
+            public boolean isClosed() {
+                return closed.get();
+            }
+
+            @Override
+            public boolean markRunningForStartup() {
+                return isRunning.compareAndSet(false, true);
+            }
+
+            @Override
+            public void markStoppedAfterStartupFailure() {
+                isRunning.set(false);
+            }
+
+            @Override
+            public boolean markStoppingForShutdown() {
+                return isRunning.compareAndSet(true, false);
+            }
+
+            @Override
+            public RuntimeMaintenanceGate maintenanceGate() {
+                return chainStorage.maintenanceGate();
+            }
+
+            @Override
+            public void logStarting() {
+                log.info("Starting Yano...");
+            }
+
+            @Override
+            public void logAlreadyRunning() {
+                log.warn("Node is already running");
+            }
+
+            @Override
+            public void logStopping() {
+                log.info("Stopping Yano...");
+            }
+
+            @Override
+            public void logStopped() {
+                log.info("Yano stopped");
+            }
+
+            @Override
+            public void logStartupCleanupFailure(Throwable failure) {
+                log.warn("Runtime cleanup after failed startup also failed (errorType={})",
+                        failure.getClass().getName());
+            }
+
+            @Override
+            public void stopRuntimeServices() {
+                RuntimeNode.this.stopRuntimeServices();
+            }
+
+            @Override
+            public void startPluginsAndInitializeFilters() {
+                RuntimeNode.this.startPluginsAndInitializeFilters();
+            }
+
+            @Override
+            public void stopPluginsAfterRuntimeDrain() {
+                RuntimeNode.this.stopPluginsAfterRuntimeDrain();
+            }
+
+            @Override
+            public void closeRuntimeResourcesUnderMaintenance() {
+                withRuntimeMaintenance("node close", () -> closeRuntimeResources(unsafeLedgerApplyShutdown));
+            }
+
+            @Override
+            public SubsystemHealth runtimeHealth(String name) {
+                return RuntimeNode.this.runtimeHealth(name);
+            }
+
+            @Override
+            public boolean isServerEnabled() {
+                return config.isEnableServer();
+            }
+
+            @Override
+            public boolean deferServerStartUntilClientStateReady() {
+                return config.isEnableServer() && config.isEnableClient() && !config.isEnableBlockProducer();
+            }
+
+            @Override
+            public void startServer() {
+                RuntimeNode.this.startServer();
+            }
+
+            @Override
+            public void stopServer() {
+                serveSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth serverHealth(String stageName) {
+                return config.isEnableServer() && isRunning.get()
+                        ? serveSubsystem.health()
+                        : SubsystemHealth.up(stageName);
+            }
+
+            @Override
+            public String txName() {
+                return txSubsystem.name();
+            }
+
+            @Override
+            public void startTx() {
+                txSubsystem.start();
+            }
+
+            @Override
+            public void stopTx() {
+                txSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth txHealth() {
+                return txSubsystem.health();
+            }
+
+            @Override
+            public void runBootstrapRecovery() {
+                loadGenesisConfigForStartup();
+                utxoSubsystem.initializeOrValidateFullStateGenesis(
+                        genesisConfig, config.getProtocolMagic());
+                if (config.isEnableBootstrap() && config.isEnableClient()
+                        && chainState.getTip() == null && chainState.getHeaderTip() == null) {
+                    performBootstrap();
+                }
+                validateChainState();
+                performStartupAdhocRollback();
+                completeStartupDerivedStateRecovery();
+            }
+
+            @Override
+            public String utxoName() {
+                return utxoSubsystem.name();
+            }
+
+            @Override
+            public void startUtxo() {
+                utxoSubsystem.startBackgroundServices();
+            }
+
+            @Override
+            public void stopUtxo() {
+                utxoSubsystem.pauseBackgroundServices();
+            }
+
+            @Override
+            public SubsystemHealth utxoHealth() {
+                return utxoSubsystem.health();
+            }
+
+            @Override
+            public String ledgerStateName() {
+                return ledgerStateSubsystem.name();
+            }
+
+            @Override
+            public void startLedgerState() {
+                ledgerStateSubsystem.start();
+            }
+
+            @Override
+            public void stopLedgerState() {
+                ledgerStateSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth ledgerStateHealth() {
+                return ledgerStateSubsystem.health();
+            }
+
+            @Override
+            public String chainStorageName() {
+                return chainStorage.name();
+            }
+
+            @Override
+            public void startChainPrune() {
+                chainStorage.startBlockPruneService();
+            }
+
+            @Override
+            public void stopChainPrune() {
+                chainStorage.stopBlockPruneService();
+            }
+
+            @Override
+            public SubsystemHealth chainStorageHealth() {
+                return chainStorage.health();
+            }
+
+            @Override
+            public String producerName() {
+                return producerSubsystem.name();
+            }
+
+            @Override
+            public void startProducer() {
+                if (config.isEnableBlockProducer()) {
+                    producerStartupCoordinator.start();
+                }
+            }
+
+            @Override
+            public void stopProducer() {
+                producerSubsystem.stop();
+            }
+
+            @Override
+            public SubsystemHealth producerHealth() {
+                return producerSubsystem.health();
+            }
+
+            @Override
+            public void closeNonceListeners() {
+                closeNonceListenerSubscriptions();
+            }
+
+            @Override
+            public String chronologyName() {
+                return chronologySubsystem.name();
+            }
+
+            @Override
+            public void startChronology() {
+                initSlotTimeCalculator();
+            }
+
+            @Override
+            public SubsystemHealth chronologyHealth() {
+                return chronologySubsystem.health();
+            }
+
+            @Override
+            public String syncName() {
+                return syncSubsystem.name();
+            }
+
+            @Override
+            public void startSync() {
+                initRelayNonceTrackingIfRequired();
+                if (config.isEnableClient()) {
+                    syncSubsystem.startClientSync();
+                }
+            }
+
+            @Override
+            public void stopSyncForShutdown() {
+                stopSyncForShutdownSafely(
+                        syncSubsystem::stopForShutdown,
+                        () -> unsafeLedgerApplyShutdown = true);
+            }
+
+            @Override
+            public SubsystemHealth syncHealth() {
+                return config.isEnableClient() ? syncSubsystem.health() : SubsystemHealth.up(syncSubsystem.name());
+            }
+
+            @Override
+            public void startPublication() {
+                publishStartupEvent();
+            }
+
+            @Override
+            public void finishSuccessfulStartup() {
+                log.info("Yano started successfully");
+                printStartupStatus();
+            }
+        };
+    }
+
+    private ChainStateSnapshots snapshotsOrThrow() {
+        return chainStorage.snapshotsOrThrow();
+    }
+
+    private BootstrapChainStateWriter bootstrapWriterOrNull() {
+        return chainStorage.bootstrapWriterOrNull();
+    }
+
+    private ChainStateRecovery chainStateRecoveryOrNull() {
+        return chainStorage.recoveryOrNull();
+    }
+
+    @Override
+    public Optional<DevnetRuntime> devnetRuntime() {
+        return Optional.of(devnetRuntime);
+    }
+
+    @Override
+    public UtxoState getUtxoState() {
+        return utxoSubsystem.state();
+    }
+
+    public LedgerStateProvider getLedgerStateProvider() {
+        return ledgerStateSubsystem.ledgerStateProvider();
+    }
+
+    public EpochParamProvider getEpochParamProvider() {
+        return ledgerStateSubsystem.epochParamProvider();
+    }
+
+    private boolean epochParamsTrackingEnabled() {
+        return ledgerStateSubsystem.epochParamsTrackingEnabled();
+    }
+
+    private String runtimeProtocolParametersFile() {
+        return epochParamsTrackingEnabled() ? null : config.getProtocolParametersFile();
+    }
+
+    private String runtimeProtocolParametersJson() {
+        if (inMemoryDevnetGenesis == null || epochParamsTrackingEnabled()) {
+            return null;
+        }
+        return inMemoryDevnetGenesis.protocolParametersJson();
+    }
+
+    /**
+     * Resolve the *effective* {@link EpochParamProvider} for nonce evolution.
+     * Returns the {@link EpochParamTracker} when wired and enabled — it carries on-chain
+     * protocol-param updates (e.g. mainnet epoch 259 extraEntropy). Falls back to the
+     * genesis-backed {@link #epochParamProvider} otherwise.
+     * <p>
+     * Mirrors the pattern at {@code DefaultAccountStateStore.java:1362}.
+     */
+    private EpochParamProvider effectiveEpochParamProvider() {
+        return ledgerStateSubsystem.effectiveEpochParamProvider();
+    }
+
+    private ProtocolVersionSupplier createBlockProtocolVersionSupplier() {
+        return resolveBlockProtocolVersionSupplier(
+                epochParamsTrackingEnabled(),
+                effectiveEpochParamProvider(),
+                getLedgerStateProvider(),
+                this::createStaticBlockProtocolVersionSupplier,
+                this::createGenesisBlockProtocolVersionSupplier);
+    }
+
+    public static ProtocolVersionSupplier resolveBlockProtocolVersionSupplier(boolean epochParamsTrackingEnabled,
+                                                                              EpochParamProvider effectiveProvider,
+                                                                              LedgerStateProvider ledgerStateProvider,
+                                                                              Supplier<ProtocolVersionSupplier> staticSupplier,
+                                                                              Supplier<ProtocolVersionSupplier> genesisSupplier) {
+        if (epochParamsTrackingEnabled) {
+            EpochParamTracker tracker = effectiveProvider instanceof EpochParamTracker t && t.isEnabled()
+                    ? t : null;
+            if (tracker != null && ledgerStateProvider != null) {
+                log.info("Block protocol version source: effective-ledger");
+                return new EffectiveProtocolVersionSupplier(
+                        ledgerStateProvider,
+                        effectiveProvider.getEpochSlotCalc(),
+                        tracker);
+            }
+
+            log.warn("Epoch-param tracking is enabled but effective block protocol version source is unavailable "
+                            + "(tracker={}, ledgerStateProvider={}). Falling back to protocol-param.json / Shelley genesis.",
+                    tracker != null, ledgerStateProvider != null);
+        }
+
+        ProtocolVersionSupplier staticProtocolVersionSupplier = staticSupplier != null ? staticSupplier.get() : null;
+        if (staticProtocolVersionSupplier != null) {
+            return staticProtocolVersionSupplier;
+        }
+
+        ProtocolVersionSupplier genesisProtocolVersionSupplier = genesisSupplier != null ? genesisSupplier.get() : null;
+        if (genesisProtocolVersionSupplier != null) {
+            return genesisProtocolVersionSupplier;
+        }
+
+        throw new IllegalStateException(
+                "No protocol version source available for block production. Configure epoch-param tracking "
+                        + "with ledger state, protocol-param.json, or a valid Shelley genesis protocolVersion.");
+    }
+
+    private ProtocolVersionSupplier createStaticBlockProtocolVersionSupplier() {
+        // Static fallback mode is fixed until the operator reconfigures or effective tracking becomes available.
+        String protocolParamsJson = null;
+        String source = null;
+        if (genesisConfig != null && genesisConfig.hasProtocolParameters()) {
+            protocolParamsJson = genesisConfig.getProtocolParameters();
+            source = inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getProtocolParametersFile();
+        } else if (inMemoryDevnetGenesis != null
+                && inMemoryDevnetGenesis.protocolParametersJson() != null
+                && !inMemoryDevnetGenesis.protocolParametersJson().isBlank()) {
+            protocolParamsJson = inMemoryDevnetGenesis.protocolParametersJson();
+            source = "in-memory-devnet";
+        } else if (config.getProtocolParametersFile() != null
+                && !config.getProtocolParametersFile().isBlank()) {
+            source = config.getProtocolParametersFile();
+            try {
+                protocolParamsJson = Files.readString(Path.of(config.getProtocolParametersFile()));
+            } catch (Exception e) {
+                log.warn("Failed to read protocol-param.json for block protocol version fallback file={}: {}",
+                        source, e.toString());
+                return null;
+            }
+        }
+
+        if (protocolParamsJson == null || protocolParamsJson.isBlank()) {
+            return null;
+        }
+
+        try {
+            StaticProtocolVersionSupplier supplier =
+                    StaticProtocolVersionSupplier.fromProtocolParametersJson(protocolParamsJson);
+            ProtocolVersion version = supplier.getProtocolVersion(0);
+            log.info("Block protocol version source: protocol-param-json file={} version={}.{}",
+                    sourceLabel(source), version.major(), version.minor());
+            return supplier;
+        } catch (Exception e) {
+            log.warn("Failed to resolve block protocol version from protocol-param.json file={}: {}",
+                    sourceLabel(source), e.toString());
+            return null;
+        }
+    }
+
+    private ProtocolVersionSupplier createGenesisBlockProtocolVersionSupplier() {
+        // Genesis fallback mode is fixed until the operator reconfigures or effective tracking becomes available.
+        var shelley = genesisConfig != null ? genesisConfig.getShelleyGenesisData() : null;
+        if (shelley == null && inMemoryDevnetGenesis != null) {
+            shelley = inMemoryDevnetGenesis.shelley();
+        }
+        if (shelley == null) {
+            return null;
+        }
+
+        long major = shelley.protocolMajor();
+        long minor = shelley.protocolMinor();
+        if (major <= 0 || minor < 0) {
+            log.warn("Shelley genesis protocolVersion is invalid for block protocol version fallback "
+                            + "file={} version={}.{}",
+                    sourceLabel(inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getShelleyGenesisFile()),
+                    major, minor);
+            return null;
+        }
+
+        ProtocolVersionSupplier supplier = ProtocolVersionSupplier.fixed(major, minor);
+        String source = inMemoryDevnetGenesis != null ? "in-memory-devnet" : config.getShelleyGenesisFile();
+        log.info("Block protocol version source: shelley-genesis file={} version={}.{}",
+                sourceLabel(source), major, minor);
+        return supplier;
+    }
+
+    private static String sourceLabel(String source) {
+        return source != null && !source.isBlank() ? source : "not-configured";
+    }
+
+    public AccountStateStore getAccountStateStore() {
+        return ledgerStateSubsystem.accountStateStore();
+    }
+
+    @Override
+    public Optional<DefaultAccountStateStore> getDefaultAccountStateStore() {
+        AccountStateStore store = getAccountStateStore();
+        return store instanceof DefaultAccountStateStore defaultStore
+                ? Optional.of(defaultStore)
+                : Optional.empty();
+    }
+
+    @Override
+    public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
+        chainStorage.setBlockBodyRetentionBoundary(boundary);
+    }
+
+    private void completeStartupDerivedStateRecovery() {
+        ledgerStateSubsystem.completeStartupRecovery(utxoSubsystem::completeStartupRecovery);
+    }
+
+    private Throwable pauseRuntimeBackgroundServices(Throwable failure) {
+        Throwable outcome = attemptRuntimeCleanup(
+                failure, "UTXO background services", utxoSubsystem::pauseBackgroundServices);
+        outcome = attemptRuntimeCleanup(
+                outcome, "ledger-state background services", ledgerStateSubsystem::stop);
+        return attemptRuntimeCleanup(
+                outcome, "chain-storage prune service", chainStorage::stopBlockPruneService);
+    }
+
+    private void startPluginsAndInitializeFilters() {
+        // A stopped runtime seals every typed provider/product facade before
+        // bundle teardown. Reopen admission only after the previous cycle's
+        // callback and product-cleanup barriers have reached quiescence.
+        pluginEnvironment.resumeContributionCallbacks();
+        boolean pluginsStarted = false;
+        try {
+            if (pluginManager != null && runtimeOptions.plugins().enabled()) {
+                pluginManager.startAll();
+                pluginsStarted = true;
+            }
+            domainApiRegistry.resume();
+            utxoSubsystem.initializeFilterChain(
+                    pluginManager != null ? pluginManager.getStorageFilters() : List.of(),
+                    projectionFilterPreflight);
+            utxoSubsystem.startIndexContributors(pluginEnvironment.providers());
+            // Health and metrics may depend on services contributed by the
+            // ordinary plugin planes, so construct telemetry only after both
+            // NodePlugin and domain products are active.
+            pluginOperationsRegistry.activateTelemetry();
+            pluginOperationsRegistry.startSampling();
+        } catch (Throwable failure) {
+            boolean stopNodePlugins = pluginsStarted;
+            Runnable stopPlugins = () -> stopDomainAndNodePlugins(stopNodePlugins);
+            throw rollbackPluginStartup(failure, stopPlugins,
+                    pluginEnvironment::sealContributionCallbacks);
+        }
+    }
+
+    private void stopDomainAndNodePlugins(boolean stopNodePlugins) {
+        Throwable failure = null;
+        try {
+            utxoSubsystem.stopIndexContributors();
+        } catch (Throwable indexFailure) {
+            failure = recordPluginCleanupFailure(failure, indexFailure);
+        }
+        try {
+            pluginOperationsRegistry.sealAndAwait();
+        } catch (Throwable operationsFailure) {
+            failure = recordPluginCleanupFailure(failure, operationsFailure);
+        }
+        try {
+            domainApiRegistry.sealAndAwait();
+        } catch (Throwable domainFailure) {
+            failure = recordPluginCleanupFailure(failure, domainFailure);
+        }
+        try {
+            localReadModelContributions.sealAndAwait();
+        } catch (Throwable readModelFailure) {
+            failure = recordPluginCleanupFailure(failure, readModelFailure);
+        }
+        if (stopNodePlugins) {
+            try {
+                pluginManager.stopAll();
+            } catch (Throwable pluginFailure) {
+                failure = recordPluginCleanupFailure(failure, pluginFailure);
+            }
+        }
+        if (failure != null) {
+            throw propagatePluginCleanupFailure(failure);
+        }
+    }
+
+    static RuntimeException rollbackPluginStartup(
+            Throwable primary,
+            Runnable stopPlugins,
+            Runnable sealContributions
+    ) {
+        Throwable outcome = primary;
+        try {
+            stopPlugins.run();
+        } catch (Throwable stopFailure) {
+            outcome = recordPluginCleanupFailure(outcome, stopFailure);
+        }
+        // Sealing is unconditional, including after a fatal or repeated
+        // stop failure, so rollback cannot accidentally leave admission open.
+        try {
+            sealContributions.run();
+        } catch (Throwable sealFailure) {
+            outcome = recordPluginCleanupFailure(outcome, sealFailure);
+        }
+        return propagatePluginCleanupFailure(outcome);
+    }
+
+    static Throwable recordPluginCleanupFailure(Throwable current, Throwable next) {
+        return LifecycleFailures.merge(current, next);
+    }
+
+    private static RuntimeException propagatePluginCleanupFailure(Throwable failure) {
+        if (failure instanceof Error fatal) {
+            throw fatal;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return new IllegalStateException("Plugin startup cleanup failed", failure);
+    }
+
+    static void stopSyncForShutdownSafely(
+            SyncShutdownAction stopAction,
+            Runnable markUnsafe
+    ) {
+        Objects.requireNonNull(stopAction, "stopAction");
+        Objects.requireNonNull(markUnsafe, "markUnsafe");
+        boolean unsafeLedgerApplyWorker;
+        try {
+            unsafeLedgerApplyWorker = stopAction.stopForShutdown();
+        } catch (Throwable stopFailure) {
+            // A failed stop cannot prove the ledger-apply worker is quiescent.
+            // Mark the generation unsafe before reverse kernel teardown can
+            // reach plugin, EventBus, or database ownership.
+            Throwable outcome = stopFailure;
+            try {
+                markUnsafe.run();
+            } catch (Throwable markFailure) {
+                outcome = recordPluginCleanupFailure(outcome, markFailure);
+            }
+            throw propagatePluginCleanupFailure(outcome);
+        }
+        if (unsafeLedgerApplyWorker) {
+            // Marker failures are marker failures, not failed stop attempts;
+            // do not route them back through the stop catch or invoke twice.
+            markUnsafe.run();
+        }
+    }
+
+    static void requireSafeRestart(boolean unsafeLedgerApplyShutdown) {
+        if (unsafeLedgerApplyShutdown) {
+            throw new IllegalStateException(
+                    "Cannot restart after an unsafe ledger-apply shutdown; "
+                            + "create a new runtime instance");
+        }
+    }
+
+    private void publishStartupEvent() {
+        EventMetadata meta = EventMetadata.builder().origin("runtime").build();
+        eventBus.publish(
+                new NodeStartedEvent(System.currentTimeMillis()),
+                meta,
+                PublishOptions.builder().build());
+    }
+
+    /**
+     * Start the node (both client and server)
+     */
+    public void start() {
+        requirePluginTeardownAllowed("start the runtime");
+        requireSafeRestart(unsafeLedgerApplyShutdown);
+        try {
+            kernel.start();
+        } catch (KernelLifecycleException e) {
+            throw unwrapKernelStartupFailure(e);
+        }
+    }
+
+    private RuntimeException unwrapKernelStartupFailure(KernelLifecycleException e) {
+        Throwable cause = e.getCause();
+        if (cause instanceof RuntimeException || cause instanceof Error) {
+            Throwable outcome = cause;
+            for (Throwable suppressed : e.getSuppressed()) {
+                outcome = recordPluginCleanupFailure(outcome, suppressed);
+            }
+            return propagatePluginCleanupFailure(outcome);
+        }
+        return e;
+    }
+
+    private void loadGenesisConfigForStartup() {
+        // Always load genesis config if any genesis files are configured (for protocol params, epoch length, etc.)
+        if (genesisConfig != null || (!hasAnyGenesisConfig() && inMemoryDevnetGenesis == null)) {
+            return;
+        }
+
+        if (inMemoryDevnetGenesis != null) {
+            genesisConfig = GenesisConfig.fromInMemory(
+                    inMemoryDevnetGenesis.shelley(),
+                    inMemoryDevnetGenesis.byron(),
+                    runtimeProtocolParametersJson());
+        } else {
+            genesisConfig = GenesisConfig.load(
+                    config.getShelleyGenesisFile(),
+                    config.getByronGenesisFile(),
+                    runtimeProtocolParametersFile());
+        }
+
+        // Propagate epoch params from genesis to config (for REST layer).
+        propagateGenesisToConfig(genesisConfig);
+
+        log.info("Genesis config loaded (protocolParams={}, shelleyData={})",
+                genesisConfig.hasProtocolParameters() ? "available" : "none",
+                genesisConfig.getShelleyGenesisData() != null ? "available" : "none");
+    }
+
+    /**
+     * Perform bootstrap using the provided data provider.
+     * Called automatically during start() if bootstrap is enabled and chain state is empty.
+     */
+    private void performBootstrap() {
+        BootstrapChainStateWriter bootstrapWriter = bootstrapWriterOrNull();
+        if (bootstrapWriter == null) {
+            log.warn("Bootstrap requires synthetic chain-state write support. Skipping.");
+            return;
+        }
+
+        if (bootstrapDataProvider == null) {
+            throw new IllegalStateException(
+                    "Bootstrap is enabled but no BootstrapDataProvider is configured. "
+                            + "Set a provider via setBootstrapDataProvider() before calling start().");
+        }
+
+        log.info("=== Bootstrap State Mode ===");
+        log.info("Block: {}", config.getBootstrapBlockNumber() <= 0 ? "latest" : config.getBootstrapBlockNumber());
+
+        BootstrapService bootstrapService = new BootstrapService(chainState, bootstrapWriter, utxoStore);
+
+        List<BootstrapOutpoint> outpoints = null;
+        if (config.getBootstrapUtxos() != null) {
+            outpoints = config.getBootstrapUtxos().stream()
+                    .map(c -> new BootstrapOutpoint(c.getTxHash(), c.getOutputIndex()))
+                    .toList();
+        }
+
+        BootstrapResult result = bootstrapService.bootstrap(
+                config.getBootstrapBlockNumber(),
+                config.getBootstrapAddresses(),
+                outpoints,
+                bootstrapDataProvider);
+
+        log.info("=== Bootstrap Complete: block #{}, slot={}, {} UTXOs ===",
+                result.blockNumber(), result.slot(), result.utxosInjected());
+    }
+
+    /**
+     * Set the bootstrap data provider. Must be called before start() if bootstrap is enabled.
+     */
+    public void setBootstrapDataProvider(BootstrapDataProvider provider) {
+        this.bootstrapDataProvider = provider;
+    }
+
+    /**
+     * Get the UTXO store writer. Used by BootstrapResource for incremental UTXO refresh.
+     */
+    public UtxoStoreWriter getUtxoStoreWriter() {
+        return utxoStore;
+    }
+
+    /**
+     * Start the server component
+     */
+    private void startServer() {
+        serveSubsystem.start();
+    }
+
+    private ProducerStartupCoordinator.Actions producerStartupActions() {
+        return new ProducerStartupCoordinator.Actions() {
+            @Override
+            public void wireBlockProducerHelpers() {
+                BlockProducerHelper.setGenesisBootstrapDataSupplier(RuntimeNode.this::currentGenesisBootstrapData);
+                BlockProducerHelper.setProducerPoolHashSupplier(null);
+                if (getEpochParamProvider() != null) {
+                    BlockProducerHelper.setEpochParamProvider(getEpochParamProvider());
+                }
+                boolean processSkippedEpochs = resolveGlobalBoolean(
+                        YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, false);
+                if (processSkippedEpochs && !config.isDevMode()) {
+                    log.warn("{} requires dev mode (yano.dev-mode=true); ignoring",
+                            YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS);
+                    processSkippedEpochs = false;
+                }
+                BlockProducerHelper.setProcessSkippedEpochs(processSkippedEpochs);
+            }
+
+            @Override
+            public ProducerStartupPlan startupPlan() {
+                return producerStartupPlan();
+            }
+
+            @Override
+            public YanoConfig config() {
+                return config;
+            }
+
+            @Override
+            public ChainState chainState() {
+                return chainState;
+            }
+
+            @Override
+            public EventBus eventBus() {
+                return eventBus;
+            }
+
+            @Override
+            public GenesisConfig genesisConfig() {
+                return genesisConfig;
+            }
+
+            @Override
+            public ChainTip chainTip() {
+                return chainState.getTip();
+            }
+
+            @Override
+            public void loadAndPropagateGenesisConfig() {
+                RuntimeNode.this.loadAndPropagateGenesisConfig();
+            }
+
+            @Override
+            public void autoDeriveBlockTimeMillis() {
+                RuntimeNode.this.autoDeriveBlockTimeMillis();
+            }
+
+            @Override
+            public void autoDeriveSlotLengthMillis() {
+                RuntimeNode.this.autoDeriveSlotLengthMillis();
+            }
+
+            @Override
+            public long computeEpochShiftMillis(int epochs) {
+                return RuntimeNode.this.computeEpochShiftMillis(epochs);
+            }
+
+            @Override
+            public void setResolvedGenesisTimestamp(long timestampMillis) {
+                resolvedGenesisTimestamp = timestampMillis;
+            }
+
+            @Override
+            public long resolvedGenesisTimestamp() {
+                return resolvedGenesisTimestamp;
+            }
+
+            @Override
+            public void refreshGenesisBootstrapDataFromGenesis() {
+                refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
+            }
+
+            @Override
+            public DevnetBlockBuilder createDevnetBlockBuilder(boolean freshStart) {
+                return devnetBlockBuilderFactory().create(freshStart);
+            }
+
+            @Override
+            public void configureGenesisProducerPoolHash(DevnetBlockBuilder blockBuilder) {
+                RuntimeNode.this.configureGenesisProducerPoolHash(blockBuilder);
+            }
+
+            @Override
+            public void setConwayEraStartIfFreshStart(boolean freshStart) {
+                RuntimeNode.this.setConwayEraStartIfFreshStart(freshStart);
+            }
+
+            @Override
+            public DevnetBlockProducer createLiveDevnetProducer(DevnetBlockBuilder blockBuilder) {
+                return RuntimeNode.this.createLiveDevnetProducer(blockBuilder);
+            }
+
+            @Override
+            public void storeGenesisUtxosIfNeeded(boolean freshStart) {
+                RuntimeNode.this.storeGenesisUtxosIfNeeded(freshStart);
+            }
+
+            @Override
+            public void notifyServeNewDataAvailable() {
+                serveSubsystem.notifyNewDataAvailable();
+            }
+
+            @Override
+            public void setEpochNonceState(EpochNonceState epochNonceState) {
+                RuntimeNode.this.epochNonceState = epochNonceState;
+            }
+
+            @Override
+            public void initializeNonceShelleyStartSlot(EpochNonceState epochNonceState) {
+                RuntimeNode.this.initializeNonceShelleyStartSlot(epochNonceState);
+            }
+
+            @Override
+            public NonceStateStore nonceStoreOrNull() {
+                return chainState instanceof NonceStateStore nonceStore ? nonceStore : null;
+            }
+
+            @Override
+            public EpochParamProvider effectiveEpochParamProvider() {
+                return RuntimeNode.this.effectiveEpochParamProvider();
+            }
+
+            @Override
+            public byte[] resolveGenesisHash() {
+                return RuntimeNode.this.resolveGenesisHash();
+            }
+
+            @Override
+            public void initializeProducerNonceState(EpochNonceState nonceState,
+                                                     NonceStateStore nonceStore,
+                                                     NonceReplayService replayService,
+                                                     String operation,
+                                                     String modeDescription) {
+                RuntimeNode.this.initializeProducerNonceState(
+                        nonceState, nonceStore, replayService, operation, modeDescription);
+            }
+
+            @Override
+            public ProtocolVersionSupplier createBlockProtocolVersionSupplier() {
+                return RuntimeNode.this.createBlockProtocolVersionSupplier();
+            }
+
+            @Override
+            public NonceEvolutionListener.NonceCursorResolver nonceCursorResolver() {
+                return RuntimeNode.this::resolveNonceSnapshotCursor;
+            }
+
+            @Override
+            public void replaceNonceListenerSubscriptions(List<SubscriptionHandle> subscriptionHandles) {
+                RuntimeNode.this.replaceNonceListenerSubscriptions(subscriptionHandles);
+            }
+
+            @Override
+            public SlotLeaderProducerFactory slotLeaderProducerFactory() {
+                return RuntimeNode.this.slotLeaderProducerFactory();
+            }
+
+            @Override
+            public void deferPastTimeTravelBlockProducer() {
+                RuntimeNode.this.deferPastTimeTravelBlockProducer();
+            }
+        };
+    }
+
+    private void deferPastTimeTravelBlockProducer() {
+        log.info("Past time travel mode: block production deferred until /epochs/shift is called");
+        loadAndPropagateGenesisConfig();
+        autoDeriveBlockTimeMillis();
+        autoDeriveSlotLengthMillis();
+    }
+
+    private void loadAndPropagateGenesisConfig() {
+        if (genesisConfig == null) {
+            if (inMemoryDevnetGenesis != null) {
+                genesisConfig = GenesisConfig.fromInMemory(
+                        inMemoryDevnetGenesis.shelley(),
+                        inMemoryDevnetGenesis.byron(),
+                        runtimeProtocolParametersJson());
+            } else {
+                genesisConfig = GenesisConfig.load(
+                        config.getShelleyGenesisFile(),
+                        config.getByronGenesisFile(),
+                        runtimeProtocolParametersFile());
+            }
+
+            propagateGenesisToConfig(genesisConfig);
+            refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
+        }
+    }
+
+    private GenesisBootstrapData currentGenesisBootstrapData() {
+        return ledgerStateSubsystem.currentGenesisBootstrapData();
+    }
+
+    private void refreshGenesisBootstrapData(NetworkGenesisConfig networkGenesisConfig) {
+        ledgerStateSubsystem.refreshGenesisBootstrapData(networkGenesisConfig);
+    }
+
+    private void refreshGenesisBootstrapData(
+            org.yanoproject.runtime.genesis.ShelleyGenesisData shelleyGenesisData) {
+        ledgerStateSubsystem.refreshGenesisBootstrapData(shelleyGenesisData);
+    }
+
+    /**
+     * Initialize epoch nonce tracking for relay/client mode.
+     * <p>
+     * Relay mode does not use the nonce to produce blocks, but the REST/API layer
+     * still exposes it and it is useful for validating synced mainnet/preprod state.
+     * The important startup invariant is that the nonce state must describe the
+     * durable body tip, not the header tip. Header sync may run ahead of body
+     * apply in pipelined mode, while nonce evolution depends on block bodies.
+     * <p>
+     * When {@link NonceStateStore} is available, startup uses
+     * {@link NonceReplayService} to restore a cursor-bearing snapshot or replay
+     * stored block bodies up to the current body tip. This repairs the case where
+     * the process stopped after block bodies were committed but before the latest
+     * nonce snapshot was persisted.
+     */
+    private void initNonceTracking() {
+        if (config.isEnableBootstrap()) {
+            epochNonceState = null;
+            log.warn("initNonceTracking called in bootstrap mode; skipping because partial chain state "
+                    + "cannot replay nonce history");
+            return;
+        }
+
+        if (genesisConfig == null || genesisConfig.getShelleyGenesisData() == null) {
+            log.debug("Nonce tracking not initialized: no shelley genesis data");
+            return;
+        }
+
+        try {
+            var shelleyData = genesisConfig.getShelleyGenesisData();
+            long epochLength = shelleyData.epochLength();
+            long securityParam = shelleyData.securityParam();
+            double activeSlotsCoeff = genesisConfig.getActiveSlotsCoeff();
+            if (activeSlotsCoeff <= 0) activeSlotsCoeff = 0.05; // default for public networks
+
+            long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
+                    ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
+            epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
+            initializeNonceShelleyStartSlot(epochNonceState);
+            NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
+                    ? (NonceStateStore) chainState : null;
+
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            NonceEvolutionListenerFactory.logTrackingMode(trackedParams, networkMagic);
+            NonceReplayService replayService = null;
+            byte[] genesisHash = resolveGenesisHash();
+
+            if (nonceStore != null) {
+                replayService = new NonceReplayService(
+                        chainState,
+                        nonceStore,
+                        new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                        genesisHash);
+                replayService.repairToBodyTip(epochNonceState, genesisHash, "startup");
+            } else if (genesisHash != null) {
+                epochNonceState.initFromGenesisHash(genesisHash);
+            }
+
+            if (epochNonceState.getEpochNonce() == null) {
+                log.debug("Nonce tracking not initialized: no shelley genesis hash or durable nonce state available");
+                epochNonceState = null;
+                return;
+            }
+
+            if (nonceStore != null) {
+                nonceStore.storeEpochNonce(epochNonceState.getCurrentEpoch(), epochNonceState.getEpochNonce());
+            }
+
+            // Register listener — no own-block skipping (null issuerVkey) since we're not producing
+            var nonceListener = new NonceEvolutionListener(epochNonceState, nonceStore, null,
+                    effectiveParamProvider, trackedParams, networkMagic,
+                    this::resolveNonceSnapshotCursor, replayService);
+            replaceNonceListenerSubscriptions(AnnotationListenerRegistrar.register(eventBus, nonceListener,
+                    com.bloxbean.cardano.yaci.events.api.SubscriptionOptions.builder().build()));
+
+            log.info("Epoch nonce tracking initialized for relay mode (epochLength={}, k={}, f={})",
+                    epochLength, securityParam, activeSlotsCoeff);
+        } catch (Exception e) {
+            epochNonceState = null;
+            throw new IllegalStateException("Failed to initialize nonce tracking", e);
+        }
+    }
+
+    public void initRelayNonceTrackingIfRequired() {
+        if (!shouldInitializeRelayNonceTracking(config.isEnableBlockProducer(), config.isEnableBootstrap())) {
+            if (config.isEnableBootstrap() && !config.isEnableBlockProducer()) {
+                epochNonceState = null;
+                log.info("Epoch nonce tracking disabled in bootstrap mode; "
+                        + "partial chain state cannot replay nonce history");
+            }
+            return;
+        }
+
+        initNonceTracking();
+    }
+
+    private boolean resolveGlobalBoolean(String key, boolean def) {
+        Object value = runtimeOptions.globals().get(key);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value != null) {
+            return Boolean.parseBoolean(String.valueOf(value));
+        }
+        return def;
+    }
+
+    public static boolean shouldInitializeRelayNonceTracking(boolean blockProducerEnabled, boolean bootstrapEnabled) {
+        return !blockProducerEnabled && !bootstrapEnabled;
+    }
+
+    private void replaceNonceListenerSubscriptions(List<SubscriptionHandle> subscriptionHandles) {
+        closeNonceListenerSubscriptions();
+        nonceListenerSubscriptions = subscriptionHandles != null ? List.copyOf(subscriptionHandles) : List.of();
+    }
+
+    private void closeNonceListenerSubscriptions() {
+        rethrowRuntimeCleanup(closeNonceListenerSubscriptions(null),
+                "Nonce listener subscription close failed");
+    }
+
+    private Throwable closeNonceListenerSubscriptions(Throwable failure) {
+        List<SubscriptionHandle> handles = nonceListenerSubscriptions;
+        nonceListenerSubscriptions = List.of();
+        Throwable outcome = failure;
+        for (SubscriptionHandle handle : handles) {
+            outcome = attemptRuntimeCleanup(
+                    outcome, "nonce listener subscription", handle::close);
+        }
+        return outcome;
+    }
+
+    /**
+     * Initialize nonce state before any local block production starts.
+     * <p>
+     * Producer mode is stricter than relay mode: a wrong nonce changes leader
+     * checks and the VRF proof included in produced blocks. For that reason this
+     * method first tries to repair persisted nonce state to the durable body tip.
+     * Only an empty chain may fall back to a configured initial nonce or genesis
+     * hash initialization.
+     * <p>
+     * The resulting state is also persisted as the current epoch nonce so a
+     * subsequent restart can verify or repair from a cursor-bearing snapshot
+     * instead of trusting an in-memory checkpoint that no longer exists.
+     *
+     * @param nonceState mutable nonce state used by the producer and listener
+     * @param nonceStore durable nonce store, or {@code null} for in-memory chain state
+     * @param replayService optional repair service backed by stored block bodies
+     * @param repairReason short reason included in repair logs
+     * @param modeDescription human-readable producer mode for error messages
+     */
+    private void initializeProducerNonceState(EpochNonceState nonceState,
+                                              NonceStateStore nonceStore,
+                                              NonceReplayService replayService,
+                                              String repairReason,
+                                              String modeDescription) {
+        boolean initialized = false;
+        ChainTip bodyTip = chainState.getTip();
+
+        if (replayService != null
+                && !(bodyTip == null && hasConfiguredInitialEpochNonce())) {
+            var repair = replayService.repairToBodyTip(nonceState, repairReason);
+            initialized = nonceState.getEpochNonce() != null;
+            if (initialized) {
+                log.info("Nonce state repaired for {}: source={}, replayedBlocks={}",
+                        modeDescription, repair.source(), repair.replayedBlocks());
+            }
+        }
+
+        if (!initialized && hasConfiguredInitialEpochNonce()) {
+            byte[] nonce = HexUtil.decodeHexString(config.getInitialEpochNonce());
+            nonceState.seedFromExternal(config.getInitialEpoch(), nonce);
+            initialized = true;
+            log.info("Nonce state seeded from config for {}: epoch={}",
+                    modeDescription, config.getInitialEpoch());
+            if (nonceStore != null && bodyTip == null) {
+                nonceStore.storeLatestNonceSnapshot(NonceStateSnapshot.origin(nonceState.serialize()));
+            }
+        }
+
+        if (!initialized) {
+            byte[] genesisHash = resolveGenesisHash();
+            if (genesisHash == null) {
+                throw new IllegalStateException(
+                        "Shelley genesis hash required for nonce initialization in " + modeDescription);
+            }
+            nonceState.initFromGenesisHash(genesisHash);
+            initialized = true;
+            if (nonceStore != null && bodyTip == null) {
+                nonceStore.storeLatestNonceSnapshot(NonceStateSnapshot.origin(nonceState.serialize()));
+            }
+        }
+
+        if (nonceStore != null) {
+            nonceStore.storeEpochNonce(nonceState.getCurrentEpoch(), nonceState.getEpochNonce());
+        }
+    }
+
+    /**
+     * Return true only when the external initial nonce configuration is complete.
+     * A nonce without its epoch is ambiguous, and an epoch without a nonce cannot
+     * seed {@link EpochNonceState}.
+     */
+    private boolean hasConfiguredInitialEpochNonce() {
+        return config.getInitialEpochNonce() != null
+                && !config.getInitialEpochNonce().isBlank()
+                && config.getInitialEpoch() >= 0;
+    }
+
+    /**
+     * Build the durable cursor envelope for a nonce snapshot.
+     * <p>
+     * The callback is used by {@link NonceEvolutionListener} after normal block
+     * apply and after rollback repair. The caller provides the ChainSync point
+     * that triggered the snapshot, but that point is not always the correct
+     * durable cursor for nonce state. In pipelined sync, ChainSync/header state
+     * can be ahead of body apply. Nonce state follows body apply because the
+     * nonce algorithm consumes block headers from stored bodies.
+     * <p>
+     * Therefore the persisted {@link NonceStateSnapshot} is always stamped with
+     * the current ChainState body tip. If the body tip is ahead of the rollback
+     * point, the local state is inconsistent with the requested rollback and the
+     * snapshot is rejected instead of storing a misleading repair cursor.
+     */
+    private NonceStateSnapshot resolveNonceSnapshotCursor(long slot, String hashHex, byte[] serializedNonceState) {
+        ChainTip tip = chainState.getTip();
+        if (tip == null) {
+            return NonceStateSnapshot.origin(serializedNonceState);
+        }
+
+        if (tip.getSlot() > slot) {
+            throw new IllegalStateException("Cannot persist rollback nonce snapshot: body tip slot "
+                    + tip.getSlot() + " is ahead of rollback slot " + slot + ", hash=" + hashHex);
+        }
+
+        // ChainSync may roll back only header state while body apply is behind
+        // the rollback point. Nonce follows body apply, so the durable cursor
+        // must always be the post-rollback body tip, not the ChainSync point.
+        return new NonceStateSnapshot(tip.getSlot(), tip.getBlockNumber(), tip.getBlockHash(), serializedNonceState);
+    }
+
+    /**
+     * Populate the Shelley start slot used by era-aware nonce calculations.
+     * <p>
+     * Mainnet and public test networks have a Byron-to-Shelley boundary, while
+     * many devnets start directly in Shelley/Conway. The value can come from
+     * persisted era metadata after a prior sync, from the active epoch parameter
+     * provider, from already-propagated config, or finally from genesis/network
+     * defaults. Keeping this resolution in one place prevents relay, producer,
+     * and replay paths from deriving different nonce epochs for the same slot.
+     */
+    private void initializeNonceShelleyStartSlot(EpochNonceState nonceState) {
+        if (nonceState == null || nonceState.isShelleyStartSlotSet()) {
+            return;
+        }
+
+        EraMetadataStore eraMetadataStore = eraMetadataStoreOrNull();
+        if (eraMetadataStore != null) {
+            var persistedStart = eraMetadataStore.getFirstNonByronEraStartSlot();
+            if (persistedStart.isPresent()) {
+                nonceState.setShelleyStartSlot(persistedStart.getAsLong());
+                return;
+            }
+        }
+
+        EpochParamProvider epochParamProvider = getEpochParamProvider();
+        if (epochParamProvider != null) {
+            nonceState.setShelleyStartSlot(epochParamProvider.getShelleyStartSlot());
+            return;
+        }
+
+        if (config.isEpochParamsInitialized()) {
+            nonceState.setShelleyStartSlot(config.getFirstNonByronSlot());
+            return;
+        }
+
+        if (genesisConfig != null && genesisConfig.getShelleyGenesisData() != null) {
+            long firstNonByronSlot = DefaultEpochParamProvider.resolveFirstNonByronSlot(
+                    protocolMagic, genesisConfig.getByronGenesisData() != null);
+            nonceState.setShelleyStartSlot(firstNonByronSlot);
+        }
+    }
+
+    /**
+     * Resolve the shelley genesis hash: use configured hash if available, otherwise hash the file.
+     */
+    private byte[] resolveGenesisHash() {
+        String configHash = config.getShelleyGenesisHash();
+        if (configHash != null && !configHash.isBlank()) {
+            log.info("Using configured shelley-genesis-hash: {}", configHash);
+            return HexUtil.decodeHexString(configHash);
+        }
+
+        String shelleyGenesisFile = config.getShelleyGenesisFile();
+        if (shelleyGenesisFile != null) {
+            try {
+                byte[] genesisBytes = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(shelleyGenesisFile));
+                byte[] hash = Blake2bUtil.blake2bHash256(genesisBytes);
+                log.info("Derived shelley-genesis hash from file: {}", HexUtil.encodeHexString(hash));
+                return hash;
+            } catch (Exception e) {
+                log.error("Failed to read shelley genesis file: {}", e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    private void autoDeriveBlockTimeMillis() {
+        if (config.getBlockTimeMillis() <= 0) {
+            if (genesisConfig.getShelleyGenesisData() != null) {
+                double activeSlotsCoeff = genesisConfig.getActiveSlotsCoeff();
+                if (activeSlotsCoeff <= 0) activeSlotsCoeff = 1.0;
+                double slotLength = genesisConfig.getShelleyGenesisData().slotLength();
+                int derived = (int) (slotLength * 1000 / activeSlotsCoeff);
+                config.setBlockTimeMillis(derived);
+                log.info("Auto-derived blockTimeMillis={} from genesis (slotLength={}, activeSlotsCoeff={})",
+                        derived, slotLength, activeSlotsCoeff);
+            } else {
+                config.setBlockTimeMillis(1000);
+                log.info("No genesis data available, using default blockTimeMillis=1000");
+            }
+        } else {
+            log.info("Using explicit blockTimeMillis={}", config.getBlockTimeMillis());
+        }
+    }
+
+    private void autoDeriveSlotLengthMillis() {
+        int genesisSlotLength = genesisConfig.getSlotLengthMillis();
+        int legacySlotLength = config.getSlotLengthMillis();
+        if (legacySlotLength != 0 && legacySlotLength != genesisSlotLength) {
+            log.warn("Ignoring legacy yano.block-producer.slot-length-millis={}; genesis slotLength defines {}ms slots",
+                    legacySlotLength, genesisSlotLength);
+        }
+        config.setSlotLengthMillis(genesisSlotLength);
+        log.info("Derived slotLengthMillis={} from genesis slotLength={}",
+                genesisSlotLength, genesisConfig.getShelleyGenesisData().slotLength());
+    }
+
+    /**
+     * Store genesis UTXOs in the UTXO store using blake2b(address) tx hash convention.
+     * Genesis funds belong to the initial ledger state, not to the first produced block.
+     */
+    private void storeGenesisUtxosIfNeeded(boolean freshStart) {
+        if (freshStart && utxoStore != null) {
+            utxoStore.storeGenesisUtxos(genesisConfig.getInitialFunds(),
+                    config.getProtocolMagic(), 0, 0, "");
+        }
+    }
+
+    /**
+     * Fresh devnet shortcut: mark Conway era at slot 0 so EraProviderImpl treats the
+     * devnet as Conway-or-later from genesis. This is intentional for devnets that
+     * start post-bootstrap with PV10+ behavior — not generic Conway detection for synced chains.
+     */
+    private void setConwayEraStartIfFreshStart(boolean freshStart) {
+        EraMetadataStore eraMetadataStore = eraMetadataStoreOrNull();
+        if (freshStart && eraMetadataStore != null) {
+            eraMetadataStore.setEraStartSlot(Era.Conway.value, 0);
+        }
+    }
+
+    /**
+     * Compute the epoch shift in milliseconds for fast-forwarding genesis timestamp.
+     * Does NOT set config.genesisTimestamp — callers apply the shift themselves.
+     */
+    private long computeEpochShiftMillis(int epochs) {
+        var shelleyData = genesisConfig.getShelleyGenesisData();
+        long epochLengthSlots = shelleyData.epochLength();
+        double slotLengthSec = shelleyData.slotLength();
+        return (long) (epochs * epochLengthSlots * slotLengthSec * 1000);
+    }
+
+    /**
+     * Create a live DevnetBlockProducer and install it as the active producer strategy.
+     * Does NOT call start() — caller controls configuration and start timing.
+     */
+    private DevnetBlockProducer createLiveDevnetProducer(DevnetBlockBuilder blockBuilder) {
+        return devnetProducerFactory().createLive(blockBuilder, devnetProducerSettings());
+    }
+
+    /**
+     * Create a deferred time-travel DevnetBlockProducer and install it as the active producer strategy.
+     * Does NOT call start() — shifted-genesis flow enables sequential slots before starting.
+     */
+    private DevnetBlockProducer createDevnetTimeTravelProducer(DevnetBlockBuilder blockBuilder) {
+        return devnetProducerFactory().createTimeTravel(blockBuilder, devnetProducerSettings());
+    }
+
+    private DevnetProducerFactory.Settings devnetProducerSettings() {
+        return new DevnetProducerFactory.Settings(
+                config.getBlockTimeMillis(),
+                config.isLazyBlockProduction(),
+                resolvedGenesisTimestamp,
+                config.getSlotLengthMillis(),
+                genesisConfig,
+                config.getBackfillBlockIntervalSlots());
+    }
+
+    private DevnetBlockBuilderFactory devnetBlockBuilderFactory() {
+        return new DevnetBlockBuilderFactory(
+                config,
+                genesisConfig,
+                new DevnetBlockBuilderFactory.Dependencies(
+                        chainState,
+                        this::effectiveEpochParamProvider,
+                        this::resolveGenesisHash,
+                        this::initializeNonceShelleyStartSlot,
+                        this::initializeProducerNonceState,
+                        this::createBlockProtocolVersionSupplier));
+    }
+
+    private DevnetProducerFactory devnetProducerFactory() {
+        return new DevnetProducerFactory(
+                new DevnetProducerFactory.Dependencies(
+                        chainState,
+                        txSubsystem,
+                        serveSubsystem::server,
+                        eventBus,
+                        scheduler,
+                        producerSubsystem));
+    }
+
+    private SlotLeaderProducerFactory slotLeaderProducerFactory() {
+        return new SlotLeaderProducerFactory(
+                new SlotLeaderProducerFactory.Dependencies(
+                        chainState,
+                        txSubsystem,
+                        serveSubsystem::server,
+                        eventBus,
+                        scheduler,
+                        producerSubsystem));
+    }
+
+    private void configureGenesisProducerPoolHash(DevnetBlockBuilder blockBuilder) {
+        if (blockBuilder instanceof SignedBlockBuilder signedBlockBuilder) {
+            String poolHash = signedBlockBuilder.getIssuerPoolHashHex();
+            org.yanoproject.runtime.blockproducer.BlockProducerHelper.setProducerPoolHashSupplier(() -> poolHash);
+            log.info("Genesis producer pool hash available for block-producer events: {}", poolHash);
+        } else {
+            org.yanoproject.runtime.blockproducer.BlockProducerHelper.setProducerPoolHashSupplier(null);
+        }
+    }
+
+    /**
+     * Create a Praos-aware past-time-travel producer for multi-node devnets.
+     * The stake distribution comes from Shelley genesis because no indexer is
+     * available during companion bootstrap.
+     */
+    private SlotLeaderTimeTravelBlockProducer createSlotLeaderTimeTravelProducer(boolean freshStart) {
+        var shelleyData = genesisConfig.getShelleyGenesisData();
+        if (shelleyData == null) {
+            throw new IllegalStateException("Shelley genesis data required for past-time-travel slot-leader mode");
+        }
+        if (config.getShelleyGenesisFile() == null || config.getShelleyGenesisFile().isBlank()) {
+            throw new IllegalStateException("Shelley genesis file required for past-time-travel slot-leader mode");
+        }
+
+        try {
+            SlotLeaderKeyMaterial keyMaterial = SlotLeaderKeyMaterial.load(config);
+            String poolHash = keyMaterial.poolHash();
+            log.info("Past-time-travel slot-leader pool hash: {}", poolHash);
+
+            long epochLength = shelleyData.epochLength();
+            long securityParam = shelleyData.securityParam();
+            double activeSlotsCoeff = genesisConfig.getActiveSlotsCoeff();
+            long byronSlotsPerEpoch = genesisConfig.getByronGenesisData() != null
+                    ? genesisConfig.getByronGenesisData().epochLength() : Constants.BYRON_SLOTS_PER_EPOCH;
+
+            epochNonceState = new EpochNonceState(epochLength, securityParam, activeSlotsCoeff, byronSlotsPerEpoch);
+            initializeNonceShelleyStartSlot(epochNonceState);
+
+            NonceStateStore nonceStore = (chainState instanceof NonceStateStore)
+                    ? (NonceStateStore) chainState : null;
+
+            EpochParamProvider effectiveParamProvider = effectiveEpochParamProvider();
+            boolean trackedParams = effectiveParamProvider instanceof EpochParamTracker tracker
+                    && tracker.isEnabled();
+            long networkMagic = config.getProtocolMagic();
+            NonceReplayService replayService = nonceStore != null && !freshStart
+                    ? new NonceReplayService(chainState, nonceStore,
+                            new EpochNonceEvolver(effectiveParamProvider, trackedParams, networkMagic),
+                            resolveGenesisHash())
+                    : null;
+            initializeProducerNonceState(epochNonceState, nonceStore, replayService,
+                    "past-time-travel-startup", "past-time-travel slot-leader mode");
+
+            ProtocolVersionSupplier protocolVersionSupplier = createBlockProtocolVersionSupplier();
+
+            var signingComponents = SlotLeaderSigningComponents.create(
+                    keyMaterial,
+                    shelleyData.slotsPerKESPeriod(),
+                    shelleyData.maxKESEvolutions(),
+                    epochNonceState,
+                    nonceStore,
+                    protocolVersionSupplier,
+                    BlockBodySizeLimitSupplier.fromEpochParams(this::effectiveEpochParamProvider),
+                    activeSlotsCoeff);
+            var signedBlockBuilder = signingComponents.signedBlockBuilder();
+            var slotLeaderCheck = signingComponents.slotLeaderCheck();
+
+            var stakeDataProvider = StakeDataProviderFactory.createGenesisTimeTravelProvider(
+                    Path.of(config.getShelleyGenesisFile()),
+                    poolHash);
+
+            long sequentialScanLimitSlots = Math.max(epochLength, 1000L);
+            return slotLeaderProducerFactory().createTimeTravel(
+                    signedBlockBuilder,
+                    epochNonceState,
+                    slotLeaderCheck,
+                    stakeDataProvider,
+                    poolHash,
+                    resolvedGenesisTimestamp,
+                    config.getSlotLengthMillis(),
+                    config.getBlockTimeMillis(),
+                    sequentialScanLimitSlots,
+                    BackfillPolicy.resolveInterval(config.getBackfillBlockIntervalSlots(),
+                            shelleyData.securityParam(), activeSlotsCoeff, true));
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create past-time-travel slot-leader block producer", e);
+        }
+    }
+
+    /**
+     * Initialize the SlotTimeCalculator from genesis config data.
+     */
+    private void initSlotTimeCalculator() {
+        chronologySubsystem.initialize(genesisConfig, resolvedGenesisTimestamp);
+    }
+
+    /**
+     * Set the transaction evaluator. Called externally (e.g. from app)
+     * to inject a concrete evaluator implementation.
+     *
+     */
+    public long getResolvedGenesisTimestamp() {
+        return resolvedGenesisTimestamp;
+    }
+
+    public void setTransactionEvaluator(TransactionValidator evaluator) {
+        txSubsystem.setTransactionEvaluator(evaluator);
+    }
+
+    public void setScriptEvaluator(TransactionEvaluator scriptEvaluator) {
+        txSubsystem.setScriptEvaluator(scriptEvaluator);
+    }
+
+    @Override
+    public boolean isTransactionEvaluationAvailable() {
+        return txSubsystem.isTransactionEvaluationAvailable();
+    }
+
+    @Override
+    public List<TxEvaluationResult> evaluateTransaction(byte[] txCbor) throws Exception {
+        return txSubsystem.evaluateTransaction(txCbor);
+    }
+
+    @Override
+    public Optional<Utxo> resolveUtxo(Outpoint outpoint) {
+        return txSubsystem.resolveUtxo(outpoint);
+    }
+
+    @Override
+    public Optional<byte[]> getScriptRefBytesByHash(String scriptHash) {
+        return txSubsystem.getScriptRefBytesByHash(scriptHash);
+    }
+
+    @Override
+    public void startProducer() {
+        withRuntimeMaintenance("producer start", () -> {
+            if (!producerSubsystem.hasProduction()) {
+                throw new UnsupportedOperationException("Producer control is not available");
+            }
+            try {
+                producerSubsystem.start();
+            } catch (RuntimeException | Error e) {
+                markRuntimeDegraded(
+                        "producer start",
+                        "Producer start failed after producer control mutation started; restart required",
+                        e);
+                throw e;
+            }
+        });
+    }
+
+    @Override
+    public void stopProducer() {
+        withRuntimeMaintenance("producer stop", () -> {
+            if (!producerSubsystem.hasProduction()) {
+                throw new UnsupportedOperationException("Producer control is not available");
+            }
+            try {
+                producerSubsystem.stop();
+            } catch (RuntimeException | Error e) {
+                markRuntimeDegraded(
+                        "producer stop",
+                        "Producer stop failed after producer control mutation started; restart required",
+                        e);
+                throw e;
+            }
+        });
+    }
+
+    @Override
+    public void resetProducerToChainTip() {
+        withRuntimeMaintenance("producer reset", () -> {
+            if (!producerSubsystem.hasProduction()) {
+                throw new UnsupportedOperationException("Producer control is not available");
+            }
+            try {
+                producerSubsystem.resetToChainTip();
+            } catch (RuntimeException | Error e) {
+                markRuntimeDegraded(
+                        "producer reset",
+                        "Producer reset failed after producer control mutation started; restart required",
+                        e);
+                throw e;
+            }
+        });
+    }
+
+    @Override
+    public boolean isProducerRunning() {
+        return producerSubsystem.isRunning();
+    }
+
+    public EpochNonceState getEpochNonceState() {
+        return epochNonceState;
+    }
+
+    private byte[] epochNonceForHeaderValidation(long slot) {
+        EpochNonceState state = epochNonceState;
+        if (state == null) {
+            return null;
+        }
+        try {
+            return state.previewEpochNonceForSlot(slot);
+        } catch (RuntimeException e) {
+            log.debug("Epoch nonce unavailable for header validation at slot {}: {}", slot, e.getMessage());
+            return null;
+        }
+    }
+
+    private HeaderValidationLedgerViewProvider headerValidationLedgerViewProvider() {
+        AccountStateStore store = ledgerStateSubsystem.accountStateStore();
+        EpochParamProvider epochParams = effectiveEpochParamProvider();
+        if (store instanceof AccountStateReadStore readStore && epochParams != null) {
+            boolean strictOpCertCounter = config.effectiveUpstream()
+                    .getValidation()
+                    .strictOpCertCounterMode();
+            return new LedgerStateHeaderValidationLedgerViewProvider(
+                    store, readStore, epochParams, strictOpCertCounter);
+        }
+        return HeaderValidationLedgerViewProvider.none();
+    }
+
+    private List<HeaderValidationCustomizer> headerValidationCustomizers() {
+        return pluginManager != null ? pluginManager.getHeaderValidationCustomizers() : List.of();
+    }
+
+    @Override
+    public java.util.Map<String, Object> getEpochNonceInfo() {
+        if (epochNonceState == null) return null;
+        var map = new java.util.LinkedHashMap<String, Object>();
+        map.put("epoch", epochNonceState.getCurrentEpoch());
+        byte[] nonce = epochNonceState.getEpochNonce();
+        map.put("nonce", nonce != null ? HexUtil.encodeHexString(nonce) : null);
+        byte[] evolving = epochNonceState.getEvolvingNonce();
+        map.put("evolving_nonce", evolving != null ? HexUtil.encodeHexString(evolving) : null);
+        byte[] candidate = epochNonceState.getCandidateNonce();
+        map.put("candidate_nonce", candidate != null ? HexUtil.encodeHexString(candidate) : null);
+        return map;
+    }
+
+    @Override
+    public String getEpochNonce(int epoch) {
+        if (epoch < 0) return null;
+        if (chainState instanceof NonceStateStore nonceStore) {
+            byte[] stored = nonceStore.getEpochNonce(epoch);
+            if (stored != null) {
+                return HexUtil.encodeHexString(stored);
+            }
+        }
+        if (epochNonceState != null && epochNonceState.getCurrentEpoch() == epoch) {
+            byte[] current = epochNonceState.getEpochNonce();
+            return current != null ? HexUtil.encodeHexString(current) : null;
+        }
+        return null;
+    }
+
+    /** Compatibility entry point retained for tests and internal callers. */
+    private void initializeGenesisUtxos() {
+        loadGenesisConfigForStartup();
+        utxoSubsystem.initializeOrValidateFullStateGenesis(genesisConfig, config.getProtocolMagic());
+    }
+
+    private boolean hasAnyGenesisConfig() {
+        return (config.getShelleyGenesisFile() != null && !config.getShelleyGenesisFile().isBlank())
+                || (config.getByronGenesisFile() != null && !config.getByronGenesisFile().isBlank())
+                || (!epochParamsTrackingEnabled()
+                    && config.getProtocolParametersFile() != null && !config.getProtocolParametersFile().isBlank());
+    }
+
+    @Override
+    public String submitTransaction(byte[] txCbor) {
+        if (!isRunning.get()) {
+            throw new IllegalStateException("Cannot submit transaction while node is not running");
+        }
+        return txSubsystem.submitTransaction(
+                txCbor,
+                (txHash, acceptedTxCbor) -> syncSubsystem.submitTxBytes(txHash, acceptedTxCbor, TxBodyType.CONWAY));
+    }
+
+    @Override
+    public boolean isTransactionInMemPool(String txHash) {
+        return txSubsystem != null && txSubsystem.containsTransaction(txHash);
+    }
+
+    @Override
+    public List<Utxo> listUtxos(String query, boolean credential, String asset,
+                               int page, int count, boolean descending) {
+        return txSubsystem.listUtxos(query, credential, asset, page, count, descending);
+    }
+
+    @Override
+    public List<String> evictTransaction(String txHash) {
+        if (!isRunning.get()) {
+            throw new IllegalStateException("Cannot evict transaction while node is not running");
+        }
+        return txSubsystem.evictTransaction(txHash);
+    }
+
+    @Override
+    public org.yanoproject.api.events.stream.NodeEventStream.Subscription subscribe(
+            java.util.Set<String> topics) {
+        return l1EventFanout.subscribe(topics);
+    }
+
+    @Override
+    public boolean isAvailable() {
+        return l1EventFanout.isAvailable();
+    }
+
+    @Override
+    public String getProtocolParameters() {
+        // The no-epoch API returns only static protocol-param.json content. When
+        // epoch-param tracking is enabled, callers must use the epoch-specific
+        // query so they get the tracker-resolved value for that epoch.
+        if (epochParamsTrackingEnabled()) {
+            return null;
+        }
+
+        if (genesisConfig != null && genesisConfig.hasProtocolParameters()) {
+            return genesisConfig.getProtocolParameters();
+        }
+
+        if (inMemoryDevnetGenesis != null
+                && inMemoryDevnetGenesis.protocolParametersJson() != null
+                && !inMemoryDevnetGenesis.protocolParametersJson().isBlank()) {
+            return inMemoryDevnetGenesis.protocolParametersJson();
+        }
+
+        String protocolParamsFile = config.getProtocolParametersFile();
+        if (protocolParamsFile == null || protocolParamsFile.isBlank()) {
+            return null;
+        }
+
+        try {
+            return Files.readString(Path.of(protocolParamsFile));
+        } catch (Exception e) {
+            log.warn("Failed to read protocol parameters file={}: {}", protocolParamsFile, e.toString());
+            return null;
+        }
+    }
+
+    @Override
+    public Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        if (epoch < 0) {
+            return Optional.empty();
+        }
+
+        LedgerStateProvider ledgerStateProvider = getLedgerStateProvider();
+        if (epochParamsTrackingEnabled()) {
+            // With tracking enabled, protocol params are epoch-scoped ledger
+            // state. Do not mask a missing tracker snapshot with static
+            // protocol-param.json; that would hide sync/restore gaps on real
+            // networks and return the wrong value after governance updates.
+            return ledgerStateProvider != null
+                    ? ledgerStateProvider.getProtocolParameters(epoch)
+                    : Optional.empty();
+        }
+
+        Optional<ProtocolParamsSnapshot> staticParams = staticProtocolParamsSnapshot(epoch);
+        if (staticParams.isPresent() || ledgerStateProvider == null) {
+            return staticParams;
+        }
+
+        if (ledgerStateProvider != null) {
+            Optional<ProtocolParamsSnapshot> ledgerParams = ledgerStateProvider.getProtocolParameters(epoch);
+            if (ledgerParams.isPresent()) {
+                return ledgerParams;
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    private Optional<ProtocolParamsSnapshot> staticProtocolParamsSnapshot(int epoch) {
+        String json = getProtocolParameters();
+        if (json == null || json.isBlank()) {
+            return Optional.empty();
+        }
+
+        StaticProtocolParamsSnapshotCache cached = staticProtocolParamsSnapshotCache;
+        if (cached != null && cached.json().equals(json)) {
+            return Optional.of(cached.snapshot().withEpoch(epoch));
+        }
+
+        try {
+            ProtocolParamsSnapshot snapshot = ProtocolParamsMapper.fromNodeProtocolParamSnapshot(json, epoch);
+            staticProtocolParamsSnapshotCache = new StaticProtocolParamsSnapshotCache(json, snapshot);
+            return Optional.of(snapshot);
+        } catch (Exception e) {
+            throw new IllegalStateException("Static protocol parameters are not available", e);
+        }
+    }
+
+    @Override
+    public GenesisParameters getGenesisParameters() {
+        if (genesisConfig == null || genesisConfig.getShelleyGenesisData() == null) {
+            return null;
+        }
+        var d = genesisConfig.getShelleyGenesisData();
+        return new GenesisParameters(
+                d.activeSlotsCoeff(),
+                d.updateQuorum(),
+                String.valueOf(d.maxLovelaceSupply()),
+                d.networkMagic(),
+                d.epochLength(),
+                d.systemStart(),
+                d.slotsPerKESPeriod(),
+                (int) d.slotLength(),
+                d.maxKESEvolutions(),
+                d.securityParam()
+        );
+    }
+
+    @Override
+    public long slotToEpoch(long slot) {
+        EpochParamProvider provider = effectiveEpochParamProvider();
+        if (provider == null) throw new IllegalStateException("epoch parameters are unavailable");
+        return provider.getEpochSlotCalc().slotToEpoch(slot);
+    }
+
+    @Override
+    public void setEpochArchiveStagingSink(
+            org.yanoproject.api.archive.EpochArchiveStagingSink sink) {
+        ledgerStateSubsystem.setEpochArchiveStagingSink(sink);
+    }
+
+    @Override
+    public java.util.Map<String, Object> getEpochCalcStatus() {
+        return ledgerStateSubsystem.epochCalcStatus();
+    }
+
+    /**
+     * Configure one-shot adhoc rollback on startup. Set via command line args.
+     * Only one of slot or epoch should be set (epoch takes precedence if both set).
+     */
+    public void setAdhocRollback(long rollbackToSlot, int rollbackToEpoch) {
+        this.adhocRollbackToSlot = rollbackToSlot;
+        this.adhocRollbackToEpoch = rollbackToEpoch;
+    }
+
+    /**
+     * Propagate genesis-derived epoch params to YanoConfig so the REST layer
+     * (EpochUtil) has era-aware values for epoch/slot conversion.
+     */
+    /**
+     * Propagate genesis-derived epoch params to YanoConfig so the REST layer
+     * (EpochUtil) and other consumers have era-aware values for epoch/slot conversion.
+     * <p>
+     * Must set all three fields together: epochLength, byronSlotsPerEpoch, firstNonByronSlot.
+     * Fails fast if firstNonByronSlot cannot be resolved for an unknown Byron network.
+     */
+    private void propagateGenesisToConfig(org.yanoproject.runtime.blockproducer.GenesisConfig gc) {
+        if (gc.getShelleyGenesisData() != null && gc.getShelleyGenesisData().epochLength() > 0) {
+            config.setEpochLength(gc.getShelleyGenesisData().epochLength());
+        }
+        if (gc.getByronGenesisData() != null && gc.getByronGenesisData().k() > 0) {
+            config.setByronSlotsPerEpoch(gc.getByronGenesisData().epochLength());
+        } else if (gc.getShelleyGenesisData() != null && gc.getShelleyGenesisData().securityParam() > 0) {
+            // Fallback: derive byronSlotsPerEpoch from Shelley securityParam
+            config.setByronSlotsPerEpoch(gc.getShelleyGenesisData().securityParam() * 10);
+        }
+        // Resolve firstNonByronSlot — fail fast for unknown Byron networks
+        long firstNonByron = DefaultEpochParamProvider
+                .resolveFirstNonByronSlot(protocolMagic, gc.getByronGenesisData() != null);
+        config.setFirstNonByronSlot(firstNonByron);
+    }
+
+    /**
+     * Perform adhoc rollback if configured. Called from start() after chain-state
+     * validation but before derived-state startup recovery and chain sync begin.
+     * Does NOT require dev mode.
+     * <p>
+     * Rolls back ALL authoritative stores synchronously in dependency-safe order
+     * (AccountState → UTXO → ChainState), verifies post-rollback state, then
+     * asks the ledger subsystem to clean up derived export artifacts.
+     * <p>
+     * Both body tip and header tip are considered when deciding whether rollback
+     * is needed. Pipelined sync can persist headers ahead of bodies, so a startup
+     * rollback that only looks at the body tip could leave orphan header state
+     * beyond the requested rollback point.
+     */
+    private void performStartupAdhocRollback() {
+        long targetSlot = -1;
+
+        if (adhocRollbackToEpoch >= 0) {
+            EpochParamProvider epochParamProvider = getEpochParamProvider();
+            var epochCalc = epochParamProvider != null
+                    ? epochParamProvider.getEpochSlotCalc()
+                    : new EpochSlotCalc(
+                            config.getEpochLength(),
+                            com.bloxbean.cardano.yaci.core.common.Constants.BYRON_SLOTS_PER_EPOCH, 0);
+
+            int firstNonByronEpoch = epochCalc.firstNonByronEpoch();
+            if (adhocRollbackToEpoch < firstNonByronEpoch) {
+                log.error("Adhoc rollback-to-epoch={} is before first non-Byron epoch {}. Skipping.",
+                        adhocRollbackToEpoch, firstNonByronEpoch);
+                return;
+            }
+
+            targetSlot = epochCalc.epochToStartSlot(adhocRollbackToEpoch);
+            log.info("Adhoc rollback: epoch {} → slot {}", adhocRollbackToEpoch, targetSlot);
+        } else if (adhocRollbackToSlot >= 0) {
+            targetSlot = adhocRollbackToSlot;
+        }
+
+        if (targetSlot < 0) return; // No rollback requested
+
+        ChainTip currentTip = chainState.getTip();
+        ChainTip currentHeaderTip = chainState.getHeaderTip();
+        long currentBodySlot = currentTip != null ? currentTip.getSlot() : -1;
+        long currentHeaderSlot = currentHeaderTip != null ? currentHeaderTip.getSlot() : -1;
+        long currentMaxSlot = Math.max(currentBodySlot, currentHeaderSlot);
+        if (currentMaxSlot < 0) {
+            log.warn("Adhoc rollback requested (slot={}) but chain is empty. Skipping.", targetSlot);
+            return;
+        }
+
+        if (targetSlot >= currentMaxSlot) {
+            log.info("Adhoc rollback target slot {} >= current stored tip {}. Nothing to roll back.",
+                    targetSlot, currentMaxSlot);
+            return;
+        }
+
+        // Resolve the nearest canonical main-block point. Main wins when an EBB
+        // and its successor share the requested slot; targeting the EBB requires
+        // an explicit point-aware API rather than this legacy slot option.
+        Point targetPoint = null;
+        if (chainState instanceof NearestPointLookup nearestPointLookup) {
+            targetPoint = nearestPointLookup.findNearestPointAtOrBefore(targetSlot);
+        }
+        if (targetPoint == null) {
+            log.error("Adhoc rollback: no stored block found at or before slot {}. Skipping.", targetSlot);
+            return;
+        }
+        if (targetPoint.getSlot() != targetSlot) {
+            log.info("Adhoc rollback: exact slot {} not found, using nearest block at slot {}",
+                    targetSlot, targetPoint.getSlot());
+        }
+        targetSlot = targetPoint.getSlot();
+        log.info("Adhoc rollback resolved point: slot={}, hash={}", targetSlot, targetPoint.getHash());
+
+        var stores = ledgerStateSubsystem.rollbackCapableStores(utxoStore);
+
+        long commonFloor = commonRollbackFloorSlot();
+
+        // Log per-store status
+        log.info("=== Adhoc Rollback ===");
+        log.info("Target slot: {}", targetSlot);
+        log.info("Current body tip: slot={}, block={}",
+                currentTip != null ? currentTip.getSlot() : "none",
+                currentTip != null ? currentTip.getBlockNumber() : "none");
+        log.info("Current header tip: slot={}, block={}",
+                currentHeaderTip != null ? currentHeaderTip.getSlot() : "none",
+                currentHeaderTip != null ? currentHeaderTip.getBlockNumber() : "none");
+        log.info("Common rollback floor: {}", commonFloor);
+        for (var store : stores) {
+            log.info("  {}: latest={}, floor={}", store.storeName(),
+                    store.getLatestAppliedSlot(), store.getRollbackFloorSlot());
+        }
+
+        // Validate target is within admissible range
+        if (targetSlot < commonFloor) {
+            log.error("=== Adhoc Rollback ABORTED ===");
+            log.error("Target slot {} is below common rollback floor {}.", targetSlot, commonFloor);
+            log.error("Historical reward-input facts (block issuers/fees) have been pruned beyond this point.");
+            log.error("Replay of epoch boundaries before this slot would produce incorrect rewards.");
+            log.error("Options: restore from checkpoint, or resync with larger retention:");
+            log.error("  yano.account-state.epoch-block-data-retention-lag (default 5, try 20+)");
+            throw new RuntimeException("Adhoc rollback aborted: target " + targetSlot
+                    + " below floor " + commonFloor);
+        }
+
+        // Rollback in dependency-safe order: derived state first, chain tip last
+        // Order: AccountState → UTXO → ChainState
+        for (var store : stores) {
+            log.info("Rolling back {}", store.storeName());
+            if (store instanceof PointRollbackCapableStore pointStore) {
+                pointStore.rollbackToPoint(targetPoint);
+            } else {
+                store.rollbackToSlot(targetSlot);
+            }
+        }
+
+        // Post-rollback verification: each store must report latestAppliedSlot <= targetSlot
+        for (var store : stores) {
+            long actual = store.getLatestAppliedSlot();
+            if (actual > targetSlot) {
+                throw new IllegalStateException(
+                        store.storeName() + " reports latestAppliedSlot=" + actual
+                                + " after rollback to " + targetSlot);
+            }
+            var appliedPoint = store.getLatestAppliedPoint();
+            if (actual == targetSlot && appliedPoint.blockHash() != null
+                    && !appliedPoint.blockHash().equalsIgnoreCase(targetPoint.getHash())) {
+                throw new IllegalStateException(store.storeName() + " reports hash="
+                        + appliedPoint.blockHash() + " after rollback to " + targetPoint.getHash());
+            }
+        }
+
+        ChainTip newTip = chainState.getTip();
+        ChainTip newHeaderTip = chainState.getHeaderTip();
+        if (newHeaderTip != null && newHeaderTip.getSlot() > targetSlot) {
+            throw new IllegalStateException("ChainState header tip reports slot="
+                    + newHeaderTip.getSlot() + " after adhoc rollback to " + targetSlot);
+        }
+
+        log.info("=== Adhoc Rollback Complete ===");
+        log.info("New tip: slot={}, block={}", newTip != null ? newTip.getSlot() : "none",
+                newTip != null ? newTip.getBlockNumber() : "none");
+        log.info("New header tip: slot={}, block={}",
+                newHeaderTip != null ? newHeaderTip.getSlot() : "none",
+                newHeaderTip != null ? newHeaderTip.getBlockNumber() : "none");
+
+    }
+
+    private void rollbackDevnetToSlot(long targetSlot) {
+        rollbackDevnet(DevnetRollbackTarget.slot(targetSlot));
+    }
+
+    private DevnetRollbackResult rollbackDevnet(DevnetRollbackTarget target) {
+        requireDevMode("Rollback");
+        try (var maintenance = chainStorage.maintenanceGate()
+                .enterMaintenance("devnet rollback")) {
+            long targetSlot = resolveDevnetRollbackTarget(target);
+            ChainTip currentTip = chainState.getTip();
+            if (currentTip == null) {
+                throw new IllegalStateException("No chain tip available - chain is empty");
+            }
+
+            if (targetSlot < 0) {
+                throw new IllegalArgumentException("Target slot must be >= 0, got: " + targetSlot);
+            }
+
+            if (targetSlot >= currentTip.getSlot()) {
+                throw new IllegalArgumentException("Target slot " + targetSlot
+                        + " must be less than current tip slot " + currentTip.getSlot());
+            }
+
+            log.info("API-triggered rollback: target slot={}, current tip slot={}, block={}",
+                    targetSlot, currentTip.getSlot(), currentTip.getBlockNumber());
+
+            boolean wasRunning = producerSubsystem.isRunning();
+            boolean utxoPruneWasRunning = utxoSubsystem.isPruneServiceRunning();
+            boolean blockPruneWasRunning = chainStorage.isBlockPruneServiceRunning();
+            boolean utxoPrunePaused = false;
+            boolean blockPrunePaused = false;
+            boolean rollbackStarted = false;
+            boolean rollbackCompleted = false;
+
+            // 1. Stop block producer and derived-state pruners before rollback.
+            if (wasRunning) {
+                producerSubsystem.stop();
+            }
+
+            try {
+                if (utxoPruneWasRunning) {
+                    if (!utxoSubsystem.pausePruneServiceAndAwait(Duration.ofSeconds(5))) {
+                        throw new IllegalStateException("Cannot rollback devnet because UTXO prune service did not stop");
+                    }
+                    utxoPrunePaused = true;
+                }
+                if (blockPruneWasRunning) {
+                    if (!chainStorage.stopBlockPruneServiceAndAwait(Duration.ofSeconds(5))) {
+                        throw new IllegalStateException("Cannot rollback devnet because block-body prune service did not stop");
+                    }
+                    blockPrunePaused = true;
+                }
+
+                if (!(chainState instanceof NearestPointLookup nearestPointLookup)) {
+                    throw new IllegalStateException("ChainState cannot resolve an exact rollback point");
+                }
+                Point rollbackPoint = nearestPointLookup.findNearestPointAtOrBefore(targetSlot);
+                if (rollbackPoint == null) {
+                    throw new IllegalArgumentException("No canonical point found at or before slot " + targetSlot);
+                }
+                targetSlot = rollbackPoint.getSlot();
+
+                // 2. Rollback chain state to the resolved point.
+                rollbackStarted = true;
+                ChainStateRollback.rollbackToPoint(chainState, rollbackPoint);
+
+                // 3. Verify the exact restored point.
+                ChainTip newTip = chainState.getTip();
+                if (newTip == null || newTip.getSlot() != rollbackPoint.getSlot()
+                        || !HexUtil.encodeHexString(newTip.getBlockHash()).equalsIgnoreCase(rollbackPoint.getHash())) {
+                    throw new IllegalStateException("ChainState did not restore exact API rollback point " + rollbackPoint);
+                }
+
+                // 4. Publish RollbackEvent (isReal=true so UTXO deltas get unwound)
+                try {
+                    EventMetadata meta = EventMetadata.builder().origin("api-rollback").build();
+                    eventBus.publish(new RollbackEvent(rollbackPoint, true),
+                            meta, PublishOptions.builder().build());
+                } catch (Exception ex) {
+                    log.warn("RollbackEvent publish failed: {}", ex.toString());
+                    throw new RuntimeException("RollbackEvent publish failed during API rollback", ex);
+                }
+                if (!utxoSubsystem.drainAsyncHandlerAndRestart(Duration.ofSeconds(30))) {
+                    throw new IllegalStateException("Async UTXO handler did not drain after API rollback");
+                }
+                // 5. Notify server (ChainSyncServerAgent sends Rollbackward to connected clients)
+                if (serveSubsystem.notifyNewDataAvailable()) {
+                    log.info("Notified server agents about API-triggered rollback");
+                }
+
+                // 6. Reset BodyFetchManager epoch tracker to rolled-back tip epoch
+                BodyFetchManager bodyFetchManager = currentBodyFetchManager();
+                EpochParamProvider epochParamProvider = getEpochParamProvider();
+                if (bodyFetchManager != null && epochParamProvider != null) {
+                    int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
+                    bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
+                }
+
+                // 7. Reset block producer to resume from new tip
+                producerSubsystem.resetToChainTip();
+
+                log.info("API-triggered rollback complete: new tip slot={}, block={}",
+                        newTip != null ? newTip.getSlot() : "null",
+                        newTip != null ? newTip.getBlockNumber() : "null");
+                rollbackCompleted = true;
+                maintenance.clearDegraded();
+                return new DevnetRollbackResult(
+                        newTip != null ? newTip.getSlot() : 0,
+                        newTip != null ? newTip.getBlockNumber() : 0);
+            } finally {
+                boolean canResume = !rollbackStarted || rollbackCompleted;
+                if (canResume) {
+                    if (utxoPrunePaused) {
+                        utxoSubsystem.startBackgroundServices();
+                    }
+                    if (blockPrunePaused) {
+                        chainStorage.startBlockPruneService();
+                    }
+                } else {
+                    String message = "Devnet rollback failed after chain state changed; runtime services remain paused "
+                            + "and the node should be restarted before continuing";
+                    log.error(message);
+                    maintenance.markDegraded(message, null);
+                }
+
+                // 8. Resume block producer only after a successful rollback or pre-rollback abort.
+                if (wasRunning && canResume) {
+                    producerSubsystem.start();
+                }
+            }
+        }
+    }
+
+    private long resolveDevnetRollbackTarget(DevnetRollbackTarget target) {
+        if (target == null) {
+            throw new IllegalArgumentException("Rollback target is required");
+        }
+
+        int paramCount = 0;
+        if (target.slot() != null) paramCount++;
+        if (target.blockNumber() != null) paramCount++;
+        if (target.count() != null) paramCount++;
+
+        if (paramCount == 0 || paramCount > 1) {
+            throw new IllegalArgumentException("Exactly one of 'slot', 'blockNumber', or 'count' must be provided");
+        }
+
+        if (target.slot() != null) {
+            return target.slot();
+        }
+
+        if (target.blockNumber() != null) {
+            Long slot = chainState.getSlotByBlockNumber(target.blockNumber());
+            if (slot == null) {
+                throw new IllegalArgumentException("No block found with number " + target.blockNumber());
+            }
+            return slot;
+        }
+
+        if (target.count() < 0) {
+            throw new IllegalArgumentException("Count must be >= 0, got: " + target.count());
+        }
+
+        ChainTip tip = chainState.getTip();
+        if (tip == null) {
+            throw new IllegalArgumentException("Chain is empty, cannot rollback by count");
+        }
+
+        long targetBlockNumber = tip.getBlockNumber() - target.count();
+        if (targetBlockNumber < 0) {
+            throw new IllegalArgumentException("Count " + target.count()
+                    + " exceeds current chain height " + tip.getBlockNumber());
+        }
+
+        Long slot = chainState.getSlotByBlockNumber(targetBlockNumber);
+        if (slot == null) {
+            throw new IllegalArgumentException("No block found at block number " + targetBlockNumber);
+        }
+        return slot;
+    }
+
+    // --- Devnet developer tools: Snapshot, Fund, Time Advance ---
+
+    private void requireDevMode(String operation) {
+        if (!config.isDevMode()) {
+            throw new IllegalStateException(operation + " requires dev mode (yano.dev-mode=true)");
+        }
+        if (!producerSubsystem.hasDevnetProduction()) {
+            throw new IllegalStateException(operation + " requires block producer to be running");
+        }
+    }
+
+    private <T> T withRuntimeMaintenance(String reason, Supplier<T> operation) {
+        try (var maintenance = chainStorage.maintenanceGate().enterMaintenance(reason)) {
+            T result = operation.get();
+            maintenance.clearDegraded();
+            return result;
+        }
+    }
+
+    private void withRuntimeMaintenance(String reason, Runnable operation) {
+        try (var maintenance = chainStorage.maintenanceGate().enterMaintenance(reason)) {
+            operation.run();
+            maintenance.clearDegraded();
+        }
+    }
+
+    private void markRuntimeDegraded(String operation, String message, Throwable cause) {
+        chainStorage.maintenanceGate().markDegraded(operation, message, cause);
+    }
+
+    private <T> T withRuntimeRead(String operationName, Supplier<T> operation) {
+        try (var ignored = chainStorage.maintenanceGate().enterRead(operationName)) {
+            return operation.get();
+        }
+    }
+
+    private SnapshotInfo createDevnetSnapshot(String name) {
+        return withRuntimeMaintenance("devnet snapshot create " + name, () -> {
+            return devnetSnapshotCatalogService().create(name);
+        });
+    }
+
+    private void restoreDevnetSnapshot(String name) {
+        restoreDevnetSnapshotAndGetTip(name);
+    }
+
+    private DevnetRestoreResult restoreDevnetSnapshotAndGetTip(String name) {
+        try (var maintenance = chainStorage.maintenanceGate()
+                .enterMaintenance("devnet snapshot restore " + name)) {
+            requireDevMode("Restore");
+            return devnetSnapshotRestoreService().restoreAndGetTip(name, maintenance);
+        }
+    }
+
+    private DevnetSnapshotRestoreService devnetSnapshotRestoreService() {
+        return new DevnetSnapshotRestoreService(
+                chainState,
+                snapshotsOrThrow(),
+                producerSubsystem::serviceOrNull,
+                new DevnetSnapshotRestoreService.Actions() {
+                    @Override
+                    public boolean isBlockProducerRunning() {
+                        return producerSubsystem.isRunning();
+                    }
+
+                    @Override
+                    public void stopBlockProducer() {
+                        producerSubsystem.stop();
+                    }
+
+                    @Override
+                    public void resetBlockProducerToChainTip() {
+                        producerSubsystem.resetToChainTip();
+                    }
+
+                    @Override
+                    public void startBlockProducer() {
+                        producerSubsystem.start();
+                    }
+
+                    @Override
+                    public boolean isServerRunning() {
+                        return serveSubsystem.isRunning();
+                    }
+
+                    @Override
+                    public boolean stopServerAndAwait(Duration timeout) {
+                        return serveSubsystem.stopAndAwait(timeout);
+                    }
+
+                    @Override
+                    public void startServer() {
+                        RuntimeNode.this.startServer();
+                    }
+
+                    @Override
+                    public void notifyServerNewDataAvailable() {
+                        serveSubsystem.notifyNewDataAvailable();
+                    }
+
+                    @Override
+                    public boolean isTxAdmissionAccepting() {
+                        return txSubsystem.isAccepting();
+                    }
+
+                    @Override
+                    public void pauseTxAdmissionAndAwait() {
+                        txSubsystem.pauseAdmissionAndAwait();
+                    }
+
+                    @Override
+                    public void startTxAdmission() {
+                        txSubsystem.start();
+                    }
+
+                    @Override
+                    public void stopTxAdmission() {
+                        txSubsystem.stop();
+                    }
+
+                    @Override
+                    public void clearPendingTransactions() {
+                        txSubsystem.clearPendingTransactions();
+                    }
+
+                    @Override
+                    public boolean isAsyncUtxoHandlerRunning() {
+                        return utxoSubsystem.isAsyncHandlerRunning();
+                    }
+
+                    @Override
+                    public boolean pauseAsyncUtxoHandlerAndAwait(Duration timeout) {
+                        return utxoSubsystem.pauseAsyncHandlerAndAwait(timeout);
+                    }
+
+                    @Override
+                    public boolean isUtxoPruneServiceRunning() {
+                        return utxoSubsystem.isPruneServiceRunning();
+                    }
+
+                    @Override
+                    public boolean pauseUtxoPruneServiceAndAwait(Duration timeout) {
+                        return utxoSubsystem.pausePruneServiceAndAwait(timeout);
+                    }
+
+                    @Override
+                    public boolean isUtxoMetricsSamplerRunning() {
+                        return utxoSubsystem.isStoreMetricsSamplerRunning();
+                    }
+
+                    @Override
+                    public boolean pauseUtxoMetricsSamplerAndAwait(Duration timeout) {
+                        return utxoSubsystem.pauseStoreMetricsSamplerAndAwait(timeout);
+                    }
+
+                    @Override
+                    public void reinitializeUtxoAndReconcileAfterSnapshotRestore() {
+                        utxoSubsystem.reinitializeAndReconcileAfterSnapshotRestore();
+                        utxoStore = utxoSubsystem.store();
+                    }
+
+                    @Override
+                    public void prepareUtxoForStorageReplacement() {
+                        utxoSubsystem.prepareForStorageReplacement();
+                    }
+
+                    @Override
+                    public void resumeUtxoAfterSnapshotRestore(boolean asyncUtxoHandlerPaused,
+                                                               boolean utxoPrunePaused,
+                                                               boolean utxoMetricsSamplerPaused) {
+                        utxoSubsystem.resumeAfterSnapshotRestore(
+                                asyncUtxoHandlerPaused,
+                                utxoPrunePaused,
+                                utxoMetricsSamplerPaused);
+                    }
+
+                    @Override
+                    public void reinitializeLedgerAndReconcileAfterSnapshotRestore() {
+                        ledgerStateSubsystem.reinitializeAndReconcileAfterSnapshotRestore();
+                    }
+
+                    @Override
+                    public void resumeLedgerAfterSnapshotRestore() {
+                    }
+
+                    @Override
+                    public boolean isBlockPruneServiceRunning() {
+                        return chainStorage.isBlockPruneServiceRunning();
+                    }
+
+                    @Override
+                    public boolean stopBlockPruneServiceAndAwait(Duration timeout) {
+                        return chainStorage.stopBlockPruneServiceAndAwait(timeout);
+                    }
+
+                    @Override
+                    public void startBlockPruneService() {
+                        chainStorage.startBlockPruneService();
+                    }
+
+                    @Override
+                    public void invalidateSlotTimeCache() {
+                        chronologySubsystem.invalidateSlotTimeCache();
+                    }
+                });
+    }
+
+    private List<SnapshotInfo> listDevnetSnapshots() {
+        return withRuntimeRead("devnet snapshot list",
+                () -> devnetSnapshotCatalogService().list());
+    }
+
+    private void deleteDevnetSnapshot(String name) {
+        withRuntimeMaintenance("devnet snapshot delete " + name,
+                () -> devnetSnapshotCatalogService().delete(name));
+    }
+
+    private DevnetSnapshotCatalogService devnetSnapshotCatalogService() {
+        return new DevnetSnapshotCatalogService(
+                config::isDevMode,
+                producerSubsystem::hasDevnetProduction,
+                chainState,
+                () -> chainState instanceof ChainStateSnapshots snapshots ? snapshots : null,
+                this::snapshotsOrThrow,
+                producerSubsystem::serviceOrNull);
+    }
+
+    private FundResult fundAddress(String address, long lovelace) {
+        return withRuntimeMaintenance("devnet faucet",
+                () -> devnetFaucetService().fundAddress(address, lovelace));
+    }
+
+    private DevnetFaucetService devnetFaucetService() {
+        return new DevnetFaucetService(
+                config::isDevMode,
+                producerSubsystem::hasProduction,
+                () -> utxoStore,
+                this::markRuntimeDegraded);
+    }
+
+    private TimeAdvanceResult advanceTimeBySlots(int slots) {
+        return withRuntimeMaintenance("devnet time advance",
+                () -> devnetTimeAdvanceService().advanceBySlots(slots));
+    }
+
+    private TimeAdvanceResult advanceTimeUntilSlot(long targetSlot) {
+        return withRuntimeMaintenance("devnet time advance",
+                () -> devnetTimeAdvanceService().advanceUntilSlot(targetSlot));
+    }
+
+    private TimeAdvanceResult advanceTimeBySeconds(int seconds) {
+        return withRuntimeMaintenance("devnet time advance",
+                () -> devnetTimeAdvanceService().advanceBySeconds(seconds));
+    }
+
+    private DevnetTimeAdvanceService devnetTimeAdvanceService() {
+        return new DevnetTimeAdvanceService(
+                config::isDevMode,
+                producerSubsystem::hasDevnetProduction,
+                chainState,
+                producerSubsystem,
+                DevnetTimeAdvanceService.DEFAULT_MAX_ADVANCE_SLOTS,
+                this::markRuntimeDegraded);
+    }
+
+    /**
+     * Shift genesis timestamp back by a number of epochs, then start block producer.
+     * Used in past-time-travel mode where block production is deferred until this is called.
+     *
+     * @param epochs number of epochs to shift genesis back
+     * @return the shift in milliseconds
+     */
+    private long shiftGenesisAndStartProducer(int epochs) {
+        return withRuntimeMaintenance("devnet genesis shift",
+                () -> devnetGenesisShiftService().shiftGenesisAndStartProducer(epochs));
+    }
+
+    private DevnetGenesisShiftService devnetGenesisShiftService() {
+        return new DevnetGenesisShiftService(
+                config::isPastTimeTravelMode,
+                this::producerStartupPlan,
+                producerSubsystem::hasProduction,
+                System::currentTimeMillis,
+                new DevnetGenesisShiftService.Actions() {
+                    @Override
+                    public GenesisConfig genesisConfig() {
+                        return genesisConfig;
+                    }
+
+                    @Override
+                    public void setConfigGenesisTimestamp(long timestampMillis) {
+                        config.setGenesisTimestamp(timestampMillis);
+                    }
+
+                    @Override
+                    public String shelleyGenesisFile() {
+                        return config.getShelleyGenesisFile();
+                    }
+
+                    @Override
+                    public void applyShiftedGenesis(GenesisConfig shiftedGenesisConfig) {
+                        genesisConfig = shiftedGenesisConfig;
+                        propagateGenesisToConfig(genesisConfig);
+                        refreshGenesisBootstrapData(genesisConfig.getShelleyGenesisData());
+                    }
+
+                    @Override
+                    public boolean isFreshStart() {
+                        return chainState.getTip() == null;
+                    }
+
+                    @Override
+                    public void setResolvedGenesisTimestamp(long timestampMillis) {
+                        resolvedGenesisTimestamp = timestampMillis;
+                    }
+
+                    @Override
+                    public void initSlotTimeCalculator() {
+                        RuntimeNode.this.initSlotTimeCalculator();
+                    }
+
+                    @Override
+                    public void setConwayEraStartIfFreshStart(boolean freshStart) {
+                        RuntimeNode.this.setConwayEraStartIfFreshStart(freshStart);
+                    }
+
+                    @Override
+                    public void storeGenesisUtxosIfNeeded(boolean freshStart) {
+                        RuntimeNode.this.storeGenesisUtxosIfNeeded(freshStart);
+                    }
+
+                    @Override
+                    public void startSlotLeaderTimeTravel(boolean freshStart) {
+                        startShiftedSlotLeaderTimeTravelProducer(freshStart);
+                    }
+
+                    @Override
+                    public void startDevnetTimeTravel(boolean freshStart) {
+                        startShiftedDevnetTimeTravelProducer(freshStart);
+                    }
+                },
+                this::markRuntimeDegraded);
+    }
+
+    private void startShiftedSlotLeaderTimeTravelProducer(boolean freshStart) {
+        SlotLeaderTimeTravelBlockProducer producer = createSlotLeaderTimeTravelProducer(freshStart);
+        producerSubsystem.setForceSequentialSlots(true, "Past time travel");
+        producer.start();
+    }
+
+    private void startShiftedDevnetTimeTravelProducer(boolean freshStart) {
+        DevnetBlockBuilder blockBuilder = devnetBlockBuilderFactory().create(freshStart);
+        DevnetBlockProducer producer = createDevnetTimeTravelProducer(blockBuilder);
+        producerSubsystem.setForceSequentialSlots(true, "Past time travel");
+        producer.start();
+    }
+
+    private ProducerStartupPlan producerStartupPlan() {
+        return producerStartupPlanOverride != null
+                ? producerStartupPlanOverride
+                : ProducerStartupPlan.from(config);
+    }
+
+    /**
+     * Catch up to wall-clock slot by rapidly producing blocks.
+     * Used in past-time-travel mode after epoch shifts and tx injection are done.
+     *
+     * @return the time advance result
+     */
+    private TimeAdvanceResult catchUpToWallClock() {
+        return withRuntimeMaintenance("devnet catch-up",
+                () -> devnetCatchUpService().catchUpToWallClock());
+    }
+
+    private DevnetCatchUpService devnetCatchUpService() {
+        return new DevnetCatchUpService(
+                config::isDevMode,
+                config::isPastTimeTravelSlotLeaderMode,
+                chainState,
+                producerSubsystem,
+                () -> resolvedGenesisTimestamp,
+                config::getSlotLengthMillis,
+                System::currentTimeMillis,
+                this::markRuntimeDegraded);
+    }
+
+    @Override
+    public long slotToUnixTime(long slot) {
+        return chronologySubsystem.slotToUnixTime(slot).orElse(0L);
+    }
+
+    private HeaderSyncManager currentHeaderSyncManager() {
+        return syncSubsystem.currentHeaderSyncManager();
+    }
+
+    /** Immutable ADR-011.2 plugin inventory for operations adapters. */
+    public org.yanoproject.api.plugin.PluginCatalogView pluginCatalog() {
+        return pluginEnvironment.catalog();
+    }
+
+    private BodyFetchManager currentBodyFetchManager() {
+        return syncSubsystem.currentBodyFetchManager();
+    }
+
+    private PeerSessionStatus currentPeerSessionStatus() {
+        return syncSubsystem.currentPeerSessionStatus();
+    }
+
+
+    /**
+     * Stop Yano.
+     */
+    public void stop() {
+        requirePluginTeardownAllowed("stop the runtime");
+        KernelState state = kernel.state();
+        if (state == KernelState.CREATED || state == KernelState.STOPPED || state == KernelState.FAILED) {
+            withRuntimeMaintenance("node stop", () -> {
+            });
+            return;
+        }
+        kernel.stop();
+    }
+
+    @Override
+    public void close() {
+        requirePluginTeardownAllowed("close the runtime");
+        kernel.close();
+    }
+
+    private void requirePluginTeardownAllowed(String action) {
+        pluginEnvironment.requireContributionTeardownAllowed(action);
+        if (pluginManager != null) {
+            pluginManager.requireLifecycleTeardownAllowed(action);
+        }
+    }
+
+    private void stopRuntimeServices() {
+        Throwable failure = null;
+        boolean unsafeLedgerApplyWorker = false;
+        try {
+            unsafeLedgerApplyWorker = syncSubsystem.stopForShutdown();
+        } catch (Throwable stopFailure) {
+            unsafeLedgerApplyWorker = true;
+            failure = recordPluginCleanupFailure(failure, stopFailure);
+            log.warn("Error stopping sync during runtime stop (errorType={})",
+                    stopFailure.getClass().getName());
+        }
+
+        failure = attemptRuntimeCleanup(
+                failure, "block producer", producerSubsystem::stop);
+        failure = closeNonceListenerSubscriptions(failure);
+
+        // Disable admission before stopping the server so a half-stopped N2N
+        // server cannot continue admitting transactions.
+        failure = attemptRuntimeCleanup(
+                failure, "transaction subsystem", txSubsystem::stop);
+        failure = attemptRuntimeCleanup(
+                failure, "server subsystem", serveSubsystem::stop);
+        failure = pauseRuntimeBackgroundServices(failure);
+
+        // Non-client producers may have their own async UTxO queue. It must
+        // drain while index products and plugin callback admission are live.
+        try {
+            if (!utxoSubsystem.drainAsyncHandlerBeforeClose(Duration.ofSeconds(30))) {
+                unsafeLedgerApplyWorker = true;
+                failure = recordPluginCleanupFailure(failure,
+                        new IllegalStateException("Async UTXO handler did not drain during runtime stop"));
+            }
+        } catch (Throwable drainFailure) {
+            unsafeLedgerApplyWorker = true;
+            failure = recordPluginCleanupFailure(failure, drainFailure);
+        }
+        if (unsafeLedgerApplyWorker) {
+            unsafeLedgerApplyShutdown = true;
+        }
+        rethrowRuntimeCleanup(failure, "Runtime stop failed");
+    }
+
+    /** Called only after the kernel has stopped sync/apply stages. */
+    private void stopPluginsAfterRuntimeDrain() {
+        requirePluginTeardownAllowed("stop runtime plugins");
+        // Domain request admission is independent of ledger apply ownership
+        // and must close on every shutdown path, including an unsafe ledger
+        // drain where broader provider teardown is deliberately skipped.
+        Throwable failure = attemptRuntimeCleanup(
+                null, "plugin telemetry products", pluginOperationsRegistry::sealAndAwait);
+        failure = attemptRuntimeCleanup(
+                failure, "domain API products", domainApiRegistry::sealAndAwait);
+        if (unsafeLedgerApplyShutdown) {
+            failure = recordPluginCleanupFailure(failure, new IllegalStateException(
+                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain"));
+            rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
+            return;
+        }
+        failure = attemptRuntimeCleanup(
+                failure, "UTxO index contributors", utxoSubsystem::stopIndexContributors);
+        // Close callback admission only after every runtime subsystem has
+        // stopped accepting work. Calls already admitted remain valid and are
+        // allowed to finish before NodePlugin/provider/loader teardown.
+        failure = attemptRuntimeCleanup(
+                failure, "plugin contribution admission",
+                pluginEnvironment::sealContributionCallbacks);
+        if (pluginManager != null) {
+            failure = attemptRuntimeCleanup(
+                    failure, "managed plugin callback admission",
+                    pluginManager::sealManagedCallbacks);
+        }
+        if (pluginEnvironment.hasPendingContributionCallbacks()
+                || pluginEnvironment.hasPendingContributionCleanup()) {
+            log.warn("Waiting for plugin contribution callbacks and product cleanup to "
+                    + "finish before stopping bundle lifecycle");
+        }
+        failure = attemptRuntimeCleanup(
+                failure, "plugin contribution callbacks",
+                pluginEnvironment::awaitContributionCallbacks);
+        failure = attemptRuntimeCleanup(
+                failure, "plugin contribution products",
+                pluginEnvironment::awaitContributionCleanup);
+        if (pluginManager != null) {
+            failure = attemptRuntimeCleanup(
+                    failure, "plugin manager", pluginManager::stopAll);
+        }
+        rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
+    }
+
+    private void closeRuntimeResources(boolean unsafeLedgerApplyWorker) {
+        requirePluginTeardownAllowed("close runtime plugin resources");
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        Throwable cleanupFailure = null;
+
+        cleanupFailure = attemptRuntimeCleanup(
+                cleanupFailure, "block producer", producerSubsystem::stop);
+        cleanupFailure = closeNonceListenerSubscriptions(cleanupFailure);
+        cleanupFailure = attemptRuntimeCleanup(
+                cleanupFailure, "transaction subsystem", txSubsystem::close);
+        cleanupFailure = attemptRuntimeCleanup(
+                cleanupFailure, "server subsystem", serveSubsystem::close);
+        cleanupFailure = pauseRuntimeBackgroundServices(cleanupFailure);
+        RuntimeCloseOutcome outcome = closeApplyOwnedResources(
+                unsafeLedgerApplyWorker, cleanupFailure, runtimeCloseActions());
+        cleanupFailure = outcome.failure();
+
+        rethrowRuntimeCleanup(cleanupFailure, "Runtime resource close failed");
+    }
+
+    private RuntimeCloseActions runtimeCloseActions() {
+        return new RuntimeCloseActions() {
+            @Override
+            public void closeSync() {
+                syncSubsystem.close();
+            }
+
+            @Override
+            public boolean drainUtxo() {
+                return utxoSubsystem.drainAsyncHandlerBeforeClose(Duration.ofSeconds(30));
+            }
+
+            @Override
+            public void markUnsafe() {
+                unsafeLedgerApplyShutdown = true;
+            }
+
+            @Override
+            public void closePluginManager() {
+                if (pluginManager != null) {
+                    pluginManager.close();
+                }
+            }
+
+            @Override
+            public void closeDomainApis() {
+                Throwable failure = null;
+                try {
+                    utxoSubsystem.stopIndexContributors();
+                } catch (Throwable indexFailure) {
+                    failure = recordPluginCleanupFailure(failure, indexFailure);
+                }
+                try {
+                    domainApiRegistry.close();
+                } catch (Throwable domainFailure) {
+                    failure = domainFailure;
+                }
+                try {
+                    localReadModelContributions.close();
+                } catch (Throwable readModelFailure) {
+                    failure = recordPluginCleanupFailure(failure, readModelFailure);
+                }
+                if (failure != null) {
+                    throw propagatePluginCleanupFailure(failure);
+                }
+            }
+
+            @Override
+            public void closePluginOperations() {
+                pluginOperationsRegistry.close();
+            }
+
+            @Override
+            public void closePluginEnvironment() {
+                pluginEnvironment.close();
+            }
+
+            @Override
+            public void closeUtxoEventHandlers() {
+                utxoSubsystem.closeEventHandlers();
+            }
+
+            @Override
+            public void closeLedgerEventHandlers() {
+                ledgerStateSubsystem.closeEventHandlers();
+            }
+
+            @Override
+            public void closeEventBus() {
+                eventBus.close();
+            }
+
+            @Override
+            public void closeUtxo() {
+                utxoSubsystem.close();
+            }
+
+            @Override
+            public void closeLedger() {
+                ledgerStateSubsystem.close();
+            }
+
+            @Override
+            public void closeSchedulers() {
+                schedulers.close();
+            }
+
+            @Override
+            public void closeChainStorage(boolean unsafeLedgerApplyWorker) {
+                chainStorage.closeAfterRuntimeDrain(unsafeLedgerApplyWorker);
+            }
+        };
+    }
+
+    static RuntimeCloseOutcome closeApplyOwnedResources(
+            boolean unsafeLedgerApplyWorker,
+            Throwable cleanupFailure,
+            RuntimeCloseActions actions
+    ) {
+        Objects.requireNonNull(actions, "actions");
+        boolean unsafeMarked = unsafeLedgerApplyWorker;
+        try {
+            actions.closeSync();
+        } catch (Throwable syncCloseFailure) {
+            // As with stopForShutdown, an exceptional close cannot establish
+            // that an apply worker released ledger/plugin resources.
+            unsafeLedgerApplyWorker = true;
+            unsafeMarked = true;
+            Throwable unsafeFailure = markUnsafePreservingFailure(
+                    actions, syncCloseFailure);
+            cleanupFailure = recordPluginCleanupFailure(cleanupFailure, unsafeFailure);
+            log.warn("Error closing sync subsystem during runtime teardown "
+                            + "(errorType={})",
+                    syncCloseFailure.getClass().getName());
+        }
+
+        if (!unsafeLedgerApplyWorker) {
+            boolean drained = false;
+            try {
+                drained = actions.drainUtxo();
+            } catch (Throwable drainFailure) {
+                unsafeLedgerApplyWorker = true;
+                unsafeMarked = true;
+                Throwable unsafeFailure = markUnsafePreservingFailure(
+                        actions, drainFailure);
+                cleanupFailure = recordPluginCleanupFailure(cleanupFailure, unsafeFailure);
+                log.warn("Error draining async UTXO event handler during shutdown "
+                                + "(errorType={})",
+                        drainFailure.getClass().getName());
+            }
+            if (!unsafeLedgerApplyWorker && !drained) {
+                unsafeLedgerApplyWorker = true;
+                unsafeMarked = true;
+                cleanupFailure = markUnsafePreservingFailure(actions, cleanupFailure);
+            }
+        }
+
+        if (unsafeLedgerApplyWorker) {
+            if (!unsafeMarked) {
+                cleanupFailure = markUnsafePreservingFailure(actions, cleanupFailure);
+            }
+            log.error("Skipping plugin/listener close because an apply worker did not stop or drain");
+            log.error("Skipping EventBus close because an apply worker did not stop or drain");
+        } else {
+            // Stop plugins/listeners before closing the bus and ChainState only after all apply
+            // workers are stopped/drained. Closing shared state first can make a queued async
+            // listener fail while applying an accepted block event.
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "domain API registry", actions::closeDomainApis);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "plugin manager", actions::closePluginManager);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "plugin operations registry",
+                    actions::closePluginOperations);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "plugin environment", actions::closePluginEnvironment);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "UTXO event handlers", actions::closeUtxoEventHandlers);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "ledger-state event handlers", actions::closeLedgerEventHandlers);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "event bus", actions::closeEventBus);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "UTXO subsystem", actions::closeUtxo);
+            cleanupFailure = attemptRuntimeCleanup(
+                    cleanupFailure, "ledger-state subsystem", actions::closeLedger);
+        }
+
+        // Plugin stop/close may need the manager-provided scheduler. Keep it
+        // alive until every safe plugin/listener cleanup callback has run.
+        cleanupFailure = attemptRuntimeCleanup(
+                cleanupFailure, "runtime schedulers", actions::closeSchedulers);
+
+        boolean unsafeAtStorageClose = unsafeLedgerApplyWorker;
+        cleanupFailure = attemptRuntimeCleanup(
+                cleanupFailure, "chain storage",
+                () -> actions.closeChainStorage(unsafeAtStorageClose));
+        return new RuntimeCloseOutcome(unsafeLedgerApplyWorker, cleanupFailure);
+    }
+
+    private static Throwable markUnsafePreservingFailure(
+            RuntimeCloseActions actions,
+            Throwable current
+    ) {
+        try {
+            actions.markUnsafe();
+            return current;
+        } catch (Throwable markFailure) {
+            return recordPluginCleanupFailure(current, markFailure);
+        }
+    }
+
+    private static Throwable attemptRuntimeCleanup(
+            Throwable current,
+            String name,
+            Runnable closeAction
+    ) {
+        try {
+            closeAction.run();
+            return current;
+        } catch (Throwable failure) {
+            log.warn("Error closing/stopping {} during runtime teardown (errorType={})",
+                    name, failure.getClass().getName());
+            return recordPluginCleanupFailure(current, failure);
+        }
+    }
+
+    private static void rethrowRuntimeCleanup(Throwable failure, String message) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        if (failure != null) {
+            throw new IllegalStateException(message, failure);
+        }
+    }
+
+    // Rollback handling - coordinates between managers and handles server notifications
+    public void handleChainSyncRollback(Point point) {
+        syncSubsystem.handleChainSyncRollback(point);
+    }
+
+    /**
+     * Update sync phase based on sync progress
+     */
+    public void updateSyncProgress(long slot, long blockNumber) {
+        syncSubsystem.updateSyncProgress(slot, blockNumber);
+    }
+
+    /**
+     * Notify the server about new block availability when blocks are stored in pipeline mode.
+     * This is called by PipelineDataListener after blocks are successfully stored by BodyFetchManager.
+     * Only notifies during STEADY_STATE (at tip) to avoid excessive notifications during initial sync.
+     */
+    public void notifyServerNewBlockStored() {
+        syncSubsystem.notifyServerNewBlockStored();
+    }
+
+    /**
+     * Resume BodyFetchManager when headers start flowing after intersection.
+     * This provides immediate resume instead of waiting for the 30s timeout.
+     */
+    public void resumeBodyFetchOnHeaderFlow() {
+        syncSubsystem.resumeBodyFetchOnHeaderFlow();
+    }
+
+    public void onPeerDisconnected() {
+        syncSubsystem.onPeerDisconnected();
+    }
+
+    public void requestPeerRecovery(PeerRecoveryReason reason) {
+        syncSubsystem.requestPeerRecovery(reason);
+    }
+
+    // Status and monitoring methods
+    public boolean isRunning() {
+        return isRunning.get();
+    }
+
+    public boolean isSyncing() {
+        return syncSubsystem.isSyncing();
+    }
+
+    public boolean isServerRunning() {
+        return serveSubsystem.isRunning();
+    }
+
+    public long getBlocksProcessed() {
+        return syncSubsystem.blocksProcessed();
+    }
+
+    public long getLastProcessedSlot() {
+        return syncSubsystem.lastProcessedSlot();
+    }
+
+    @Override
+    public ChainTip getLocalTip() {
+        return chainState.getTip();
+    }
+
+    @Override
+    public java.util.OptionalLong getSyncTargetBlockNumber() {
+        var remote = syncSubsystem.remoteTip();
+        return remote == null ? java.util.OptionalLong.empty()
+                : java.util.OptionalLong.of(remote.getBlock());
+    }
+
+    @Override
+    public byte[] getBlock(byte[] blockHash) {
+        return chainState.getBlock(blockHash);
+    }
+
+    @Override
+    public byte[] getBlockByNumber(long blockNumber) {
+        return chainState.getBlockByNumber(blockNumber);
+    }
+
+    @Override
+    public Era getBlockEra(long blockNumber) {
+        return chainState.getBlockEra(blockNumber);
+    }
+
+    @Override
+    public Optional<org.yanoproject.api.CanonicalBlockReference> getCanonicalBlockReference(
+            long blockNumber) {
+        if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getCanonicalBlockReference(blockNumber);
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<org.yanoproject.api.ByronEpochBoundaryReference>
+    getByronEpochBoundaryBlockAtOrBefore(long slot) {
+        if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getByronEpochBoundaryBlockAtOrBefore(slot);
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public java.util.OptionalLong getEarliestRetainedBodyBlockNumber() {
+        if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getEarliestRetainedBodyBlockNumber();
+        }
+        return java.util.OptionalLong.empty();
+    }
+
+    public RuntimeMaintenanceGate getMaintenanceGate() {
+        return chainStorage.maintenanceGate();
+    }
+
+    public YanoConfig getConfig() {
+        return config;
+    }
+
+    @Override
+    public boolean recoverChain() {
+        try (var maintenance = chainStorage.maintenanceGate().enterMaintenance("chain state recovery")) {
+            if (isRunning()) {
+                throw new IllegalStateException("Cannot recover chain state while node is running. Stop the node first.");
+            }
+
+            ChainStateRecovery recovery = chainStateRecoveryOrNull();
+            if (recovery != null) {
+                log.info("🔧 Initiating chain state recovery...");
+
+                // First check if recovery is needed
+                if (!recovery.detectCorruption()) {
+                    log.info("✅ No corruption detected, recovery not needed");
+                    return false;
+                }
+
+                // Perform recovery
+                try {
+                    recovery.recoverFromCorruption();
+                } catch (RuntimeException | Error e) {
+                    maintenance.markDegraded(
+                            "Chain state recovery failed; storage may need operator repair or process restart",
+                            e);
+                    throw e;
+                }
+                maintenance.clearDegraded();
+                return true;
+            } else {
+                log.info("Chain state recovery not supported for current storage");
+                return false;
+            }
+        }
+    }
+
+    @Override
+    public void registerListeners(Object... listeners) {
+        var defaultOption = SubscriptionOptions.builder().build();
+        for (Object listener : listeners) {
+            AnnotationListenerRegistrar.register(eventBus, listener, defaultOption);
+        }
+    }
+
+    @Override
+    public void registerListener(Object listener, SubscriptionOptions sbOptions) {
+        AnnotationListenerRegistrar.register(eventBus, listener, sbOptions);
+    }
+
+    /**
+     * Validate chain state integrity and attempt automatic recovery if corruption is detected
+     */
+    private void validateChainState() {
+        ChainStateRecovery recovery = chainStateRecoveryOrNull();
+        if (recovery != null) {
+            log.info("🔍 Validating chain state integrity...");
+
+            if (recovery.detectCorruption()) {
+                log.warn("🚨 Chain state corruption detected during startup!");
+
+                // Attempt automatic recovery
+                try {
+                    log.info("🔧 Attempting automatic recovery...");
+                    recovery.recoverFromCorruption();
+                    log.info("✅ Chain state recovered successfully - sync can proceed");
+                } catch (Exception e) {
+                    log.error("❌ Automatic recovery failed", e);
+                    throw new RuntimeException("Chain state is corrupted and automatic recovery failed. " +
+                            "Please manually recover using: curl -X POST http://localhost:8080/api/v1/node/recover", e);
+                }
+            } else {
+                log.info("✅ Chain state integrity validated - no corruption detected");
+            }
+        } else {
+            log.debug("Chain state validation skipped (in-memory storage)");
+        }
+    }
+
+    @Override
+    public NodeStatus getStatus() {
+        ChainTip localTip = statusLocalTip();
+        ChainTip headerTip = statusHeaderTip();
+        PeerSessionStatus peerStatus = currentPeerSessionStatus();
+        PeerRecoveryFailureTracker.Snapshot recoveryStatus = syncSubsystem.peerRecoverySnapshot();
+        UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
+        TxDiffusionStats txDiffusionStats = txSubsystem.txDiffusionStats();
+        var mempoolStats = txSubsystem.mempoolStats();
+        RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
+        RuntimeMaintenanceGate.Degradation maintenanceDegradation = maintenanceGate.degradation();
+
+        String statusMessage = "Node is " + (isRunning() ? "running" : "stopped");
+
+        // Add pipeline-specific status if in pipeline mode
+        if (syncSubsystem.isPipelinedMode()) {
+            statusMessage += " (phase: " + syncSubsystem.syncPhase().name() + ")";
+            HeaderSyncManager headerSyncManager = currentHeaderSyncManager();
+            BodyFetchManager bodyFetchManager = currentBodyFetchManager();
+
+            // Add header tip information
+            if (headerTip != null) {
+                // Calculate header-body gap for pipeline monitoring
+                long gap = localTip != null ?
+                        headerTip.getSlot() - localTip.getSlot() :
+                        headerTip.getSlot();
+
+                statusMessage += String.format(" [gap: %d blocks]", gap);
+            }
+
+            // Add header metrics if available
+            if (headerSyncManager != null) {
+                var headerMetrics = headerSyncManager.getHeaderMetrics();
+                statusMessage += String.format(" [headers: %d]", headerMetrics.totalHeaders);
+            }
+
+            // Add body metrics if available
+            if (bodyFetchManager != null) {
+                var bodyStatus = bodyFetchManager.getStatus();
+                statusMessage += String.format(" [bodies: %d]", bodyStatus.bodiesReceived);
+            }
+        }
+
+        if (peerStatus != null) {
+            statusMessage += String.format(" [peer: %s/%s]", peerStatus.peerName(), peerStatus.state());
+        }
+
+        if (recoveryStatus.consecutiveFailures() > 0) {
+            statusMessage += String.format(" [peerRecovery: %d/%d%s]",
+                    recoveryStatus.consecutiveFailures(),
+                    recoveryStatus.maxFailures(),
+                    recoveryStatus.terminal() ? " terminal" : "");
+        }
+
+        if (maintenanceGate.isMaintenanceActive()) {
+            statusMessage += String.format(" [maintenance: %s]", maintenanceGate.activeReason());
+        }
+
+        if (maintenanceDegradation != null) {
+            statusMessage += String.format(" [runtimeDegraded: %s]", maintenanceDegradation.message());
+        }
+
+        Tip remoteTip = syncSubsystem.remoteTip();
+        Point remotePoint = remoteTip != null ? remoteTip.getPoint() : null;
+        RelayConnectionSnapshot relayConnectionSnapshot = relayConnectionManager.snapshot();
+        PeerGovernorSnapshot peerGovernorSnapshot = syncSubsystem.peerGovernorSnapshot();
+        // With client sync disabled (e.g. a standalone devnet block producer) the
+        // configured default remote is never contacted — reporting it as the
+        // "active peer" is misleading (status page showed the preprod relay on a
+        // devnet). Report the mode explicitly and no active peer instead.
+        boolean clientSyncEnabled = config.isClientEnabled();
+
+        return NodeStatus.builder()
+                .running(isRunning())
+                .syncing(isSyncing())
+                .serverRunning(isServerRunning())
+                .blocksProcessed(syncSubsystem.blocksProcessed())
+                .lastProcessedSlot(syncSubsystem.lastProcessedSlot())
+                .localTipSlot(localTip != null ? localTip.getSlot() : null)
+                .localTipBlockNumber(localTip != null ? localTip.getBlockNumber() : null)
+                .remoteTipSlot(remotePoint != null ? remotePoint.getSlot() : null)
+                .remoteTipBlockNumber(remotePoint != null ? remoteTip.getBlock() : null)
+                .initialSyncComplete(syncSubsystem.isInitialSyncComplete())
+                .syncMode(syncSubsystem.isPipelinedMode() ? "pipelined" : "sequential")
+                .statusMessage(statusMessage)
+                .maintenanceActive(maintenanceGate.isMaintenanceActive())
+                .maintenanceReason(maintenanceGate.activeReason())
+                .runtimeDegraded(maintenanceDegradation != null)
+                .runtimeDegradedReason(maintenanceDegradation != null ? maintenanceDegradation.message() : null)
+                .runtimeDegradedOperation(maintenanceDegradation != null ? maintenanceDegradation.operation() : null)
+                .runtimeDegradedAtMillis(maintenanceDegradation != null ? maintenanceDegradation.timestampMillis() : null)
+                .peerName(peerStatus != null ? peerStatus.peerName() : null)
+                .upstreamMode(clientSyncEnabled
+                        ? upstreamStatus.mode().configValue()
+                        : "disabled (local producer)")
+                .upstreamConfiguredPeerCount(upstreamStatus.configuredPeerCount())
+                .upstreamHotPeerCount(upstreamStatus.hotPeerCount())
+                .upstreamObserverPeerCount(upstreamStatus.observerPeerCount())
+                .upstreamKnownPeerCount(upstreamStatus.knownPeerCount())
+                .upstreamCandidateHeaderCount(upstreamStatus.candidateHeaderCount())
+                .upstreamActivePeer(clientSyncEnabled ? upstreamStatus.activePeerName() : null)
+                .upstreamTxForwarding(upstreamStatus.txForwarding())
+                .upstreamMultiPeerObservationOnly(upstreamStatus.multiPeerObservationOnly())
+                .upstreamDiscoveryRunning(upstreamStatus.discoveryRunning())
+                .relayAutoDiscovery(serveSubsystem.isRelayAutoDiscoveryEnabled())
+                .relayAdvertisedHost(serveSubsystem.advertisedHost())
+                .relayAdvertisedPort(serveSubsystem.advertisedPort())
+                .relayInboundConnectionCount(relayConnectionSnapshot.inboundConnectionCount())
+                .relayOutboundConnectionCount(relayConnectionSnapshot.outboundConnectionCount())
+                .relayEstablishedConnectionCount(relayConnectionSnapshot.establishedConnectionCount())
+                .relayConnectingConnectionCount(relayConnectionSnapshot.connectingConnectionCount())
+                .relayRejectedInboundConnections(relayConnectionSnapshot.rejectedInboundConnections())
+                .relayFailedOutboundConnections(relayConnectionSnapshot.failedOutboundConnections())
+                .relayConnectionsPerIpMax(relayConnectionSnapshot.connectionsPerIpMax())
+                .relayKnownPeerCount(peerGovernorSnapshot.knownPeerCount())
+                .relayColdPeerCount(peerGovernorSnapshot.coldPeerCount())
+                .relayWarmPeerCount(peerGovernorSnapshot.warmPeerCount())
+                .relayHotPeerCount(peerGovernorSnapshot.hotPeerCount())
+                .relayBackoffPeerCount(peerGovernorSnapshot.backoffPeerCount())
+                .relayQuarantinedPeerCount(peerGovernorSnapshot.quarantinedPeerCount())
+                .relaySharablePeerCount(peerGovernorSnapshot.sharablePeerCount())
+                .relayInboundPeerCount(peerGovernorSnapshot.inboundPeerCount())
+                .relayGossipPeerCount(peerGovernorSnapshot.gossipPeerCount())
+                .relayLedgerPeerCount(peerGovernorSnapshot.ledgerPeerCount())
+                .relayBootstrapPeerCount(peerGovernorSnapshot.bootstrapPeerCount())
+                .relayGovernorTargetHotPeers(peerGovernorSnapshot.targetHotPeers())
+                .relayGovernorTargetWarmPeers(peerGovernorSnapshot.targetWarmPeers())
+                .relayGovernorLastReconcileAtMillis(peerGovernorSnapshot.lastReconcileAtMillis())
+                .upstreamValidationLevel(upstreamStatus.validationLevel())
+                .upstreamValidationAcceptedHeaders(upstreamStatus.validationAcceptedHeaders())
+                .upstreamValidationRejectedHeaders(upstreamStatus.validationRejectedHeaders())
+                .upstreamValidationLastRejectedStage(upstreamStatus.validationLastRejectedStage())
+                .upstreamValidationLastRejectedReason(upstreamStatus.validationLastRejectedReason())
+                .mempoolSize(txSubsystem.mempoolSize())
+                .mempoolBytes(txSubsystem.mempoolBytes())
+                .mempoolMaxTxs(txSubsystem.mempoolMaxTxs())
+                .mempoolMaxBytes(txSubsystem.mempoolMaxBytes())
+                .mempoolTtlSeconds(txSubsystem.mempoolTtlSeconds())
+                .mempoolUtxoIndexEntries(mempoolStats.utxoIndexEntries())
+                .mempoolMaxUtxoIndexEntries(txSubsystem.mempoolMaxUtxoIndexEntries())
+                .mempoolProducedOutputs(mempoolStats.producedOutputs())
+                .mempoolSpentOutpoints(mempoolStats.spentOutpoints())
+                .mempoolReferenceScripts(mempoolStats.referenceScripts())
+                .mempoolDependencyEdges(mempoolStats.dependencyEdges())
+                .mempoolEstimatedIndexBytes(mempoolStats.estimatedIndexBytes())
+                .mempoolDuplicateRejections(mempoolStats.duplicateRejections())
+                .mempoolConflictRejections(mempoolStats.conflictRejections())
+                .mempoolCapacityRejections(mempoolStats.capacityRejections())
+                .mempoolMalformedRejections(mempoolStats.malformedRejections())
+                .mempoolLedgerRejections(mempoolStats.ledgerRejections())
+                .mempoolCascadedRemovals(mempoolStats.cascadedRemovals())
+                .mempoolAdmissionQueueLength(mempoolStats.admissionQueueLength())
+                .mempoolAdmissionWaitNanos(mempoolStats.totalAdmissionWaitNanos())
+                .mempoolAdmissionHoldNanos(mempoolStats.totalAdmissionHoldNanos())
+                .mempoolValidationNanos(mempoolStats.totalValidationNanos())
+                .mempoolSlowValidations(mempoolStats.slowValidations())
+                .mempoolAccepting(txSubsystem.isAccepting())
+                .mempoolValidationAvailable(txSubsystem.transactionValidationService() != null)
+                .mempoolEvaluationAvailable(txSubsystem.isTransactionEvaluationAvailable())
+                .txDiffusionMode(txSubsystem.txDiffusionMode())
+                .txDiffusionEnabled(txSubsystem.txDiffusionEnabled())
+                .txDiffusionPeerCount(txDiffusionStats.peerCount())
+                .txDiffusionAcceptedMempoolEvents(txDiffusionStats.acceptedMempoolEvents())
+                .txDiffusionInboundTxIdsRequested(txDiffusionStats.inboundTxIdsRequested())
+                .txDiffusionInboundTxIdsRejected(txDiffusionStats.inboundTxIdsRejected())
+                .txDiffusionInboundTxIdsIgnored(txDiffusionStats.inboundTxIdsIgnored())
+                .txDiffusionInboundTxBodiesAccepted(txDiffusionStats.inboundTxBodiesAccepted())
+                .txDiffusionInboundTxBodiesRejected(txDiffusionStats.inboundTxBodiesRejected())
+                .txDiffusionInboundTxBodiesIgnored(txDiffusionStats.inboundTxBodiesIgnored())
+                .txDiffusionOutboundForwarded(txDiffusionStats.outboundForwarded())
+                .txDiffusionOutboundSuppressed(txDiffusionStats.outboundSuppressed())
+                .txDiffusionServedTxs(txDiffusionStats.servedTxs())
+                .txDiffusionServedBytes(txDiffusionStats.servedBytes())
+                .txDiffusionInFlightTxs(txDiffusionStats.inFlightTxs())
+                .txDiffusionInFlightBytes(txDiffusionStats.inFlightBytes())
+                .peerState(peerStatus != null ? peerStatus.state().name() : null)
+                .peerRecoveryReason(peerRecoveryReason(peerStatus, recoveryStatus))
+                .peerRecoveryFailures(recoveryStatus.consecutiveFailures())
+                .peerMaxRecoveryFailures(recoveryStatus.maxFailures())
+                .peerRecoveryTerminal(recoveryStatus.terminal())
+                .peerTerminalFailureMessage(peerStatus != null && peerStatus.terminalFailureMessage() != null
+                        ? peerStatus.terminalFailureMessage()
+                        : recoveryStatus.message())
+                .peerApplicationProgressAgeMillis(peerStatus != null ? peerStatus.applicationProgressAgeMillis() : null)
+                .peerKeepAliveAgeMillis(peerStatus != null ? peerStatus.keepAliveAgeMillis() : null)
+                .peerBodyFetchInProgress(peerStatus != null ? peerStatus.bodyFetchInProgress() : null)
+                .peerBodyFetchInProgressAgeMillis(peerStatus != null ? peerStatus.bodyFetchInProgressAgeMillis() : null)
+                .timestamp(System.currentTimeMillis())
+                .build();
+    }
+
+    @Override
+    public NodePeers getPeers() {
+        UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
+        RelayConnectionSnapshot connectionSnapshot = relayConnectionManager.snapshot();
+        PeerGovernorSnapshot governorSnapshot = syncSubsystem.peerGovernorSnapshot();
+        Map<String, PeerRow> rows = new LinkedHashMap<>();
+
+        for (PeerGovernorPeerInfo peerInfo : governorSnapshot.peerInfos()) {
+            PeerDescriptor descriptor = peerInfo.descriptor();
+            if (descriptor == null) {
+                continue;
+            }
+            rows.computeIfAbsent(descriptor.id(), PeerRow::new).governor = peerInfo;
+        }
+        for (RelayConnectionInfo connection : connectionSnapshot.connections()) {
+            if (connection == null || connection.key() == null) {
+                continue;
+            }
+            String id = PeerDescriptor.endpointId(connection.key().host(), connection.key().port());
+            rows.computeIfAbsent(id, PeerRow::new).connection = connection;
+        }
+
+        List<NodePeers.NodePeer> peers = rows.values().stream()
+                .map(row -> toNodePeer(row, upstreamStatus))
+                .sorted(Comparator
+                        .comparing(NodePeers.NodePeer::active).reversed()
+                        .thenComparing(peer -> stateRank(peer.governorState()))
+                        .thenComparing(peer -> valueOrEmpty(peer.endpoint())))
+                .toList();
+
+        return new NodePeers(
+                System.currentTimeMillis(),
+                upstreamStatus.activePeerId(),
+                upstreamStatus.activePeerName(),
+                governorSnapshot.knownPeerCount(),
+                governorSnapshot.coldPeerCount(),
+                governorSnapshot.warmPeerCount(),
+                governorSnapshot.hotPeerCount(),
+                governorSnapshot.backoffPeerCount(),
+                governorSnapshot.quarantinedPeerCount(),
+                governorSnapshot.sharablePeerCount(),
+                governorSnapshot.inboundPeerCount(),
+                governorSnapshot.gossipPeerCount(),
+                governorSnapshot.ledgerPeerCount(),
+                governorSnapshot.bootstrapPeerCount(),
+                governorSnapshot.targetKnownPeers(),
+                governorSnapshot.targetWarmPeers(),
+                governorSnapshot.targetHotPeers(),
+                connectionSnapshot.inboundConnectionCount(),
+                connectionSnapshot.outboundConnectionCount(),
+                connectionSnapshot.establishedConnectionCount(),
+                connectionSnapshot.connectingConnectionCount(),
+                connectionSnapshot.rejectedInboundConnections(),
+                connectionSnapshot.failedOutboundConnections(),
+                peers);
+    }
+
+    private static NodePeers.NodePeer toNodePeer(PeerRow row, UpstreamStatus upstreamStatus) {
+        PeerGovernorPeerInfo governor = row.governor;
+        PeerDescriptor descriptor = governor != null ? governor.descriptor() : null;
+        RelayConnectionInfo connection = row.connection;
+        String host = descriptor != null
+                ? descriptor.host()
+                : connection != null && connection.key() != null ? connection.key().host() : null;
+        int port = descriptor != null
+                ? descriptor.port()
+                : connection != null && connection.key() != null ? connection.key().port() : 0;
+        String endpoint = host != null && port > 0 ? host + ":" + port : row.id;
+        ProtocolCapabilities capabilities = connection != null ? connection.capabilities() : null;
+        boolean active = isActivePeer(row.id, endpoint, upstreamStatus);
+        return new NodePeers.NodePeer(
+                row.id,
+                host,
+                port,
+                endpoint,
+                descriptor != null ? descriptor.source().configValue() : null,
+                descriptor != null ? descriptor.sourceId() : null,
+                descriptor != null ? descriptor.trustable() : null,
+                descriptor != null ? descriptor.advertise() : null,
+                descriptor != null ? descriptor.sharable() : null,
+                descriptor != null ? descriptor.score() : null,
+                governor != null && governor.state() != null ? governor.state().name() : null,
+                descriptor != null ? descriptor.firstSeenMillis() : null,
+                descriptor != null ? descriptor.lastSeenMillis() : null,
+                descriptor != null ? descriptor.expiresAtMillis() : null,
+                governor != null && governor.backoffUntilMillis() > 0 ? governor.backoffUntilMillis() : null,
+                connection != null ? connection.connectionId() : null,
+                connection != null && connection.direction() != null ? connection.direction().name() : null,
+                connection != null && connection.state() != null ? connection.state().name() : null,
+                connection != null ? connection.reason() : null,
+                connection != null ? connection.createdAtMillis() : null,
+                connection != null ? connection.updatedAtMillis() : null,
+                capabilities != null ? capabilities.negotiatedVersion() : null,
+                capabilities != null ? capabilities.chainSync() : null,
+                capabilities != null ? capabilities.blockFetch() : null,
+                capabilities != null ? capabilities.txSubmission() : null,
+                capabilities != null ? capabilities.keepAlive() : null,
+                capabilities != null ? capabilities.peerSharing() : null,
+                capabilities != null ? capabilities.query() : null,
+                active,
+                connection != null && connection.established());
+    }
+
+    private static boolean isActivePeer(String id, String endpoint, UpstreamStatus upstreamStatus) {
+        if (upstreamStatus == null) {
+            return false;
+        }
+        String activeId = upstreamStatus.activePeerId();
+        String activeName = upstreamStatus.activePeerName();
+        return matchesPeer(id, activeId)
+                || matchesPeer(endpoint, activeId)
+                || matchesPeer(id, activeName)
+                || matchesPeer(endpoint, activeName);
+    }
+
+    private static boolean matchesPeer(String left, String right) {
+        return left != null && right != null && left.equalsIgnoreCase(right);
+    }
+
+    private static int stateRank(String state) {
+        if (state == null) {
+            return 99;
+        }
+        return switch (state) {
+            case "HOT" -> 0;
+            case "WARM" -> 1;
+            case "COLD" -> 2;
+            case "BACKOFF" -> 3;
+            case "QUARANTINED" -> 4;
+            default -> 99;
+        };
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value != null ? value : "";
+    }
+
+    private static final class PeerRow {
+        private final String id;
+        private PeerGovernorPeerInfo governor;
+        private RelayConnectionInfo connection;
+
+        private PeerRow(String id) {
+            this.id = id;
+        }
+    }
+
+    private ChainTip statusLocalTip() {
+        if (closed.get()) {
+            return null;
+        }
+        try {
+            return getLocalTip();
+        } catch (RuntimeException e) {
+            throw e;
+        }
+    }
+
+    private ChainTip statusHeaderTip() {
+        if (closed.get()) {
+            return null;
+        }
+        try {
+            return chainState.getHeaderTip();
+        } catch (RuntimeException e) {
+            throw e;
+        }
+    }
+
+    private static String peerRecoveryReason(PeerSessionStatus peerStatus,
+                                             PeerRecoveryFailureTracker.Snapshot recoveryStatus) {
+        if (peerStatus != null
+                && peerStatus.recoveryAttempts() > 0
+                && peerStatus.lastRecoveryReason() != null
+                && peerStatus.lastRecoveryReason() != PeerRecoveryReason.UNKNOWN) {
+            return peerStatus.lastRecoveryReason().name();
+        }
+
+        if (recoveryStatus != null
+                && recoveryStatus.consecutiveFailures() > 0
+                && recoveryStatus.lastReason() != null
+                && recoveryStatus.lastReason() != PeerRecoveryReason.UNKNOWN) {
+            return recoveryStatus.lastReason().name();
+        }
+
+        return null;
+    }
+
+    @Override
+    public void addBlockChainDataListener(BlockChainDataListener listener) {
+        if (listener != null && !blockChainDataListeners.contains(listener)) {
+            blockChainDataListeners.add(listener);
+        }
+    }
+
+    @Override
+    public void removeBlockChainDataListener(BlockChainDataListener listener) {
+        blockChainDataListeners.remove(listener);
+    }
+
+    @Override
+    public void addNodeEventListener(NodeEventListener listener) {
+        if (listener != null && !nodeEventListeners.contains(listener)) {
+            nodeEventListeners.add(listener);
+        }
+    }
+
+    @Override
+    public void removeNodeEventListener(NodeEventListener listener) {
+        nodeEventListeners.remove(listener);
+    }
+
+    /**
+     * Print detailed startup status for debugging
+     */
+    private void printStartupStatus() {
+        log.info("═══════════════════════════════════════════════════════════");
+        log.info("🚀 YACI NODE STARTUP STATUS");
+        log.info("═══════════════════════════════════════════════════════════");
+
+        // Client status
+        log.info("📡 CLIENT MODE: {}", config.isEnableClient() ? "ENABLED" : "DISABLED");
+        if (config.isEnableClient()) {
+            log.info("   └─ Remote: {}:{}", remoteCardanoHost, remoteCardanoPort);
+            log.info("   └─ Syncing: {}", isSyncing() ? "YES" : "NO");
+            log.info("   └─ Blocks processed: {}", syncSubsystem.blocksProcessed());
+            log.info("   └─ Last slot: {}", syncSubsystem.lastProcessedSlot());
+        }
+
+        // Server status
+        log.info("🌐 SERVER MODE: {}", config.isEnableServer() ? "ENABLED" : "DISABLED");
+        if (config.isEnableServer()) {
+            log.info("   └─ Port: {}", serverPort);
+            log.info("   └─ Running: {}", isServerRunning() ? "YES" : "NO");
+            log.info("   └─ Protocol magic: {}", protocolMagic);
+        }
+
+        // Block producer status
+        if (config.isEnableBlockProducer()) {
+            log.info("BLOCK PRODUCER: ENABLED (devnet)");
+            log.info("   Block interval: {}ms", config.getBlockTimeMillis());
+            log.info("   Lazy mode: {}", config.isLazyBlockProduction());
+        }
+
+        // Chain state status
+        ChainTip tip = chainState.getTip();
+        log.info("💾 CHAIN STATE: {}", tip != null ? "HAS DATA" : "EMPTY");
+        if (tip != null) {
+            log.info("   └─ Tip slot: {}", tip.getSlot());
+            log.info("   └─ Tip block: {}", tip.getBlockNumber());
+            log.info("   └─ Storage: {}", config.isUseRocksDB() ? "RocksDB" : "InMemory");
+        } else {
+            log.warn("   └─ ⚠️  NO BLOCKCHAIN DATA - Server cannot serve requests");
+        }
+
+        // Overall status
+        boolean canServeClients = tip != null && isServerRunning();
+        log.info("🎯 READY TO SERVE: {}", canServeClients ? "YES ✅" : "NO ❌");
+
+        if (!canServeClients) {
+            log.warn("⚠️  DIAGNOSTIC: Real Cardano nodes will not connect because:");
+            if (tip == null) {
+                log.warn("   • Server has no blockchain data to serve");
+                log.warn("   • Wait for client sync to download blocks first");
+            }
+            if (!isServerRunning()) {
+                log.warn("   • Server is not running properly");
+            }
+        }
+
+        log.info("═══════════════════════════════════════════════════════════");
+    }
+
+    /**
+     * Handle intersection found event - transition to INTERSECT_PHASE
+     */
+    public void onIntersectionFound() {
+        syncSubsystem.onIntersectionFound();
+    }
+
+    /**
+     * If local tip is already close to the remote tip, transition to STEADY_STATE immediately.
+     * Invoked on intersection-found with the remote tip info available.
+     */
+    public void maybeFastTransitionToSteadyState(Tip remoteTip) {
+        syncSubsystem.maybeFastTransitionToSteadyState(remoteTip);
+    }
+
+    private PeerClientFactory createPeerClientFactory() {
+        boolean sourcePortReuse = resolveBoolean(
+                this.runtimeOptions.globals(),
+                YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE,
+                true);
+        if (!sourcePortReuse) {
+            return DefaultPeerClientFactory.supervised();
+        }
+
+        Optional<String> bindHost = resolveSourcePortReuseBindHost();
+        if (bindHost.isEmpty()) {
+            log.warn("Relay outbound source-port reuse enabled, but no concrete local bind address could be resolved; using normal outbound dials");
+            return DefaultPeerClientFactory.supervised();
+        }
+
+        log.info("Relay outbound source-port reuse enabled: binding upstream dials to {}:{}",
+                bindHost.get(), serverPort);
+        return DefaultPeerClientFactory.supervisedWithLocalBind(bindHost.get(), serverPort);
+    }
+
+    private Optional<String> resolveSourcePortReuseBindHost() {
+        for (SourcePortProbeTarget target : sourcePortProbeTargets()) {
+            Optional<String> localHost = LocalBindAddressResolver.resolveForRemote(target.host(), target.port());
+            if (localHost.isPresent()) {
+                log.debug("Resolved relay source-port bind address {} using route to {}:{}",
+                        localHost.get(), target.host(), target.port());
+                return localHost;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private List<SourcePortProbeTarget> sourcePortProbeTargets() {
+        List<SourcePortProbeTarget> targets = new ArrayList<>();
+        if (config.effectiveUpstream() != null) {
+            for (UpstreamPeerConfig peer : config.effectiveUpstream().orderedPeers()) {
+                addSourcePortProbeTarget(targets, peer.getHost(), peer.getPort());
+            }
+        }
+        addSourcePortProbeTarget(targets, remoteCardanoHost, remoteCardanoPort);
+
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        List<SourcePortProbeTarget> deduplicated = new ArrayList<>();
+        for (SourcePortProbeTarget target : targets) {
+            String key = target.host() + "\0" + target.port();
+            if (seen.add(key)) {
+                deduplicated.add(target);
+            }
+        }
+        return deduplicated;
+    }
+
+    private static void addSourcePortProbeTarget(List<SourcePortProbeTarget> targets, String host, int port) {
+        if (host == null || host.isBlank() || port <= 0 || port > 65_535) {
+            return;
+        }
+        targets.add(new SourcePortProbeTarget(host.trim(), port));
+    }
+
+    private static long parseLong(Object obj, long def) {
+        if (obj instanceof Number n) return n.longValue();
+        if (obj != null) {
+            try { return Long.parseLong(String.valueOf(obj)); } catch (Exception ignored) {}
+        }
+        return def;
+    }
+
+    private static boolean resolveBoolean(Map<String, Object> globals, String key, boolean def) {
+        Object val = globals != null ? globals.get(key) : null;
+        if (val instanceof Boolean b) return b;
+        if (val != null) {
+            try { return Boolean.parseBoolean(String.valueOf(val)); } catch (Exception ignored) {}
+        }
+        return def;
+    }
+
+    private static String resolveString(Map<String, Object> globals, String key, String def) {
+        Object val = globals != null ? globals.get(key) : null;
+        if (val == null) {
+            return def;
+        }
+        String str = String.valueOf(val).trim();
+        return str.isEmpty() ? def : str;
+    }
+
+    /**
+     * Highest slot below which no rollback-capable store can restore state.
+     *
+     * <p>The maximum across every store, because a rollback is only safe where <em>all</em> of
+     * them can go: one store that pruned further than the rest sets the limit for everyone.
+     *
+     * <p>ADR-039 compares this against the oldest slot an artifact still requires. A projection
+     * that referenced a source below this floor would be holding a reference to state that can no
+     * longer be restored, so the retention check pauses rather than acknowledging.
+     */
+    public long commonRollbackFloorSlot() {
+        var stores = ledgerStateSubsystem == null
+                ? java.util.List.<org.yanoproject.api.rollback.RollbackCapableStore>of()
+                : ledgerStateSubsystem.rollbackCapableStores(utxoStore);
+        long commonFloor = 0;
+        for (var store : stores) {
+            long floor = store.getRollbackFloorSlot();
+            if (floor > commonFloor) commonFloor = floor;
+        }
+        return commonFloor;
+    }
+}

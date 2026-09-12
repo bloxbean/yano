@@ -133,7 +133,7 @@ Rationale for the boundary cases:
 
 ### Mechanism
 
-1. `com.bloxbean.cardano.yano.app.api.ApiGroup` holds the profile
+1. `org.yanoproject.app.api.ApiGroup` holds the profile
    extension names as compile-time constants
    (`x-smallrye-profile-core`, `-app-chain`, `-devnet`, `-admin`).
 2. Each resource class is annotated with

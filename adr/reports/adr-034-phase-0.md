@@ -171,7 +171,7 @@ corruption, exception, or no-progress error. Logs are retained under the local
 ```text
 ./gradlew :archive-modules:archive-api:test
 ./gradlew :archive-modules:archive-api:integrationTest \
-  --tests com.bloxbean.cardano.yano.archive.benchmark.DuckLakeSnapshotConcurrencyTest
+  --tests org.yanoproject.archive.benchmark.DuckLakeSnapshotConcurrencyTest
 ./gradlew :archive-modules:archive-api:archiveLayoutBenchmark \
   -Pfixture='/trusted/address_utxo/range/*.parquet' \
   -PbenchmarkOutput='/tmp/yano-archive-layout'

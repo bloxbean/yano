@@ -1,0 +1,44 @@
+[
+  {
+    "name": "org.yanoproject.runtime.plugins.LoggingPlugin",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.yanoproject.runtime.plugins.LoggingPlugin_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.yanoproject.runtime.utxo.UtxoEventHandler_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.yanoproject.runtime.utxo.UtxoEventHandlerAsync_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.yanoproject.runtime.blockproducer.NonceEvolutionListener_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.yanoproject.runtime.validation.DefaultConsensusListener_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.yanoproject.runtime.validation.DefaultTransactionValidatorListener_EventBindings",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  }
+]

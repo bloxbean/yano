@@ -254,11 +254,11 @@ tasks.register('verifyLegacyAccountHistoryRemoved') {
 
     doLast {
         def forbiddenPaths = [
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCborCodec.java',
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCfNames.java',
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryEventHandler.java',
-                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryStore.java',
-                'runtime/src/main/java/com/bloxbean/cardano/yano/runtime/ledger/AccountHistorySubsystem.java'
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryCborCodec.java',
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryCfNames.java',
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryEventHandler.java',
+                'ledger-state/src/main/java/org/yanoproject/ledgerstate/AccountHistoryStore.java',
+                'runtime/src/main/java/org/yanoproject/runtime/ledger/AccountHistorySubsystem.java'
         ]
         def failures = forbiddenPaths.findAll { file(it).exists() }
                 .collect { "removed file exists: ${it}" }
@@ -309,15 +309,15 @@ tasks.register('verifyLegacyHistoryReplayRemoved') {
 
     doLast {
         def forbiddenPaths = [
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveConfiguration.java',
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveStartMode.java',
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/AddressTransactionDataset.java',
-                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/UtxoHistoryDataset.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveMaintenanceBudget.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveWriteSession.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveReceipt.java',
-                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveRetentionCutoff.java',
-                'archive-modules/archive-store-ducklake/src/main/java/com/bloxbean/cardano/yano/archive/ducklake/DuckLakeWriteSession.java'
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/config/ArchiveConfiguration.java',
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/config/ArchiveStartMode.java',
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/dataset/AddressTransactionDataset.java',
+                'archive-modules/archive-core/src/main/java/org/yanoproject/archive/core/dataset/UtxoHistoryDataset.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveMaintenanceBudget.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveWriteSession.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveReceipt.java',
+                'archive-modules/archive-api/src/main/java/org/yanoproject/archive/api/ArchiveRetentionCutoff.java',
+                'archive-modules/archive-store-ducklake/src/main/java/org/yanoproject/archive/ducklake/DuckLakeWriteSession.java'
         ]
         def failures = forbiddenPaths.findAll { file(it).exists() }
                 .collect { "removed replay path exists: ${it}" }

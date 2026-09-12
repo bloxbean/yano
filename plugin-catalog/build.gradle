@@ -9,7 +9,7 @@ dependencies {
 
 application {
     applicationName = 'yano-plugins'
-    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginCatalogCli'
+    mainClass = 'org.yanoproject.catalog.PluginCatalogCli'
 }
 
 java {

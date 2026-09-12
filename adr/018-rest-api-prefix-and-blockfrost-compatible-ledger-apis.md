@@ -713,9 +713,9 @@ Verification:
 
 ```bash
 ../gradlew :node-app:test \
-  --tests com.bloxbean.cardano.yano.app.api.epochs.EpochResourceAdaPotTest \
-  --tests com.bloxbean.cardano.yano.app.YaciNodeResourceTest \
-  --tests com.bloxbean.cardano.yano.app.ApiPrefixResourceTest
+  --tests org.yanoproject.app.api.epochs.EpochResourceAdaPotTest \
+  --tests org.yanoproject.app.YaciNodeResourceTest \
+  --tests org.yanoproject.app.ApiPrefixResourceTest
 ```
 
 Result: passed. The test run still emits existing warnings about
@@ -836,9 +836,9 @@ Verification:
 
 ```bash
 ../gradlew :node-api:test \
-  --tests com.bloxbean.cardano.yano.api.util.CardanoBech32IdsTest \
+  --tests org.yanoproject.api.util.CardanoBech32IdsTest \
   :node-app:test \
-  --tests com.bloxbean.cardano.yano.app.api.accounts.AccountStateResourceBalanceTest
+  --tests org.yanoproject.app.api.accounts.AccountStateResourceBalanceTest
 
 ../gradlew :node-app:quarkusBuild
 ```
@@ -998,13 +998,13 @@ Verification:
 
 ```bash
 ../gradlew :node-runtime:test \
-  --tests com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigrationTest \
-  --tests com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStoreTest \
+  --tests org.yanoproject.runtime.migration.StakeBalanceIndexStartupMigrationTest \
+  --tests org.yanoproject.runtime.utxo.DefaultUtxoStoreTest \
   :node-app:test \
-  --tests com.bloxbean.cardano.yano.app.api.accounts.AccountStateResourceBalanceTest \
-  --tests com.bloxbean.cardano.yano.app.api.epochs.EpochResourceAdaPotTest \
-  --tests com.bloxbean.cardano.yano.app.ApiPrefixResourceTest \
-  --tests com.bloxbean.cardano.yano.app.YaciNodeResourceTest
+  --tests org.yanoproject.app.api.accounts.AccountStateResourceBalanceTest \
+  --tests org.yanoproject.app.api.epochs.EpochResourceAdaPotTest \
+  --tests org.yanoproject.app.ApiPrefixResourceTest \
+  --tests org.yanoproject.app.YaciNodeResourceTest
 ```
 
 Result: passed. The same existing Java 25/JBoss Threads, SLF4J, Gradle, and
@@ -1259,16 +1259,16 @@ Verification:
 
 ```bash
 ../gradlew :ledger-state:test \
-  --tests com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStoreTest
+  --tests org.yanoproject.ledgerstate.AccountHistoryStoreTest
 
 ../gradlew :node-runtime:test \
-  --tests com.bloxbean.cardano.yano.runtime.migration.StakeBalanceIndexStartupMigrationTest \
-  --tests com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStoreTest \
+  --tests org.yanoproject.runtime.migration.StakeBalanceIndexStartupMigrationTest \
+  --tests org.yanoproject.runtime.utxo.DefaultUtxoStoreTest \
   :node-app:test \
-  --tests com.bloxbean.cardano.yano.app.api.accounts.AccountStateResourceBalanceTest \
-  --tests com.bloxbean.cardano.yano.app.ApiPrefixResourceTest \
-  --tests com.bloxbean.cardano.yano.app.api.epochs.EpochResourceAdaPotTest \
-  --tests com.bloxbean.cardano.yano.app.YaciNodeResourceTest
+  --tests org.yanoproject.app.api.accounts.AccountStateResourceBalanceTest \
+  --tests org.yanoproject.app.ApiPrefixResourceTest \
+  --tests org.yanoproject.app.api.epochs.EpochResourceAdaPotTest \
+  --tests org.yanoproject.app.YaciNodeResourceTest
 ```
 
 Result: passed. Existing Java 25/JBoss Threads shutdown warnings, RocksDB native

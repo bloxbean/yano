@@ -1,0 +1,69 @@
+package org.yanoproject.ledgerstate;
+
+import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
+import com.bloxbean.cardano.yaci.events.api.EventBus;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
+import org.yanoproject.api.account.AccountStateStore;
+import org.yanoproject.api.events.BlockAppliedEvent;
+import org.yanoproject.api.events.EpochTransitionEvent;
+import org.yanoproject.api.events.GenesisBlockEvent;
+import org.yanoproject.api.events.PostEpochTransitionEvent;
+import org.yanoproject.api.events.PreEpochTransitionEvent;
+import org.yanoproject.api.events.RollbackEvent;
+
+import java.util.List;
+
+/**
+ * Synchronous event handler for account state.
+ * Same pattern as UtxoEventHandler.
+ */
+public final class AccountStateEventHandler implements AutoCloseable {
+    private final AccountStateStore store;
+    private final List<SubscriptionHandle> handles;
+
+    public AccountStateEventHandler(EventBus bus, AccountStateStore store) {
+        this.store = store;
+        SubscriptionOptions defaults = SubscriptionOptions.builder().build();
+        this.handles = AnnotationListenerRegistrar.register(bus, this, defaults);
+    }
+
+    @DomainEventListener(order = 110)
+    public void onGenesisBlock(GenesisBlockEvent e) {
+        if (store != null && store.isEnabled()) store.handleGenesisBlock(e);
+    }
+
+    @DomainEventListener(order = 110)
+    public void onPreEpochTransition(PreEpochTransitionEvent e) {
+        if (store != null && store.isEnabled()) {
+            store.prepareEpochBoundary(e.previousEpoch(), e.newEpoch(), e.slot(), e.blockNumber());
+            store.handleEpochTransition(e.previousEpoch(), e.newEpoch());
+        }
+    }
+
+    @DomainEventListener(order = 110)
+    public void onEpochTransition(EpochTransitionEvent e) {
+        if (store != null && store.isEnabled()) store.handleEpochTransitionSnapshot(e.previousEpoch(), e.newEpoch());
+    }
+
+    @DomainEventListener(order = 110)
+    public void onPostEpochTransition(PostEpochTransitionEvent e) {
+        if (store != null && store.isEnabled()) store.handlePostEpochTransition(e.previousEpoch(), e.newEpoch());
+    }
+
+    @DomainEventListener(order = 110)
+    public void onBlockApplied(BlockAppliedEvent e) {
+        if (store != null && store.isEnabled()) store.applyBlock(e);
+    }
+
+    @DomainEventListener(order = 110)
+    public void onRollback(RollbackEvent e) {
+        if (store != null && store.isEnabled()) store.rollbackTo(e);
+    }
+
+    @Override
+    public void close() {
+        if (handles != null) handles.forEach(h -> { try { h.close(); } catch (Exception ignored) {} });
+    }
+}

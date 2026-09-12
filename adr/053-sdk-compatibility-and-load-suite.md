@@ -102,7 +102,7 @@ compat-tests/
     with-devnet.sh             # start a devnet, run a command, tear down
   ccl/                         # standalone Gradle build (own wrapper)
     settings.gradle build.gradle gradle/wrapper/
-    src/main/java/com/bloxbean/cardano/yano/compat/ccl/
+    src/main/java/org/yanoproject/compat/ccl/
   mesh/                        # package.json + package-lock.json + src/*.mjs
   evolution/                   # package.json + package-lock.json + src/*.mjs
   shared/                      # vesting.ak, vesting-plutus.json, proxy.mjs,
@@ -351,7 +351,7 @@ that only works when the harness calls `/api/v1` by hand proves nothing about th
 
 - `run-suite.sh:9` hardcodes `ROOT="/Users/satya/Downloads/yano-ccl-test"` — derive
   from `$(cd "$(dirname "$0")" && pwd)`.
-- Java package `com.bloxbean.yanoload` → `com.bloxbean.cardano.yano.compat.ccl`.
+- Java package `com.bloxbean.yanoload` → `org.yanoproject.compat.ccl`.
   Mechanical; keeps the repo's package convention intact.
 - Java toolchain 21 → 25, matching the repo. Required anyway if the BLS contract is
   ever recompiled: julc `0.1.0-pre16` is Java-25-only.

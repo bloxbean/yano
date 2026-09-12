@@ -52,12 +52,12 @@ The implementation keeps the operator surface small and uses the existing
 
 - `./gradlew :core-api:compileJava`
 - `./gradlew :runtime:compileJava`
-- `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest`
+- `./gradlew :runtime:test --tests org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest`
 - `./gradlew :runtime:test`
 - `./gradlew :app:test`
 - `./gradlew :app:quarkusBuild`
 - Final focused regression/build pass:
-  `./gradlew :core-api:test --tests com.bloxbean.cardano.yano.api.model.NodeStatusTest :runtime:test --tests com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest --tests com.bloxbean.cardano.yano.runtime.connection.DefaultRelayConnectionManagerTest :app:quarkusBuild`
+  `./gradlew :core-api:test --tests org.yanoproject.api.model.NodeStatusTest :runtime:test --tests org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest --tests org.yanoproject.runtime.connection.DefaultRelayConnectionManagerTest :app:quarkusBuild`
 
 ## Live Preprod Verification
 

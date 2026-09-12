@@ -180,6 +180,6 @@ Tradeoffs:
 
 ## References
 
-- `runtime/src/main/java/com/bloxbean/cardano/yano/runtime/Yano.java` — current `restoreSnapshot` (line 2371), `rollbackTo` (line 2228), `handleRollback` (line 3167), `performAdhocRollback` (line 2095).
-- `core-api/src/main/java/com/bloxbean/cardano/yano/api/NodeAPI.java` — current API surface.
+- `runtime/src/main/java/org/yanoproject/runtime/Yano.java` — current `restoreSnapshot` (line 2371), `rollbackTo` (line 2228), `handleRollback` (line 3167), `performAdhocRollback` (line 2095).
+- `core-api/src/main/java/org/yanoproject/api/NodeAPI.java` — current API surface.
 - ADR-013 — modular library and plugin gaps (related plugin/store lifecycle concerns).

@@ -29,11 +29,11 @@ New module:
 Main packages:
 
 ```text
-com.bloxbean.cardano.yano.p2p.connection
-com.bloxbean.cardano.yano.p2p.peer
-com.bloxbean.cardano.yano.p2p.governor
-com.bloxbean.cardano.yano.p2p.discovery
-com.bloxbean.cardano.yano.p2p.peersharing
+org.yanoproject.p2p.connection
+org.yanoproject.p2p.peer
+org.yanoproject.p2p.governor
+org.yanoproject.p2p.discovery
+org.yanoproject.p2p.peersharing
 ```
 
 Dependency direction:
@@ -55,7 +55,7 @@ Added:
 - `include 'p2p'` in `settings.gradle`;
 - ArchUnit core test dependency;
 - `P2pArchitectureTest`, which asserts no `p2p` class imports
-  `com.bloxbean.cardano.yano.runtime..`.
+  `org.yanoproject.runtime..`.
 
 ArchUnit is used as a normal JUnit test through `archunit` core, not
 `archunit-junit5`, to avoid conflicting with the repository's pinned JUnit
@@ -125,9 +125,9 @@ Phase-level verification:
 ```text
 ./gradlew :p2p:compileJava :p2p:test
 ./gradlew :p2p:test :runtime:compileJava :runtime:compileTestJava
-./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.peer.PeerSessionHealthTest' --tests 'com.bloxbean.cardano.yano.runtime.peer.PeerSessionSupervisorTest'
-./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest'
-./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.server.ServeSubsystemTest'
+./gradlew :runtime:test --tests 'org.yanoproject.runtime.peer.PeerSessionHealthTest' --tests 'org.yanoproject.runtime.peer.PeerSessionSupervisorTest'
+./gradlew :runtime:test --tests 'org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest'
+./gradlew :runtime:test --tests 'org.yanoproject.runtime.server.ServeSubsystemTest'
 ```
 
 Final verification:
@@ -141,7 +141,7 @@ Both final commands completed successfully.
 
 Static checks:
 
-- no production code in `:p2p` imports `com.bloxbean.cardano.yano.runtime..`;
+- no production code in `:p2p` imports `org.yanoproject.runtime..`;
 - stale runtime package references for moved types were removed from source
   code;
 - remaining occurrences of historical runtime package names are in ADR/report

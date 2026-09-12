@@ -359,14 +359,14 @@ export class YanoApi {
     path: string, parameters: Record<string, string>, signal?: AbortSignal
   ) {
     return this.domain<T>(
-      'com.bloxbean.cardano.yano.appchain.eutxo.indexer',
+      'org.yanoproject.x.eutxo.indexer',
       `index/v1/${path}`, parameters, signal);
   }
   authenticatedMapDomain<T>(
     path: string, parameters: Record<string, string>, signal?: AbortSignal
   ) {
     return this.domain<T>(
-      'com.bloxbean.cardano.yano.appchain.stdlib', path, parameters, signal);
+      'org.yanoproject.x.stdlib', path, parameters, signal);
   }
   chainSubmitMessage(chainId: string, topic: string, bodyHex: string, signal?: AbortSignal) {
     return this.post<MessageSubmitResult>(

@@ -19,8 +19,8 @@ the [Yano X extension tutorials](https://github.com/bloxbean/yano-x/tree/main/do
 
 ```java
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.appchain.testkit.AppChainCluster;
-import com.bloxbean.cardano.yano.appchain.testkit.AppChainClusterHandle;
+import org.yanoproject.appchain.testkit.AppChainCluster;
+import org.yanoproject.appchain.testkit.AppChainClusterHandle;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

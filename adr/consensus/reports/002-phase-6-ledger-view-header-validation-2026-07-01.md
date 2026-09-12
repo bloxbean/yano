@@ -40,7 +40,7 @@ Passed:
 
 ```bash
 ./gradlew :core-api:compileJava :ledger-state:compileJava :runtime:compileJava :runtime:compileTestJava :ledger-state:compileTestJava
-./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.sync.validation.ShelleyHeaderValidatorTest --tests com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest :ledger-state:test --tests com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStoreGenesisBootstrapTest --tests com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStorePoolHistoryTest
+./gradlew :runtime:test --tests org.yanoproject.runtime.sync.validation.ShelleyHeaderValidatorTest --tests org.yanoproject.runtime.config.UpstreamConfigTest :ledger-state:test --tests org.yanoproject.ledgerstate.DefaultAccountStateStoreGenesisBootstrapTest --tests org.yanoproject.ledgerstate.DefaultAccountStateStorePoolHistoryTest
 ```
 
 ## Remaining Work

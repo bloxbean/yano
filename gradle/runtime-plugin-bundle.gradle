@@ -8,19 +8,19 @@ def ownedBundleId = project.property('runtimePluginBundleId').toString()
 def excludedBundleIds = project.findProperty('runtimePluginExcludedBundleIds') ?: []
 def excludedPluginProjectEntries = new HashSet<String>()
 def supportedServicePaths = [
-        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory',
-        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory',
-        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider',
-        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider',
-        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider',
-        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider'
+        'META-INF/services/org.yanoproject.api.plugin.NodePlugin',
+        'META-INF/services/org.yanoproject.api.appchain.AppStateMachineProvider',
+        'META-INF/services/org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory',
+        'META-INF/services/org.yanoproject.api.appchain.sequencer.SequencerModeProvider',
+        'META-INF/services/org.yanoproject.api.appchain.l1view.L1ObserverProvider',
+        'META-INF/services/org.yanoproject.api.appchain.l1view.L1EpochObserverProvider',
+        'META-INF/services/org.yanoproject.api.appchain.signer.SignerProviderFactory',
+        'META-INF/services/org.yanoproject.api.appchain.effects.AppEffectExecutorFactory',
+        'META-INF/services/org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory',
+        'META-INF/services/org.yanoproject.api.plugin.domain.DomainApiProvider',
+        'META-INF/services/org.yanoproject.api.plugin.domain.LocalReadModelProvider',
+        'META-INF/services/org.yanoproject.api.plugin.operations.PluginHealthProvider',
+        'META-INF/services/org.yanoproject.api.plugin.operations.PluginMetricsProvider'
 ]
 
 tasks.named('shadowJar') {
@@ -29,7 +29,7 @@ tasks.named('shadowJar') {
     reproducibleFileOrder = true
     preserveFileTimestamps = false
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    exclude 'com/bloxbean/cardano/yano/api/**'
+    exclude 'org/yanoproject/api/**'
     excludedBundleIds.each { bundleId ->
         exclude "META-INF/yano/plugins/${bundleId}.json"
     }
@@ -87,7 +87,7 @@ tasks.register('verifyRuntimePluginBundle') {
                 throw new GradleException(
                         "${project.path} bundle manifests are not isolated: ${manifests}")
             }
-            if (entries.any { it.startsWith('com/bloxbean/cardano/yano/api/') }) {
+            if (entries.any { it.startsWith('org/yanoproject/api/') }) {
                 throw new GradleException(
                         "${project.path} bundle duplicates host API classes")
             }

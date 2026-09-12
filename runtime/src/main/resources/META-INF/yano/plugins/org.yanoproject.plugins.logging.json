@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "org.yanoproject.plugins.logging",
+  "version": "1.0.0",
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "node-plugin",
+      "name": "org.yanoproject.plugins.logging",
+      "provider": "org.yanoproject.runtime.plugins.LoggingPlugin"
+    }
+  ]
+}

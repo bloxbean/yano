@@ -72,7 +72,7 @@ tasks.register('generateTestPluginCatalogIndex', JavaExec) {
         it.file('META-INF/yano-plugin-index-v1.json')
     })
     classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
+    mainClass = 'org.yanoproject.catalog.PluginIndexGenerator'
     doFirst {
         def output = generatedTestPluginCatalogDir.get()
                 .file('META-INF/yano-plugin-index-v1.json').asFile
@@ -135,7 +135,7 @@ tasks.register('benchmarkAdr025ClassicJmtRuntime', JavaExec) {
     description = 'Runs the ADR-025 Phase 3 durable classic-JMT runtime benchmark'
     dependsOn tasks.named('testClasses')
     classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.runtime.appchain.ClassicJmtRuntimeBenchmark'
+    mainClass = 'org.yanoproject.runtime.appchain.ClassicJmtRuntimeBenchmark'
     def report = layout.buildDirectory.file('reports/adr025/phase3-classic-jmt-runtime.json')
     args report.get().asFile.absolutePath,
             providers.gradleProperty('adr025RuntimeKeys').getOrElse('100000'),
@@ -150,7 +150,7 @@ tasks.register('benchmarkAdr025ClassicJmtRuntime', JavaExec) {
         description = "Runs the ADR-028 M8 ${profile} logical-snapshot benchmark"
         dependsOn tasks.named('testClasses')
         classpath = sourceSets.test.runtimeClasspath
-        mainClass = 'com.bloxbean.cardano.yano.runtime.appchain.AuthenticatedSnapshotBenchmark'
+        mainClass = 'org.yanoproject.runtime.appchain.AuthenticatedSnapshotBenchmark'
         maxHeapSize = '6g'
         def report = rootProject.layout.projectDirectory.file(
                 "adr/app-layer/benchmarks/028-m8-authenticated-snapshot-${suffix.toLowerCase()}.json")
@@ -185,7 +185,7 @@ tasks.register('benchmarkWalletIndexes', JavaExec) {
     description = 'Measures four optional-wallet-index modes on physically stored synthetic blocks'
     dependsOn tasks.named('testClasses')
     classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.runtime.wallet.WalletIndexBenchmark'
+    mainClass = 'org.yanoproject.runtime.wallet.WalletIndexBenchmark'
     maxHeapSize = '1g'
     args providers.gradleProperty('walletBenchmarkDirectory').getOrElse('/private/tmp/yano-wallet-index-benchmark'),
             providers.gradleProperty('walletBenchmarkBlocks').getOrElse('1000000')
@@ -198,7 +198,7 @@ tasks.register('benchmarkWalletHistory', JavaExec) {
     description = 'Replays retained historical blocks through the four wallet-index modes'
     dependsOn tasks.named('testClasses')
     classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.runtime.wallet.WalletHistoricalBenchmark'
+    mainClass = 'org.yanoproject.runtime.wallet.WalletHistoricalBenchmark'
     maxHeapSize = '1g'
     args providers.gradleProperty('walletHistorySource').getOrElse(''),
             providers.gradleProperty('walletHistoryOutput').getOrElse(''),
@@ -211,7 +211,7 @@ tasks.register('verifyWalletHistory', JavaExec) {
     group = 'verification'
     dependsOn tasks.named('testClasses')
     classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.runtime.wallet.WalletHistoricalVerifier'
+    mainClass = 'org.yanoproject.runtime.wallet.WalletHistoricalVerifier'
     maxHeapSize = '1g'
     args providers.gradleProperty('walletVerifyDatabase').getOrElse(''),
             providers.gradleProperty('walletVerifyOutput').getOrElse('')

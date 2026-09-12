@@ -224,11 +224,11 @@ Use the lightweight `yano-appchain-client` artifact with the same version as
 the Yano nodes:
 
 ```groovy
-implementation "com.bloxbean.cardano:yano-appchain-client:${yanoVersion}"
+implementation "org.yanoproject:yano-appchain-client:${yanoVersion}"
 ```
 
 ```java
-import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import org.yanoproject.x.client.AppChainClient;
 
 AppChainClient client = AppChainClient
         .builder("http://127.0.0.1:7071/api/v1")

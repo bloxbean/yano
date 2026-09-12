@@ -329,7 +329,7 @@ catch up the delta (user guide §14.3).
 
 ## 9. State machines — the SPI
 
-`com.bloxbean.cardano.yano.api.appchain.AppStateMachine`:
+`org.yanoproject.api.appchain.AppStateMachine`:
 
 | Method | When | Contract |
 |---|---|---|
@@ -389,7 +389,7 @@ plugins so Yano's core documentation does not imply that they are built in.
    settings (`context.settings()` is the `yano.app-chain.*` map with the
    stem stripped, e.g. `machines.my-machine.foo`).
 3. **Plugin mode** (default distribution, no rebuild): register the provider
-   in `META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider`,
+   in `META-INF/services/org.yanoproject.api.appchain.AppStateMachineProvider`,
    and add `META-INF/yano/plugins/<bundle-id>.json`. The manifest declares an
    `app-state-machine` contribution whose `name` equals the provider `id()`
    and whose `provider` is the same fully-qualified class as the ServiceLoader

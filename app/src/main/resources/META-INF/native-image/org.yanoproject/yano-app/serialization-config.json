@@ -1,0 +1,188 @@
+[
+  {
+    "name": "org.yanoproject.api.model.NodeStatus"
+  },
+  {
+    "name": "com.bloxbean.cardano.yaci.core.storage.ChainTip"
+  },
+  {
+    "name": "org.yanoproject.app.api.blocks.dto.BlockDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.epochs.dto.EpochDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.epochs.dto.ProtocolParamsDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.epochs.dto.AdaPotDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.epochs.dto.StakeDtos$TotalStakeDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.epochs.dto.StakeDtos$PoolStakeDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.epochs.dto.StakeDtos$PoolStakeDelegatorDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.network.dto.NetworkDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.network.dto.NetworkDto$SupplyDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.network.dto.NetworkDto$StakeDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$StakeRegistrationDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$PoolDelegationDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$DRepDelegationDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$PoolDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$PoolRetirementDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$AccountInfoDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$WithdrawalHistoryDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$DelegationHistoryDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$RegistrationHistoryDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$MirHistoryDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.dto.AccountStateDtos$AccountStakeDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$EpochSnapshotEntry"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$PoolBlockCountEntry"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$EpochSnapshotSummary"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$PoolBlockCountSummary"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$ProtocolParamsDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$EpochInfoDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$PoolStateDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$RetiredPoolDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$AdaPotDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$PoolParamsDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$RewardInputsDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.governance.dto.GovernanceDtos$ProposalDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.governance.dto.GovernanceDtos$ProposalVoteDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.governance.dto.GovernanceDtos$DRepListDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.governance.dto.GovernanceDtos$DRepDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.governance.dto.GovernanceDtos$DRepDistributionDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.utxos.dto.UtxoDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.utxos.dto.AmountDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.tx.dto.TxInputsOutputsDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.tx.dto.TxUtxoDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.tx.dto.TxAmountDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.tx.dto.TxDto"
+  },
+  {
+    "name": "org.yanoproject.app.api.genesis.dto.GenesisDto"
+  },
+  {
+    "name": "org.yanoproject.api.model.GenesisParameters"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.RollbackRequest"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.RollbackResponse"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.SnapshotRequest"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.SnapshotResponse"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.FundRequest"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.FundResponse"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.TimeAdvanceRequest"
+  },
+  {
+    "name": "org.yanoproject.app.api.devnet.dto.TimeAdvanceResponse"
+  },
+  {
+    "name": "org.yanoproject.api.model.SnapshotInfo"
+  },
+  {
+    "name": "org.yanoproject.api.model.FundResult"
+  },
+  {
+    "name": "org.yanoproject.api.model.TimeAdvanceResult"
+  },
+  {
+    "name": "org.yanoproject.api.config.YanoConfig"
+  },
+  {
+    "name": "java.util.ArrayList"
+  },
+  {
+    "name": "java.util.HashMap"
+  },
+  {
+    "name": "java.util.LinkedHashMap"
+  }
+]

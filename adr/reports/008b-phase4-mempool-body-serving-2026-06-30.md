@@ -24,6 +24,6 @@ Date: 2026-06-30
 
 ## Verification
 
-- `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.tx.diffusion.DefaultTxDiffusionTest`
+- `./gradlew :runtime:test --tests org.yanoproject.runtime.tx.diffusion.DefaultTxDiffusionTest`
 - `./gradlew :runtime:test`
 - `./gradlew :app:test :app:quarkusBuild`

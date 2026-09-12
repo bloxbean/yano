@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.client.ledger.slice.yaci;
 
 import com.bloxbean.cardano.client.ledger.slice.ProposalsSlice;
-import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
+import org.yanoproject.api.account.LedgerStateProvider;
 
 /**
  * Yaci adapter for {@link ProposalsSlice} backed by {@link LedgerStateProvider}.

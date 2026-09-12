@@ -99,7 +99,7 @@ source-export build using the same staged inputs.
   removed. Runtime configuration now accepts only the canonical `yano.plugins.*` keys.
 - A post-split showcase deployment exposed two boundaries that archive-only rehearsal did not
   exercise. Explicit plugin allow-lists must include manifested bundle dependencies (the showcase
-  now selects `com.bloxbean.cardano.yano.appchain.composite` for role-workflow), and local derived
+  now selects `org.yanoproject.x.composite` for role-workflow), and local derived
   read models must start only after their app-chain source gateways are live. Yano now orders the
   local-read-model subsystem immediately after app-chain startup and before app-chain shutdown.
 - Directory-loaded, dependency-complete bundle catalogs now publish artifact-closure provenance.

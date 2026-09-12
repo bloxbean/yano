@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/java-25-orange.svg" alt="Java 25">
-  <a href="https://central.sonatype.com/namespace/com.bloxbean.cardano"><img src="https://img.shields.io/maven-central/v/com.bloxbean.cardano/yano-runtime?label=maven%20central" alt="Maven Central"></a>
+  <a href="https://central.sonatype.com/namespace/org.yanoproject"><img src="https://img.shields.io/maven-central/v/org.yanoproject/yano-runtime?label=maven%20central" alt="Maven Central"></a>
   <a href=".github/workflows/build.yml"><img src="https://github.com/bloxbean/yano/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 </p>
 
@@ -119,9 +119,9 @@ Yano publishes individual modules to Maven Central (release coming — until the
 artifacts are available on Sonatype's snapshot repo).
 
 Pick the latest version from
-[Maven Central](https://central.sonatype.com/namespace/com.bloxbean.cardano)
+[Maven Central](https://central.sonatype.com/namespace/org.yanoproject)
 (or, while pre-release, the
-[Sonatype snapshots repo](https://central.sonatype.com/repository/maven-snapshots/com/bloxbean/cardano/)).
+[Sonatype snapshots repo](https://central.sonatype.com/repository/maven-snapshots/org/yanoproject/)).
 
 ```gradle
 repositories {
@@ -135,10 +135,10 @@ ext {
 }
 
 dependencies {
-    implementation "com.bloxbean.cardano:yano-runtime:$yanoVersion"
+    implementation "org.yanoproject:yano-runtime:$yanoVersion"
     // or pull a slim slice:
-    implementation "com.bloxbean.cardano:yano-core-api:$yanoVersion"
-    implementation "com.bloxbean.cardano:yano-ledger-state:$yanoVersion"
+    implementation "org.yanoproject:yano-core-api:$yanoVersion"
+    implementation "org.yanoproject:yano-ledger-state:$yanoVersion"
 }
 ```
 
@@ -146,14 +146,14 @@ dependencies {
 
 | Coordinate | What it is |
 |---|---|
-| `com.bloxbean.cardano:yano-core-api` | Public node interfaces and plugin SPI |
-| `com.bloxbean.cardano:yano-runtime` | Node implementation with RocksDB persistence |
-| `com.bloxbean.cardano:yano-ledger-state` | Account / delegation / governance state stores |
-| `com.bloxbean.cardano:yano-ledger-rules` | Validation rule interfaces |
-| `com.bloxbean.cardano:yano-scalus-bridge` | Scalus-based Plutus script evaluation adapter |
-| `com.bloxbean.cardano:yano-bootstrap-providers` | Initial-state providers (Blockfrost / Koios / …) |
+| `org.yanoproject:yano-core-api` | Public node interfaces and plugin SPI |
+| `org.yanoproject:yano-runtime` | Node implementation with RocksDB persistence |
+| `org.yanoproject:yano-ledger-state` | Account / delegation / governance state stores |
+| `org.yanoproject:yano-ledger-rules` | Validation rule interfaces |
+| `org.yanoproject:yano-scalus-bridge` | Scalus-based Plutus script evaluation adapter |
+| `org.yanoproject:yano-bootstrap-providers` | Initial-state providers (Blockfrost / Koios / …) |
 
-The Quarkus REST application (`com.bloxbean.cardano.yano.app`, the `app/` module) is **not**
+The Quarkus REST application (`org.yanoproject.app`, the `app/` module) is **not**
 published; it's distributed as an uber-jar (`app/build/yano.jar`) and as a GraalVM native
 binary (`app/build/yano`).
 

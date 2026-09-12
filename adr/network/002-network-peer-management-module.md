@@ -46,7 +46,7 @@ Do not create a new Gradle module in Phase 1.
 
 Create a focused package inside the existing `runtime` module:
 
-- `com.bloxbean.cardano.yano.runtime.peer`
+- `org.yanoproject.runtime.peer`
 
 This package will own the active upstream peer session and the recovery
 supervisor. It will keep the implementation single-active-peer first, while
@@ -221,7 +221,7 @@ Possible future module name:
 
 Possible future base package:
 
-- `com.bloxbean.cardano.yano.network`
+- `org.yanoproject.network`
 
 Until then, use the package boundary inside `runtime`.
 
@@ -375,7 +375,7 @@ Tradeoffs:
 
 ## Resolved Questions
 
-- Phase 1 package: `com.bloxbean.cardano.yano.runtime.peer`.
+- Phase 1 package: `org.yanoproject.runtime.peer`.
 - No Gradle module in Phase 1.
 - `SyncStartPointProvider` returns candidate points, not one point.
 - Active peer replacement is synchronous from Yano's perspective in Phase 1.

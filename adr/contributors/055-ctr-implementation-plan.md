@@ -89,17 +89,17 @@ Regression command:
 
 ```sh
 ./gradlew :runtime:test \
-  --tests 'com.bloxbean.cardano.yano.runtime.wallet.*' \
-  --tests 'com.bloxbean.cardano.yano.runtime.utxo.*' \
-  --tests 'com.bloxbean.cardano.yano.runtime.plugins.*' \
-  --tests 'com.bloxbean.cardano.yano.runtime.internal.RuntimeNodePluginRollbackTest' \
-  --tests 'com.bloxbean.cardano.yano.runtime.devnet.DevnetSnapshotRestoreServiceTest' \
+  --tests 'org.yanoproject.runtime.wallet.*' \
+  --tests 'org.yanoproject.runtime.utxo.*' \
+  --tests 'org.yanoproject.runtime.plugins.*' \
+  --tests 'org.yanoproject.runtime.internal.RuntimeNodePluginRollbackTest' \
+  --tests 'org.yanoproject.runtime.devnet.DevnetSnapshotRestoreServiceTest' \
   :runtime:pluginCatalogSemanticsTest :plugin-catalog:test \
   :archive-modules:archive-core:test \
-  --tests 'com.bloxbean.cardano.yano.archive.core.projection.*' \
+  --tests 'org.yanoproject.archive.core.projection.*' \
   :app:test \
-  --tests 'com.bloxbean.cardano.yano.app.api.wallet.WalletScanResourceTest' \
-  --tests 'com.bloxbean.cardano.yano.app.api.addresses.AddressResourceTest' \
-  --tests 'com.bloxbean.cardano.yano.app.PluginCatalogGeneratedNativeMetadataTest' \
+  --tests 'org.yanoproject.app.api.wallet.WalletScanResourceTest' \
+  --tests 'org.yanoproject.app.api.addresses.AddressResourceTest' \
+  --tests 'org.yanoproject.app.PluginCatalogGeneratedNativeMetadataTest' \
   :app:quarkusBuild --console=plain
 ```

@@ -17,7 +17,7 @@ mempool mutation, and event publication.
 New package:
 
 ```text
-com.bloxbean.cardano.yano.p2p.tx.diffusion
+org.yanoproject.p2p.tx.diffusion
 ```
 
 Moved from runtime to p2p:
@@ -75,7 +75,7 @@ Phase-level verification:
 ```text
 ./gradlew :p2p:test
 ./gradlew :runtime:compileJava :runtime:compileTestJava
-./gradlew :runtime:test --tests 'com.bloxbean.cardano.yano.runtime.handlers.YaciTxSubmissionHandlerTest' --tests 'com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest' --tests 'com.bloxbean.cardano.yano.runtime.tx.TxSubsystemTest'
+./gradlew :runtime:test --tests 'org.yanoproject.runtime.handlers.YaciTxSubmissionHandlerTest' --tests 'org.yanoproject.runtime.sync.SyncSubsystemTest' --tests 'org.yanoproject.runtime.tx.TxSubsystemTest'
 ```
 
 Final verification:

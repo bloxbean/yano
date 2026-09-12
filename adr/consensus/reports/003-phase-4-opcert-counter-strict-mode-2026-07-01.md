@@ -19,8 +19,8 @@ Date: 2026-07-01
 
 ```text
 ./gradlew :runtime:test \
-  --tests com.bloxbean.cardano.yano.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProviderTest \
-  --tests com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest
+  --tests org.yanoproject.runtime.sync.validation.LedgerStateHeaderValidationLedgerViewProviderTest \
+  --tests org.yanoproject.runtime.config.UpstreamConfigTest
 ```
 
 Result: passed.

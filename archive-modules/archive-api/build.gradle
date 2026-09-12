@@ -13,7 +13,7 @@ tasks.register('archiveLayoutBenchmark', JavaExec) {
     description = 'Measures normalized and wide archive layouts for a Yaci Store address_utxo Parquet fixture.'
     dependsOn integrationTestClasses
     classpath = sourceSets.integrationTest.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.archive.benchmark.ArchiveLayoutBenchmark'
+    mainClass = 'org.yanoproject.archive.benchmark.ArchiveLayoutBenchmark'
     if (project.hasProperty('fixture')) {
         args project.property('fixture')
     }

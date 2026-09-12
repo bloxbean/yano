@@ -34,7 +34,7 @@
 - `MultiPeerScaffoldingTest.peerSnapshotFileSeedsPeerStoreEntries`
 - `MultiPeerScaffoldingTest.peerSnapshotWithWrongNetworkMagicIsIgnored`
 - `MultiPeerScaffoldingTest.peerAddressPolicyRejectsPrivateAddressesUnlessAllowed`
-- `./gradlew :runtime:test --tests "com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "com.bloxbean.cardano.yano.runtime.sync.SyncSubsystemTest" --tests "com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest" --console=plain`
+- `./gradlew :runtime:test --tests "org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest" --tests "org.yanoproject.runtime.sync.SyncSubsystemTest" --tests "org.yanoproject.runtime.config.UpstreamConfigTest" --console=plain`
 - Live preprod run in `p2p-relay` mode against
   `preprod-node.play.dev.cardano.org:3001`, local HTTP `7098`, local N2N
   `7099`.

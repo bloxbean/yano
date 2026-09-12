@@ -24,10 +24,10 @@ The module exposes operations for:
 ## Basic Usage
 
 ```java
-import com.bloxbean.cardano.yano.api.DevnetControl;
-import com.bloxbean.cardano.yano.api.config.YanoConfig;
-import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
-import com.bloxbean.cardano.yano.runtime.assembly.Yano;
+import org.yanoproject.api.DevnetControl;
+import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.devnet.YanoDevnetAssembly;
+import org.yanoproject.runtime.assembly.Yano;
 
 YanoConfig config = YanoConfig.devnetDefault(0);
 

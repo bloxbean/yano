@@ -68,15 +68,15 @@ controlled by `yano.relay.connection.source-port-reuse`.
 - Yano compile:
   `./gradlew :runtime:compileJava :app:compileJava`
 - Yano targeted manager test:
-  `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.connection.DefaultRelayConnectionManagerTest`
+  `./gradlew :runtime:test --tests org.yanoproject.runtime.connection.DefaultRelayConnectionManagerTest`
 - Yano runtime suite: `./gradlew :runtime:test`
 - Yano app producer config test:
-  `./gradlew :app:test --tests com.bloxbean.cardano.yano.app.YanoProducerTest`
+  `./gradlew :app:test --tests org.yanoproject.app.YanoProducerTest`
 - Yano app build: `./gradlew :app:quarkusBuild`
 - Additional post-governor validation:
-  `./gradlew :runtime:test --tests com.bloxbean.cardano.yano.runtime.connection.DefaultRelayConnectionManagerTest`
+  `./gradlew :runtime:test --tests org.yanoproject.runtime.connection.DefaultRelayConnectionManagerTest`
 - Final focused regression/build pass:
-  `./gradlew :core-api:test --tests com.bloxbean.cardano.yano.api.model.NodeStatusTest :runtime:test --tests com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest --tests com.bloxbean.cardano.yano.runtime.connection.DefaultRelayConnectionManagerTest :app:quarkusBuild`
+  `./gradlew :core-api:test --tests org.yanoproject.api.model.NodeStatusTest :runtime:test --tests org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest --tests org.yanoproject.runtime.connection.DefaultRelayConnectionManagerTest :app:quarkusBuild`
 
 ## Live Preprod Verification
 

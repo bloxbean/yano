@@ -53,11 +53,11 @@ Focused tests passed:
 
 ```bash
 ./gradlew :runtime:test \
-  --tests com.bloxbean.cardano.yano.runtime.sync.validation.ShelleyHeaderValidatorTest \
-  --tests com.bloxbean.cardano.yano.runtime.sync.validation.HeaderValidationPipelineTest \
-  --tests com.bloxbean.cardano.yano.runtime.config.UpstreamConfigTest \
-  --tests com.bloxbean.cardano.yano.runtime.HeaderSyncManagerTest \
-  --tests com.bloxbean.cardano.yano.runtime.sync.multipeer.MultiPeerScaffoldingTest
+  --tests org.yanoproject.runtime.sync.validation.ShelleyHeaderValidatorTest \
+  --tests org.yanoproject.runtime.sync.validation.HeaderValidationPipelineTest \
+  --tests org.yanoproject.runtime.config.UpstreamConfigTest \
+  --tests org.yanoproject.runtime.HeaderSyncManagerTest \
+  --tests org.yanoproject.runtime.sync.multipeer.MultiPeerScaffoldingTest
 ```
 
 App build passed:

@@ -1,6 +1,6 @@
 import type { AppChainStatus, EutxoTransactionSummary } from '$lib/api/types';
 
-export const EUTXO_BUNDLE_ID = 'com.bloxbean.cardano.yano.appchain.eutxo';
+export const EUTXO_BUNDLE_ID = 'org.yanoproject.x.eutxo';
 export const EUTXO_STATE_MACHINE_ID = 'eutxo-ledger';
 const IDENTIFIER = /^[0-9a-f]{64}$/;
 const OUTPOINT = /^([0-9a-f]{64})#([0-9]|[1-9][0-9]{0,4})$/;

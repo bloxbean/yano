@@ -159,12 +159,12 @@ describe('Yano API client', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
     vi.stubGlobal('fetch', fetchMock);
     await new YanoApi('/api/v1', 'reader-key').domain(
-      'com.bloxbean.cardano.yano.appchain.eutxo',
+      'org.yanoproject.x.eutxo',
       `transactions/${'ab'.repeat(32)}`,
       { chain: 'payments/east', limit: '20' }
     );
     expect(fetchMock.mock.calls[0][0]).toBe(
-      `/api/v1/plugins/com.bloxbean.cardano.yano.appchain.eutxo/transactions/${'ab'.repeat(32)}?chain=payments%2Feast&limit=20`);
+      `/api/v1/plugins/org.yanoproject.x.eutxo/transactions/${'ab'.repeat(32)}?chain=payments%2Feast&limit=20`);
     expect((fetchMock.mock.calls[0][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
   });
 
@@ -178,7 +178,7 @@ describe('Yano API client', () => {
       chain: 'payments/east', limit: '25', cursor: 'c1_safe'
     });
     expect(fetchMock.mock.calls[0][0]).toBe(
-      '/api/v1/plugins/com.bloxbean.cardano.yano.appchain.eutxo.indexer/index/v1/transactions'
+      '/api/v1/plugins/org.yanoproject.x.eutxo.indexer/index/v1/transactions'
       + '?chain=payments%2Feast&limit=25&cursor=c1_safe');
     const id = 'ab'.repeat(32);
     await api.l1Transaction(id);
@@ -195,7 +195,7 @@ describe('Yano API client', () => {
     await api.authenticatedMapDomain(
       `authenticated-map/entries/products/${'6b'.repeat(3)}`, { chain: 'map/east' });
     expect(fetchMock.mock.calls[0][0]).toBe(
-      '/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/authenticated-map/entries/'
+      '/api/v1/plugins/org.yanoproject.x.stdlib/authenticated-map/entries/'
       + `products/${'6b'.repeat(3)}?chain=map%2Feast`);
     expect((fetchMock.mock.calls[0][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
     await api.chainSubmitMessage('map/east', 'authenticated-map.command.v1', '830100');
