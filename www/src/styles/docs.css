@@ -1,0 +1,33 @@
+:root {
+  --sl-color-accent-low: #152e20;
+  --sl-color-accent: #80b94f;
+  --sl-color-accent-high: #c3f69c;
+  --sl-font: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --sl-content-width: 49rem;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e7f7da;
+  --sl-color-accent: #365f1e;
+  --sl-color-accent-high: #214110;
+}
+.site-title {
+  font-weight: 750;
+  letter-spacing: -0.04em;
+}
+h1,
+h2,
+h3 {
+  letter-spacing: -0.035em;
+}
+.sl-markdown-content pre {
+  border-radius: 12px;
+}
+.sl-markdown-content table {
+  font-size: 0.875rem;
+}
+.sl-markdown-content a {
+  text-underline-offset: 3px;
+}
+header.header {
+  backdrop-filter: blur(18px);
+}

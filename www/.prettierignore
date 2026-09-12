@@ -1,0 +1,6 @@
+dist/
+node_modules/
+.astro/
+public/ai/
+public/llms*.txt
+src/content/docs/reference/configuration-catalog.md

@@ -1,0 +1,58 @@
+---
+import PageTitle from '@astrojs/starlight/components/PageTitle.astro';
+const path = Astro.url.pathname.replace(/^\/+|\/+$/g, '');
+const markdown = `/ai/pages/${path}.md`;
+const isPage = path !== '404' && path !== '404.html';
+---
+
+<PageTitle />
+{isPage && (
+  <div class="page-tools" data-pagefind-ignore>
+    <a href={markdown}>View Markdown ↗</a>
+    <button data-markdown={markdown}>Copy page for AI</button>
+    <span class="copy-feedback" role="status" aria-live="polite"></span>
+  </div>
+)}
+<script>
+  document.querySelectorAll<HTMLButtonElement>('[data-markdown]').forEach((button) =>
+    button.addEventListener('click', async () => {
+      const feedback = button.parentElement?.querySelector('.copy-feedback');
+      try {
+        const response = await fetch(button.dataset.markdown || '');
+        if (!response.ok) throw new Error('Markdown unavailable');
+        await navigator.clipboard.writeText(await response.text());
+        if (feedback) feedback.textContent = 'Copied';
+      } catch {
+        if (feedback) feedback.textContent = 'Use View Markdown to copy manually.';
+      }
+    }),
+  );
+</script>
+<style>
+  .page-tools {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-top: 1rem;
+    font-size: 0.75rem;
+    color: var(--sl-color-gray-2);
+  }
+  .page-tools a {
+    text-decoration: none;
+    color: var(--sl-color-text-accent);
+  }
+  .page-tools button {
+    font: inherit;
+    cursor: pointer;
+    background: var(--sl-color-bg-nav);
+    color: var(--sl-color-text);
+    border: 1px solid var(--sl-color-hairline);
+    border-radius: 5px;
+    padding: 0.4rem 0.7rem;
+  }
+  .copy-feedback {
+    font-size: 0.7rem;
+    color: var(--sl-color-text-accent);
+  }
+</style>
