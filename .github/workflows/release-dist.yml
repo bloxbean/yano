@@ -12,6 +12,7 @@ jobs:
       is_final: ${{ steps.version.outputs.is_final }}
       version: ${{ steps.version.outputs.version }}
       npm_publish: ${{ steps.version.outputs.npm_publish }}
+      github_release: ${{ steps.version.outputs.github_release }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +53,12 @@ jobs:
           NPM_PUBLISH=$(./gradlew -q properties | awk '/^npm_publish:/ { print $2; exit }')
           echo "npm_publish=${NPM_PUBLISH:-false}" >> "$GITHUB_OUTPUT"
           echo "npm publish for this tag: ${NPM_PUBLISH:-false}"
+          # A GitHub release is deletable, unlike npm and Docker, but it still
+          # notifies watchers and advertises the tag as a real release. Gating it
+          # lets a tag rehearse the whole pipeline and stage Maven Central only.
+          GITHUB_RELEASE=$(./gradlew -q properties | awk '/^github_release:/ { print $2; exit }')
+          echo "github_release=${GITHUB_RELEASE:-false}" >> "$GITHUB_OUTPUT"
+          echo "GitHub release for this tag: ${GITHUB_RELEASE:-false}"
 
   jar-dist:
     needs: validate
@@ -243,11 +250,14 @@ jobs:
 
   release:
     needs: [validate, jar-dist, native-dist, npm-publish]
-    # npm-publish is skipped when npm_publish is false, and a skipped dependency
-    # would otherwise skip this job too. The GitHub release still ships the jar
-    # and native distributions; only a genuine npm failure blocks it.
+    # Gated by github_release in gradle.properties. npm-publish is skipped when
+    # npm_publish is false, and a skipped dependency would otherwise skip this
+    # job too, so it is checked by result rather than by default behaviour: the
+    # release still ships the jar and native distributions when npm publishing is
+    # off, and only a genuine npm failure blocks it.
     if: >-
       !cancelled()
+      && needs.validate.outputs.github_release == 'true'
       && needs.jar-dist.result == 'success'
       && needs.native-dist.result == 'success'
       && needs.npm-publish.result != 'failure'
