@@ -58,6 +58,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
     private final boolean requireLedgerStateProvider;
     private final boolean supplementaryRulesEnabled;
 
+    @Deprecated(forRemoval = true)
     public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                            com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
                                            com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
@@ -67,6 +68,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                 null, null, false, false);
     }
 
+    @Deprecated(forRemoval = true)
     public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                            com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
                                            com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
@@ -87,6 +89,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                 null, null, false, supplementaryRulesEnabled);
     }
 
+    @Deprecated(forRemoval = true)
     public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                            com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
                                            com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
@@ -97,6 +100,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                 currentSlotSupplier, null);
     }
 
+    @Deprecated(forRemoval = true)
     public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                            com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
                                            com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,
@@ -108,6 +112,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                 currentSlotSupplier, currentEpochResolver, true, false);
     }
 
+    @Deprecated(forRemoval = true)
     public ScalusBasedTransactionValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                            com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier,
                                            com.bloxbean.cardano.client.common.model.SlotConfig slotConfig,

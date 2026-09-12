@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RuntimeSlotConfigSupplierTest {
@@ -113,7 +114,25 @@ class RuntimeSlotConfigSupplierTest {
 
         assertEquals(4_492_800, slotConfig.getZeroSlot());
         assertEquals(shelleyStart, slotConfig.getZeroTime());
-        assertEquals(mainnetEpochs, supplier.getEpochSlotCalc());
+        assertSame(mainnetEpochs, supplier.getEpochSlotCalc());
+    }
+
+    @Test
+    void byronNetworkAlwaysUsesShelleySystemStartAsSlotConfigOrigin() {
+        var config = YanoConfig.devnetDefault(13337);
+        config.setGenesisTimestamp(Instant.parse("2017-09-23T21:44:51Z").toEpochMilli());
+        var mainnetEpochs = new EpochSlotCalc(432_000, 21_600, 4_492_800);
+        long shelleyStart = Instant.parse("2020-07-29T21:44:51Z").toEpochMilli();
+        var supplier = new RuntimeSlotConfigSupplier(
+                config,
+                () -> Instant.parse("2017-09-23T21:44:51Z").toEpochMilli(),
+                genesis("2020-07-29T21:44:51Z", 1.0),
+                mainnetEpochs);
+
+        var slotConfig = supplier.getSlotConfig();
+
+        assertEquals(4_492_800, slotConfig.getZeroSlot());
+        assertEquals(shelleyStart, slotConfig.getZeroTime());
     }
 
     private static GenesisConfig genesis(String systemStart, double slotLengthSeconds) {

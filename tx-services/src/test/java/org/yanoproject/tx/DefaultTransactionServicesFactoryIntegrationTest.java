@@ -2,10 +2,12 @@ package org.yanoproject.tx;
 
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.ledgerrules.SlotConfigSupplier;
 import org.yanoproject.runtime.assembly.YanoAssembly;
 import org.yanoproject.runtime.assembly.Yano;
 import org.yanoproject.runtime.config.InMemoryDevnetGenesis;
 import org.yanoproject.runtime.genesis.ShelleyGenesisParser;
+import org.yanoproject.runtime.tx.TransactionServices;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,7 +15,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -63,6 +68,7 @@ class DefaultTransactionServicesFactoryIntegrationTest {
                 testPath("app/config/network/devnet/shelley-genesis.json").toFile());
         var protocolParameters = Files.readString(testPath("app/config/network/devnet/protocol-param.json"));
         var inMemoryGenesis = new InMemoryDevnetGenesis(shelley, null, null, protocolParameters);
+        var capturedServices = new AtomicReference<TransactionServices>();
 
         RuntimeOptions runtimeOptions = new RuntimeOptions(null, null, Map.of(
                 "yano.utxo.enabled", true,
@@ -75,11 +81,25 @@ class DefaultTransactionServicesFactoryIntegrationTest {
                 .runtimeOptions(runtimeOptions)
                 .transactionBootstrap(
                         TransactionBootstrapOptions.enabled(false, false, "aiken"),
-                        DefaultTransactionServicesFactory::create)
+                        (context, options) -> {
+                            var services = DefaultTransactionServicesFactory.create(context, options);
+                            services.ifPresent(capturedServices::set);
+                            return services;
+                        })
                 .build();
 
         try {
             assertTrue(node.txEvaluationGateway().isTransactionEvaluationAvailable());
+            assertNotNull(capturedServices.get());
+            assertNotNull(capturedServices.get().validator());
+
+            var field = capturedServices.get().validator().getClass().getDeclaredField("slotConfigSupplier");
+            field.setAccessible(true);
+            var slotConfigSupplier = (SlotConfigSupplier) field.get(capturedServices.get().validator());
+
+            assertEquals(shelley.epochLength(), slotConfigSupplier.getEpochSlotCalc().shelleyEpochLength());
+            assertEquals(0, slotConfigSupplier.getEpochSlotCalc().firstNonByronEpoch());
+            assertEquals(0, slotConfigSupplier.getSlotConfig().getZeroSlot());
         } finally {
             node.close();
         }

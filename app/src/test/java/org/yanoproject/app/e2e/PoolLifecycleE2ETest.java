@@ -121,6 +121,8 @@ class PoolLifecycleE2ETest extends BaseE2ETest {
         submitAndAwait(buildDRepDelegationOnly(retainedDRepDelegator));
         awaitState("scenario E DRep delegation visible",
                 () -> hasDRepDelegation(retainedDRepDelegator));
+
+        advanceToEpoch(currentEpoch() + 17);
     }
 
     @Test

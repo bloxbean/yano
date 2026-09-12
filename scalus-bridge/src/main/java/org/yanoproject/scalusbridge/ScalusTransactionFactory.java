@@ -26,12 +26,14 @@ public class ScalusTransactionFactory {
     // underlying constructor for standalone/static-param consumers.
     // ---------------------------------------------------------------------
 
+    @Deprecated(forRemoval = true)
     public static TransactionValidator createValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId) {
         return createValidator(protocolParamsSupplier, scriptSupplier, slotConfig, networkId, null, false);
     }
 
+    @Deprecated(forRemoval = true)
     public static TransactionValidator createValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId,
@@ -39,6 +41,7 @@ public class ScalusTransactionFactory {
         return createValidator(protocolParamsSupplier, scriptSupplier, slotConfig, networkId, ledgerStateProvider, false);
     }
 
+    @Deprecated(forRemoval = true)
     public static TransactionValidator createValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId,
@@ -57,6 +60,7 @@ public class ScalusTransactionFactory {
                 networkId, ledgerStateProvider, null, null, false, supplementaryRulesEnabled);
     }
 
+    @Deprecated(forRemoval = true)
     public static TransactionValidator createValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId,
@@ -66,6 +70,7 @@ public class ScalusTransactionFactory {
                 ledgerStateProvider, currentSlotSupplier, null, false);
     }
 
+    @Deprecated(forRemoval = true)
     public static TransactionValidator createValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId,
@@ -76,6 +81,7 @@ public class ScalusTransactionFactory {
                 ledgerStateProvider, currentSlotSupplier, currentEpochResolver, false);
     }
 
+    @Deprecated(forRemoval = true)
     public static TransactionValidator createValidator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId,
@@ -111,6 +117,7 @@ public class ScalusTransactionFactory {
                 requireLedgerStateProvider, supplementaryRulesEnabled);
     }
 
+    @Deprecated(forRemoval = true)
     public static TransactionEvaluator createEvaluator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId) {
@@ -125,6 +132,7 @@ public class ScalusTransactionFactory {
                 networkId, null);
     }
 
+    @Deprecated(forRemoval = true)
     public static TransactionEvaluator createEvaluator(EpochProtocolParamsSupplier protocolParamsSupplier,
                                                        ScriptSupplier scriptSupplier,
                                                        SlotConfig slotConfig, int networkId,

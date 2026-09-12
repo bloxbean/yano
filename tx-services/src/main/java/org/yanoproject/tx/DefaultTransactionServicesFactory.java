@@ -96,7 +96,10 @@ public final class DefaultTransactionServicesFactory {
                         epochSlotCalc.shelleyEpochLength(),
                         epochSlotCalc.firstNonByronEpoch());
             } else {
-                log.info("Yano transaction slot config supplier prepared; zeroTime will resolve at runtime");
+                log.info("Yano transaction slot config supplier prepared; zeroTime will resolve at runtime, "
+                                + "epochLength={}, zeroEpoch={}",
+                        epochSlotCalc.shelleyEpochLength(),
+                        epochSlotCalc.firstNonByronEpoch());
             }
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;

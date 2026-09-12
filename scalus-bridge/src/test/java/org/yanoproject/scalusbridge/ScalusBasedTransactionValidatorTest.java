@@ -17,6 +17,7 @@ import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedures;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.ParameterChangeAction;
 import org.yanoproject.api.account.LedgerStateProvider;
+import org.yanoproject.api.util.EpochSlotCalc;
 import org.yanoproject.ledgerrules.SlotConfigSupplier;
 import org.yanoproject.ledgerrules.ValidationError;
 import org.junit.jupiter.api.Test;
@@ -128,8 +129,17 @@ class ScalusBasedTransactionValidatorTest {
     @Test
     void validateUsesDynamicSlotConfigSupplierPerCall() {
         var zeroTime = new AtomicLong(1_780_000_000_000L);
-        var validator = new SlotCapturingValidator(
-                () -> new SlotConfig(1_000, 0, zeroTime.get()));
+        var validator = new SlotCapturingValidator(new SlotConfigSupplier() {
+            @Override
+            public SlotConfig getSlotConfig() {
+                return new SlotConfig(1_000, 0, zeroTime.get());
+            }
+
+            @Override
+            public EpochSlotCalc getEpochSlotCalc() {
+                return new EpochSlotCalc(1_200, 1_200, 0);
+            }
+        });
 
         assertTrue(validator.validate(new byte[]{1, 2, 3}, Set.of()).valid());
         zeroTime.set(1_780_000_001_000L);
@@ -440,7 +450,7 @@ class ScalusBasedTransactionValidatorTest {
         @Override
         protected TransitResult runScalusValidation(byte[] txCbor, ProtocolParams protocolParams,
                                                     Set<Utxo> inputUtxos, long currentSlot) {
-            zeroTimes.add(resolveCclSlotConfig().getZeroTime());
+            zeroTimes.add(resolveScalusSlotConfig().zeroTime());
             return new TransitResult(true, null, null);
         }
 

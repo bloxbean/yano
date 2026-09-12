@@ -52,6 +52,9 @@ final class RuntimeSlotConfigSupplier implements SlotConfigSupplier {
     }
 
     boolean canResolveZeroTimeNow() {
+        if (epochSlotCalc.firstNonByronSlot() > 0) {
+            return genesisConfig != null && genesisConfig.getSystemStartEpochMillis() > 0;
+        }
         if (config.getGenesisTimestamp() > 0) {
             return true;
         }
@@ -62,6 +65,14 @@ final class RuntimeSlotConfigSupplier implements SlotConfigSupplier {
     }
 
     long resolveZeroTimeMillis() {
+        if (epochSlotCalc.firstNonByronSlot() > 0) {
+            if (genesisConfig == null) {
+                throw new IllegalStateException(
+                        "Cannot resolve Shelley transition time without Shelley genesis configuration");
+            }
+            return requireEpochMillis(genesisConfig.getSystemStartEpochMillis(), "Shelley systemStart");
+        }
+
         long configured = config.getGenesisTimestamp();
         if (configured > 0) {
             return requireEpochMillis(configured, YanoPropertyKeys.BlockProducer.GENESIS_TIMESTAMP);
