@@ -69,7 +69,6 @@ publishing {
 
 def releaseVersion = !version.endsWith('SNAPSHOT')
 if (releaseVersion && !project.hasProperty('skipSigning')) {
-    signing {
-        sign publishing.publications
-    }
+    // In-memory CI signing, shared with every other published project (root build.gradle).
+    rootProject.configureReleaseSigning(project)
 }
