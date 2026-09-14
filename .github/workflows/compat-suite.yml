@@ -43,6 +43,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: 'true'
+          persist-credentials: false
 
       - name: Set up JDK 25
         uses: actions/setup-java@v4
@@ -58,18 +59,24 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew compat-tests/ccl/gradlew compat-tests/run-suite.sh compat-tests/bin/with-devnet.sh
 
+      # Inputs reach the scripts through env, never inline expressions.
       - name: Resolve options
         id: opts
+        env:
+          KINDS: ${{ inputs.kinds }}
+          LABEL: ${{ inputs.label }}
+          RUN_NUMBER: ${{ github.run_number }}
+          CHECK_ENDPOINTS: ${{ inputs.check_endpoints }}
         run: |
-          case "${{ inputs.kinds }}" in
+          case "$KINDS" in
             compat-only) echo "flags=--compat-only" >> "$GITHUB_OUTPUT" ;;
             load-only)   echo "flags=--load-only"   >> "$GITHUB_OUTPUT" ;;
             *)           echo "flags="              >> "$GITHUB_OUTPUT" ;;
           esac
-          label='${{ inputs.label }}'
-          [ -n "$label" ] || label="run-${{ github.run_number }}"
+          label="$LABEL"
+          [ -n "$label" ] || label="run-${RUN_NUMBER}"
           echo "label=$label" >> "$GITHUB_OUTPUT"
-          if [ '${{ inputs.check_endpoints }}' = 'true' ]; then
+          if [ "$CHECK_ENDPOINTS" = 'true' ]; then
             echo "endpoints=--check-endpoints" >> "$GITHUB_OUTPUT"
           else
             echo "endpoints=" >> "$GITHUB_OUTPUT"
@@ -77,23 +84,37 @@ jobs:
 
       - name: Run against the supplied node
         if: inputs.url != ''
+        env:
+          URL: ${{ inputs.url }}
+          LABEL: ${{ steps.opts.outputs.label }}
+          FLAGS: ${{ steps.opts.outputs.flags }}
+          ENDPOINTS: ${{ steps.opts.outputs.endpoints }}
         run: |
+          # FLAGS and ENDPOINTS are fixed option words (or empty) chosen above, so they stay unquoted.
+          # shellcheck disable=SC2086
           compat-tests/run-suite.sh \
-            --url '${{ inputs.url }}' \
-            --label '${{ steps.opts.outputs.label }}' \
-            ${{ steps.opts.outputs.flags }} ${{ steps.opts.outputs.endpoints }}
+            --url "$URL" \
+            --label "$LABEL" \
+            $FLAGS $ENDPOINTS
 
       - name: Build this ref, start a devnet, and run
         if: inputs.url == ''
+        env:
+          LABEL: ${{ steps.opts.outputs.label }}
+          FLAGS: ${{ steps.opts.outputs.flags }}
+          ENDPOINTS: ${{ steps.opts.outputs.endpoints }}
         run: |
+          # shellcheck disable=SC2086
           compat-tests/bin/with-devnet.sh -- \
-            --label '${{ steps.opts.outputs.label }}' \
-            ${{ steps.opts.outputs.flags }} ${{ steps.opts.outputs.endpoints }}
+            --label "$LABEL" \
+            $FLAGS $ENDPOINTS
 
       - name: Publish summary
         if: always()
+        env:
+          LABEL: ${{ steps.opts.outputs.label }}
         run: |
-          summary="compat-tests/results/${{ steps.opts.outputs.label }}/SUMMARY.md"
+          summary="compat-tests/results/${LABEL}/SUMMARY.md"
           [ -f "$summary" ] && cat "$summary" >> "$GITHUB_STEP_SUMMARY" || \
             echo 'No summary produced - the suite failed before reporting.' >> "$GITHUB_STEP_SUMMARY"
 

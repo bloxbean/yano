@@ -1,5 +1,17 @@
 name: Release Docker Images
 
+# Builds, smoke-tests and publishes the JVM and native Docker images and the Docker Compose zip.
+#
+# Called by release.yml for a v* tag when docker_publish = true in gradle.properties, or started by hand:
+# a dry run (the default) builds and smoke-tests any ref without credentials; a manual publish needs
+# maven_staging_confirmed and the release tag.
+#
+# The Docker Hub credentials (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) are secrets of the release-staging
+# environment, which only accepts v* tags, main and release/**. Only the push jobs name it, and they run no
+# repository code: they download the Docker build contexts that the credential-free build jobs of the same
+# run prepared and smoke-tested. When publishing, those build jobs check out refs/tags/v<version> -- a
+# protected tag -- never the ref a manual run was started from or any other ref.
+
 on:
   workflow_call:
     inputs:
@@ -17,11 +29,6 @@ on:
         required: false
         type: boolean
         default: false
-    secrets:
-      DOCKERHUB_USERNAME:
-        required: true
-      DOCKERHUB_TOKEN:
-        required: true
   workflow_dispatch:
     inputs:
       version:
@@ -48,8 +55,7 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: release-docker-${{ inputs.git_tag || github.ref_name }}
@@ -62,32 +68,20 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.validate.outputs.version }}
       is_final: ${{ steps.validate.outputs.is_final }}
       promote_latest: ${{ steps.validate.outputs.promote_latest }}
       dry_run: ${{ steps.validate.outputs.dry_run }}
+      checkout_ref: ${{ steps.validate.outputs.checkout_ref }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.git_tag }}
-          persist-credentials: false
-
-      - name: Set up JDK 25
-        uses: actions/setup-java@v4
-        with:
-          java-version: '25'
-          distribution: temurin
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
       - name: Validate release inputs
         id: validate
         shell: bash
         env:
-          HAS_DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' }}
-          HAS_DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+          GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_GIT_TAG: ${{ inputs.git_tag }}
           INPUT_PROMOTE_LATEST: ${{ inputs.promote_latest || false }}
@@ -103,11 +97,6 @@ jobs:
             exit 1
           fi
 
-          if [[ "$DRY_RUN" != "true" && ("$HAS_DOCKERHUB_USERNAME" != "true" || "$HAS_DOCKERHUB_TOKEN" != "true") ]]; then
-            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are required" >&2
-            exit 1
-          fi
-
           VERSION="$INPUT_VERSION"
           GIT_TAG="$INPUT_GIT_TAG"
           if [[ "$DRY_RUN" != "true" && "$VERSION" == *-SNAPSHOT* ]]; then
@@ -120,15 +109,20 @@ jobs:
             exit 1
           fi
 
-          if [[ "$DRY_RUN" != "true" && "$GIT_TAG" != "v${VERSION}" ]]; then
-            echo "Git tag ${GIT_TAG} does not match version ${VERSION}" >&2
-            exit 1
-          fi
-
-          GRADLE_VERSION=$(./gradlew -q properties | awk '/^version:/ { print $2; exit }')
-          if [[ "$GRADLE_VERSION" != "$VERSION" ]]; then
-            echo "Gradle version ${GRADLE_VERSION} at ${GIT_TAG} does not match requested Docker version ${VERSION}" >&2
-            exit 1
+          if [[ "$DRY_RUN" == "true" ]]; then
+            CHECKOUT_REF="$GIT_TAG"
+          else
+            if [[ "$GIT_TAG" != "v${VERSION}" ]]; then
+              echo "Git tag ${GIT_TAG} does not match version ${VERSION}" >&2
+              exit 1
+            fi
+            # Publishing builds only from the release tag, which only the release App and org admins can
+            # create. The fully qualified ref can't resolve to a branch with the same name.
+            if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GIT_TAG}" --silent; then
+              echo "Tag ${GIT_TAG} does not exist" >&2
+              exit 1
+            fi
+            CHECKOUT_REF="refs/tags/${GIT_TAG}"
           fi
 
           IS_FINAL=false
@@ -143,18 +137,17 @@ jobs:
             fi
           fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "is_final=$IS_FINAL" >> "$GITHUB_OUTPUT"
-          echo "promote_latest=$PROMOTE_LATEST" >> "$GITHUB_OUTPUT"
-          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "is_final=$IS_FINAL"
+            echo "promote_latest=$PROMOTE_LATEST"
+            echo "dry_run=$DRY_RUN"
+            echo "checkout_ref=$CHECKOUT_REF"
+          } >> "$GITHUB_OUTPUT"
 
-  jvm-image:
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.git_tag }}
+          ref: ${{ steps.validate.outputs.checkout_ref }}
           persist-credentials: false
 
       - name: Set up JDK 25
@@ -163,14 +156,43 @@ jobs:
           java-version: '25'
           distribution: temurin
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Check the Gradle version at the ref
+        shell: bash
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+          CHECKOUT_REF: ${{ steps.validate.outputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          GRADLE_VERSION=$(./gradlew -q properties | awk '/^version:/ { print $2; exit }')
+          if [[ "$GRADLE_VERSION" != "$VERSION" ]]; then
+            echo "Gradle version ${GRADLE_VERSION} at ${CHECKOUT_REF} does not match requested Docker version ${VERSION}" >&2
+            exit 1
+          fi
+
+  # Build and smoke-test jobs: repository code, no credentials, no environment. No build cache either:
+  # these jobs build what the push jobs publish.
+  jvm-image:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.checkout_ref }}
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: temurin
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Validate JVM base image
         run: docker buildx imagetools inspect "${JVM_BASE_IMAGE}" >/dev/null
@@ -213,28 +235,26 @@ jobs:
           echo "JVM container did not become healthy" >&2
           exit 1
 
-      - name: Login to Docker Hub
+      # A tarball keeps file modes (entrypoint, launch scripts); artifact uploads drop them.
+      - name: Package JVM Docker context
         if: needs.validate.outputs.dry_run != 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: tar -C app/build/docker/jvm -cf "$RUNNER_TEMP/docker-jvm-context.tar" context
 
-      - name: Publish JVM image
+      - name: Upload JVM Docker context
         if: needs.validate.outputs.dry_run != 'true'
-        uses: docker/build-push-action@v6
+        uses: actions/upload-artifact@v4
         with:
-          context: app/build/docker/jvm/context
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            JVM_BASE_IMAGE=${{ env.JVM_BASE_IMAGE }}
-          tags: ${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.version }}-jvm
+          name: docker-jvm-context
+          path: ${{ runner.temp }}/docker-jvm-context.tar
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Dry-run JVM publish summary
         if: needs.validate.outputs.dry_run == 'true'
+        env:
+          YANO_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          echo "Dry run: would publish ${IMAGE_NAME}:${{ needs.validate.outputs.version }}-jvm"
+          echo "Dry run: would publish ${IMAGE_NAME}:${YANO_VERSION}-jvm"
 
   native-image:
     needs: validate
@@ -249,24 +269,22 @@ jobs:
             platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.git_tag }}
+          ref: ${{ needs.validate.outputs.checkout_ref }}
           persist-credentials: false
 
       - name: Set up Oracle GraalVM 25.3
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@0426e2e191540e8514dff98dc52a5f5146a2a276 # v1.6.6
         with:
           version: '25.3'
           distribution: graalvm
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          cache: gradle
       - name: Verify Oracle GraalVM release
         run: native-image --version | grep -F 'Oracle GraalVM 25.3'
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -311,88 +329,165 @@ jobs:
           echo "Native container did not become healthy" >&2
           exit 1
 
-      - name: Login to Docker Hub
+      # A tarball keeps file modes (the native binary, entrypoint); artifact uploads drop them.
+      - name: Package native Docker context
         if: needs.validate.outputs.dry_run != 'true'
-        uses: docker/login-action@v3
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: tar -C app/build/docker/native -cf "$RUNNER_TEMP/docker-native-context-${ARCH}.tar" context
+
+      - name: Upload native Docker context
+        if: needs.validate.outputs.dry_run != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-native-context-${{ matrix.arch }}
+          path: ${{ runner.temp }}/docker-native-context-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Dry-run native publish summary
+        if: needs.validate.outputs.dry_run == 'true'
+        env:
+          YANO_VERSION: ${{ needs.validate.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          echo "Dry run: would publish ${IMAGE_NAME}:${YANO_VERSION}-native-${ARCH}"
+          echo "Dry run: would create ${IMAGE_NAME}:${YANO_VERSION}-native"
+
+  # Push jobs: Docker Hub credentials from release-staging; no checkout, no repository code beyond the
+  # Dockerfiles in the downloaded contexts.
+  push-jvm:
+    needs: [validate, jvm-image]
+    if: needs.validate.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    environment: release-staging
+    permissions:
+      contents: read
+    steps:
+      - name: Download JVM Docker context
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-jvm-context
+          path: ${{ runner.temp }}
+
+      - name: Unpack JVM Docker context
+        run: tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/docker-jvm-context.tar"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Publish JVM image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/context
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            JVM_BASE_IMAGE=${{ env.JVM_BASE_IMAGE }}
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.version }}-jvm
+
+  push-native:
+    needs: [validate, native-image]
+    if: needs.validate.outputs.dry_run != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    environment: release-staging
+    permissions:
+      contents: read
+    steps:
+      - name: Download native Docker context
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-native-context-${{ matrix.arch }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack native Docker context
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/docker-native-context-${ARCH}.tar"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish native image for ${{ matrix.arch }}
-        if: needs.validate.outputs.dry_run != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: app/build/docker/native/context
+          context: ${{ runner.temp }}/context
           platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.version }}-native-${{ matrix.arch }}
 
-      - name: Dry-run native publish summary
-        if: needs.validate.outputs.dry_run == 'true'
-        run: |
-          echo "Dry run: would publish ${IMAGE_NAME}:${{ needs.validate.outputs.version }}-native-${{ matrix.arch }}"
-
   native-manifest:
-    needs:
-      - validate
-      - native-image
+    needs: [validate, push-native]
+    if: needs.validate.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
+    environment: release-staging
+    permissions:
+      contents: read
     steps:
-      - name: Dry-run native manifest summary
-        if: needs.validate.outputs.dry_run == 'true'
-        run: |
-          echo "Dry run: would create ${IMAGE_NAME}:${{ needs.validate.outputs.version }}-native"
-
       - name: Set up Docker Buildx
-        if: needs.validate.outputs.dry_run != 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Login to Docker Hub
-        if: needs.validate.outputs.dry_run != 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish native multi-arch manifest
-        if: needs.validate.outputs.dry_run != 'true'
         shell: bash
+        env:
+          YANO_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
 
-          VERSION="$YANO_VERSION"
           docker buildx imagetools create \
-            -t "${IMAGE_NAME}:${VERSION}-native" \
-            "${IMAGE_NAME}:${VERSION}-native-amd64" \
-            "${IMAGE_NAME}:${VERSION}-native-arm64"
-        env:
-          YANO_VERSION: ${{ needs.validate.outputs.version }}
+            -t "${IMAGE_NAME}:${YANO_VERSION}-native" \
+            "${IMAGE_NAME}:${YANO_VERSION}-native-amd64" \
+            "${IMAGE_NAME}:${YANO_VERSION}-native-arm64"
 
   promote-latest:
-    needs:
-      - validate
-      - jvm-image
-      - native-manifest
+    needs: [validate, push-jvm, native-manifest]
+    if: needs.validate.outputs.promote_latest == 'true' && needs.validate.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
+    environment: release-staging
+    permissions:
+      contents: read
     steps:
-      - name: Skip latest promotion
-        if: needs.validate.outputs.promote_latest != 'true' || needs.validate.outputs.dry_run == 'true'
-        run: |
-          echo "Skipping latest Docker tag promotion"
-
       - name: Set up Docker Buildx
-        if: needs.validate.outputs.promote_latest == 'true' && needs.validate.outputs.dry_run != 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Login to Docker Hub
-        if: needs.validate.outputs.promote_latest == 'true' && needs.validate.outputs.dry_run != 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Promote latest Docker tags
-        if: needs.validate.outputs.promote_latest == 'true' && needs.validate.outputs.dry_run != 'true'
         shell: bash
         env:
           YANO_VERSION: ${{ needs.validate.outputs.version }}
@@ -406,19 +501,42 @@ jobs:
             -t "${IMAGE_NAME}:latest-native" \
             "${IMAGE_NAME}:${YANO_VERSION}-native"
 
+  # Manual dry runs started on main or release/** also prove that the release-staging Docker Hub
+  # credentials work: log in and out, nothing else. No checkout, nothing is pushed.
+  verify-docker-login:
+    needs: validate
+    if: >-
+      needs.validate.outputs.dry_run == 'true' && github.event_name == 'workflow_dispatch'
+      && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: ubuntu-latest
+    environment: release-staging
+    permissions: {}
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
   docker-compose-zip:
-    # promote-latest is an explicit no-op for dry runs and prereleases, but it
-    # still depends on all image build/publish jobs.
-    needs:
-      - validate
-      - promote-latest
+    # Dry runs: after the image builds. Publishing: after the images are pushed (and latest promoted, for a
+    # final release).
+    needs: [validate, jvm-image, native-image, push-jvm, native-manifest, promote-latest]
+    if: >-
+      !cancelled()
+      && needs.jvm-image.result == 'success'
+      && needs.native-image.result == 'success'
+      && (needs.validate.outputs.dry_run == 'true'
+          || (needs.push-jvm.result == 'success'
+              && needs.native-manifest.result == 'success'
+              && needs.promote-latest.result != 'failure'))
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.git_tag }}
+          ref: ${{ needs.validate.outputs.checkout_ref }}
           persist-credentials: false
 
       - name: Set up JDK 25
@@ -426,9 +544,6 @@ jobs:
         with:
           java-version: '25'
           distribution: temurin
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -459,12 +574,35 @@ jobs:
             --env-file "$TMP_DIR/yano-docker-${YANO_VERSION}/compose/.env" \
             config >/dev/null
 
-      - name: Upload compose zip to GitHub release
+      - name: Upload compose zip
         if: needs.validate.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-zip
+          path: app/build/distributions/yano-docker-*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # The only job with a write token; it runs no repository code.
+  attach-compose-zip:
+    needs: [validate, docker-compose-zip]
+    if: needs.validate.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download compose zip
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-compose-zip
+          path: dist
+
+      - name: Upload compose zip to GitHub release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ inputs.git_tag }}
-          files: app/build/distributions/yano-docker-*.zip
+          files: dist/yano-docker-*.zip
           prerelease: ${{ needs.validate.outputs.is_final != 'true' }}
+          make_latest: legacy
           overwrite_files: true
           fail_on_unmatched_files: true
