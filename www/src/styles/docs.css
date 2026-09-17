@@ -6,11 +6,15 @@
   --sl-color-accent-high: #c3f69c;
   --sl-font: 'Inter', ui-sans-serif, system-ui, sans-serif;
   --sl-content-width: 49rem;
+  --yano-mark-wing: #f2f5ef;
+  --yano-mark-slash: #b9f57d;
 }
 :root[data-theme='light'] {
   --sl-color-accent-low: #e7f7da;
   --sl-color-accent: #365f1e;
   --sl-color-accent-high: #214110;
+  --yano-mark-wing: #0b100d;
+  --yano-mark-slash: #5e9c2c;
 }
 h1,
 h2,
