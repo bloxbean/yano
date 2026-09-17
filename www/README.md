@@ -24,7 +24,14 @@ npm run build
 
 ## Branding
 
-`static/logo-dark.svg` remains the original artwork. `static/logo-docs.svg` is the lime/mint documentation variant, with the same geometry, a transparent background, and a tighter viewBox. It is the source for `www/public/favicon.ico`, its copy in `www/public/logo.svg` serves the site, and the social card embeds the same artwork.
+The mark is the paper plane with a lime slash in `static/yano-*.svg`, using the site tokens `#0b100d` (ink), `#f2f5ef` (paper), and `#b9f57d` (lime):
+
+- `yano-icon.svg`: for dark surfaces. `www/public/logo.svg` is the same artwork with a tighter viewBox; the landing page and social card use it.
+- `yano-icon-light.svg`: for light surfaces (ink wings, `#5e9c2c` slash, since lime has too little contrast on white). The docs header inlines the mark and switches between both through `--yano-mark-*` in `src/styles/docs.css`.
+- `yano-icon-mono.svg`: single-color `currentColor` version.
+- `yano-app-icon-dark.svg` / `yano-app-icon-lime.svg`: rounded-square app icons. `www/public/favicon.svg` is the dark app icon with the mark enlarged to stay legible at 16 px; `favicon.ico` (16/32/48) and `apple-touch-icon.png` (180, full-bleed) are rendered from it.
+
+`static/logo-dark.svg` and `static/logo-docs.svg` are the previous gradient artwork.
 
 ## Content
 
