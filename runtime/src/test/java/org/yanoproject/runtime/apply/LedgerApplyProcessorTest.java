@@ -37,10 +37,16 @@ class LedgerApplyProcessorTest {
     }
 
     @Test
+    void defaultProfileUsesBoundedDecodedQueue() {
+        assertEquals(16L * 1024 * 1024,
+                LedgerApplyProcessor.Policy.defaults().maxQueuedDecodedBytes());
+    }
+
+    @Test
     void lowMemoryProfileReducesDecodedQueueDefaultAndAllowsOverride() {
         System.setProperty(YanoPropertyKeys.RESOURCE_PROFILE, "low-memory");
 
-        assertEquals(32L * 1024 * 1024,
+        assertEquals(4L * 1024 * 1024,
                 LedgerApplyProcessor.Policy.defaults().maxQueuedDecodedBytes());
 
         System.setProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES, "16777216");

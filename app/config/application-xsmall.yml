@@ -1,0 +1,24 @@
+# Experimental extra-small profile for severely memory-constrained machines.
+#
+# Compose after a network profile, for example:
+#   ./yano.sh start:mainnet,xsmall
+#
+# For a JVM-jar distribution, the candidate target is at least 1.5 GiB RAM:
+#   JAVA_OPTS="-Xmx384m"
+#
+# Expect lower sync throughput than the small profile. These values require
+# validation on representative constrained hardware. Native-image memory sizing
+# will be documented separately.
+
+yano:
+  bodyFetch:
+    maxBatchSize: 1000
+  ledger-apply:
+    max-queued-decoded-bytes: 4194304 # 4 MiB encoded-block queue budget
+  rocksdb:
+    block-cache-bytes: 16777216       # 16 MiB shared read cache
+    write-buffer-bytes: 33554432      # 32 MiB aggregate write buffers
+    max-background-jobs: 1
+    max-open-files: 128
+    target-file-size-bytes: 134217728 # 128 MiB SST target
+    write-buffer-allow-stall: true
