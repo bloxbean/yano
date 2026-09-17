@@ -10,6 +10,10 @@
 #   ./yano.sh start:mainnet,trusted-peers
 #
 # Profile files live beside this file as application-<profile>.yml.
+#
+# The standard defaults target a dedicated machine with at least 3 GiB RAM;
+# 4 GiB is recommended. For the JVM-jar distribution, start with:
+#   JAVA_OPTS="-Xmx768m"
 
 quarkus:
   http:

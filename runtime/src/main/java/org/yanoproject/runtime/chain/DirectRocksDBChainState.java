@@ -132,11 +132,11 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             final long blockCacheBytes = getLong(
                     YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES,
                     "YANO_ROCKSDB_BLOCK_CACHE_BYTES",
-                    lowMemoryProfile ? 16L * 1024 * 1024 : 32L * 1024 * 1024);
+                    lowMemoryProfile ? 16L * 1024 * 1024 : 256L * 1024 * 1024);
             final long writeBufferBytes = getLong(
                     YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
                     "YANO_ROCKSDB_WRITE_BUFFER_BYTES",
-                    lowMemoryProfile ? 32L * 1024 * 1024 : 64L * 1024 * 1024);
+                    lowMemoryProfile ? 32L * 1024 * 1024 : 256L * 1024 * 1024);
             final boolean writeBufferAllowStall = getBool(
                     YanoPropertyKeys.RocksDb.WRITE_BUFFER_ALLOW_STALL,
                     "YANO_ROCKSDB_WRITE_BUFFER_ALLOW_STALL",

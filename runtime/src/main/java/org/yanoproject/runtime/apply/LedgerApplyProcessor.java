@@ -119,7 +119,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
      */
     public record Policy(int maxQueuedItems, long maxQueuedDecodedBytes, int reservedControlSlots) {
         private static final int DEFAULT_MAX_QUEUED_ITEMS = 10_000;
-        private static final long DEFAULT_MAX_QUEUED_DECODED_BYTES = 64L * 1024L * 1024L;
+        private static final long DEFAULT_MAX_QUEUED_DECODED_BYTES = 16L * 1024L * 1024L;
         private static final int DEFAULT_RESERVED_CONTROL_SLOTS = 64;
 
         public Policy {
@@ -148,7 +148,7 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                     positiveIntProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_ITEMS,
                             DEFAULT_MAX_QUEUED_ITEMS),
                     positiveLongProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES,
-                            profile.isLowMemory() ? 32L * 1024L * 1024L
+                            profile.isLowMemory() ? 4L * 1024L * 1024L
                                     : DEFAULT_MAX_QUEUED_DECODED_BYTES),
                     positiveIntProperty(YanoPropertyKeys.LedgerApply.RESERVED_CONTROL_SLOTS,
                             DEFAULT_RESERVED_CONTROL_SLOTS));
