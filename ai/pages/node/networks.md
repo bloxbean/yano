@@ -32,9 +32,10 @@ Profiles compose with a comma-separated list. Network profiles set genesis/netwo
 ```bash
 ./yano.sh start:preprod,relay
 ./yano.sh start:preprod,wallet
+./yano.sh start:mainnet,small,wallet
 ```
 
-The first enables the packaged relay profile. The second enables wallet discovery indexes and requires a fresh sync for complete history.
+The first enables the packaged relay profile. The second enables wallet discovery indexes and requires a fresh sync for complete coverage. The third also selects memory-bounded runtime settings. See [runtime profiles](/start/runtime-profiles/) to choose a size and combine it with wallet support.
 
 ## Observe synchronization
 

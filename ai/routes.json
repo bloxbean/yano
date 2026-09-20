@@ -1,5 +1,5 @@
 {
-  "sourceRevision": "d58c814c813ed4c39939a52235b7094cbb238a9b",
+  "sourceRevision": "de89354afd99aff84d0ef8adc836feff726cdeb2",
   "version": "0.1.0-pre16-dev1",
   "apiPrefix": "/api/v1",
   "note": "Static literal JAX-RS annotation inventory. Not OpenAPI; excludes generated/dynamic plugin routes and does not encode schemas, authentication, feature gates, or availability. Obtain /q/openapi?format=json from your actual artifact.",

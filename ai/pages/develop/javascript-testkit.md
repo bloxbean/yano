@@ -49,8 +49,8 @@ The helper starts the process in `beforeAll` and stops it in `afterAll`.
 
 ```js
 const yano = await startYanoDevnet({
-  binaryPath: '/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64/yano',
-  cwd: '/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64',
+  binaryPath: '/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64/yano',
+  cwd: '/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64',
   blockTimeMillis: 200,
   httpPort: 0,
   n2nPort: 0,

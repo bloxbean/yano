@@ -1,5 +1,5 @@
 {
-  "sourceRevision": "d58c814c813ed4c39939a52235b7094cbb238a9b",
+  "sourceRevision": "de89354afd99aff84d0ef8adc836feff726cdeb2",
   "version": "0.1.0-pre16-dev1",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
@@ -566,14 +566,6 @@
           "value": true
         },
         {
-          "key": "yano.history.projection.enabled",
-          "value": true
-        },
-        {
-          "key": "yano.history.projection.sink",
-          "value": "ducklake"
-        },
-        {
           "key": "yano.epoch-snapshot.amounts-enabled",
           "value": true
         },
@@ -1038,6 +1030,40 @@
       ]
     },
     {
+      "source": "app/config/application-large.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.ledger-apply.max-queued-decoded-bytes",
+          "value": 33554432
+        },
+        {
+          "key": "yano.rocksdb.block-cache-bytes",
+          "value": 1073741824
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-bytes",
+          "value": 536870912
+        },
+        {
+          "key": "yano.rocksdb.max-background-jobs",
+          "value": 4
+        },
+        {
+          "key": "yano.rocksdb.max-open-files",
+          "value": 512
+        },
+        {
+          "key": "yano.rocksdb.target-file-size-bytes",
+          "value": 67108864
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-allow-stall",
+          "value": false
+        }
+      ]
+    },
+    {
       "source": "app/config/application-mainnet.yml",
       "profile": null,
       "values": [
@@ -1102,6 +1128,40 @@
         {
           "key": "yano.upstream.validation.start.hash",
           "value": "9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-medium.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.ledger-apply.max-queued-decoded-bytes",
+          "value": 16777216
+        },
+        {
+          "key": "yano.rocksdb.block-cache-bytes",
+          "value": 536870912
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-bytes",
+          "value": 268435456
+        },
+        {
+          "key": "yano.rocksdb.max-background-jobs",
+          "value": 2
+        },
+        {
+          "key": "yano.rocksdb.max-open-files",
+          "value": 256
+        },
+        {
+          "key": "yano.rocksdb.target-file-size-bytes",
+          "value": 67108864
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-allow-stall",
+          "value": false
         }
       ]
     },
@@ -1550,6 +1610,40 @@
       ]
     },
     {
+      "source": "app/config/application-small.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.ledger-apply.max-queued-decoded-bytes",
+          "value": 4194304
+        },
+        {
+          "key": "yano.rocksdb.block-cache-bytes",
+          "value": 134217728
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-bytes",
+          "value": 134217728
+        },
+        {
+          "key": "yano.rocksdb.max-background-jobs",
+          "value": 2
+        },
+        {
+          "key": "yano.rocksdb.max-open-files",
+          "value": 256
+        },
+        {
+          "key": "yano.rocksdb.target-file-size-bytes",
+          "value": 67108864
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-allow-stall",
+          "value": false
+        }
+      ]
+    },
+    {
       "source": "app/config/application-static-multi.yml",
       "profile": null,
       "values": [
@@ -1718,6 +1812,44 @@
         {
           "key": "yano.filters.utxo.enabled",
           "value": false
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-xsmall.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.bodyFetch.maxBatchSize",
+          "value": 1000
+        },
+        {
+          "key": "yano.ledger-apply.max-queued-decoded-bytes",
+          "value": 4194304
+        },
+        {
+          "key": "yano.rocksdb.block-cache-bytes",
+          "value": 16777216
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-bytes",
+          "value": 33554432
+        },
+        {
+          "key": "yano.rocksdb.max-background-jobs",
+          "value": 1
+        },
+        {
+          "key": "yano.rocksdb.max-open-files",
+          "value": 128
+        },
+        {
+          "key": "yano.rocksdb.target-file-size-bytes",
+          "value": 134217728
+        },
+        {
+          "key": "yano.rocksdb.write-buffer-allow-stall",
+          "value": true
         }
       ]
     },

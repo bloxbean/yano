@@ -14,6 +14,7 @@ The same project also gives you a local, block-producing development network, in
 | --- | --- |
 | Try Yano without syncing a public network | [Your first local node](/start/quickstart/) |
 | Read Cardano data and submit transactions | [Run a data node](/node/networks/) |
+| Choose memory settings or enable wallet scans | [Runtime and wallet profiles](/start/runtime-profiles/) |
 | Test a Java application against real ledger state | [Java testkit](/develop/java-testkit/) |
 | Test from JavaScript or TypeScript | [JavaScript testkit](/develop/javascript-testkit/) |
 | Give several participants a shared, verifiable event history | [Your first app chain](/app-chains/quickstart/) |

@@ -10,7 +10,7 @@ Download and extract the **[JVM distribution](/start/installation/)**, recommend
 ./yano.sh start:devnet,appchain
 ```
 
-This activates the bundled app-chain profile, including `orders-chain`, a **single-member** `ordered-log` demo. Pre12 also includes a `registry-chain`; the current-source profile keeps `orders-chain` only. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
+This activates the bundled app-chain profile, including `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
 
 ## 1. Submit an event
 

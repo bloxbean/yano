@@ -1,6 +1,6 @@
-# Release migration details
+# Release change details
 
-Storage and behavior changes across preview versions.
+Configuration and behavior changes across preview versions.
 
 Canonical URL: https://getyano.dev/reference/upgrading/
 

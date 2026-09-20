@@ -10,7 +10,7 @@ See [configuration layering](/reference/configuration/) before applying settings
 
 ## Bundled application defaults
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -143,7 +143,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -159,8 +159,6 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 | `yano.genesis.conway-genesis-file` | `config/network/devnet/conway-genesis.json` |
 | `yano.genesis.protocol-parameters-file` | `config/network/devnet/protocol-param.json` |
 | `yano.account-state.enabled` | `true` |
-| `yano.history.projection.enabled` | `true` |
-| `yano.history.projection.sink` | `ducklake` |
 | `yano.epoch-snapshot.amounts-enabled` | `true` |
 | `yano.adapot.enabled` | `true` |
 | `yano.rewards.enabled` | `true` |
@@ -179,7 +177,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet-slotleader profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -214,7 +212,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — mainnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -235,7 +233,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — preview profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -256,7 +254,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — sanchonet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -275,7 +273,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — test profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -289,7 +287,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## application-appchain.yml
 
-Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-appchain.yml)
+Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-appchain.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -308,7 +306,7 @@ Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/b
 
 ## application-header-signature.yml
 
-Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-header-signature.yml)
+Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-header-signature.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -316,9 +314,23 @@ Source: [app/config/application-header-signature.yml](https://github.com/bloxbea
 | `yano.upstream.validation.body-level` | `none` |
 | `yano.upstream.validation.opcert-counter-mode` | `none` |
 
+## application-large.yml
+
+Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-large.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `33554432` |
+| `yano.rocksdb.block-cache-bytes` | `1073741824` |
+| `yano.rocksdb.write-buffer-bytes` | `536870912` |
+| `yano.rocksdb.max-background-jobs` | `4` |
+| `yano.rocksdb.max-open-files` | `512` |
+| `yano.rocksdb.target-file-size-bytes` | `67108864` |
+| `yano.rocksdb.write-buffer-allow-stall` | `false` |
+
 ## application-mainnet.yml
 
-Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-mainnet.yml)
+Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-mainnet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -338,9 +350,23 @@ Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/bl
 | `yano.upstream.validation.start.slot` | `133660855` |
 | `yano.upstream.validation.start.hash` | `9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c` |
 
+## application-medium.yml
+
+Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-medium.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `16777216` |
+| `yano.rocksdb.block-cache-bytes` | `536870912` |
+| `yano.rocksdb.write-buffer-bytes` | `268435456` |
+| `yano.rocksdb.max-background-jobs` | `2` |
+| `yano.rocksdb.max-open-files` | `256` |
+| `yano.rocksdb.target-file-size-bytes` | `67108864` |
+| `yano.rocksdb.write-buffer-allow-stall` | `false` |
+
 ## application-opcert-strict.yml
 
-Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-opcert-strict.yml)
+Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-opcert-strict.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -348,7 +374,7 @@ Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/y
 
 ## application-praos-ledger.yml
 
-Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-praos-ledger.yml)
+Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-praos-ledger.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -358,7 +384,7 @@ Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/ya
 
 ## application-praos-lite.yml
 
-Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-praos-lite.yml)
+Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-praos-lite.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -368,7 +394,7 @@ Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano
 
 ## application-preprod.yml
 
-Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-preprod.yml)
+Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-preprod.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -390,7 +416,7 @@ Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/bl
 
 ## application-preview.yml
 
-Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-preview.yml)
+Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-preview.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -412,7 +438,7 @@ Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/bl
 
 ## application-projection.yml
 
-Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-projection.yml)
+Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-projection.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -435,7 +461,7 @@ Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano
 
 ## application-relay.yml
 
-Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-relay.yml)
+Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-relay.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -475,7 +501,7 @@ Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob
 
 ## application-sanchonet.yml
 
-Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-sanchonet.yml)
+Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-sanchonet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -492,9 +518,23 @@ Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/
 | `yano.upstream.validation.start.mode` | `era` |
 | `yano.upstream.validation.start.era` | `conway` |
 
+## application-small.yml
+
+Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-small.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `4194304` |
+| `yano.rocksdb.block-cache-bytes` | `134217728` |
+| `yano.rocksdb.write-buffer-bytes` | `134217728` |
+| `yano.rocksdb.max-background-jobs` | `2` |
+| `yano.rocksdb.max-open-files` | `256` |
+| `yano.rocksdb.target-file-size-bytes` | `67108864` |
+| `yano.rocksdb.write-buffer-allow-stall` | `false` |
+
 ## application-static-multi.yml
 
-Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-static-multi.yml)
+Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-static-multi.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -518,7 +558,7 @@ Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/ya
 
 ## application-structural-validation.yml
 
-Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-structural-validation.yml)
+Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-structural-validation.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -528,7 +568,7 @@ Source: [app/config/application-structural-validation.yml](https://github.com/bl
 
 ## application-trusted-peers.yml
 
-Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-trusted-peers.yml)
+Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-trusted-peers.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -547,7 +587,7 @@ Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/y
 
 ## application-wallet.yml
 
-Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-wallet.yml)
+Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-wallet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -557,9 +597,24 @@ Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blo
 | `yano.utxo.enabled` | `true` |
 | `yano.filters.utxo.enabled` | `false` |
 
+## application-xsmall.yml
+
+Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-xsmall.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.bodyFetch.maxBatchSize` | `1000` |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `4194304` |
+| `yano.rocksdb.block-cache-bytes` | `16777216` |
+| `yano.rocksdb.write-buffer-bytes` | `33554432` |
+| `yano.rocksdb.max-background-jobs` | `1` |
+| `yano.rocksdb.max-open-files` | `128` |
+| `yano.rocksdb.target-file-size-bytes` | `134217728` |
+| `yano.rocksdb.write-buffer-allow-stall` | `true` |
+
 ## application.yml
 
-Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application.yml)
+Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application.yml)
 
 | Property | Packaged value |
 | --- | --- |

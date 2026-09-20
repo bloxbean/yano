@@ -1084,7 +1084,7 @@ Download and extract the **[JVM distribution](/start/installation/)**, recommend
 ./yano.sh start:devnet,appchain
 ```
 
-This activates the bundled app-chain profile, including `orders-chain`, a **single-member** `ordered-log` demo. Pre12 also includes a `registry-chain`; the current-source profile keeps `orders-chain` only. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
+This activates the bundled app-chain profile, including `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
 
 ## 1. Submit an event
 
@@ -2198,8 +2198,8 @@ The helper starts the process in `beforeAll` and stops it in `afterAll`.
 
 ```js
 const yano = await startYanoDevnet({
-  binaryPath: '/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64/yano',
-  cwd: '/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64',
+  binaryPath: '/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64/yano',
+  cwd: '/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64',
   blockTimeMillis: 200,
   httpPort: 0,
   n2nPort: 0,
@@ -2681,9 +2681,10 @@ Profiles compose with a comma-separated list. Network profiles set genesis/netwo
 ```bash
 ./yano.sh start:preprod,relay
 ./yano.sh start:preprod,wallet
+./yano.sh start:mainnet,small,wallet
 ```
 
-The first enables the packaged relay profile. The second enables wallet discovery indexes and requires a fresh sync for complete history.
+The first enables the packaged relay profile. The second enables wallet discovery indexes and requires a fresh sync for complete coverage. The third also selects memory-bounded runtime settings. See [runtime profiles](/start/runtime-profiles/) to choose a size and combine it with wallet support.
 
 ## Observe synchronization
 
@@ -2759,17 +2760,12 @@ These indexes are preview functionality. The general node defaults keep
 both indexes disabled. The wallet profile enables both and no longer enables
 archival history projection. Production resource validation remains outstanding.
 
-## Upgrading from the pre-contributor wallet index
+From an extracted distribution, compose `wallet` with a network and optionally
+one [runtime profile](/start/runtime-profiles/):
 
-The contributor-based wallet index requires a **fresh sync database**. Existing
-wallet tables do not contain the new host-owned availability/rollback metadata;
-their presence does not prove complete index history. Upgrading the executable
-alone will leave these indexes unavailable, and later blocks will not repair them.
-Startup warns when existing wallet history is unavailable under the new gate.
-
-Stop the node, retain the old database as a backup, configure a new storage path,
-and sync with the wallet flags enabled from the beginning. Do not run two nodes
-against the same database. There is no migration or automatic backfill in preview.
+```bash
+./yano.sh start:mainnet,small,wallet
+```
 
 ## Configuration
 
@@ -2826,10 +2822,8 @@ scans need their filters and retained canonical block bodies. First-seen survive
 spending and ordinary body pruning. Scan queries that cross missing coverage or
 unavailable bodies fail; they do not silently scan all bodies as a fallback.
 
-Existing databases do not acquire complete coverage by enabling a flag. A fresh
-sync is required. Turning a flag off while canonical blocks advance breaks its
-continuity. Turning it off and back on without missing blocks can preserve the
-existing proof. There is no index backfill or automatic historical repair.
+Start with a fresh database and keep the selected indexes enabled throughout the
+sync. Turning one off while canonical blocks advance breaks its continuity.
 
 ## Canonical coordinates and coverage
 
@@ -2943,10 +2937,9 @@ finish with `done` (resumed scans still require complete `knownOutputs`). The
 record establishes whether the requested scan was complete. First-seen answers
 remain unavailable while their history contains unresolved first-seen errors.
 
-There is no automatic repair operation yet. Upgrading does not reconstruct filters
-or origin completeness already lost by older versions. Unknown gaps, missing block
-bodies, corrupt metadata and reorgs still fail closed rather than returning a
-successful partial scan.
+There is no automatic repair operation yet. Unknown gaps, missing block bodies,
+corrupt metadata and reorgs fail closed rather than returning a successful
+partial scan.
 
 On reorg, discard uncommitted stream changes. Retry an earlier saved canonical
 cursor together with its matching history/outpoint snapshot. If none survives,
@@ -3394,18 +3387,19 @@ Yano is pre-release. Pin library, node, verifier, and plugin versions together. 
 
 The current Java namespace is `org.yanoproject.*`, and Maven artifacts use group `org.yanoproject`. Do not rename dependency packages such as `com.bloxbean.cardano.client.*` or `com.bloxbean.cardano.yaci.*`: those belong to separate projects.
 
-## Before an upgrade
+## Preview release changes
 
-1. Record the current version, profile configuration, network/genesis identity, and plugin catalog.
-2. Stop the process cleanly and keep a recoverable backup of the complete state and associated identities.
-3. Check release-specific storage and commitment compatibility.
-4. Validate the new artifact in an isolated environment before replacing the running installation.
+Start each preview node release with a fresh sync directory. Storage compatibility
+between preview releases is not guaranteed, and Yano does not provide a general
+chainstate migration path yet. Keep an old database only when you need it for
+comparison or rollback to its matching executable.
 
-Wallet index upgrades require fresh sync where completeness metadata is absent. History archive sections are selected for a fresh archive. App-chain commitment/profile changes may require a fresh chain; they are not automatically in-place migrations.
+Keep network identities and app-chain state with their matching release and
+configuration. App-chain signing journals record safety decisions and must never
+be copied selectively, discarded, or combined with a newly empty app-chain ledger.
 
-Never discard a signing journal or reuse an app-chain identity with a newly empty ledger as a recovery shortcut. It may lose persisted consensus or observation locks.
-
-See [release migration details](/reference/upgrading/) for concrete compatibility changes.
+See [release change details](/reference/upgrading/) for configuration and behavior
+changes that may affect a new deployment.
 
 ---
 
@@ -3511,7 +3505,7 @@ See [configuration layering](/reference/configuration/) before applying settings
 
 ## Bundled application defaults
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3644,7 +3638,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3660,8 +3654,6 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 | `yano.genesis.conway-genesis-file` | `config/network/devnet/conway-genesis.json` |
 | `yano.genesis.protocol-parameters-file` | `config/network/devnet/protocol-param.json` |
 | `yano.account-state.enabled` | `true` |
-| `yano.history.projection.enabled` | `true` |
-| `yano.history.projection.sink` | `ducklake` |
 | `yano.epoch-snapshot.amounts-enabled` | `true` |
 | `yano.adapot.enabled` | `true` |
 | `yano.rewards.enabled` | `true` |
@@ -3680,7 +3672,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet-slotleader profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3715,7 +3707,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — mainnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3736,7 +3728,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — preview profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3757,7 +3749,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — sanchonet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3776,7 +3768,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — test profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3790,7 +3782,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## application-appchain.yml
 
-Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-appchain.yml)
+Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-appchain.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3809,7 +3801,7 @@ Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/b
 
 ## application-header-signature.yml
 
-Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-header-signature.yml)
+Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-header-signature.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3817,9 +3809,23 @@ Source: [app/config/application-header-signature.yml](https://github.com/bloxbea
 | `yano.upstream.validation.body-level` | `none` |
 | `yano.upstream.validation.opcert-counter-mode` | `none` |
 
+## application-large.yml
+
+Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-large.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `33554432` |
+| `yano.rocksdb.block-cache-bytes` | `1073741824` |
+| `yano.rocksdb.write-buffer-bytes` | `536870912` |
+| `yano.rocksdb.max-background-jobs` | `4` |
+| `yano.rocksdb.max-open-files` | `512` |
+| `yano.rocksdb.target-file-size-bytes` | `67108864` |
+| `yano.rocksdb.write-buffer-allow-stall` | `false` |
+
 ## application-mainnet.yml
 
-Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-mainnet.yml)
+Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-mainnet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3839,9 +3845,23 @@ Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/bl
 | `yano.upstream.validation.start.slot` | `133660855` |
 | `yano.upstream.validation.start.hash` | `9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c` |
 
+## application-medium.yml
+
+Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-medium.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `16777216` |
+| `yano.rocksdb.block-cache-bytes` | `536870912` |
+| `yano.rocksdb.write-buffer-bytes` | `268435456` |
+| `yano.rocksdb.max-background-jobs` | `2` |
+| `yano.rocksdb.max-open-files` | `256` |
+| `yano.rocksdb.target-file-size-bytes` | `67108864` |
+| `yano.rocksdb.write-buffer-allow-stall` | `false` |
+
 ## application-opcert-strict.yml
 
-Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-opcert-strict.yml)
+Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-opcert-strict.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3849,7 +3869,7 @@ Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/y
 
 ## application-praos-ledger.yml
 
-Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-praos-ledger.yml)
+Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-praos-ledger.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3859,7 +3879,7 @@ Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/ya
 
 ## application-praos-lite.yml
 
-Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-praos-lite.yml)
+Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-praos-lite.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3869,7 +3889,7 @@ Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano
 
 ## application-preprod.yml
 
-Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-preprod.yml)
+Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-preprod.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3891,7 +3911,7 @@ Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/bl
 
 ## application-preview.yml
 
-Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-preview.yml)
+Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-preview.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3913,7 +3933,7 @@ Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/bl
 
 ## application-projection.yml
 
-Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-projection.yml)
+Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-projection.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3936,7 +3956,7 @@ Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano
 
 ## application-relay.yml
 
-Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-relay.yml)
+Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-relay.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3976,7 +3996,7 @@ Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob
 
 ## application-sanchonet.yml
 
-Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-sanchonet.yml)
+Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-sanchonet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3993,9 +4013,23 @@ Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/
 | `yano.upstream.validation.start.mode` | `era` |
 | `yano.upstream.validation.start.era` | `conway` |
 
+## application-small.yml
+
+Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-small.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `4194304` |
+| `yano.rocksdb.block-cache-bytes` | `134217728` |
+| `yano.rocksdb.write-buffer-bytes` | `134217728` |
+| `yano.rocksdb.max-background-jobs` | `2` |
+| `yano.rocksdb.max-open-files` | `256` |
+| `yano.rocksdb.target-file-size-bytes` | `67108864` |
+| `yano.rocksdb.write-buffer-allow-stall` | `false` |
+
 ## application-static-multi.yml
 
-Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-static-multi.yml)
+Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-static-multi.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4019,7 +4053,7 @@ Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/ya
 
 ## application-structural-validation.yml
 
-Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-structural-validation.yml)
+Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-structural-validation.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4029,7 +4063,7 @@ Source: [app/config/application-structural-validation.yml](https://github.com/bl
 
 ## application-trusted-peers.yml
 
-Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-trusted-peers.yml)
+Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-trusted-peers.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4048,7 +4082,7 @@ Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/y
 
 ## application-wallet.yml
 
-Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application-wallet.yml)
+Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-wallet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4058,9 +4092,24 @@ Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blo
 | `yano.utxo.enabled` | `true` |
 | `yano.filters.utxo.enabled` | `false` |
 
+## application-xsmall.yml
+
+Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application-xsmall.yml)
+
+| Property | Packaged value |
+| --- | --- |
+| `yano.bodyFetch.maxBatchSize` | `1000` |
+| `yano.ledger-apply.max-queued-decoded-bytes` | `4194304` |
+| `yano.rocksdb.block-cache-bytes` | `16777216` |
+| `yano.rocksdb.write-buffer-bytes` | `33554432` |
+| `yano.rocksdb.max-background-jobs` | `1` |
+| `yano.rocksdb.max-open-files` | `128` |
+| `yano.rocksdb.target-file-size-bytes` | `134217728` |
+| `yano.rocksdb.write-buffer-allow-stall` | `true` |
+
 ## application.yml
 
-Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/d58c814c813ed4c39939a52235b7094cbb238a9b/app/config/application.yml)
+Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/de89354afd99aff84d0ef8adc836feff726cdeb2/app/config/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4899,8 +4948,8 @@ The npm platform package normally supplies the native binary. To select a partic
 
 ```js
 const yano = await startYanoDevnet({
-  binaryPath: "/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64/yano",
-  cwd: "/absolute/path/to/yano-native-0.1.0-pre12-macos-arm64"
+  binaryPath: "/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64/yano",
+  cwd: "/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64"
 });
 ```
 
@@ -5243,9 +5292,9 @@ contributions, see `runtime/docs/events-and-plugins-guide.md`.
 
 ---
 
-# Release migration details
+# Release change details
 
-Storage and behavior changes across preview versions.
+Configuration and behavior changes across preview versions.
 
 Canonical URL: https://getyano.dev/reference/upgrading/
 
@@ -5330,17 +5379,17 @@ Choose and run a JVM or platform-specific Yano release.
 
 Canonical URL: https://getyano.dev/start/installation/
 
-Download a ready-to-run ZIP from [Yano v0.1.0-pre12](https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12). Extract the complete archive; keep the executable, launcher, and `config/` directory together.
+Download a ready-to-run ZIP from [Yano v0.1.0-pre15](https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre15). Extract the complete archive; keep the executable, launcher, and `config/` directory together.
 
 ## Choose your download
 
 | Distribution | Download | Requirements |
 | --- | --- | --- |
-| **JVM — recommended for app chains** | [yano-0.1.0-pre12.zip](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-0.1.0-pre12.zip) | Java 25 |
-| Linux x64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-linux-x64.zip) | Linux on x64 |
-| Linux arm64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-linux-arm64.zip) | Linux on arm64 |
-| macOS arm64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-macos-arm64.zip) | Apple silicon Mac |
-| Windows x64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-native-0.1.0-pre12-windows-x64.zip) | Windows on x64 |
+| **JVM — recommended for app chains** | [yano-0.1.0-pre15.zip](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre15/yano-0.1.0-pre15.zip) | Java 25 |
+| Linux x64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre15/yano-native-0.1.0-pre15-linux-x64.zip) | Linux on x64 |
+| Linux arm64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre15/yano-native-0.1.0-pre15-linux-arm64.zip) | Linux on arm64 |
+| macOS arm64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre15/yano-native-0.1.0-pre15-macos-arm64.zip) | Apple silicon Mac |
+| Windows x64 | [Native ZIP](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre15/yano-native-0.1.0-pre15-windows-x64.zip) | Windows on x64 |
 
 For app-chain onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
 
@@ -5349,8 +5398,8 @@ For app-chain onboarding, **use the JVM distribution for now**. It is also the d
 For the JVM ZIP:
 
 ```bash
-unzip yano-0.1.0-pre12.zip
-cd yano-0.1.0-pre12
+unzip yano-0.1.0-pre15.zip
+cd yano-0.1.0-pre15
 ./yano.sh start:devnet
 ```
 
@@ -5380,9 +5429,9 @@ For JVM app chains, use `java "-Dquarkus.profile=devnet,appchain" -jar yano.jar`
 
 ## Releases and documentation versions
 
-The download links above select **pre12**, a published release. This site's advanced reference follows the current `org.yanoproject` source line, which is newer. The namespace rename, newer wallet/history features, plugin contracts, and proof APIs are not all present in pre12. Use your release's bundled configuration and `/q/swagger-ui` as the reference for its available endpoints.
+The download links above select **pre15**, the newest published preview. This site's advanced reference follows the current source line, which may be newer. Resource profiles described in [choose a runtime profile](/start/runtime-profiles/) were added after pre15; use them only when the matching files exist in your extracted `config/` directory. Use your release's bundled configuration and `/q/swagger-ui` as the reference for its available endpoints.
 
-Pre12 also predates the current split of additional stock app-chain extensions into Yano X. Do not infer a release's bundled machines from the current-source module map. Use release-matched SDKs and verifiers, and check [upgrade notes](/operate/upgrades/) before reusing stored state.
+Use release-matched SDKs, plugins, and verifiers. Start preview releases with fresh node storage unless that release explicitly documents compatibility.
 
 You can browse [all releases](https://github.com/bloxbean/yano/releases) for later artifacts. To modify Yano itself or use unreleased changes, see [build from source](/contribute/build-from-source/); building is not required for the download workflow.
 
@@ -5404,6 +5453,7 @@ The same project also gives you a local, block-producing development network, in
 | --- | --- |
 | Try Yano without syncing a public network | [Your first local node](/start/quickstart/) |
 | Read Cardano data and submit transactions | [Run a data node](/node/networks/) |
+| Choose memory settings or enable wallet scans | [Runtime and wallet profiles](/start/runtime-profiles/) |
 | Test a Java application against real ledger state | [Java testkit](/develop/java-testkit/) |
 | Test from JavaScript or TypeScript | [JavaScript testkit](/develop/javascript-testkit/) |
 | Give several participants a shared, verifiable event history | [Your first app chain](/app-chains/quickstart/) |
@@ -5451,10 +5501,10 @@ Start a local Cardano chain from a **ready-to-run release**. You do not need Git
 
 ## 1. Download Yano
 
-Open the [Yano v0.1.0-pre12 release](https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12) and download:
+Open the [Yano v0.1.0-pre15 release](https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre15) and download:
 
-- **JVM:** [`yano-0.1.0-pre12.zip`](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre12/yano-0.1.0-pre12.zip), with Java 25 installed. Recommended if you also want to try app chains.
-- **Native:** the `yano-native-0.1.0-pre12-<platform>.zip` matching your operating system and CPU. No Java installation needed.
+- **JVM:** [`yano-0.1.0-pre15.zip`](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre15/yano-0.1.0-pre15.zip), with Java 25 installed. Recommended if you also want to try app chains.
+- **Native:** the `yano-native-0.1.0-pre15-<platform>.zip` matching your operating system and CPU. No Java installation needed.
 
 See [installation](/start/installation/) for the platform download links and Windows commands.
 
@@ -5463,12 +5513,12 @@ See [installation](/start/installation/) for the platform download links and Win
 Extract the whole ZIP, including its `config/` directory. For the JVM download on macOS or Linux:
 
 ```bash
-unzip yano-0.1.0-pre12.zip
-cd yano-0.1.0-pre12
+unzip yano-0.1.0-pre15.zip
+cd yano-0.1.0-pre15
 ./yano.sh start:devnet
 ```
 
-For a native download, enter its extracted `yano-native-0.1.0-pre12-<platform>` directory and run the same `./yano.sh start:devnet` command. The launcher selects the packaged binary automatically.
+For a native download, enter its extracted `yano-native-0.1.0-pre15-<platform>` directory and run the same `./yano.sh start:devnet` command. The launcher selects the packaged binary automatically.
 
 Keep this terminal running. The default REST port is `7070`; the node-to-node port is `13337`. The local devnet uses network magic `42`.
 
@@ -5494,3 +5544,84 @@ If startup fails, check Java with `java -version` for a JVM installation, confir
 ## Next steps
 
 [Connect your favorite SDK](/develop/blockfrost/), [submit a transaction](/develop/transactions/), or [start an app chain](/app-chains/quickstart/). Source builds are an optional [contributor workflow](/contribute/build-from-source/).
+
+---
+
+# Choose a runtime profile
+
+Start Yano with resource sizing and optional wallet indexes.
+
+Canonical URL: https://getyano.dev/start/runtime-profiles/
+
+Yano's resource profiles provide practical starting points for the Java heap,
+RocksDB memory, and the decoded-block queue. Add one profile after the network:
+
+```bash
+./yano.sh start:mainnet,small
+./yano.sh start:mainnet,medium
+./yano.sh start:mainnet,large
+```
+
+Use only one resource profile at a time. `yano.sh` applies its maximum heap to
+both JVM and native distributions. An explicit `-Xmx` in `JAVA_OPTS` overrides
+that value.
+
+These profiles are available when the matching file exists in the extracted
+`config/` directory, such as `config/application-small.yml`. Older releases
+without those files do not provide them.
+
+## Pick a size
+
+| Profile                        |                         Host RAM guidance |                            Maximum heap | When to use it                                          |
+| ------------------------------ | ----------------------------------------: | --------------------------------------: | ------------------------------------------------------- |
+| Standard (no resource profile) |          3 GiB minimum; 4 GiB recommended | JVM ergonomics; 1536 MiB native default | General use                                             |
+| `xsmall`                       |                         1.5 GiB candidate |                                 384 MiB | Experimental, severely constrained systems; slower sync |
+| `small`                        | 3 GiB recommended for public-network sync |                                 384 MiB | Lowest validated full-sync settings                     |
+| `medium`                       |                             4 GiB minimum |                                1536 MiB | More heap and read-cache headroom                       |
+| `large`                        |          6 GiB minimum; 8 GiB recommended |                                   2 GiB | Experimental throughput testing                         |
+
+Host RAM is not the same as Java heap. RocksDB, native allocations, thread
+stacks, mapped files, and the operating system also use memory. Treat these as
+starting points and monitor resident memory during a full sync.
+
+## Settings applied
+
+All memory values below are aggregate budgets shared across RocksDB column
+families.
+
+| Profile  | Decoded queue | Read cache | Write buffers | Background jobs | Open files | SST target | Allow write stall |
+| -------- | ------------: | ---------: | ------------: | --------------: | ---------: | ---------: | ----------------- |
+| Standard |        16 MiB |    256 MiB |       256 MiB |               2 |        256 |     64 MiB | No                |
+| `xsmall` |         4 MiB |     16 MiB |        32 MiB |               1 |        128 |    128 MiB | Yes               |
+| `small`  |         4 MiB |    128 MiB |       128 MiB |               2 |        256 |     64 MiB | No                |
+| `medium` |        16 MiB |    512 MiB |       256 MiB |               2 |        256 |     64 MiB | No                |
+| `large`  |        32 MiB |      1 GiB |       512 MiB |               4 |        512 |     64 MiB | No                |
+
+The queue limit measures encoded block bytes; decoded Java objects can occupy
+more heap. The RocksDB cache and write buffers use native memory outside the
+Java heap.
+
+## Add wallet discovery and scans
+
+The `wallet` feature profile composes with a network and a resource profile:
+
+```bash
+./yano.sh start:mainnet,small,wallet
+```
+
+Enable it before the first sync into a fresh database. It provides:
+
+- exact-address first-seen lookup at
+  `GET /api/v1/addresses/{address}/first-seen`;
+- a streaming, filtered wallet scan at `POST /api/v1/scan`;
+- complete UTxO storage and retained block bodies needed by those queries.
+
+The wallet profile does not enable archival history, hold private keys, create
+wallets, or sign transactions. See [wallet discovery and scans](/node/wallet-indexes/)
+for request formats and coverage rules.
+
+For example, a larger wallet-indexing node can use:
+
+```bash
+./yano.sh start:mainnet,medium,wallet
+```
