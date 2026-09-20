@@ -31,7 +31,7 @@ The mark is the paper plane with a lime slash in `static/yano-*.svg`, using the 
 - `yano-icon-mono.svg`: single-color `currentColor` version.
 - `yano-app-icon-dark.svg` / `yano-app-icon-lime.svg`: rounded-square app icons. `www/public/favicon.svg` is the dark app icon with the mark enlarged to stay legible at 16 px; `favicon.ico` (16/32/48) and `apple-touch-icon.png` (180, full-bleed) are rendered from it.
 
-`static/logo-dark.svg` and `static/logo-docs.svg` are the previous gradient artwork.
+`static/readme-banner.png` uses the same mark and palette for the repository header.
 
 ## Content
 

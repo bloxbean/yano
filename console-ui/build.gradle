@@ -26,7 +26,7 @@ tasks.register('buildFrontend', NpmTask) {
     dependsOn tasks.named('npmCi')
     args = ['run', 'build']
     inputs.dir('frontend/src')
-    inputs.file(rootProject.file('static/logo-dark.svg'))
+    inputs.file(rootProject.file('static/yano-icon.svg'))
     inputs.files('frontend/package.json', 'frontend/package-lock.json',
             'frontend/svelte.config.js', 'frontend/vite.config.ts',
             'frontend/tsconfig.json')
