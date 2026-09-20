@@ -502,7 +502,7 @@ executable UI code in this ADR's scope.
 
 ### 3.9 Post-implementation usability and verification revision
 
-The shared shell uses the repository-owned `static/logo-dark.svg` asset,
+The shared shell uses the repository-owned `static/yano-icon.svg` asset,
 labels the landing page `Yano Console`, and uses a 15-pixel root font while
 retaining accessible control sizes and the browser's zoom behavior. The build
 has one logo source of truth; it stages the asset into generated frontend

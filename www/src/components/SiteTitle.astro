@@ -3,7 +3,11 @@ const { siteTitleHref } = Astro.locals.starlightRoute;
 ---
 
 <a class="brand" href={siteTitleHref} aria-label="Yano home">
-  <img src="/logo.svg" width="34" height="34" alt="" />
+  <svg class="mark" viewBox="4 0 96 96" width="34" height="34" aria-hidden="true">
+    <polygon class="wing" points="79.25,14.11 11.45,46.01 37.37,55.98"></polygon>
+    <polygon class="wing" points="85.89,20.75 53.99,88.55 44.02,62.63"></polygon>
+    <polygon class="slash-mark" points="92.54,7.46 89.05,14.61 25.24,78.42 21.58,74.76 85.39,10.95"></polygon>
+  </svg>
   <span class="wordmark" translate="no">
     yano
   </span>
@@ -24,11 +28,18 @@ const { siteTitleHref } = Astro.locals.starlightRoute;
     white-space: nowrap;
   }
 
-  img {
+  .mark {
     width: 34px;
     height: 34px;
     flex: 0 0 auto;
-    object-fit: contain;
+  }
+
+  .wing {
+    fill: var(--yano-mark-wing);
+  }
+
+  .slash-mark {
+    fill: var(--yano-mark-slash);
   }
 
   .wordmark {

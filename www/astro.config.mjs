@@ -10,7 +10,7 @@ export default defineConfig({
       description:
         'The Cardano data node you can build with. Query, test, embed, and create app chains.',
       logo: { src: './public/logo.svg' },
-      favicon: '/favicon.ico',
+      favicon: '/favicon.svg',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/bloxbean/yano' }],
       customCss: ['./src/styles/docs.css'],
       components: {
@@ -28,6 +28,8 @@ export default defineConfig({
         { label: 'Contribute', items: [{ autogenerate: { directory: 'contribute' } }] },
       ],
       head: [
+        { tag: 'link', attrs: { rel: 'icon', href: '/favicon.ico', sizes: '32x32' } },
+        { tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' } },
         { tag: 'meta', attrs: { property: 'og:image', content: 'https://getyano.dev/social.svg' } },
       ],
     }),

@@ -3,7 +3,7 @@ declare global {
 }
 
 export {};
-declare module '@yano-static/logo-dark.svg?url' {
+declare module '@yano-static/yano-icon.svg?url' {
   const source: string;
   export default source;
 }
