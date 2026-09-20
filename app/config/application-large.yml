@@ -3,9 +3,9 @@
 # Compose after a network profile, for example:
 #   ./yano.sh start:mainnet,large
 #
-# For a JVM-jar distribution, use at least 6 GiB RAM; 8 GiB is recommended.
-# Start with:
-#   JAVA_OPTS="-Xmx2g"
+# Selecting this profile makes yano.sh use -Xmx2g for JVM and native
+# distributions. Override it explicitly, for example: JAVA_OPTS="-Xmx3g".
+# Use at least 6 GiB RAM; 8 GiB is recommended.
 #
 # These values require dedicated full-sync validation. Native-image memory
 # sizing will be documented separately.

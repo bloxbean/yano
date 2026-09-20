@@ -3,8 +3,9 @@
 # Compose after a network profile, for example:
 #   ./yano.sh start:mainnet,xsmall
 #
-# For a JVM-jar distribution, the candidate target is at least 1.5 GiB RAM:
-#   JAVA_OPTS="-Xmx384m"
+# Selecting this profile makes yano.sh use -Xmx384m for JVM and native
+# distributions. Override it explicitly, for example: JAVA_OPTS="-Xmx512m".
+# The candidate target is at least 1.5 GiB RAM.
 #
 # Expect lower sync throughput than the small profile. These values require
 # validation on representative constrained hardware. Native-image memory sizing

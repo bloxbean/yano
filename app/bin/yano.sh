@@ -64,9 +64,11 @@ Environment:
                    -XX: options; run '<binary> -XX:PrintFlags=' to list them.
                    JVM agents and module-system flags cannot exist in a native
                    image and are dropped with a warning.
+                   An explicit -Xmx overrides a resource-profile heap default.
   YANO_NATIVE_MAX_HEAP
-                   Native default maximum heap (default: 1536m). An explicit
-                   -Xmx in JAVA_OPTS overrides this value.
+                   Explicit native maximum heap. An explicit -Xmx in JAVA_OPTS
+                   overrides this value. Without either, a resource-profile
+                   default applies, or 1536m when no resource profile is used.
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
 
 Advanced:
@@ -305,6 +307,40 @@ if [ -n "$PROFILE" ]; then
     PROFILE_PROP="-Dquarkus.profile=${PROFILE}"
 fi
 
+# Resource profiles are the only JVM profiles that imply a heap limit. Network
+# and feature profiles alone leave HotSpot ergonomics untouched. Native images
+# retain their existing 1536m fallback when no resource profile is selected.
+RESOURCE_PROFILE=""
+PROFILE_MAX_HEAP=""
+select_resource_profile() {
+    [ -n "$PROFILE" ] || return
+
+    local old_ifs="$IFS"
+    local profile
+    local heap
+    IFS=','
+    read -ra profiles <<< "$PROFILE"
+    IFS="$old_ifs"
+    for profile in "${profiles[@]}"; do
+        case "$profile" in
+            xsmall) heap="384m" ;;
+            small) heap="384m" ;;
+            medium) heap="1536m" ;;
+            large) heap="2g" ;;
+            *) continue ;;
+        esac
+        if [ -n "$RESOURCE_PROFILE" ]; then
+            echo "Error: multiple resource profiles selected: $RESOURCE_PROFILE, $profile" >&2
+            echo "Select only one of: xsmall, small, medium, large." >&2
+            exit 1
+        fi
+        RESOURCE_PROFILE="$profile"
+        PROFILE_MAX_HEAP="$heap"
+    done
+}
+
+select_resource_profile
+
 # JAVA_OPTS is honoured by both distributions. A GraalVM native image accepts
 # -D system properties, the -X memory flags, -verbose, and its own -XX:
 # namespace (this image advertises 48 of them, including MaxHeapSize,
@@ -324,8 +360,12 @@ fi
 # forwarded, but called out so the operator is never left assuming a setting
 # applied when it did not.
 NATIVE_JAVA_OPTS=()
+EFFECTIVE_MAX_HEAP=""
+EFFECTIVE_MAX_HEAP_SOURCE=""
 collect_native_java_opts() {
     NATIVE_JAVA_OPTS=()
+    EFFECTIVE_MAX_HEAP=""
+    EFFECTIVE_MAX_HEAP_SOURCE=""
 
     local dropped=""
     local unverified=""
@@ -341,7 +381,11 @@ collect_native_java_opts() {
             -D*|-Xmx*|-Xms*|-Xss*|-XX:*|-verbose*)
                 NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="$opt"
                 case "$opt" in
-                    -Xmx*) has_max_heap="true" ;;
+                    -Xmx*)
+                        has_max_heap="true"
+                        EFFECTIVE_MAX_HEAP="${opt#-Xmx}"
+                        EFFECTIVE_MAX_HEAP_SOURCE="JAVA_OPTS"
+                        ;;
                 esac
                 ;;
             -X*)
@@ -357,7 +401,17 @@ collect_native_java_opts() {
     done
 
     if [ "$has_max_heap" = "false" ]; then
-        NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="-Xmx${YANO_NATIVE_MAX_HEAP:-1536m}"
+        if [ -n "${YANO_NATIVE_MAX_HEAP:-}" ]; then
+            EFFECTIVE_MAX_HEAP="$YANO_NATIVE_MAX_HEAP"
+            EFFECTIVE_MAX_HEAP_SOURCE="YANO_NATIVE_MAX_HEAP"
+        elif [ -n "$PROFILE_MAX_HEAP" ]; then
+            EFFECTIVE_MAX_HEAP="$PROFILE_MAX_HEAP"
+            EFFECTIVE_MAX_HEAP_SOURCE="resource profile $RESOURCE_PROFILE"
+        else
+            EFFECTIVE_MAX_HEAP="1536m"
+            EFFECTIVE_MAX_HEAP_SOURCE="native default"
+        fi
+        NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="-Xmx${EFFECTIVE_MAX_HEAP}"
     fi
 
     if [ -n "$dropped" ]; then
@@ -375,11 +429,55 @@ collect_native_java_opts() {
     fi
 }
 
+JVM_JAVA_OPTS=()
+collect_jvm_java_opts() {
+    JVM_JAVA_OPTS=()
+    EFFECTIVE_MAX_HEAP=""
+    EFFECTIVE_MAX_HEAP_SOURCE="JVM ergonomics"
+
+    local opt
+    local has_max_heap="false"
+    # Preserve the launcher's existing JAVA_OPTS word-splitting behavior.
+    # shellcheck disable=SC2086
+    set -- ${JAVA_OPTS:-}
+    for opt in "$@"; do
+        JVM_JAVA_OPTS[${#JVM_JAVA_OPTS[@]}]="$opt"
+        case "$opt" in
+            -Xmx*)
+                has_max_heap="true"
+                EFFECTIVE_MAX_HEAP="${opt#-Xmx}"
+                EFFECTIVE_MAX_HEAP_SOURCE="JAVA_OPTS"
+                ;;
+        esac
+    done
+
+    if [ "$has_max_heap" = "false" ] && [ -n "$PROFILE_MAX_HEAP" ]; then
+        EFFECTIVE_MAX_HEAP="$PROFILE_MAX_HEAP"
+        EFFECTIVE_MAX_HEAP_SOURCE="resource profile $RESOURCE_PROFILE"
+        JVM_JAVA_OPTS[${#JVM_JAVA_OPTS[@]}]="-Xmx${EFFECTIVE_MAX_HEAP}"
+    fi
+}
+
+print_heap_selection() {
+    if [ -n "$RESOURCE_PROFILE" ] \
+        && [ -n "$EFFECTIVE_MAX_HEAP" ] \
+        && [ "$EFFECTIVE_MAX_HEAP" != "$PROFILE_MAX_HEAP" ]; then
+        echo "Warning: $EFFECTIVE_MAX_HEAP_SOURCE selects -Xmx${EFFECTIVE_MAX_HEAP} and overrides" >&2
+        echo "         the $RESOURCE_PROFILE profile default -Xmx${PROFILE_MAX_HEAP}." >&2
+    fi
+    if [ -n "$EFFECTIVE_MAX_HEAP" ]; then
+        echo "Maximum heap: $EFFECTIVE_MAX_HEAP ($EFFECTIVE_MAX_HEAP_SOURCE)"
+    else
+        echo "Maximum heap: JVM ergonomics (no launcher -Xmx)"
+    fi
+}
+
 # Auto-detect mode: native binary or JAR
 if [ -f "$YANO_ROOT/yano" ]; then
     # Native binary mode
     echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
     collect_native_java_opts
+    print_heap_selection
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
@@ -389,13 +487,16 @@ if [ -f "$YANO_ROOT/yano" ]; then
 elif [ -f "$YANO_ROOT/yano.jar" ]; then
     # Uber-jar mode
     echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    collect_jvm_java_opts
+    print_heap_selection
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
-    exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$YANO_ROOT/yano.jar" ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
+    exec java "${JVM_JAVA_OPTS[@]}" $PROFILE_PROP -jar "$YANO_ROOT/yano.jar" ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano" ]; then
     echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
     collect_native_java_opts
+    print_heap_selection
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
@@ -404,10 +505,12 @@ elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano" ]; then
         "${NATIVE_JAVA_OPTS[@]}" $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano.jar" ]; then
     echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
+    collect_jvm_java_opts
+    print_heap_selection
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
-    exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$YANO_ROOT/build/yano.jar" \
+    exec java "${JVM_JAVA_OPTS[@]}" $PROFILE_PROP -jar "$YANO_ROOT/build/yano.jar" \
         ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 else
     echo "Error: Neither 'yano' binary nor 'yano.jar' found in $YANO_ROOT"
