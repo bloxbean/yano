@@ -90,11 +90,20 @@
     "app/src/main/resources/application.yml"
   ],
   "start/quickstart": [
-    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12",
+    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre15",
     "app/bin/yano.sh"
   ],
+  "start/runtime-profiles": [
+    "app/bin/yano.sh",
+    "app/config/application.yml",
+    "app/config/application-xsmall.yml",
+    "app/config/application-small.yml",
+    "app/config/application-medium.yml",
+    "app/config/application-large.yml",
+    "app/config/application-wallet.yml"
+  ],
   "start/installation": [
-    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre12",
+    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre15",
     "app/bin/yano.sh"
   ],
   "operate/troubleshooting": [

@@ -9,17 +9,12 @@ These indexes are preview functionality. The general node defaults keep
 both indexes disabled. The wallet profile enables both and no longer enables
 archival history projection. Production resource validation remains outstanding.
 
-## Upgrading from the pre-contributor wallet index
+From an extracted distribution, compose `wallet` with a network and optionally
+one [runtime profile](/start/runtime-profiles/):
 
-The contributor-based wallet index requires a **fresh sync database**. Existing
-wallet tables do not contain the new host-owned availability/rollback metadata;
-their presence does not prove complete index history. Upgrading the executable
-alone will leave these indexes unavailable, and later blocks will not repair them.
-Startup warns when existing wallet history is unavailable under the new gate.
-
-Stop the node, retain the old database as a backup, configure a new storage path,
-and sync with the wallet flags enabled from the beginning. Do not run two nodes
-against the same database. There is no migration or automatic backfill in preview.
+```bash
+./yano.sh start:mainnet,small,wallet
+```
 
 ## Configuration
 
@@ -76,10 +71,8 @@ scans need their filters and retained canonical block bodies. First-seen survive
 spending and ordinary body pruning. Scan queries that cross missing coverage or
 unavailable bodies fail; they do not silently scan all bodies as a fallback.
 
-Existing databases do not acquire complete coverage by enabling a flag. A fresh
-sync is required. Turning a flag off while canonical blocks advance breaks its
-continuity. Turning it off and back on without missing blocks can preserve the
-existing proof. There is no index backfill or automatic historical repair.
+Start with a fresh database and keep the selected indexes enabled throughout the
+sync. Turning one off while canonical blocks advance breaks its continuity.
 
 ## Canonical coordinates and coverage
 
@@ -193,10 +186,9 @@ finish with `done` (resumed scans still require complete `knownOutputs`). The
 record establishes whether the requested scan was complete. First-seen answers
 remain unavailable while their history contains unresolved first-seen errors.
 
-There is no automatic repair operation yet. Upgrading does not reconstruct filters
-or origin completeness already lost by older versions. Unknown gaps, missing block
-bodies, corrupt metadata and reorgs still fail closed rather than returning a
-successful partial scan.
+There is no automatic repair operation yet. Unknown gaps, missing block bodies,
+corrupt metadata and reorgs fail closed rather than returning a successful
+partial scan.
 
 On reorg, discard uncommitted stream changes. Retry an earlier saved canonical
 cursor together with its matching history/outpoint snapshot. If none survives,

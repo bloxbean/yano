@@ -1,6 +1,6 @@
 ---
-title: "Release migration details"
-description: "Storage and behavior changes across preview versions."
+title: "Release change details"
+description: "Configuration and behavior changes across preview versions."
 sidebar:
   order: 10
 ---
