@@ -91,11 +91,6 @@ public class DevnetTestProfile implements QuarkusTestProfile {
         return Map.of(
                 "yano.storage.rocksdb", "true",
                 "yano.storage.path", TEMP_STORAGE_DIR.toString(),
-                // Devnet runs the projection archive, so the test writes one. Left at its
-                // default it lands in ./history inside the source tree - 53 MB of DuckLake per
-                // run, untracked and uncleaned. Keep it outside the RocksDB directory: devnet
-                // snapshot restore replaces that directory and the archive must remain intact.
-                "yano.history.dir", TEMP_HISTORY_DIR.toString(),
                 "yano.genesis.shelley-genesis-file", TEMP_SHELLEY_GENESIS.toString(),
                 "yano.plugins.enabled", "false",
                 "yano.server.port", "23337"

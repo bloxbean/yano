@@ -11,11 +11,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Devnet actually runs the projection archive, rather than merely starting with it configured.
+ * Devnet can run the opt-in projection archive, rather than merely starting with it configured.
  *
  * <p>The three existing integration tests submit transactions and never read history, so devnet
  * could - and did - report a healthy archive that installed no contributors and recorded no
@@ -28,9 +30,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  * can see it.
  */
 @QuarkusTest
-@TestProfile(DevnetTestProfile.class)
+@TestProfile(DevnetProjectionArchiveIT.ProjectionDevnetTestProfile.class)
 @Tag("integration")
 public class DevnetProjectionArchiveIT extends BaseE2ETest {
+
+    public static class ProjectionDevnetTestProfile extends DevnetTestProfile {
+        @Override
+        public Map<String, String> getConfigOverrides() {
+            Map<String, String> overrides = new HashMap<>(super.getConfigOverrides());
+            if (!overrides.isEmpty()) {
+                overrides.put("yano.history.projection.enabled", "true");
+                overrides.put("yano.history.projection.sink", "ducklake");
+                // Keep the archive outside RocksDB: snapshot restore replaces the chainstate
+                // directory, while projection history must remain intact for this test.
+                overrides.put("yano.history.dir", TEMP_HISTORY_DIR.toString());
+            }
+            return overrides;
+        }
+    }
 
     @Override
     protected int getAccountBaseIndex() {

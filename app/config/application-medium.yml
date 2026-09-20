@@ -1,0 +1,21 @@
+# Medium-machine profile for additional JVM and RocksDB read-cache headroom.
+#
+# Compose after a network profile, for example:
+#   ./yano.sh start:mainnet,medium
+#
+# Selecting this profile makes yano.sh use -Xmx1536m for JVM and native
+# distributions. Override it explicitly, for example: JAVA_OPTS="-Xmx2g".
+# Use a 4 GiB or larger machine.
+#
+# Native-image memory sizing will be documented after separate validation.
+
+yano:
+  ledger-apply:
+    max-queued-decoded-bytes: 16777216 # 16 MiB encoded-block queue budget
+  rocksdb:
+    block-cache-bytes: 536870912       # 512 MiB shared read cache
+    write-buffer-bytes: 268435456      # 256 MiB aggregate write buffers
+    max-background-jobs: 2
+    max-open-files: 256
+    target-file-size-bytes: 67108864   # 64 MiB SST target
+    write-buffer-allow-stall: false
