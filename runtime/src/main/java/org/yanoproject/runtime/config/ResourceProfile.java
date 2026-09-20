@@ -1,8 +1,11 @@
 package org.yanoproject.runtime.config;
 
 import org.yanoproject.api.config.YanoPropertyKeys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Explicit runtime footprint profile. It changes performance defaults only;
@@ -13,6 +16,8 @@ public enum ResourceProfile {
     LOW_MEMORY("low-memory");
 
     private static final String ENV_NAME = "YANO_RESOURCE_PROFILE";
+    private static final Logger log = LoggerFactory.getLogger(ResourceProfile.class);
+    private static final AtomicBoolean lowMemoryDeprecationLogged = new AtomicBoolean();
 
     private final String externalName;
 
@@ -39,6 +44,10 @@ public enum ResourceProfile {
         String normalized = value.trim().toLowerCase(Locale.ROOT);
         for (ResourceProfile profile : values()) {
             if (profile.externalName.equals(normalized)) {
+                if (profile == LOW_MEMORY && lowMemoryDeprecationLogged.compareAndSet(false, true)) {
+                    log.warn("Resource profile 'low-memory' is deprecated; use the explicit "
+                            + "Quarkus application profile 'xsmall' instead");
+                }
                 return profile;
             }
         }

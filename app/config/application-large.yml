@@ -1,0 +1,22 @@
+# Experimental large-machine profile for throughput testing.
+#
+# Compose after a network profile, for example:
+#   ./yano.sh start:mainnet,large
+#
+# Selecting this profile makes yano.sh use -Xmx2g for JVM and native
+# distributions. Override it explicitly, for example: JAVA_OPTS="-Xmx3g".
+# Use at least 6 GiB RAM; 8 GiB is recommended.
+#
+# These values require dedicated full-sync validation. Native-image memory
+# sizing will be documented separately.
+
+yano:
+  ledger-apply:
+    max-queued-decoded-bytes: 33554432 # 32 MiB encoded-block queue budget
+  rocksdb:
+    block-cache-bytes: 1073741824      # 1 GiB shared read cache
+    write-buffer-bytes: 536870912      # 512 MiB aggregate write buffers
+    max-background-jobs: 4
+    max-open-files: 512
+    target-file-size-bytes: 67108864   # 64 MiB SST target
+    write-buffer-allow-stall: false

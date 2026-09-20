@@ -22,6 +22,14 @@ class DirectRocksDBChainStateTuningTest {
     }
 
     @Test
+    void defaultProfileUsesStandardSharedMemoryBudget() {
+        try (DirectRocksDBChainState chainState =
+                     new DirectRocksDBChainState(tempDir.resolve("standard-default").toString())) {
+            assertThat(chainState.sharedBlockCacheCapacityBytes()).isEqualTo(512L * 1024 * 1024);
+        }
+    }
+
+    @Test
     void writeBufferManagerDoesNotHardStallByDefault() {
         try (DirectRocksDBChainState chainState =
                      new DirectRocksDBChainState(tempDir.resolve("default").toString())) {
