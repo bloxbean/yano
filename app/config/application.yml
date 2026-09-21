@@ -17,8 +17,10 @@
 
 quarkus:
   http:
+    # REST API, health, metrics, Swagger UI, and the node console.
     port: 7070
   log:
+    level: INFO
     console:
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{3.}] (%t) %s%e%n"
     file:
@@ -27,81 +29,33 @@ quarkus:
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{3.}] (%t) %s%e%n"
 
 yano:
-  exit-on-epoch-calc-error: false # Auto verify adapot values for all known epochs (for public networks), exit if any mismatch found
+  # Cardano N2N server. Give every node on the same host a distinct port.
+  server:
+    port: 13337
+
+  # Primary L1 RocksDB state. Never point two running nodes at the same path.
+  storage:
+    path: ./chainstate
+
+  # For public-network epochs with bundled expected AdaPot values, Yano verifies
+  # the calculated treasury and reserves automatically.
+  # false: log mismatches, expose details through /api/v1/node/epoch-calc-status,
+  #        and continue.
+  # true: terminate the node on a mismatch so the epoch can be investigated.
+  exit-on-epoch-calc-error: false
+
   epoch-boundary:
+    # Use bounded-memory streaming reward calculation when the required
+    # pool-major snapshot is complete. Otherwise, use the legacy reward path.
     reward-mode: streaming
+
+    # Flush epoch-boundary RocksDB work when either threshold is reached.
+    # These limits apply to delegation snapshot rows, streaming reward chunks,
+    # and temporary reward-credential flags. The byte limit is an estimate,
+    # not a strict process-memory cap. Both values must be positive.
     max-batch-operations: 10000
-    max-batch-bytes: 4194304
-#  rollback-retention-epochs: 20
-#  storage:
-#    path: ./chainstate
-# =====================================================================
-# Optional Features (uncomment to enable)
-# =====================================================================
+    max-batch-bytes: 4194304 # 4 MiB
 
-# UTXO Storage Filters
-# ---------------------
-# Filter UTXOs before persisting to RocksDB. Only matching outputs are stored.
-# Useful for dApp-specific nodes that only need UTXOs for certain addresses.
-#
-#  filters:
-#    utxo:
-#      enabled: true
-#      addresses:                  # Bech32 addresses to store UTXOs for
-#        - addr_test1wzn5ee2qaqvly3hx7e0nk3vhm240n5muq3plhjcnvx9ppjgf62u6a
-#      payment-credentials:        # Payment credential hashes (28-byte hex)
-#        - 6313d841f3e1d906d5a87ed9104739748a13e50cd23bf103d4883cee
-
-# Block Body Pruning
-# ---------------------
-# Prune old block bodies beyond a retention window to reduce DB size.
-# Headers and indices are preserved so the node can still serve as a relay.
-# Set block-body-prune-depth to 0 to disable (default).
-#
-#  chain:
-#    block-body-prune-depth: 2160       # Blocks to retain (2160 ~ Cardano finality)
-#    block-prune-batch-size: 500000     # Entries per prune pass
-#    block-prune-interval-seconds: 300
-
-# Script Evaluator
-# ---------------------
-# Choose the script evaluator for the /utils/txs/evaluate endpoint.
-# Options: scalus (default, native image via yano.sh), aiken (JVM/jar)
-#
-#  block-producer:
-#    script-evaluator: scalus
-
-# Bootstrap State Mode
-# ---------------------
-# Skip full chain sync and start from a specific block.
-# Useful for lightweight relay mode (e.g., dApp transaction submission).
-#
-#  bootstrap:
-#    enabled: false
-#    block-number: -1            # Block number (-1 = latest - 100)
-#    addresses:                  # Addresses to fetch UTXOs for
-#      - addr_test1qz...
-#    utxos:                      # Specific UTXOs (format: txHash#outputIndex)
-#      - "abc123...def#0"
-#    provider: blockfrost        # blockfrost or koios
-#    blockfrost:
-#      api-key: ""
-#      base-url: ""              # Auto-detected from network if blank
-#    koios:
-#      base-url: ""              # Auto-detected from network if blank
-
-# Block Producer Mode (Devnet)
-# ---------------------
-# Enable block production for local devnet testing.
-# Requires VRF, KES keys and operational certificate.
-# Use Quarkus profile: -Dquarkus.profile=devnet
-#
-#  block-producer:
-#    enabled: true
-#    block-time-millis: 0
-#    lazy: false
-#    genesis-timestamp: 0
-#    # Slot duration comes from Shelley genesis slotLength (legacy slot-length-millis is ignored).
-#    vrf-skey-file: config/network/devnet/vrf.skey
-#    kes-skey-file: config/network/devnet/kes.skey
-#    opcert-file: config/network/devnet/opcert.cert
+  # Optional umbrella for coherent UTXO/account-state rollback retention.
+  # Explicit lower-level retention properties still take precedence.
+  # rollback-retention-epochs: 20

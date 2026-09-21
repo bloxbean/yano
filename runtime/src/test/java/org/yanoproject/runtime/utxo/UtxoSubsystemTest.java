@@ -136,7 +136,7 @@ class UtxoSubsystemTest {
     }
 
     @Test
-    void emptyFilterSnapshotClearsStartCycleFilterFromPreviousRun() {
+    void enabledFilterWithoutSelectorsOrPluginFailsClosed() {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
                 "yano.utxo.enabled", true,
@@ -161,8 +161,36 @@ class UtxoSubsystemTest {
                 subsystem.initializeFilterChain(List.of(new StorageFilter() { }));
                 assertThat(store.activeStorageFilterCount()).isOne();
 
-                subsystem.initializeFilterChain(List.of());
-                assertThat(store.activeStorageFilterCount()).isZero();
+                assertThatThrownBy(() -> subsystem.initializeFilterChain(List.of()))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("requires at least one non-blank address");
+                assertThat(store.activeStorageFilterCount()).isOne();
+            } finally {
+                subsystem.close();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void blankBuiltInSelectorsDoNotCountAsAnEffectiveFilter() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.Utxo.ENABLED, true,
+                YanoPropertyKeys.UtxoFilter.ENABLED, true,
+                YanoPropertyKeys.UtxoFilter.ADDRESSES, List.of("  "),
+                YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS, List.of(""),
+                YanoPropertyKeys.Metrics.ENABLED, false));
+
+        try (DirectRocksDBChainState chain = new DirectRocksDBChainState(
+                tempDir.resolve("blank-filter-chainstate").toString())) {
+            UtxoSubsystem subsystem = new UtxoSubsystem(YanoConfig.serverOnly(0), options,
+                    chain, chain, new NoopEventBus(), scheduler, LoggerFactory.getLogger(getClass()));
+            try {
+                assertThatThrownBy(() -> subsystem.initializeFilterChain(List.of()))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("plugin-provided storage filter");
             } finally {
                 subsystem.close();
             }

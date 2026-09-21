@@ -2213,6 +2213,12 @@ tasks.register('verifyCoreJvmDistribution') {
             if (archive.getEntry("${root}/config/application-wallet.yml") == null) {
                 throw new GradleException('Yano JVM distribution is missing the wallet profile')
             }
+            ['bootstrap', 'devnet', 'pruned', 'selective-utxo'].each { profile ->
+                if (archive.getEntry("${root}/config/application-${profile}.yml") == null) {
+                    throw new GradleException(
+                            "Yano JVM distribution is missing the ${profile} profile")
+                }
+            }
             if (archive.getEntry("${root}/LICENSE") == null) {
                 throw new GradleException('Yano JVM distribution is missing LICENSE')
             }
@@ -2826,6 +2832,12 @@ tasks.register('verifyCoreNativeDistribution') {
             }
             if (archive.getEntry("${root}/LICENSE") == null) {
                 throw new GradleException('Yano native distribution is missing LICENSE')
+            }
+            ['bootstrap', 'devnet', 'pruned', 'selective-utxo'].each { profile ->
+                if (archive.getEntry("${root}/config/application-${profile}.yml") == null) {
+                    throw new GradleException(
+                            "Yano native distribution is missing the ${profile} profile")
+                }
             }
             def packagedSidecars = archive.entries().findAll {
                 it.name.startsWith("${root}/libduckdb_java") && !it.isDirectory()

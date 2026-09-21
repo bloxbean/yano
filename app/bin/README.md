@@ -47,11 +47,11 @@ Run a standalone local blockchain with automatic block production.
 
 - Protocol magic: 42
 - Automatic block production (configurable interval)
-- Built-in faucet: `POST http://localhost:8080/api/v1/devnet/fund`
-- Snapshot: `POST http://localhost:8080/api/v1/devnet/snapshot`
-- Restore: `POST http://localhost:8080/api/v1/devnet/restore/{name}`
-- Time advance: `POST http://localhost:8080/api/v1/devnet/time/advance`
-- Rollback: `POST http://localhost:8080/api/v1/devnet/rollback`
+- Built-in faucet: `POST http://localhost:7070/api/v1/devnet/fund`
+- Snapshot: `POST http://localhost:7070/api/v1/devnet/snapshot`
+- Restore: `POST http://localhost:7070/api/v1/devnet/restore/{name}`
+- Time advance: `POST http://localhost:7070/api/v1/devnet/time/advance`
+- Rollback: `POST http://localhost:7070/api/v1/devnet/rollback`
 
 ### Standalone App-Chain Demo
 
@@ -72,11 +72,11 @@ Use the Yano X showcase for multi-node examples and additional state machines.
 
 ## Key Features
 
-- **REST API** (port 8080) — blocks, transactions, UTXOs, epochs, protocol params
-- **Swagger UI** — `http://localhost:8080/q/swagger-ui`
+- **REST API** (port 7070) — blocks, transactions, UTXOs, epochs, protocol params
+- **Swagger UI** — `http://localhost:7070/q/swagger-ui`
 - **Transaction submission** — `POST /api/v1/tx/submit` (CBOR or hex-encoded)
 - **Plutus script evaluation** — `POST /api/v1/utils/txs/evaluate` (Ogmios-compatible)
-- **Health check** — `http://localhost:8080/q/health/ready`
+- **Health check** — `http://localhost:7070/q/health/ready`
 - **Cardano N2N server** on port 13337
 - **JVM plugin system** — load extension JARs from the `plugins/` directory
 - **GraalVM native runtime** — closed-world Yano core image with the built-in ordered log
@@ -89,9 +89,16 @@ Use the Yano X showcase for multi-node examples and additional state machines.
 Override any config property via environment variables:
 
 ```bash
-YANO_SERVER_PORT=3001 ./yano.sh start
+QUARKUS_HTTP_PORT=7071 YANO_SERVER_PORT=13338 \
+  YANO_STORAGE_PATH=./chainstate-node-2 \
+  QUARKUS_LOG_FILE_PATH=./yano-node-2.log \
+  ./yano.sh start
 YANO_REMOTE_HOST=localhost YANO_REMOTE_PORT=3001 ./yano.sh start
 ```
+
+Every concurrently running node must have a distinct REST port, N2N port,
+chainstate path and log path. App-chain and projection nodes must also use
+distinct `YANO_APP_CHAIN_STORAGE_PATH` and `YANO_HISTORY_DIR` values.
 
 ### Runtime memory options
 
@@ -127,10 +134,14 @@ The `config/` directory contains genesis files and protocol parameters for each 
 config/
   application.yml
   application-appchain.yml
+  application-bootstrap.yml
+  application-devnet.yml
+  application-pruned.yml
   application-projection.yml
   application-preprod.yml
   application-relay.yml
   application-praos-lite.yml
+  application-selective-utxo.yml
   network/
     devnet/
     mainnet/
@@ -149,6 +160,8 @@ optional validation:
 ./yano.sh start:preview,relay,praos-lite
 ./yano.sh start:preprod,relay,praos-ledger
 ./yano.sh start:preprod,projection
+./yano.sh start:preprod,pruned
+BLOCKFROST_API_KEY=... ./yano.sh start:preprod,bootstrap
 ```
 
 The `projection` profile enables the optional JVM-only history archive, written by
@@ -169,6 +182,24 @@ Epoch artifacts are not selectable. Rewards, epoch stake, ada pots, DRep
 distribution and governance proposal status always ship.
 
 The archive defaults to `./history`; override it with `YANO_HISTORY_DIR`.
+
+### Storage and partial-state profiles
+
+The `bootstrap` profile starts from a recent provider block instead of replaying
+from genesis. It requires a new/empty chainstate and produces partial history.
+It cannot be combined with `devnet`, `devnet-slotleader`, or `projection`.
+
+The `pruned` profile retains a bounded window of block bodies. Pruned bodies can
+only be recovered by restoring another database or resyncing, and the profile
+cannot be combined with `wallet`.
+
+The `selective-utxo` profile retains only configured addresses, payment
+credentials, or plugin-selected outputs. Edit the profile or set the
+comma-separated `YANO_FILTERS_UTXO_ADDRESSES` or
+`YANO_FILTERS_UTXO_PAYMENT_CREDENTIALS` override before starting: an enabled
+filter with no effective selector fails startup.
+The resulting UTXO state is intentionally partial and cannot be combined with
+`wallet`; disabling the filter later requires a resync to recover omitted UTXOs.
 
 ## Directory Structure
 

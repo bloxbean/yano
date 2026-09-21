@@ -1,0 +1,44 @@
+# Local block-producing devnet profile.
+# Start with:
+#   ./yano.sh start:devnet
+#
+# The included keys and operational certificate are development fixtures only.
+
+yano:
+  network: devnet
+  auto-sync-start: true
+  dev-mode: true
+  client:
+    enabled: false
+  remote:
+    protocol-magic: 42
+  genesis:
+    shelley-genesis-file: config/network/devnet/shelley-genesis.json
+    shelley-genesis-hash: ""
+    byron-genesis-file: config/network/devnet/byron-genesis.json
+    alonzo-genesis-file: config/network/devnet/alonzo-genesis.json
+    conway-genesis-file: config/network/devnet/conway-genesis.json
+    protocol-parameters-file: config/network/devnet/protocol-param.json
+  account-state:
+    enabled: true
+  epoch-snapshot:
+    amounts-enabled: true
+  adapot:
+    enabled: true
+  rewards:
+    enabled: true
+  epoch-params:
+    tracking-enabled: true
+  governance:
+    enabled: true
+  utxo:
+    enabled: true
+  block-producer:
+    enabled: true
+    block-time-millis: 0
+    lazy: false
+    genesis-timestamp: 0
+    vrf-skey-file: config/network/devnet/vrf.skey
+    kes-skey-file: config/network/devnet/kes.skey
+    opcert-file: config/network/devnet/opcert.cert
+    past-time-travel-slot-leader-mode: false

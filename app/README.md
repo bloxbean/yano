@@ -119,7 +119,7 @@ java -Dquarkus.profile=devnet -jar build/yano.jar
 | `yano.storage.path` | ./chainstate | RocksDB storage directory |
 | `yano.app-chain.storage.path` | appchain-chainstate | Process-relative authoritative app-chain RocksDB root |
 | `yano.block-producer.block-time-millis` | 0 | Block production interval in ms; `0` means derive from genesis (`shelley-genesis.slotLength`). |
-| `yano.block-producer.script-evaluator` | `aiken` | Plutus script evaluator (`aiken` or `scalus`) |
+| `yano.block-producer.script-evaluator` | `scalus` | Plutus script evaluator (`scalus`, or `aiken` on the JVM) |
 
 ### Script Evaluator
 
@@ -127,12 +127,11 @@ The node supports two Plutus script evaluators for the `/utils/txs/evaluate` end
 
 | Evaluator | Default in | Description |
 |-----------|-----------|-------------|
-| `aiken` | JVM (jar) | Uses Aiken's UPLC evaluator via JNA. Does not work with native image. |
-| `scalus` | Native image | Pure JVM evaluator. Works in both JVM and native image modes. |
+| `aiken` | JVM (jar) only | Uses Aiken's UPLC evaluator via JNA. Does not work with native image. |
+| `scalus` | JVM and native image | Pure JVM evaluator and the packaged default. |
 
-When using `bin/yano.sh`, the script automatically selects the appropriate evaluator:
-- **Native binary** → `scalus`
-- **JVM (jar)** → `aiken`
+When using `bin/yano.sh`, native launches explicitly select `scalus`; JVM
+launches use the packaged `scalus` default unless configuration overrides it.
 
 To override, set the property in `config/application.yml`:
 

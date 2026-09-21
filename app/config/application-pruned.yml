@@ -1,0 +1,13 @@
+# Block-body pruning profile.
+# Compose after a network profile, for example:
+#   ./yano.sh start:preprod,pruned
+#
+# Pruning deletes old local block bodies while retaining headers and indexes.
+# Recovering deleted bodies requires restoring another database or resyncing.
+# Do not combine this profile with wallet scans that need historical bodies.
+
+yano:
+  chain:
+    block-body-prune-depth: 2160 # Approximate Cardano finality window.
+    block-prune-batch-size: 500000
+    block-prune-interval-seconds: 300
