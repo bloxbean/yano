@@ -1,8 +1,9 @@
 # Selective UTXO storage profile for application-specific nodes.
-# Compose after a network profile only after configuring at least one address or
-# payment credential below, or through YANO_FILTERS_UTXO_ADDRESSES /
-# YANO_FILTERS_UTXO_PAYMENT_CREDENTIALS (comma-separated). Startup fails if
-# filtering is enabled without an effective built-in or plugin-provided filter.
+# Compose after a network profile, then configure at least one address or
+# payment credential below (or through YANO_FILTERS_UTXO_ADDRESSES /
+# YANO_FILTERS_UTXO_PAYMENT_CREDENTIALS) and set enabled to true (or export
+# YANO_FILTERS_UTXO_ENABLED=true). It is deliberately disabled as shipped
+# because an enabled filter with no selectors is equivalent to no filtering.
 #
 # This creates intentionally partial UTXO state. Use a fresh, dedicated
 # yano.storage.path. Disabling the filter later does not reconstruct omitted
@@ -12,7 +13,7 @@
 yano:
   filters:
     utxo:
-      enabled: true
+      enabled: false
       addresses: []
       # Example:
       # addresses:

@@ -379,12 +379,6 @@ public final class UtxoSubsystem implements Subsystem {
                     + expectedPreflight + " != " + resolved.names());
         }
 
-        if (resolved.enabled() && resolved.filters().isEmpty()) {
-            throw new IllegalStateException(
-                    "yano.filters.utxo.enabled=true requires at least one non-blank address, "
-                            + "payment credential, or plugin-provided storage filter");
-        }
-
         if (!resolved.enabled()) {
             defaultStore.setFilterChain(null);
             log.info("UTXO storage filtering disabled");
@@ -412,28 +406,22 @@ public final class UtxoSubsystem implements Subsystem {
         if (addrObj instanceof java.util.Collection<?> collection) {
             for (Object address : collection) {
                 if (address != null) {
-                    String value = String.valueOf(address).trim();
-                    if (!value.isEmpty()) {
-                        addresses.add(value);
-                    }
+                    addresses.add(String.valueOf(address));
                 }
             }
         } else if (addrObj instanceof String address && !address.isBlank()) {
-            addresses.add(address.trim());
+            addresses.add(address);
         }
 
         Object pcObj = runtimeOptions.globals().get(YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS);
         if (pcObj instanceof java.util.Collection<?> collection) {
             for (Object paymentCred : collection) {
                 if (paymentCred != null) {
-                    String value = String.valueOf(paymentCred).trim();
-                    if (!value.isEmpty()) {
-                        paymentCreds.add(value);
-                    }
+                    paymentCreds.add(String.valueOf(paymentCred));
                 }
             }
         } else if (pcObj instanceof String paymentCred && !paymentCred.isBlank()) {
-            paymentCreds.add(paymentCred.trim());
+            paymentCreds.add(paymentCred);
         }
 
         List<StorageFilter> filters = new ArrayList<>();

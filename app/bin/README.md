@@ -193,11 +193,12 @@ The `pruned` profile retains a bounded window of block bodies. Pruned bodies can
 only be recovered by restoring another database or resyncing, and the profile
 cannot be combined with `wallet`.
 
-The `selective-utxo` profile retains only configured addresses, payment
-credentials, or plugin-selected outputs. Edit the profile or set the
-comma-separated `YANO_FILTERS_UTXO_ADDRESSES` or
-`YANO_FILTERS_UTXO_PAYMENT_CREDENTIALS` override before starting: an enabled
-filter with no effective selector fails startup.
+The `selective-utxo` profile is shipped disabled to avoid accidentally running
+without an effective selector. Edit the profile or set the comma-separated
+`YANO_FILTERS_UTXO_ADDRESSES` or `YANO_FILTERS_UTXO_PAYMENT_CREDENTIALS`
+override, then set `yano.filters.utxo.enabled=true` (or
+`YANO_FILTERS_UTXO_ENABLED=true`). Once enabled, it retains only configured
+addresses, payment credentials, or plugin-selected outputs.
 The resulting UTXO state is intentionally partial and cannot be combined with
 `wallet`; disabling the filter later requires a resync to recover omitted UTXOs.
 

@@ -35,9 +35,6 @@ yano:
     enabled: true
   block-producer:
     enabled: true
-    block-time-millis: 0
-    lazy: false
-    genesis-timestamp: 0
     vrf-skey-file: config/network/devnet/vrf.skey
     kes-skey-file: config/network/devnet/kes.skey
     opcert-file: config/network/devnet/opcert.cert
