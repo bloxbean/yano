@@ -506,8 +506,8 @@ The npm platform package normally supplies the native binary. To select a partic
 
 ```js
 const yano = await startYanoDevnet({
-  binaryPath: "/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64/yano",
-  cwd: "/absolute/path/to/yano-native-0.1.0-pre15-macos-arm64"
+  binaryPath: "/absolute/path/to/yano-native-<version>-macos-arm64/yano",
+  cwd: "/absolute/path/to/yano-native-<version>-macos-arm64"
 });
 ```
 
