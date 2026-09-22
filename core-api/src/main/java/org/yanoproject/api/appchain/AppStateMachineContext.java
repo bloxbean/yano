@@ -23,6 +23,11 @@ public interface AppStateMachineContext {
     /** Dynamic plugin settings (suffix-keyed, e.g. {@code zk.max-proofs-per-block}). */
     Map<String, String> settings();
 
+    /** Catalog bridge for declared component construction; never call during deterministic execution. */
+    default Optional<AppStateMachineResolver> stateMachineResolver() {
+        return Optional.empty();
+    }
+
     /**
      * Normalized and authenticated framework consensus profile (ADR-016).
      *

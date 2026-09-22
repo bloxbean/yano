@@ -32,6 +32,7 @@ import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.state.StateSnapshot;
 import org.yanoproject.api.appchain.transition.FinalizedMessageIndex;
+import org.yanoproject.api.appchain.transition.TransitionKernel;
 import org.yanoproject.api.appchain.transition.FinalizedMessageIndexedStateMachine;
 import org.yanoproject.api.appchain.transition.FinalizedBlockMessageRootIndexedStateMachine;
 import org.yanoproject.api.appchain.transition.FinalizedBlockMessageRootIndex;
@@ -563,6 +564,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                     return config.pluginSettings();
                                 }
                                 @Override
+                                public Optional<AppStateMachineResolver> stateMachineResolver() {
+                                    return Optional.of((id, childContext) -> resolveStateMachine(
+                                            id, pluginProviders, childContext, log));
+                                }
+                                @Override
                                 public Optional<AppChainConsensusProfile> consensusProfile() {
                                     return Optional.of(AppChainSubsystem.this.consensusProfile);
                                 }
@@ -864,6 +870,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private static AppStateMachine startupMarkedStateMachine(AppStateMachine delegate, String id) {
         return new AppStateMachine() {
+            @Override
+            public Optional<TransitionKernel<?, ?>> transitionKernel() {
+                return delegate.transitionKernel();
+            }
+
             @Override
             public String id() {
                 return id;

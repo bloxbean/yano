@@ -8,6 +8,10 @@ import org.yanoproject.api.appchain.AppStateWriter;
 import org.yanoproject.api.appchain.effects.AppEffectEmitter;
 import org.yanoproject.api.appchain.transition.FinalizedMessageIndex;
 import org.yanoproject.api.appchain.transition.TransitionPlans;
+import org.yanoproject.api.appchain.transition.OrderedLogKernel;
+import org.yanoproject.api.appchain.transition.TransitionKernel;
+
+import java.util.Optional;
 
 /**
  * Built-in default app: an append-only ordered log of opaque messages.
@@ -21,6 +25,12 @@ import org.yanoproject.api.appchain.transition.TransitionPlans;
 public final class OrderedLogStateMachine implements AppStateMachine {
 
     public static final String ID = "ordered-log";
+    private static final OrderedLogKernel KERNEL = new OrderedLogKernel();
+
+    @Override
+    public Optional<TransitionKernel<?, ?>> transitionKernel() {
+        return Optional.of(KERNEL);
+    }
 
     @Override
     public String id() {

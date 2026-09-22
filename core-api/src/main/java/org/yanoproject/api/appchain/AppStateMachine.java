@@ -5,6 +5,9 @@ import org.yanoproject.api.appchain.effects.AppEffectEmitter;
 import org.yanoproject.api.appchain.effects.EffectResult;
 import org.yanoproject.api.appchain.observation.AppObservationEmitter;
 import org.yanoproject.api.appchain.observation.ObservationResult;
+import org.yanoproject.api.appchain.transition.TransitionKernel;
+
+import java.util.Optional;
 
 /**
  * The developer-facing SPI of the Yano app-chain framework: a deterministic
@@ -34,6 +37,11 @@ public interface AppStateMachine {
 
     /** Stable identifier of this state machine implementation (e.g. "ordered-log"). */
     String id();
+
+    /** Optional pure command kernel for atomic composition; standalone apply remains the entry point. */
+    default Optional<TransitionKernel<?, ?>> transitionKernel() {
+        return Optional.empty();
+    }
 
     /** Called once before the first block is applied / on node start. */
     default void init(AppStateReader state, AppChainInfo info) {

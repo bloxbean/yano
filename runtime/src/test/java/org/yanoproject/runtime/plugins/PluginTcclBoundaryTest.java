@@ -21,6 +21,17 @@ import org.yanoproject.api.appchain.AppStateMachineContext;
 import org.yanoproject.api.appchain.AppStateMachineProvider;
 import org.yanoproject.api.appchain.AppStateReader;
 import org.yanoproject.api.appchain.AppStateWriter;
+import org.yanoproject.api.appchain.codec.MessageCodec;
+import org.yanoproject.api.appchain.transition.CommandDescriptor;
+import org.yanoproject.api.appchain.transition.ConfigurationDescriptor;
+import org.yanoproject.api.appchain.transition.EventDescriptor;
+import org.yanoproject.api.appchain.transition.OrderedLogKernel;
+import org.yanoproject.api.appchain.transition.TransitionContext;
+import org.yanoproject.api.appchain.transition.TransitionDecision;
+import org.yanoproject.api.appchain.transition.TransitionKernel;
+import org.yanoproject.api.appchain.transition.TransitionWorkBudget;
+import org.yanoproject.api.appchain.transition.TransitionWorkReference;
+import org.yanoproject.api.appchain.transition.TransitionWorkRequest;
 import org.yanoproject.api.appchain.effects.AppEffectEmitter;
 import org.yanoproject.api.appchain.effects.AppEffectExecutor;
 import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
@@ -69,6 +80,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
@@ -171,6 +183,8 @@ class PluginTcclBoundaryTest {
             AppStateMachine secondMachine = machineProvider.create(null);
             assertThat(secondMachine).isNotSameAs(firstMachine);
             firstMachine.id();
+            exerciseKernel(firstMachine.transitionKernel().orElseThrow());
+            assertCaller(caller);
             firstMachine.init(null, null);
             firstMachine.validate(null);
             firstMachine.validateForBlock(null, 1, null);
@@ -2692,12 +2706,90 @@ class PluginTcclBoundaryTest {
         }
     }
 
+    private static <C, F> void exerciseKernel(TransitionKernel<C, F> kernel) {
+        C command = kernel.codec().decode(new byte[]{1});
+        assertThat(kernel.codec().encode(command)).containsExactly(1);
+        assertThat(kernel.codec().type()).isEqualTo(byte[].class);
+        var context = new TransitionContext(1, 0, 0, new byte[32], "test", new byte[32]);
+        assertThat(kernel.admit(command, context).isAccepted()).isTrue();
+        F facts = kernel.facts(command, context, null);
+        assertThat(kernel.readParticipants()).isEmpty();
+        assertThat(kernel.workBudgets()).containsExactly(new TransitionWorkBudget("crypto", new byte[]{9}, 5));
+        assertThat(kernel.workReferences()).containsExactly(new TransitionWorkReference("machine", "crypto"));
+        assertThat(kernel.workRequest(command, context)).contains(new TransitionWorkRequest(
+                new TransitionWorkReference("machine", "crypto"), 1));
+        assertThat(kernel.facts(command, context, null, Map.of())).isEqualTo(facts);
+        assertThat(kernel.decide(command, context, facts)).isInstanceOf(TransitionDecision.Approved.class);
+        assertThat(kernel.commands()).hasSize(1);
+        assertThat(kernel.events()).hasSize(1);
+        assertThat(kernel.configuration().settings()).isEmpty();
+        byte[] logical = {4};
+        assertThat(kernel.lookupKey(logical)).containsExactly(5);
+        assertThat(logical).containsExactly(4);
+    }
+
     private static final class AssertingStateMachine implements AppStateMachine {
         private final ContextProbe probe;
 
         private AssertingStateMachine(ContextProbe probe) { this.probe = probe; }
 
         @Override public String id() { probe.check(); return "machine"; }
+        @Override public Optional<TransitionKernel<?, ?>> transitionKernel() {
+            probe.check();
+            return Optional.of(new TransitionKernel<byte[], Boolean>() {
+                private final OrderedLogKernel delegate = new OrderedLogKernel();
+                @Override public MessageCodec<byte[]> codec() {
+                    probe.check();
+                    return new MessageCodec<>() {
+                        @Override public byte[] encode(byte[] value) { probe.check(); return value.clone(); }
+                        @Override public byte[] decode(byte[] body) { probe.check(); return body.clone(); }
+                        @Override public Class<byte[]> type() { probe.check(); return byte[].class; }
+                    };
+                }
+                @Override public AdmissionResult admit(byte[] command, TransitionContext context) {
+                    probe.check();
+                    return AdmissionResult.accept();
+                }
+                @Override public Boolean facts(byte[] command, TransitionContext context, AppStateReader state) {
+                    probe.check();
+                    return true;
+                }
+                @Override public List<String> readParticipants() { probe.check(); return List.of(); }
+                @Override public byte[] lookupKey(byte[] logicalKey) {
+                    probe.check();
+                    logicalKey[0]++;
+                    return logicalKey;
+                }
+                @Override public List<TransitionWorkBudget> workBudgets() {
+                    probe.check();
+                    return List.of(new TransitionWorkBudget("crypto", new byte[]{9}, 5));
+                }
+                @Override public List<TransitionWorkReference> workReferences() {
+                    probe.check();
+                    return List.of(new TransitionWorkReference("machine", "crypto"));
+                }
+                @Override public Optional<TransitionWorkRequest> workRequest(byte[] command, TransitionContext context) {
+                    probe.check();
+                    return Optional.of(new TransitionWorkRequest(new TransitionWorkReference("machine", "crypto"), 1));
+                }
+                @Override public Boolean facts(byte[] command, TransitionContext context, AppStateReader state,
+                                                Map<String, AppStateReader> participants) {
+                    probe.check();
+                    assertThat(participants).isEmpty();
+                    return true;
+                }
+                @Override public TransitionDecision decide(byte[] command, TransitionContext context, Boolean facts) {
+                    probe.check();
+                    return delegate.decide(command, context, facts);
+                }
+                @Override public List<CommandDescriptor> commands() { probe.check(); return delegate.commands(); }
+                @Override public List<EventDescriptor> events() { probe.check(); return delegate.events(); }
+                @Override public ConfigurationDescriptor configuration() {
+                    probe.check();
+                    return delegate.configuration();
+                }
+            });
+        }
         @Override public void init(AppStateReader state, AppChainInfo info) { probe.check(); }
         @Override public AdmissionResult validate(AppMessage message) {
             probe.check();
