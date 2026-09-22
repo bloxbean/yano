@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "site": "https://getyano.dev",
-  "version": "0.1.0-pre16-dev1",
-  "sourceRevision": "de89354afd99aff84d0ef8adc836feff726cdeb2",
+  "version": "0.1.0-pre16",
+  "sourceRevision": "2d29561f2c66b36ea512388043eddb12cc7f2a00",
   "sourceRepository": "https://github.com/bloxbean/yano",
   "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
   "pages": [
@@ -235,7 +235,7 @@
       "description": "Active packaged configuration values and declared property keys, generated from source.",
       "url": "https://getyano.dev/reference/configuration-catalog/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
-      "sha256": "1b7afc7626cf7b09307f5682d846a33cda32de440f56f0aaafaa8d7188e254e7"
+      "sha256": "84053e2be98f7980014c61ce09bbbcee156d4d2fdc99f589b7bf9a3abce7a3b7"
     },
     {
       "title": "Configuration guide",
@@ -315,7 +315,7 @@
     },
     {
       "url": "https://getyano.dev/llms-full.txt",
-      "sha256": "d7fb33b3717af9ce2bdc68c0bfbed55195deb7524078faa6afd35699a413a0c2"
+      "sha256": "236c019553a3abcbd127cc70d38358526e8d6f8a8f5628d14fabaefd28d306ed"
     },
     {
       "url": "https://getyano.dev/ai/agent-instructions.md",
@@ -323,11 +323,11 @@
     },
     {
       "url": "https://getyano.dev/ai/configuration.json",
-      "sha256": "d50b93da28efdf5c1d081001fa0fec6a6b5c5c1181bcb1321692c0ab7acc4718"
+      "sha256": "182be335cbcea6820f5d5fc71bd9a72ff4699cd534c9297d3008ba0f74dfd282"
     },
     {
       "url": "https://getyano.dev/ai/routes.json",
-      "sha256": "ffc83b1fc136d8b4df5becd868c5e1ac86ba9d785e22152099ed690a4feb7f3d"
+      "sha256": "3ae87e13016644a4ecf2045c312f839e3ab07045b7653873755b3dc16ed853ef"
     }
   ]
 }

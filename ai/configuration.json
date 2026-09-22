@@ -1,6 +1,6 @@
 {
-  "sourceRevision": "de89354afd99aff84d0ef8adc836feff726cdeb2",
-  "version": "0.1.0-pre16-dev1",
+  "sourceRevision": "2d29561f2c66b36ea512388043eddb12cc7f2a00",
+  "version": "0.1.0-pre16",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
     {
@@ -1012,6 +1012,126 @@
       ]
     },
     {
+      "source": "app/config/application-bootstrap.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.bootstrap.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.bootstrap.block-number",
+          "value": "${YANO_BOOTSTRAP_BLOCK_NUMBER:-1}"
+        },
+        {
+          "key": "yano.bootstrap.provider",
+          "value": "${YANO_BOOTSTRAP_PROVIDER:blockfrost}"
+        },
+        {
+          "key": "yano.bootstrap.blockfrost.api-key",
+          "value": "<configure privately; see local demo profile for test-only identity>"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-devnet.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.network",
+          "value": "devnet"
+        },
+        {
+          "key": "yano.auto-sync-start",
+          "value": true
+        },
+        {
+          "key": "yano.dev-mode",
+          "value": true
+        },
+        {
+          "key": "yano.client.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.remote.protocol-magic",
+          "value": 42
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-file",
+          "value": "config/network/devnet/shelley-genesis.json"
+        },
+        {
+          "key": "yano.genesis.shelley-genesis-hash",
+          "value": ""
+        },
+        {
+          "key": "yano.genesis.byron-genesis-file",
+          "value": "config/network/devnet/byron-genesis.json"
+        },
+        {
+          "key": "yano.genesis.alonzo-genesis-file",
+          "value": "config/network/devnet/alonzo-genesis.json"
+        },
+        {
+          "key": "yano.genesis.conway-genesis-file",
+          "value": "config/network/devnet/conway-genesis.json"
+        },
+        {
+          "key": "yano.genesis.protocol-parameters-file",
+          "value": "config/network/devnet/protocol-param.json"
+        },
+        {
+          "key": "yano.account-state.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.epoch-snapshot.amounts-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.adapot.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.rewards.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.epoch-params.tracking-enabled",
+          "value": true
+        },
+        {
+          "key": "yano.governance.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.utxo.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.vrf-skey-file",
+          "value": "config/network/devnet/vrf.skey"
+        },
+        {
+          "key": "yano.block-producer.kes-skey-file",
+          "value": "config/network/devnet/kes.skey"
+        },
+        {
+          "key": "yano.block-producer.opcert-file",
+          "value": "config/network/devnet/opcert.cert"
+        },
+        {
+          "key": "yano.block-producer.past-time-travel-slot-leader-mode",
+          "value": false
+        }
+      ]
+    },
+    {
       "source": "app/config/application-header-signature.yml",
       "profile": null,
       "values": [
@@ -1418,6 +1538,24 @@
       ]
     },
     {
+      "source": "app/config/application-pruned.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.chain.block-body-prune-depth",
+          "value": 2160
+        },
+        {
+          "key": "yano.chain.block-prune-batch-size",
+          "value": 500000
+        },
+        {
+          "key": "yano.chain.block-prune-interval-seconds",
+          "value": 300
+        }
+      ]
+    },
+    {
       "source": "app/config/application-relay.yml",
       "profile": null,
       "values": [
@@ -1428,10 +1566,6 @@
         {
           "key": "yano.server.enabled",
           "value": true
-        },
-        {
-          "key": "yano.server.port",
-          "value": 13337
         },
         {
           "key": "yano.relay.auto-discovery",
@@ -1606,6 +1740,44 @@
         {
           "key": "yano.upstream.validation.start.era",
           "value": "conway"
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-selective-utxo.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.filters.utxo.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.filters.utxo.addresses",
+          "value": []
+        },
+        {
+          "key": "yano.filters.utxo.payment-credentials",
+          "value": []
+        },
+        {
+          "key": "yano.account.stake-balance-index-enabled",
+          "value": false
+        },
+        {
+          "key": "yano.epoch-snapshot.amounts-enabled",
+          "value": false
+        },
+        {
+          "key": "yano.adapot.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.rewards.enabled",
+          "value": false
+        },
+        {
+          "key": "yano.governance.enabled",
+          "value": false
         }
       ]
     },
@@ -1860,6 +2032,14 @@
         {
           "key": "quarkus.http.port",
           "value": 7070
+        },
+        {
+          "key": "yano.server.port",
+          "value": 13337
+        },
+        {
+          "key": "yano.storage.path",
+          "value": "./chainstate"
         },
         {
           "key": "yano.exit-on-epoch-calc-error",
