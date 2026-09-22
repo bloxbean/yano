@@ -8,24 +8,27 @@ Start a local Cardano chain from a **ready-to-run release**. You do not need Git
 
 ## 1. Download Yano
 
-Open the [Yano v0.1.0-pre15 release](https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre15) and download:
+Open [Yano Releases](https://github.com/bloxbean/yano/releases), choose the newest preview, and download:
 
-- **JVM:** [`yano-0.1.0-pre15.zip`](https://github.com/bloxbean/yano/releases/download/v0.1.0-pre15/yano-0.1.0-pre15.zip), with Java 25 installed. Recommended if you also want to try app chains.
-- **Native:** the `yano-native-0.1.0-pre15-<platform>.zip` matching your operating system and CPU. No Java installation needed.
+- **JVM:** `yano-<version>.zip`, with Java 25 installed. Recommended if you also want to try app chains.
+- **Native:** `yano-native-<version>-<platform>.zip`, matching your operating system and CPU. No Java installation needed.
 
-See [installation](/start/installation/) for the platform download links and Windows commands.
+Replace `<version>` with the selected release version and `<platform>` with the platform suffix shown in its asset list.
+
+See [installation](/start/installation/) for platform-specific asset names and Windows commands.
 
 ## 2. Extract and start
 
 Extract the whole ZIP, including its `config/` directory. For the JVM download on macOS or Linux:
 
 ```bash
-unzip yano-0.1.0-pre15.zip
-cd yano-0.1.0-pre15
+VERSION="<version>" # Replace with the selected release version.
+unzip "yano-${VERSION}.zip"
+cd "yano-${VERSION}"
 ./yano.sh start:devnet
 ```
 
-For a native download, enter its extracted `yano-native-0.1.0-pre15-<platform>` directory and run the same `./yano.sh start:devnet` command. The launcher selects the packaged binary automatically.
+For a native download, enter its extracted `yano-native-<version>-<platform>` directory and run the same `./yano.sh start:devnet` command. The launcher selects the packaged binary automatically.
 
 Keep this terminal running. The default REST port is `7070`; the node-to-node port is `13337`. The local devnet uses network magic `42`.
 

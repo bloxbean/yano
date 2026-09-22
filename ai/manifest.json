@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "https://getyano.dev",
   "version": "0.1.0-pre16",
-  "sourceRevision": "2d29561f2c66b36ea512388043eddb12cc7f2a00",
+  "sourceRevision": "808e1d0848a6dd2959fd6f61dc72d903ff164236",
   "sourceRepository": "https://github.com/bloxbean/yano",
   "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
   "pages": [
@@ -130,7 +130,7 @@
       "description": "Manage a native devnet process from JavaScript tests.",
       "url": "https://getyano.dev/develop/javascript-testkit/",
       "markdown": "https://getyano.dev/ai/pages/develop/javascript-testkit.md",
-      "sha256": "df23a14b69edb7bc115347e347173d7a426b7f47fce92852dc3a29d0b1de1b7e"
+      "sha256": "936731ab99ea433d54402154574f5c389204e79b94bf309a99d55b0788e044ff"
     },
     {
       "title": "Snapshots, rollback & time",
@@ -235,7 +235,7 @@
       "description": "Active packaged configuration values and declared property keys, generated from source.",
       "url": "https://getyano.dev/reference/configuration-catalog/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
-      "sha256": "84053e2be98f7980014c61ce09bbbcee156d4d2fdc99f589b7bf9a3abce7a3b7"
+      "sha256": "3232a4c2eeee711ac5aca77eaf75d6a3c0f478be081b6ec30f7332fc7d3b3d83"
     },
     {
       "title": "Configuration guide",
@@ -256,7 +256,7 @@
       "description": "Lifecycle, helper APIs, and native process options for JavaScript.",
       "url": "https://getyano.dev/reference/javascript/",
       "markdown": "https://getyano.dev/ai/pages/reference/javascript.md",
-      "sha256": "69c5e5f0269b7ffb9e66813b246f618bd1576592091ce7721d13f8a6fe66bacb"
+      "sha256": "e3d0d0c3b476cffdd9ae4d9264b30aa8a13ee0e5fd0bae98848a51edc8700bdb"
     },
     {
       "title": "Plugin query & domain APIs",
@@ -284,7 +284,7 @@
       "description": "Choose and run a JVM or platform-specific Yano release.",
       "url": "https://getyano.dev/start/installation/",
       "markdown": "https://getyano.dev/ai/pages/start/installation.md",
-      "sha256": "21192811d9d23b486ab6e999dc7b58d2cb1964c8aa831c86c4f09bca3e98aea7"
+      "sha256": "5bbe17ba7448019cba7bac40262c40ea9c01f90409ff40e01c105512428d9e2d"
     },
     {
       "title": "What is Yano?",
@@ -298,7 +298,7 @@
       "description": "Download Yano and start a local Cardano development network.",
       "url": "https://getyano.dev/start/quickstart/",
       "markdown": "https://getyano.dev/ai/pages/start/quickstart.md",
-      "sha256": "57aca76ce6756c775d27ca5186df8bb1a456f636d7ddc814561011ba4b83f33b"
+      "sha256": "36a464fd63ff2ca1f9d06daa950bd339d2aac43390ed752b55f606efab379fb0"
     },
     {
       "title": "Choose a runtime profile",
@@ -315,7 +315,7 @@
     },
     {
       "url": "https://getyano.dev/llms-full.txt",
-      "sha256": "236c019553a3abcbd127cc70d38358526e8d6f8a8f5628d14fabaefd28d306ed"
+      "sha256": "e120f9be92b0b84e23a86ab8512aca346d8ee97742a4a759d75284db55aa0db9"
     },
     {
       "url": "https://getyano.dev/ai/agent-instructions.md",
@@ -323,11 +323,11 @@
     },
     {
       "url": "https://getyano.dev/ai/configuration.json",
-      "sha256": "182be335cbcea6820f5d5fc71bd9a72ff4699cd534c9297d3008ba0f74dfd282"
+      "sha256": "5506b0ce2256ac456506369a9f7de7fd0b9c6ed9eb3659f6ff501589bcbc6e5b"
     },
     {
       "url": "https://getyano.dev/ai/routes.json",
-      "sha256": "3ae87e13016644a4ecf2045c312f839e3ab07045b7653873755b3dc16ed853ef"
+      "sha256": "0e0b328ca810a1076937eb2bb558a5c779477ff6d7669b56160f604c6054f4c4"
     }
   ]
 }
