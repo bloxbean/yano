@@ -44,6 +44,10 @@ Examples:
   ./yano.sh start:preview
   ./yano.sh start:sanchonet
   ./yano.sh start:devnet
+  BLOCKFROST_API_KEY=... ./yano.sh start:preprod,bootstrap
+  ./yano.sh start:preprod,pruned
+  YANO_FILTERS_UTXO_ADDRESSES=addr_test1... \
+      ./yano.sh start:preprod,selective-utxo
   ./yano.sh start:mydevnet
   ./yano.sh appchain config validate --mode template \\
       --template-contract builtin:cluster config/application-appchain.yml
@@ -229,6 +233,36 @@ validate_profile_list() {
     done
 }
 
+profile_selected() {
+    case ",${PROFILE}," in
+        *",$1,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+reject_profile_pair() {
+    local first="$1"
+    local second="$2"
+    local reason="$3"
+    if profile_selected "$first" && profile_selected "$second"; then
+        echo "Error: profiles '$first' and '$second' cannot be combined: $reason" >&2
+        exit 1
+    fi
+}
+
+validate_profile_compatibility() {
+    reject_profile_pair bootstrap devnet \
+        "bootstrap partial state cannot produce blocks"
+    reject_profile_pair bootstrap devnet-slotleader \
+        "bootstrap partial state cannot produce blocks"
+    reject_profile_pair bootstrap projection \
+        "projection history must be captured from genesis"
+    reject_profile_pair selective-utxo wallet \
+        "wallet indexes require complete, unfiltered UTXO storage"
+    reject_profile_pair pruned wallet \
+        "wallet scans require retained historical block bodies"
+}
+
 if [ "$#" -eq 0 ]; then
     usage
     exit 0
@@ -304,6 +338,7 @@ done
 PROFILE_PROP=""
 if [ -n "$PROFILE" ]; then
     validate_profile_list "$PROFILE"
+    validate_profile_compatibility
     PROFILE_PROP="-Dquarkus.profile=${PROFILE}"
 fi
 

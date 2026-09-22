@@ -6,7 +6,6 @@ yano:
     enabled: true
   server:
     enabled: true
-    port: 13337
   relay:
     auto-discovery: true
     advertised-host: auto

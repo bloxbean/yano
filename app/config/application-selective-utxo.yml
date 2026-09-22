@@ -1,0 +1,38 @@
+# Selective UTXO storage profile for application-specific nodes.
+# Compose after a network profile, then configure at least one address or
+# payment credential below (or through YANO_FILTERS_UTXO_ADDRESSES /
+# YANO_FILTERS_UTXO_PAYMENT_CREDENTIALS) and set enabled to true (or export
+# YANO_FILTERS_UTXO_ENABLED=true). It is deliberately disabled as shipped
+# because an enabled filter with no selectors is equivalent to no filtering.
+#
+# This creates intentionally partial UTXO state. Use a fresh, dedicated
+# yano.storage.path. Disabling the filter later does not reconstruct omitted
+# outputs; restoring complete UTXO state requires a full resync. Do not combine
+# with the wallet profile or any feature requiring complete network-wide UTXOs.
+
+yano:
+  filters:
+    utxo:
+      enabled: false
+      addresses: []
+      # Example:
+      # addresses:
+      #   - addr_test1...
+      payment-credentials: []
+      # Example (28-byte credential hash):
+      # payment-credentials:
+      #   - 6313d841f3e1d906d5a87ed9104739748a13e50cd23bf103d4883cee
+
+  # Complete network-wide UTXO balances and calculations derived from them are
+  # not available. Certificate/account tracking and epoch-parameter tracking
+  # can remain enabled because this profile still replays blocks from genesis.
+  account:
+    stake-balance-index-enabled: false
+  epoch-snapshot:
+    amounts-enabled: false
+  adapot:
+    enabled: false
+  rewards:
+    enabled: false
+  governance:
+    enabled: false

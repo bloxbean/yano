@@ -1,0 +1,29 @@
+# Bootstrap partial-state profile for a lightweight transaction-submission node.
+# Compose after a public-network profile, for example:
+#   BLOCKFROST_API_KEY=... ./yano.sh start:preprod,bootstrap
+#
+# Bootstrap starts from a recent canonical block instead of replaying from
+# genesis. Use a new/empty yano.storage.path. The resulting node has partial
+# history and cannot be combined with block production or projection history.
+# Derived ledger-state services that require genesis-complete history are
+# disabled automatically while bootstrap mode is active.
+
+yano:
+  bootstrap:
+    enabled: true
+    # -1 resolves to a recent provider tip suitable for forward synchronization.
+    block-number: ${YANO_BOOTSTRAP_BLOCK_NUMBER:-1}
+    provider: ${YANO_BOOTSTRAP_PROVIDER:blockfrost} # blockfrost | koios
+
+    # Configure at least one address and/or explicit UTXO when initial UTXO
+    # state is required. Addresses may be payment or stake addresses.
+    # addresses:
+    #   - addr_test1qz...
+    # utxos:
+    #   - "abc123...def#0"
+
+    blockfrost:
+      api-key: ${BLOCKFROST_API_KEY:}
+      # base-url: "" # Auto-detected from yano.network when omitted.
+    # koios:
+    #   base-url: "" # Auto-detected from yano.network when omitted.
