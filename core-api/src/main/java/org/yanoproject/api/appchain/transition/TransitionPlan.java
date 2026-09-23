@@ -18,18 +18,25 @@ public record TransitionPlan(
         List<StateMutation> mutations,
         List<EffectIntent> effects,
         List<StateMutation> consumptions,
-        List<StateMutation> receipts
+        List<StateMutation> receipts,
+        List<TransitionEvent> events
 ) {
     public static final int MAX_STATE_OPERATIONS = 32_768;
     public static final int MAX_EFFECTS = 1_048_576;
     public static final int MAX_KEY_BYTES = 4_096;
     public static final int MAX_VALUE_BYTES = 1_048_576;
+    public static final int MAX_EVENTS_PER_PLAN = 256;
+    public static final int MAX_EVENT_PAYLOAD_BYTES = TransitionEvent.MAX_PAYLOAD_BYTES;
 
     public TransitionPlan {
         mutations = immutableMutations(mutations, "mutations");
         consumptions = immutableMutations(consumptions, "consumptions");
         receipts = immutableMutations(receipts, "receipts");
         effects = effects == null ? List.of() : List.copyOf(effects);
+        events = events == null ? List.of() : List.copyOf(events);
+        if (events.size() > MAX_EVENTS_PER_PLAN) {
+            throw new IllegalArgumentException("transition plan exceeds event limit");
+        }
         int stateOperations = mutations.size() + consumptions.size() + receipts.size();
         if (stateOperations > MAX_STATE_OPERATIONS) {
             throw new IllegalArgumentException("transition plan exceeds state-operation limit");
@@ -47,6 +54,17 @@ public record TransitionPlan(
                 throw new IllegalArgumentException("transition plan contains a duplicate state key");
             }
         }
+    }
+
+    public TransitionPlan(List<StateMutation> mutations, List<EffectIntent> effects,
+                          List<StateMutation> consumptions, List<StateMutation> receipts) {
+        this(mutations, effects, consumptions, receipts, List.of());
+    }
+
+    public static TransitionPlan of(List<StateMutation> mutations, List<EffectIntent> effects,
+                                    List<StateMutation> consumptions, List<StateMutation> receipts,
+                                    List<TransitionEvent> events) {
+        return new TransitionPlan(mutations, effects, consumptions, receipts, events);
     }
 
     public static TransitionPlan mutations(List<StateMutation> mutations) {

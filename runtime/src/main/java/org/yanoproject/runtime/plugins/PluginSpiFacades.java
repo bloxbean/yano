@@ -11,6 +11,16 @@ import org.yanoproject.api.appchain.AppStateMachineContext;
 import org.yanoproject.api.appchain.AppStateMachineProvider;
 import org.yanoproject.api.appchain.AppStateReader;
 import org.yanoproject.api.appchain.AppStateWriter;
+import org.yanoproject.api.appchain.codec.MessageCodec;
+import org.yanoproject.api.appchain.transition.CommandDescriptor;
+import org.yanoproject.api.appchain.transition.ConfigurationDescriptor;
+import org.yanoproject.api.appchain.transition.EventDescriptor;
+import org.yanoproject.api.appchain.transition.TransitionContext;
+import org.yanoproject.api.appchain.transition.TransitionDecision;
+import org.yanoproject.api.appchain.transition.TransitionKernel;
+import org.yanoproject.api.appchain.transition.TransitionWorkBudget;
+import org.yanoproject.api.appchain.transition.TransitionWorkReference;
+import org.yanoproject.api.appchain.transition.TransitionWorkRequest;
 import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidator;
 import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import org.yanoproject.api.appchain.authmap.ValidatorInitContext;
@@ -93,6 +103,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -1320,6 +1331,73 @@ final class PluginSpiFacades {
         }
     }
 
+    private record KernelFacade<C, F>(TransitionKernel<C, F> delegate,
+                                       ClassLoader loader, CallbackTracker callbacks)
+            implements TransitionKernel<C, F> {
+        @Override public MessageCodec<C> codec() {
+            MessageCodec<C> codec = pluginCall(callbacks, loader, delegate::codec);
+            return new MessageCodec<>() {
+                @Override public byte[] encode(C value) {
+                    return pluginCall(callbacks, loader, () -> codec.encode(value)).clone();
+                }
+                @Override public C decode(byte[] body) {
+                    byte[] input = body.clone();
+                    return pluginCall(callbacks, loader, () -> codec.decode(input));
+                }
+                @Override public Class<C> type() { return pluginCall(callbacks, loader, codec::type); }
+            };
+        }
+        @Override public AppStateMachine.AdmissionResult admit(C command) {
+            return pluginCall(callbacks, loader, () -> delegate.admit(command));
+        }
+        @Override public AppStateMachine.AdmissionResult admit(C command, TransitionContext context) {
+            return pluginCall(callbacks, loader, () -> delegate.admit(command, context));
+        }
+        @Override public F facts(C command, TransitionContext context, AppStateReader state) {
+            return pluginCall(callbacks, loader, () -> delegate.facts(command, context, state));
+        }
+        @Override public List<String> readParticipants() {
+            return snapshotList(pluginCall(callbacks, loader, delegate::readParticipants), loader, callbacks,
+                    256, "too many kernel read participants");
+        }
+        @Override public List<TransitionWorkBudget> workBudgets() {
+            return snapshotList(pluginCall(callbacks, loader, delegate::workBudgets), loader, callbacks,
+                    TransitionWorkBudget.MAX_DECLARATIONS, "too many kernel work budgets");
+        }
+        @Override public List<TransitionWorkReference> workReferences() {
+            return snapshotList(pluginCall(callbacks, loader, delegate::workReferences), loader, callbacks,
+                    TransitionWorkBudget.MAX_DECLARATIONS, "too many kernel work references");
+        }
+        @Override public Optional<TransitionWorkRequest> workRequest(C command, TransitionContext context) {
+            return Objects.requireNonNull(pluginCall(callbacks, loader,
+                    () -> delegate.workRequest(command, context)), "kernel work request must not return null");
+        }
+        @Override public F facts(C command, TransitionContext context, AppStateReader state,
+                                 Map<String, AppStateReader> participants) {
+            Map<String, AppStateReader> views = Map.copyOf(participants);
+            return pluginCall(callbacks, loader, () -> delegate.facts(command, context, state, views));
+        }
+        @Override public TransitionDecision decide(C command, TransitionContext context, F facts) {
+            return pluginCall(callbacks, loader, () -> delegate.decide(command, context, facts));
+        }
+        @Override public List<CommandDescriptor> commands() {
+            return snapshotList(pluginCall(callbacks, loader, delegate::commands), loader, callbacks,
+                    256, "too many kernel commands");
+        }
+        @Override public List<EventDescriptor> events() {
+            return snapshotList(pluginCall(callbacks, loader, delegate::events), loader, callbacks,
+                    256, "too many kernel event descriptors");
+        }
+        @Override public ConfigurationDescriptor configuration() {
+            return pluginCall(callbacks, loader, delegate::configuration);
+        }
+        @Override public byte[] lookupKey(byte[] logicalKey) {
+            byte[] input = Objects.requireNonNull(logicalKey, "logicalKey").clone();
+            return Objects.requireNonNull(pluginCall(callbacks, loader,
+                    () -> delegate.lookupKey(input)), "kernel lookup key must not be null").clone();
+        }
+    }
+
     private record StateMachineFacade(
             AppStateMachine delegate,
             ClassLoader loader,
@@ -1328,6 +1406,12 @@ final class PluginSpiFacades {
     ) implements AppStateMachine {
         private StateMachineFacade {
             Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public Optional<TransitionKernel<?, ?>> transitionKernel() {
+            return pluginCall(callbacks, loader, delegate::transitionKernel)
+                    .map(kernel -> new KernelFacade<>(kernel, loader, callbacks));
         }
 
         @Override

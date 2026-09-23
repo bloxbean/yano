@@ -27,6 +27,46 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AppChainMetricsTest {
 
     @Test
+    void admissionCountersUseOnlyFixedCodesAndSurviveStatusFailure() throws Exception {
+        String prose = "private payload / token=secret\ninvalid field";
+        AtomicBoolean fail = new AtomicBoolean();
+        AppChainGateway gateway = gateway("chain-admission", Map::of, () -> {
+            if (fail.get()) throw new IllegalStateException("private callback exception");
+            return Map.of(
+                    "admissionRejections", Map.of("APPLICATION_REJECTED", 1L,
+                            prose, 100L, "PLUGIN_CHOSEN_SYMBOL", 200L),
+                    "admissionUnavailable", Map.of("CALLBACK_FAILED", 2L, "STATE_UNAVAILABLE", 3L,
+                            prose, 400L));
+        });
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        try {
+            AppChainMetrics metrics = metrics(registry, gateway);
+            metrics.onStart(null);
+            try {
+                var rejected = registry.get("yano.appchain.admission.rejected")
+                        .tags("chain", "chain-admission", "code", "APPLICATION_REJECTED").functionCounter();
+                assertEquals(1d, rejected.count());
+                assertEquals(1, registry.find("yano.appchain.admission.rejected").functionCounters().size());
+                assertEquals(2, registry.find("yano.appchain.admission.unavailable").functionCounters().size());
+                assertEquals(2d, registry.get("yano.appchain.admission.unavailable")
+                        .tags("chain", "chain-admission", "code", "CALLBACK_FAILED").functionCounter().count());
+                assertEquals(3d, registry.get("yano.appchain.admission.unavailable")
+                        .tags("chain", "chain-admission", "code", "STATE_UNAVAILABLE").functionCounter().count());
+                assertTrue(registry.getMeters().stream().flatMap(meter -> meter.getId().getTags().stream())
+                        .noneMatch(tag -> tag.getValue().equals(prose)
+                                || tag.getValue().equals("PLUGIN_CHOSEN_SYMBOL")));
+                fail.set(true);
+                Thread.sleep(1_050);
+                assertEquals(1d, rejected.count());
+            } finally {
+                metrics.onStop(null);
+            }
+        } finally {
+            registry.close();
+        }
+    }
+
+    @Test
     void exposesBoundedProfileVersionRetentionAndLosslessRootWords() {
         byte[] root = new byte[32];
         root[0] = (byte) 0xff;
@@ -378,17 +418,20 @@ class AppChainMetricsTest {
 
     private static AppChainGateway gateway(String chainId,
                                            Supplier<Map<String, Object>> effectStats) {
+        return gateway(chainId, effectStats, () -> Map.of(
+                "poolSize", 0, "peers", Map.of(), "drops", Map.of(), "stalled", false));
+    }
+
+    private static AppChainGateway gateway(String chainId,
+                                           Supplier<Map<String, Object>> effectStats,
+                                           Supplier<Map<String, Object>> status) {
         return (AppChainGateway) Proxy.newProxyInstance(
                 AppChainGateway.class.getClassLoader(),
                 new Class<?>[]{AppChainGateway.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "chainId" -> chainId;
                     case "tipHeight" -> 0L;
-                    case "status" -> Map.of(
-                            "poolSize", 0,
-                            "peers", Map.of(),
-                            "drops", Map.of(),
-                            "stalled", false);
+                    case "status" -> status.get();
                     case "effectStats" -> effectStats.get();
                     case "subscribeFinalized" -> (AutoCloseable) () -> { };
                     case "toString" -> "TestAppChainGateway[" + chainId + "]";

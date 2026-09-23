@@ -21,10 +21,16 @@ public interface AppChainGateway {
 
     /**
      * Sign and submit an opaque message body for diffusion to the app group.
+     * When sequencing is enabled, local application admission uses the next candidate height and a coherent
+     * committed-state snapshot before retaining or relaying the message. An
+     * accepted ID is not a guarantee of inclusion or application success: the
+     * eventual candidate rechecks admission and application execution may fail.
      *
      * @param topic sub-stream within the chain; null or "" = default topic
      * @param body  opaque application payload
      * @return the content-derived message id (hex)
+     * @throws AppSubmissionRejectedException if local application admission rejects the message
+     * @throws PoolFullException if the local pending pool cannot retain the message
      */
     String submit(String topic, byte[] body);
 

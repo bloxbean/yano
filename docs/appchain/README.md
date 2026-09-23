@@ -8,6 +8,7 @@ anchoring remain part of Yano so they can be built and qualified for GraalVM.
 Start with:
 
 - [App-chain consensus and state-machine internals](../APP_CHAIN_CONSENSUS_GUIDE.md)
+- [Message submission and HTTP outcomes](submission.md)
 - [Plugin query and domain API contract](../APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md)
 - [Plugin operations](../PLUGIN_OPERATIONS.md)
 - [Certified observations (preview)](observations.md)

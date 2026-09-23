@@ -32,6 +32,7 @@ import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.state.StateSnapshot;
 import org.yanoproject.api.appchain.transition.FinalizedMessageIndex;
+import org.yanoproject.api.appchain.transition.TransitionKernel;
 import org.yanoproject.api.appchain.transition.FinalizedMessageIndexedStateMachine;
 import org.yanoproject.api.appchain.transition.FinalizedBlockMessageRootIndexedStateMachine;
 import org.yanoproject.api.appchain.transition.FinalizedBlockMessageRootIndex;
@@ -184,6 +185,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final AtomicLong relayedCount = new AtomicLong();
     private final AtomicLong submittedCount = new AtomicLong();
     private final AtomicLong duplicateCount = new AtomicLong();
+
+    /** Host-owned local admission totals; plugin reasons never become metric keys. */
+    private final AtomicLong admissionRejectedCount = new AtomicLong();
+    private final AtomicLong admissionFailedCount = new AtomicLong();
+    private final AtomicLong admissionUnavailableCount = new AtomicLong();
 
     // Drop accounting by reason (ADR 008.1 I1.1) — surfaced in status() and metrics
     private final java.util.concurrent.ConcurrentHashMap<String, AtomicLong> dropCounters =
@@ -563,6 +569,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                     return config.pluginSettings();
                                 }
                                 @Override
+                                public Optional<AppStateMachineResolver> stateMachineResolver() {
+                                    return Optional.of((id, childContext) -> resolveStateMachine(
+                                            id, pluginProviders, childContext, log));
+                                }
+                                @Override
                                 public Optional<AppChainConsensusProfile> consensusProfile() {
                                     return Optional.of(AppChainSubsystem.this.consensusProfile);
                                 }
@@ -864,6 +875,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private static AppStateMachine startupMarkedStateMachine(AppStateMachine delegate, String id) {
         return new AppStateMachine() {
+            @Override
+            public Optional<TransitionKernel<?, ?>> transitionKernel() {
+                return delegate.transitionKernel();
+            }
+
             @Override
             public String id() {
                 return id;
@@ -2012,6 +2028,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // Admit locally BEFORE diffusing — a message this node cannot hold must
         // not be half-way into the network with an "accepted" id (ADR 008.1 I1.1)
         AppMessage message = buildSigned(effectiveTopic, body, config.defaultTtlSeconds());
+        validateLocalSubmission(message);
         AppMsgPool.AddResult added = pool.add(message);
         if (added == AppMsgPool.AddResult.FULL) {
             countDrop("pool_full");
@@ -2024,6 +2041,50 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         log.info("App message submitted: id={}, chain={}, topic={}, seq={}",
                 message.getMessageIdHex(), config.chainId(), effectiveTopic, message.getSenderSeq());
         return message.getMessageIdHex();
+    }
+
+    /**
+     * Check the next candidate against one coherent finalized height/root pair.
+     * Historical root reads remain stable if another block commits meanwhile;
+     * proposal selection must still revalidate against its actual predecessor.
+     * The caller holds a generation lease for the complete callback lifetime.
+     */
+    private void validateLocalSubmission(AppMessage message) {
+        // The supported diffusion-only mode has no ledger, candidate block, or
+        // application execution. Do not invent a genesis snapshot for that mode.
+        if (!config.sequencingEnabled()) {
+            return;
+        }
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) {
+            admissionUnavailableCount.incrementAndGet();
+            throw new IllegalStateException("App-chain application admission is unavailable");
+        }
+        AppLedgerStore.CommittedStateSnapshot snapshot = currentLedger.captureCommittedState();
+        ExpiringQueryContext context = new ExpiringQueryContext(
+                currentLedger, snapshot.height(), snapshot.stateRoot(), null);
+        AppStateMachine.AdmissionResult result;
+        try {
+            result = stateMachine.validateForBlock(message, Math.addExact(snapshot.height(), 1L), context);
+            if (result == null) {
+                throw new IllegalStateException("Invalid admission result");
+            }
+        } catch (Throwable failure) {
+            LifecycleFailures.rethrowIfProcessFatalReachable(failure);
+            admissionFailedCount.incrementAndGet();
+            // Never forward an arbitrary plugin exception or its message to REST.
+            AdmissionDiagnostics.INSTANCE.failed(snapshot.height() + 1L, failure);
+            throw new IllegalStateException("App-chain application admission is unavailable");
+        } finally {
+            context.expire();
+        }
+        if (!result.isAccepted()) {
+            // Count only here: proposal validation and REST exception mapping
+            // must not count the same local admission decision again.
+            admissionRejectedCount.incrementAndGet();
+            AdmissionDiagnostics.INSTANCE.rejected(snapshot.height() + 1L, result.reason());
+            throw new AppSubmissionRejectedException(result.reason());
+        }
     }
 
     private static boolean validTopic(String topic) {
@@ -4068,6 +4129,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             drops.put(dropEntry.getKey(), dropEntry.getValue().get());
         }
         status.put("drops", drops);
+        status.put("admissionRejections", Map.of(
+                "APPLICATION_REJECTED", admissionRejectedCount.get()));
+        status.put("admissionUnavailable", Map.of(
+                "CALLBACK_FAILED", admissionFailedCount.get(),
+                "STATE_UNAVAILABLE", admissionUnavailableCount.get()));
         if (config.l1StabilityDepth() > 0) {
             status.put("l1RefDeferrals", l1RefDeferrals.get());
         }

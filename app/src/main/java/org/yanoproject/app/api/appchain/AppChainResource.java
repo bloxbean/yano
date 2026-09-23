@@ -6,6 +6,7 @@ import org.yanoproject.api.appchain.AppBlockHeader;
 import org.yanoproject.api.appchain.AppChainGateway;
 import org.yanoproject.api.appchain.AppChainGateways;
 import org.yanoproject.api.appchain.AppQueryPath;
+import org.yanoproject.api.appchain.AppSubmissionRejectedException;
 import org.yanoproject.api.appchain.ReceivedAppMessage;
 import org.yanoproject.api.appchain.PoolFullException;
 import org.yanoproject.api.appchain.observation.ObservationReport;
@@ -612,6 +613,9 @@ public class AppChainResource {
                 result.put("chainId", gateway.chainId());
                 result.put("topic", request.topic() != null ? request.topic() : "");
                 return Response.accepted(result).build();
+            } catch (AppSubmissionRejectedException e) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity(Map.of("code", e.code())).build();
             } catch (org.yanoproject.api.appchain.PoolFullException e) {
                 // Backpressure (ADR 008.1 I1.1): the message was NOT retained/relayed
                 return Response.status(429)

@@ -63,11 +63,13 @@ Code pointers use class names — start at
 submit (REST / SDK / gossip)
   → envelope auth: member Ed25519 signature, message-id integrity
   → transport limits: size (chain max-message-bytes), TTL cap
-  → state machine validate()      ← application admission (reject = 400)
+  → local sequenced submission: validateForBlock(next height, committed snapshot)
+                                 ← declared application rejection = 400
   → pool (backpressure: full pool = 429 + counted gossip drops)
   → gossip to app peers (dedup by message-id)
   → proposer selects into a block  (drops: finalized dupes, stale
-     sender-seqs, machine-rejected; ~system topics bypass validate)
+     sender-seqs, machine-rejected; revalidates at actual candidate height/state;
+     ~system topics bypass ordinary application admission)
   → consensus round (§4)          ← the only place messages become canonical
   → finalized: indexed by id/topic/sender, applied to state, streamed to
      SSE/webhooks/Kafka, provable via MPF, eventually anchored to L1
@@ -77,6 +79,13 @@ Two distinct rejection tiers exist by design (§8.2): *admission* keeps junk
 out of blocks (node-local, fast, can be re-tried), while *apply* is
 consensus-enforced and never rejects — a finalized message that violates a
 business rule is a **deterministic no-op** on every member.
+
+The early application callback applies to local submissions on every sequenced
+machine, not inbound gossip or explicit diffusion-only mode. **202** is only a
+local acceptance acknowledgement; unexpected callback failures produce generic
+**503**, and full-pool submissions remain **429**. See the
+[submission API contract](appchain/submission.md) for safe rejection codes,
+snapshot lifetime, and retry semantics.
 
 ## 3. Block anatomy
 
