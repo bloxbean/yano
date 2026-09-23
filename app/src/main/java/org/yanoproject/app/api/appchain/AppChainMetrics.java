@@ -50,6 +50,8 @@ import java.util.concurrent.TimeUnit;
  *   yano_appchain_composite_governance_proposal_state{chain} gauge
  *   yano_appchain_composite_governance_local_ready{chain} gauge
  *   yano_appchain_messages_dropped_total{chain,reason} counter (pool_full, stale_seq, ...)
+ *   yano_appchain_admission_rejected_total{chain,code} function counter (APPLICATION_REJECTED)
+ *   yano_appchain_admission_unavailable_total{chain,code} function counter (CALLBACK_FAILED, STATE_UNAVAILABLE)
  *   yano_appchain_blocks_finalized_total     counter
  *   yano_appchain_messages_finalized_total   counter
  *   yano_appchain_block_interval_seconds     timer (time between finalized blocks)
@@ -244,6 +246,10 @@ public class AppChainMetrics {
                     .description("Messages dropped before sequencing, by reason")
                     .register(registry);
         }
+        registerAdmissionCounter(chain, snapshot, "rejected", "admissionRejections", "APPLICATION_REJECTED");
+        registerAdmissionCounter(chain, snapshot, "unavailable", "admissionUnavailable", "CALLBACK_FAILED");
+        registerAdmissionCounter(chain, snapshot, "unavailable", "admissionUnavailable", "STATE_UNAVAILABLE");
+
         // Per-sink lag gauges for sinks known at startup (config-defined)
         Object sinks = snapshot.get().get("sinks");
         if (sinks instanceof Map<?, ?> sinkMap) {
@@ -283,6 +289,16 @@ public class AppChainMetrics {
             }
         });
         log.infof("App-chain metrics registered for chain '%s'", chain);
+    }
+
+    /** Registers only host-defined codes; neither status keys nor plugin prose create tags. */
+    private void registerAdmissionCounter(String chain, StatusSnapshot snapshot,
+                                          String outcome, String statusKey, String code) {
+        FunctionCounter.builder("yano.appchain.admission." + outcome, snapshot,
+                        s -> s.admissionTotal(statusKey, code))
+                .tags("chain", chain, "code", code)
+                .description("Local application admission " + outcome + " decisions before pool retention")
+                .register(registry);
     }
 
     private void registerStateCommitmentMetrics(
@@ -519,6 +535,9 @@ public class AppChainMetrics {
         private volatile Map<String, Object> cached = Map.of();
         private volatile long cachedAt;
 
+        /** Three fixed series retain their last total across missing or failed status reads. */
+        private final Map<String, Double> admissionTotals = new ConcurrentHashMap<>();
+
         StatusSnapshot(AppChainGateway gateway) {
             this.gateway = gateway;
         }
@@ -534,6 +553,13 @@ public class AppChainMetrics {
                 cachedAt = now;
             }
             return cached;
+        }
+
+        /** Cumulative admission counters never fall to zero on an observability failure. */
+        double admissionTotal(String statusKey, String code) {
+            double current = nested(statusKey, code);
+            return admissionTotals.merge(code, Double.isFinite(current) ? Math.max(0d, current) : 0d,
+                    Math::max);
         }
 
         double number(String key) {

@@ -1,6 +1,9 @@
 package org.yanoproject.api.appchain.transition;
 
 import org.junit.jupiter.api.Test;
+import org.yanoproject.api.appchain.AppStateMachine.AdmissionResult;
+import org.yanoproject.api.appchain.AppStateReader;
+import org.yanoproject.api.appchain.codec.MessageCodec;
 
 import java.util.Collections;
 import java.util.HexFormat;
@@ -11,6 +14,44 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TransitionKernelTest {
+    @Test
+    void contextualAdmissionDelegatesToCommandOnlyChecks() {
+        TransitionKernel<byte[], Boolean> kernel = new TestKernel() {
+            @Override public AdmissionResult admit(byte[] command) {
+                return command[0] == 0 ? AdmissionResult.reject("INVALID_COMMAND") : AdmissionResult.accept();
+            }
+        };
+        var context = new TransitionContext(7, 0, 0, new byte[32], "test", new byte[32]);
+        assertThat(kernel.admit(new byte[]{1}).isAccepted()).isTrue();
+        assertThat(kernel.admit(new byte[]{1}, context).isAccepted()).isTrue();
+        assertThat(kernel.admit(new byte[]{0}, context).reason()).isEqualTo("INVALID_COMMAND");
+    }
+
+    @Test
+    void commandOnlyAdmissionNeverInvokesContextualOverride() {
+        TransitionKernel<byte[], Boolean> kernel = new TestKernel() {
+            @Override public AdmissionResult admit(byte[] command, TransitionContext context) {
+                throw new AssertionError("context must not be fabricated");
+            }
+        };
+        assertThat(kernel.admit(new byte[]{1}).isAccepted()).isTrue();
+    }
+
+    /** Minimal kernel fixture: only admission behavior varies between the tests. */
+    private abstract static class TestKernel implements TransitionKernel<byte[], Boolean> {
+        private final OrderedLogKernel delegate = new OrderedLogKernel();
+        @Override public MessageCodec<byte[]> codec() { return delegate.codec(); }
+        @Override public Boolean facts(byte[] command, TransitionContext context, AppStateReader state) {
+            return true;
+        }
+        @Override public TransitionDecision decide(byte[] command, TransitionContext context, Boolean facts) {
+            return delegate.decide(command, context, facts);
+        }
+        @Override public List<CommandDescriptor> commands() { return delegate.commands(); }
+        @Override public List<EventDescriptor> events() { return delegate.events(); }
+        @Override public ConfigurationDescriptor configuration() { return delegate.configuration(); }
+    }
+
     @Test
     void eventsHaveCanonicalScalarPayloadsAndDefensiveCopies() {
         byte[] payload = TransitionScalars.encode(Map.of("x", 1L));

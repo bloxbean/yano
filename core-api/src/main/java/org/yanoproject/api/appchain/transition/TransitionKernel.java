@@ -25,9 +25,30 @@ public interface TransitionKernel<C, F> extends TransitionCapability<C, F> {
     /** Returns the command wire codec; derived commands undergo the same decoding as external commands. */
     MessageCodec<C> codec();
 
-    /** Performs state-independent admission before facts are read; acceptance does not guarantee approval. */
-    default AdmissionResult admit(C command, TransitionContext context) {
+    /**
+     * Performs cheap, pure admission using only the decoded command and immutable kernel configuration.
+     * Local ingress may invoke this callback without an execution height, sender context, or state reader.
+     * Implementations must not infer missing execution identity, perform I/O, or make authorization decisions
+     * that require execution facts. Acceptance is not authorization and does not guarantee approval.
+     *
+     * @param command decoded command, subject to the same codec as execution
+     * @return a non-null admission result; a rejection should use a bounded symbolic reason code
+     */
+    default AdmissionResult admit(C command) {
         return AdmissionResult.accept();
+    }
+
+    /**
+     * Performs execution-context admission before facts are read. The default delegates to command-only
+     * admission; overrides should preserve those checks before adding deterministic context checks.
+     * This callback is not a substitute for authorization in the decision function.
+     *
+     * @param command decoded command
+     * @param context real deterministic execution identity, never a fabricated local-admission context
+     * @return a non-null admission result; acceptance does not guarantee approval
+     */
+    default AdmissionResult admit(C command, TransitionContext context) {
+        return admit(command);
     }
 
     /**

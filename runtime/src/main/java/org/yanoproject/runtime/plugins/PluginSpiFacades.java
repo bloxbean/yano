@@ -1347,6 +1347,9 @@ final class PluginSpiFacades {
                 @Override public Class<C> type() { return pluginCall(callbacks, loader, codec::type); }
             };
         }
+        @Override public AppStateMachine.AdmissionResult admit(C command) {
+            return pluginCall(callbacks, loader, () -> delegate.admit(command));
+        }
         @Override public AppStateMachine.AdmissionResult admit(C command, TransitionContext context) {
             return pluginCall(callbacks, loader, () -> delegate.admit(command, context));
         }

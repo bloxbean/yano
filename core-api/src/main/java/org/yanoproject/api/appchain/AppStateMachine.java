@@ -58,10 +58,13 @@ public interface AppStateMachine {
     /**
      * Height- and state-aware mempool admission for the next candidate block.
      * <p>
-     * The runtime invokes this overload while selecting a proposal, with the
+     * The runtime invokes this overload before pooling local submissions and
+     * again while selecting a proposal, with the
      * committed state at {@code candidateHeight - 1}. Versioned state machines
      * should override it when the valid topic or payload set changes at an
-     * activation height.
+     * activation height. Local admission is advisory: a subsequent candidate
+     * may see different state. Implementations must be side-effect free and
+     * safe for concurrent invocation, and must not retain the supplied reader.
      */
     default AdmissionResult validateForBlock(
             AppMessage message,

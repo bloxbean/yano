@@ -2711,6 +2711,9 @@ class PluginTcclBoundaryTest {
         assertThat(kernel.codec().encode(command)).containsExactly(1);
         assertThat(kernel.codec().type()).isEqualTo(byte[].class);
         var context = new TransitionContext(1, 0, 0, new byte[32], "test", new byte[32]);
+        assertThat(kernel.admit(command).isAccepted()).isTrue();
+        C rejected = kernel.codec().decode(new byte[]{0});
+        assertThat(kernel.admit(rejected).reason()).isEqualTo("COMMAND_REJECTED");
         assertThat(kernel.admit(command, context).isAccepted()).isTrue();
         F facts = kernel.facts(command, context, null);
         assertThat(kernel.readParticipants()).isEmpty();
@@ -2745,6 +2748,10 @@ class PluginTcclBoundaryTest {
                         @Override public byte[] decode(byte[] body) { probe.check(); return body.clone(); }
                         @Override public Class<byte[]> type() { probe.check(); return byte[].class; }
                     };
+                }
+                @Override public AdmissionResult admit(byte[] command) {
+                    probe.check();
+                    return command[0] == 0 ? AdmissionResult.reject("COMMAND_REJECTED") : AdmissionResult.accept();
                 }
                 @Override public AdmissionResult admit(byte[] command, TransitionContext context) {
                     probe.check();
