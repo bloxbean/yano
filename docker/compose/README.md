@@ -77,7 +77,16 @@ To inspect the resolved compose file for a network:
 
 Runtime environment is in `config/env`.
 
+The complete `config` directory is mounted read-only at `/app/config`. Edits to
+`application.yml` and `application-<profile>.yml`, including newly added custom
+profiles, take effect when the node restarts. This directory replaces the image's
+bundled configuration, so keep the extracted config files together and use a
+distribution compatible with the selected image version.
+
 Network genesis and protocol parameter files are in `config/network`. The compose file mounts this directory to `/app/config/network`, so edits on the host are visible in the container.
+
+This nested network mount is writable: startup can seed missing files and devnet
+can update genesis files without making the application YAML files writable.
 
 The Docker image also contains an immutable copy of the default network files. On startup, Yano seeds any missing files from that default copy. If you accidentally edit or remove a file, delete the host copy and restart Yano to restore the bundled default.
 
@@ -85,6 +94,12 @@ The Docker image also contains an immutable copy of the default network files. O
 `YANO_PROFILE` may be a comma-separated Quarkus profile list such as
 `preprod,relay,praos-lite`; `YANO_NETWORK` remains the first profile, such as
 `preprod`.
+
+The launcher combines `yano.yml` with `yano-<network>.yml` for `mainnet`,
+`preview`, `sanchonet`, and `devnet`. These Compose overrides select network-specific
+state directories; the application settings come from the YAML profiles in
+`config`. Preprod uses the base Compose file. Custom networks use the base file
+with state paths supplied by the launcher.
 
 Each network uses separate L1 and app-chain state directories by default. The launcher creates both selected directories before Docker Compose starts, so they are owned by the user running `yano.sh`:
 

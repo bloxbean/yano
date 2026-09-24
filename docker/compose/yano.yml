@@ -19,7 +19,8 @@ services:
       - ${YANO_APPCHAIN_STATE_PATH:-../appchain-chainstate-preprod}:/app/appchain-chainstate
       - ${YANO_APPCHAIN_INDEXER_PATH:-../appchain-indexers-preprod}:/app/appchain-indexers
       - ../logs:/app/logs
-      - ../config/application.yml:/app/config/application.yml:ro
+      - ../config:/app/config:ro
+      # Network files must remain writable for seeding and devnet genesis updates.
       - ../config/network:/app/config/network
       - ../plugins:/app/plugins
     healthcheck:
