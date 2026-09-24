@@ -6,10 +6,10 @@ sidebar:
 ---
 
 The Yano distribution embeds the unified console. Start Yano and open
-`http://127.0.0.1:7070/ui/`. The node, app-chain, plugin, and observability
+`http://127.0.0.1:7070/ui/`. The node, app ledger, plugin, and observability
 routes are real static paths, so `/ui/status/`, `/ui/app-chain/`,
 `/ui/plugins/`, and `/ui/observability/` can be bookmarked directly, as can the
-app-chain views `/ui/app-chain/authenticated-map/`,
+app ledger views `/ui/app-chain/authenticated-map/`,
 `/ui/app-chain/cardano-history/`, and `/ui/app-chain/eutxo/`.
 
 The connection panel accepts a Yano API base and an optional API key. Keys
@@ -47,12 +47,12 @@ The equivalent environment settings are
 
 Never configure `origins: "*"` when API keys are used. CORS controls which
 browsers may call the node; it does not replace or weaken Yano's API-key
-checks. The fetch-based app-chain stream uses the same CORS and `X-API-Key`
+checks. The fetch-based app ledger stream uses the same CORS and `X-API-Key`
 rules as normal JSON requests.
 
 ## Historical metrics
 
-Without extra services, the node and app-chain charts retain up to one hour
+Without extra services, the node and app ledger charts retain up to one hour
 of bounded history in the current browser tab. This short history survives a
 refresh but is not a monitoring database.
 
@@ -66,7 +66,7 @@ pinned Prometheus companion:
 ./yano.sh observability clean --yes
 ```
 
-`start` discovers a running maintained local app-chain cluster, or defaults
+`start` discovers a running maintained local app ledger cluster, or defaults
 to `http://127.0.0.1:7070`. Repeat `--target <node-origin>` to replace
 discovery. It prints a preconfigured `/ui/observability/?metrics=...` link.
 The default retention is 15 days / 2 GB; `stop` preserves history and only
@@ -82,7 +82,7 @@ is never sent to the node.
 
 ## Capability panels
 
-The App chains page discovers optional capabilities from the selected chain's
+The App ledgers page discovers optional capabilities from the selected chain's
 status and, when authorized, confirms first-party bundles against the plugin
 catalog. It does not assume that every deployment has effects or role-aware
 approvals.
@@ -94,7 +94,7 @@ approvals.
   root-fixed committed-query surface and adds the decoded domain projection
   when available. The committed result remains visible if that convenience
   projection is unavailable.
-- Every running app chain exposes **Operations**, **Capabilities**, and
+- Every running app ledger exposes **Operations**, **Capabilities**, and
   **Proofs**. Proofs is divided into **Message**, **State**, **Import and
   verify**, and **Advanced** workflows. The browser can SHA-256 the exact
   finalized message payload or

@@ -439,7 +439,7 @@
         <div>
           <h2 class="m-0 text-sm font-semibold">Logical snapshot series</h2>
           <p class="mb-0 mt-1 text-xs text-slate-500">
-            Immutable roots remain committed in primary app-chain state; online/archive lifecycle is node-local.
+            Immutable roots remain committed in primary app ledger state; online/archive lifecycle is node-local.
           </p>
         </div>
         <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs"

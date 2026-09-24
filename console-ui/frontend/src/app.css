@@ -1,4 +1,8 @@
 @import "tailwindcss";
+/* Brand fonts, bundled locally so the console works offline (same faces as getyano.dev). */
+@import "@fontsource/space-grotesk/latin-400.css";
+@import "@fontsource/space-grotesk/latin-700.css";
+@import "@fontsource/dm-sans/latin-500.css";
 
 @theme {
   --color-yano-950: #05070f;
