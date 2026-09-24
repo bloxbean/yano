@@ -21,7 +21,11 @@ export default defineConfig({
         { label: 'Start here', items: [{ autogenerate: { directory: 'start' } }] },
         { label: 'Run a data node', items: [{ autogenerate: { directory: 'node' } }] },
         { label: 'Develop & test', items: [{ autogenerate: { directory: 'develop' } }] },
-        { label: 'Build an app chain', items: [{ autogenerate: { directory: 'app-chains' } }] },
+        {
+          label: 'Build an app chain',
+          badge: { text: 'Experimental', variant: 'caution' },
+          items: [{ autogenerate: { directory: 'app-chains' } }],
+        },
         { label: 'Operate & extend', items: [{ autogenerate: { directory: 'operate' } }] },
         { label: 'Reference', items: [{ autogenerate: { directory: 'reference' } }] },
         { label: 'Build with AI', items: [{ autogenerate: { directory: 'ai' } }] },

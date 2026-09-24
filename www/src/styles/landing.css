@@ -1108,3 +1108,22 @@ footer > div > p {
     transition: none !important;
   }
 }
+
+/* Experimental marker for the app-chain feature. */
+.exp-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid rgba(243, 198, 104, 0.55);
+  border-radius: 999px;
+  color: #f3c668;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.satellite .exp-note {
+  color: #f3c668;
+}

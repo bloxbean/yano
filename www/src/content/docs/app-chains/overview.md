@@ -5,9 +5,21 @@ sidebar:
   order: 1
 ---
 
-An app chain is a shared application ledger hosted by Yano. A configured group of members orders messages, executes the same deterministic logic, and certifies the resulting state.
+:::caution[Experimental]
+App chains are experimental. Configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path, and every member of a chain must upgrade together. Don't use app chains to hold value yet.
+:::
+
+An app chain in Yano is a permissioned application ledger: a known group of members orders messages, executes the same deterministic logic, and certifies the resulting state, with proofs and optional anchoring to Cardano.
 
 For example, several organizations can agree on the order of shipment events and later prove that a particular message was recorded. Yano's built-in `ordered-log` provides this shared history without interpreting the payload.
+
+## What an app chain is not
+
+The term "appchain" often means a sovereign blockchain elsewhere. A Yano app chain is narrower:
+
+- It is not a standalone public blockchain. Members are configured; there is no open validator set.
+- It has no native token and no fee market.
+- It is not a Cardano layer 2 secured by L1 consensus. Anchoring records an auditable commitment on Cardano; Cardano does not validate the app chain's state transitions.
 
 ## From message to evidence
 

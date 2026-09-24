@@ -33,6 +33,7 @@ const paths = [
     number: '03',
     title: 'Build your own chain.',
     label: 'App chains',
+    badge: 'Experimental',
     text: 'Start with the JVM release and turn application events into a shared, verifiable history. Begin with an ordered log, then extend the rules.',
     href: '/app-chains/quickstart/',
     cta: 'Create an app chain',
@@ -220,6 +221,7 @@ const features = [
               <div>
                 <small>ORDER & PROVE</small>
                 <strong>App chains</strong>
+                <small class="exp-note">EXPERIMENTAL</small>
               </div>
               <span class="node-light"></span>
             </div>
@@ -289,6 +291,7 @@ const features = [
             >
               <span>{path.number}</span>
               {path.label}
+              {path.badge && <span class="exp-badge">{path.badge}</span>}
               <span class="tab-arrow" aria-hidden="true">
                 ↗
               </span>
@@ -305,7 +308,10 @@ const features = [
             tabindex="0"
           >
             <div class="workflow-copy">
-              <span class="tiny-label">{path.label.toUpperCase()}</span>
+              <span class="tiny-label">
+                {path.label.toUpperCase()}
+                {path.badge && <span class="exp-badge">{path.badge}</span>}
+              </span>
               <h3>{path.title}</h3>
               <p>{path.text}</p>
               <a class="text-link" href={path.href}>

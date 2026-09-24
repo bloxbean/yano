@@ -5,6 +5,10 @@ sidebar:
   order: 2
 ---
 
+:::caution[Experimental]
+App chains are experimental. Configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path. See [what an app chain is and isn't](/app-chains/overview/).
+:::
+
 Download and extract the **[JVM distribution](/start/installation/)**, recommended for app chains for now. From its extracted directory:
 
 ```bash
