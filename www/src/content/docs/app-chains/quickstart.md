@@ -1,21 +1,21 @@
 ---
-title: "Your first app chain"
+title: "Your first app ledger"
 description: "Start the built-in ordered log and submit your first event."
 sidebar:
   order: 2
 ---
 
 :::caution[Experimental]
-App chains are experimental. Configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path. See [what an app chain is and isn't](/app-chains/overview/).
+App ledgers are experimental. Configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path. See [what an app ledger is and isn't](/app-chains/overview/).
 :::
 
-Download and extract the **[JVM distribution](/start/installation/)**, recommended for app chains for now. From its extracted directory:
+Download and extract the **[JVM distribution](/start/installation/)**, recommended for app ledgers for now. From its extracted directory:
 
 ```bash
 ./yano.sh start:devnet,appchain
 ```
 
-This activates the bundled app-chain profile, including `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
+This activates the bundled `appchain` profile, including `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
 
 ## 1. Submit an event
 

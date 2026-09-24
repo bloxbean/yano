@@ -1,6 +1,6 @@
 ---
 title: "Troubleshooting"
-description: "Diagnose startup, synchronization, unavailable data, and app-chain progress."
+description: "Diagnose startup, synchronization, unavailable data, and app ledger progress."
 sidebar:
   order: 8
 ---
@@ -9,7 +9,7 @@ sidebar:
 
 Check `java -version` (JDK 25), the working directory, configured storage ownership, and whether ports `7070` or `13337` are already in use. Start the launcher inside the complete extracted distribution; Java is needed only for the JVM ZIP.
 
-Do not run two processes against one RocksDB directory. Keep node and app-chain storage, network configuration, and member identity together when moving an installation.
+Do not run two processes against one RocksDB directory. Keep node and app ledger storage, network configuration, and member identity together when moving an installation.
 
 ## The node is healthy but still behind
 

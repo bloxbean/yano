@@ -31,12 +31,12 @@ const paths = [
   {
     id: 'app',
     number: '03',
-    title: 'Build your own chain.',
-    label: 'App chains',
+    title: 'Build your own app ledger.',
+    label: 'App ledgers',
     badge: 'Experimental',
     text: 'Start with the JVM release and turn application events into a shared, verifiable history. Begin with an ordered log, then extend the rules.',
     href: '/app-chains/quickstart/',
-    cta: 'Create an app chain',
+    cta: 'Create an app ledger',
     file: 'terminal',
     lang: 'bash' as const,
     code: './yano.sh start:devnet,appchain\n\n# Submit an event to the built-in ordered log\ncurl -X POST \\\n  localhost:7070/api/v1/app-chain/chains/orders-chain/messages \\\n  -H \'Content-Type: application/json\' \\\n  -d \'{"topic":"order-created","body":"order A-1001"}\'',
@@ -96,7 +96,7 @@ const features = [
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Yano is a Cardano data node in Java. Query the chain, run real devnet tests, and build verifiable app chains with one modular foundation."
+      content="Yano is a Cardano data node in Java. Query the chain, run real devnet tests, and build verifiable multi-party app ledgers with one modular foundation."
     />
     <meta name="theme-color" content="#0b100d" />
     <link rel="canonical" href="https://getyano.dev/" />
@@ -107,7 +107,7 @@ const features = [
     <meta property="og:title" content="Yano — Your foundation for building on Cardano" />
     <meta
       property="og:description"
-      content="A data node. A real devnet. Your app chain. Explore Yano."
+      content="A data node. A real devnet. Your multi-party app ledger. Explore Yano."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://getyano.dev/" />
@@ -155,7 +155,7 @@ const features = [
             on <span>Cardano.</span>
           </h1>
           <p class="hero-description">
-            A data node. A real devnet. Your app chain.
+            A data node. A real devnet. Your multi-party app ledger.
             <br />
             Build your dApp in any language, with your favorite SDK. Query, evaluate, and submit
             transactions through Yano’s Blockfrost-compatible API.
@@ -179,7 +179,7 @@ const features = [
         <div
           class="system-visual"
           role="img"
-          aria-label="Yano connects Cardano ledger data to applications, devnet tests, and app chains with proofs."
+          aria-label="Yano connects Cardano ledger data to applications, devnet tests, and app ledgers with proofs."
         >
           <div class="visual-top">
             <span class="tiny-label">ONE FOUNDATION. MANY POSSIBILITIES.</span>
@@ -220,7 +220,7 @@ const features = [
               <span class="satellite-icon">◇</span>
               <div>
                 <small>ORDER & PROVE</small>
-                <strong>App chains</strong>
+                <strong>App ledgers</strong>
                 <small class="exp-note">EXPERIMENTAL</small>
               </div>
               <span class="node-light"></span>
@@ -435,7 +435,7 @@ const features = [
           <strong>BUILD</strong>
           <a href="/start/quickstart/">Get started</a>
           <a href="/develop/java-testkit/">Testkit</a>
-          <a href="/app-chains/overview/">App chains</a>
+          <a href="/app-chains/overview/">App ledgers</a>
         </div>
         <div>
           <strong>EXPLORE</strong>

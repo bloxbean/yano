@@ -16,7 +16,7 @@ Open `http://localhost:7070/q/swagger-ui`. The node supplies these OpenAPI docum
 | Document | Scope |
 | --- | --- |
 | `/q/openapi-core` | Chain, ledger, transactions, evaluation, read-only node status |
-| `/q/openapi-app-chain` | App-chain and plugin domain APIs |
+| `/q/openapi-app-chain` | App ledger and plugin domain APIs |
 | `/q/openapi-devnet` | Local faucet, snapshots, rollback, time controls |
 | `/q/openapi-admin` | Node lifecycle, plugin operations, diagnostics |
 | `/q/openapi-history` | Historical coverage and maintenance |

@@ -1,5 +1,5 @@
 ---
-title: "App-chain testkit"
+title: "App ledger testkit"
 description: "Test your state machine with an embedded cluster of Yano members."
 sidebar:
   order: 7

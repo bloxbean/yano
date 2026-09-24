@@ -57,7 +57,7 @@ with `~` are reserved for Yano.
 
 ## Start the out-of-the-box demo
 
-From an extracted **JVM release** directory (recommended for app chains):
+From an extracted **JVM release** directory (recommended for app ledgers):
 
 ```bash
 ./yano.sh start:devnet,appchain
@@ -468,4 +468,4 @@ state machine's deterministic `apply()` method.
 - [Yano X tutorials](https://github.com/bloxbean/yano-x/tree/main/docs/appchain/tutorials)
 - [Yano X stock state machines](https://github.com/bloxbean/yano-x/tree/main/state-machines)
 - [Consensus and state-machine internals](/app-chains/consensus/)
-- [Yano X Java app-chain client](https://github.com/bloxbean/yano-x/tree/main/sdk/client)
+- [Yano X Java app ledger client](https://github.com/bloxbean/yano-x/tree/main/sdk/client)

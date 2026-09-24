@@ -8,7 +8,7 @@ export default defineConfig({
     starlight({
       title: 'Yano',
       description:
-        'The Cardano data node you can build with. Query, test, embed, and create app chains.',
+        'The Cardano data node you can build with. Query, test, embed, and create multi-party app ledgers.',
       logo: { src: './public/logo.svg' },
       favicon: '/favicon.svg',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/bloxbean/yano' }],
@@ -22,7 +22,7 @@ export default defineConfig({
         { label: 'Run a data node', items: [{ autogenerate: { directory: 'node' } }] },
         { label: 'Develop & test', items: [{ autogenerate: { directory: 'develop' } }] },
         {
-          label: 'Build an app chain',
+          label: 'Build an app ledger',
           badge: { text: 'Experimental', variant: 'caution' },
           items: [{ autogenerate: { directory: 'app-chains' } }],
         },

@@ -1,5 +1,5 @@
 ---
-title: "Consensus & chain configuration"
+title: "Consensus & ledger configuration"
 description: "Member consensus, execution, commitments, and anchoring."
 sidebar:
   order: 6
@@ -234,7 +234,7 @@ With `l1.stability-depth > 0`, every block carries an `(l1Slot, l1BlockHash)`
 reference at least that many blocks below the L1 tip. Followers verify it
 against their **own** L1 view: a fabricated ref is rejected fail-closed, a
 ref slightly ahead of the local view is deferred and retried, and slots must
-be monotonic across blocks. This pins app-chain history to L1 time — it is
+be monotonic across blocks. This pins app ledger history to L1 time — it is
 what makes observation stability ([L1 observations](/app-chains/observations/)) and
 anchor recency meaningful.
 

@@ -18,7 +18,7 @@ Read [account state and rollback](/reference/account-state/) for the state lifec
 | Control | Effect | Consequence |
 | --- | --- | --- |
 | `yano.storage.path` | Node RocksDB directory | One node process per database |
-| `yano.app-chain.storage.path` | Separate app-chain RocksDB root | Back up app-chain identity and state together |
+| `yano.app-chain.storage.path` | Separate app ledger RocksDB root | Back up app ledger identity and state together |
 | `yano.filters.utxo.*` | Persist selected UTxOs | Queries describe the selected subset, not complete network coverage |
 | `yano.chain.block-body-prune-depth` | Remove older block bodies | Old body-dependent queries and scans may be unavailable |
 | `yano.rollback-retention-epochs` | Bound retained rollback material | Must match your recovery requirements |

@@ -29,4 +29,4 @@ Dynamic plugin JAR loading is a JVM feature. Native distributions retain the cor
 
 ## Test your plugin
 
-Use [the app-chain testkit](/develop/app-chain-testkit/) for embedded clusters, plus the conformance suites for the SPI you implement. Test actual failure/recovery behavior, not just a successful submit.
+Use [the app ledger testkit](/develop/app-chain-testkit/) for embedded clusters, plus the conformance suites for the SPI you implement. Test actual failure/recovery behavior, not just a successful submit.

@@ -240,7 +240,7 @@ the same JAR; adjacent thin dependency JARs are not one catalog bundle.
 
 Copy the JAR into `yano.plugins.directory`. If an allow-list is configured,
 allow the bundle id. Select the state-machine contribution by its short
-selector on the app chain. The domain contribution is activated as part of the
+selector on the app ledger. The domain contribution is activated as part of the
 selected bundle and is addressed by bundle id.
 
 For privileged routes configure an unscoped full key:
