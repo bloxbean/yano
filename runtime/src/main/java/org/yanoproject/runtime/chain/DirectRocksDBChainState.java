@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -1818,7 +1819,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     }
 
     /**
-     * Restore from a snapshot: close current DB, delete DB dir, copy snapshot, reopen.
+     * Restore from a snapshot: close current DB, clear DB dir, copy snapshot, reopen.
      * Caller must ensure no concurrent reads/writes during restore.
      *
      * @param snapshotPath directory containing the checkpoint to restore from
@@ -1834,15 +1835,22 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         // 1. Close current DB
         close();
 
-        // 2. Delete current DB directory
+        // 2. Clear current DB directory. Keep the directory itself: it may be a mount point
+        //    (for example in Docker) or a symlink to another disk.
         Path dbDir = Path.of(dbPath);
         try {
             if (Files.exists(dbDir)) {
-                deleteRecursively(dbDir);
-                log.info("Deleted existing DB directory: {}", dbPath);
+                List<Path> entries = new ArrayList<>();
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(dbDir)) {
+                    stream.forEach(entries::add);
+                }
+                for (Path entry : entries) {
+                    deleteRecursively(entry);
+                }
+                log.info("Cleared existing DB directory: {}", dbPath);
             }
         } catch (IOException e) {
-            throw new RuntimeException("Failed to delete DB directory: " + dbPath, e);
+            throw new RuntimeException("Failed to clear DB directory: " + dbPath, e);
         }
 
         // 3. Copy snapshot to DB path
