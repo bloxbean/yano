@@ -98,7 +98,7 @@ tasks.register('verifyStaticConsoleContract') {
         def landing = new File(root, 'index.html').getText('UTF-8')
         [
                 'aria-label="Console"',
-                'alt="Yano"',
+                'aria-label="Yano console home"',
                 'data:image/svg+xml',
                 'Yano Console'
         ].each { marker ->
