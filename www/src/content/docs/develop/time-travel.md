@@ -50,4 +50,4 @@ curl -fsS -X POST http://localhost:7070/api/v1/devnet/rollback \
   -H 'Content-Type: application/json' -d '{"count":3}'
 ```
 
-Specify exactly one of `count`, `slot`, or `blockNumber`. The operation uses the normal state rollback path and notifies downstream N2N clients. Use it to test whether an indexer or application reverses observations correctly.
+Specify exactly one of `count`, `slot`, or `block_number` in the JSON body (the JavaScript testkit helper accepts `blockNumber` and maps it). The operation uses the normal state rollback path and notifies downstream N2N clients. Use it to test whether an indexer or application reverses observations correctly.

@@ -96,12 +96,12 @@
 {#if !metricsBase}
   <section class="card p-6">
     <h2 class="mt-0 text-lg font-semibold">Plain Yano mode</h2>
-    <p class="text-sm text-slate-400">Node and app-chain pages collect bounded one-hour history in this browser tab. For durable local history, start the optional companion and open the URL it prints:</p>
+    <p class="text-sm text-slate-400">Node and app ledger pages collect bounded one-hour history in this browser tab. For durable local history, start the optional companion and open the URL it prints:</p>
     <pre class="overflow-auto rounded-lg bg-slate-950 p-4 text-sm text-emerald-300">./yano.sh observability start</pre>
     <p class="mb-0 text-xs text-slate-500">Production operators can set an existing read-only Prometheus-compatible origin from Connection.</p>
   </section>
 {:else}
-  {#if error}<div class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{error}. Browser session charts remain available on the Node and App chains pages.</div>{/if}
+  {#if error}<div class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{error}. Browser session charts remain available on the Node and App ledgers pages.</div>{/if}
   <section class="card mb-4 flex flex-wrap items-end gap-4 p-4">
     <div class="mr-auto"><small class="text-slate-500">Provider</small><div class="font-mono text-sm">{metricsBase}</div></div>
     <label class="text-xs text-slate-400">Window
@@ -125,7 +125,7 @@
     <MetricCard title="L1 current"><MetricRow label="Sync gap" value={`${latest(syncGap).toLocaleString()} blocks`} />
       <MetricRow label="Mempool" value={`${latest(mempool).toLocaleString()} tx`} /><MetricRow label="UTXO lag" value={`${latest(utxo).toLocaleString()} blocks`} />
     </MetricCard>
-    <MetricCard title="App-chain current"><MetricRow label="Pending pool" value={latest(pool).toLocaleString()} />
+    <MetricCard title="App ledger current"><MetricRow label="Pending pool" value={latest(pool).toLocaleString()} />
       <MetricRow label="Open effects" value={latest(effectsOpen).toLocaleString()} /><MetricRow label="Anchor lag" value={latest(anchor).toLocaleString()} />
     </MetricCard>
   </div>
@@ -139,11 +139,11 @@
     <MetricCard title="Transaction diffusion rate"><LineChart series={values(txRate)} label="Durable transaction rate" /></MetricCard>
   </div>
 
-  <div class="section-title">App-chain & effects · {selectedChain || 'none'}</div>
+  <div class="section-title">App ledger & effects · {selectedChain || 'none'}</div>
   <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-    <MetricCard title="Finalized block rate"><LineChart series={values(tipRate)} label="Durable app-chain block rate" /></MetricCard>
-    <MetricCard title="Pending pool"><LineChart series={values(pool)} label="Durable app-chain pool" /></MetricCard>
-    <MetricCard title="Block interval"><LineChart series={values(interval)} label="Durable app-chain interval" /></MetricCard>
+    <MetricCard title="Finalized block rate"><LineChart series={values(tipRate)} label="Durable app ledger block rate" /></MetricCard>
+    <MetricCard title="Pending pool"><LineChart series={values(pool)} label="Durable app ledger pool" /></MetricCard>
+    <MetricCard title="Block interval"><LineChart series={values(interval)} label="Durable app ledger interval" /></MetricCard>
     <MetricCard title="Anchor lag"><LineChart series={values(anchor)} label="Durable anchor lag" /></MetricCard>
     <MetricCard title="Open effects"><LineChart series={values(effectsOpen)} label="Durable open effects" /></MetricCard>
     <MetricCard title="Effect execution rate"><LineChart series={values(effectsRate)} label="Durable effect execution rate" /></MetricCard>

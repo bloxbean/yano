@@ -24,9 +24,9 @@ class AppChainStatusPageTest {
                 .statusCode(200)
                 .extract().asString();
 
-        assertTrue(page.contains("Yano · App Chains"));
+        assertTrue(page.contains("Yano · App Ledgers"));
         assertTrue(page.contains("data-console-route=\"app-chain\""));
-        for (String panel : new String[]{"App-chain operations", "Consensus &amp; traffic",
+        for (String panel : new String[]{"App ledger operations", "Consensus &amp; traffic",
                 "L1 anchor", "Effect executors", "Profile governance", "Live messages",
                 "Recent blocks", "Finalized message", "Authenticated fetch SSE"}) {
             assertTrue(page.contains(panel), panel);

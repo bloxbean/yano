@@ -568,7 +568,7 @@
   ) {
     if (proof.stateRoot !== confirmedAnchor.stateRoot
       || Number(proof.committedHeight) !== Number(confirmedAnchor.anchoredHeight)) {
-      throw new Error('State proof does not match the latest L1-confirmed app-chain root');
+      throw new Error('State proof does not match the latest L1-confirmed app ledger root');
     }
   }
 
@@ -672,7 +672,7 @@
 
 <div class="mb-5 flex flex-wrap items-end justify-between gap-4">
   <div><p class="eyebrow">Authenticated L1 history</p><h1 class="mt-1 text-2xl font-bold">Cardano History</h1>
-    <p class="mt-2 max-w-3xl text-sm text-slate-400">Query epoch facts, generate subject-specific proofs, and verify them against L1-anchored app-chain roots.</p></div>
+    <p class="mt-2 max-w-3xl text-sm text-slate-400">Query epoch facts, generate subject-specific proofs, and verify them against L1-anchored app ledger roots.</p></div>
   {#if chains.length > 0}<label class="text-xs text-slate-400">Chain
     <select class="ml-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
       value={selectedChain} onchange={(event) => void selectChain(event.currentTarget.value)}>
@@ -682,7 +682,7 @@
 
 {#if loading}<p class="text-slate-400">Discovering Cardano History capabilities…</p>
 {:else if error}<div class="card border-rose-500/30 p-5 text-rose-300">{error}</div>
-{:else if chains.length === 0}<div class="card p-6 text-slate-400">No running app chain declares the <code>l1-epoch-params-v1</code> capability.</div>
+{:else if chains.length === 0}<div class="card p-6 text-slate-400">No running app ledger declares the <code>l1-epoch-params-v1</code> capability.</div>
 {:else}
   <nav class="mb-5 flex flex-wrap gap-2" aria-label="Cardano History views">
     {#each ['overview', 'parameters', ...(hasStake ? ['stake'] : []), ...(hasGovernance ? ['governance'] : []), 'verify'] as item}

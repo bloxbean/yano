@@ -9,8 +9,9 @@ live in [Yano X](https://github.com/bloxbean/yano-x).
 
 Code pointers use class names — start at
 `runtime/.../appchain/AppChainEngine.java` (consensus core),
-`core-api/.../appchain/` (SPI + codecs), and `runtime/.../OrderedLog.java`
-(the one built-in state machine).
+`core-api/.../appchain/` (SPI + codecs), and
+`runtime/.../appchain/OrderedLogStateMachine.java` (the one built-in state
+machine, whose transition logic is `core-api/.../appchain/transition/OrderedLogKernel.java`).
 
 ---
 
@@ -203,6 +204,13 @@ than unlock.
 
 ## 6. Sequencer modes and membership
 
+Each chain selects its sequencer with `sequencer.mode`: `fixed`, `rotating`,
+or the id of a sequencer-mode plugin. A chain that sets only
+`sequencer.proposer` uses `fixed`. Membership is selected with
+`membership.mode`: `static` (the default) or `governed`. Both keys sit under
+the chain's `yano.app-chain` block (for example
+`yano.app-chain.chains[0].sequencer.mode`).
+
 ### 6.1 Fixed
 
 `sequencer.proposer` selects the view-0 leader. If it cannot complete the
@@ -331,7 +339,7 @@ Startup re-verifies rather than trusts:
 
 ### 8.3 Snapshots
 
-`GET .../snapshot` produces a RocksDB checkpoint (hard links — cheap) with a
+`POST .../snapshot` (body `{"path":"<fresh directory>"}`) produces a RocksDB checkpoint (hard links — cheap) with a
 member-signed manifest binding tip height/hash, state root and member
 epochs. New-member onboarding = copy checkpoint, verify manifest, start,
 catch up the delta (user guide §14.3).
@@ -343,17 +351,18 @@ catch up the delta (user guide §14.3).
 | Method | When | Contract |
 |---|---|---|
 | `id()` | — | stable identifier, matched against `state-machine` config |
-| `init(reader, info)` | once at start | read-only warm-up; `info` = (chainId, own member key, member count) |
-| `validate(msg)` | admission (pool + block selection) | fast, side-effect-free, MAY run concurrently; envelope auth already done; reject keeps the message out of blocks. `~` system topics bypass it |
-| `apply(block, writer)` | exactly once per finalized block, in height order, on EVERY member | the deterministic transition; all writes via `writer.put/delete` (= MPF entries) |
-| `query(path, params)` | committed reads | invoked through the chain-scoped REST `/query/{path}` route; state proofs remain available through `state/proof/{keyHex}` |
+| `init(AppStateReader, AppChainInfo)` | once at start | read-only warm-up; `info` = (chainId, own member key, member count) |
+| `AdmissionResult validateForBlock(AppMessage, long candidateHeight, AppStateReader committedState)` | admission (local submission + block selection) | height- and state-aware; defaults to `validate(AppMessage)`. Fast, side-effect-free, MAY run concurrently, must not retain the reader; envelope auth already done; reject keeps the message out of blocks. `~` system topics bypass it |
+| `void apply(AppBlockExecutionContext, AppStateWriter, AppEffectEmitter)` | exactly once per finalized block, in height order, on EVERY member | the deterministic transition; all writes via `writer.put/delete` (= MPF entries); effects only through the `AppEffectEmitter` |
+| `byte[] query(String path, byte[] params, AppQueryContext)` | committed reads | invoked through the chain-scoped REST `/query/{path}` route; state proofs remain available through `state/proof/{keyHex}` |
 
 **Determinism is the contract.** Inside `apply()`: no wall clock (use
 `block.timestamp()`), no randomness, no I/O, no environment reads, no
 iteration over unordered collections, no locale-dependent serialization.
 Violations don't corrupt anything — they *stall the chain*, because
 followers reject the proposer's state root (§4.2). Test with
-`StateMachineConformance` (runtime testkit): it applies an identical seeded
+`StateMachineConformance` (`org.yanoproject.runtime.appchain`, in
+`yano-runtime`): it applies an identical seeded
 block corpus in N independent runs plus a kill-and-reopen replay and asserts
 byte-identical roots at every height.
 
@@ -409,7 +418,7 @@ plugins so Yano's core documentation does not imply that they are built in.
      "schemaVersion": 1,
      "id": "com.example.my-machine",
      "version": "1.0.0",
-     "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+     "yanoApi": { "min": 3, "max": 3, "minLevel": 11 },
      "dependencies": [],
      "contributions": [
        {
@@ -421,6 +430,12 @@ plugins so Yano's core documentation does not imply that they are built in.
    }
    ```
 
+   `yanoApi` is the plugin API range, not a release version: `min`/`max`
+   bound the supported API major and `minLevel` is the lowest additive API
+   level the bundle needs. The sample matches plugin API major 3, level 11;
+   use the values of your target release (`PluginApiVersion` or its release
+   notes), or the host rejects the bundle at load.
+
    Package one self-contained bundle JAR, drop it into the JVM node's
    `plugins/` directory, and set `state-machine: my-machine`. An unknown id
    fails fast listing available ids. Native images cannot load directory JARs;
@@ -428,7 +443,8 @@ plugins so Yano's core documentation does not imply that they are built in.
    and reflection metadata are generated before the native executable.
 4. **Library mode**: pass the machine instance straight to the
    `AppChainSubsystem` constructor — no provider or services file needed.
-5. Start from `scaffolds/plugin-template/` (a complete counter machine +
+5. Start from the Yano X
+   [plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template) (a complete counter machine +
    provider + ServiceLoader entry + bundle manifest), and gate your machine with
    `StateMachineConformance` before trusting it with a multi-node chain.
    The full walkthrough is user guide §6 / tutorial Part 2.

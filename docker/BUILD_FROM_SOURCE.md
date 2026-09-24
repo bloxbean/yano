@@ -136,21 +136,25 @@ Build a Docker Compose zip locally:
 
 ```bash
 ./gradlew :app:yanoDockerDistZip \
-  -PyanoDockerReleaseVersion=0.1.0-pre4 \
-  -PyanoDockerImageTag=0.1.0-pre4 \
+  -PyanoDockerReleaseVersion=<version> \
+  -PyanoDockerImageTag=<version> \
   -PskipSigning=true
 ```
+
+Replace `<version>` with the release version to pin, for example the version of
+the [latest release](https://github.com/bloxbean/yano/releases/latest) without
+its leading `v`.
 
 The zip is created under:
 
 ```text
-app/build/distributions/yano-docker-0.1.0-pre4.zip
+app/build/distributions/yano-docker-<version>.zip
 ```
 
 The generated `compose/.env` inside the zip pins:
 
 ```text
-YANO_IMAGE_TAG=0.1.0-pre4
+YANO_IMAGE_TAG=<version>
 ```
 
 After extracting the zip:
@@ -160,10 +164,10 @@ After extracting the zip:
 ./yano.sh start
 ```
 
-The generated compose zip is release-oriented. If `YANO_IMAGE_TAG=0.1.0-pre4`, compose resolves the default JVM image as:
+The generated compose zip is release-oriented. If `YANO_IMAGE_TAG=<version>`, compose resolves the default JVM image as:
 
 ```text
-bloxbean/yano:0.1.0-pre4-jvm
+bloxbean/yano:<version>-jvm
 ```
 
 That image must already exist on DockerHub. For local source builds, edit `compose/.env` to use the local image tags you built above.

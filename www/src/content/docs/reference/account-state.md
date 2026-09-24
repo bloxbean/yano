@@ -52,7 +52,7 @@ a transient cursor says that a journaled operation must be resumed.
 | `meta.epoch_boundary_state_version` | Format version | Atomically when an empty account store is initialized | A populated pre-marker or unknown version is rejected without writes; retain a backup and resync. |
 | `meta.snapshot_dereg_index_version` | Permanent semantic-readiness guard | In the same empty-store initialization batch | Missing or incompatible means the credential-major SNAP deregistration input is not trustworthy; startup rejects the store and requires resync. |
 | `meta.reward_event_index_version` | Permanent semantic-readiness guard | In the same empty-store initialization batch | Missing or incompatible means bounded reward event input is not trustworthy; startup rejects the store and requires resync. |
-| `meta.pool_lifecycle_state_version` (`pool-lifecycle-state-v1`) | Permanent semantic-readiness guard | In the same empty-store initialization batch as the epoch-boundary markers | Missing on a populated store or any value other than v1 is rejected without writes; retain a backup and resync. |
+| `meta.pool_lifecycle_state_version` (value `1`, reported as `pool-lifecycle-state-v1`) | Permanent semantic-readiness guard | In the same empty-store initialization batch as the epoch-boundary markers | Missing on a populated store or any value other than v1 is rejected without writes; retain a backup and resync. |
 | `meta.utxo_pointer.ready.v1` | Permanent, coordinate-pinned UTXO pointer-index completeness marker | Updated atomically with pointer-index changes after the full index is available | When the pointer index is applicable, a missing, malformed, stale or wrong-coordinate marker makes it not ready and startup fails closed with resync guidance. |
 | `meta.genesis_staking_bootstrap` | Permanent idempotence and genesis-identity guard | Atomically with Shelley genesis pools, delegations, deposits and initial derived facts | Absence permits the one-time bootstrap. A marker for a different genesis identity fails closed; verify genesis configuration rather than overwriting it. |
 | `meta.rollback.v1.target-slot` | Transient crash-recovery cursor | Before the first bounded account rollback chunk; removed after all phases are reversed | Absence is normal. Presence makes startup resume rollback-v1. A malformed value fails startup and requires restoring a sound checkpoint or resyncing. |
@@ -61,13 +61,15 @@ a transient cursor says that a journaled operation must be resumed.
 
 ## Manual debugging rollback
 
-A one-shot startup rollback can be requested with exactly one command-line
-system property:
+A one-shot startup rollback can be requested with one of the following
+command-line system properties:
 
 ```text
 -Dyano.debug.rollback-to-slot=<slot>
 -Dyano.debug.rollback-to-epoch=<epoch>
 ```
+
+Set only one. If both are set, the epoch target takes precedence.
 
 Do not put these properties in `application.yml`; remove them from the next
 start so the rollback is not requested again.

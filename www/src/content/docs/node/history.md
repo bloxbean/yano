@@ -225,6 +225,6 @@ Use `FORMAT CSV, HEADER` instead when a downstream tool needs CSV. Detach when t
 DETACH history_lake;
 ```
 
-For the complete relation and column contract, see the [DuckLake projection schema](https://github.com/bloxbean/yano/blob/main/docs/archive/DUCKLAKE_PROJECTION_SCHEMA.md). For archive selection, retention, maintenance, and disk thresholds, see the [configuration catalog](/reference/configuration-catalog/) and Yano's `/q/openapi-history` endpoint.
+For the complete relation and column contract, see the [DuckLake projection schema](https://github.com/bloxbean/yano/blob/main/docs/archive/DUCKLAKE_PROJECTION_SCHEMA.md). For archive selection, retention, maintenance, and disk thresholds, see the [configuration catalog](/reference/configuration-catalog/) and Yano's `/q/openapi-history` endpoint. Over HTTP, `GET /api/v1/history/coverage` reports per-dataset coverage and `GET /api/v1/history/watermark` returns the consistency point through which the selected datasets are queryable.
 
 When moving or backing up an archive, keep the catalog and `ducklake-data/` together from the same consistent point. A catalog alone contains metadata, not the historical rows.

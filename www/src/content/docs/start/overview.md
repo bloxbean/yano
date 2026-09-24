@@ -18,7 +18,7 @@ The same project also gives you a local, block-producing development network, in
 | Choose memory settings or enable wallet scans | [Runtime and wallet profiles](/start/runtime-profiles/) |
 | Test a Java application against real ledger state | [Java testkit](/develop/java-testkit/) |
 | Test from JavaScript or TypeScript | [JavaScript testkit](/develop/javascript-testkit/) |
-| Give several participants a shared, verifiable event history | [Your first app chain](/app-chains/quickstart/) |
+| Give several participants a shared, verifiable event history | [Your first app ledger](/app-chains/quickstart/) |
 | Add application-specific rules | [State machines and plugins](/app-chains/extensions/) |
 | Give an AI assistant accurate Yano context | [Build with AI](/ai/overview/) |
 
@@ -34,7 +34,7 @@ Yano runs in Java, but your dApp does not have to. Use its [Blockfrost-compatibl
 
 **Development network.** Produce local blocks, fund test addresses, save snapshots, trigger rollbacks, and control time. Java and JavaScript testkits manage the lifecycle for repeatable tests.
 
-**App-chain host.** Run independent application ledgers with signed messages, deterministic execution, threshold finality, state proofs, and optional Cardano anchoring. The built-in `ordered-log` records opaque events. More state machines and integrations live in [Yano X](https://github.com/bloxbean/yano-x).
+**Multi-party app ledgers (experimental).** Run independent app ledgers with signed messages, deterministic execution, threshold finality, state proofs, and optional Cardano anchoring. The built-in `ordered-log` records opaque events. More state machines and integrations live in [Yano X](https://github.com/bloxbean/yano-x).
 
 ## Current status
 
@@ -47,6 +47,6 @@ The Java package root and Maven group are `org.yanoproject`. The JavaScript test
 - **UTxO:** an unspent transaction output; the spendable state of a Cardano address.
 - **Slot / epoch:** Cardano's units of chain time; an epoch contains many slots.
 - **Devnet:** an isolated network with test funds and its own genesis.
-- **State root:** a compact commitment to the state of an app chain.
+- **State root:** a compact commitment to the state of an app ledger.
 - **Finality certificate:** evidence that the configured member threshold certified an app block.
-- **Anchor:** a Cardano transaction that commits an app-chain root to L1.
+- **Anchor:** a Cardano transaction that commits an app ledger root to L1.

@@ -1,6 +1,6 @@
 ---
 title: "Troubleshooting"
-description: "Diagnose startup, synchronization, unavailable data, and app-chain progress."
+description: "Diagnose startup, synchronization, unavailable data, and app ledger progress."
 sidebar:
   order: 8
 ---
@@ -9,11 +9,11 @@ sidebar:
 
 Check `java -version` (JDK 25), the working directory, configured storage ownership, and whether ports `7070` or `13337` are already in use. Start the launcher inside the complete extracted distribution; Java is needed only for the JVM ZIP.
 
-Do not run two processes against one RocksDB directory. Keep node and app-chain storage, network configuration, and member identity together when moving an installation.
+Do not run two processes against one RocksDB directory. Keep node and app ledger storage, network configuration, and member identity together when moving an installation.
 
 ## The node is healthy but still behind
 
-Read `/api/v1/status` and `/api/v1/node/tip`. Readiness means the application is ready to serve; public-network synchronization can still be in progress. Look at the local/remote tips, selected peer, recovery reason, rejected validation stage, and last progress in logs.
+Read `/api/v1/node/status` (local/remote tips, sync progress and mode, selected peer, upstream state, and any runtime-degraded reason) and `/api/v1/node/tip`; `/api/v1/status` reports the chain tip plus UTxO store, prune, and history state. Readiness means the application is ready to serve; public-network synchronization can still be in progress. The status response also exposes recovery reasons, rejected validation details, and time since application progress; consult logs for additional context.
 
 Confirm the genesis/network magic and upstream reachability. Repeatedly restarting or deleting state can hide the original error; preserve logs and configuration first.
 

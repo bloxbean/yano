@@ -13,7 +13,7 @@ during temporary capture.
 Every schema-v1 manifest must declare both plugin API compatibility dimensions:
 
 ```json
-"yanoApi": { "min": 1, "max": 1, "minLevel": 1 }
+"yanoApi": { "min": 3, "max": 3, "minLevel": 11 }
 ```
 
 `min`/`max` are the inclusive supported API majors. `minLevel` is the minimum

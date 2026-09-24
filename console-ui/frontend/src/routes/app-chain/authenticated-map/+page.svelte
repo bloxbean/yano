@@ -160,7 +160,7 @@
         selectedChain = chains.some((chain) => chain.chainId === requested)
           ? requested! : chains[0]?.chainId ?? '';
         if (!selectedChain) {
-          pageError = 'No app chains are enabled on this node.';
+          pageError = 'No app ledgers are enabled on this node.';
           return;
         }
         await activateChain(selectedChain);
@@ -645,7 +645,7 @@
       </select>
     </label>
     <a class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 no-underline hover:border-slate-500"
-       href={`${base}/app-chain/?chain=${encodeURIComponent(selectedChain)}`}>Generic app-chain view</a>
+       href={`${base}/app-chain/?chain=${encodeURIComponent(selectedChain)}`}>Generic app ledger view</a>
   </div>
 </header>
 
