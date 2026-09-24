@@ -7,8 +7,10 @@ Canonical URL: https://getyano.dev/develop/javascript-testkit/
 `@bloxbean/yano-testkit` starts a local native Yano devnet, waits for HTTP readiness, and returns connection details and helpers. Its npm scope is unchanged by the Java namespace rename.
 
 ```bash
-npm install --save-dev @bloxbean/yano-testkit
+npm install --save-dev @bloxbean/yano-testkit@preview
 ```
+
+Yano releases are currently published under the `preview` npm tag. The `latest` tag is reserved for a future stable release and does not currently resolve to a working testkit, so install with `@preview`.
 
 Use Node.js 20.8 or later for the testkit. Platform packages cover Linux x64/arm64, macOS arm64, and Windows x64. A matching published platform package or a locally built native binary is required.
 

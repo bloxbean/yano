@@ -15,9 +15,9 @@ between preview releases is not guaranteed, and Yano does not provide a general
 chainstate migration path yet. Keep an old database only when you need it for
 comparison or rollback to its matching executable.
 
-Keep network identities and app-chain state with their matching release and
-configuration. App-chain signing journals record safety decisions and must never
-be copied selectively, discarded, or combined with a newly empty app-chain ledger.
+Keep network identities and app ledger state with their matching release and
+configuration. App ledger signing journals record safety decisions and must never
+be copied selectively, discarded, or combined with a newly empty app ledger.
 
 See [release change details](/reference/upgrading/) for configuration and behavior
 changes that may affect a new deployment.

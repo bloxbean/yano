@@ -8,12 +8,12 @@ Start a local Cardano chain from a **ready-to-run release**. You do not need Git
 
 ## 1. Download Yano
 
-Open [Yano Releases](https://github.com/bloxbean/yano/releases), choose the newest preview, and download:
+Open the [latest Yano release](https://github.com/bloxbean/yano/releases/latest) (or choose another from [Yano Releases](https://github.com/bloxbean/yano/releases)) and download:
 
-- **JVM:** `yano-<version>.zip`, with Java 25 installed. Recommended if you also want to try app chains.
+- **JVM:** `yano-<version>.zip`, with Java 25 installed. Recommended if you also want to try app ledgers.
 - **Native:** `yano-native-<version>-<platform>.zip`, matching your operating system and CPU. No Java installation needed.
 
-Replace `<version>` with the selected release version and `<platform>` with the platform suffix shown in its asset list.
+Replace `<version>` with the selected release version as it appears in the asset names (the release tag without its leading `v`) and `<platform>` with the platform suffix shown in its asset list.
 
 See [installation](/start/installation/) for platform-specific asset names and Windows commands.
 
@@ -53,4 +53,4 @@ If startup fails, check Java with `java -version` for a JVM installation, confir
 
 ## Next steps
 
-[Connect your favorite SDK](/develop/blockfrost/), [submit a transaction](/develop/transactions/), or [start an app chain](/app-chains/quickstart/). Source builds are an optional [contributor workflow](/contribute/build-from-source/).
+[Connect your favorite SDK](/develop/blockfrost/), [submit a transaction](/develop/transactions/), or [start an app ledger](/app-chains/quickstart/). Source builds are an optional [contributor workflow](/contribute/build-from-source/).

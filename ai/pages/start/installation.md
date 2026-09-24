@@ -4,21 +4,21 @@ Choose and run a JVM or platform-specific Yano release.
 
 Canonical URL: https://getyano.dev/start/installation/
 
-Choose the newest preview from [Yano Releases](https://github.com/bloxbean/yano/releases). Extract the complete archive; keep the executable, launcher, and `config/` directory together.
+Download the [latest Yano release](https://github.com/bloxbean/yano/releases/latest), or choose another from [Yano Releases](https://github.com/bloxbean/yano/releases). Extract the complete archive; keep the executable, launcher, and `config/` directory together.
 
 ## Choose your download
 
 | Distribution | Download | Requirements |
 | --- | --- | --- |
-| **JVM — recommended for app chains** | `yano-<version>.zip` | Java 25 |
+| **JVM — recommended for app ledgers** | `yano-<version>.zip` | Java 25 |
 | Linux x64 | `yano-native-<version>-linux-x64.zip` | Linux on x64 |
 | Linux arm64 | `yano-native-<version>-linux-arm64.zip` | Linux on arm64 |
 | macOS arm64 | `yano-native-<version>-macos-arm64.zip` | Apple silicon Mac |
 | Windows x64 | `yano-native-<version>-windows-x64.zip` | Windows on x64 |
 
-Replace `<version>` with the selected release version.
+Replace `<version>` with the selected release version as it appears in the asset names (the release tag without its leading `v`).
 
-For app-chain onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
+For app ledger onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
 
 ## Start on macOS or Linux
 
@@ -53,7 +53,7 @@ JVM distribution, with Java 25 installed:
 java -Dquarkus.profile=devnet -jar yano.jar
 ```
 
-For JVM app chains, use `java "-Dquarkus.profile=devnet,appchain" -jar yano.jar`.
+For JVM app ledgers, use `java "-Dquarkus.profile=devnet,appchain" -jar yano.jar`.
 
 ## Releases and documentation versions
 

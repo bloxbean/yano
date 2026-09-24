@@ -15,7 +15,9 @@ RocksDB memory, and the decoded-block queue. Add one profile after the network:
 
 Use only one resource profile at a time. `yano.sh` applies its maximum heap to
 both JVM and native distributions. An explicit `-Xmx` in `JAVA_OPTS` overrides
-that value.
+that value. For the native distribution, `YANO_NATIVE_MAX_HEAP` also overrides
+the profile default, and an explicit `-Xmx` in `JAVA_OPTS` still takes
+precedence over it.
 
 These profiles are available when the matching file exists in the extracted
 `config/` directory, such as `config/application-small.yml`. Older releases

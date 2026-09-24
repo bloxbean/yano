@@ -15,7 +15,7 @@ Open `http://localhost:7070/q/swagger-ui`. The node supplies these OpenAPI docum
 | Document | Scope |
 | --- | --- |
 | `/q/openapi-core` | Chain, ledger, transactions, evaluation, read-only node status |
-| `/q/openapi-app-chain` | App-chain and plugin domain APIs |
+| `/q/openapi-app-chain` | App ledger and plugin domain APIs |
 | `/q/openapi-devnet` | Local faucet, snapshots, rollback, time controls |
 | `/q/openapi-admin` | Node lifecycle, plugin operations, diagnostics |
 | `/q/openapi-history` | Historical coverage and maintenance |
@@ -26,6 +26,8 @@ Download the schema from **your actual binary**:
 ```bash
 curl -fsS 'http://localhost:7070/q/openapi?format=json' -o yano-openapi.json
 ```
+
+The main route families under the prefix are `node`, `status`, `blocks`, `epochs`, `accounts`, `addresses`, `utxos`, `credentials`, `txs`, `tx`, `utils/txs`, `scripts`, `governance`, `network`, `genesis`, `events` (SSE), `history`, `devnet`, `app-chain`, `plugins/{bundleId}`, `plugin-operations`, and `admin/mempool/transactions`.
 
 The site provides a [source-derived route inventory](/ai/routes.json), not a substitute for a complete OpenAPI schema. Routes can be feature-gated, require credentials, or return unavailable when required data is absent.
 

@@ -18,7 +18,7 @@ cd app
 ./yano.sh start:devnet
 ```
 
-Choose the branch or tag containing the changes you want before building. For current namespace examples, use a checkout containing `org.yanoproject`; pre12 predates that rename.
+Choose the branch or tag containing the changes you want before building. For current namespace examples, use a checkout containing `org.yanoproject`; pre14 and earlier predate that rename (pre15 and later use `org.yanoproject`).
 
 The remaining commands build release-style distributions from the checked-out source tree.
 
@@ -85,6 +85,9 @@ Output:
 app/build/distributions/yano-<version>.zip
 ```
 
+Here `<version>` is the `version` in `gradle.properties` without any
+`-SNAPSHOT` suffix.
+
 The zip contains `yano.jar`, `yano.sh`, config files, network genesis files,
 plugin directory scaffolding, and the JVM-only offline plugin catalog tool under
 `tools/yano-plugins/`. It also contains the repository `LICENSE` and a normalized
@@ -125,7 +128,7 @@ unzip plugin-catalog/build/distributions/yano-plugins-<version>.zip \
 ```
 
 See [`plugin-catalog/README.md`](https://github.com/bloxbean/yano/blob/fd7fe406e9364689a3e829b79f82707488cebf1e/plugin-catalog/README.md) for policy options
-and stable exit codes, and [`PLUGIN_OPERATIONS.md`](/operate/plugins/) for
+and stable exit codes, and the [plugin operations guide](/operate/plugins/) for
 deployment authentication, health, metrics, and dashboard guidance.
 
 Verify the final uber-JAR, its merged catalog/manifests, and JVM directory
@@ -135,10 +138,9 @@ loading with the build-only conformance bundle:
 ./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true
 ```
 
-This task intentionally uses the default
-`includeNativePluginConformanceFixture=false`: the fixture must be absent from
-the application index so startup can prove it was selected from the external
-plugin directory. The task starts an isolated one-member app chain and asserts
+The fixture is never bundled into the application index; the smoke loads it
+only from the external plugin directory, so startup proves it was selected from
+there. The task starts an isolated one-member app chain and asserts
 all ten catalog contribution kinds (`NodePlugin` plus nine typed SPIs),
 protected operations REST, the plugin health group, Prometheus metrics, and
 dashboard assets. The fixture's adversarial TCCL handoff also proves plugin
@@ -164,9 +166,9 @@ app/build/distributions/yano-native-<version>-<platform>.zip
 Examples:
 
 ```text
-yano-native-0.1.0-pre4-macos-arm64.zip
-yano-native-0.1.0-pre4-linux-x64.zip
-yano-native-0.1.0-pre4-linux-arm64.zip
+yano-native-<version>-macos-arm64.zip
+yano-native-<version>-linux-x64.zip
+yano-native-<version>-linux-arm64.zip
 ```
 
 The zip contains the native `yano` executable, `yano.sh`, config files, and
@@ -199,28 +201,9 @@ resulting `app/build/yano` (or `yano.exe`), and only then upload the zip; this
 prevents a distribution-triggered native rebuild from replacing an executable
 that was already tested.
 
-Maintainers can additionally exercise native reachability for every typed
-app-chain plugin SPI with the non-published conformance fixture:
-
-```bash
-./gradlew :app:quarkusBuild \
-  -PincludeNativePluginConformanceFixture=true \
-  -Dquarkus.native.enabled=true \
-  -Dquarkus.package.jar.enabled=false \
-  -PskipSigning=true
-
-./gradlew :app:nativePluginCatalogSmoke \
-  -PincludeNativePluginConformanceFixture=true \
-  -PskipSigning=true
-```
-
-This property is a verification-only build input. Do not use the resulting
-binary as a release artifact; the dedicated CI job neither publishes nor
-packages it. The smoke starts an isolated one-member, no-peer app chain and
-asserts all ten catalog contribution kinds (`NodePlugin` plus nine typed SPIs)
-through structured status, protected operations REST, the plugin health group,
-Prometheus metrics, and dashboard assets. It also retains the
-catalog-provenance and ignored-directory-JAR checks.
+The native smoke also asserts that the build-only plugin conformance fixture is
+absent from the executable: native images embed only retained core providers,
+and the fixture is exercised only by the packaged JVM smoke above.
 
 ## Linux Native Zip From macOS
 
@@ -243,22 +226,26 @@ Build the Docker compose zip:
 
 ```bash
 ./gradlew :app:yanoDockerDistZip \
-  -PyanoDockerReleaseVersion=0.1.0-pre4 \
-  -PyanoDockerImageTag=0.1.0-pre4 \
+  -PyanoDockerReleaseVersion=<version> \
+  -PyanoDockerImageTag=<version> \
   -PskipSigning=true
 ```
+
+Replace `<version>` with the release version the compose files should pin.
+`yanoDockerReleaseVersion` defaults to the `gradle.properties` version without
+`-SNAPSHOT`, and `yanoDockerImageTag` defaults to `latest`.
 
 Output:
 
 ```text
-app/build/distributions/yano-docker-0.1.0-pre4.zip
+app/build/distributions/yano-docker-<version>.zip
 ```
 
 For local Docker image testing, use a local image tag:
 
 ```bash
 ./gradlew :app:yanoDockerDistZip \
-  -PyanoDockerReleaseVersion=0.1.0-pre4 \
+  -PyanoDockerReleaseVersion=<version> \
   -PyanoDockerImageTag=local \
   -PskipSigning=true
 ```
@@ -278,7 +265,7 @@ Docker images are built from Gradle-prepared artifact contexts:
   -Dquarkus.native.enabled=true \
   -Dquarkus.package.jar.enabled=false \
   -Dquarkus.native.container-build=true \
-  -Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25 \
+  -Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25i3 \
   -PskipSigning=true
 ```
 

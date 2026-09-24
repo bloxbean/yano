@@ -31,7 +31,7 @@ Environment aliases explicitly supplied by packaged YAML are preserved in the [g
 | `yano.remote.host` / `port` | Selected upstream connection |
 | `yano.storage.path` | Local node database |
 | `yano.server.port` | Node-to-node server port |
-| `yano.app-chain.storage.path` | Separate app-chain database root |
+| `yano.app-chain.storage.path` | Separate app ledger database root |
 | `yano.block-producer.block-time-millis` | `0` derives timing from genesis |
 | `yano.plugins.directory` | JVM plugin directory |
 

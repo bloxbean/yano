@@ -4,7 +4,7 @@ Understand the preview observation framework and its trust model.
 
 Canonical URL: https://getyano.dev/app-chains/observations/
 
-Certified observations bring bounded reports from configured sources or reporters into an app chain. They are **preview functionality, disabled by default**. Agreement on reports does not establish that a source is correct.
+Certified observations bring bounded reports from configured sources or reporters into an app ledger. They are **preview functionality, disabled by default**. Agreement on reports does not establish that a source is correct.
 
 ## Configure an explicit profile
 

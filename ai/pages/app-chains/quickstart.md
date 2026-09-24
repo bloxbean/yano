@@ -1,16 +1,20 @@
-# Your first app chain
+# Your first app ledger
 
 Start the built-in ordered log and submit your first event.
 
 Canonical URL: https://getyano.dev/app-chains/quickstart/
 
-Download and extract the **[JVM distribution](/start/installation/)**, recommended for app chains for now. From its extracted directory:
+:::caution[Experimental]
+App ledgers are experimental. Configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path. See [what an app ledger is and isn't](/app-chains/overview/).
+:::
+
+Download and extract the **[JVM distribution](/start/installation/)**, recommended for app ledgers for now. From its extracted directory:
 
 ```bash
 ./yano.sh start:devnet,appchain
 ```
 
-This activates the bundled app-chain profile, including `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
+This activates the bundled `appchain` profile, including `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
 
 ## 1. Submit an event
 
@@ -21,11 +25,11 @@ curl -fsS -X POST \
   -d '{"topic":"order-created","body":"order A-1001"}'
 ```
 
-Save the returned `messageId`. The response is HTTP `202`: the event has been accepted, but may not yet be finalized.
+Save the returned `messageId`. The response is HTTP `202`: the event has been accepted, but may not yet be finalized. See [submission responses](/app-chains/ordered-log/#submit-through-rest) for the `400`, `429`, and `503` cases.
 
 ## 2. Read the finalized message
 
-Replace `<message-id>` with the returned value. Query again after the proposer has had time to create a block:
+Replace `<message-id>` with the returned value. The message route returns HTTP `404` until the message is finalized, so `curl -f` fails until then; query again after the proposer has had time to create a block:
 
 ```bash
 curl -fsS   'http://localhost:7070/api/v1/app-chain/chains/orders-chain/messages/<message-id>'

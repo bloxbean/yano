@@ -10,7 +10,8 @@ This guide covers two read-side extension points:
 - the same manifested bundle can publish framework-neutral domain routes that
   call that query through a constrained host facade.
 
-Start with the working project in `scaffolds/plugin-template`. It contains the
+Start with the working project in the Yano X
+[plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template). It contains the
 provider classes, both ServiceLoader descriptors, one manifest, unit tests, and
 a production-catalog launch probe described below.
 
@@ -198,7 +199,7 @@ manifest filename id must all be identical:
   "schemaVersion": 1,
   "id": "com.example.product-passport",
   "version": "1.0.0",
-  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 11 },
   "dependencies": [],
   "contributions": [
     {
@@ -220,7 +221,9 @@ a host API major within `min`/`max` and a host global API level at least
 `minLevel`; an incompatible bundle is rejected before any provider is
 constructed. The level advances for additive public plugin APIs (including new
 contribution kinds) and never resets when the major changes. It is independent
-of the bundle's `version` SemVer.
+of the bundle's `version` SemVer. The sample above matches plugin API major 3,
+level 11; these are API numbers, not release versions, so set them to match the
+plugin API of your target Yano release (`PluginApiVersion` or its release notes).
 
 ServiceLoader remains the behavior-instantiation contract. The manifest is
 identity, compatibility, policy, ownership, and inventory metadata; it is not
@@ -236,7 +239,7 @@ the same JAR; adjacent thin dependency JARs are not one catalog bundle.
 
 Copy the JAR into `yano.plugins.directory`. If an allow-list is configured,
 allow the bundle id. Select the state-machine contribution by its short
-selector on the app chain. The domain contribution is activated as part of the
+selector on the app ledger. The domain contribution is activated as part of the
 selected bundle and is addressed by bundle id.
 
 For privileged routes configure an unscoped full key:
@@ -274,4 +277,5 @@ At minimum:
 
 The scaffold wires steps 1–5 into its Gradle `check` lifecycle and is the
 reference authoring baseline. For event-listener and `NodePlugin` lifecycle
-contributions, see `runtime/docs/events-and-plugins-guide.md`.
+contributions, see the
+[events and plugins guide](https://github.com/bloxbean/yano/blob/main/runtime/docs/events-and-plugins-guide.md).

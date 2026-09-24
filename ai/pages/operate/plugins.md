@@ -124,7 +124,7 @@ across runtime generations.
 Authoritatively absent series are unregistered; explicitly stale sources keep
 their last-good value and stale status.
 
-The app-chain API key does **not** protect `/q/health/group/plugins` or
+The app ledger API key (`yano.app-chain.api.keys`) does **not** protect `/q/health/group/plugins` or
 `/q/metrics`. Restrict management endpoints with the deployment listener,
 firewall, ingress, or authenticated reverse proxy. Do not expose them publicly
 by relying on the plugin operations credential.
