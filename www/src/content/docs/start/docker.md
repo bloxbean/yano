@@ -46,7 +46,13 @@ To run two instances, extract into separate directories and give each a distinct
 `INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT`. Compose uses
 `yano-<INSTANCE_NAME>` as its project name, so stopping one instance does not
 stop another. Separate folders alone are insufficient when their instance names
-are the same. Keep any explicitly configured storage paths separate too.
+are the same; the launcher then refuses to start, restart, or stop the
+container that the other directory owns. Keep any explicitly configured storage
+paths separate too.
+
+Older Compose ZIPs ran every instance as project `compose`. After upgrading a
+directory in place, `./yano.sh start` reports the old container. Run
+`./yano.sh stop` or `./yano.sh restart` from that directory to replace it.
 
 ## Profiles and memory
 
@@ -102,11 +108,12 @@ file; custom networks use paths supplied by the launcher. Inspect the result
 with `./yano.sh config:<profiles>` before starting.
 
 The writable `runtime-data-<network>/` directory holds devnet snapshots, epoch
-checkpoints, and the upstream peer store. It is mounted at `/app/data`, with the
-existing host chainstate directory mounted separately at `/app/data/chainstate`.
-`YANO_RUNTIME_DATA_PATH` overrides the auxiliary data directory. Back up both
-directories. When reusing an older `config/env`, set
-`YANO_STORAGE_PATH=/app/data/chainstate` to match the new mount location.
+checkpoints, the upstream peer store, and the `projection` history archive. It
+is mounted at `/app/data`, with the existing host chainstate directory mounted
+separately at `/app/data/chainstate`. `YANO_RUNTIME_DATA_PATH` overrides the
+auxiliary data directory. Back up both directories. The Compose file sets the
+container storage and history paths, so an older `config/env` does not need
+changes.
 
 On Linux, set `YANO_UID` and `YANO_GID` in `compose/.env` to the owner of the
 writable host directories if it differs from the default `1000:1000`.

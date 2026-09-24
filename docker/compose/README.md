@@ -134,11 +134,13 @@ Set `YANO_APPCHAIN_INDEXER_PATH` for the rebuildable app-chain read-index root.
 Do not place it below either authoritative state directory.
 
 `runtime-data-<network>/` is mounted at `/app/data` for devnet snapshots,
-automatic epoch checkpoints, and the upstream peer store. Override its host path
-with `YANO_RUNTIME_DATA_PATH`. The existing `chainstate-<network>/` directory is
+automatic epoch checkpoints, the upstream peer store, and the `projection`
+history archive (`history/`). Override its host path with
+`YANO_RUNTIME_DATA_PATH`. The existing `chainstate-<network>/` directory is
 mounted inside it at `/app/data/chainstate`, so database files do not move. Keep
-both directories when backing up runtime data. When upgrading an older Compose
-installation, update `config/env` to use `YANO_STORAGE_PATH=/app/data/chainstate`.
+both directories when backing up runtime data. The Compose file sets
+`YANO_STORAGE_PATH` and `YANO_HISTORY_DIR` to these container paths, overriding
+any older values in `config/env`.
 
 For simultaneous instances, use separate extracted directories and set distinct
 `INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT` values in each
@@ -146,6 +148,16 @@ For simultaneous instances, use separate extracted directories and set distinct
 separate folders alone do not distinguish instances. For example, use
 `INSTANCE_NAME=devnet` in one folder and `INSTANCE_NAME=preprod` in another.
 An explicit `COMPOSE_PROJECT_NAME` still overrides the project name.
+
+The launcher manages only the container that this directory's Compose file
+created. If another directory already runs a container with the same name,
+`start`, `restart`, and `stop` exit with an error instead of replacing it.
+
+Bundles without a Compose project name ran every instance as project
+`compose`. After upgrading such a directory in place, `./yano.sh start` reports
+the old container; run `./yano.sh stop` or `./yano.sh restart` to remove it and
+continue under the new project name. If the old container was started from a
+different directory, stop it from that directory.
 If you customize storage paths, give each instance its own `YANO_CHAINSTATE_PATH`,
 `YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH`, and `YANO_APPCHAIN_INDEXER_PATH`.
 

@@ -2,6 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
+set "SCRIPT_NAME=%~nx0"
 set "COMPOSE_FILE=%SCRIPT_DIR%compose\yano.yml"
 set "DEVNET_COMPOSE_FILE=%SCRIPT_DIR%compose\yano-devnet.yml"
 set "MAINNET_COMPOSE_FILE=%SCRIPT_DIR%compose\yano-mainnet.yml"
@@ -64,6 +65,8 @@ if "%ACTION:~0,7%"=="config:" (
 )
 
 if "%ACTION%"=="stop" (
+  call :ensure_container_ownership replace
+  if errorlevel 1 exit /b !ERRORLEVEL!
   docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" down
   exit /b !ERRORLEVEL!
 )
@@ -87,11 +90,15 @@ goto usage
 :start_preprod
 call :prepare_chainstate preprod
 if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership start
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_mainnet
 call :prepare_chainstate mainnet
+if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership start
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%MAINNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
@@ -99,17 +106,23 @@ exit /b !ERRORLEVEL!
 :start_preview
 call :prepare_chainstate preview
 if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership start
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%PREVIEW_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_sanchonet
 call :prepare_chainstate sanchonet
 if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership start
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%SANCHONET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :start_devnet
 call :prepare_chainstate devnet
+if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership start
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%DEVNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
@@ -119,11 +132,15 @@ call :prepare_custom_profile
 if errorlevel 1 exit /b !ERRORLEVEL!
 call :prepare_chainstate "%CUSTOM_PROFILE%"
 if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership start
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
 exit /b !ERRORLEVEL!
 
 :restart_preprod
 call :prepare_chainstate preprod
+if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership replace
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
@@ -133,6 +150,8 @@ exit /b !ERRORLEVEL!
 :restart_mainnet
 call :prepare_chainstate mainnet
 if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership replace
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%MAINNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%MAINNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
@@ -140,6 +159,8 @@ exit /b !ERRORLEVEL!
 
 :restart_preview
 call :prepare_chainstate preview
+if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership replace
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%PREVIEW_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
@@ -149,6 +170,8 @@ exit /b !ERRORLEVEL!
 :restart_sanchonet
 call :prepare_chainstate sanchonet
 if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership replace
+if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%SANCHONET_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%SANCHONET_COMPOSE_FILE%" --env-file "%ENV_FILE%" up -d
@@ -156,6 +179,8 @@ exit /b !ERRORLEVEL!
 
 :restart_devnet
 call :prepare_chainstate devnet
+if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership replace
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" -f "%DEVNET_COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
@@ -166,6 +191,8 @@ exit /b !ERRORLEVEL!
 call :prepare_custom_profile
 if errorlevel 1 exit /b !ERRORLEVEL!
 call :prepare_chainstate "%CUSTOM_PROFILE%"
+if errorlevel 1 exit /b !ERRORLEVEL!
+call :ensure_container_ownership replace
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" down
 if errorlevel 1 exit /b !ERRORLEVEL!
@@ -200,6 +227,43 @@ exit /b !ERRORLEVEL!
 call :prepare_custom_profile
 if errorlevel 1 exit /b !ERRORLEVEL!
 docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" config
+exit /b !ERRORLEVEL!
+
+:ensure_container_ownership
+rem This launcher manages only the container created from this directory's Compose file.
+rem "start" refuses any other container with the configured name. "replace" (stop and
+rem restart) also removes this directory's container when it belongs to an older project
+rem name, such as "compose" from bundles that did not name their Compose project.
+set "EXPECTED_PROJECT="
+set "OWNED_CONTAINER="
+for /f "usebackq tokens=1,*" %%A in (`docker compose -f "%COMPOSE_FILE%" --env-file "%ENV_FILE%" config 2^>nul`) do (
+  if "%%A"=="name:" if not defined EXPECTED_PROJECT set "EXPECTED_PROJECT=%%B"
+  if "%%A"=="container_name:" if not defined OWNED_CONTAINER set "OWNED_CONTAINER=%%B"
+)
+if not defined EXPECTED_PROJECT exit /b 0
+if not defined OWNED_CONTAINER exit /b 0
+set "EXISTING_PROJECT="
+set "EXISTING_FILES="
+for /f "delims=" %%P in ('docker container inspect --format "{{index .Config.Labels `com.docker.compose.project`}}" "!OWNED_CONTAINER!" 2^>nul') do set "EXISTING_PROJECT=%%P"
+if not defined EXISTING_PROJECT exit /b 0
+for /f "delims=" %%F in ('docker container inspect --format "{{index .Config.Labels `com.docker.compose.project.config_files`}}" "!OWNED_CONTAINER!" 2^>nul') do set "EXISTING_FILES=%%F"
+set "OTHER_FILES=!EXISTING_FILES:%COMPOSE_FILE%=!"
+if "!OTHER_FILES!"=="!EXISTING_FILES!" (
+  echo Container !OWNED_CONTAINER! is not managed by this directory.
+  echo Compose project: !EXISTING_PROJECT!; files: !EXISTING_FILES!
+  echo Set a distinct INSTANCE_NAME in %ENV_FILE%, or stop that instance from its own directory.
+  exit /b 1
+)
+if /i "!EXISTING_PROJECT!"=="!EXPECTED_PROJECT!" exit /b 0
+if not "%~1"=="replace" (
+  echo Container !OWNED_CONTAINER! was started from this directory as Compose project '!EXISTING_PROJECT!'.
+  echo Run '%SCRIPT_NAME% stop' or '%SCRIPT_NAME% restart' to replace it with project '!EXPECTED_PROJECT!'.
+  exit /b 1
+)
+echo Removing container !OWNED_CONTAINER! from Compose project '!EXISTING_PROJECT!'.
+docker stop "!OWNED_CONTAINER!" >nul
+if errorlevel 1 exit /b !ERRORLEVEL!
+docker rm "!OWNED_CONTAINER!" >nul
 exit /b !ERRORLEVEL!
 
 :prepare_custom_profile

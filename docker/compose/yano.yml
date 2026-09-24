@@ -13,6 +13,9 @@ services:
       JAVA_OPTS: ${JAVA_OPTS:-}
       YANO_NATIVE_MAX_HEAP: ${YANO_NATIVE_MAX_HEAP:-1536m}
       YANO_EXTRA_ARGS: ${YANO_EXTRA_ARGS:-}
+      # Fixed by the mounts below; these override any older value in config/env.
+      YANO_STORAGE_PATH: /app/data/chainstate
+      YANO_HISTORY_DIR: /app/data/history
     ports:
       - "${YANO_HTTP_PORT:-7070}:7070"
       - "${YANO_N2N_PORT:-13337}:13337"

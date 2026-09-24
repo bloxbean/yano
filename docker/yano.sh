@@ -231,6 +231,48 @@ prepare_chainstate_for_profiles() {
   ensure_appchain_indexer_dir "$profile"
 }
 
+container_label() {
+  docker container inspect --format "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null
+}
+
+# The launcher manages only the container created from this directory's Compose file.
+# "start" refuses any other container with the configured name. "replace" (stop and
+# restart) also removes this directory's container when it belongs to an older project
+# name, such as "compose" from bundles that did not name their Compose project.
+ensure_container_ownership() {
+  mode="$1"
+  identity="$(compose config 2>/dev/null | sed -n -e 's/^name: *//p' -e 's/^ *container_name: *//p')"
+  expected_project="$(printf '%s\n' "$identity" | sed -n 1p)"
+  container="$(printf '%s\n' "$identity" | sed -n 2p)"
+  if [ -z "$expected_project" ] || [ -z "$container" ]; then
+    return 0
+  fi
+
+  existing_project="$(container_label "$container" com.docker.compose.project)" || return 0
+  existing_files="$(container_label "$container" com.docker.compose.project.config_files)"
+  case ",$existing_files," in
+    *",$COMPOSE_FILE,"*) ;;
+    *)
+      echo "Container $container is not managed by this directory." >&2
+      echo "Compose project: $existing_project; files: $existing_files" >&2
+      echo "Set a distinct INSTANCE_NAME in $ENV_FILE, or stop that instance from its own directory." >&2
+      exit 1
+      ;;
+  esac
+
+  if [ "$existing_project" = "$expected_project" ]; then
+    return 0
+  fi
+  if [ "$mode" != "replace" ]; then
+    echo "Container $container was started from this directory as Compose project '$existing_project'." >&2
+    echo "Run '$0 stop' or '$0 restart' to replace it with project '$expected_project'." >&2
+    exit 1
+  fi
+  echo "Removing container $container from Compose project '$existing_project'."
+  docker stop "$container" >/dev/null
+  docker rm "$container" >/dev/null
+}
+
 compose_network() {
   profile_list="$1"
   shift
@@ -238,7 +280,12 @@ compose_network() {
   network="$(primary_profile "$profile_list")"
   validate_profile_name "$network"
 
+  if [ "${1:-}" = "down" ]; then
+    ensure_container_ownership replace
+  fi
+
   if [ "${1:-}" = "up" ]; then
+    ensure_container_ownership start
     ensure_chainstate_dir "$network"
     ensure_runtime_data_dir "$network"
     ensure_appchain_state_dir "$network"
@@ -323,6 +370,7 @@ case "$ACTION" in
     compose_network "${ACTION#start:}" up -d
     ;;
   stop)
+    ensure_container_ownership replace
     compose down
     ;;
   restart)
