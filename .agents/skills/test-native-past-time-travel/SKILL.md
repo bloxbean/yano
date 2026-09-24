@@ -1,21 +1,21 @@
 ---
-name: test-native-haskell-sync
-description: Regression test: Yano devnet (GraalVM native) in regular block-producer mode with a Haskell cardano-node following it; verify lock-step sync for 2 epochs. Runs release-QA test haskell-sync-native.
+name: test-native-past-time-travel
+description: Regression test: Yano devnet (GraalVM native) in past-time-travel mode; shift epochs, catch up to wall clock, verify a Haskell cardano-node syncs from slot 0. Runs release-QA test past-time-travel-native.
 ---
 
-# Yano to Haskell sync (native)
+# Past time travel with Haskell sync (native)
 
 ## Run it
 
 ```bash
-qa/release-qa.sh --only haskell-sync-native
+qa/release-qa.sh --only past-time-travel-native
 ```
 
 Run it with `run_in_background` and wait for the completion notification; do not poll.
 The script builds Yano if the cached build in `qa/work/bin` is not from the current
 commit and working tree (building the JVM jar and native binary), runs on the isolated harness ports listed in
 `qa/README.md`, and only kills processes it started. Nodes already running
-on 7070/13337 are never touched. Expected time: about 10 minutes, plus the native build if needed.
+on 7070/13337 are never touched. Expected time: about 5 minutes, plus the native build if needed.
 
 If it exits 3, pre-flight failed (a missing tool or a busy harness port): report what it
 printed and stop. Do not kill whatever holds the port.
@@ -31,11 +31,9 @@ printed and stop. Do not kill whatever holds the port.
 
 ## What it checks
 
-- Same as `test-haskell-sync` on the native binary: Haskell tip at slot 2400 or later,
-  matching block hash, no Haskell error lines.
-- Also reports native-image initialization errors in the Yano log.
+- Same checks as `test-past-time-travel`, on the native binary.
 
-Harness: `qa/harness/haskell-sync.sh native`.
+Harness: `qa/harness/past-time-travel.sh native`.
 
 ## Report
 
@@ -48,4 +46,4 @@ Read `qa/results/<run-id>/report.md` (the newest directory under `qa/results/`) 
 
 To investigate a failure, read those logs before re-running. Do not change the harness
 to make a test pass; report what failed. The full orchestrated suite is the
-`release-qa` skill.
+`release-qa` skill (`.agents/skills/release-qa`).

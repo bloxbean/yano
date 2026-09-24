@@ -1,21 +1,21 @@
 ---
-name: test-native-haskell-sync
-description: Regression test: Yano devnet (GraalVM native) in regular block-producer mode with a Haskell cardano-node following it; verify lock-step sync for 2 epochs. Runs release-QA test haskell-sync-native.
+name: test-all-haskell-regressions
+description: Regression suite: runs the four Yano-to-Haskell sync tests (JVM and native Haskell sync, JVM and native past time travel) and produces one combined report. Runs release-QA tests haskell-sync-* and past-time-travel-*.
 ---
 
-# Yano to Haskell sync (native)
+# All Haskell sync regressions
 
 ## Run it
 
 ```bash
-qa/release-qa.sh --only haskell-sync-native
+qa/release-qa.sh --only haskell-sync-jvm,haskell-sync-native,past-time-travel-jvm,past-time-travel-native
 ```
 
 Run it with `run_in_background` and wait for the completion notification; do not poll.
 The script builds Yano if the cached build in `qa/work/bin` is not from the current
 commit and working tree (building the JVM jar and native binary), runs on the isolated harness ports listed in
 `qa/README.md`, and only kills processes it started. Nodes already running
-on 7070/13337 are never touched. Expected time: about 10 minutes, plus the native build if needed.
+on 7070/13337 are never touched. Expected time: about 30-40 minutes, plus the native build if needed.
 
 If it exits 3, pre-flight failed (a missing tool or a busy harness port): report what it
 printed and stop. Do not kill whatever holds the port.
@@ -31,11 +31,9 @@ printed and stop. Do not kill whatever holds the port.
 
 ## What it checks
 
-- Same as `test-haskell-sync` on the native binary: Haskell tip at slot 2400 or later,
-  matching block hash, no Haskell error lines.
-- Also reports native-image initialization errors in the Yano log.
-
-Harness: `qa/harness/haskell-sync.sh native`.
+Runs, in this order and one at a time: `test-haskell-sync`, `test-native-haskell-sync`,
+`test-past-time-travel`, `test-native-past-time-travel`. A failure does not stop the
+remaining tests. See each skill for its pass criteria.
 
 ## Report
 

@@ -1,42 +1,40 @@
 ---
-name: test-app-chain-cluster
-description: App-chain smoke test: two-node Yano app-chain cluster on devnet (proposer + member, L1 anchoring on); submit messages, verify sequenced blocks, state roots, finality certificates, MPF proofs and the L1 anchor on both nodes. Runs release-QA test appchain-cluster.
+name: test-app-chain-rotation-governance
+description: Regression test: two-node Yano devnet app chain with a rotating sequencer and governed membership; verify proposership rotates across L1-slot windows and a governed member-add activates identically on both nodes. Runs release-QA test appchain-rotation-governance.
 ---
 
-# App-chain cluster
+# App-chain rotation and governance
 
 ## Run it
 
 ```bash
-qa/release-qa.sh --only appchain-cluster
+qa/release-qa.sh --only appchain-rotation-governance
 ```
 
 Run it with `run_in_background` and wait for the completion notification; do not poll.
 The script builds Yano if the cached build in `qa/work/bin` is not from the current
 commit and working tree (building only the JVM jar), runs on the isolated harness ports listed in
 `qa/README.md`, and only kills processes it started. Nodes already running
-on 7070/13337 are never touched. Expected time: about 3-5 minutes.
+on 7070/13337 are never touched. Expected time: about 4-6 minutes.
 
 If it exits 3, pre-flight failed (a missing tool or a busy harness port): report what it
 printed and stop. Do not kill whatever holds the port.
 
 ## What it checks
 
-Node A (proposer, anchoring) and node B (member, L1 follower of A) run on the harness
-ports with the required state triple, per-node storage and an admin API key. Checks:
+- Rotating mode with a positive window, proposer in {A, B}, no split votes; peers connected.
+- Tips identical; every block has 2 or more certificate signatures; at least 2 distinct
+  proposers across blocks.
+- One approval alone changes nothing; the governed member-add activates on both nodes
+  (3 members) at the same activation height.
+- Ordinary messages still finalize afterwards; final tips identical.
 
-- A is proposer, B is member, peers connected both ways, sequencing on.
-- Tips equal with identical state root; block 1 has identical roots, 2 or more certificate
-  signatures, and A as proposer.
-- Each node's message is visible on the other with source `PEER`; an MPF proof for A's
-  message is served by B.
-- An anchor is confirmed on L1; final tips identical; L1 in lock-step and advancing.
-
-Harness: `qa/harness/appchain-cluster.sh`.
+Harness: `qa/harness/appchain-rotation-governance.sh` (window 50 slots, about 10 s at 0.2 s slots).
 
 ## Notes
 
 B logs a few "empty chain state" ERRORs while it starts; they are expected.
+On a slow host, widen the rotation window with `WINDOW=<slots>` (default 50, about 10 s).
 
 ## Report
 
@@ -49,4 +47,4 @@ Read `qa/results/<run-id>/report.md` (the newest directory under `qa/results/`) 
 
 To investigate a failure, read those logs before re-running. Do not change the harness
 to make a test pass; report what failed. The full orchestrated suite is the
-`release-qa` skill.
+`release-qa` skill (`.agents/skills/release-qa`).

@@ -49,4 +49,4 @@ Read `qa/results/<run-id>/report.md` (the newest directory under `qa/results/`) 
 
 To investigate a failure, read those logs before re-running. Do not change the harness
 to make a test pass; report what failed. The full orchestrated suite is the
-`release-qa` skill.
+`release-qa` skill (`.agents/skills/release-qa`).
