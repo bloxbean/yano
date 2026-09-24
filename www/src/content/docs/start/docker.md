@@ -47,7 +47,8 @@ To run two instances, extract into separate directories and give each a distinct
 `yano-<INSTANCE_NAME>` as its project name, so stopping one instance does not
 stop another. Separate folders alone are insufficient when their instance names
 are the same; the launcher then refuses to start, restart, or stop the
-container that the other directory owns. Keep any explicitly configured storage
+container that the other directory owns. The same applies if you set
+`COMPOSE_PROJECT_NAME`: each directory needs its own value. Keep any explicitly configured storage
 paths separate too.
 
 Older Compose ZIPs ran every instance as project `compose`. After upgrading a

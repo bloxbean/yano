@@ -147,7 +147,9 @@ For simultaneous instances, use separate extracted directories and set distinct
 `compose/.env`. The Compose project is named `yano-${INSTANCE_NAME:-default}`;
 separate folders alone do not distinguish instances. For example, use
 `INSTANCE_NAME=devnet` in one folder and `INSTANCE_NAME=preprod` in another.
-An explicit `COMPOSE_PROJECT_NAME` still overrides the project name.
+An explicit `COMPOSE_PROJECT_NAME` still overrides the project name; give each
+directory its own value, because the launcher refuses to act on a project that
+already holds another directory's container.
 
 The launcher manages only the container that this directory's Compose file
 created. If another directory already runs a container with the same name,

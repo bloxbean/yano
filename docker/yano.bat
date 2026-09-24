@@ -242,6 +242,12 @@ for /f "usebackq tokens=1,*" %%A in (`docker compose -f "%COMPOSE_FILE%" --env-f
 )
 if not defined EXPECTED_PROJECT exit /b 0
 if not defined OWNED_CONTAINER exit /b 0
+rem Compose acts on every container in the project, so a project shared with another
+rem directory (the same COMPOSE_PROJECT_NAME) would let it stop or replace that container.
+for /f "delims=" %%C in ('docker ps -aq --filter "label=com.docker.compose.project=!EXPECTED_PROJECT!" 2^>nul') do (
+  call :check_project_member %%C
+  if errorlevel 1 exit /b 1
+)
 set "EXISTING_PROJECT="
 set "EXISTING_FILES="
 for /f "delims=" %%P in ('docker container inspect --format "{{index .Config.Labels `com.docker.compose.project`}}" "!OWNED_CONTAINER!" 2^>nul') do set "EXISTING_PROJECT=%%P"
@@ -266,6 +272,24 @@ if errorlevel 1 exit /b !ERRORLEVEL!
 docker rm "!OWNED_CONTAINER!" >nul
 exit /b !ERRORLEVEL!
 
+:check_project_member
+set "MEMBER_FILES="
+for /f "delims=" %%F in ('docker container inspect --format "{{index .Config.Labels `com.docker.compose.project.config_files`}}" "%~1" 2^>nul') do set "MEMBER_FILES=%%F"
+set "OTHER_FILES=!MEMBER_FILES:%COMPOSE_FILE%=!"
+if not "!OTHER_FILES!"=="!MEMBER_FILES!" exit /b 0
+set "MEMBER_NAME="
+for /f "delims=" %%N in ('docker container inspect --format "{{.Name}}" "%~1" 2^>nul') do set "MEMBER_NAME=%%N"
+echo Compose project '!EXPECTED_PROJECT!' already has container !MEMBER_NAME:~1! from another directory.
+echo Files: !MEMBER_FILES!
+set "SHARED_PROJECT_NAME=%COMPOSE_PROJECT_NAME%"
+if not defined SHARED_PROJECT_NAME call :read_env_value COMPOSE_PROJECT_NAME SHARED_PROJECT_NAME
+if defined SHARED_PROJECT_NAME (
+  echo Give each directory its own project: set a distinct COMPOSE_PROJECT_NAME in %ENV_FILE%,
+  echo or remove COMPOSE_PROJECT_NAME so the project follows INSTANCE_NAME.
+) else (
+  echo Give each directory its own project: set a distinct INSTANCE_NAME in %ENV_FILE%.
+)
+exit /b 1
 :prepare_custom_profile
 if "%CUSTOM_PROFILE%"=="" (
   echo Invalid profile name: %CUSTOM_PROFILE%

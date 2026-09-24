@@ -34,6 +34,7 @@ printed and stop.
 - An edited `application-devnet.yml` and a new `application-qaprobe.yml` take effect.
 - Instance ownership: a second folder with the same `INSTANCE_NAME` is refused on start,
   stop and restart; distinct names run side by side; stopping one leaves the other.
+  Folders sharing a `COMPOSE_PROJECT_NAME` are refused the same way.
 - An older `config/env` with `YANO_STORAGE_PATH=/app/chainstate` still resumes the chain.
 - A fresh bundle with `devnet,projection` writes history to `runtime-data-devnet/history`
   (history must be enabled from genesis, so it does not reuse the first node).

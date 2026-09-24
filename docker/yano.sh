@@ -248,6 +248,27 @@ ensure_container_ownership() {
     return 0
   fi
 
+  # Compose acts on every container in the project, so a project shared with another
+  # directory (the same COMPOSE_PROJECT_NAME) would let it stop or replace that container.
+  for member in $(docker ps -aq --filter "label=com.docker.compose.project=$expected_project"); do
+    member_files="$(container_label "$member" com.docker.compose.project.config_files)"
+    case ",$member_files," in
+      *",$COMPOSE_FILE,"*) ;;
+      *)
+        member_name="$(docker container inspect --format '{{.Name}}' "$member" 2>/dev/null)"
+        echo "Compose project '$expected_project' already has container ${member_name#/} from another directory." >&2
+        echo "Files: $member_files" >&2
+        if [ -n "${COMPOSE_PROJECT_NAME:-}" ] || [ -n "$(env_file_value COMPOSE_PROJECT_NAME)" ]; then
+          echo "Give each directory its own project: set a distinct COMPOSE_PROJECT_NAME in $ENV_FILE," >&2
+          echo "or remove COMPOSE_PROJECT_NAME so the project follows INSTANCE_NAME." >&2
+        else
+          echo "Give each directory its own project: set a distinct INSTANCE_NAME in $ENV_FILE." >&2
+        fi
+        exit 1
+        ;;
+    esac
+  done
+
   existing_project="$(container_label "$container" com.docker.compose.project)" || return 0
   existing_files="$(container_label "$container" com.docker.compose.project.config_files)"
   case ",$existing_files," in

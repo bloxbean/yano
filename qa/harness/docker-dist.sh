@@ -109,7 +109,7 @@ extract_bundle "$B" qa-docker-a $HB $NB
 for action in start:devnet stop restart:devnet; do
   OUTB=$(cd "$B" && ./yano.sh $action 2>&1); rc=$?
   check "same INSTANCE_NAME in another folder: $action refused" \
-    $([ $rc != 0 ] && echo "$OUTB" | grep -q 'not managed by this directory'; echo $?)
+    $([ $rc != 0 ] && echo "$OUTB" | grep -q 'distinct INSTANCE_NAME'; echo $?)
 done
 check "first instance still running" $([ "$(docker inspect -f '{{.State.Running}}' yano-qa-docker-a)" = true ]; echo $?)
 set_env "$B" INSTANCE_NAME qa-docker-b; QA_CONTAINERS="$QA_CONTAINERS yano-qa-docker-b"
@@ -117,6 +117,16 @@ set_env "$B" INSTANCE_NAME qa-docker-b; QA_CONTAINERS="$QA_CONTAINERS yano-qa-do
 check "distinct INSTANCE_NAME runs side by side" $?
 (cd "$B" && ./yano.sh stop) >> "$RUN/b-start.log" 2>&1
 check "stopping the second leaves the first running" \
+  $([ "$(docker inspect -f '{{.State.Running}}' yano-qa-docker-a 2>/dev/null)" = true ]; echo $?)
+# A shared COMPOSE_PROJECT_NAME with distinct instance names must also be refused.
+set_env "$A" COMPOSE_PROJECT_NAME yano-qa-docker-shared; set_env "$B" COMPOSE_PROJECT_NAME yano-qa-docker-shared
+(cd "$A" && ./yano.sh restart:devnet) >> "$RUN/a-start.log" 2>&1; wait_http_ready $HA 120
+for action in start:devnet stop restart:devnet; do
+  OUTB=$(cd "$B" && ./yano.sh $action 2>&1); rc=$?
+  check "shared COMPOSE_PROJECT_NAME: $action refused" \
+    $([ $rc != 0 ] && echo "$OUTB" | grep -q 'COMPOSE_PROJECT_NAME'; echo $?)
+done
+check "first instance survives the shared-project attempts" \
   $([ "$(docker inspect -f '{{.State.Running}}' yano-qa-docker-a 2>/dev/null)" = true ]; echo $?)
 (cd "$A" && ./yano.sh stop) >> "$RUN/a-start.log" 2>&1
 check "yano.sh stop removes the container" $(docker inspect yano-qa-docker-a >/dev/null 2>&1; [ $? != 0 ]; echo $?)
