@@ -96,7 +96,10 @@ PID_FILE="$RUN_DIR/started-pids"
 : > "$PID_FILE"
 export PID_FILE YANO_JAR PROJECT_ROOT
 
-trap 'log "cleanup: stopping processes started by this run"; cleanup_tracked' EXIT INT TERM
+trap 'log "cleanup: stopping processes started by this run"; cleanup_tracked' EXIT
+# Exit on a signal so the EXIT trap cleans up and no further case starts.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --- pre-flight -------------------------------------------------------------
 command -v java >/dev/null || die "java not on PATH"
