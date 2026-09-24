@@ -30,10 +30,11 @@ package for the local OS/CPU.
 
 ## Use An Exact Version
 
-To test a specific release:
+To test a specific release, replace `<version>` with a published version (see
+`npm view @bloxbean/yano-testkit versions`):
 
 ```bash
-npm install --save-dev @bloxbean/yano-testkit@0.1.0-pre7
+npm install --save-dev @bloxbean/yano-testkit@<version>
 npm test
 ```
 

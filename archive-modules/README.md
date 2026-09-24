@@ -81,8 +81,8 @@ History is disabled by default. The JVM distribution includes the optional
 ./yano.sh start:preprod,projection
 ```
 
-For stake-address transaction history without the other block sections, the
-`wallet` profile selects `address-transaction:v1` alone:
+The `wallet` profile does not enable the archive. It enables the wallet
+discovery and scan indexes instead:
 
 ```bash
 ./yano.sh start:preprod,wallet

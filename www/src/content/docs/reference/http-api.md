@@ -28,6 +28,8 @@ Download the schema from **your actual binary**:
 curl -fsS 'http://localhost:7070/q/openapi?format=json' -o yano-openapi.json
 ```
 
+The main route families under the prefix are `node`, `status`, `blocks`, `epochs`, `accounts`, `addresses`, `utxos`, `credentials`, `txs`, `tx`, `utils/txs`, `scripts`, `governance`, `network`, `genesis`, `events` (SSE), `history`, `devnet`, `app-chain`, `plugins/{bundleId}`, `plugin-operations`, and `admin/mempool/transactions`.
+
 The site provides a [source-derived route inventory](/ai/routes.json), not a substitute for a complete OpenAPI schema. Routes can be feature-gated, require credentials, or return unavailable when required data is absent.
 
 ## Common requests

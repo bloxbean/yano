@@ -6,7 +6,8 @@ This guide covers ADR-011.3's two read-side extension points:
 - the same manifested bundle can publish framework-neutral domain routes that
   call that query through a constrained host facade.
 
-Start with the working project in `scaffolds/plugin-template`. It contains the
+Start with the working project in the Yano X
+[plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template). It contains the
 provider classes, both ServiceLoader descriptors, one manifest, unit tests, and
 a production-catalog launch probe described below.
 
@@ -194,7 +195,7 @@ manifest filename id must all be identical:
   "schemaVersion": 1,
   "id": "com.example.product-passport",
   "version": "1.0.0",
-  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 11 },
   "dependencies": [],
   "contributions": [
     {
@@ -216,7 +217,9 @@ a host API major within `min`/`max` and a host global API level at least
 `minLevel`; an incompatible bundle is rejected before any provider is
 constructed. The level advances for additive public plugin APIs (including new
 contribution kinds) and never resets when the major changes. It is independent
-of the bundle's `version` SemVer.
+of the bundle's `version` SemVer. The sample above matches plugin API major 3,
+level 11; these are API numbers, not release versions, so set them to match the
+plugin API of your target Yano release (`PluginApiVersion` or its release notes).
 
 ServiceLoader remains the behavior-instantiation contract. The manifest is
 identity, compatibility, policy, ownership, and inventory metadata; it is not

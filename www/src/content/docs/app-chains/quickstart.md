@@ -22,11 +22,11 @@ curl -fsS -X POST \
   -d '{"topic":"order-created","body":"order A-1001"}'
 ```
 
-Save the returned `messageId`. The response is HTTP `202`: the event has been accepted, but may not yet be finalized.
+Save the returned `messageId`. The response is HTTP `202`: the event has been accepted, but may not yet be finalized. See [submission responses](/app-chains/ordered-log/#submit-through-rest) for the `400`, `429`, and `503` cases.
 
 ## 2. Read the finalized message
 
-Replace `<message-id>` with the returned value. Query again after the proposer has had time to create a block:
+Replace `<message-id>` with the returned value. The message route returns HTTP `404` until the message is finalized, so `curl -f` fails until then; query again after the proposer has had time to create a block:
 
 ```bash
 curl -fsS   'http://localhost:7070/api/v1/app-chain/chains/orders-chain/messages/<message-id>'

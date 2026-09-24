@@ -26,16 +26,11 @@ transaction submission, and assertions.
 ## Install
 
 ```bash
-npm install --save-dev @bloxbean/yano-testkit
-```
-
-For preview releases:
-
-```bash
 npm install --save-dev @bloxbean/yano-testkit@preview
 ```
 
-The `latest` npm tag is reserved for stable releases. Until a stable package is
+The `latest` npm tag is reserved for stable releases and does not currently
+resolve to a working testkit or platform package. Until a stable package is
 promoted, install prereleases explicitly with `@preview`.
 
 The package depends on optional platform packages that contain the native Yano

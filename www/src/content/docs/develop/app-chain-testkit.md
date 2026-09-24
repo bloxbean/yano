@@ -5,7 +5,7 @@ sidebar:
   order: 7
 ---
 
-`org.yanoproject:yano-appchain-testkit` provides a JUnit 5 extension with generated member keys, temporary ledgers, and real socket connections between embedded nodes.
+`org.yanoproject:yano-appchain-core-testkit` provides a JUnit 5 extension with generated member keys, temporary ledgers, and real socket connections between embedded nodes.
 
 ```java
 import org.yanoproject.appchain.testkit.AppChainCluster;
@@ -28,4 +28,4 @@ class SharedLogTest {
 
 This is an integration fixture, not a simulation of Byzantine peers, adversarial timing, L1 rollback, or production load. Add workload-specific assertions and separate tests for those concerns.
 
-For effect executor plugins, the module also supplies provider-neutral conformance suites and an `EffectRuntimeHarness`. See the module source and contracts in the [repository](https://github.com/bloxbean/yano/tree/fd7fe406e9364689a3e829b79f82707488cebf1e/appchain/appchain-testkit).
+Effect executor conformance suites and the `EffectRuntimeHarness` moved to Yano X: use `org.yanoproject.x:yano-x-effects-testkit` ([source](https://github.com/bloxbean/yano-x/tree/main/sdk/effects-testkit)). See the module source in the [repository](https://github.com/bloxbean/yano/tree/main/appchain/appchain-testkit).

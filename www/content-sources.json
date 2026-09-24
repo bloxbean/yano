@@ -33,10 +33,12 @@
     "docs/mempool-administration.md"
   ],
   "app-chains/ordered-log": [
-    "docs/appchain/state-machines/ordered-log.md"
+    "docs/appchain/state-machines/ordered-log.md",
+    "docs/appchain/submission.md"
   ],
   "app-chains/consensus": [
-    "docs/APP_CHAIN_CONSENSUS_GUIDE.md"
+    "docs/APP_CHAIN_CONSENSUS_GUIDE.md",
+    "docs/appchain/submission.md"
   ],
   "operate/console": [
     "docs/console-ui.md"
@@ -63,7 +65,8 @@
   ],
   "develop/transactions": [
     "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
-    "app/bin/yano.sh"
+    "app/bin/yano.sh",
+    "app/src/main/java/org/yanoproject/app/YanoProducer.java"
   ],
   "app-chains/overview": [
     "appchain/README.md",
@@ -90,7 +93,7 @@
     "app/src/main/resources/application.yml"
   ],
   "start/quickstart": [
-    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre15",
+    "https://github.com/bloxbean/yano/releases/latest",
     "app/bin/yano.sh"
   ],
   "start/runtime-profiles": [
@@ -103,12 +106,14 @@
     "app/config/application-wallet.yml"
   ],
   "start/installation": [
-    "https://github.com/bloxbean/yano/releases/tag/v0.1.0-pre15",
+    "https://github.com/bloxbean/yano/releases/latest",
     "app/bin/yano.sh"
   ],
   "operate/troubleshooting": [
     "README.md",
-    "app/src/main/resources/application.yml"
+    "app/src/main/resources/application.yml",
+    "app/src/main/java/org/yanoproject/app/YanoResource.java",
+    "app/src/main/java/org/yanoproject/app/api/status/StatusResource.java"
   ],
   "operate/upgrades": [
     "docs/UPGRADING.md",

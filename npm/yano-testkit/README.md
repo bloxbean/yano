@@ -11,15 +11,12 @@ For a detailed JavaScript developer guide, see
 ## Install
 
 ```bash
-npm install --save-dev @bloxbean/yano-testkit
+npm install --save-dev @bloxbean/yano-testkit@preview
 ```
 
 Preview releases are published under the `preview` tag until the first stable
-release promotes a version to `latest`:
-
-```bash
-npm install --save-dev @bloxbean/yano-testkit@preview
-```
+release promotes a version to `latest`. Until then, `latest` does not resolve to
+a working testkit, so install with `@preview`.
 
 The package resolves a platform-specific native Yano binary from optional npm
 packages. For local development before publishing those packages, set

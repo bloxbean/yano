@@ -8,7 +8,9 @@ sidebar:
 The Yano distribution embeds the unified console. Start Yano and open
 `http://127.0.0.1:7070/ui/`. The node, app-chain, plugin, and observability
 routes are real static paths, so `/ui/status/`, `/ui/app-chain/`,
-`/ui/plugins/`, and `/ui/observability/` can be bookmarked directly.
+`/ui/plugins/`, and `/ui/observability/` can be bookmarked directly, as can the
+app-chain views `/ui/app-chain/authenticated-map/`,
+`/ui/app-chain/cardano-history/`, and `/ui/app-chain/eutxo/`.
 
 The connection panel accepts a Yano API base and an optional API key. Keys
 remain in memory unless the operator explicitly opts into browser-local

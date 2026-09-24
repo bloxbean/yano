@@ -7,8 +7,9 @@ sidebar:
 
 Code pointers use class names — start at
 `runtime/.../appchain/AppChainEngine.java` (consensus core),
-`core-api/.../appchain/` (SPI + codecs), and `runtime/.../OrderedLog.java`
-(the one built-in state machine).
+`core-api/.../appchain/` (SPI + codecs), and
+`runtime/.../appchain/OrderedLogStateMachine.java` (the one built-in state
+machine, whose transition logic is `core-api/.../appchain/transition/OrderedLogKernel.java`).
 
 ---
 
@@ -61,11 +62,13 @@ Code pointers use class names — start at
 submit (REST / SDK / gossip)
   → envelope auth: member Ed25519 signature, message-id integrity
   → transport limits: size (chain max-message-bytes), TTL cap
-  → state machine validate()      ← application admission (reject = 400)
+  → local sequenced submission: validateForBlock(next height, committed snapshot)
+                                 ← declared application rejection = 400
   → pool (backpressure: full pool = 429 + counted gossip drops)
   → gossip to app peers (dedup by message-id)
   → proposer selects into a block  (drops: finalized dupes, stale
-     sender-seqs, machine-rejected; ~system topics bypass validate)
+     sender-seqs, machine-rejected; revalidates at actual candidate height/state;
+     ~system topics bypass ordinary application admission)
   → consensus round (§4)          ← the only place messages become canonical
   → finalized: indexed by id/topic/sender, applied to state, streamed to
      SSE/webhooks/Kafka, provable via MPF, eventually anchored to L1
@@ -75,6 +78,13 @@ Two distinct rejection tiers exist by design (§8.2): *admission* keeps junk
 out of blocks (node-local, fast, can be re-tried), while *apply* is
 consensus-enforced and never rejects — a finalized message that violates a
 business rule is a **deterministic no-op** on every member.
+
+The early application callback applies to local submissions on every sequenced
+machine, not inbound gossip or explicit diffusion-only mode. **202** is only a
+local acceptance acknowledgement; a declared rejection returns **400** with a
+`code`, unexpected callback failures produce generic **503**, and full-pool
+submissions remain **429**. See
+[submission responses](/app-chains/ordered-log/#submit-through-rest).
 
 ## 3. Block anatomy
 
@@ -192,6 +202,13 @@ than unlock.
 
 ## 6. Sequencer modes and membership
 
+Each chain selects its sequencer with `sequencer.mode`: `fixed`, `rotating`,
+or the id of a sequencer-mode plugin. A chain that sets only
+`sequencer.proposer` uses `fixed`. Membership is selected with
+`membership.mode`: `static` (the default) or `governed`. Both keys sit under
+the chain's `yano.app-chain` block (for example
+`yano.app-chain.chains[0].sequencer.mode`).
+
 ### 6.1 Fixed
 
 `sequencer.proposer` selects the view-0 leader. If it cannot complete the
@@ -218,7 +235,7 @@ reference at least that many blocks below the L1 tip. Followers verify it
 against their **own** L1 view: a fabricated ref is rejected fail-closed, a
 ref slightly ahead of the local view is deferred and retried, and slots must
 be monotonic across blocks. This pins app-chain history to L1 time — it is
-what makes observation stability (user guide §5.5) and
+what makes observation stability ([L1 observations](/app-chains/observations/)) and
 anchor recency meaningful.
 
 ### 6.4 Proposer vs anchor leader (don't conflate them)
@@ -227,7 +244,8 @@ Rotation applies to the **proposer** only. The **anchor leader** — the node
 with `anchor.enabled` that builds and pays for L1 anchor txs — is a separate,
 fixed role that does not rotate (one thread UTxO, one fee wallet), and it is
 not a trust point: script-mode advances require threshold member
-co-signatures verified against each member's own ledger (user guide §5.1).
+co-signatures verified against each member's own ledger (see
+[anchor modes](/app-chains/proofs/#anchor-modes)).
 A rotating chain with anchoring therefore has a rotating proposer AND a
 fixed anchor leader at the same time.
 
@@ -267,7 +285,8 @@ The split of responsibilities:
 
 `stateRoot` is therefore a pure, reproducible commitment to the state
 machine's data — recomputed and byte-compared by every member on every
-block (§4.2 check 13), committed on-chain by anchoring (user guide §5), and
+block (§4.2 check 13), committed on-chain by
+[anchoring](/app-chains/proofs/#anchor-modes), and
 queryable per key: `GET .../state/proof/{keyHex}` returns the value and an MPF
 inclusion proof any independent implementation can verify against an
 anchored root.
@@ -320,10 +339,12 @@ Startup re-verifies rather than trusts:
 
 ### 8.3 Snapshots
 
-`GET .../snapshot` produces a RocksDB checkpoint (hard links — cheap) with a
-member-signed manifest binding tip height/hash, state root and member
-epochs. New-member onboarding = copy checkpoint, verify manifest, start,
-catch up the delta (user guide §14.3).
+`POST /api/v1/app-chain/chains/{chainId}/snapshot` with body
+`{"path":"<fresh directory>"}` produces a RocksDB checkpoint (hard links —
+cheap) with a member-signed manifest binding tip height/hash, state root and
+member epochs. New-member onboarding = copy checkpoint, verify manifest,
+start, catch up the delta (see the
+[Yano X user guide §14.3](https://github.com/bloxbean/yano-x/blob/main/docs/APP_CHAIN_USER_GUIDE.md#143-snapshots--member-onboarding)).
 
 ## 9. State machines — the SPI
 
@@ -332,17 +353,18 @@ catch up the delta (user guide §14.3).
 | Method | When | Contract |
 |---|---|---|
 | `id()` | — | stable identifier, matched against `state-machine` config |
-| `init(reader, info)` | once at start | read-only warm-up; `info` = (chainId, own member key, member count) |
-| `validate(msg)` | admission (pool + block selection) | fast, side-effect-free, MAY run concurrently; envelope auth already done; reject keeps the message out of blocks. `~` system topics bypass it |
-| `apply(block, writer)` | exactly once per finalized block, in height order, on EVERY member | the deterministic transition; all writes via `writer.put/delete` (= MPF entries) |
-| `query(path, params)` | committed reads | invoked through the chain-scoped REST `/query/{path}` route; state proofs remain available through `state/proof/{keyHex}` |
+| `init(AppStateReader, AppChainInfo)` | once at start | read-only warm-up; `info` = (chainId, own member key, member count) |
+| `AdmissionResult validateForBlock(AppMessage, long candidateHeight, AppStateReader committedState)` | admission (local submission + block selection) | height- and state-aware; defaults to `validate(AppMessage)`. Fast, side-effect-free, MAY run concurrently, must not retain the reader; envelope auth already done; reject keeps the message out of blocks. `~` system topics bypass it |
+| `void apply(AppBlockExecutionContext, AppStateWriter, AppEffectEmitter)` | exactly once per finalized block, in height order, on EVERY member | the deterministic transition; all writes via `writer.put/delete` (= MPF entries); effects only through the `AppEffectEmitter` |
+| `byte[] query(String path, byte[] params, AppQueryContext)` | committed reads | invoked through the chain-scoped REST `/query/{path}` route; state proofs remain available through `state/proof/{keyHex}` |
 
 **Determinism is the contract.** Inside `apply()`: no wall clock (use
 `block.timestamp()`), no randomness, no I/O, no environment reads, no
 iteration over unordered collections, no locale-dependent serialization.
 Violations don't corrupt anything — they *stall the chain*, because
 followers reject the proposer's state root (§4.2). Test with
-`StateMachineConformance` (runtime testkit): it applies an identical seeded
+`StateMachineConformance` (`org.yanoproject.runtime.appchain`, in
+`yano-runtime`): it applies an identical seeded
 block corpus in N independent runs plus a kill-and-reopen replay and asserts
 byte-identical roots at every height.
 
@@ -398,7 +420,7 @@ plugins so Yano's core documentation does not imply that they are built in.
      "schemaVersion": 1,
      "id": "com.example.my-machine",
      "version": "1.0.0",
-     "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+     "yanoApi": { "min": 3, "max": 3, "minLevel": 11 },
      "dependencies": [],
      "contributions": [
        {
@@ -410,6 +432,12 @@ plugins so Yano's core documentation does not imply that they are built in.
    }
    ```
 
+   `yanoApi` is the plugin API range, not a release version: `min`/`max`
+   bound the supported API major and `minLevel` is the lowest additive API
+   level the bundle needs. The sample matches plugin API major 3, level 11;
+   use the values of your target release (`PluginApiVersion` or its release
+   notes), or the host rejects the bundle at load.
+
    Package one self-contained bundle JAR, drop it into the JVM node's
    `plugins/` directory, and set `state-machine: my-machine`. An unknown id
    fails fast listing available ids. Native images cannot load directory JARs;
@@ -417,18 +445,25 @@ plugins so Yano's core documentation does not imply that they are built in.
    and reflection metadata are generated before the native executable.
 4. **Library mode**: pass the machine instance straight to the
    `AppChainSubsystem` constructor — no provider or services file needed.
-5. Start from `scaffolds/plugin-template/` (a complete counter machine +
-   provider + ServiceLoader entry + bundle manifest), and gate your machine with
-   `StateMachineConformance` before trusting it with a multi-node chain.
-   The full walkthrough is user guide §6 / tutorial Part 2.
+5. Start from the
+   [Yano X plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template)
+   (a complete counter machine + provider + ServiceLoader entry + bundle
+   manifest), and gate your machine with `StateMachineConformance` before
+   trusting it with a multi-node chain. For the full walkthrough, see
+   [extension development](/app-chains/extensions/) and the
+   [Yano X user guide §6](https://github.com/bloxbean/yano-x/blob/main/docs/APP_CHAIN_USER_GUIDE.md#6-custom-app-chains-your-own-state-machine).
 
 ## 12. Where to go deeper
 
 - **Anchoring internals** (thread NFT, co-sign rounds, on-chain validator,
-  independent verification): user guide §5 and the implementation.
-- **Rotation & governed membership design**: the implementation,
-  `008.3-*`.
+  independent verification): [proofs and anchoring](/app-chains/proofs/) and
+  the [Yano X user guide §5](https://github.com/bloxbean/yano-x/blob/main/docs/APP_CHAIN_USER_GUIDE.md#5-l1-anchoring).
+- **Rotation & governed membership**: the implementations,
+  [`RotatingSequencerMode`](https://github.com/bloxbean/yano/blob/main/runtime/src/main/java/org/yanoproject/runtime/appchain/RotatingSequencerMode.java)
+  and
+  [`GovernedMembership`](https://github.com/bloxbean/yano/blob/main/runtime/src/main/java/org/yanoproject/runtime/appchain/GovernedMembership.java).
 - **Wire ABIs** (anchor datum, evidence bundle, observations):
-  `core-api/src/main/cddl/appchain/*.cddl`.
+  [`core-api/src/main/cddl/appchain/`](https://github.com/bloxbean/yano/tree/main/core-api/src/main/cddl/appchain).
 - **Live regressions** that exercise everything in this guide on a real
-  devnet: the `test-app-chain-*` skills under `.claude/skills/`.
+  devnet: the `test-app-chain-*` skills under
+  [`.claude/skills/`](https://github.com/bloxbean/yano/tree/main/.claude/skills).

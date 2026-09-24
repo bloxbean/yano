@@ -13,7 +13,7 @@ Do not run two processes against one RocksDB directory. Keep node and app-chain 
 
 ## The node is healthy but still behind
 
-Read `/api/v1/status` and `/api/v1/node/tip`. Readiness means the application is ready to serve; public-network synchronization can still be in progress. Look at the local/remote tips, selected peer, recovery reason, rejected validation stage, and last progress in logs.
+Read `/api/v1/node/status` (local/remote tips, sync progress and mode, selected peer, upstream state, and any runtime-degraded reason) and `/api/v1/node/tip`; `/api/v1/status` reports the chain tip plus UTxO store, prune, and history state. Readiness means the application is ready to serve; public-network synchronization can still be in progress. Recovery reasons, rejected validation stages, and last progress appear only in the logs.
 
 Confirm the genesis/network magic and upstream reachability. Repeatedly restarting or deleting state can hide the original error; preserve logs and configuration first.
 
