@@ -28,9 +28,9 @@ generation-pinned read facade.
 Before upgrading, remove every explicit `yano.history.enabled` property, including
 `yano.history.enabled=false`. To collect history, configure
 `yano.history.projection.enabled=true` and select projection sections or epoch artifacts as
-needed. Also remove `yano.account-history.enabled` and legacy `yano.history.worker.*`,
-`yano.history.hot-store.*`, `yano.history.datasets.*`, `yano.history.start-mode`,
-`yano.history.maintenance.*`, and `yano.history.archive.sqlite.*` properties. Startup rejects
+needed. Also remove `yano.account-history.enabled`, `yano.history.live-enabled`, and
+legacy `yano.history.worker.*`, `yano.history.hot-store.*`, `yano.history.datasets.*`,
+`yano.history.start-mode`, `yano.history.maintenance.*`, and `yano.history.archive.sqlite.*` properties. Startup rejects
 these keys rather than silently ignoring them, and readiness reports `DOWN` while the
 configuration error is present.
 

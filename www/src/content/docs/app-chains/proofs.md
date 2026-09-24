@@ -13,7 +13,7 @@ Yano exposes different evidence for different questions. Choose the proof that m
 | Message proof | A message ID occurs in a finalized block's `messagesRoot` |
 | State proof | A key/value or absence relates to an expected Merkle Patricia Forestry root |
 | Evidence bundle | Related message, block, certificate, and available anchor evidence for verification |
-| Cardano anchor | An app-chain commitment was recorded on L1 under the selected anchor scheme |
+| Cardano anchor | An app ledger commitment was recorded on L1 under the selected anchor scheme |
 
 ## Query a proof
 

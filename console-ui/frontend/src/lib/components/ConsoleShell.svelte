@@ -4,7 +4,6 @@
   import { apiFailureMessage, currentApiKey, hasPersistedApiKey, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodeStatus } from '$lib/api/types';
   import { metricsCredential, resolveMetricsBase, saveMetricsConnection } from '$lib/telemetry/prometheus';
-  import { logoUrl } from '$lib/brand';
 
   let { children } = $props<{ children: import('svelte').Snippet }>();
   let config: NodeConfig | null = $state(null);
@@ -59,15 +58,21 @@
 <header class="sticky top-0 z-30 border-b border-slate-700/30 bg-yano-950/80 backdrop-blur-xl">
   <div class="mx-auto flex max-w-[1320px] flex-wrap items-center justify-between gap-3 px-5 py-3">
     <div class="flex items-center gap-4">
-      <a href={`${base}/`} class="flex items-center gap-2 text-slate-100 no-underline">
-        <img src={logoUrl} alt="Yano" class="h-9 w-9 drop-shadow-md" />
-        <span><strong>Yano</strong><small class="ml-2 text-slate-500">Console</small></span>
+      <a href={`${base}/`} class="brand text-slate-100 no-underline" aria-label="Yano console home">
+        <svg class="brand-mark" viewBox="4 0 96 96" width="34" height="34" aria-hidden="true">
+          <polygon class="brand-wing" points="79.25,14.11 11.45,46.01 37.37,55.98"></polygon>
+          <polygon class="brand-wing" points="85.89,20.75 53.99,88.55 44.02,62.63"></polygon>
+          <polygon class="brand-slash-mark" points="92.54,7.46 89.05,14.61 25.24,78.42 21.58,74.76 85.39,10.95"></polygon>
+        </svg>
+        <span class="brand-wordmark" translate="no">yano</span>
+        <span class="brand-slash" aria-hidden="true">/</span>
+        <span class="brand-caption">CONSOLE</span>
       </a>
       <nav class="hidden items-center gap-1 md:flex" aria-label="Console">
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
            href={`${base}/status/`}>Node</a>
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
-           href={`${base}/app-chain/`}>App chains</a>
+           href={`${base}/app-chain/`}>App ledgers</a>
         {#if hasCardanoHistory}
           <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
              href={`${base}/app-chain/cardano-history/`}>Cardano history</a>
@@ -124,3 +129,47 @@
 </header>
 
 <main class="mx-auto max-w-[1320px] px-5 py-6">{@render children()}</main>
+
+<style>
+  /* Same mark and wordmark as the getyano.dev docs header (www/src/components/SiteTitle.astro). */
+  .brand {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+  }
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+  }
+  .brand-wing { fill: #f2f5ef; }
+  .brand-slash-mark { fill: #b9f57d; }
+  .brand-wordmark {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -2px;
+  }
+  .brand-slash {
+    padding-inline: 6px;
+    color: #64748b;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: 2rem;
+    font-weight: 400;
+    line-height: 1;
+  }
+  .brand-caption {
+    color: #94a3b8;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 0.625rem;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+  }
+  @media (max-width: 40rem) {
+    .brand-slash,
+    .brand-caption { display: none; }
+  }
+</style>

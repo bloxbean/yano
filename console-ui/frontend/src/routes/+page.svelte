@@ -8,7 +8,7 @@
   <p class="mb-3 text-xs font-semibold uppercase tracking-[.22em] text-cyan-400">Unified node operations</p>
   <h1 class="m-0 bg-gradient-to-r from-cyan-300 via-blue-400 to-violet-400 bg-clip-text text-4xl font-bold
              text-transparent md:text-5xl">Yano Console</h1>
-  <p class="mx-auto mt-4 max-w-2xl text-slate-400">Inspect L1 sync, application chains, plugins, and operational health
+  <p class="mx-auto mt-4 max-w-2xl text-slate-400">Inspect L1 sync, app ledgers, plugins, and operational health
     from the console embedded in this node.</p>
 </section>
 
@@ -18,7 +18,7 @@
     <p class="mt-2 text-sm text-slate-400">Sync, peers, mempool, diffusion, storage, and short-lived trends.</p>
   </a>
   <a href={`${base}/app-chain/`} class="card p-6 text-slate-100 no-underline transition hover:-translate-y-1 hover:border-violet-400/40">
-    <div class="mb-4 text-2xl">◇</div><h2 class="text-lg font-semibold">App chains</h2>
+    <div class="mb-4 text-2xl">◇</div><h2 class="text-lg font-semibold">App ledgers</h2>
     <p class="mt-2 text-sm text-slate-400">Finality, anchors, messages, state machines, effects, and proofs.</p>
   </a>
   <a href={`${base}/plugins/`} class="card p-6 text-slate-100 no-underline transition hover:-translate-y-1 hover:border-cyan-400/40">
@@ -27,6 +27,6 @@
   </a>
   <a href={`${base}/observability/`} class="card p-6 text-slate-100 no-underline transition hover:-translate-y-1 hover:border-emerald-400/40">
     <div class="mb-4 text-2xl">⌁</div><h2 class="text-lg font-semibold">Observability</h2>
-    <p class="mt-2 text-sm text-slate-400">Durable L1, app-chain, and effects history from an explicit Prometheus endpoint.</p>
+    <p class="mt-2 text-sm text-slate-400">Durable L1, app ledger, and effects history from an explicit Prometheus endpoint.</p>
   </a>
 </div>

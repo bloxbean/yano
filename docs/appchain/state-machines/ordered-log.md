@@ -220,11 +220,13 @@ policy rather than an `ordered-log` consensus rule.
 
 ## Submit from Java
 
-Use the lightweight `yano-appchain-client` artifact with the same version as
-the Yano nodes:
+The Java client belongs to Yano X. Use the lightweight `yano-x-client`
+artifact. Yano X has its own release line, so `yanoXVersion` is a Yano X
+[release](https://github.com/bloxbean/yano-x/releases) compatible with your Yano nodes, not the Yano
+node version:
 
 ```groovy
-implementation "org.yanoproject:yano-appchain-client:${yanoVersion}"
+implementation "org.yanoproject.x:yano-x-client:${yanoXVersion}"
 ```
 
 ```java
@@ -295,10 +297,10 @@ sha256("~yano/finalized-message/v1/" || message-id)
   -> cbor([schema-version, block-height, message-index, topic, sender])
 ```
 
-It also maintains:
+It also maintains a namespaced tip record:
 
 ```text
-~tip -> cbor(block-height)
+sha256("~yano/finalized-message/v1/" || "tip") -> cbor(block-height)
 ```
 
 The message body remains in finalized block history and the message index; it

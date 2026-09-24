@@ -142,8 +142,8 @@ project locks they require:
 Do not add Gradle's `--parallel` flag to a repository-wide build. The existing
 Module alignment gates deliberately inspect several projects' dependency
 graphs and Gradle 9 rejects that cross-project resolution under project
-parallelism. CI obtains safe concurrency by running the core, extended, crypto,
-and distribution tiers as independent jobs.
+parallelism. CI obtains safe concurrency by running the core, extended, distribution,
+and native-core tiers as independent jobs.
 
 Test output defaults to failures and skips. Enable the former per-test and
 standard-stream logging when diagnosing a failure:

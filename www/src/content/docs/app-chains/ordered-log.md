@@ -57,7 +57,7 @@ with `~` are reserved for Yano.
 
 ## Start the out-of-the-box demo
 
-From an extracted **JVM release** directory (recommended for app chains):
+From an extracted **JVM release** directory (recommended for app ledgers):
 
 ```bash
 ./yano.sh start:devnet,appchain
@@ -106,17 +106,36 @@ payloads.
 
 ## Configuration
 
-A single configured chain can select the machine directly:
+The snippets in this section show only the keys that select and tune
+`ordered-log`. They are not complete chain definitions: every chain also needs
+its `signing-key`, `members`, `threshold`, the state-commitment triple
+(`state.commitment-profile`, `state.format-fingerprint`, and `state.genesis-id`,
+configured together), and a sequencer (`sequencer.proposer` or
+`sequencer.mode`). Start from the complete single-member block in
+`config/application-appchain.yml`:
 
 ```yaml
 yano:
   app-chain:
-    enabled: true
-    chain-id: orders-chain
-    state-machine: ordered-log
+    chains[0]:
+      chain-id: "orders-chain"
+      signing-key: "<64 hex characters>"
+      members: "<member public key hex>"
+      threshold: 1
+      state-machine: ordered-log
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: "<fingerprint>"
+        genesis-id: "<genesis id>"
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+      sequencer:
+        proposer: "<member public key hex>"
 ```
 
-The multi-chain form is:
+Several chains are configured by index. Only the selecting keys are shown:
 
 ```yaml
 yano:
@@ -153,7 +172,8 @@ secret-management flow.
 
 `ordered-log` has no machine-specific settings. It uses the common chain
 settings for capacity, latency, expiry, retention, sequencing, membership, and
-anchoring. For example:
+anchoring. For example, these keys are added to a chain's complete
+definition:
 
 ```yaml
 yano:
@@ -183,8 +203,8 @@ original content must remain independently verifiable.
 
 ## Submit through REST
 
-In the default local cluster, node indices 0, 1, and 2 use HTTP ports 7070,
-7071, and 7072. This request is equivalent to CLI submission with `--node 1`:
+In the Yano X showcase's default local cluster, node indices 0, 1, and 2 use
+HTTP ports 7070, 7071, and 7072. This request is equivalent to CLI submission with `--node 1`:
 
 ```bash
 RESPONSE=$(curl -sS -X POST \
@@ -209,6 +229,19 @@ A successful submission returns HTTP `202`:
 }
 ```
 
+| Response | Meaning | Next step |
+|---|---|---|
+| **202** with `messageId` | Locally admitted, retained, and offered for diffusion | Wait for finalization; this is not finality or business success |
+| **400** with `{"code":"<REASON>"}` | The chain's state machine rejected local admission before pool retention or relay | Correct the command before submitting again |
+| **429** | The local pending pool is full; the message was not relayed | Retry after backpressure clears |
+| **503** | Application admission is unavailable, or the chain is stopped/paused | Check node health before retrying |
+
+Malformed input and envelope limits also return **400**, with an `error`
+field instead of `code`. Application reason codes are at most 32 uppercase
+ASCII letters or underscores; any other reason is reported as
+`APPLICATION_REJECTED`. `ordered-log` does not reject application payloads, so
+`code` responses come only from custom state machines.
+
 For arbitrary bytes, send hexadecimal data instead:
 
 ```bash
@@ -226,11 +259,12 @@ policy rather than an `ordered-log` consensus rule.
 
 The following client belongs to Yano X and is installed separately from the Yano host.
 
-Use the lightweight `yano-appchain-client` artifact with the same version as
-the Yano nodes:
+Use the lightweight `yano-x-client` artifact. Yano X has its own release line,
+so `yanoXVersion` is a [Yano X release](https://github.com/bloxbean/yano-x/releases)
+compatible with your Yano nodes, not the Yano node version:
 
 ```groovy
-implementation "org.yanoproject:yano-appchain-client:${yanoVersion}"
+implementation "org.yanoproject.x:yano-x-client:${yanoXVersion}"
 ```
 
 ```java
@@ -301,10 +335,10 @@ sha256("~yano/finalized-message/v1/" || message-id)
   -> cbor([schema-version, block-height, message-index, topic, sender])
 ```
 
-It also maintains:
+It also maintains a namespaced tip record:
 
 ```text
-~tip -> cbor(block-height)
+sha256("~yano/finalized-message/v1/" || "tip") -> cbor(block-height)
 ```
 
 The message body remains in finalized block history and the message index; it
@@ -434,4 +468,4 @@ state machine's deterministic `apply()` method.
 - [Yano X tutorials](https://github.com/bloxbean/yano-x/tree/main/docs/appchain/tutorials)
 - [Yano X stock state machines](https://github.com/bloxbean/yano-x/tree/main/state-machines)
 - [Consensus and state-machine internals](/app-chains/consensus/)
-- [Yano X Java app-chain client](https://github.com/bloxbean/yano-x/tree/main/sdk/client)
+- [Yano X Java app ledger client](https://github.com/bloxbean/yano-x/tree/main/sdk/client)

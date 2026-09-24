@@ -18,8 +18,8 @@ Yano is modular. Select capabilities for the job, and check the configuration an
 | CCL backend adapter | Java testkit | Selected backend services, not the whole CCL backend API |
 | Wallet first-seen and scan indexes | Optional node capability | Fresh sync and continuous coverage; scans require retained bodies |
 | DuckLake history projection | JVM | Fresh-sync archive; no native support |
-| `ordered-log` app chain | JVM or native host | Opaque events; does not enforce application business rules |
-| Multiple app chains, proofs, and L1 anchoring | App-chain host | Configure identities, membership, thresholds, and anchor requirements |
+| `ordered-log` app ledger | JVM or native host | Opaque events; does not enforce application business rules |
+| Multiple app ledgers, proofs, and L1 anchoring | App ledger host | Configure identities, membership, thresholds, and anchor requirements |
 | Certified observations | Optional preview | Disabled by default; explicit committed profile and trust policy |
 | Dynamic plugin JARs and Yano X extensions | JVM | Matching plugin contracts and explicit installation |
 | Console, health, and metrics | Runnable application | Optional persistent metrics companion requires Docker Compose |

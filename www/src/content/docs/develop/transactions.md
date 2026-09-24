@@ -32,7 +32,7 @@ Hex-encoded CBOR is also accepted with `Content-Type: text/plain`. A submission 
 
 ## Evaluation
 
-The evaluation route is `/api/v1/utils/txs/evaluate`. Use the running node's [OpenAPI document](/reference/http-api/) for its accepted request/response shapes. The launcher selects Aiken for the JVM and Scalus for native execution; `yano.block-producer.script-evaluator` can override the choice where supported. Aiken's JNA evaluator is not supported by native image.
+The evaluation route is `/api/v1/utils/txs/evaluate`. Use the running node's [OpenAPI document](/reference/http-api/) for its accepted request/response shapes. Scalus is the default script evaluator for both the JVM and native distributions. On the JVM, `-Dyano.block-producer.script-evaluator=aiken` (or `julc`) selects an alternative. Aiken's JNA evaluator is not supported by native image.
 
 ## Integration choices
 

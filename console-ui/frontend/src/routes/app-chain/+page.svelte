@@ -132,9 +132,9 @@
         selectedChain = chains.some((chain) => chain.chainId === queryChain) ? queryChain!
           : chains.some((chain) => chain.chainId === remembered) ? remembered! : chains[0]?.chainId ?? '';
         if (selectedChain) activateChain(selectedChain);
-        else pageError = 'No app chains are enabled on this node.';
+        else pageError = 'No app ledgers are enabled on this node.';
       } catch (cause) {
-        pageError = apiFailureMessage(cause, 'Unable to load app chains');
+        pageError = apiFailureMessage(cause, 'Unable to load app ledgers');
       }
     })();
     return () => {
@@ -199,7 +199,7 @@
       pageError = '';
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        pageError = apiFailureMessage(cause, 'App-chain status request failed');
+        pageError = apiFailureMessage(cause, 'App ledger status request failed');
       }
     }
   }
@@ -367,7 +367,7 @@
       blockPages = [...blockPages.slice(0, blockPageIndex), page];
       blocks = page;
     } catch (cause) {
-      pageError = apiFailureMessage(cause, 'Unable to load older app-chain blocks');
+      pageError = apiFailureMessage(cause, 'Unable to load older app ledger blocks');
     } finally {
       blocksLoading = false;
     }
@@ -388,7 +388,7 @@
         inspectedBlock = detail;
       }
     } catch (cause) {
-      inspectedBlockError = apiFailureMessage(cause, 'Unable to load app-chain block details');
+      inspectedBlockError = apiFailureMessage(cause, 'Unable to load app ledger block details');
     } finally {
       inspectedBlockLoading = false;
     }
@@ -406,13 +406,13 @@
   }
 </script>
 
-<svelte:head><title>Yano · App Chains</title></svelte:head>
+<svelte:head><title>Yano · App Ledgers</title></svelte:head>
 
 <div data-console-route="app-chain" class="mb-4 flex flex-wrap items-end justify-between gap-3">
   <div>
     <p class="m-0 text-xs font-semibold uppercase tracking-[.18em] text-violet-400">Application ledger</p>
-    <h1 class="mt-1 text-2xl font-bold">{activeView === 'operations' ? 'App-chain operations'
-      : activeView === 'capabilities' ? 'App-chain capabilities' : 'App-chain proof lab'}</h1>
+    <h1 class="mt-1 text-2xl font-bold">{activeView === 'operations' ? 'App ledger operations'
+      : activeView === 'capabilities' ? 'App ledger capabilities' : 'App ledger proof lab'}</h1>
   </div>
   {#if activeView !== 'capabilities'}<div class="flex flex-wrap items-end gap-2">
     <label class="text-xs text-slate-400">Chain
@@ -442,7 +442,7 @@
 
 {#if pageError}<div class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{pageError}</div>{/if}
 
-<nav aria-label="App-chain views" class="mb-5 flex w-fit rounded-xl border border-slate-800 bg-slate-900/70 p-1">
+<nav aria-label="App ledger views" class="mb-5 flex w-fit rounded-xl border border-slate-800 bg-slate-900/70 p-1">
   <button type="button"
           data-app-chain-view="operations"
           class="rounded-lg px-4 py-2 text-sm font-semibold transition {activeView === 'operations' ? 'bg-violet-500/20 text-violet-200' : 'text-slate-400 hover:text-slate-200'}"
@@ -611,9 +611,9 @@
     {#if profile.approvals != null}<MetricRow label="Approvals / Ready" value={`${fmt(profile.approvals)} / ${fmt(profile.readiness)}`} />{/if}
     {#if profile.locallyReady != null}<MetricRow label="Local Catalog" value={boolValue(profile.locallyReady) ? 'ready' : 'missing'} />{/if}
   </MetricCard>
-  <MetricCard title="App-chain peers" subtitle="Member connections">
+  <MetricCard title="App ledger peers" subtitle="Member connections">
     {#each peers as [peer, connected]}
-      <MetricRow label={shortHash(peer, 28)} labelCopyValue={peer} copyLabel="app-chain peer"
+      <MetricRow label={shortHash(peer, 28)} labelCopyValue={peer} copyLabel="app ledger peer"
                  value={`${connected ? 'connected' : 'disconnected'} · ${status?.peerTransports?.[peer] ?? '-'}`} />
     {:else}<p class="text-sm text-slate-500">No peers configured.</p>{/each}
   </MetricCard>
@@ -621,7 +621,7 @@
 
 <div class="section-title">Trends <span class="font-normal normal-case tracking-normal text-slate-600">· {historySource} · up to 1 hour</span></div>
 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-  <MetricCard title="Tip rate" subtitle="blocks / second"><LineChart series={chartTip} colors={['#a78bfa']} label="App-chain tip rate" /></MetricCard>
+  <MetricCard title="Tip rate" subtitle="blocks / second"><LineChart series={chartTip} colors={['#a78bfa']} label="App ledger tip rate" /></MetricCard>
   <MetricCard title="Pending pool" subtitle="messages"><LineChart series={chartPool} colors={['#f59e0b']} label="Pending message pool" /></MetricCard>
   <MetricCard title="Block interval" subtitle="milliseconds"><LineChart series={chartInterval} colors={['#38bdf8']} label="Block interval" /></MetricCard>
   <MetricCard title="Anchor lag" subtitle="app blocks"><LineChart series={chartAnchor} colors={['#10b981']} label="Anchor lag" /></MetricCard>
@@ -683,7 +683,7 @@
              hasPrevious={blockHasPrevious}
              hasNext={blockHasNext}
              busy={blocksLoading}
-             label="app-chain blocks"
+             label="app ledger blocks"
              onPrevious={previousBlockPage}
              onNext={() => void nextBlockPage()} />
     {/if}
@@ -740,7 +740,7 @@
 <dialog bind:this={blockDialog} class="m-auto max-h-[calc(100%-2rem)] w-[min(900px,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 p-0 text-slate-100 backdrop:bg-slate-950/80">
   <div class="flex items-center justify-between border-b border-slate-700 p-4">
     <div>
-      <h2 class="m-0 text-lg font-semibold">Finalized app-chain block</h2>
+      <h2 class="m-0 text-lg font-semibold">Finalized app ledger block</h2>
       <p class="m-0 text-xs text-slate-500">Height {inspectedBlockHeight ?? '-'}</p>
     </div>
     <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-sm"

@@ -199,7 +199,7 @@
 {#if !authenticated}
   <section class="card mx-auto max-w-2xl p-6">
     <h2 class="mt-0 text-xl">Connect to plugin operations</h2>
-    <p class="text-sm text-slate-400">Enter an unscoped app-chain API key. It is retained only for this browser tab and sent in the <code>X-API-Key</code> header after the host-provided API prefix is verified.</p>
+    <p class="text-sm text-slate-400">Enter an unscoped app ledger API key. It is retained only for this browser tab and sent in the <code>X-API-Key</code> header after the host-provided API prefix is verified.</p>
     <form class="mt-5 flex gap-2" onsubmit={(event) => { event.preventDefault(); void connect(); }}>
       <input class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" type="password" autocomplete="off" maxlength="4096" disabled={!prefixVerified} bind:value={keyInput} aria-label="API key" />
       <button class="rounded-lg bg-cyan-500 px-4 py-2 font-semibold text-slate-950 disabled:opacity-40" disabled={!prefixVerified || !keyInput}>Connect</button>
