@@ -230,10 +230,21 @@ if "%YANO_CHAINSTATE_PATH%"=="" call :read_env_value YANO_CHAINSTATE_PATH YANO_C
 if "%YANO_CHAINSTATE_PATH%"=="" set "YANO_CHAINSTATE_PATH=../chainstate-%CUSTOM_PROFILE%"
 set "YANO_PROFILE=%CUSTOM_PROFILE%"
 set "YANO_NETWORK=%CUSTOM_PROFILE%"
+if "%YANO_RUNTIME_DATA_PATH%"=="" call :read_env_value YANO_RUNTIME_DATA_PATH YANO_RUNTIME_DATA_PATH
+if "%YANO_RUNTIME_DATA_PATH%"=="" set "YANO_RUNTIME_DATA_PATH=../runtime-data-%CUSTOM_PROFILE%"
 exit /b 0
 
 :prepare_chainstate
 set "CHAINSTATE_PROFILE=%~1"
+if "%YANO_RUNTIME_DATA_PATH%"=="" call :read_env_value YANO_RUNTIME_DATA_PATH YANO_RUNTIME_DATA_PATH
+if "%YANO_RUNTIME_DATA_PATH%"=="" set "YANO_RUNTIME_DATA_PATH=../runtime-data-%CHAINSTATE_PROFILE%"
+rem Create the writable parent before Docker can create it as root on the host.
+set "SAVED_CHAINSTATE_PATH=%YANO_CHAINSTATE_PATH%"
+set "YANO_CHAINSTATE_PATH=%YANO_RUNTIME_DATA_PATH%"
+call :host_chainstate_path
+call :ensure_chainstate_dir
+set "YANO_CHAINSTATE_PATH=%SAVED_CHAINSTATE_PATH%"
+if errorlevel 1 exit /b !ERRORLEVEL!
 if "%YANO_CHAINSTATE_PATH%"=="" call :read_env_value YANO_CHAINSTATE_PATH YANO_CHAINSTATE_PATH
 if "%YANO_CHAINSTATE_PATH%"=="" set "YANO_CHAINSTATE_PATH=../chainstate-%CHAINSTATE_PROFILE%"
 call :host_chainstate_path

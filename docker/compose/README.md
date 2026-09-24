@@ -133,9 +133,23 @@ a custom host path.
 Set `YANO_APPCHAIN_INDEXER_PATH` for the rebuildable app-chain read-index root.
 Do not place it below either authoritative state directory.
 
-If you want to run multiple networks or multiple Yano instances at the same time, use separate extracted distribution directories or set different `YANO_CHAINSTATE_PATH`, `YANO_APPCHAIN_STATE_PATH`, `YANO_APPCHAIN_INDEXER_PATH`, `INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT` values.
+`runtime-data-<network>/` is mounted at `/app/data` for devnet snapshots,
+automatic epoch checkpoints, and the upstream peer store. Override its host path
+with `YANO_RUNTIME_DATA_PATH`. The existing `chainstate-<network>/` directory is
+mounted inside it at `/app/data/chainstate`, so database files do not move. Keep
+both directories when backing up runtime data. When upgrading an older Compose
+installation, update `config/env` to use `YANO_STORAGE_PATH=/app/data/chainstate`.
 
-The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate-*`, `appchain-chainstate-*`, `logs/`, `plugins/`, and `config/network`.
+For simultaneous instances, use separate extracted directories and set distinct
+`INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT` values in each
+`compose/.env`. The Compose project is named `yano-${INSTANCE_NAME:-default}`;
+separate folders alone do not distinguish instances. For example, use
+`INSTANCE_NAME=devnet` in one folder and `INSTANCE_NAME=preprod` in another.
+An explicit `COMPOSE_PROJECT_NAME` still overrides the project name.
+If you customize storage paths, give each instance its own `YANO_CHAINSTATE_PATH`,
+`YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH`, and `YANO_APPCHAIN_INDEXER_PATH`.
+
+The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate-*`, `runtime-data-*`, `appchain-chainstate-*`, `appchain-indexers-*`, `logs/`, `plugins/`, and `config/network`.
 
 For a custom network, add its files under `config/network/<name>` and run with a matching custom Quarkus profile:
 

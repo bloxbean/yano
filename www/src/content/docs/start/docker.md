@@ -42,6 +42,12 @@ Keep the image version compatible with the ZIP's config files. Change
 `YANO_HTTP_PORT`, `YANO_N2N_PORT`, or `INSTANCE_NAME` in `compose/.env` as needed
 before starting.
 
+To run two instances, extract into separate directories and give each a distinct
+`INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT`. Compose uses
+`yano-<INSTANCE_NAME>` as its project name, so stopping one instance does not
+stop another. Separate folders alone are insufficient when their instance names
+are the same. Keep any explicitly configured storage paths separate too.
+
 ## Profiles and memory
 
 Put the network first, then add comma-separated Quarkus profiles:
@@ -94,3 +100,13 @@ mounts and replace state paths with network-specific directories, such as
 `chainstate-devnet/` and `appchain-chainstate-devnet/`. Preprod uses the base
 file; custom networks use paths supplied by the launcher. Inspect the result
 with `./yano.sh config:<profiles>` before starting.
+
+The writable `runtime-data-<network>/` directory holds devnet snapshots, epoch
+checkpoints, and the upstream peer store. It is mounted at `/app/data`, with the
+existing host chainstate directory mounted separately at `/app/data/chainstate`.
+`YANO_RUNTIME_DATA_PATH` overrides the auxiliary data directory. Back up both
+directories. When reusing an older `config/env`, set
+`YANO_STORAGE_PATH=/app/data/chainstate` to match the new mount location.
+
+On Linux, set `YANO_UID` and `YANO_GID` in `compose/.env` to the owner of the
+writable host directories if it differs from the default `1000:1000`.

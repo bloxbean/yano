@@ -159,6 +159,24 @@ appchain_indexer_path_for_profile() {
   printf '../appchain-indexers-%s\n' "$profile"
 }
 
+runtime_data_path_for_profile() {
+  profile="$1"
+  if [ -n "${YANO_RUNTIME_DATA_PATH:-}" ]; then
+    printf '%s\n' "$YANO_RUNTIME_DATA_PATH"
+    return
+  fi
+  configured_path="$(strip_optional_quotes "$(env_file_value YANO_RUNTIME_DATA_PATH)")"
+  printf '%s\n' "${configured_path:-../runtime-data-$profile}"
+}
+
+ensure_runtime_data_dir() {
+  runtime_data_path="$(runtime_data_path_for_profile "$1")"
+  case "$runtime_data_path" in
+    /*) mkdir -p "$runtime_data_path" ;;
+    *) mkdir -p "$COMPOSE_DIR/$runtime_data_path" ;;
+  esac
+}
+
 ensure_chainstate_dir() {
   profile="$1"
   chainstate_path="$(chainstate_path_for_profile "$profile")"
@@ -208,6 +226,7 @@ prepare_chainstate_for_profiles() {
   validate_profile_list "$profile_list"
   profile="$(primary_profile "$profile_list")"
   ensure_chainstate_dir "$profile"
+  ensure_runtime_data_dir "$profile"
   ensure_appchain_state_dir "$profile"
   ensure_appchain_indexer_dir "$profile"
 }
@@ -221,6 +240,7 @@ compose_network() {
 
   if [ "${1:-}" = "up" ]; then
     ensure_chainstate_dir "$network"
+    ensure_runtime_data_dir "$network"
     ensure_appchain_state_dir "$network"
     ensure_appchain_indexer_dir "$network"
   fi
@@ -253,11 +273,13 @@ compose_network() {
       ;;
     *)
       custom_chainstate_path="$(chainstate_path_for_profile "$network")"
+      custom_runtime_data_path="$(runtime_data_path_for_profile "$network")"
       custom_appchain_state_path="$(appchain_state_path_for_profile "$network")"
       custom_appchain_indexer_path="$(appchain_indexer_path_for_profile "$network")"
       YANO_PROFILE="$profile_list" \
         YANO_NETWORK="$network" \
         YANO_CHAINSTATE_PATH="$custom_chainstate_path" \
+        YANO_RUNTIME_DATA_PATH="$custom_runtime_data_path" \
         YANO_APPCHAIN_STATE_PATH="$custom_appchain_state_path" \
         YANO_APPCHAIN_INDEXER_PATH="$custom_appchain_indexer_path" \
         docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
