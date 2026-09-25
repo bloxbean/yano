@@ -1,3 +1,5 @@
+name: yano-${INSTANCE_NAME:-default}
+
 services:
   yano:
     image: ${YANO_IMAGE:-bloxbean/yano}:${YANO_IMAGE_TAG:-latest}-${YANO_IMAGE_FLAVOR:-jvm}
@@ -11,15 +13,20 @@ services:
       JAVA_OPTS: ${JAVA_OPTS:-}
       YANO_NATIVE_MAX_HEAP: ${YANO_NATIVE_MAX_HEAP:-1536m}
       YANO_EXTRA_ARGS: ${YANO_EXTRA_ARGS:-}
+      # Fixed by the mounts below; these override any older value in config/env.
+      YANO_STORAGE_PATH: /app/data/chainstate
+      YANO_HISTORY_DIR: /app/data/history
     ports:
       - "${YANO_HTTP_PORT:-7070}:7070"
       - "${YANO_N2N_PORT:-13337}:13337"
     volumes:
-      - ${YANO_CHAINSTATE_PATH:-../chainstate-preprod}:/app/chainstate
-      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-chainstate-preprod}:/app/appchain-chainstate
-      - ${YANO_APPCHAIN_INDEXER_PATH:-../appchain-indexers-preprod}:/app/appchain-indexers
+      - ${YANO_RUNTIME_DATA_PATH:-../data-preprod/runtime-data}:/app/data
+      - ${YANO_CHAINSTATE_PATH:-../data-preprod/chainstate}:/app/data/chainstate
+      - ${YANO_APPCHAIN_STATE_PATH:-../data-preprod/appchain-chainstate}:/app/appchain-chainstate
+      - ${YANO_APPCHAIN_INDEXER_PATH:-../data-preprod/appchain-indexers}:/app/appchain-indexers
       - ../logs:/app/logs
-      - ../config/application.yml:/app/config/application.yml:ro
+      - ../config:/app/config:ro
+      # Network files must remain writable for seeding and devnet genesis updates.
       - ../config/network:/app/config/network
       - ../plugins:/app/plugins
     healthcheck:

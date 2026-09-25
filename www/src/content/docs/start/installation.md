@@ -1,6 +1,6 @@
 ---
 title: "Download & install Yano"
-description: "Choose and run a JVM or platform-specific Yano release."
+description: "Choose and run a JVM, native, or Docker Compose Yano release."
 sidebar:
   order: 3
 ---
@@ -16,8 +16,14 @@ Download the [latest Yano release](https://github.com/bloxbean/yano/releases/lat
 | Linux arm64 | `yano-native-<version>-linux-arm64.zip` | Linux on arm64 |
 | macOS arm64 | `yano-native-<version>-macos-arm64.zip` | Apple silicon Mac |
 | Windows x64 | `yano-native-<version>-windows-x64.zip` | Windows on x64 |
+| Docker Compose | `yano-docker-<version>.zip` | Docker Engine or Docker Desktop with Compose v2 |
 
 Replace `<version>` with the selected release version as it appears in the asset names (the release tag without its leading `v`).
+
+For the Docker ZIP, follow [Run with Docker Compose](/start/docker/). It contains
+the launcher and configuration and pulls a versioned image; Java is included in
+the JVM image. Some older releases omit this ZIP; use another listed distribution
+or [build the Compose ZIP from source](/contribute/build-from-source/#docker-compose-zip-distribution).
 
 For app ledger onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
 

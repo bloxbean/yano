@@ -586,7 +586,13 @@ jobs:
   # The only job with a write token; it runs no repository code.
   attach-compose-zip:
     needs: [validate, docker-compose-zip]
-    if: needs.validate.outputs.dry_run != 'true'
+    # Preview releases skip promote-latest upstream. Override the implicit
+    # success() check, but require a successfully validated and built ZIP.
+    if: >-
+      !cancelled()
+      && needs.validate.result == 'success'
+      && needs.docker-compose-zip.result == 'success'
+      && needs.validate.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

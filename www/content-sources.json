@@ -98,6 +98,8 @@
   ],
   "start/runtime-profiles": [
     "app/bin/yano.sh",
+    "docker/jvm/entrypoint.sh",
+    "docker/native/entrypoint.sh",
     "app/config/application.yml",
     "app/config/application-xsmall.yml",
     "app/config/application-small.yml",
@@ -107,7 +109,19 @@
   ],
   "start/installation": [
     "https://github.com/bloxbean/yano/releases/latest",
-    "app/bin/yano.sh"
+    "app/bin/yano.sh",
+    "docker/compose/README.md"
+  ],
+  "start/docker": [
+    "docker/compose/README.md",
+    "docker/compose/CUSTOM_PROFILE.md",
+    "docker/compose/yano.yml",
+    "docker/compose/yano-devnet.yml",
+    "docker/compose/.env",
+    "docker/config/env",
+    "docker/yano.sh",
+    "docker/jvm/entrypoint.sh",
+    "docker/native/entrypoint.sh"
   ],
   "operate/troubleshooting": [
     "README.md",

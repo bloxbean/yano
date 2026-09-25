@@ -4,6 +4,7 @@ services:
       YANO_PROFILE: ${YANO_PROFILE:-sanchonet}
       YANO_NETWORK: ${YANO_NETWORK:-sanchonet}
     volumes:
-      - ${YANO_CHAINSTATE_PATH:-../chainstate-sanchonet}:/app/chainstate
-      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-chainstate-sanchonet}:/app/appchain-chainstate
-      - ${YANO_APPCHAIN_INDEXER_PATH:-../appchain-indexers-sanchonet}:/app/appchain-indexers
+      - ${YANO_RUNTIME_DATA_PATH:-../data-sanchonet/runtime-data}:/app/data
+      - ${YANO_CHAINSTATE_PATH:-../data-sanchonet/chainstate}:/app/data/chainstate
+      - ${YANO_APPCHAIN_STATE_PATH:-../data-sanchonet/appchain-chainstate}:/app/appchain-chainstate
+      - ${YANO_APPCHAIN_INDEXER_PATH:-../data-sanchonet/appchain-indexers}:/app/appchain-indexers

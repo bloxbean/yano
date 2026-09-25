@@ -11,6 +11,8 @@ past, catch up to wall-clock, verify the backfilled history block by block, then
 Haskell `cardano-node` accepts that history from genesis and follows subsequent live
 blocks.
 
+The orchestrated release QA runs this test as `sparse-backfill` (see the `release-qa` skill).
+
 ## Run it
 
 ```bash

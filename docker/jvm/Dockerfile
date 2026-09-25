@@ -30,7 +30,8 @@ ENV YANO_PROFILE=preprod \
     YANO_PLUGINS_DIRECTORY=/app/plugins
 
 EXPOSE 7070 13337
-VOLUME ["/app/chainstate", "/app/logs", "/app/plugins"]
+# Compose mounts chainstate below /app/data; declaring it would leave an unused anonymous volume.
+VOLUME ["/app/logs", "/app/plugins"]
 
 HEALTHCHECK --interval=20s --timeout=5s --retries=12 \
     CMD curl -fsS http://localhost:7070/q/health/ready || exit 1
