@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 0 96 96" width="96" height="96">
+  <title>Yano</title>
+  <!-- The Yano paper plane with flapping wings. Each wing folds toward the edge where it
+       meets the body (a line at -45 degrees) and opens again. With reduced motion the
+       static logo is shown instead. -->
+  <style>
+    .still { display: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .flying { display: none; }
+      .still { display: inline; }
+    }
+  </style>
+  <g class="flying">
+    <g transform="translate(79.25 14.11) rotate(-45)">
+      <g>
+        <animateTransform attributeName="transform" type="scale" dur="0.8s" repeatCount="indefinite"
+          values="1 1;1 0.15;1 1" keyTimes="0;0.5;1" calcMode="spline"
+          keySplines="0.45 0 0.55 1;0.45 0 0.55 1"/>
+        <polygon transform="rotate(45) translate(-79.25 -14.11)"
+          points="79.25,14.11 11.45,46.01 37.37,55.98" fill="#f2f5ef"/>
+      </g>
+    </g>
+    <g transform="translate(85.89 20.75) rotate(-45)">
+      <g>
+        <animateTransform attributeName="transform" type="scale" dur="0.8s" repeatCount="indefinite"
+          values="1 1;1 0.15;1 1" keyTimes="0;0.5;1" calcMode="spline"
+          keySplines="0.45 0 0.55 1;0.45 0 0.55 1"/>
+        <polygon transform="rotate(45) translate(-85.89 -20.75)"
+          points="85.89,20.75 53.99,88.55 44.02,62.63" fill="#f2f5ef"/>
+      </g>
+    </g>
+  </g>
+  <g class="still">
+    <polygon points="79.25,14.11 11.45,46.01 37.37,55.98" fill="#f2f5ef"/>
+    <polygon points="85.89,20.75 53.99,88.55 44.02,62.63" fill="#f2f5ef"/>
+  </g>
+  <polygon points="92.54,7.46 89.05,14.61 25.24,78.42 21.58,74.76 85.39,10.95" fill="#b9f57d"/>
+</svg>

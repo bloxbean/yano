@@ -277,16 +277,17 @@ nav a:hover {
   width: 320px;
   animation: orbit 25s linear infinite;
 }
-.orbit-spinner span {
+/* The flying Yano logo rides the orbit. Rotated 45 degrees so its nose points along
+   the clockwise path; the spinner rotation keeps it tangent all the way round. */
+.orbit-plane {
   display: block;
-  width: 7px;
-  height: 7px;
+  width: 22px;
+  height: 22px;
   position: absolute;
-  left: 50%;
-  top: -3px;
-  background: var(--lime);
-  border-radius: 50%;
-  box-shadow: 0 0 20px 5px #b9f57d55;
+  left: calc(50% - 11px);
+  top: -11px;
+  transform: rotate(45deg);
+  filter: drop-shadow(0 0 6px #b9f57d88);
 }
 .core-glow {
   position: absolute;
