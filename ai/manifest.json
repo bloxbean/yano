@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "https://getyano.dev",
   "version": "0.1.0-pre17-SNAPSHOT",
-  "sourceRevision": "c2f0034d8c8719ee6022a76e35dc05221245ff5b",
+  "sourceRevision": "15b451a447f49ce327d87b279a6f06b0a372285b",
   "sourceRepository": "https://github.com/bloxbean/yano",
   "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
   "pages": [
@@ -235,7 +235,7 @@
       "description": "Active packaged configuration values and declared property keys, generated from source.",
       "url": "https://getyano.dev/reference/configuration-catalog/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
-      "sha256": "b4100b7377261d9c1cd890b0ac01913a2a6239915248ad3949eae357b57d8e8b"
+      "sha256": "7dc6125d53274ea277cfde9fa1c0d0f60046102d1c5bec1debf494f2ead3f497"
     },
     {
       "title": "Configuration guide",
@@ -280,11 +280,18 @@
       "sha256": "271ea706726c6f32f7987cd46a6002d3b6391c107410297e1b859964073fde51"
     },
     {
+      "title": "Run with Docker Compose",
+      "description": "Start the Docker distribution, combine profiles, and configure mounts and memory.",
+      "url": "https://getyano.dev/start/docker/",
+      "markdown": "https://getyano.dev/ai/pages/start/docker.md",
+      "sha256": "98610e31245346bd7e03389f27ea12afb52bacf1f61164f7eb815e7c170a6d17"
+    },
+    {
       "title": "Download & install Yano",
-      "description": "Choose and run a JVM or platform-specific Yano release.",
+      "description": "Choose and run a JVM, native, or Docker Compose Yano release.",
       "url": "https://getyano.dev/start/installation/",
       "markdown": "https://getyano.dev/ai/pages/start/installation.md",
-      "sha256": "e13e100709bd2c4f91b24ac8fe57f44adf5e5a80115711988eed2d23ea2327f7"
+      "sha256": "40348a8e3e0352e3c8ef2df492394f6da212da1222b18a0e441201f069af8434"
     },
     {
       "title": "What is Yano?",
@@ -305,17 +312,17 @@
       "description": "Start Yano with resource sizing and optional wallet indexes.",
       "url": "https://getyano.dev/start/runtime-profiles/",
       "markdown": "https://getyano.dev/ai/pages/start/runtime-profiles.md",
-      "sha256": "fff39fdb8ce3b49138db1991a8f22c8ad44b6f5a8919cdf03dd6eac8035d39b9"
+      "sha256": "31bf50da66002dca190712787b6f48d3e40adf395f612a3d103411d99cd3b091"
     }
   ],
   "artifacts": [
     {
       "url": "https://getyano.dev/llms.txt",
-      "sha256": "afcef5bc5461b08c9ec897d85de3f21d528e98d5afaeea88595414de50e1f87b"
+      "sha256": "61515218c594102fb02adf8d4c355eea5f12193bcedfbc0b5bd7efafadfbb6fb"
     },
     {
       "url": "https://getyano.dev/llms-full.txt",
-      "sha256": "cdd4bfa988eef218320dcbba635d560ec18f1ddbbcff4b5bd070c4307abdb4a5"
+      "sha256": "2a8ac828ea5b3178c19a8e5cedfbbb67ce248e339d5e59a33a10b394a8597934"
     },
     {
       "url": "https://getyano.dev/ai/agent-instructions.md",
@@ -323,11 +330,11 @@
     },
     {
       "url": "https://getyano.dev/ai/configuration.json",
-      "sha256": "2b15b288853fde07b58e564a67d3833e607dcf589f7f37635fc4540073a2248c"
+      "sha256": "6e665d1893255f2243396e74742ca92b214fb28464d1ddf339fb8c4f07cecf75"
     },
     {
       "url": "https://getyano.dev/ai/routes.json",
-      "sha256": "c3e1213b547e6caed994a502c53db4dfd0e1054361257983eccd19c2a00d210a"
+      "sha256": "7b6baba513e5f70e4bc3978b3c0fac893cfc71f11804534b81d2e23c4921f13d"
     }
   ]
 }

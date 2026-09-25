@@ -3585,7 +3585,7 @@ See [configuration layering](/reference/configuration/) before applying settings
 
 ## Bundled application defaults
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3718,7 +3718,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3752,7 +3752,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet-slotleader profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3787,7 +3787,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — mainnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3808,7 +3808,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — preview profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3829,7 +3829,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — sanchonet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3848,7 +3848,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — test profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/src/main/resources/application.yml)
+Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3862,7 +3862,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## application-appchain.yml
 
-Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-appchain.yml)
+Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-appchain.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3881,7 +3881,7 @@ Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/b
 
 ## application-bootstrap.yml
 
-Source: [app/config/application-bootstrap.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-bootstrap.yml)
+Source: [app/config/application-bootstrap.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-bootstrap.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3892,7 +3892,7 @@ Source: [app/config/application-bootstrap.yml](https://github.com/bloxbean/yano/
 
 ## application-devnet.yml
 
-Source: [app/config/application-devnet.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-devnet.yml)
+Source: [app/config/application-devnet.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-devnet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3922,7 +3922,7 @@ Source: [app/config/application-devnet.yml](https://github.com/bloxbean/yano/blo
 
 ## application-header-signature.yml
 
-Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-header-signature.yml)
+Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-header-signature.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3932,7 +3932,7 @@ Source: [app/config/application-header-signature.yml](https://github.com/bloxbea
 
 ## application-large.yml
 
-Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-large.yml)
+Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-large.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3946,7 +3946,7 @@ Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob
 
 ## application-mainnet.yml
 
-Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-mainnet.yml)
+Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-mainnet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3968,7 +3968,7 @@ Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/bl
 
 ## application-medium.yml
 
-Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-medium.yml)
+Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-medium.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3982,7 +3982,7 @@ Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blo
 
 ## application-opcert-strict.yml
 
-Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-opcert-strict.yml)
+Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-opcert-strict.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -3990,7 +3990,7 @@ Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/y
 
 ## application-praos-ledger.yml
 
-Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-praos-ledger.yml)
+Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-praos-ledger.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4000,7 +4000,7 @@ Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/ya
 
 ## application-praos-lite.yml
 
-Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-praos-lite.yml)
+Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-praos-lite.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4010,7 +4010,7 @@ Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano
 
 ## application-preprod.yml
 
-Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-preprod.yml)
+Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-preprod.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4032,7 +4032,7 @@ Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/bl
 
 ## application-preview.yml
 
-Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-preview.yml)
+Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-preview.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4054,7 +4054,7 @@ Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/bl
 
 ## application-projection.yml
 
-Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-projection.yml)
+Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-projection.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4077,7 +4077,7 @@ Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano
 
 ## application-pruned.yml
 
-Source: [app/config/application-pruned.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-pruned.yml)
+Source: [app/config/application-pruned.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-pruned.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4087,7 +4087,7 @@ Source: [app/config/application-pruned.yml](https://github.com/bloxbean/yano/blo
 
 ## application-relay.yml
 
-Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-relay.yml)
+Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-relay.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4126,7 +4126,7 @@ Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob
 
 ## application-sanchonet.yml
 
-Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-sanchonet.yml)
+Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-sanchonet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4145,7 +4145,7 @@ Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/
 
 ## application-selective-utxo.yml
 
-Source: [app/config/application-selective-utxo.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-selective-utxo.yml)
+Source: [app/config/application-selective-utxo.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-selective-utxo.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4160,7 +4160,7 @@ Source: [app/config/application-selective-utxo.yml](https://github.com/bloxbean/
 
 ## application-small.yml
 
-Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-small.yml)
+Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-small.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4174,7 +4174,7 @@ Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob
 
 ## application-static-multi.yml
 
-Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-static-multi.yml)
+Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-static-multi.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4198,7 +4198,7 @@ Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/ya
 
 ## application-structural-validation.yml
 
-Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-structural-validation.yml)
+Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-structural-validation.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4208,7 +4208,7 @@ Source: [app/config/application-structural-validation.yml](https://github.com/bl
 
 ## application-trusted-peers.yml
 
-Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-trusted-peers.yml)
+Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-trusted-peers.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4227,7 +4227,7 @@ Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/y
 
 ## application-wallet.yml
 
-Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-wallet.yml)
+Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-wallet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4239,7 +4239,7 @@ Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blo
 
 ## application-xsmall.yml
 
-Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application-xsmall.yml)
+Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application-xsmall.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4254,7 +4254,7 @@ Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blo
 
 ## application.yml
 
-Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/c2f0034d8c8719ee6022a76e35dc05221245ff5b/app/config/application.yml)
+Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/15b451a447f49ce327d87b279a6f06b0a372285b/app/config/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -5565,9 +5565,146 @@ Native builds preserve core providers but cannot dynamically load JVM plugins. U
 
 ---
 
+# Run with Docker Compose
+
+Start the Docker distribution, combine profiles, and configure mounts and memory.
+
+Canonical URL: https://getyano.dev/start/docker/
+
+Install Docker Engine or Docker Desktop with Compose v2. Download
+`yano-docker-<version>.zip` from [Yano Releases](https://github.com/bloxbean/yano/releases)
+and extract the complete archive. The ZIP contains configuration and launchers;
+Docker downloads the executable image separately. No host Java installation is needed.
+
+The following commands use a POSIX shell, including a terminal on macOS or Linux.
+
+```bash
+VERSION="<version>" # Replace with the version in the release asset name, without v.
+unzip "yano-docker-${VERSION}.zip"
+cd "yano-docker-${VERSION}"
+./yano.sh config:devnet
+./yano.sh start:devnet
+```
+
+Open the console at `http://localhost:7070/ui/`. Check readiness with:
+
+```bash
+curl -fsS http://localhost:7070/q/health/ready
+./yano.sh status
+```
+
+`./yano.sh logs` follows the container logs. `./yano.sh stop` removes the container
+while preserving the host's state directories.
+
+## Images and ports
+
+`compose/.env` pins `YANO_IMAGE_TAG` to the ZIP's release version and defaults
+`YANO_IMAGE_FLAVOR` to `jvm`, selecting `bloxbean/yano:<version>-jvm`. Set the
+flavor to `native` to select the matching native image. Use the JVM flavor for
+dynamic plugins and JVM-only capabilities such as DuckLake history.
+
+Preview releases use their versioned image tags; do not rely on a `latest` tag.
+Keep the image version compatible with the ZIP's config files. Change
+`YANO_HTTP_PORT`, `YANO_N2N_PORT`, or `INSTANCE_NAME` in `compose/.env` as needed
+before starting.
+
+To run two instances, extract into separate directories and give each a distinct
+`INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT`. Compose uses
+`yano-<INSTANCE_NAME>` as its project name, so stopping one instance does not
+stop another. Separate folders alone are insufficient when their instance names
+are the same; the launcher then refuses to start, restart, or stop the
+container that the other directory owns. The same applies if you set
+`COMPOSE_PROJECT_NAME`: each directory needs its own value. Keep any explicitly configured storage
+paths separate too.
+
+Older Compose ZIPs ran every instance as project `compose`. After upgrading a
+directory in place, `./yano.sh start` reports the old container. Run
+`./yano.sh stop` or `./yano.sh restart` from that directory to replace it.
+
+## Profiles and memory
+
+Put the network first, then add comma-separated Quarkus profiles:
+
+```bash
+./yano.sh config:preprod,wallet,praos-lite,small
+JAVA_OPTS="-Xmx384m" ./yano.sh start:preprod,wallet,praos-lite,small
+```
+
+The complete list reaches Quarkus. The first profile selects the network and
+its storage directories. Enable `wallet` before the first sync into a fresh
+database; see [wallet indexes](/node/wallet-indexes/) for coverage requirements.
+Choose profiles supported by your image and release.
+
+Resource profiles such as `small` and `medium` apply their YAML settings for
+RocksDB and the decoded-block queue. **The Docker launcher does not select a
+heap limit from the resource profile.** Set `JAVA_OPTS` explicitly for either
+image flavor, or persist it in `compose/.env`:
+
+```dotenv
+JAVA_OPTS=-Xmx384m
+YANO_PROFILE=preprod,wallet,praos-lite,small
+```
+
+With these settings saved, `./yano.sh start` and `./yano.sh restart` use them.
+For a one-command override, repeat the settings when restarting. See
+[runtime profiles](/start/runtime-profiles/) for suggested heap sizes and
+off-heap memory budgets.
+
+The native image uses `YANO_NATIVE_MAX_HEAP` (default `1536m`) when `JAVA_OPTS`
+has no `-Xmx`. An explicit `-Xmx` takes precedence. The JVM image uses JVM
+ergonomics unless you supply a heap limit.
+
+## Configuration and storage
+
+Edit `config/application.yml` or `config/application-<profile>.yml`, then restart
+with the intended profile list. You can add your own profile files alongside
+them. The complete `config` directory is mounted read-only at `/app/config`.
+The nested `config/network` mount is writable for missing-file seeding and
+devnet genesis updates. Older Compose ZIPs may mount only `application.yml`;
+check their `compose/yano.yml` before relying on external profile files.
+
+`config/env` supplies container environment variables. `compose/.env` controls
+image selection, ports, profiles, and other Compose settings. Logs and plugins
+are mounted from the extracted `logs/` and `plugins/` directories.
+
+The launcher combines `compose/yano.yml` with the matching network override
+for `mainnet`, `preview`, `sanchonet`, or `devnet`, and supplies each network's
+data paths. Inspect the result with `./yano.sh config:<profiles>` before starting.
+
+Each network keeps its data in one folder beside `compose/`:
+
+```text
+data-preprod/
+  chainstate/            L1 database (/app/data/chainstate)
+  runtime-data/          snapshots, epoch checkpoints, peer store, projection history (/app/data)
+  appchain-chainstate/   authoritative app-chain state
+  appchain-indexers/     rebuildable app-chain read indexes
+```
+
+With the default layout, back up or move a network by copying its whole
+`data-<network>/` folder. If you set any of the path variables below, or an upgraded
+installation still uses folders from the earlier layout, back up every resolved
+path instead: `./yano.sh config:<network>` lists them as volume `source` entries.
+
+To place one of these folders elsewhere, set `YANO_CHAINSTATE_PATH`,
+`YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH` or `YANO_APPCHAIN_INDEXER_PATH`
+in `compose/.env`; values there may reference other variables defined in the file,
+such as `${DATA_ROOT}/chainstate`. The Compose file sets the container storage and
+history paths, so an older `config/env` does not need changes.
+
+Folders from earlier bundles, such as `chainstate-preprod/` beside `compose/`,
+stay in use while their variable is unset, so upgrading does not start a new sync.
+To adopt the new layout, stop Yano and move each into `data-<network>/`, for
+example `mv chainstate-preprod data-preprod/chainstate`.
+
+On Linux, set `YANO_UID` and `YANO_GID` in `compose/.env` to the owner of the
+writable host directories if it differs from the default `1000:1000`.
+
+---
+
 # Download & install Yano
 
-Choose and run a JVM or platform-specific Yano release.
+Choose and run a JVM, native, or Docker Compose Yano release.
 
 Canonical URL: https://getyano.dev/start/installation/
 
@@ -5582,8 +5719,14 @@ Download the [latest Yano release](https://github.com/bloxbean/yano/releases/lat
 | Linux arm64 | `yano-native-<version>-linux-arm64.zip` | Linux on arm64 |
 | macOS arm64 | `yano-native-<version>-macos-arm64.zip` | Apple silicon Mac |
 | Windows x64 | `yano-native-<version>-windows-x64.zip` | Windows on x64 |
+| Docker Compose | `yano-docker-<version>.zip` | Docker Engine or Docker Desktop with Compose v2 |
 
 Replace `<version>` with the selected release version as it appears in the asset names (the release tag without its leading `v`).
+
+For the Docker ZIP, follow [Run with Docker Compose](/start/docker/). It contains
+the launcher and configuration and pulls a versioned image; Java is included in
+the JVM image. Some older releases omit this ZIP; use another listed distribution
+or [build the Compose ZIP from source](/contribute/build-from-source/#docker-compose-zip-distribution).
 
 For app ledger onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
 
@@ -5760,11 +5903,16 @@ RocksDB memory, and the decoded-block queue. Add one profile after the network:
 ./yano.sh start:mainnet,large
 ```
 
-Use only one resource profile at a time. `yano.sh` applies its maximum heap to
+Use only one resource profile at a time. The standalone ZIP's `yano.sh` applies its maximum heap to
 both JVM and native distributions. An explicit `-Xmx` in `JAVA_OPTS` overrides
 that value. For the native distribution, `YANO_NATIVE_MAX_HEAP` also overrides
 the profile default, and an explicit `-Xmx` in `JAVA_OPTS` still takes
 precedence over it.
+
+In the **Docker Compose distribution**, these profiles apply the RocksDB and
+queue settings, but do not automatically set the maximum heap. Set it explicitly,
+for example `JAVA_OPTS="-Xmx384m" ./yano.sh start:mainnet,small`.
+See [Docker profiles and memory](/start/docker/#profiles-and-memory) for details.
 
 These profiles are available when the matching file exists in the extracted
 `config/` directory, such as `config/application-small.yml`. Older releases

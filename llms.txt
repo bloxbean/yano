@@ -53,7 +53,8 @@ Java 25. Maven group org.yanoproject. Built-in machine: ordered-log. Additional 
 - [Plugin query & domain APIs](https://getyano.dev/ai/pages/reference/plugin-contract.md): Implement committed queries and bounded domain APIs.
 - [Release change details](https://getyano.dev/ai/pages/reference/upgrading.md): Configuration and behavior changes across preview versions.
 - [Capability guide](https://getyano.dev/ai/pages/start/capabilities.md): See which Yano features fit your runtime and workflow.
-- [Download & install Yano](https://getyano.dev/ai/pages/start/installation.md): Choose and run a JVM or platform-specific Yano release.
+- [Run with Docker Compose](https://getyano.dev/ai/pages/start/docker.md): Start the Docker distribution, combine profiles, and configure mounts and memory.
+- [Download & install Yano](https://getyano.dev/ai/pages/start/installation.md): Choose and run a JVM, native, or Docker Compose Yano release.
 - [What is Yano?](https://getyano.dev/ai/pages/start/overview.md): Understand Yano, choose a starting point, and build your first Cardano workflow.
 - [Your first local node](https://getyano.dev/ai/pages/start/quickstart.md): Download Yano and start a local Cardano development network.
 - [Choose a runtime profile](https://getyano.dev/ai/pages/start/runtime-profiles.md): Start Yano with resource sizing and optional wallet indexes.

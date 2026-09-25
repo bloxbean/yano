@@ -13,11 +13,16 @@ RocksDB memory, and the decoded-block queue. Add one profile after the network:
 ./yano.sh start:mainnet,large
 ```
 
-Use only one resource profile at a time. `yano.sh` applies its maximum heap to
+Use only one resource profile at a time. The standalone ZIP's `yano.sh` applies its maximum heap to
 both JVM and native distributions. An explicit `-Xmx` in `JAVA_OPTS` overrides
 that value. For the native distribution, `YANO_NATIVE_MAX_HEAP` also overrides
 the profile default, and an explicit `-Xmx` in `JAVA_OPTS` still takes
 precedence over it.
+
+In the **Docker Compose distribution**, these profiles apply the RocksDB and
+queue settings, but do not automatically set the maximum heap. Set it explicitly,
+for example `JAVA_OPTS="-Xmx384m" ./yano.sh start:mainnet,small`.
+See [Docker profiles and memory](/start/docker/#profiles-and-memory) for details.
 
 These profiles are available when the matching file exists in the extracted
 `config/` directory, such as `config/application-small.yml`. Older releases
