@@ -91,15 +91,17 @@ lists use commas between profile names.
 
 ## Chainstate
 
-For a custom profile, Docker uses this default host chainstate path:
+For a custom profile, Docker keeps the node's data in one folder beside `compose/`:
 
 ```text
-chainstate-mydevnet/
-appchain-chainstate-mydevnet/
-appchain-indexers-mydevnet/
+data-mydevnet/
+  chainstate/
+  runtime-data/
+  appchain-chainstate/
+  appchain-indexers/
 ```
 
-The launcher creates this directory on `start:mydevnet` or `restart:mydevnet`.
+The launcher creates these folders on `start:mydevnet` or `restart:mydevnet`.
 
 To use a different path, set `YANO_CHAINSTATE_PATH`:
 

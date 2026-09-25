@@ -102,19 +102,34 @@ image selection, ports, profiles, and other Compose settings. Logs and plugins
 are mounted from the extracted `logs/` and `plugins/` directories.
 
 The launcher combines `compose/yano.yml` with the matching network override
-for `mainnet`, `preview`, `sanchonet`, or `devnet`. These files preserve common
-mounts and replace state paths with network-specific directories, such as
-`chainstate-devnet/` and `appchain-chainstate-devnet/`. Preprod uses the base
-file; custom networks use paths supplied by the launcher. Inspect the result
-with `./yano.sh config:<profiles>` before starting.
+for `mainnet`, `preview`, `sanchonet`, or `devnet`, and supplies each network's
+data paths. Inspect the result with `./yano.sh config:<profiles>` before starting.
 
-The writable `runtime-data-<network>/` directory holds devnet snapshots, epoch
-checkpoints, the upstream peer store, and the `projection` history archive. It
-is mounted at `/app/data`, with the existing host chainstate directory mounted
-separately at `/app/data/chainstate`. `YANO_RUNTIME_DATA_PATH` overrides the
-auxiliary data directory. Back up both directories. The Compose file sets the
-container storage and history paths, so an older `config/env` does not need
-changes.
+Each network keeps its data in one folder beside `compose/`:
+
+```text
+data-preprod/
+  chainstate/            L1 database (/app/data/chainstate)
+  runtime-data/          snapshots, epoch checkpoints, peer store, projection history (/app/data)
+  appchain-chainstate/   authoritative app-chain state
+  appchain-indexers/     rebuildable app-chain read indexes
+```
+
+With the default layout, back up or move a network by copying its whole
+`data-<network>/` folder. If you set any of the path variables below, or an upgraded
+installation still uses folders from the earlier layout, back up every resolved
+path instead: `./yano.sh config:<network>` lists them as volume `source` entries.
+
+To place one of these folders elsewhere, set `YANO_CHAINSTATE_PATH`,
+`YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH` or `YANO_APPCHAIN_INDEXER_PATH`
+in `compose/.env`; values there may reference other variables defined in the file,
+such as `${DATA_ROOT}/chainstate`. The Compose file sets the container storage and
+history paths, so an older `config/env` does not need changes.
+
+Folders from earlier bundles, such as `chainstate-preprod/` beside `compose/`,
+stay in use while their variable is unset, so upgrading does not start a new sync.
+To adopt the new layout, stop Yano and move each into `data-<network>/`, for
+example `mv chainstate-preprod data-preprod/chainstate`.
 
 On Linux, set `YANO_UID` and `YANO_GID` in `compose/.env` to the owner of the
 writable host directories if it differs from the default `1000:1000`.

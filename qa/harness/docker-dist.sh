@@ -28,6 +28,11 @@ GENESIS_ZIP=$(unzip -p "$DOCKER_ZIP" '*/config/network/devnet/shelley-genesis.js
 check "yano.sh start:devnet" $?
 wait_http_ready $HA 120; check "ready within 120 s" $?
 wait_blocks $HA 20; check "producing blocks" $?
+check "data folders created under data-devnet/" \
+  $([ -f "$A/data-devnet/chainstate/CURRENT" ] && [ -d "$A/data-devnet/runtime-data" ] \
+    && [ -d "$A/data-devnet/appchain-chainstate" ] && [ -d "$A/data-devnet/appchain-indexers" ]; echo $?)
+TOP=$(cd "$A" && ls -d chainstate-* runtime-data-* appchain-* 2>/dev/null)
+check "no data folders beside compose/${TOP:+ (found: $TOP)}" $([ -z "$TOP" ]; echo $?)
 
 echo "== API sweep"
 BAD=""
@@ -59,7 +64,7 @@ echo "== snapshot create, restore, delete"
 SNAP=$(curl -s -X POST "http://localhost:$HA/api/v1/devnet/snapshot" -H 'content-type: application/json' -d '{"name":"qa"}')
 SNAP_BLOCK=$(echo "$SNAP" | jq -r '.block_number // empty'); SNAP_HASH=$(block_hash $HA "$SNAP_BLOCK")
 echo "  snapshot: $SNAP"
-check "snapshot created in runtime-data" $([ -n "$SNAP_BLOCK" ] && [ -d "$A/runtime-data-devnet/snapshots/qa" ]; echo $?)
+check "snapshot created in runtime-data" $([ -n "$SNAP_BLOCK" ] && [ -d "$A/data-devnet/runtime-data/snapshots/qa" ]; echo $?)
 wait_blocks $HA $(( ${SNAP_BLOCK:-0} + 10 ))
 BEFORE=$(tip_block $HA)
 RESTORE=$(curl -s -w ' HTTP%{http_code}' -X POST "http://localhost:$HA/api/v1/devnet/restore/qa")
@@ -101,7 +106,7 @@ extract_bundle "$P" qa-docker-proj $HB $NB
 sleep 10
 COV=$(api $HB history/coverage); echo "  coverage: $(echo "$COV" | cut -c1-160)"
 check "projection enabled without error" $(echo "$COV" | jq -e '.enabled == true and (has("error") | not)' >/dev/null; echo $?)
-check "history written to runtime-data-devnet/history" $([ -d "$P/runtime-data-devnet/history/ducklake-data" ]; echo $?)
+check "history written to data-devnet/runtime-data/history" $([ -d "$P/data-devnet/runtime-data/history/ducklake-data" ]; echo $?)
 (cd "$P" && ./yano.sh stop) >> "$RUN/projection.log" 2>&1
 
 echo "== instance ownership"
@@ -131,6 +136,19 @@ check "first instance survives the shared-project attempts" \
 (cd "$A" && ./yano.sh stop) >> "$RUN/a-start.log" 2>&1
 check "yano.sh stop removes the container" $(docker inspect yano-qa-docker-a >/dev/null 2>&1; [ $? != 0 ]; echo $?)
 
+echo "== data path from compose/.env with a variable reference"
+E=$RUN/env-path
+extract_bundle "$E" qa-docker-env $HB $NB
+set_env "$E" DATA_ROOT ../external
+printf '%s\n' 'YANO_CHAINSTATE_PATH=${DATA_ROOT}/chainstate' >> "$E/compose/.env"
+(cd "$E" && ./yano.sh start:devnet) > "$RUN/env-path.log" 2>&1; wait_http_ready $HB 120
+check "node starts with YANO_CHAINSTATE_PATH=\${DATA_ROOT}/chainstate" $?
+ESRC=$(docker inspect yano-qa-docker-env --format '{{range .Mounts}}{{if eq .Destination "/app/data/chainstate"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)
+check "chainstate mounted from the expanded external/chainstate" \
+  $(case "$ESRC" in (*/external/chainstate) [ -f "$E/external/chainstate/CURRENT" ]; echo $?;; (*) echo 1;; esac)
+check "no literal \${DATA_ROOT} folder created" $([ -z "$(find "$E" -name '*DATA_ROOT*' 2>/dev/null)" ]; echo $?)
+(cd "$E" && ./yano.sh stop) >> "$RUN/env-path.log" 2>&1
+
 echo "== in-place upgrade from $LEGACY_REF"
 if (cd "$REPO" && git cat-file -e "$LEGACY_REF:docker/yano.sh") 2>/dev/null; then
   extract_bundle "$U" qa-docker-up $HU $NU
@@ -152,6 +170,11 @@ if (cd "$REPO" && git cat-file -e "$LEGACY_REF:docker/yano.sh") 2>/dev/null; the
     $([ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' yano-qa-docker-up)" = yano-qa-docker-up ]; echo $?)
   check "upgraded node kept its chain (block $UB unchanged)" \
     $([ -n "$UH" ] && [ "$(block_hash $HU "$UB")" = "$UH" ]; echo $?)
+  SRC=$(docker inspect yano-qa-docker-up --format '{{range .Mounts}}{{if eq .Destination "/app/data/chainstate"}}{{.Source}}{{end}}{{end}}')
+  check "upgraded node keeps its top-level chainstate-devnet/ (${SRC##*/})" \
+    $([ "${SRC##*/}" = chainstate-devnet ] && [ ! -e "$U/data-devnet/chainstate" ]; echo $?)
+  check "launcher explains the earlier folder layout" \
+    $(grep -q 'Using chainstate-devnet/ from the earlier folder layout' "$RUN/upgrade.log"; echo $?)
   (cd "$U" && ./yano.sh stop) >> "$RUN/upgrade.log" 2>&1
 else
   echo "  SKIP  upgrade: $LEGACY_REF is not in this clone"

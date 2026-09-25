@@ -3,10 +3,6 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/compose/yano.yml"
-DEVNET_COMPOSE_FILE="$SCRIPT_DIR/compose/yano-devnet.yml"
-MAINNET_COMPOSE_FILE="$SCRIPT_DIR/compose/yano-mainnet.yml"
-PREVIEW_COMPOSE_FILE="$SCRIPT_DIR/compose/yano-preview.yml"
-SANCHONET_COMPOSE_FILE="$SCRIPT_DIR/compose/yano-sanchonet.yml"
 ENV_FILE="$SCRIPT_DIR/compose/.env"
 COMPOSE_DIR="$SCRIPT_DIR/compose"
 
@@ -108,127 +104,76 @@ strip_optional_quotes() {
   printf '%s\n' "$value"
 }
 
-chainstate_path_for_profile() {
-  profile="$1"
-
-  if [ -n "${YANO_CHAINSTATE_PATH:-}" ]; then
-    printf '%s\n' "$YANO_CHAINSTATE_PATH"
-    return
+# Default host path for one data folder of a network: data-<network>/<folder>.
+# A folder from the earlier flat layout (<folder>-<network>/ beside compose/) stays in
+# use, so an upgraded installation keeps its database instead of starting empty.
+default_data_path() { # <folder> <profile>
+  if [ -d "$COMPOSE_DIR/../$1-$2" ]; then
+    printf '../%s-%s\n' "$1" "$2"
+  else
+    printf '../data-%s/%s\n' "$2" "$1"
   fi
-
-  configured_path="$(strip_optional_quotes "$(env_file_value YANO_CHAINSTATE_PATH)")"
-  if [ -n "$configured_path" ]; then
-    printf '%s\n' "$configured_path"
-    return
-  fi
-
-  printf '../chainstate-%s\n' "$profile"
 }
 
-appchain_state_path_for_profile() {
-  profile="$1"
-
-  if [ -n "${YANO_APPCHAIN_STATE_PATH:-}" ]; then
-    printf '%s\n' "$YANO_APPCHAIN_STATE_PATH"
-    return
-  fi
-
-  configured_path="$(strip_optional_quotes "$(env_file_value YANO_APPCHAIN_STATE_PATH)")"
-  if [ -n "$configured_path" ]; then
-    printf '%s\n' "$configured_path"
-    return
-  fi
-
-  printf '../appchain-chainstate-%s\n' "$profile"
+# Export defaults only for data paths the user has not set. Values from the shell or
+# compose/.env are left to Compose, which expands ${VAR} references inside them.
+export_default_data_paths() { # <network>
+  for pair in YANO_CHAINSTATE_PATH:chainstate YANO_RUNTIME_DATA_PATH:runtime-data \
+      YANO_APPCHAIN_STATE_PATH:appchain-chainstate YANO_APPCHAIN_INDEXER_PATH:appchain-indexers; do
+    var=${pair%%:*}
+    folder=${pair#*:}
+    eval "current=\${$var:-}"
+    [ -n "$current" ] && continue
+    [ -n "$(env_file_value "$var")" ] && continue
+    eval "$var=\$(default_data_path \"\$folder\" \"\$1\")"
+    export "$var"
+  done
 }
 
-appchain_indexer_path_for_profile() {
-  profile="$1"
-
-  if [ -n "${YANO_APPCHAIN_INDEXER_PATH:-}" ]; then
-    printf '%s\n' "$YANO_APPCHAIN_INDEXER_PATH"
-    return
-  fi
-
-  configured_path="$(strip_optional_quotes "$(env_file_value YANO_APPCHAIN_INDEXER_PATH)")"
-  if [ -n "$configured_path" ]; then
-    printf '%s\n' "$configured_path"
-    return
-  fi
-
-  printf '../appchain-indexers-%s\n' "$profile"
+note_legacy_folders() { # <network>
+  for pair in YANO_CHAINSTATE_PATH:chainstate YANO_RUNTIME_DATA_PATH:runtime-data \
+      YANO_APPCHAIN_STATE_PATH:appchain-chainstate YANO_APPCHAIN_INDEXER_PATH:appchain-indexers; do
+    var=${pair%%:*}
+    folder=${pair#*:}
+    eval "path=\${$var:-}"
+    if [ "$path" = "../$folder-$1" ]; then
+      echo "Using $folder-$1/ from the earlier folder layout (new installations use data-$1/$folder/)." >&2
+    fi
+  done
 }
 
-runtime_data_path_for_profile() {
-  profile="$1"
-  if [ -n "${YANO_RUNTIME_DATA_PATH:-}" ]; then
-    printf '%s\n' "$YANO_RUNTIME_DATA_PATH"
-    return
-  fi
-  configured_path="$(strip_optional_quotes "$(env_file_value YANO_RUNTIME_DATA_PATH)")"
-  printf '%s\n' "${configured_path:-../runtime-data-$profile}"
-}
-
-ensure_runtime_data_dir() {
-  runtime_data_path="$(runtime_data_path_for_profile "$1")"
-  case "$runtime_data_path" in
-    /*) mkdir -p "$runtime_data_path" ;;
-    *) mkdir -p "$COMPOSE_DIR/$runtime_data_path" ;;
-  esac
-}
-
-ensure_chainstate_dir() {
-  profile="$1"
-  chainstate_path="$(chainstate_path_for_profile "$profile")"
-
-  case "$chainstate_path" in
-    /*)
-      chainstate_dir="$chainstate_path"
+compose_for_network() { # <network> <compose arguments...>
+  network_name=$1
+  shift
+  case "$network_name" in
+    mainnet|preview|sanchonet|devnet)
+      docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_DIR/yano-$network_name.yml" --env-file "$ENV_FILE" "$@"
       ;;
     *)
-      chainstate_dir="$COMPOSE_DIR/$chainstate_path"
+      compose "$@"
       ;;
   esac
-
-  mkdir -p "$chainstate_dir"
 }
 
-ensure_appchain_state_dir() {
-  profile="$1"
-  appchain_state_path="$(appchain_state_path_for_profile "$profile")"
-
-  case "$appchain_state_path" in
-    /*)
-      appchain_state_dir="$appchain_state_path"
-      ;;
-    *)
-      appchain_state_dir="$COMPOSE_DIR/$appchain_state_path"
-      ;;
-  esac
-
-  mkdir -p "$appchain_state_dir"
-}
-
-ensure_appchain_indexer_dir() {
-  profile="$1"
-  appchain_indexer_path="$(appchain_indexer_path_for_profile "$profile")"
-
-  case "$appchain_indexer_path" in
-    /*) appchain_indexer_dir="$appchain_indexer_path" ;;
-    *) appchain_indexer_dir="$COMPOSE_DIR/$appchain_indexer_path" ;;
-  esac
-
-  mkdir -p "$appchain_indexer_dir"
+# Create the host data folders before Docker can create them as root, using the paths
+# Compose resolves (after expanding .env references).
+ensure_data_dirs() { # <network>
+  compose_for_network "$1" config 2>/dev/null | awk '
+    /^[[:space:]]*source:/ { src = $0; sub(/^[[:space:]]*source:[[:space:]]*/, "", src); gsub(/^"|"$/, "", src) }
+    /^[[:space:]]*target:/ {
+      t = $0; sub(/^[[:space:]]*target:[[:space:]]*/, "", t)
+      if (t == "/app/data" || t == "/app/data/chainstate" || t == "/app/appchain-chainstate" || t == "/app/appchain-indexers") print src
+    }' | while IFS= read -r dir; do
+    [ -n "$dir" ] && mkdir -p "$dir"
+  done
 }
 
 prepare_chainstate_for_profiles() {
   profile_list="$1"
   validate_profile_list "$profile_list"
   profile="$(primary_profile "$profile_list")"
-  ensure_chainstate_dir "$profile"
-  ensure_runtime_data_dir "$profile"
-  ensure_appchain_state_dir "$profile"
-  ensure_appchain_indexer_dir "$profile"
+  export_default_data_paths "$profile"
+  ensure_data_dirs "$profile"
 }
 
 container_label() {
@@ -300,6 +245,7 @@ compose_network() {
   validate_profile_list "$profile_list"
   network="$(primary_profile "$profile_list")"
   validate_profile_name "$network"
+  export_default_data_paths "$network"
 
   if [ "${1:-}" = "down" ]; then
     ensure_container_ownership replace
@@ -307,52 +253,11 @@ compose_network() {
 
   if [ "${1:-}" = "up" ]; then
     ensure_container_ownership start
-    ensure_chainstate_dir "$network"
-    ensure_runtime_data_dir "$network"
-    ensure_appchain_state_dir "$network"
-    ensure_appchain_indexer_dir "$network"
+    note_legacy_folders "$network"
+    ensure_data_dirs "$network"
   fi
 
-  case "$network" in
-    preprod)
-      YANO_PROFILE="$profile_list" \
-        YANO_NETWORK="$network" \
-        compose "$@"
-      ;;
-    mainnet)
-      YANO_PROFILE="$profile_list" \
-        YANO_NETWORK="$network" \
-        docker compose -f "$COMPOSE_FILE" -f "$MAINNET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
-      ;;
-    preview)
-      YANO_PROFILE="$profile_list" \
-        YANO_NETWORK="$network" \
-        docker compose -f "$COMPOSE_FILE" -f "$PREVIEW_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
-      ;;
-    sanchonet)
-      YANO_PROFILE="$profile_list" \
-        YANO_NETWORK="$network" \
-        docker compose -f "$COMPOSE_FILE" -f "$SANCHONET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
-      ;;
-    devnet)
-      YANO_PROFILE="$profile_list" \
-        YANO_NETWORK="$network" \
-        docker compose -f "$COMPOSE_FILE" -f "$DEVNET_COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
-      ;;
-    *)
-      custom_chainstate_path="$(chainstate_path_for_profile "$network")"
-      custom_runtime_data_path="$(runtime_data_path_for_profile "$network")"
-      custom_appchain_state_path="$(appchain_state_path_for_profile "$network")"
-      custom_appchain_indexer_path="$(appchain_indexer_path_for_profile "$network")"
-      YANO_PROFILE="$profile_list" \
-        YANO_NETWORK="$network" \
-        YANO_CHAINSTATE_PATH="$custom_chainstate_path" \
-        YANO_RUNTIME_DATA_PATH="$custom_runtime_data_path" \
-        YANO_APPCHAIN_STATE_PATH="$custom_appchain_state_path" \
-        YANO_APPCHAIN_INDEXER_PATH="$custom_appchain_indexer_path" \
-        docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
-      ;;
-  esac
+  YANO_PROFILE="$profile_list" YANO_NETWORK="$network" compose_for_network "$network" "$@"
 }
 
 ACTION="${1:-}"

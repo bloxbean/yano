@@ -25,22 +25,24 @@ printed and stop.
 ## What it checks
 
 `docker-dist` (devnet):
-- `./yano.sh start:devnet` from the extracted bundle; ready; producing blocks.
+- `./yano.sh start:devnet` from the extracted bundle; ready; producing blocks; the four data
+  folders are created under `data-devnet/` and nothing else beside `compose/`.
 - 22 REST, console and metrics endpoints return 200.
 - `/app/config` read-only, `/app/config/network` writable, chainstate at
   `/app/data/chainstate`, no anonymous volumes; the devnet genesis update reaches the host.
-- Snapshot create in `runtime-data-devnet/snapshots`, restore back to the snapshot block
+- Snapshot create in `data-devnet/runtime-data/snapshots`, restore back to the snapshot block
   with the same hash, production resumes, delete.
 - An edited `application-devnet.yml` and a new `application-qaprobe.yml` take effect.
 - Instance ownership: a second folder with the same `INSTANCE_NAME` is refused on start,
   stop and restart; distinct names run side by side; stopping one leaves the other.
   Folders sharing a `COMPOSE_PROJECT_NAME` are refused the same way.
 - An older `config/env` with `YANO_STORAGE_PATH=/app/chainstate` still resumes the chain.
-- A fresh bundle with `devnet,projection` writes history to `runtime-data-devnet/history`
+- A fresh bundle with `devnet,projection` writes history to `data-devnet/runtime-data/history`
   (history must be enabled from genesis, so it does not reuse the first node).
 - In-place upgrade: a node started with the launcher and Compose files from commit
   `2747fc7785` (unnamed project `compose`) is refused by the new `start` with guidance,
-  moved to project `yano-qa-docker-up` by `restart`, and keeps its chain.
+  moved to project `yano-qa-docker-up` by `restart`, keeps its chain, and keeps using its
+  top-level `chainstate-devnet/` folder.
 
 `docker-public`: preprod (`wallet,small`, `-Xmx384m`) to epoch 10 plus a restart,
 preview (`small`, `-Xmx384m`) to epoch 10, and mainnet (`wallet,medium`, `-Xmx1536m`) to

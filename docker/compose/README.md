@@ -97,50 +97,52 @@ The Docker image also contains an immutable copy of the default network files. O
 
 The launcher combines `yano.yml` with `yano-<network>.yml` for `mainnet`,
 `preview`, `sanchonet`, and `devnet`. These Compose overrides select network-specific
-state directories; the application settings come from the YAML profiles in
+data folders; the application settings come from the YAML profiles in
 `config`. Preprod uses the base Compose file. Custom networks use the base file
-with state paths supplied by the launcher.
+with data paths supplied by the launcher.
 
-Each network uses separate L1 and app-chain state directories by default. The launcher creates both selected directories before Docker Compose starts, so they are owned by the user running `yano.sh`:
+Each network keeps its data in one folder, `data-<network>/`, beside `compose/`.
+The launcher creates the folders before Docker Compose starts, so they are owned by
+the user running `yano.sh`:
 
 ```text
-chainstate-preprod/
-chainstate-mainnet/
-chainstate-preview/
-chainstate-devnet/
-appchain-chainstate-preprod/
-appchain-chainstate-mainnet/
-appchain-chainstate-preview/
-appchain-chainstate-devnet/
-appchain-indexers-preprod/
-appchain-indexers-mainnet/
-appchain-indexers-preview/
-appchain-indexers-devnet/
+data-preprod/
+  chainstate/            L1 database                          -> /app/data/chainstate
+  runtime-data/          snapshots, epoch checkpoints,        -> /app/data
+                         peer store, projection history/
+  appchain-chainstate/   authoritative app-chain state        -> /app/appchain-chainstate
+  appchain-indexers/     rebuildable app-chain read indexes   -> /app/appchain-indexers
+data-mainnet/
+  ...
 ```
 
-`start:sanchonet` and custom profiles use the same `chainstate-<profile>/` and
-`appchain-chainstate-<profile>/` conventions.
+`start:sanchonet` and custom profiles follow the same `data-<profile>/` layout.
+With the default layout, back up or move a network by copying its whole
+`data-<network>/` folder. If you set any of the path variables below, or an upgraded
+installation still uses folders from the earlier layout, back up every resolved
+path instead: `./yano.sh config:<network>` lists them as volume `source` entries.
 
-To use a custom host chainstate path, set `YANO_CHAINSTATE_PATH` in `compose/.env` or for one command:
+Each folder can be placed elsewhere with its own variable in `compose/.env` or for one
+command: `YANO_CHAINSTATE_PATH`, `YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH`
+and `YANO_APPCHAIN_INDEXER_PATH`. Relative paths are resolved from `compose/`, and
+values in `compose/.env` may reference other variables defined there, such as
+`YANO_CHAINSTATE_PATH=${DATA_ROOT}/chainstate`.
 
 ```bash
 YANO_CHAINSTATE_PATH=/data/yano-mainnet ./yano.sh start:mainnet
 ```
 
-Set `YANO_APPCHAIN_STATE_PATH` the same way when app-chain state should live at
-a custom host path.
+Do not place the app-chain index folder below either authoritative state folder.
+The Compose file sets `YANO_STORAGE_PATH` and `YANO_HISTORY_DIR` to the container
+paths above, overriding any older values in `config/env`.
 
-Set `YANO_APPCHAIN_INDEXER_PATH` for the rebuildable app-chain read-index root.
-Do not place it below either authoritative state directory.
-
-`runtime-data-<network>/` is mounted at `/app/data` for devnet snapshots,
-automatic epoch checkpoints, the upstream peer store, and the `projection`
-history archive (`history/`). Override its host path with
-`YANO_RUNTIME_DATA_PATH`. The existing `chainstate-<network>/` directory is
-mounted inside it at `/app/data/chainstate`, so database files do not move. Keep
-both directories when backing up runtime data. The Compose file sets
-`YANO_STORAGE_PATH` and `YANO_HISTORY_DIR` to these container paths, overriding
-any older values in `config/env`.
+Installations from earlier bundles kept these folders directly beside `compose/`
+(`chainstate-<network>/`, `runtime-data-<network>/`, `appchain-chainstate-<network>/`,
+`appchain-indexers-<network>/`). When such a folder exists and its variable is not
+set, the launcher keeps using it and prints a note, so an upgrade never starts from an
+empty database. To adopt the new layout, stop Yano and move each folder into
+`data-<network>/` under its new name, for example
+`mv chainstate-preprod data-preprod/chainstate`.
 
 For simultaneous instances, use separate extracted directories and set distinct
 `INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT` values in each
@@ -160,10 +162,10 @@ Bundles without a Compose project name ran every instance as project
 the old container; run `./yano.sh stop` or `./yano.sh restart` to remove it and
 continue under the new project name. If the old container was started from a
 different directory, stop it from that directory.
-If you customize storage paths, give each instance its own `YANO_CHAINSTATE_PATH`,
+If you customize data paths, give each instance its own `YANO_CHAINSTATE_PATH`,
 `YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH`, and `YANO_APPCHAIN_INDEXER_PATH`.
 
-The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate-*`, `runtime-data-*`, `appchain-chainstate-*`, `appchain-indexers-*`, `logs/`, `plugins/`, and `config/network`.
+The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `data-*`, `logs/`, `plugins/`, and `config/network`.
 
 For a custom network, add its files under `config/network/<name>` and run with a matching custom Quarkus profile:
 

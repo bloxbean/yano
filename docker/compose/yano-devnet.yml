@@ -4,7 +4,7 @@ services:
       YANO_PROFILE: ${YANO_PROFILE:-devnet}
       YANO_NETWORK: ${YANO_NETWORK:-devnet}
     volumes:
-      - ${YANO_RUNTIME_DATA_PATH:-../runtime-data-devnet}:/app/data
-      - ${YANO_CHAINSTATE_PATH:-../chainstate-devnet}:/app/data/chainstate
-      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-chainstate-devnet}:/app/appchain-chainstate
-      - ${YANO_APPCHAIN_INDEXER_PATH:-../appchain-indexers-devnet}:/app/appchain-indexers
+      - ${YANO_RUNTIME_DATA_PATH:-../data-devnet/runtime-data}:/app/data
+      - ${YANO_CHAINSTATE_PATH:-../data-devnet/chainstate}:/app/data/chainstate
+      - ${YANO_APPCHAIN_STATE_PATH:-../data-devnet/appchain-chainstate}:/app/appchain-chainstate
+      - ${YANO_APPCHAIN_INDEXER_PATH:-../data-devnet/appchain-indexers}:/app/appchain-indexers
