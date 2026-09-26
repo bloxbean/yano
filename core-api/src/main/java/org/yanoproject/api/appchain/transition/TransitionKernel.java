@@ -115,6 +115,49 @@ public interface TransitionKernel<C, F> extends TransitionCapability<C, F> {
         return facts(command, context, state);
     }
 
+    /**
+     * Declares the facts this kernel can establish for admission rules. The list depends only on
+     * committed configuration, is fixed for the kernel's lifetime, and has at most
+     * {@link RuleFact#MAX_FACTS} entries with unique names. Empty by default: a kernel built
+     * against an earlier API level declares no facts.
+     *
+     * <p>Declarations and values are consensus-relevant for every profile whose rules read them:
+     * changing which facts a kernel declares, or how it computes them, changes the kernel's consensus
+     * semantics and requires a versioned profile decision.
+     *
+     * @return stable fact declarations derived only from committed configuration
+     */
+    default List<RuleFact> ruleFacts() { return List.of(); }
+
+    /**
+     * Returns the values of declared facts for a command whose decision was
+     * {@link TransitionDecision.Approved} with exactly this facts instance. Callers invoke it only
+     * after {@code decide(command, context, facts)} approved, and never for a rejection.
+     *
+     * <p>The method is pure: no I/O, clock, state reader, randomness, or node-local input. It
+     * returns only values this kernel established by its own verification. A declared name that
+     * is absent means "not established for this command". The result is never {@code null}; values
+     * are {@code Long}, {@code String} (at most {@link RuleFact#MAX_VALUE_BYTES} UTF-8 bytes),
+     * {@code byte[]} (at most {@link RuleFact#MAX_VALUE_BYTES} bytes), or {@code Boolean} for the
+     * scalar types, and for {@link RuleFact.Type#TEXT_SET} a {@code List<String>} of at most
+     * {@link RuleFact#MAX_SET_ENTRIES} entries, each at most {@link RuleFact#MAX_SET_ENTRY_BYTES}
+     * UTF-8 bytes, strictly increasing by unsigned UTF-8 bytes (sorted and duplicate-free).
+     *
+     * <p>Callers validate the result defensively and treat a violation (a {@code null} result, key, or
+     * value, an undeclared name, a wrong type, or an exceeded bound) as a deterministic rejection of
+     * the command, never as a block failure. An exception is not a violation: like an exception from
+     * {@link #decide}, it propagates as an implementation failure, because a node-local fault must
+     * not become a consensus outcome.
+     *
+     * @param command the decoded command that was approved
+     * @param context the execution context of that decision
+     * @param facts the exact facts instance passed to the approving decision
+     * @return values keyed by declared fact name; empty by default
+     */
+    default Map<String, Object> ruleFactValues(C command, TransitionContext context, F facts) {
+        return Map.of();
+    }
+
     /** Returns stable command layouts, including evidence fields that mappings must not manufacture. */
     List<CommandDescriptor> commands();
 

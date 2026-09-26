@@ -37,7 +37,33 @@ class TransitionKernelTest {
         assertThat(kernel.admit(new byte[]{1}).isAccepted()).isTrue();
     }
 
-    /** Minimal kernel fixture: only admission behavior varies between the tests. */
+    @Test
+    void kernelsBuiltBeforeApiLevelTwelveDeclareAndEstablishNoRuleFacts() {
+        TransitionKernel<byte[], Boolean> kernel = new TestKernel() { };
+        var context = new TransitionContext(7, 0, 0, new byte[32], "test", new byte[32]);
+        assertThat(kernel.ruleFacts()).isEmpty();
+        assertThat(kernel.ruleFactValues(new byte[]{1}, context, true)).isEmpty();
+    }
+
+    @Test
+    void overridingKernelDeclaresAndReturnsOneVerifiedFact() {
+        TransitionKernel<byte[], Boolean> kernel = new TestKernel() {
+            @Override public List<RuleFact> ruleFacts() {
+                return List.of(new RuleFact("verified", RuleFact.Type.BOOLEAN));
+            }
+            @Override public Map<String, Object> ruleFactValues(byte[] command, TransitionContext context,
+                                                                Boolean facts) {
+                return Map.of("verified", facts);
+            }
+        };
+        var context = new TransitionContext(7, 0, 0, new byte[32], "test", new byte[32]);
+        Boolean facts = kernel.facts(new byte[]{1}, context, null);
+        assertThat(kernel.decide(new byte[]{1}, context, facts)).isInstanceOf(TransitionDecision.Approved.class);
+        assertThat(kernel.ruleFacts()).containsExactly(new RuleFact("verified", RuleFact.Type.BOOLEAN));
+        assertThat(kernel.ruleFactValues(new byte[]{1}, context, facts)).containsExactly(Map.entry("verified", true));
+    }
+
+    /** Minimal kernel fixture: tests vary admission and rule-fact behavior by overriding it. */
     private abstract static class TestKernel implements TransitionKernel<byte[], Boolean> {
         private final OrderedLogKernel delegate = new OrderedLogKernel();
         @Override public MessageCodec<byte[]> codec() { return delegate.codec(); }

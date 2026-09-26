@@ -15,6 +15,7 @@ import org.yanoproject.api.appchain.codec.MessageCodec;
 import org.yanoproject.api.appchain.transition.CommandDescriptor;
 import org.yanoproject.api.appchain.transition.ConfigurationDescriptor;
 import org.yanoproject.api.appchain.transition.EventDescriptor;
+import org.yanoproject.api.appchain.transition.RuleFact;
 import org.yanoproject.api.appchain.transition.TransitionContext;
 import org.yanoproject.api.appchain.transition.TransitionDecision;
 import org.yanoproject.api.appchain.transition.TransitionKernel;
@@ -95,6 +96,7 @@ import org.yanoproject.runtime.util.LifecycleFailures;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -1396,6 +1398,79 @@ final class PluginSpiFacades {
             return Objects.requireNonNull(pluginCall(callbacks, loader,
                     () -> delegate.lookupKey(input)), "kernel lookup key must not be null").clone();
         }
+        @Override public List<RuleFact> ruleFacts() {
+            return snapshotList(pluginCall(callbacks, loader, delegate::ruleFacts), loader, callbacks,
+                    RuleFact.MAX_FACTS, "too many kernel rule facts");
+        }
+        /**
+         * Forwards verified fact values without interpreting them. The caller validates names, types and
+         * bounds and turns a violation into a deterministic rejection, so this snapshot never throws for a
+         * data shape (see {@link #snapshotRuleFactValues}). A null result passes through: the caller treats it
+         * as a violation too. An exception thrown by the plugin itself propagates like one from decide.
+         */
+        @Override public Map<String, Object> ruleFactValues(C command, TransitionContext context, F facts) {
+            Map<String, Object> values = pluginCall(callbacks, loader,
+                    () -> delegate.ruleFactValues(command, context, facts));
+            return values == null ? null : snapshotRuleFactValues(values, loader, callbacks);
+        }
+    }
+
+    /** Host-owned stand-in for a fact entry or value that is not a conforming scalar or text list. */
+    private static final Object NON_CONFORMING_FACT = new Object() {
+        @Override public String toString() { return "non-conforming rule fact"; }
+    };
+    /** A key no declared fact can have ({@link RuleFact} names are non-empty identifiers). */
+    private static final String NON_CONFORMING_FACT_NAME = "";
+
+    /**
+     * Copies a plugin's fact values into host-owned objects without interpreting them. Every plugin read happens
+     * inside one callback, traversal is bounded by iterations (not distinct keys), and the result keeps at most one
+     * entry beyond each bound so the caller can detect overflow. Nothing here throws for a data shape: a null or
+     * foreign entry, a non-text key, or a value that is not a conforming scalar or text list becomes a marker the
+     * caller rejects as a violation. Only {@code Long}, {@code String}, {@code Boolean}, copied {@code byte[]}, and
+     * copied lists of text survive, so no plugin object escapes the class-loader boundary.
+     */
+    private static Map<String, Object> snapshotRuleFactValues(Map<String, Object> values, ClassLoader loader,
+                                                              CallbackTracker callbacks) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        Iterator<?> entries = pluginCall(callbacks, loader, () -> ((Map<?, ?>) values).entrySet().iterator());
+        if (entries == null) {
+            snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
+            return Collections.unmodifiableMap(snapshot);
+        }
+        for (int visited = 0; visited <= RuleFact.MAX_FACTS && pluginCall(callbacks, loader, entries::hasNext);
+                visited++) {
+            Object[] pair = pluginCall(callbacks, loader, () -> {
+                Object element = entries.next();
+                if (!(element instanceof Map.Entry<?, ?> entry)) return null;
+                return new Object[]{entry.getKey(), snapshotRuleFactValue(entry.getValue())};
+            });
+            if (pair == null || !(pair[0] instanceof String name)) {
+                snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
+            } else {
+                snapshot.put(name, pair[1]);
+            }
+        }
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    /** Runs inside the plugin callback; returns a host-owned copy or the non-conforming marker. */
+    private static Object snapshotRuleFactValue(Object value) {
+        if (value == null || value instanceof Long || value instanceof String || value instanceof Boolean) {
+            return value;
+        }
+        if (value instanceof byte[] bytes) {
+            return Arrays.copyOf(bytes, Math.min(bytes.length, RuleFact.MAX_VALUE_BYTES + 1));
+        }
+        if (!(value instanceof List<?> list)) return NON_CONFORMING_FACT;
+        Iterator<?> items = list.iterator();
+        if (items == null) return NON_CONFORMING_FACT;
+        List<Object> copy = new ArrayList<>();
+        for (int visited = 0; visited <= RuleFact.MAX_SET_ENTRIES && items.hasNext(); visited++) {
+            Object item = items.next();
+            copy.add(item == null || item instanceof String ? item : NON_CONFORMING_FACT);
+        }
+        return Collections.unmodifiableList(copy);
     }
 
     private record StateMachineFacade(
