@@ -2082,8 +2082,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // Count only here: proposal validation and REST exception mapping
             // must not count the same local admission decision again.
             admissionRejectedCount.incrementAndGet();
-            AdmissionDiagnostics.INSTANCE.rejected(snapshot.height() + 1L, result.reason());
-            throw new AppSubmissionRejectedException(result.reason());
+            AdmissionDiagnostics.INSTANCE.rejected(snapshot.height() + 1L, result.reason(), result.details());
+            throw new AppSubmissionRejectedException(result.reason(), result.details());
         }
     }
 

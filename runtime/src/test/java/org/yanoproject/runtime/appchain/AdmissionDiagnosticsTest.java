@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.eq;
@@ -39,6 +41,17 @@ class AdmissionDiagnosticsTest {
         assertThat(AdmissionDiagnostics.escaped(reason, 512))
                 .startsWith("schema field missing\\u000afor item\\u000d\\u0009")
                 .endsWith("...").hasSizeLessThanOrEqualTo(512).doesNotContain("\n", "\r", "\t");
+    }
+
+    @Test
+    void optedInDebugLogsOnlyTheSanitizedDetailsAClientReceives() {
+        Logger logger = mock(Logger.class);
+        when(logger.isDebugEnabled()).thenReturn(true);
+        new AdmissionDiagnostics(logger).rejected(9, "ADMISSION_RULE_DENIED", Map.of("rule", "limit",
+                "deny", "OVER", "secret", "token=private"));
+        verify(logger).debug("Local application admission rejected (candidateHeight={}, code={}, details={}, "
+                + "reason={})", 9L, "ADMISSION_RULE_DENIED", Map.of("rule", "limit", "deny", "OVER"),
+                "ADMISSION_RULE_DENIED");
     }
 
     @Test

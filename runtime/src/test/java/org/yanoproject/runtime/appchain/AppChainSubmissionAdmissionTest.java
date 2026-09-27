@@ -70,6 +70,19 @@ class AppChainSubmissionAdmissionTest {
     }
 
     @Test
+    void structuredRefusalDetailsReachTheCallerSanitized() {
+        start(new AdmissionMachine(), 60_000);
+        assertThatThrownBy(() -> node.submit("detailed", new byte[]{1}))
+                .isInstanceOfSatisfying(AppSubmissionRejectedException.class, rejection -> {
+                    assertThat(rejection.code()).isEqualTo("ADMISSION_RULE_DENIED");
+                    assertThat(rejection.details()).containsExactly(Map.entry("rule", "transfer-limit"),
+                            Map.entry("deny", "TRANSFER_LIMIT_EXCEEDED"));
+                });
+        assertThat(node.recentMessages(10)).isEmpty();
+        assertAdmissionTotals(1, 0);
+    }
+
+    @Test
     void pluginProseAndPluginSymbolsCannotCreateMetricKeys() {
         start(new AdmissionMachine(), 60_000);
         for (String topic : new String[]{"prose", "symbol"}) {
@@ -166,6 +179,8 @@ class AppChainSubmissionAdmissionTest {
                 case "reject" -> AdmissionResult.reject("EVENT_PAYLOAD_TOO_LARGE");
                 case "prose" -> AdmissionResult.reject("private body / token=secret\ninvalid field");
                 case "symbol" -> AdmissionResult.reject("PLUGIN_CHOSEN_SYMBOL");
+                case "detailed" -> AdmissionResult.reject("ADMISSION_RULE_DENIED", Map.of("rule", "transfer-limit",
+                        "deny", "TRANSFER_LIMIT_EXCEEDED", "secret", "token=private"));
                 case "null" -> null;
                 case "throws" -> throw new IllegalArgumentException("private payload / token=secret");
                 case "after-genesis" -> height > 1 ? AdmissionResult.accept()

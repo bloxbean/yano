@@ -8,6 +8,7 @@ import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactor
 import org.yanoproject.api.appchain.authmap.ValidatorInitContext;
 import org.yanoproject.api.appchain.authmap.ValidatorVerdict;
 import org.yanoproject.api.appchain.transition.RuleFact;
+import org.yanoproject.api.appchain.transition.RuleValueView;
 import org.yanoproject.api.appchain.transition.TransitionContext;
 import org.yanoproject.api.appchain.transition.TransitionDecision;
 import org.yanoproject.api.appchain.transition.TransitionKernel;
@@ -243,6 +244,16 @@ class NativePluginConformanceVerifierTest {
         F facts = kernel.facts(command, context, null);
         assertThat(kernel.decide(command, context, facts)).isInstanceOf(TransitionDecision.Approved.class);
         assertThat(kernel.ruleFactValues(command, context, facts)).containsExactly(Map.entry("nonEmpty", true));
+        // ADR-031.4 typed views cross the same facade, as bounded host-owned copies.
+        var length = new RuleFact("length", RuleFact.Type.INTEGER);
+        assertThat(kernel.ruleValueViews()).containsExactly(new RuleValueView("", List.of(length), List.of()));
+        assertThat(kernel.ruleValueKey("", new byte[]{7})).containsExactly(7);
+        assertThat(kernel.ruleValueFields("", new byte[]{7}, new byte[]{1, 2, 3}))
+                .containsExactly(Map.entry("length", 3L));
+        assertThat(kernel.ruleWriteFields()).containsExactly(length);
+        assertThat(kernel.ruleWriteCoverageFields()).containsExactly(new RuleFact("nonEmpty", RuleFact.Type.BOOLEAN));
+        assertThat(kernel.ruleWrites(command)).containsExactly(Map.of("length", 1L));
+        assertThat(kernel.ruleWriteCoverage(command, context, facts)).containsExactly(Map.of("nonEmpty", true));
     }
 
     private static void exerciseCatalogFacades(PluginRuntimeEnvironment environment)

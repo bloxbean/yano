@@ -158,6 +158,117 @@ public interface TransitionKernel<C, F> extends TransitionCapability<C, F> {
         return Map.of();
     }
 
+    /**
+     * Declares the namespaces of this kernel's state that admission rules can read, and the typed fields each
+     * namespace's stored values decode to (Yano X ADR-031.4). The list depends only on committed configuration, is
+     * fixed for the kernel's lifetime, and has at most {@link RuleValueView#MAX_VIEWS} views with unique
+     * namespaces. Empty by default: the kernel exposes no values.
+     *
+     * <p>Declarations and decodings are consensus-relevant for every profile whose rules read them, exactly like
+     * {@link #ruleFacts()}.
+     *
+     * @return stable view declarations derived only from committed configuration
+     */
+    default List<RuleValueView> ruleValueViews() { return List.of(); }
+
+    /**
+     * Resolves a rule read's key within one declared namespace to the owner-local state key the read uses. The
+     * method is pure and configuration-only, like {@link #lookupKey(byte[])}: no state reads, scans, or namespace
+     * prefixes; a composite adds its own component prefix afterwards. The default supports only the
+     * single-namespace case and delegates to {@link #lookupKey(byte[])}.
+     *
+     * @param namespace a namespace this kernel declared
+     * @param key the rule's key bytes (text keys are UTF-8 encoded by the caller)
+     * @return the owner-local state key; never {@code null} or empty
+     * @throws IllegalArgumentException for a namespace or key the kernel does not accept; callers turn this into a
+     *                                  deterministic rule error, never a block failure. Every other exception
+     *                                  propagates as an implementation failure, as from {@link #decide}.
+     */
+    default byte[] ruleValueKey(String namespace, byte[] key) {
+        if (!namespace.isEmpty()) throw new IllegalArgumentException("unknown rule value namespace");
+        return lookupKey(key);
+    }
+
+    /**
+     * Decodes one stored value of a declared namespace into its declared fields. The method is pure: no I/O, clock,
+     * state reader, randomness, or node-local input. It returns a flat map keyed by declared field name, with value
+     * fields under {@code value.<name>} ({@link RuleValueView#VALUE_PREFIX}). A declared name that is absent means
+     * "not established": an optional member that was omitted, a text or bytes value longer than
+     * {@link RuleFact#MAX_VALUE_BYTES}, or a record the kernel cannot decode (which yields no fields). A value that
+     * cannot be represented in its declared type, such as an integer outside int64, is returned unchanged rather
+     * than coerced; callers treat it as a declaration violation. Values otherwise follow {@link #ruleFactValues}.
+     *
+     * <p>Callers validate the result as they validate {@link #ruleFactValues} and turn a violation into a
+     * deterministic rejection. An exception propagates as an implementation failure.
+     *
+     * @param namespace the declared namespace that was read
+     * @param key the rule's key bytes, as passed to {@link #ruleValueKey}
+     * @param stored the stored value found at that key
+     * @return decoded values; empty by default
+     */
+    default Map<String, Object> ruleValueFields(String namespace, byte[] key, byte[] stored) {
+        return Map.of();
+    }
+
+    /**
+     * Declares the content fields of this kernel's write view: one element per write of a command, readable by
+     * admission rules through a bounded quantifier (Yano X ADR-031.4). A non-empty list declares that the kernel has
+     * a write view. At most {@link RuleValueView#MAX_FIELDS} unique names, fixed by committed configuration. No
+     * content field is named {@code index} (the caller defines every element's position), {@code value} (the prefix
+     * of value fields), or {@code present}.
+     *
+     * @return content field declarations; empty by default (no write view)
+     */
+    default List<RuleFact> ruleWriteFields() { return List.of(); }
+
+    /**
+     * Declares the verified-coverage fields of this kernel's write view: who verifiably authorized each write. They
+     * are established only after an approved decision (see {@link #ruleWriteCoverage}). At most
+     * {@link RuleValueView#MAX_FIELDS} unique names, distinct from {@link #ruleWriteFields()} and following the same
+     * reservations ({@code index}, {@code value}, {@code present}).
+     *
+     * @return coverage field declarations; empty by default
+     */
+    default List<RuleFact> ruleWriteCoverageFields() { return List.of(); }
+
+    /**
+     * Returns the write view of a decoded command: one element per write, in command order, at most
+     * {@link RuleValueView#MAX_WRITES}. The method is a pure function of the command and committed configuration;
+     * local ingress may call it without state or an execution context. Each element is a flat map of declared
+     * content fields, with value fields under {@code value.<name>}, and never an {@code index}, which the caller
+     * defines. An element carries only value fields declared for the write view: {@code value.<f>} where some
+     * {@link RuleValueView} declares value field {@code f} and every view that declares it gives it the same type. A
+     * kernel omits a member whose type conflicts between views rather than returning it. A declared name that is
+     * absent means "not established" for that write.
+     *
+     * <p>Callers validate the result and turn a violation into a deterministic rejection. An exception propagates as
+     * an implementation failure.
+     *
+     * @param command an admitted, decoded command
+     * @return the write view; empty by default
+     */
+    default List<Map<String, Object>> ruleWrites(C command) { return List.of(); }
+
+    /**
+     * Returns the verified coverage of each write of a command whose decision was
+     * {@link TransitionDecision.Approved} with exactly this facts instance: a list of the same length and order as
+     * {@link #ruleWrites}, each element holding declared coverage fields. Callers invoke it only after
+     * {@code decide(command, context, facts)} approved, and never for a rejection. The method is pure and returns
+     * only what this kernel established by its own verification; a write with no established coverage has an empty
+     * element.
+     *
+     * <p>Callers validate the result as they validate {@link #ruleFactValues}. An exception propagates as an
+     * implementation failure.
+     *
+     * @param command the decoded command that was approved
+     * @param context the execution context of that decision
+     * @param facts the exact facts instance passed to the approving decision
+     * @return per-write coverage; empty by default
+     */
+    default List<Map<String, Object>> ruleWriteCoverage(C command, TransitionContext context, F facts) {
+        return List.of();
+    }
+
     /** Returns stable command layouts, including evidence fields that mappings must not manufacture. */
     List<CommandDescriptor> commands();
 

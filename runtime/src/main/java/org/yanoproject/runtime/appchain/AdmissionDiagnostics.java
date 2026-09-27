@@ -5,6 +5,8 @@ import org.slf4j.LoggerFactory;
 import org.yanoproject.api.appchain.AppSubmissionRejectedException;
 import org.yanoproject.runtime.util.LifecycleFailures;
 
+import java.util.Map;
+
 /**
  * Bounded, single-line operator diagnostics for local application admission.
  * WARN excludes exception messages. DEBUG deliberately includes rejection prose
@@ -46,10 +48,21 @@ final class AdmissionDiagnostics {
 
     /** DEBUG is explicitly opt-in: escaped/truncated prose can still contain sensitive application data. */
     void rejected(long candidateHeight, String reason) {
+        rejected(candidateHeight, reason, Map.of());
+    }
+
+    /** As {@link #rejected(long, String)}, also logging the sanitized structured details a client receives. */
+    void rejected(long candidateHeight, String reason, Map<String, ?> details) {
         try {
             if (logger.isDebugEnabled()) {
-                logger.debug("Local application admission rejected (candidateHeight={}, code={}, reason={})",
-                        candidateHeight, new AppSubmissionRejectedException(reason).code(), escaped(reason, 512));
+                var safe = new AppSubmissionRejectedException(reason, details);
+                if (safe.details().isEmpty()) {
+                    logger.debug("Local application admission rejected (candidateHeight={}, code={}, reason={})",
+                            candidateHeight, safe.code(), escaped(reason, 512));
+                } else {
+                    logger.debug("Local application admission rejected (candidateHeight={}, code={}, details={}, "
+                            + "reason={})", candidateHeight, safe.code(), safe.details(), escaped(reason, 512));
+                }
             }
         } catch (Throwable diagnosticFailure) {
             LifecycleFailures.rethrowIfProcessFatalReachable(diagnosticFailure);

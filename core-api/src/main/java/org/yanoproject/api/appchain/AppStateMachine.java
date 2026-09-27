@@ -7,6 +7,10 @@ import org.yanoproject.api.appchain.observation.AppObservationEmitter;
 import org.yanoproject.api.appchain.observation.ObservationResult;
 import org.yanoproject.api.appchain.transition.TransitionKernel;
 
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -214,16 +218,27 @@ public interface AppStateMachine {
                 "committed query not supported by " + id());
     }
 
-    /** Admission verdict for {@link #validate}. */
+    /**
+     * Admission verdict for {@link #validate}.
+     *
+     * <p>A rejection carries a reason, which remote callers see only as a bounded symbolic code, and optional
+     * structured details (bloxbean/yano#153). Details are advisory diagnostics for local ingress; they never affect
+     * consensus. {@link AppSubmissionRejectedException} keeps only allowlisted, grammar-checked details, so a plugin
+     * cannot echo arbitrary text to a client through them.
+     */
     final class AdmissionResult {
-        private static final AdmissionResult ACCEPTED = new AdmissionResult(true, null);
+        /** Maximum detail entries retained from a rejection's details map. */
+        public static final int MAX_DETAILS = 16;
+        private static final AdmissionResult ACCEPTED = new AdmissionResult(true, null, Map.of());
 
         private final boolean accepted;
         private final String reason;
+        private final Map<String, Object> details;
 
-        private AdmissionResult(boolean accepted, String reason) {
+        private AdmissionResult(boolean accepted, String reason, Map<String, Object> details) {
             this.accepted = accepted;
             this.reason = reason;
+            this.details = details;
         }
 
         public static AdmissionResult accept() {
@@ -231,7 +246,35 @@ public interface AppStateMachine {
         }
 
         public static AdmissionResult reject(String reason) {
-            return new AdmissionResult(false, reason);
+            return new AdmissionResult(false, reason, Map.of());
+        }
+
+        /**
+         * Rejects with a symbolic reason and structured details, for example a rule id and its deny code. The
+         * reason stays the code; details are not parsed from it. At most {@link #MAX_DETAILS} visited entries are
+         * considered, and only those with a text key and a {@code String}, {@code Long}, {@code Integer},
+         * {@code Short} or {@code Byte} value are retained, so no plugin-defined object is carried across the plugin
+         * boundary. Retained values are not otherwise checked; {@link AppSubmissionRejectedException} applies the
+         * allowlist and grammars before anything reaches a client.
+         *
+         * @param reason symbolic code, {@code [A-Z_]{1,32}} to be shown to remote callers
+         * @param details detail values by key; {@code null} means none
+         */
+        public static AdmissionResult reject(String reason, Map<String, ?> details) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            if (details != null) {
+                Iterator<? extends Map.Entry<String, ?>> entries = details.entrySet().iterator();
+                for (int visited = 0; visited < MAX_DETAILS && entries.hasNext(); visited++) {
+                    Map.Entry<String, ?> entry = entries.next();
+                    if (entry == null) continue;
+                    Object value = entry.getValue();
+                    if (entry.getKey() instanceof String key && (value instanceof String || value instanceof Long
+                            || value instanceof Integer || value instanceof Short || value instanceof Byte)) {
+                        copy.put(key, value);
+                    }
+                }
+            }
+            return new AdmissionResult(false, reason, Collections.unmodifiableMap(copy));
         }
 
         public boolean isAccepted() {
@@ -240,6 +283,14 @@ public interface AppStateMachine {
 
         public String reason() {
             return reason;
+        }
+
+        /**
+         * The rejection's retained details, not yet checked against the allowlist or grammars; empty for an
+         * acceptance or a reason-only rejection.
+         */
+        public Map<String, Object> details() {
+            return details;
         }
     }
 }

@@ -27,6 +27,7 @@ import org.yanoproject.api.appchain.transition.ConfigurationDescriptor;
 import org.yanoproject.api.appchain.transition.EventDescriptor;
 import org.yanoproject.api.appchain.transition.OrderedLogKernel;
 import org.yanoproject.api.appchain.transition.RuleFact;
+import org.yanoproject.api.appchain.transition.RuleValueView;
 import org.yanoproject.api.appchain.transition.TransitionContext;
 import org.yanoproject.api.appchain.transition.TransitionDecision;
 import org.yanoproject.api.appchain.transition.TransitionKernel;
@@ -2804,6 +2805,44 @@ class PluginTcclBoundaryTest {
         Map<String, Object> malformed = kernel.ruleFactValues(kernel.codec().decode(new byte[]{5}), context, facts);
         assertThat(malformed).containsOnlyKeys("", "roles");
         assertThat(malformed.get("roles")).isNotInstanceOf(java.util.TreeSet.class);
+        exerciseRuleViews(kernel, command, context, facts);
+    }
+
+    /** ADR-031.4 typed views cross the facade under the plugin TCCL, as bounded host-owned copies. */
+    private static <C, F> void exerciseRuleViews(TransitionKernel<C, F> kernel, C command, TransitionContext context,
+                                                 F facts) {
+        var balance = new RuleFact("balance", RuleFact.Type.INTEGER);
+        assertThat(kernel.ruleValueViews()).containsExactly(new RuleValueView("", List.of(balance), List.of()),
+                new RuleValueView("items", List.of(new RuleFact("status", RuleFact.Type.TEXT)),
+                        List.of(new RuleFact("price", RuleFact.Type.INTEGER))));
+        byte[] key = {4};
+        byte[] local = kernel.ruleValueKey("items", key);
+        assertThat(local).containsExactly(5);
+        assertThat(key).containsExactly(4);
+        local[0] = 42;
+        assertThat(kernel.ruleValueKey("items", key)).containsExactly(5);
+        Map<String, Object> decoded = kernel.ruleValueFields("items", key, new byte[]{1});
+        assertThat(decoded).containsEntry("status", "ACTIVE").containsEntry("value.price", 12L);
+        ((byte[]) decoded.get("value.tag"))[0] = 99;
+        assertThat((byte[]) kernel.ruleValueFields("items", key, new byte[]{1}).get("value.tag")).containsExactly(7);
+        assertThatThrownBy(() -> decoded.put("forged", true)).isInstanceOf(UnsupportedOperationException.class);
+        // Declared fields plus value fields, kept one entry past their bound for the engine to reject.
+        assertThat(kernel.ruleValueFields("items", key, new byte[]{2})).hasSize(2 * RuleValueView.MAX_FIELDS + 1);
+        assertThat(kernel.ruleValueFields("items", key, new byte[]{3})).isNull();
+
+        assertThat(kernel.ruleWriteFields()).containsExactly(new RuleFact("op", RuleFact.Type.TEXT));
+        assertThat(kernel.ruleWriteCoverageFields()).containsExactly(new RuleFact("actorId", RuleFact.Type.TEXT));
+        List<Map<String, Object>> writes = kernel.ruleWrites(command);
+        assertThat(writes).containsExactly(Map.of("op", "PUT"), Map.of("op", "REVOKE"));
+        assertThatThrownBy(() -> writes.add(Map.of())).isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> writes.getFirst().put("op", "PUT")).isInstanceOf(UnsupportedOperationException.class);
+        assertThat(kernel.ruleWrites(kernel.codec().decode(new byte[]{2}))).hasSize(RuleValueView.MAX_WRITES + 1);
+        assertThat(kernel.ruleWrites(kernel.codec().decode(new byte[]{3}))).isNull();
+        // A null or foreign element becomes the host's non-conforming marker instead of escaping or throwing.
+        assertThat(kernel.ruleWrites(kernel.codec().decode(new byte[]{5})))
+                .allSatisfy(element -> assertThat(element).containsOnlyKeys(""));
+        assertThat(kernel.ruleWriteCoverage(command, context, facts)).containsExactly(Map.of("actorId", "maker-a"),
+                Map.of());
     }
 
     private static final class AssertingStateMachine implements AppStateMachine {
@@ -2895,6 +2934,60 @@ class PluginTcclBoundaryTest {
                                 Map.entry("roles", new ProbeList<>(probe, "auditor", "operator")),
                                 Map.entry("digest", digest), Map.entry("mutable", mutableRoles)), false);
                     };
+                }
+                @Override public List<RuleValueView> ruleValueViews() {
+                    probe.check();
+                    return List.of(new RuleValueView("", List.of(new RuleFact("balance", RuleFact.Type.INTEGER)),
+                                    List.of()),
+                            new RuleValueView("items", List.of(new RuleFact("status", RuleFact.Type.TEXT)),
+                                    List.of(new RuleFact("price", RuleFact.Type.INTEGER))));
+                }
+                @Override public byte[] ruleValueKey(String namespace, byte[] key) {
+                    probe.check();
+                    key[0]++;
+                    return key;
+                }
+                @Override public Map<String, Object> ruleValueFields(String namespace, byte[] key, byte[] stored) {
+                    probe.check();
+                    return switch (stored[0]) {
+                        case 3 -> null;
+                        case 2 -> {
+                            List<Map.Entry<?, ?>> oversized = new ArrayList<>();
+                            for (int index = 0; index < 100; index++) oversized.add(Map.entry("f" + index, 1L));
+                            yield new ProbeEntries(probe, oversized, false);
+                        }
+                        default -> new ProbeEntries(probe, List.of(Map.entry("status", "ACTIVE"),
+                                Map.entry("value.price", 12L), Map.entry("value.tag", digest)), false);
+                    };
+                }
+                @Override public List<RuleFact> ruleWriteFields() {
+                    probe.check();
+                    return List.of(new RuleFact("op", RuleFact.Type.TEXT));
+                }
+                @Override public List<RuleFact> ruleWriteCoverageFields() {
+                    probe.check();
+                    return List.of(new RuleFact("actorId", RuleFact.Type.TEXT));
+                }
+                @Override public List<Map<String, Object>> ruleWrites(byte[] command) {
+                    probe.check();
+                    return switch (command[0]) {
+                        case 3 -> null;
+                        case 2 -> IntStream.range(0, 200).mapToObj(index -> Map.<String, Object>of("op", "PUT"))
+                                .toList();
+                        case 5 -> {
+                            List<Object> foreign = Arrays.asList(null, "not a map");
+                            @SuppressWarnings("unchecked")
+                            List<Map<String, Object>> raw = (List<Map<String, Object>>) (List<?>) foreign;
+                            yield raw;
+                        }
+                        default -> new ProbeList<Map<String, Object>>(probe, new ProbeEntries(probe,
+                                List.of(Map.entry("op", "PUT")), false), Map.<String, Object>of("op", "REVOKE"));
+                    };
+                }
+                @Override public List<Map<String, Object>> ruleWriteCoverage(byte[] command, TransitionContext context,
+                                                                            Boolean facts) {
+                    probe.check();
+                    return List.of(Map.of("actorId", "maker-a"), Map.of());
                 }
                 @Override public List<CommandDescriptor> commands() { probe.check(); return delegate.commands(); }
                 @Override public List<EventDescriptor> events() { probe.check(); return delegate.events(); }
