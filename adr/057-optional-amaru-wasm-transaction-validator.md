@@ -1,0 +1,465 @@
+# ADR-057: Optional Amaru WebAssembly Transaction Validator
+
+## Status
+
+Proposed (revised after independent review, 2026-09-28)
+
+## Date
+
+2026-09-28
+
+## Related decisions and evidence
+
+- [ADR-056](056-conway-java-ledger-rules-with-state-overlays.md) defines the
+  validation API (`TxValidationRequest`, `LedgerView`, `OverlayLedgerView`,
+  `TxEffects`), engine selection and shadowing, and the conformance gates. This
+  ADR plugs Amaru into all of them.
+- Pragma's Amaru (`https://github.com/pragma-org/amaru`, Apache-2.0). All
+  Amaru file and symbol references in this ADR are at commit `d72e9b5`
+  (2026-09-25). Older checkouts differ: the April 2026 tree has no
+  `prepare_transaction` and a different CI file.
+  - Amaru's CI builds `amaru-ledger` for `wasm32-unknown-unknown` on every push
+    (`.github/workflows/ci-build-and-test.yml`, job `build-wasm32`).
+  - Its mempool path `state.rs validate_tx` calls
+    `rules::block::validate_transaction(...)`, which runs phase-1, then phase-2
+    through Amaru's own UPLC machine.
+- The 2026-09-25 spike (at Amaru commit `d72e9b5`) found:
+  - **Build.** A `cdylib` wrapper exporting `alloc`/`dealloc`/`validate`
+    compiled to **`wasm32-wasip1`**: 4.0 MB after `wasm-opt -O3`, and its only
+    imports were 7 `wasi_snapshot_preview1` functions. The module needs no
+    threads, atomics, SIMD, exception handling or tail calls.
+  - **Correctness.** Run in **Chicory 1.7.5** (runtime compiler), it returned
+    the correct verdict on 5 of Amaru's Haskell-cross-checked scenarios,
+    including Plutus V2 reference-script and V3 phase-2 cases and one expected
+    phase-2 failure.
+  - **Speed.** Warm median was 0.8–1.3 ms per transaction, against 57–72 µs for
+    the same code natively (about 15–20× slower). The interpreter took about
+    26 ms. Parse plus runtime compilation took about 2 s at startup.
+  - **Compiler limits.** Three functions exceed the JVM method-size limit and
+    fall back to the interpreter.
+  - **Target choice.** `wasm32-unknown-unknown` builds but can't run. The
+    validation path calls `Instant::now()` for timing spans, which panics on
+    that target. It also picks up `wasm-bindgen` imports.
+  - **Toolchain.** Amaru requires a pinned **nightly** toolchain (unstable
+    `try_trait_v2`). Its C dependencies (`blst`, `secp256k1-sys`) need a clang
+    that can target wasm (zig or wasi-sdk). Apple clang can't.
+  - **Scope.** Amaru validates Conway only, from protocol version 10.
+  - **Churn.** `validate_transaction` changed signature on 2026-08-25 and
+    `ValidationContext` on 2026-08-20.
+- **Chicory has moved.** Chicory's last Dylibso release is 1.7.5. It continues
+  at the Bytecode Alliance as **Endive** (`run.endive:*`, 1.1.0 on 2026-09-03):
+  same maintainers, same API, new package name.
+  - Build-time (AOT) compilation and the interpreter work in a GraalVM 25 native
+    image. The runtime compiler does not.
+  - A wasm trap surfaces as a catchable exception. By contrast, a Rust panic
+    through Panama FFM aborted the JVM.
+
+## Decision summary
+
+1. **Yano owns a small Rust crate, `amaru-validator-wasm/`**, at the repository
+   root, outside the Gradle build. It depends on Amaru by **git tag**, initially
+   `v10.11.20260925`, with our `Cargo.lock` pinning the exact commit. The crate
+   defines a **versioned interface**: exports plus a CBOR request/response
+   schema.
+2. **Optional Java module `amaru-validator`.** It loads the module with **Endive**
+   (build-time AOT) and implements ADR-056's `TransactionValidator`.
+   - It is excluded from default builds and distributions.
+   - Developers opt in at build time, and select it at run time with
+     `yano.validation.engine=amaru`.
+   - It can also run as a shadow engine and as a test oracle.
+3. **Overlays are handled on the Java side.** Yano builds each request from the
+   ADR-056 `OverlayLedgerView` over the ticked base view. Earlier mempool
+   transactions, earlier transactions in the same block, and a pending epoch
+   boundary are therefore visible to Amaru exactly as they are to the Java
+   engine. Effects are derived by the shared `TxEffectsDeriver` from the verdict,
+   not by Amaru. The ADR-056 `Origin` policy for `isValid=false` applies
+   unchanged.
+4. **Phase-2 stays with Scalus by default.** In `amaru` mode, Amaru judges
+   phase-1 and Scalus runs the Plutus scripts. `phase2: amaru` runs Amaru's full
+   validation instead, which is the setting used for oracle runs. ExUnits
+   evaluation (`TransactionEvaluator`) is unchanged.
+5. **Yano's CI builds the wasm** in a separate, path-filtered workflow, gates it
+   on Amaru's scenarios, and publishes it (workflow artifact and a Yano release
+   asset with sha256). The normal Gradle build never needs Rust.
+
+## Context
+
+Yano's submit path uses Scalus, which misses the whole Conway GOV family and
+several certificate and LEDGER checks (ADR-056). ADR-056 fixes that in Java, but
+that takes time. Amaru already implements the complete Conway rule set and
+cross-checks it against the Haskell ledger with 276 scenarios plus the
+cardano-blueprint vectors.
+
+Running Amaru inside the JVM gives Yano two things:
+
+- **An engine** with near-complete Conway coverage now, for developers who opt
+  in.
+- **An independent oracle** for ADR-056. Every Java verdict can be compared with
+  a Haskell-checked implementation, on fixtures, on mutated transactions and on
+  real synced traffic.
+
+Amaru's design fits a sandboxed call with no callbacks:
+- `prepare_transaction` computes the set of required keys.
+- `into_validation_context` materialises those keys into a
+  `DefaultValidationContext` (plain in-memory maps with a public constructor).
+- `validate_transaction` then runs against that context.
+
+Rules never make open-ended lookups: the one non-key lookup (committee member
+by hot credential) is resolved during preparation. So one call can carry
+everything the transaction needs.
+
+## Decision drivers
+
+- **Optional and isolated.** No Rust, nightly or wasm toolchain for anyone who
+  doesn't opt in, and no effect on default images.
+- **Same semantics as the Java engine** for mempool and same-block state, so
+  differential results are meaningful.
+- **Pinned, reproducible dependency** on a released Amaru tag that Yano chooses
+  to move.
+- **Sandboxing.** A panic in Amaru must reject one transaction, not crash the
+  node.
+- **Native-image support** when opted in.
+
+## Invariants
+
+1. `amaru-validator` is never on the default runtime classpath. Its absence
+   leaves every other engine unaffected.
+2. The wasm module is pure: no file system, network or environment access. The
+   WASI imports are satisfied by a minimal host (clock, random, stdout/stderr
+   sink, `proc_exit` → trap).
+3. **Every request is self-contained**, built from a `LedgerView` snapshot.
+   Amaru never sees partial state. Missing required keys fail closed on the
+   Java side before the call.
+4. **A trap, a timeout or an undecodable response rejects the transaction as
+   phase-1** (`AmaruEngineFailure`), and the instance is discarded and
+   re-created.
+5. **The interface is versioned.** The Java side refuses a module whose
+   `abi_version` it doesn't support.
+6. **Conway only.** The request builder refuses protocol versions below 10 and
+   non-Conway bodies (ADR-056 invariant 7).
+
+## Detailed decision
+
+### 1. Rust crate `amaru-validator-wasm/`
+
+```
+amaru-validator-wasm/
+  Cargo.toml            # cdylib; git deps on amaru-ledger/-kernel/-plutus at the pinned tag
+  Cargo.lock            # seeded from Amaru's lockfile at that tag; pins exact commits
+  rust-toolchain.toml   # the nightly pinned by that Amaru tag (nightly-2026-09-04 today)
+  src/lib.rs            # exports + request/response codec
+  AMARU_VERSION         # tag, commit, toolchain — read by CI and embedded in the module
+  NOTICE                # Apache-2.0 attribution for Amaru and bundled crates
+```
+
+- Cargo does not apply `[patch]` sections from a dependency's workspace. If
+  Amaru's root `Cargo.toml` at the pinned tag has `[patch.crates-io]` entries,
+  they are copied into ours. Amaru's `crates/vendor/*` path dependencies resolve
+  inside the git checkout and need no copying. The upgrade runbook re-checks
+  both on every bump.
+- **Lockfile procedure.**
+  1. Copy Amaru's `Cargo.lock` at the tag.
+  2. Run one `cargo build` without `--locked`, so Cargo adds our crate and the
+     git sources.
+  3. Commit the lockfile.
+  4. Build with `--locked` in CI.
+- **Licences.** `cargo deny check licenses` (with a committed `deny.toml`) runs
+  in CI. It replaces the spike's manual licence audit.
+- Build flags: `--target wasm32-wasip1 --release`, `lto = true`,
+  `codegen-units = 1`, `panic = "abort"`, `-C link-arg=-zstack-size=8388608`.
+  Deep PlutusData nesting can't grow the stack in wasm, so it is sized
+  generously.
+- Exports (interface version 1):
+
+| Export | Purpose |
+|---|---|
+| `abi_version() -> u32` | Interface version check |
+| `amaru_version(ptr) -> len` | Embedded tag, commit and toolchain, for logs and bug reports |
+| `alloc(len) -> ptr`, `dealloc(ptr, len)` | Guest memory management |
+| `required_keys(tx_ptr, tx_len, env_ptr, env_len) -> resp_ptr` | Runs `prepare_transaction`; returns the key set the host must resolve |
+| `validate(req_ptr, req_len) -> resp_ptr` | Builds a `DefaultValidationContext` from the request and validates (mode selects phase-1 only, or full) |
+
+Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
+
+- **Request (CBOR):**
+  - `abi_version`, `mode` (`phase_one` | `full`);
+  - tx bytes;
+  - network magic, era history and global parameters (always explicit, so
+    custom devnets work);
+  - protocol parameters (Amaru's CBOR `Decode`, which is always available,
+    unlike its test-only serde);
+  - governance activity (dormant epochs), guardrail script hash, enacted roots,
+    treasury;
+  - transaction pointer (slot);
+  - the resolved state slices: UTxO entries, accounts, pools, DReps, committee
+    members, proposals.
+- **Response (CBOR):** `ok`, or `invalid { phase, rule, constructor, detail }`
+  using Haskell constructor names wherever Amaru exposes them, or
+  `error { message }`.
+- **Two calls per transaction.** `required_keys` first (Amaru's
+  `prepare_transaction`: inputs, reference inputs, collateral, accounts,
+  pools, DReps), then `validate`. For robustness against changes in Amaru's
+  preparation API, the request **always** carries the full current committee
+  (cold and hot credentials, expiry, resignations, pending `UpdateCommittee`
+  candidates) and **all active proposals with enacted roots**, whatever
+  `required_keys` returned. Both are small on every network.
+- **Parameter encoding.** Protocol parameters use Amaru's own CBOR layout
+  (`protocol_parameters.rs` `Decode`), not the CDDL `ProtocolParamUpdate`
+  layout. Golden interface tests pin the encoding, so an Amaru bump that changes
+  it fails CI instead of mis-decoding.
+
+### 2. Java module `amaru-validator` (optional)
+
+- **Contents.**
+  - Endive runtime and WASI host.
+  - The AOT classes generated from the pinned `.wasm` at build time, through the
+    Endive build-time compiler or a Gradle task calling its `Generator`, with
+    `interpreterFallback=WARN` until the three oversized functions are split
+    upstream or in the wrapper.
+  - `AmaruTransactionValidator implements TransactionValidator`.
+- **Request flow.**
+  1. Decode the tx.
+  2. Call `required_keys`.
+  3. Resolve each key through the request's `LedgerView` (the overlay).
+  4. Encode the request and call `validate`.
+  5. Map the response to `TxValidationOutcome`.
+  6. In `phase2: scalus` mode, run ADR-056's `ScriptPhaseEvaluator` after a
+     phase-1 pass.
+  7. On success, compute effects with `TxEffectsDeriver`.
+- **Instances.** One instance per validation thread, pooled. Instances aren't
+  thread-safe, and a pool scales linearly (measured). Memory is `ByteArrayMemory`
+  with a page limit. `WasmModule` and the AOT machine are shared.
+- **Timeouts.** Each instance runs on its own dedicated worker thread, and the
+  caller waits with `yano.validation.amaru.timeout-ms` (default 2000).
+  - On timeout the transaction is rejected (`AmaruEngineFailure`), and the
+    instance and its thread are poisoned and replaced.
+  - If Endive supports interruption or fuel metering, the thread is reclaimed.
+    If not, it keeps running, which pins a core until the guest returns.
+  - To stop a hostile or looping input from exhausting the node, a hard cap of
+    `yano.validation.amaru.max-abandoned` (default 2) applies. When it is
+    reached, the engine is marked **unhealthy**: admission through `amaru`
+    fails closed, and a health check and metric alert fire until restart.
+  - Verifying Endive's interrupt and fuel support is a Phase B gate.
+  - Normal work is bounded: phase-1 by transaction size, and Amaru phase-2
+    (`full` mode) by ExUnits.
+- **Configuration:**
+
+```yaml
+yano:
+  validation:
+    engine: amaru              # or keep scalus/java and list amaru under shadow-engines
+    amaru:
+      phase2: scalus           # scalus (default) | amaru
+      pool-size: 0             # 0 = validation threads
+      timeout-ms: 2000
+      max-abandoned: 2         # stuck calls tolerated before the engine turns unhealthy
+      max-memory-pages: 2048   # 128 MiB per instance
+```
+
+If `engine: amaru` is set but the module isn't on the classpath, startup fails
+with a clear message. There is no silent fallback.
+
+### 3. Build and distribution
+
+- **CI workflow `amaru-wasm.yml`.** Triggers: changes under
+  `amaru-validator-wasm/**`, `workflow_dispatch`, and release tags. Ubuntu
+  runner. Steps:
+  1. Install the toolchain from `rust-toolchain.toml` and
+     `rustup target add wasm32-wasip1`.
+  2. Install wasi-sdk (pinned version, checksum-verified) and set
+     `CC_wasm32_wasip1`/`AR_wasm32_wasip1`.
+  3. `cargo build`, then `wasm-opt -O3` (pinned binaryen).
+  4. Record the sha256 in `amaru_validator.wasm.sha256`.
+  5. Shallow-clone Amaru at the pinned tag to get
+     `crates/amaru-ledger/tests/data/transaction/`.
+  6. Run `:amaru-validator:test` against all 276 scenarios through Endive.
+  7. Upload the `.wasm` and sha256 as a workflow artifact. On a Yano release
+     tag, attach them to the GitHub release.
+- **Gradle.**
+  - `amaru-validator` is included in `settings.gradle` only when
+    `-PwithAmaru=true`.
+  - Its `prepareWasm` task either runs `cargo build` when `-PamaruBuild=local`
+    (the developer has the toolchains) or downloads the release asset for the
+    pinned version and verifies its sha256.
+  - Default builds, the uber-jar, Docker images and native images don't include
+    it unless built with `-PwithAmaru=true`.
+  - It is added to `centralDeploymentExclusions` (`build.gradle:684`) and kept
+    out of the BOM, so it is never published to Maven Central from a default
+    release.
+- **Native image.** Only the build-time AOT classes plus the `.meta` resource
+  are used, with resources registered in the module's
+  `META-INF/native-image`. Runtime compilation is disabled in native builds.
+- **Licensing.** The module and the Yano distribution built with it ship Amaru's
+  Apache-2.0 license and NOTICE and the third-party notices of the compiled
+  crates. There is no copyleft in the graph (the spike's audit found only
+  MIT/Apache/BSD/Zlib/CC0/Unicode/BlueOak).
+
+### 4. Upgrading Amaru
+
+1. Bump the tag in `Cargo.toml` and `AMARU_VERSION`.
+2. Copy `rust-toolchain.toml`, re-check the `[patch]` and `vendor/` overrides,
+   and re-seed `Cargo.lock` from Amaru's lockfile.
+3. Adapt the wrapper if `validate_transaction`, `ValidationContext` or kernel
+   types changed. Bump `abi_version` only if the interface changes.
+4. CI: the scenario gate, then the ADR-056 differential suite. Record any new
+   divergences.
+5. Release notes name the Amaru tag and commit.
+
+### 5. Relationship to ADR-056 conformance
+
+- **Oracle.** In oracle runs, `amaru-validator` uses `phase2: amaru`. It
+  provides:
+  - the JUnit differential for ADR-056's scenarios, mutation matrix and
+    shadow-dump bundles;
+  - a shadow engine for live preprod/preview/mainnet traffic.
+- **Resolving disagreements.** A Java-vs-Amaru disagreement is resolved against
+  Haskell. If Amaru is wrong, Yano records the divergence and reports it
+  upstream. Yano does not copy Amaru's behaviour.
+
+## Implementation plan
+
+Shipped in the same final PR as ADR-056, through the stacked steps S2 (A, B), S4 (C) and S5 (D, E) defined there.
+
+### Phase A — Rust crate, interface, CI build
+
+- Set up the crate, the git dependency on `v10.11.20260925` (confirm its commit
+  against `d72e9b5`), the toolchain pin, and the `[patch]` copy.
+- Implement exports, CBOR request/response and both modes.
+- Add the `amaru-wasm.yml` workflow and a Linux build with wasi-sdk (the spike
+  used macOS with zig; the Linux build is unproven).
+- Resolve the timing-span issue: `wasm32-wasip1` provides `clock_time_get`.
+  Separately, ask upstream to gate `Instant::now()` for wasm.
+- Gate: CI produces the module. Its imports are exactly the WASI p1 set plus
+  memory. It runs all 276 scenarios through a thin Endive harness with the
+  expected verdicts in `full` mode.
+
+### Phase B — Java module and engine
+
+- Build `amaru-validator` with Endive AOT, the WASI host, the instance pool and
+  watchdog, the request builder from `LedgerView`, response mapping,
+  `phase2: scalus|amaru`, and the `-PwithAmaru`/`prepareWasm` plumbing.
+- Wire `yano.validation.engine=amaru` and shadow-engine registration.
+- Gates:
+  - unit tests, including golden interface tests for the request encoding;
+  - scenarios pass through the full Java engine path;
+  - a trap and a timeout each reject and recover;
+  - the abandoned-thread cap turns the engine unhealthy and fails closed;
+  - Endive interrupt and fuel support is determined and documented;
+  - absence of the module leaves default builds unchanged.
+
+### Phase C — Overlays and runtime parity
+
+- Run the ADR-056 Phase 6 devnet matrix with `engine: amaru`: dependent chains
+  in the mempool and in one block, an epoch crossing with chains pending, and
+  rollback while chains are pending.
+- Gate: the same verdicts and effects as `engine: java`, and the Haskell
+  follower stays in lock-step.
+
+### Phase D — Oracle integration
+
+- Add the differential test harness used by ADR-056 Phases 2–7, the shadow
+  engine with disagreement dumps, and a CI job that runs the differential
+  whenever the wasm artifact is available.
+- Gate: every divergence is either fixed or recorded with its Haskell reference.
+
+### Phase E — Native image, performance, docs
+
+- Build and run the native image with `-PwithAmaru=true`.
+- Benchmark per-transaction latency (target: p50 ≤ 2 ms, p99 ≤ 10 ms on the
+  scenario corpus, JVM, warm), plus startup and memory per instance.
+- Write the developer guide (build, select, shadow, upgrade runbook).
+
+## Acceptance criteria
+
+- The default Yano build, tests and distributions are byte-for-byte unaffected
+  when `-PwithAmaru` is not set.
+- With the module:
+  - all 276 Amaru scenarios pass through the Java engine path in `full` mode;
+  - the Phase C devnet matrix passes with `engine: amaru`;
+  - a trap or timeout rejects one transaction and never destabilises the node;
+  - the native image works.
+- The CI workflow reproduces the module from the pinned tag and toolchain, and
+  publishes it with its sha256.
+- ADR-056's differential gate runs against this module.
+
+## Alternatives considered
+
+- **Panama FFM to a native Amaru library.** Native speed, but it needs one
+  library per platform, and a Rust `panic=abort` or segfault kills the JVM
+  (measured). It would need `panic=unwind` plus `catch_unwind` on every export.
+  It is kept as a fallback if wasm speed ever becomes a constraint.
+- **Endive runtime compiler instead of AOT.** It is simpler to wire, but costs
+  about 2 s of compilation at startup and doesn't work in native images.
+- **Wait for Pragma to publish a wasm artifact.** That would be ideal long-term,
+  and Yano will propose it (the same interface, owned upstream). But it would
+  block this work on another team's schedule. If upstream publishes one, Phase A
+  shrinks to downloading and verifying their asset.
+- **GraalWasm.** It is optimised only on the GraalVM JDK, and runs as an
+  interpreter on OpenJDK.
+- **wasmtime-java and wasmer-java.** Both are unmaintained.
+
+## Consequences
+
+### Positive
+
+- Developers can opt into near-complete, Haskell-checked Conway admission rules
+  now.
+- ADR-056 gets an independent, executable oracle on fixtures and on real
+  traffic.
+- It is sandboxed and pure JVM, and works in native images.
+
+### Negative
+
+- Yano carries a Rust crate, a nightly toolchain pin and a wasi-sdk CI step, and
+  must track Amaru's API changes on each bump.
+- It runs about 15–20× slower than native Amaru, which is fine for admission
+  (about 1 ms per transaction) but not for bulk sync validation.
+- Differences in state mapping between Yano's model and Amaru's (DRep
+  `valid_until`, committee candidates, enacted roots) are a new class of bugs.
+  The scenario and differential gates catch them only on the paths they
+  exercise.
+
+## Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Amaru API churn breaks the wrapper on a bump | Pinned tag and lockfile; wrapper-only adaptation; interface version separates our contract from theirs; CI scenario gate |
+| Yano-to-Amaru state mapping mismatch (DRep expiry, committee, roots) | Full committee and proposals always shipped; scenario gate; ADR-056 differential; shadow-dump bundles |
+| Looping guest pins CPU | Dedicated threads, abandoned-thread cap, engine goes unhealthy and fails closed |
+| Linux/wasi-sdk build differs from the macOS/zig spike | Phase A gate is a Linux CI build that runs all scenarios |
+| Optional module leaks into default artifacts | `-PwithAmaru` inclusion, central-deployment exclusion, BOM exclusion, acceptance check |
+
+## Rollback plan
+
+Set `yano.validation.engine` to `java` or `scalus` and remove `amaru` from
+`shadow-engines`. Nothing else depends on the module. Removing
+`amaru-validator-wasm/`, the `amaru-validator` module and `amaru-wasm.yml`
+reverts this ADR completely. No persisted state is involved.
+
+## Open questions
+
+1. Is Amaru's phase-one entry point (`rules::transaction::phase_one::execute`)
+   public at the pinned tag? If not, `phase2: scalus` needs a small upstream
+   visibility change. Until then it runs `full` and discards Amaru's phase-2
+   verdict, which duplicates Plutus work.
+2. Custom devnet eras: `EraHistory::new` is public at `d72e9b5`, so arbitrary
+   era histories for custom devnets (short epochs, 1000 ms slots) are likely
+   supported. Phase A confirms it with a devnet bundle.
+3. Does Endive support interrupting a running call (thread interrupt or fuel
+   metering)? This is a Phase B gate.
+4. Should the `.wasm` also be published as a Maven artifact
+   (`org.yanoproject:yano-amaru-validator-wasm`) as well as a GitHub release
+   asset?
+
+## Review decisions requested
+
+1. Approve Yano owning `amaru-validator-wasm/`, with a git dependency on a pinned
+   Amaru tag and a pinned nightly toolchain.
+2. Approve **Endive build-time AOT** as the only execution mode, with the
+   runtime compiler disabled.
+3. Approve the default `phase2: scalus` for `engine: amaru`, and `full` for
+   oracle runs.
+4. Approve the timeout and abandoned-thread policy (fail closed and unhealthy
+   after the cap).
+5. Approve proposing the interface upstream to Pragma as a published wasm
+   artifact.
