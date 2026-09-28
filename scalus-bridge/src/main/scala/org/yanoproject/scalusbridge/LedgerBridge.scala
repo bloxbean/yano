@@ -9,6 +9,7 @@ import scalus.cardano.ledger.{Transaction as ScalusTx, *}
 import scalus.cardano.ledger.rules.*
 
 import java.util
+import scala.util.control.NonFatal
 
 /**
  * Java-friendly facade for Scalus ledger validation (CardanoMutator.transit).
@@ -137,8 +138,8 @@ object LedgerBridge:
    * [[LedgerStateProvider]].
    *
    * Unlike [[validate]], exceptions are not turned into failures: a
-   * `LedgerStateUnavailableException` raised by the provider, a decoding error or a Scalus crash reach the
-   * caller, which fails closed.
+   * `LedgerStateUnavailableException` raised by the provider, a [[TransactionDecodingException]] when Scalus
+   * cannot decode the transaction, or a Scalus crash reach the caller, which fails closed.
    *
    * @return `null` when Scalus accepts the transaction, otherwise the mapped failure
    */
@@ -153,7 +154,9 @@ object LedgerBridge:
   ): LedgerFailure =
     val scalusParams = ProtocolParamsBridge.toScalusProtocolParams(protocolParams)
     val protocolVersion = ProtocolParamsBridge.extractProtocolVersion(protocolParams)
-    val scalusTx = ScalusTransactions.decode(txCbor, protocolVersion)
+    val scalusTx =
+      try ScalusTransactions.decode(txCbor, protocolVersion)
+      catch case NonFatal(e) => throw new TransactionDecodingException(e)
     val scalusUtxos = UtxoEntryBridge.convert(utxos)
     val (certState, totalDeposited) = CertStateBridge.build(ledgerStateProvider, scalusTx)
     val env = UtxoEnv(currentSlot, scalusParams, certState, ProtocolParamsBridge.toNetwork(networkId))

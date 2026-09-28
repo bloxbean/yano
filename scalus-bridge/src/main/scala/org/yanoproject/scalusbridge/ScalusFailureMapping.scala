@@ -82,6 +82,15 @@ object ScalusFailureMapping:
           else if e.costBelowMinimum.nonEmpty then "StakePoolCostTooLowPOOL"
           else "StakePoolRetirementWrongEpochPOOL"
         p1(POOL, constructor)
+      case e: DRepException =>
+        // GOVCERT, GovCert.hs:211-219 (registration: already registered, then the deposit), :236-242
+        // (deregistration: not registered, then the refund), :257-258 (update: not registered).
+        val constructor =
+          if e.alreadyRegistered.nonEmpty then "ConwayDRepAlreadyRegistered"
+          else if e.notRegistered.nonEmpty then "ConwayDRepNotRegistered"
+          else if e.invalidDeposits.nonEmpty then "ConwayDRepIncorrectDeposit"
+          else "ConwayDRepIncorrectRefund"
+        p1(GOVCERT, constructor)
       case _: WithdrawalsNotInRewardsException => p1(CERTS, "WithdrawalsNotInRewardsCERTS")
       case _: ExUnitsExceedMaxException => p1(UTXO, "ExUnitsTooBigUTxO")
       case _: TooManyCollateralInputsException => p1(UTXO, "TooManyCollateralInputs")

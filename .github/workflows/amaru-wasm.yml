@@ -5,18 +5,25 @@ name: Amaru wasm validator
 on:
   workflow_dispatch:
   push:
-    # Branch pushes run only when the crate or this workflow changes. Path filters are not
-    # evaluated for tag pushes, so every v* release tag builds and attaches the module.
+    # Branch pushes run only when the crate, the conformance harness, the engines it measures or this
+    # workflow change. Path filters are not evaluated for tag pushes, so every v* release tag builds and
+    # attaches the module.
     branches:
       - '**'
     tags:
       - 'v*'
     paths:
       - 'amaru-validator-wasm/**'
+      - 'ledger-conformance/**'
+      - 'ledger-rules/**'
+      - 'scalus-bridge/**'
       - '.github/workflows/amaru-wasm.yml'
   pull_request:
     paths:
       - 'amaru-validator-wasm/**'
+      - 'ledger-conformance/**'
+      - 'ledger-rules/**'
+      - 'scalus-bridge/**'
       - '.github/workflows/amaru-wasm.yml'
 
 permissions:
@@ -191,6 +198,60 @@ jobs:
           name: amaru-validator-scenario-requests
           path: amaru-validator-wasm/target/scenario-requests/
           if-no-files-found: error
+          retention-days: 30
+
+  conformance:
+    # ADR-056 §8: the conformance harness with every engine, the module built above as the Amaru reference
+    # engine, and Amaru's scenarios at the pinned tag (the default build runs the same tests without them).
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Download the module
+        uses: actions/download-artifact@v4
+        with:
+          name: amaru-validator-wasm
+          path: ${{ runner.temp }}/amaru-wasm
+
+      - name: Fetch Amaru's scenarios at the pinned tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(awk -F= '$1 == "tag" { print $2 }' amaru-validator-wasm/AMARU_VERSION)
+          commit=$(awk -F= '$1 == "commit" { print $2 }' amaru-validator-wasm/AMARU_VERSION)
+          git clone --quiet --depth 1 --branch "$tag" https://github.com/pragma-org/amaru.git "$RUNNER_TEMP/amaru"
+          actual=$(git -C "$RUNNER_TEMP/amaru" rev-parse HEAD)
+          [[ "$actual" == "$commit" ]] \
+            || { echo "::error::tag $tag is at $actual, AMARU_VERSION pins $commit"; exit 1; }
+
+      - name: Conformance harness (Amaru reference, 276 scenarios, mutation matrix)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :ledger-conformance:test -PskipSigning=true --stacktrace \
+            -PwithAmaru=true -PamaruWasm="$RUNNER_TEMP/amaru-wasm/amaru_validator.wasm" \
+            -PamaruScenariosDir="$RUNNER_TEMP/amaru"
+
+      - name: Upload the baseline and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-conformance-reports
+          path: ledger-conformance/build/conformance/
+          if-no-files-found: warn
           retention-days: 30
 
   release:

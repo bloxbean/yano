@@ -23,8 +23,8 @@ with the decisions recorded at the end of this ADR.
   and ADR-024 (epoch-effective protocol parameters for validation, not in this
   repository) define how validation gets slot-effective parameters today.
 - The 2026-09-25 research (not committed; summarised here):
-  - Scalus `1.1.1` enforces about **57 of 88** leaf Conway predicate failures
-    of the Haskell ledger.
+  - *Estimate, from bytecode and source inspection:* Scalus `1.1.1` enforces
+    about **57 of 88** leaf Conway predicate failures of the Haskell ledger.
   - It enforces **none of the 19 `ConwayGovPredFailure` constructors**, and not
     `DelegateeDRepNotRegistered`, `DelegateeStakePoolNotRegistered`,
     `ConwayWdrlNotDelegatedToDRep` or `ConwayTreasuryValueMismatch`.
@@ -32,9 +32,26 @@ with the decisions recorded at the end of this ADR.
     passes an empty `govState`, `scalus-bridge/.../LedgerBridge.scala:104-109`).
   - Amaru (commit `d72e9b5`, 2026-09-25) ships 276 Haskell-cross-checked JSON
     transaction scenarios and consumes the cardano-blueprint conformance vectors.
+- **Measured baseline** (Phase 2, 2026-09-29; the full report is
+  [`ledger-conformance/docs/baseline-2026-09.md`](../ledger-conformance/docs/baseline-2026-09.md)).
+  The catalogue has **88** Conway leaf constructors at cardano-ledger
+  `f649f975`, **85** of them reachable at PV 10–11. Over Amaru's 276 scenarios
+  and 16 mutants (verdict / first-failure constructor; where Haskell always
+  reports a fault with several constructors, any of them counts), after the
+  Scalus engine fixes of Phase 2:
 
-  The counts come from bytecode and source inspection. Phase 2 of this ADR
-  replaces them with measured numbers.
+  | Engine | Scenarios: verdict | Scenarios: constructor | Mutants | Constructors demonstrated |
+  |---|---:|---:|---:|---:|
+  | `scalus-legacy` (today's admission path) | 170/276 | 102/276 | 16/16 | 22/85 |
+  | `scalus-legacy` + supplementary rules | 208/276 | 138/276 | 16/16 | 31/85 |
+  | `scalus` engine (step 1d, over the view) | 193/276 | 184/276 | 16/16 | 35/85 |
+  | copied Java rules (`LedgerStateValidator`) | 158/276 | 31/276 (117 anywhere in the list) | 7/16 | 19/85 |
+  | `amaru` (reference) | 276/276 | 275/276 (+1 PV 9 `EraNotSupported`) | 16/16 | 56/85 |
+
+  The scenarios and mutants exercise 56 of the 85 constructors; the Scalus
+  engine reports 35 of those 56 as Haskell does, so the estimate above held
+  roughly for what Scalus checks, but the legacy path loses much of it to
+  decoding and error naming (Phase 2 results below).
 - Haskell `cardano-ledger` is the source of truth for rule semantics. Amaru and
   Scalus are references and oracles only. Where they disagree with Haskell,
   Haskell wins, and Yano records the divergence.
@@ -866,6 +883,27 @@ yano:
 A Gradle source set `conformanceTest` and a task `:ledger-rules:conformanceTest`
 run everything except shadow sync and the Haskell differential.
 
+**Deviations recorded in Phase 2 (2026-09-29).**
+
+- **A module, not a source set.** The harness is the test-only module
+  `ledger-conformance` (`:ledger-conformance:test`, and
+  `:ledger-conformance:conformanceReport` for the generated documents), not
+  `:ledger-rules:conformanceTest`. It runs every engine side by side, and
+  `scalus-bridge` and the optional `amaru-validator` both depend on
+  `ledger-rules`, so a `ledger-rules` source set could not depend on them. The
+  module has no main sources, removes its publication, and is in the root
+  build's `centralDeploymentExclusions`.
+- **Shared fixtures in `ledger-rules` test fixtures.** The constructor
+  catalogue (`conway-constructors.json`), the `@Covers` annotation and the
+  Amaru scenario loader live in `ledger-rules`' `testFixtures`, so the Phase 3–5
+  rule tests in `ledger-rules` can be annotated too; the coverage scan reads
+  both modules' test classes.
+- **Amaru's scenarios are not vendored.** They are read from a clone at the
+  pinned tag (`-PamaruScenariosDir` / `AMARU_SCENARIOS_DIR`; the
+  `amaru-wasm.yml` `conformance` job clones it and checks the pinned commit).
+  Without them the scenario parts skip; the mutation matrix and the coverage
+  scan always run.
+
 ## Implementation plan
 
 **Branch model.** `feat/conway-ledger-rules` is the integration branch and the
@@ -1013,6 +1051,93 @@ The final PR merges once S5's gates are green.
   framework.
 - Publish a **baseline** report: the measured pass rate for Scalus, Scalus plus
   supplementary rules, and the current Java rules.
+
+#### Phase 2 results: conformance harness and baseline (2026-09-29)
+
+- **Harness** (`ledger-conformance`, deviations in §8): an engine-agnostic
+  runner (case → `InMemoryLedgerView` → rule `LEDGER`, origin `SYNC`) records
+  per case the expected and actual verdict and `RULE.Constructor`. Legacy
+  validators are adapted as the node runs them: the legacy Scalus path sits
+  behind `TransactionValidationService`'s pre-checks (a transaction CCL cannot
+  decode is `ENGINE.DecodingFailure`, an unresolvable input
+  `UTXO.BadInputsUTxO`), with resolved inputs as CCL UTxOs, a script supplier
+  and a `LedgerStateProvider` over the view. Their free-text and Scalus
+  class-name errors are named after Haskell where the text allows, otherwise
+  reported as `UNMAPPED`.
+- **Constructor matching**: an engine's first failure must be the expected
+  constructor. Where Haskell always reports a fault with several constructors,
+  the case carries Haskell's ordered list and any constructor of it matches,
+  so the harness never pushes an engine away from Haskell's order. Today that
+  is the empty-collateral fault: Babbage `feesOK` part 2 runs
+  `validateTotalCollateral` with `sequenceA_` (`Babbage/Rules/Utxo.hs:226-239`),
+  so Haskell reports `[InsufficientCollateral, NoCollateralInputs]` (scenario
+  00278 and the `no-collateral` mutant; a single-fault `NoCollateralInputs`
+  mutant cannot exist).
+- **Coverage matrix**: 88 constructors, 85 in scope; `@Covers` scan and
+  scenario mapping generate `ledger-rules/docs/conway-rule-coverage.md`. Today
+  16 constructors have a test and a scenario, 40 only a scenario, 29 neither.
+  Gaps are reported; `-Pconformance.strict=true` fails on them (and on test
+  classes the scan cannot inspect) from the Phase 5 gate.
+- **Mutation framework**: signed Conway transactions from Amaru's corpus test
+  keys against a preprod-like PV 10 view; each edit is rebuilt (exact minimum
+  fee, hashes) and signed again over the body as encoded. 16 mutants cover UTXO
+  and UTXOW basics; Amaru rejects each with its constructor only.
+- **Scalus engine fixes found by the baseline** (`scalus-bridge`, with tests on
+  scenarios 00040, 00059, 00060 and 00031):
+  - *Transaction size*: Scalus's `TransactionSizeValidator` re-encodes the
+    four-element transaction, `is_valid` included; Haskell sizes
+    `toCBORForSizeComputation` (`Alonzo/Tx.hs:324-331, 432-443`, Conway
+    `Tx.hs:86`), the list header plus the stored body, witness and auxiliary
+    bytes. `YanoTransactionSizeValidator` replaces it in `YanoCardanoMutator`,
+    so the legacy path gets the same fix (its only behaviour change: a
+    transaction exactly at `maxTxSize`, scenario 00040, is valid).
+  - *`DRepException`* is now named `GOVCERT.ConwayDRepAlreadyRegistered`,
+    `ConwayDRepNotRegistered`, `ConwayDRepIncorrectDeposit` or
+    `ConwayDRepIncorrectRefund` (`GovCert.hs:211-219, 236-242, 257-258`)
+    instead of `ENGINE.ScalusEngineFailure`.
+  - *Decoding*: a transaction Scalus cannot decode is `ENGINE.DecodingFailure`
+    (`TransactionDecodingException`), not an engine crash.
+- **Baseline** (table in "Related decisions and evidence"; full report in
+  `ledger-conformance/docs/baseline-2026-09.md`). Findings:
+  - *Legacy Scalus path*: its strict decoder rejects 106 scenarios Haskell
+    decodes (indefinite-length maps and arrays), 46 of them valid; with 00279
+    (a Byron collateral address the CCL-UTxO conversion cannot parse) it
+    rejects 47 valid scenarios. The engine path's definite-length fallback
+    decodes all but 8 (tag-258 sets inside proposal procedures, an indefinite
+    map in update-committee proposals, and the empty input set of 00074).
+    Legacy errors keep only the Scalus class name, so `StakeCertificates` and
+    `StakePool` failures cannot be named. It accepts 59 invalid scenarios (no
+    GOV, GOVCERT, delegatee or LEDGER-level checks).
+  - *Supplementary rules*: close most GOV gaps (12 invalid accepted instead of
+    59) but reject 9 more valid scenarios: no intra-transaction state (a vote
+    by a hot key authorised earlier in the same transaction, register then
+    deregister or delegate), committee members without a term, zero-amount
+    treasury withdrawals, SPO votes on security-group parameter changes.
+  - *Scalus engine*: 79 invalid scenarios accepted (58 of 59 GOV, 8 of 12
+    GOVCERT, 8 DELEG delegatee-existence scenarios, and the LEDGER checks
+    `ConwayTreasuryValueMismatch`, `ConwayTxRefScriptsSizeTooBig`,
+    `ConwayWdrlNotDelegatedToDRep`); 4 valid rejected, all decoding (00031,
+    00144–00146). Known gap: `InputSetEmptyUTxO` cannot be reported, because
+    Scalus's decoder rejects an empty input set (00074 comes out as
+    `ENGINE.DecodingFailure`).
+  - *Copied Java rules*: they re-serialise the transaction, so signatures are
+    checked over a re-encoded body (104 valid scenarios rejected with
+    `InvalidWitnessesUTXOW`) and the minimum fee uses the re-encoded size with
+    the `is_valid` byte (both valid mutation bases rejected with
+    `FeeTooSmallUTxO`). They are independent checks, so the expected
+    constructor is often present but not first (117 found, 31 first). Phase 3
+    must hash and size the original bytes.
+  - *Amaru*: 275/276 plus the PV 9 scenario refused by design (invariant 6); no
+    disagreement with the Haskell expectations.
+  - The ADR's 57/88 estimate: the Scalus engine reports 35 of the 56
+    constructors the scenarios and mutants exercise; the remaining 29
+    constructors need Phase 3–5 mutants before any engine can be measured on
+    them.
+- **CI**: the default build runs `:ledger-conformance:test` without the corpus
+  (mutation matrix, coverage scan). `amaru-wasm.yml` gains a `conformance` job
+  (triggered also by changes to `ledger-conformance`, `ledger-rules` and
+  `scalus-bridge`) that runs it with the module it just built and the
+  scenarios at the pinned tag, and uploads the reports.
 
 ### Phase 3 — UTXO, UTXOW, UTXOS
 

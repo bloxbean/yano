@@ -93,6 +93,8 @@ public final class ScalusLedgerValidationEngine implements LedgerValidationEngin
             return run(request);
         } catch (LedgerStateUnavailableException e) {
             return TxValidationOutcome.Invalid.of(LedgerFailure.ledgerStateUnavailable(e.getMessage()));
+        } catch (TransactionDecodingException e) {
+            return engine(DECODING_FAILURE, e.getMessage());
         } catch (LinkageError e) {
             if (ScalusNativeFailures.isBlsUnavailable(e)) {
                 return engine(ScalusNativeFailures.BLS_UNAVAILABLE_RULE, ScalusNativeFailures.BLS_UNAVAILABLE_MESSAGE);

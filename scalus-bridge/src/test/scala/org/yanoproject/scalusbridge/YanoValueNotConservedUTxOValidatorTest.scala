@@ -4,7 +4,8 @@ import org.junit.jupiter.api.Assertions.{assertEquals, assertSame, assertTrue}
 import org.junit.jupiter.api.Test
 import scalus.cardano.address.{Address, Network, StakeAddress, StakePayload}
 import scalus.cardano.ledger.*
-import scalus.cardano.ledger.rules.{CardanoMutator, Context, STS, State, ValueNotConservedUTxOValidator}
+import scalus.cardano.ledger.rules.{CardanoMutator, Context, STS, State, TransactionSizeValidator,
+  ValueNotConservedUTxOValidator}
 
 class YanoValueNotConservedUTxOValidatorTest:
   private val poolDeposit = 500_000_000L
@@ -12,7 +13,7 @@ class YanoValueNotConservedUTxOValidatorTest:
   private val poolB = "02" * 28
 
   @Test
-  def swapsExactlyOneScalusDefaultValidator(): Unit =
+  def swapsExactlyTheScalusDefaultValidatorsYanoCorrects(): Unit =
     val defaultValidators = CardanoMutator.defaultSTSs.values.collect {
       case validator: STS.Validator => validator
     }.toSeq
@@ -21,9 +22,14 @@ class YanoValueNotConservedUTxOValidatorTest:
     assertEquals(1, defaultValidators.count(_ eq ValueNotConservedUTxOValidator))
     assertEquals(0, actualValidators.count(_ eq ValueNotConservedUTxOValidator))
     assertEquals(1, actualValidators.count(_ eq YanoValueNotConservedUTxOValidator))
+    assertEquals(1, defaultValidators.count(_ eq TransactionSizeValidator))
+    assertEquals(0, actualValidators.count(_ eq TransactionSizeValidator))
+    assertEquals(1, actualValidators.count(_ eq YanoTransactionSizeValidator))
 
-    assertEquals(Set(ValueNotConservedUTxOValidator), defaultValidators.toSet.diff(actualValidators.toSet))
-    assertEquals(Set(YanoValueNotConservedUTxOValidator), actualValidators.toSet.diff(defaultValidators.toSet))
+    assertEquals(Set(ValueNotConservedUTxOValidator, TransactionSizeValidator),
+      defaultValidators.toSet.diff(actualValidators.toSet))
+    assertEquals(Set(YanoValueNotConservedUTxOValidator, YanoTransactionSizeValidator),
+      actualValidators.toSet.diff(defaultValidators.toSet))
     assertEquals(defaultValidators.size, actualValidators.size)
     assertEquals(defaultValidators.toSeq.map(_.name).sorted, YanoCardanoMutator.validators.map(_.name))
     assertEquals(

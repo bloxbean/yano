@@ -27,6 +27,8 @@ def yanoModules = [
         'ledger-state'                : 'ledger-state',
         'script-evaluators'           : 'script-evaluators',
         'scalus-bridge'               : 'scalus-bridge',
+        // ADR-056 §8: the test-only conformance harness (never published; see its build.gradle).
+        'ledger-conformance'          : 'ledger-conformance',
         'yano-bom'                    : 'bom',
         'appchain-config'             : 'appchain/appchain-config',
         'console-ui'                  : 'console-ui',
