@@ -21,6 +21,8 @@ import org.yanoproject.ledger.rules.view.model.ProposalState;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
 import java.math.BigInteger;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -69,8 +71,9 @@ public final class InMemoryLedgerView implements LedgerView {
         this.accounts = Map.copyOf(b.accounts);
         this.pools = Map.copyOf(b.pools);
         this.dreps = Map.copyOf(b.dreps);
-        this.committee = Map.copyOf(b.committee);
-        this.proposals = Map.copyOf(b.proposals);
+        // Insertion-ordered copies: the enumeration reads return them in builder order.
+        this.committee = Collections.unmodifiableMap(new LinkedHashMap<>(b.committee));
+        this.proposals = Collections.unmodifiableMap(new LinkedHashMap<>(b.proposals));
         this.enactedRoots = b.enactedRoots;
         this.guardrailScriptHash = b.guardrailScriptHash;
         this.dormantEpochs = b.dormantEpochs;
@@ -160,6 +163,25 @@ public final class InMemoryLedgerView implements LedgerView {
                 .filter(m -> !m.resigned() && hot.equals(m.hot()))
                 .toList());
     }
+
+    /** {@inheritDoc} Ordered by credential type, then hash. */
+    @Override
+    public Lookup<List<CommitteeMemberState>> committeeMembers() {
+        return read(Area.COMMITTEE, null, () -> committee.values().stream()
+                .sorted(COMMITTEE_ORDER)
+                .toList());
+    }
+
+    /** {@inheritDoc} In builder insertion order. */
+    @Override
+    public Lookup<List<ProposalState>> activeProposals() {
+        return read(Area.PROPOSALS, null, () -> List.copyOf(proposals.values()));
+    }
+
+    /** Order of {@link #committeeMembers()} across all views: credential type, then hash. */
+    static final Comparator<CommitteeMemberState> COMMITTEE_ORDER =
+            Comparator.comparing((CommitteeMemberState m) -> m.cold().type())
+                    .thenComparing(m -> m.cold().hashHex());
 
     @Override
     public Lookup<Set<CredentialKey>> committeeCandidates() {

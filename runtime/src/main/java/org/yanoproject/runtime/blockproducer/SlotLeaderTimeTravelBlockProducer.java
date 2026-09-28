@@ -370,18 +370,21 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
         long blockNumber = tip != null ? tip.getBlockNumber() + 1 : 0;
         byte[] prevHash = tip != null ? tip.getBlockHash() : null;
 
-        BlockProducerHelper.prepareEpochTransitionBeforeBlock(
-                eventBus, slot, blockNumber, "slot-leader-time-travel");
+        // ADR-056: boundary section, then block selection, then the store-and-apply section.
+        BlockProducerHelper.prepareEpochTransitionInWriteSection(
+                chainState, eventBus, slot, blockNumber, "slot-leader-time-travel");
 
         try {
             List<byte[]> txList = blockBuilder.fitTransactions(slot, transactions.drainForBlock());
             var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
-            BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
+            try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
-            log.debug("Slot-leader time-travel block #{} produced: slot={}, txs={}, hash={}",
-                    blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
+                log.debug("Slot-leader time-travel block #{} produced: slot={}, txs={}, hash={}",
+                        blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
 
-            BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-time-travel");
+                BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-time-travel");
+            }
             transactions.blockCandidatePublished();
             if (notifyServer) {
                 BlockProducerHelper.notifyServer(nodeServerSupplier.get());

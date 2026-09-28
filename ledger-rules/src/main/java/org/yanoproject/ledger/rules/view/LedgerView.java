@@ -108,6 +108,28 @@ public interface LedgerView {
      */
     Lookup<ProposalState> proposal(GovActionId id);
 
+    /**
+     * Enumerates the committee state: every cold credential {@link #committeeMemberByCold} answers
+     * Present for (elected members, and candidates or former members that have a hot-key
+     * authorization or a resignation), including the resigned flag and the elected term's expiry.
+     * Callers that need the elected committee only filter on {@link CommitteeMemberState#isElected()}.
+     *
+     * @return the entries ordered by credential type, then hash; Present with an empty list when
+     *         there are none (never Absent)
+     */
+    Lookup<List<CommitteeMemberState>> committeeMembers();
+
+    /**
+     * Enumerates Haskell's {@code Proposals}: every proposal {@link #proposal(GovActionId)} answers
+     * Present for, including proposals past their {@code expiresAfter} epoch that no boundary has
+     * removed yet.
+     *
+     * @return the proposals, oldest submission first (implementations document how they order
+     *         proposals submitted in the same block); Present with an empty list when there are
+     *         none (never Absent)
+     */
+    Lookup<List<ProposalState>> activeProposals();
+
     /** @return the enacted roots per purpose (never Absent; use {@link EnactedRoots#NONE}) */
     Lookup<EnactedRoots> enactedRoots();
 

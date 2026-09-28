@@ -39,6 +39,7 @@ import org.yanoproject.p2p.tx.diffusion.TxCatalog;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusion;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusionMode;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusionStats;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import org.yanoproject.runtime.validation.DefaultTransactionValidatorListener;
 import org.slf4j.Logger;
@@ -156,23 +157,29 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         mempoolEvictionPolicy = new DefaultMempoolEvictionPolicy(
                 memPool, maxAgeMillis, mempoolMaxTxs, mempoolMaxBytes);
 
+        // ADR-056 lock order: the mempool never runs while the canonical gate is held. Canonical
+        // events are delivered on the writer's thread inside its write section, so the mempool
+        // work is deferred until that section releases the gate (or runs at once outside one).
         mempoolEvictionSubscription = eventBus.subscribe(BlockAppliedEvent.class, ctx -> {
                     UtxoState state = utxoStateSupplier.get();
                     if (state == null || !state.isEnabled()) {
-                        onCanonicalBlockApplied(ctx.event());
+                        BlockAppliedEvent applied = ctx.event();
+                        CanonicalStateGate.runAfterWriteRelease(() -> onCanonicalBlockApplied(applied));
                     }
                 }, SubscriptionOptions.builder().priority(200).build());
-        mempoolUtxoAppliedSubscription = eventBus.subscribe(UtxoStateAppliedEvent.class,
-                ctx -> onCanonicalBlockApplied(ctx.event().blockAppliedEvent()),
-                SubscriptionOptions.builder().build());
+        mempoolUtxoAppliedSubscription = eventBus.subscribe(UtxoStateAppliedEvent.class, ctx -> {
+                    BlockAppliedEvent applied = ctx.event().blockAppliedEvent();
+                    CanonicalStateGate.runAfterWriteRelease(() -> onCanonicalBlockApplied(applied));
+                }, SubscriptionOptions.builder().build());
         mempoolRollbackSubscription = eventBus.subscribe(RollbackEvent.class, ctx -> {
                     UtxoState state = utxoStateSupplier.get();
                     if (state == null || !state.isEnabled()) {
-                        onCanonicalRollbackApplied();
+                        CanonicalStateGate.runAfterWriteRelease(this::onCanonicalRollbackApplied);
                     }
                 }, SubscriptionOptions.builder().priority(200).build());
         mempoolUtxoRollbackSubscription = eventBus.subscribe(UtxoStateRolledBackEvent.class,
-                ctx -> onCanonicalRollbackApplied(), SubscriptionOptions.builder().build());
+                ctx -> CanonicalStateGate.runAfterWriteRelease(this::onCanonicalRollbackApplied),
+                SubscriptionOptions.builder().build());
         txDiffusionSubscription = eventBus.subscribe(MemPoolTransactionReceivedEvent.class,
                 ctx -> txDiffusion.onTransactionAccepted(ctx.event().transaction()),
                 SubscriptionOptions.builder().build());

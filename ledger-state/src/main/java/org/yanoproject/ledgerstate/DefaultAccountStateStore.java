@@ -518,6 +518,26 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
+     * Returns a read-only view of this store bound to a caller-owned RocksDB read snapshot
+     * (ADR-056 canonical snapshots). The caller owns {@code reads} and the snapshot in it and must
+     * keep both alive while the reader is used. The reader never writes.
+     *
+     * @param snapshotDb the database the snapshot in {@code reads} was taken on; it must be this
+     *                   store's database, otherwise a read could use a foreign snapshot
+     * @param reads      read options carrying the snapshot
+     * @throws IllegalStateException when the store is disabled or {@code snapshotDb} is not its database
+     */
+    public LedgerStateSnapshotReader snapshotReader(RocksDB snapshotDb, ReadOptions reads) {
+        if (!enabled || db == null || cfState == null) {
+            throw new IllegalStateException("persistent account state is unavailable");
+        }
+        if (snapshotDb != db) {
+            throw new IllegalStateException("snapshot was taken on a different RocksDB instance");
+        }
+        return new LedgerStateSnapshotReader(db, cfState, reads, governanceBlockProcessor != null);
+    }
+
+    /**
      * Set the UtxoState reference for UTXO balance aggregation at epoch boundary.
      * Must be called before epoch snapshots with amounts are needed.
      */

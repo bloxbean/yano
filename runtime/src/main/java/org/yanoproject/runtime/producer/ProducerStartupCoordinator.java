@@ -23,6 +23,7 @@ import org.yanoproject.runtime.blockproducer.ProtocolVersionSupplier;
 import org.yanoproject.runtime.blockproducer.BlockBodySizeLimitSupplier;
 import lombok.extern.slf4j.Slf4j;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Objects;
 
@@ -197,23 +198,26 @@ public final class ProducerStartupCoordinator {
             var stakeDataProvider = StakeDataProviderFactory.createLiveSlotLeaderProvider(config);
 
             if (config.isDevMode() && freshStart) {
-                actions.storeGenesisUtxosIfNeeded(freshStart);
-                var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, java.util.List.of());
-                try {
-                    BlockProducerHelper.publishGenesisBlockEvent(
-                            actions.eventBus(), genesisResult, "slot-leader-genesis");
-                } catch (RuntimeException | Error e) {
-                    signedBlockBuilder.rollbackPendingNonceState();
-                    throw e;
+                // ADR-056: genesis UTxOs, bootstrap, block store and apply form one canonical write section.
+                try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                    actions.storeGenesisUtxosIfNeeded(freshStart);
+                    var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, List.of());
+                    try {
+                        BlockProducerHelper.publishGenesisBlockEvent(
+                                actions.eventBus(), genesisResult, "slot-leader-genesis");
+                    } catch (RuntimeException | Error e) {
+                        signedBlockBuilder.rollbackPendingNonceState();
+                        throw e;
+                    }
+                    BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, genesisResult);
+                    log.info("Genesis block produced (slot-leader devnet): hash={}",
+                            HexUtil.encodeHexString(genesisResult.blockHash()));
+
+                    actions.setConwayEraStartIfFreshStart(freshStart);
+
+                    BlockProducerHelper.publishEvent(
+                            actions.eventBus(), genesisResult, 0, "slot-leader-genesis", false);
                 }
-                BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, genesisResult);
-                log.info("Genesis block produced (slot-leader devnet): hash={}",
-                        HexUtil.encodeHexString(genesisResult.blockHash()));
-
-                actions.setConwayEraStartIfFreshStart(freshStart);
-
-                BlockProducerHelper.publishEvent(
-                        actions.eventBus(), genesisResult, 0, "slot-leader-genesis", false);
                 actions.notifyServeNewDataAvailable();
             }
 
@@ -245,20 +249,22 @@ public final class ProducerStartupCoordinator {
                         }
 
                         byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(slot);
-                        var vrfResult = slotLeaderCheck.checkAndProve(slot, epochNonce, java.math.BigDecimal.ONE);
+                        var vrfResult = slotLeaderCheck.checkAndProve(slot, epochNonce, BigDecimal.ONE);
                         if (vrfResult != null) {
                             ChainTip tip = chainState.getTip();
-                            BlockProducerHelper.prepareEpochTransitionBeforeBlock(
+                            BlockProducerHelper.prepareEpochTransitionInWriteSection(chainState,
                                     actions.eventBus(), slot, tip.getBlockNumber() + 1, "slot-leader-catch-up");
                             var result = signedBlockBuilder.buildBlock(
                                     tip.getBlockNumber() + 1,
                                     slot,
                                     tip.getBlockHash(),
-                                    java.util.List.of(),
+                                    List.of(),
                                     vrfResult);
-                            BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, result);
-                            BlockProducerHelper.publishEvent(
-                                    actions.eventBus(), result, 0, "slot-leader-catch-up");
+                            try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                                BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, result);
+                                BlockProducerHelper.publishEvent(
+                                        actions.eventBus(), result, 0, "slot-leader-catch-up");
+                            }
                             produced++;
                         }
                         if (produced > 0 && produced % 1000 == 0) {

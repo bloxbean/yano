@@ -237,6 +237,8 @@ public final class YanoPropertyKeys {
     public static final class Validation {
         public static final String DEFAULT_VALIDATOR_ENABLED = "yano.validation.default-validator-enabled";
         public static final String SUPPLEMENTARY_RULES_ENABLED = "yano.validation.supplementary-rules-enabled";
+        /** ADR-056: soft cap on live canonical ledger snapshots (default 4); only shadow requests are refused. */
+        public static final String MAX_LIVE_SNAPSHOTS = "yano.validation.max-live-snapshots";
 
         private Validation() {
         }

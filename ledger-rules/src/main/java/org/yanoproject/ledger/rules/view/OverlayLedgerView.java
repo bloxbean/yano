@@ -292,6 +292,69 @@ public final class OverlayLedgerView implements LedgerView {
         return Lookup.present(List.copyOf(result));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The base list with every layer's committee changes (hot-key authorizations, resignations)
+     * applied, newest layer winning per cold credential.</p>
+     */
+    @Override
+    public Lookup<List<CommitteeMemberState>> committeeMembers() {
+        Map<CredentialKey, Lookup<CommitteeMemberState>> newestByCold = new LinkedHashMap<>();
+        for (Node n = top; n != null; n = n.below) {
+            n.layer.committee.forEach(newestByCold::putIfAbsent);
+        }
+        Lookup<List<CommitteeMemberState>> fromBase = base.committeeMembers();
+        if (newestByCold.isEmpty() || !(fromBase instanceof Lookup.Present<List<CommitteeMemberState>> present)) {
+            return fromBase;
+        }
+        Map<CredentialKey, CommitteeMemberState> merged = new LinkedHashMap<>();
+        for (CommitteeMemberState m : present.value()) {
+            merged.put(m.cold(), m);
+        }
+        newestByCold.forEach((cold, v) -> {
+            if (v instanceof Lookup.Present<CommitteeMemberState> p) {
+                merged.put(cold, p.value());
+            } else {
+                merged.remove(cold);
+            }
+        });
+        return Lookup.present(merged.values().stream().sorted(InMemoryLedgerView.COMMITTEE_ORDER).toList());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The base list followed by the proposals submitted in the layers, oldest layer first and in
+     * body order within a layer (the order Haskell inserts them into {@code Proposals}).</p>
+     */
+    @Override
+    public Lookup<List<ProposalState>> activeProposals() {
+        Lookup<List<ProposalState>> fromBase = base.activeProposals();
+        if (top == null || !(fromBase instanceof Lookup.Present<List<ProposalState>> present)) {
+            return fromBase;
+        }
+        List<List<ProposalState>> layersNewestFirst = new ArrayList<>();
+        for (Node n = top; n != null; n = n.below) {
+            if (!n.layer.proposalOrder.isEmpty()) {
+                layersNewestFirst.add(n.layer.proposalOrder);
+            }
+        }
+        if (layersNewestFirst.isEmpty()) {
+            return fromBase;
+        }
+        Map<GovActionId, ProposalState> merged = new LinkedHashMap<>();
+        for (ProposalState p : present.value()) {
+            merged.put(p.id(), p);
+        }
+        for (List<ProposalState> layer : layersNewestFirst.reversed()) {
+            for (ProposalState p : layer) {
+                merged.put(p.id(), p);
+            }
+        }
+        return Lookup.present(List.copyOf(merged.values()));
+    }
+
     @Override
     public Lookup<Set<CredentialKey>> committeeCandidates() {
         Set<CredentialKey> added = new HashSet<>();
@@ -393,6 +456,7 @@ public final class OverlayLedgerView implements LedgerView {
         final Long dormantEpochs;
         final Map<CredentialKey, Lookup<CommitteeMemberState>> committee;
         final Map<GovActionId, ProposalState> proposals;
+        final List<ProposalState> proposalOrder;
         final Set<CredentialKey> candidates;
 
         Layer(LayerBuilder b) {
@@ -412,6 +476,7 @@ public final class OverlayLedgerView implements LedgerView {
             this.dormantEpochs = b.dormantEpochs;
             this.committee = Map.copyOf(b.committee);
             this.proposals = Map.copyOf(b.proposals);
+            this.proposalOrder = List.copyOf(b.proposals.values());
             this.candidates = Set.copyOf(b.candidates);
         }
     }
@@ -431,7 +496,7 @@ public final class OverlayLedgerView implements LedgerView {
         final List<DormantDRepExpiriesBumped> bumps = new ArrayList<>();
         Long dormantEpochs;
         final Map<CredentialKey, Lookup<CommitteeMemberState>> committee = new HashMap<>();
-        final Map<GovActionId, ProposalState> proposals = new HashMap<>();
+        final Map<GovActionId, ProposalState> proposals = new LinkedHashMap<>();
         final Set<CredentialKey> candidates = new HashSet<>();
 
         LayerBuilder(OverlayLedgerView below, TxEffects effects) {

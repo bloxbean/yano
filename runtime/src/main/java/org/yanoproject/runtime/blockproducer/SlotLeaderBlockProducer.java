@@ -275,19 +275,22 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         long blockNumber = tip.getBlockNumber() + 1;
         byte[] prevHash = tip.getBlockHash();
 
-        BlockProducerHelper.prepareEpochTransitionBeforeBlock(
-                eventBus, slot, blockNumber, "slot-leader-block-producer");
+        // ADR-056: boundary section, then block selection, then the store-and-apply section.
+        BlockProducerHelper.prepareEpochTransitionInWriteSection(
+                chainState, eventBus, slot, blockNumber, "slot-leader-block-producer");
 
         try {
             List<byte[]> txList = blockBuilder.fitTransactions(slot, transactions.drainForBlock());
             var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
 
-            BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
+            try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
-            log.info("Block #{} produced: slot={}, txs={}, hash={}",
-                    blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
+                log.info("Block #{} produced: slot={}, txs={}, hash={}",
+                        blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
 
-            BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-block-producer");
+                BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-block-producer");
+            }
             transactions.blockCandidatePublished();
             BlockProducerHelper.notifyServer(nodeServerSupplier.get());
         } catch (UnfitBlockTransactionException e) {

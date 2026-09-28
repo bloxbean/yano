@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
+import org.rocksdb.RocksDB;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.BlockBodyRetentionBoundary;
 import org.yanoproject.api.EpochParamProvider;
@@ -152,6 +153,9 @@ import org.yanoproject.runtime.sync.validation.BodyValidator;
 import org.yanoproject.runtime.db.RocksDbSupplier;
 import org.yanoproject.runtime.tx.TxSubsystem;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusionStats;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
+import org.yanoproject.runtime.ledger.canonical.RocksCanonicalSnapshotSource;
+import org.yanoproject.runtime.utxo.DefaultUtxoStore;
 import org.yanoproject.runtime.utxo.UtxoSubsystem;
 import org.yanoproject.runtime.utxo.UtxoStoreWriter;
 import org.yanoproject.runtime.validation.DefaultConsensusListener;
@@ -593,6 +597,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             this.kernel = new NodeKernel(
                     runtimeKernelSubsystems(),
                     new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
+            wireCanonicalStateGate();
             constructionCleanup.clear();
         } catch (Throwable failure) {
             throw propagateConstructionFailure(
@@ -645,6 +650,34 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     private RocksDbAccess rocksDbAccessOrNull() {
         return chainStorage.rocksDbAccessOrNull();
+    }
+
+    /**
+     * ADR-056: configures the canonical state gate owned by the chain state. Snapshots are only
+     * available over the RocksDB-backed stores; every supplier is re-read at capture time because
+     * snapshot restore reopens the database and reinitializes the stores.
+     */
+    private void wireCanonicalStateGate() {
+        CanonicalStateGate gate = CanonicalStateGate.of(chainState);
+        int maxLive = (int) parseLong(runtimeOptions.globals().get(YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS),
+                CanonicalStateGate.DEFAULT_MAX_LIVE_SNAPSHOTS);
+        gate.setMaxLiveSnapshots(maxLive > 0 ? maxLive : CanonicalStateGate.DEFAULT_MAX_LIVE_SNAPSHOTS);
+        gate.configureLedgerEpochReader(() -> RocksCanonicalSnapshotSource.completedBoundaryEpoch(
+                getDefaultAccountStateStore().orElse(null)));
+        gate.configureEpochCalculator(slot -> {
+            EpochParamProvider provider = getEpochParamProvider();
+            return provider != null ? provider.getEpochSlotCalc().slotToEpoch(slot) : -1;
+        });
+        RocksDbAccess rocks = rocksDbAccessOrNull();
+        if (rocks == null) {
+            return;
+        }
+        gate.installSnapshotSource(new RocksCanonicalSnapshotSource(
+                () -> (RocksDB) rocks.getDb(),
+                () -> getDefaultAccountStateStore().orElse(null),
+                () -> utxoSubsystem.store() instanceof DefaultUtxoStore store ? store : null,
+                epoch -> getDefaultAccountStateStore().flatMap(store -> store.getProtocolParameters(epoch)),
+                utxoSubsystem::isApplyAsync));
     }
 
     /**
@@ -1251,6 +1284,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 validateChainState();
                 performStartupAdhocRollback();
                 completeStartupDerivedStateRecovery();
+                // Bootstrap, adhoc rollback and interrupted-boundary recovery change the tip and ledger
+                // state outside any write section; republish the canonical tip (ADR-056).
+                CanonicalStateGate.of(chainState).refreshTip();
             }
 
             @Override
@@ -2413,8 +2449,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      */
     private void storeGenesisUtxosIfNeeded(boolean freshStart) {
         if (freshStart && utxoStore != null) {
-            utxoStore.storeGenesisUtxos(genesisConfig.getInitialFunds(),
-                    config.getProtocolMagic(), 0, 0, "");
+            // Initial ledger state is a canonical write (ADR-056); reentrant inside a producer's
+            // genesis section.
+            CanonicalStateGate.of(chainState).runWrite(() -> utxoStore.storeGenesisUtxos(
+                    genesisConfig.getInitialFunds(), config.getProtocolMagic(), 0, 0, ""));
         }
     }
 
@@ -3179,28 +3217,38 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 }
                 targetSlot = rollbackPoint.getSlot();
 
-                // 2. Rollback chain state to the resolved point.
-                rollbackStarted = true;
-                ChainStateRollback.rollbackToPoint(chainState, rollbackPoint);
+                // 2-4 form one canonical write section (ADR-056): chain-state rollback, the
+                // rollback listeners and, with async UTxO apply, the drained UTxO rollback.
+                ChainTip newTip;
+                try (CanonicalStateGate.WriteSection ignored = CanonicalStateGate.of(chainState).enterWrite()) {
+                    // 2. Rollback chain state to the resolved point.
+                    rollbackStarted = true;
+                    ChainStateRollback.rollbackToPoint(chainState, rollbackPoint);
 
-                // 3. Verify the exact restored point.
-                ChainTip newTip = chainState.getTip();
-                if (newTip == null || newTip.getSlot() != rollbackPoint.getSlot()
-                        || !HexUtil.encodeHexString(newTip.getBlockHash()).equalsIgnoreCase(rollbackPoint.getHash())) {
-                    throw new IllegalStateException("ChainState did not restore exact API rollback point " + rollbackPoint);
-                }
+                    // 3. Verify the exact restored point.
+                    newTip = chainState.getTip();
+                    if (newTip == null || newTip.getSlot() != rollbackPoint.getSlot()
+                            || !HexUtil.encodeHexString(newTip.getBlockHash())
+                            .equalsIgnoreCase(rollbackPoint.getHash())) {
+                        throw new IllegalStateException(
+                                "ChainState did not restore exact API rollback point " + rollbackPoint);
+                    }
 
-                // 4. Publish RollbackEvent (isReal=true so UTXO deltas get unwound)
-                try {
-                    EventMetadata meta = EventMetadata.builder().origin("api-rollback").build();
-                    eventBus.publish(new RollbackEvent(rollbackPoint, true),
-                            meta, PublishOptions.builder().build());
-                } catch (Exception ex) {
-                    log.warn("RollbackEvent publish failed: {}", ex.toString());
-                    throw new RuntimeException("RollbackEvent publish failed during API rollback", ex);
-                }
-                if (!utxoSubsystem.drainAsyncHandlerAndRestart(Duration.ofSeconds(30))) {
-                    throw new IllegalStateException("Async UTXO handler did not drain after API rollback");
+                    // 4. Publish RollbackEvent (isReal=true so UTXO deltas get unwound)
+                    try {
+                        EventMetadata meta = EventMetadata.builder().origin("api-rollback").build();
+                        eventBus.publish(new RollbackEvent(rollbackPoint, true),
+                                meta, PublishOptions.builder().build());
+                    } catch (Exception ex) {
+                        log.warn("RollbackEvent publish failed: {}", ex.toString());
+                        throw new RuntimeException("RollbackEvent publish failed during API rollback", ex);
+                    }
+                    // Draining inside the section cannot deadlock: with async UTxO apply the snapshot
+                    // source reports itself unavailable before the gate's read lock is taken, so no
+                    // capture ever waits here, and the async handler never takes the gate.
+                    if (!utxoSubsystem.drainAsyncHandlerAndRestart(Duration.ofSeconds(30))) {
+                        throw new IllegalStateException("Async UTXO handler did not drain after API rollback");
+                    }
                 }
                 // 5. Notify server (ChainSyncServerAgent sends Rollbackward to connected clients)
                 if (serveSubsystem.notifyNewDataAvailable()) {
@@ -3526,8 +3574,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private FundResult fundAddress(String address, long lovelace) {
+        // The faucet injects a UTxO outside any block: a canonical change of its own (ADR-056).
         return withRuntimeMaintenance("devnet faucet",
-                () -> devnetFaucetService().fundAddress(address, lovelace));
+                () -> CanonicalStateGate.of(chainState).callWrite(
+                        () -> devnetFaucetService().fundAddress(address, lovelace)));
     }
 
     private DevnetFaucetService devnetFaucetService() {

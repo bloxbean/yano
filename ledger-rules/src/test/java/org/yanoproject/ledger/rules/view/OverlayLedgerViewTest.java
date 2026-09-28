@@ -443,4 +443,48 @@ class OverlayLedgerViewTest {
         assertThat(base.proposal(expired)).isEqualTo(Lookup.present(proposal));
         assertThat(v1.proposal(expired)).isEqualTo(Lookup.present(proposal));
     }
+
+    @Test
+    void committeeMembersApplyLayerAuthorizationsAndResignations() {
+        CredentialKey cold1 = keyCred(1);
+        CredentialKey cold2 = keyCred(2);
+        CredentialKey hot = keyCred(0x51);
+        LedgerView base = base().committeeMember(new CommitteeMemberState(cold1, null, false, 200L)).build();
+        OverlayLedgerView v1 = OverlayLedgerView.over(base).apply(changes(TX1,
+                new CommitteeHotAuthorized(cold1, hot), new CommitteeHotAuthorized(cold2, hot)));
+        OverlayLedgerView v2 = v1.apply(changes(TX2, new CommitteeResigned(cold1)));
+
+        assertThat(OverlayLedgerView.over(base).committeeMembers().require("m"))
+                .containsExactly(new CommitteeMemberState(cold1, null, false, 200L));
+        assertThat(v1.committeeMembers().require("m")).containsExactly(
+                new CommitteeMemberState(cold1, hot, false, 200L),
+                new CommitteeMemberState(cold2, hot, false, null));
+        assertThat(v2.committeeMembers().require("m")).containsExactly(
+                new CommitteeMemberState(cold1, null, true, 200L),
+                new CommitteeMemberState(cold2, hot, false, null));
+        // Layer changes cannot even be applied over an unavailable committee, so this is the base path.
+        assertThat(OverlayLedgerView.over(base().unavailable(InMemoryLedgerView.Area.COMMITTEE).build())
+                .committeeMembers().isUnavailable()).isTrue();
+    }
+
+    @Test
+    void activeProposalsAppendLayerSubmissionsInOrder() {
+        ProposalState old = new ProposalState(new GovActionId(hash32(0x0f), 0), GovActionType.INFO_ACTION, null,
+                null, 90, 96, Fixtures.GOV_ACTION_DEPOSIT, Fixtures.rewardAddressHex(1));
+        ProposalState a = new ProposalState(new GovActionId(TX1, 0), GovActionType.INFO_ACTION, null, null, 100, 106,
+                Fixtures.GOV_ACTION_DEPOSIT, Fixtures.rewardAddressHex(1));
+        ProposalState b = new ProposalState(new GovActionId(TX1, 1), GovActionType.INFO_ACTION, null, null, 100, 106,
+                Fixtures.GOV_ACTION_DEPOSIT, Fixtures.rewardAddressHex(1));
+        ProposalState c = new ProposalState(new GovActionId(TX2, 0), GovActionType.INFO_ACTION, null, null, 100, 106,
+                Fixtures.GOV_ACTION_DEPOSIT, Fixtures.rewardAddressHex(1));
+        OverlayLedgerView v0 = OverlayLedgerView.over(base().proposal(old).build());
+        OverlayLedgerView v1 = v0.apply(changes(TX1, new ProposalSubmitted(a), new ProposalSubmitted(b)));
+        OverlayLedgerView v2 = v1.apply(changes(TX2, new ProposalSubmitted(c)));
+
+        assertThat(v0.activeProposals().require("p")).containsExactly(old);
+        assertThat(v2.activeProposals().require("p")).containsExactly(old, a, b, c);
+        assertThat(v2.truncateTo(1).activeProposals().require("p")).containsExactly(old, a, b);
+        assertThat(OverlayLedgerView.over(base().unavailable(InMemoryLedgerView.Area.PROPOSALS).build())
+                .apply(changes(TX1, new ProposalSubmitted(a))).activeProposals().isUnavailable()).isTrue();
+    }
 }

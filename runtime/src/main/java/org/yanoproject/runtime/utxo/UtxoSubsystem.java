@@ -133,6 +133,14 @@ public final class UtxoSubsystem implements Subsystem {
         return asyncEventHandler != null;
     }
 
+    /**
+     * @return true when UTxO apply runs on the async handler ({@code yano.utxo.applyAsync=true}), i.e.
+     *         outside the canonical write section (ADR-056: canonical snapshots are then unavailable)
+     */
+    public boolean isApplyAsync() {
+        return asyncApply;
+    }
+
     public boolean isPruneServiceRunning() {
         return pruneService != null;
     }

@@ -117,4 +117,27 @@ class InMemoryLedgerViewTest {
                 .extracting(CommitteeMemberState::cold)
                 .containsExactlyInAnyOrder(keyCred(1), keyCred(2));
     }
+
+    @Test
+    void enumeratesCommitteeInCredentialOrderAndProposalsInInsertionOrder() {
+        CommitteeMemberState script = new CommitteeMemberState(CredentialKey.script(hash28(0x01)), null, true, 90L);
+        CommitteeMemberState keyB = new CommitteeMemberState(keyCred(0x02), keyCred(0x52), false, 80L);
+        CommitteeMemberState keyA = new CommitteeMemberState(keyCred(0x01), null, false, null);
+        ProposalState second = new ProposalState(new GovActionId(hash32(0x02), 0), GovActionType.INFO_ACTION, null,
+                null, 10, 16, BigInteger.TEN, "e0" + hash28(9));
+        ProposalState first = new ProposalState(new GovActionId(hash32(0x01), 1), GovActionType.INFO_ACTION, null,
+                null, 10, 16, BigInteger.TEN, "e0" + hash28(9));
+        InMemoryLedgerView view = InMemoryLedgerView.builder()
+                .committeeMember(script).committeeMember(keyB).committeeMember(keyA)
+                .proposal(second).proposal(first)
+                .build();
+
+        assertThat(view.committeeMembers().require("c")).containsExactly(keyA, keyB, script);
+        assertThat(view.activeProposals().require("p")).containsExactly(second, first);
+        assertThat(InMemoryLedgerView.builder().build().committeeMembers()).isEqualTo(Lookup.present(List.of()));
+        assertThat(InMemoryLedgerView.builder().unavailable(InMemoryLedgerView.Area.COMMITTEE).build()
+                .committeeMembers().isUnavailable()).isTrue();
+        assertThat(InMemoryLedgerView.builder().unavailable(InMemoryLedgerView.Area.PROPOSALS).build()
+                .activeProposals().isUnavailable()).isTrue();
+    }
 }

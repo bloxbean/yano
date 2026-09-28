@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import org.yanoproject.api.model.DevnetRestoreResult;
 import org.yanoproject.runtime.blockproducer.BlockProducerService;
 import org.yanoproject.runtime.chain.ChainStateSnapshots;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
 import lombok.extern.slf4j.Slf4j;
 
@@ -165,11 +166,16 @@ public final class DevnetSnapshotRestoreService {
             }
 
             restoreStarted = true;
-            actions.prepareUtxoForStorageReplacement();
-            snapshots.restoreFromSnapshot(checkpointDir.toString());
+            // Replacing the database is a canonical change (ADR-056). The producer and admission are
+            // already stopped, so nothing else waits on the gate; closing the database invalidates
+            // every live canonical snapshot before its native handles go away.
+            CanonicalStateGate.of(chainState).runWrite(() -> {
+                actions.prepareUtxoForStorageReplacement();
+                snapshots.restoreFromSnapshot(checkpointDir.toString());
 
-            actions.reinitializeUtxoAndReconcileAfterSnapshotRestore();
-            actions.reinitializeLedgerAndReconcileAfterSnapshotRestore();
+                actions.reinitializeUtxoAndReconcileAfterSnapshotRestore();
+                actions.reinitializeLedgerAndReconcileAfterSnapshotRestore();
+            });
             actions.clearPendingTransactions();
             actions.resetBlockProducerToChainTip();
             actions.notifyServerNewDataAvailable();
