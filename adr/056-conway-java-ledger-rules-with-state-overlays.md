@@ -38,12 +38,17 @@ with the decisions recorded at the end of this ADR.
 - Haskell `cardano-ledger` is the source of truth for rule semantics. Amaru and
   Scalus are references and oracles only. Where they disagree with Haskell,
   Haskell wins, and Yano records the divergence.
-- **Pinned Haskell revision.** Phase 1 pins the `cardano-ledger` revision used
-  by the Haskell node version Yano targets. Every Haskell reference in this ADR
-  (module paths, rule order, `reapplyTx`/`reapplyValidatedTx`, static labels)
-  is re-checked against that revision and recorded in
-  `ledger-rules/docs/conway-rule-coverage.md`. The local reference checkout
-  (`42d088ed8`, 2026-04-29) predates upstream changes to mempool re-application.
+- **Pinned Haskell revisions** (Phase 1, 2026-09-28; details in
+  [adr-056-haskell-pinned-revisions](reports/adr-056-haskell-pinned-revisions.md)):
+  - **cardano-node 11.1.2** (`fef83fed`), the current release;
+  - **cardano-ledger `f649f975`** (cardano-ledger-conway 1.23.0.0; shelley
+    1.19.0.1 at `4c81e909`);
+  - **ouroboros-consensus 4.2.1.0 (`82ecba32`)**.
+
+  Every Haskell reference in this ADR is re-checked against these revisions
+  and recorded in `ledger-rules/docs/conway-rule-coverage.md`. The
+  release-QA node (11.0.1) has identical Conway predicate failures, PV gates
+  and check order; only the `IsValid` → `IsPhase2Valid` rename differs.
 
 ## Decision summary
 
@@ -468,13 +473,18 @@ checks.
 
 0. **MEMPOOL** (only when `rule = MEMPOOL`), against the **incoming** state,
    before anything in `LEDGER`:
-   - `ConwayMempoolFailure` when **all** inputs are already spent ("probably a
-     duplicate"). If this fails, every other check is skipped, as Haskell's
+   - `ConwayMempoolFailure` when **every spending input** is already spent
+     ("probably a duplicate"). Reference and collateral inputs are not
+     considered. If this fails, every other check is skipped, as Haskell's
      `whenFailureFreeDefault` does. So a duplicate reports only this failure.
-   - Before `hardforkConwayDisallowUnelectedCommitteeFromVoting` (PV11): reject
-     votes by unelected committee members, judged against the incoming
-     committee state, not post-certificate state. From PV11 the same check
-     lives in `GOV`.
+   - While `hardforkConwayDisallowUnelectedCommitteeFromVoting` is off
+     (PV ≤ 10): reject votes by unelected committee members with
+     `ConwayMempoolFailure`, judged against the incoming committee state, not
+     post-certificate state. From PV11 the same check lives in `GOV` as
+     `UnelectedCommitteeVoters`, so it also applies to blocks.
+   - Haskell has no separate MEMPOOL failure type. `ConwayMempoolFailure` is a
+     constructor of `ConwayLedgerPredFailure` (`Conway/Rules/Mempool.hs:86`,
+     `Ledger.hs:124`).
 
    Only if MEMPOOL passes does `LEDGER` run:
 
@@ -482,10 +492,16 @@ checks.
    - treasury value (`ConwayTreasuryValueMismatch`);
    - total reference-script size, from spending inputs **and** reference
      inputs;
-   - withdrawals: from PV11, `ConwayWithdrawalsMissingAccounts` /
-     `ConwayIncompleteWithdrawals`; before PV11 the check sits in `CERTS` as
-     `WithdrawalsNotInRewardsCERTS`;
-   - `ConwayWdrlNotDelegatedToDRep`.
+   - `ConwayWdrlNotDelegatedToDRep` (PV ≥ 10), on pre-certificate accounts;
+   - from PV11 (`hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule`):
+     `ConwayWithdrawalsMissingAccounts` / `ConwayIncompleteWithdrawals`, then
+     the DRep activity updates and the withdrawal drain, before `CERTS`.
+     Before PV11 the withdrawal check and drain are the `CERTS` base case
+     (`WithdrawalsNotInRewardsCERTS`), which runs before the first
+     certificate (`Certs.hs:222-241`).
+
+   Failures accumulate, as in Haskell STS: later checks still run and report
+   their failures. Only `whenFailureFree` blocks are skipped.
 2. **If `isValid=true`, CERTS.** Certificates fold over an intra-transaction
    overlay: `DELEG`, `POOL` and `GOVCERT`, with deposit and refund correctness.
    Their PV gates include:
@@ -573,8 +589,13 @@ public interface ScriptPhaseEvaluator {
   - Populating `invalid_txs` in block encoding, and in body size and hash.
   - A Haskell-follower test with a phase-2-invalid transaction in a
     Yano-produced block.
-  - Confirming the `WhetherToIntervene` semantics against the pinned
-    ouroboros-consensus revision.
+  - Matching `WhetherToIntervene` at consensus 4.2.1.0 (`Shelley/Eras.hs:238-271`):
+    - a peer transaction is first applied with its flag forced to
+      `IsValid True`;
+    - if the **only** failure is `ValidationTagMismatch`, it is re-applied as
+      `IsValid False`, collecting collateral, and that flipped transaction is
+      what gets stored and forged;
+    - local submissions keep their flag, so a wrong flag is rejected.
 
 **Mempool.**
 - **One immutable published state.** The mempool's ledger-facing state is one
@@ -717,9 +738,12 @@ public interface ScriptPhaseEvaluator {
 the same rule. The validator re-applies a transaction (skipping static checks)
 only when `previous` is present **and** none of the following changed since
 `previous` was produced:
-- **protocol major version** (Haskell `reapplyValidatedTx` on upstream master
-  forces full validation on a major-version change; to be confirmed at the
-  pinned revision);
+- **protocol major version**. At the pinned revision, cardano-ledger has
+  `reapplyValidatedTx`, which forces full validation on a protocol-major
+  change (`Shelley/API/Mempool.hs:420-439`). Consensus 4.2.1.0 (node 11.1.2)
+  still calls the deprecated `reapplyTx`, which has no such guard; consensus
+  main switches to `reapplyValidatedTx` for node 11.2. Yano applies the guard
+  now. That is stricter than node 11.1.2, and strictly safer;
 - **`phase2EnvDigest`**: the hash of what a phase-2 verdict depends on besides
   the resolved inputs. That is the cost models of the languages the transaction
   uses, the ExUnits price and limit parameters, and the Plutus language
@@ -742,7 +766,11 @@ the new environment.
 
 | Skipped in REAPPLY (static) | Re-run in REAPPLY (depend on state or environment) |
 |---|---|
-| vkey and bootstrap signature verification, metadata hash/validity, native script evaluation, empty inputs, bootstrap address attributes, network ids (tx body, outputs, withdrawals), max tx size, **Plutus execution** | input existence, validity interval and forecast, fees, min-UTxO, value size, ExUnits limits, script integrity hash (cost models may have changed), needed witnesses, reference input disjointness, all CERTS, GOV and LEDGER checks, MEMPOOL |
+| vkey and bootstrap signature verification (`validateVerifiedWits`), metadata hash/validity, malformed script witnesses and reference scripts, empty inputs, bootstrap address attributes, network ids (tx body, outputs, withdrawals), max tx size, **Plutus execution** (`when2Phase`) | input existence, validity interval and forecast, fees, collateral, min-UTxO, value size, ExUnits limits, **native script evaluation** (dynamic in Conway: `Babbage/Rules/Utxow.hs` uses `runTest`), missing/extraneous scripts, datums, redeemers, script integrity hash (cost models may have changed), needed witnesses, reference input disjointness, `CollectErrors`, all CERTS, GOV and LEDGER checks, MEMPOOL |
+
+The static set is taken from the `lblStatic`/`runTestOnSignal` labels at the
+pinned revision (`Babbage/Rules/Utxow.hs`, `Babbage/Rules/Utxo.hs`,
+`Alonzo/Rules/Utxos.hs`).
 
 **Block production.**
 - `BlockTransactionSelectors.selectMempool` acquires one `CanonicalSnapshot`
