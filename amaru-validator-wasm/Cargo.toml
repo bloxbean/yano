@@ -1,0 +1,42 @@
+# Yano's WebAssembly wrapper around Pragma's Amaru transaction validator (ADR-057).
+#
+# This crate is outside the Gradle build. Nothing in the default Yano build needs Rust.
+# Upgrading Amaru: see README.md, "Upgrading Amaru".
+
+[package]
+name = "amaru-validator-wasm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+description = "Versioned wasm32-wasip1 interface around Amaru's Conway transaction validation, for Yano"
+repository = "https://github.com/bloxbean/yano"
+
+# A standalone workspace: never picked up by a parent Cargo workspace.
+[workspace]
+
+[lib]
+name = "amaru_validator"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Amaru, pinned by tag. Cargo.lock pins the exact commit (see AMARU_VERSION).
+amaru-kernel = { git = "https://github.com/pragma-org/amaru", tag = "v10.11.20260925" }
+amaru-ledger = { git = "https://github.com/pragma-org/amaru", tag = "v10.11.20260925" }
+amaru-plutus = { git = "https://github.com/pragma-org/amaru", tag = "v10.11.20260925" }
+
+[dev-dependencies]
+# The fixture-equivalence test reads Amaru's JSON scenarios. `test-utils` enables the serde
+# implementations of `ProtocolParameters`/`NetworkName` and the `$ref` resolver; it is never
+# part of the wasm build.
+amaru-kernel = { git = "https://github.com/pragma-org/amaru", tag = "v10.11.20260925", features = ["test-utils"] }
+hex = "0.4.3"
+serde = "1.0.229"
+serde_json = { version = "1.0.151", features = ["std"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = 3

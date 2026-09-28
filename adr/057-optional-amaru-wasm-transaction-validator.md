@@ -19,7 +19,13 @@ with the decisions recorded at the end of this ADR.
 - Pragma's Amaru (`https://github.com/pragma-org/amaru`, Apache-2.0). All
   Amaru file and symbol references in this ADR are at commit `d72e9b5`
   (2026-09-25). Older checkouts differ: the April 2026 tree has no
-  `prepare_transaction` and a different CI file.
+  `prepare_transaction` and a different CI file. The pinned tag
+  `v10.11.20260925` is commit `eaf8ac3f`, which is `d72e9b5` plus one
+  Debian-packaging commit. That commit adds two systemd-unit lines to
+  `crates/amaru/Cargo.toml`, the node binary's Debian metadata. Nothing
+  under `amaru-ledger`, `amaru-kernel`, `amaru-plutus`, `amaru-uplc` or
+  `crates/vendor` changed, and neither did the root `Cargo.toml`,
+  `Cargo.lock` or `rust-toolchain.toml` (Phase A).
   - Amaru's CI builds `amaru-ledger` for `wasm32-unknown-unknown` on every push
     (`.github/workflows/ci-build-and-test.yml`, job `build-wasm32`).
   - Its mempool path `state.rs validate_tx` calls
@@ -157,12 +163,20 @@ everything the transaction needs.
 
 ```
 amaru-validator-wasm/
-  Cargo.toml            # cdylib; git deps on amaru-ledger/-kernel/-plutus at the pinned tag
+  Cargo.toml            # cdylib + rlib; git deps on amaru-ledger/-kernel/-plutus at the pinned tag
   Cargo.lock            # seeded from Amaru's lockfile at that tag; pins exact commits
-  rust-toolchain.toml   # the nightly pinned by that Amaru tag (nightly-2026-09-04 today)
-  src/lib.rs            # exports + request/response codec
+  rust-toolchain.toml   # the nightly pinned by that Amaru tag (nightly-2026-09-04 today) + wasm32-wasip1
+  .cargo/config.toml    # wasm stack size
   AMARU_VERSION         # tag, commit, toolchain — read by CI and embedded in the module
-  NOTICE                # Apache-2.0 attribution for Amaru and bundled crates
+  INTERFACE.md          # interface v1: exports, CDDL, absence and byte-exactness rules
+  src/lib.rs            # the exports
+  src/interface.rs      # v1 request/response codec (the reference encoder)
+  src/engine.rs         # required_keys and validate over Amaru's public API
+  src/failure.rs        # Amaru errors -> Haskell rule and constructor at ADR-056's pinned revision
+  tests/amaru_scenarios.rs  # scenario gate: 276 scenarios, both modes, required_keys sufficiency
+  scripts/              # build-wasm.sh, wasm_check.py, run_wasm_scenarios.py, bundle.sh, zig shims
+  deny.toml, about.toml # cargo deny licence/source policy; cargo-about third-party licence file
+  NOTICE, LICENSE-AMARU # Apache-2.0 attribution for Amaru and bundled crates
 ```
 
 - Cargo does not apply `[patch]` sections from a dependency's workspace. If
@@ -187,7 +201,7 @@ amaru-validator-wasm/
 | Export | Purpose |
 |---|---|
 | `abi_version() -> u32` | Interface version check |
-| `amaru_version(ptr) -> len` | Embedded tag, commit and toolchain, for logs and bug reports |
+| `amaru_version() -> resp_ptr` | Embedded tag, commit and toolchain, for logs and bug reports. Phase A made this return a `[u32 LE len][UTF-8]` buffer, the same convention as the other exports |
 | `alloc(len) -> ptr`, `dealloc(ptr, len)` | Guest memory management |
 | `required_keys(tx_ptr, tx_len, env_ptr, env_len) -> resp_ptr` | Runs `prepare_transaction`; returns the key set the host must resolve |
 | `validate(req_ptr, req_len) -> resp_ptr` | Builds a `DefaultValidationContext` from the request and validates (mode selects phase-1 only, or full) |
@@ -218,7 +232,11 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
   `required_keys` returned. Both are small on every network.
 - **Parameter encoding.** Protocol parameters use Amaru's own CBOR layout
   (`protocol_parameters.rs` `Decode`), not the CDDL `ProtocolParamUpdate`
-  layout. Golden interface tests pin the encoding, so an Amaru bump that changes
+  layout. Amaru's layout omits four values that Haskell hardcodes: the
+  per-transaction and per-block reference-script size limits, and the
+  reference-script cost stride and multiplier. An optional `ledger_constants`
+  map overrides them (Phase A; Amaru's scenarios move them). Golden interface
+  tests pin the encoding, so an Amaru bump that changes
   it fails CI instead of mis-decoding.
 
 ### 2. Java module `amaru-validator` (optional)
@@ -288,13 +306,25 @@ with a clear message. There is no silent fallback.
      `rustup target add wasm32-wasip1`.
   2. Install wasi-sdk (pinned version, checksum-verified) and set
      `CC_wasm32_wasip1`/`AR_wasm32_wasip1`.
-  3. `cargo build`, then `wasm-opt -O3` (pinned binaryen).
-  4. Record the sha256 in `amaru_validator.wasm.sha256`.
-  5. Shallow-clone Amaru at the pinned tag to get
-     `crates/amaru-ledger/tests/data/transaction/`.
-  6. Run `:amaru-validator:test` against all 276 scenarios through Endive.
-  7. Upload the `.wasm` and sha256 as a workflow artifact. On a Yano release
-     tag, attach them to the GitHub release.
+  3. Run `cargo deny check licenses sources` (pinned, checksum-verified).
+  4. Shallow-clone Amaru at the pinned tag to get
+     `crates/amaru-ledger/tests/data/transaction/`, checking the commit against
+     `AMARU_VERSION`.
+  5. Run `cargo test --locked` natively. It covers all 276 scenarios in both
+     modes (phase, rule and Haskell constructor), `required_keys` sufficiency,
+     and arena growth.
+  6. `cargo build`, then `wasm-opt -O3` (pinned binaryen). `wasm_check.py`
+     checks the imports, exports and features, and the sha256 is recorded in
+     `amaru_validator.wasm.sha256`.
+  7. Replay every `validate` and `required_keys` call from step 5 through the
+     built module under wasmtime (hash-pinned). The responses must be
+     byte-identical to native. The Endive run of the scenarios is Phase B.
+  8. Bundle `amaru-validator-wasm-<version>.tar.gz`: the module, its sha256,
+     `AMARU_VERSION`, `NOTICE`, `LICENSE-AMARU`, `INTERFACE.md`, and
+     `THIRD-PARTY-LICENSES.txt` generated by cargo-about (pinned,
+     checksum-verified). Upload the bundle and the standalone module, each with
+     a `.sha256`, as a workflow artifact. On a Yano release tag, wait for
+     `release-dist.yml` to create the release, then attach them to it.
 - **Gradle.**
   - `amaru-validator` is included in `settings.gradle` only when
     `-PwithAmaru=true`.
@@ -349,9 +379,16 @@ Shipped in the same final PR as ADR-056, through the stacked steps S2 (A, B), S4
   used macOS with zig; the Linux build is unproven).
 - Resolve the timing-span issue: `wasm32-wasip1` provides `clock_time_get`.
   Separately, ask upstream to gate `Instant::now()` for wasm.
-- Gate: CI produces the module. Its imports are exactly the WASI p1 set plus
-  memory. It runs all 276 scenarios through a thin Endive harness with the
-  expected verdicts in `full` mode.
+- Gate (as implemented):
+  - CI produces the module and its bundle.
+  - Its imports are exactly the WASI p1 set, plus its own exported memory.
+  - All 276 scenarios pass natively in both modes, with Haskell rule and
+    constructor names.
+  - Every `validate` and `required_keys` response replays byte-identically
+    through the `.wasm` under wasmtime.
+
+  Running the scenarios through a thin Endive harness moves to Phase B, together
+  with the WASI host it needs (see `amaru-validator-wasm/README.md`).
 
 ### Phase B — Java module and engine
 
@@ -462,11 +499,23 @@ reverts this ADR completely. No persisted state is involved.
 
 ## Open questions
 
-1. Is Amaru's phase-one entry point (`rules::transaction::phase_one::execute`)
+1. *Resolved in Phase A: yes, `phase_one::execute` is public at
+   `v10.11.20260925`, and `mode = phase_one` calls it. However, Amaru runs
+   some phase-1 checks in its phase-two preparation: it decodes script
+   witnesses (`MalformedScriptWitnesses`), checks cost models and builds the
+   script context (`CollectErrors`: NoCostModel, BadTranslation, including the
+   Plutus V3 disjoint-reference-inputs check). Phase-one mode misses these, so
+   the `phase2: scalus` path must report them
+   (`amaru-validator-wasm/INTERFACE.md`).*
+   Is Amaru's phase-one entry point (`rules::transaction::phase_one::execute`)
    public at the pinned tag? If not, `phase2: scalus` needs a small upstream
    visibility change. Until then it runs `full` and discards Amaru's phase-2
    verdict, which duplicates Plutus work.
-2. Custom devnet eras: `EraHistory::new` is public at `d72e9b5`, so arbitrary
+2. *Resolved in Phase A at the interface level. The request carries the era
+   history and global parameters explicitly, and a test validates a Plutus V3
+   spend under magic 42, 500-slot epochs and 1 s slots. A live devnet bundle
+   remains Phase C.*
+   Custom devnet eras: `EraHistory::new` is public at `d72e9b5`, so arbitrary
    era histories for custom devnets (short epochs, 1000 ms slots) are likely
    supported. Phase A confirms it with a devnet bundle.
 3. Does Endive support interrupting a running call (thread interrupt or fuel

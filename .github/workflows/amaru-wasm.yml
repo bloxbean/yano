@@ -1,0 +1,242 @@
+name: Amaru wasm validator
+
+# Builds amaru-validator-wasm (ADR-057 §3): the optional Amaru transaction validator compiled to
+# wasm32-wasip1. It is separate from the Gradle build, which never needs Rust.
+on:
+  workflow_dispatch:
+  push:
+    # Branch pushes run only when the crate or this workflow changes. Path filters are not
+    # evaluated for tag pushes, so every v* release tag builds and attaches the module.
+    branches:
+      - '**'
+    tags:
+      - 'v*'
+    paths:
+      - 'amaru-validator-wasm/**'
+      - '.github/workflows/amaru-wasm.yml'
+  pull_request:
+    paths:
+      - 'amaru-validator-wasm/**'
+      - '.github/workflows/amaru-wasm.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amaru-wasm-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # Pinned build tools. Each download is checked against its sha256 before use.
+  WASI_SDK_VERSION: '34'
+  WASI_SDK_SHA256: b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4   # wasi-sdk-34.0-x86_64-linux.tar.gz
+  BINARYEN_VERSION: '132'
+  BINARYEN_SHA256: 195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572   # binaryen-version_132-x86_64-linux.tar.gz
+  CARGO_DENY_VERSION: '0.20.2'
+  CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f # cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+  CARGO_ABOUT_VERSION: '0.9.2'
+  CARGO_ABOUT_SHA256: 9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af # cargo-about-0.9.2-x86_64-unknown-linux-musl.tar.gz
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: amaru-validator-wasm
+    outputs:
+      amaru_tag: ${{ steps.amaru.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned Amaru version
+        id: amaru
+        run: |
+          set -euo pipefail
+          tag=$(awk -F= '$1 == "tag" { print $2 }' AMARU_VERSION)
+          commit=$(awk -F= '$1 == "commit" { print $2 }' AMARU_VERSION)
+          toolchain=$(awk -F= '$1 == "toolchain" { print $2 }' AMARU_VERSION)
+          [[ -n "$tag" && -n "$commit" && -n "$toolchain" ]] || { echo "::error::AMARU_VERSION is incomplete"; exit 1; }
+          grep -q "channel = \"$toolchain\"" rust-toolchain.toml \
+            || { echo "::error::rust-toolchain.toml does not pin $toolchain (AMARU_VERSION)"; exit 1; }
+          {
+            echo "tag=$tag"
+            echo "commit=$commit"
+            echo "toolchain=$toolchain"
+          } >> "$GITHUB_OUTPUT"
+          echo "Amaru $tag ($commit), toolchain $toolchain"
+
+      - name: Install the Rust toolchain
+        run: |
+          set -euo pipefail
+          # Installs the channel and components named in rust-toolchain.toml.
+          rustup toolchain install
+          rustup target add wasm32-wasip1
+          rustc --version
+          cargo --version
+
+      - name: Cache Cargo downloads and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            amaru-validator-wasm/target
+          key: amaru-wasm-${{ runner.os }}-${{ hashFiles('amaru-validator-wasm/Cargo.lock', 'amaru-validator-wasm/rust-toolchain.toml') }}
+          restore-keys: |
+            amaru-wasm-${{ runner.os }}-
+
+      - name: Install wasi-sdk ${{ env.WASI_SDK_VERSION }}
+        run: |
+          set -euo pipefail
+          archive="wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/$archive"
+          echo "${WASI_SDK_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "WASI_SDK_PATH=$RUNNER_TEMP/wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux" >> "$GITHUB_ENV"
+
+      - name: Install binaryen ${{ env.BINARYEN_VERSION }}
+        run: |
+          set -euo pipefail
+          archive="binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/$archive"
+          echo "${BINARYEN_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "WASM_OPT=$RUNNER_TEMP/binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" >> "$GITHUB_ENV"
+
+      - name: Install cargo-deny ${{ env.CARGO_DENY_VERSION }}
+        run: |
+          set -euo pipefail
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/$name.tar.gz"
+          echo "${CARGO_DENY_SHA256}  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+
+      - name: Install cargo-about ${{ env.CARGO_ABOUT_VERSION }}
+        run: |
+          set -euo pipefail
+          name="cargo-about-${CARGO_ABOUT_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/$name.tar.gz"
+          echo "${CARGO_ABOUT_SHA256}  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "CARGO_ABOUT=$RUNNER_TEMP/$name/cargo-about" >> "$GITHUB_ENV"
+
+      - name: Licences and sources (cargo deny)
+        run: cargo deny --locked check licenses sources
+
+      - name: Fetch Amaru's scenarios at the pinned tag
+        env:
+          AMARU_TAG: ${{ steps.amaru.outputs.tag }}
+          AMARU_COMMIT: ${{ steps.amaru.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch "$AMARU_TAG" https://github.com/pragma-org/amaru.git "$RUNNER_TEMP/amaru"
+          actual=$(git -C "$RUNNER_TEMP/amaru" rev-parse HEAD)
+          [[ "$actual" == "$AMARU_COMMIT" ]] \
+            || { echo "::error::tag $AMARU_TAG is at $actual, AMARU_VERSION pins $AMARU_COMMIT"; exit 1; }
+          echo "AMARU_FIXTURES_DIR=$RUNNER_TEMP/amaru/crates/amaru-ledger/tests/data/transaction" >> "$GITHUB_ENV"
+
+      - name: Test (native) - all Amaru scenarios, both modes, required_keys sufficiency
+        run: |
+          set -euo pipefail
+          rm -rf target/scenario-requests   # never replay requests cached from an earlier run
+          AMARU_DUMP_REQUESTS_DIR="$PWD/target/scenario-requests" \
+            cargo test --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+          grep -E 'Amaru scenarios .*: 276 matched of 276' "$RUNNER_TEMP/test.log"
+
+      - name: Build the wasm module (wasi-sdk, wasm-opt, import/feature check, sha256)
+        run: scripts/build-wasm.sh
+
+      - name: Replay every validate and required_keys call through the module (wasmtime)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes -r scripts/requirements-replay.txt
+          "$RUNNER_TEMP/venv/bin/python" scripts/run_wasm_scenarios.py \
+            target/wasm-out/amaru_validator.wasm target/scenario-requests
+
+      - name: Bundle (module, sha256, notices, third-party licences)
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-${GITHUB_SHA::12}"
+          fi
+          scripts/bundle.sh "$version"
+
+      - name: Upload the module
+        uses: actions/upload-artifact@v4
+        with:
+          name: amaru-validator-wasm
+          path: amaru-validator-wasm/target/publish/
+          if-no-files-found: error
+
+  release:
+    # On a Yano release tag, attach the bundle and the module to the GitHub release. The release is
+    # created by release-dist.yml (softprops/action-gh-release) only: this job never creates one, so
+    # the two workflows cannot race on creation. It waits for the release to exist, then uploads.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read release flags
+        id: flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          github_release=$(awk -F' *= *' '$1 == "github_release" { print $2; exit }' gradle.properties)
+          echo "github_release=${github_release:-false}" >> "$GITHUB_OUTPUT"
+          echo "GitHub release: ${github_release:-false}"
+
+      - name: Download the bundle
+        if: steps.flags.outputs.github_release == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: amaru-validator-wasm
+          path: dist
+
+      - name: Wait for the release, then attach the files
+        if: steps.flags.outputs.github_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # release-dist.yml builds the distributions before it creates the release.
+          for attempt in $(seq 1 120); do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == 120 ]]; then
+              echo "::error::release $TAG did not appear within 120 minutes (release-dist.yml)"
+              exit 1
+            fi
+            sleep 60
+          done
+          ls -l dist
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/amaru-validator-wasm-*.tar.gz \
+            dist/amaru-validator-wasm-*.tar.gz.sha256 \
+            dist/amaru_validator.wasm \
+            dist/amaru_validator.wasm.sha256
