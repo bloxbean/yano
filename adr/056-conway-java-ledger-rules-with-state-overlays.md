@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (revised after the Fable review and three Codex review rounds of PR #155,
+Proposed (revised after the Fable review and four Codex review rounds of PR #155,
 2026-09-28)
 
 ## Date
@@ -631,15 +631,17 @@ public interface ScriptPhaseEvaluator {
      `TickedLedgerView(newSnapshot, nextSlot)` with rule `MEMPOOL`. Each
      transaction's `previous` decides between re-application and full
      validation. Failures are dropped. This produces a candidate state R.
-  4. Under the lane, publish only if **both** checks pass:
-     - **Canonical freshness:** the published `canonicalGeneration` still
-       equals `Gs`, and the epoch of the current `nextSlot` still equals `Es`.
-       Mempool ancestry is never taken as proof of canonical freshness.
-     - **Mempool descent:** S's mutation log since the recorded position
-       contains only appends. If so, validate those appended transactions in
-       order on top of R, dropping failures.
-
-     If both pass, swap in the result.
+  4. Under the lane, in this order:
+     1. **Mempool descent:** S's mutation log since the recorded position must
+        contain only appends. If so, validate those appended transactions in
+        order on top of R, dropping failures.
+     2. **Canonical freshness, as the last action before the swap:** the
+        published `canonicalGeneration` still equals `Gs`, and the epoch of the
+        current `nextSlot` still equals `Es`. Mempool ancestry is never taken
+        as proof of canonical freshness. Because this check comes after append
+        reconciliation, time spent validating appended transactions can't
+        hide a canonical change.
+     3. If both pass, swap in the result immediately.
   5. If either check fails, **discard** R and release `newSnapshot`:
      - A canonical freshness failure restarts from step 1 against the newest
        snapshot.
@@ -675,19 +677,32 @@ public interface ScriptPhaseEvaluator {
      - Every discarded attempt releases its own `newSnapshot`.
 
   This keeps O(N) × validation time off the admission path. A rebuild is never
-  published for a generation or target epoch that was already superseded when it
-  was checked. It never resurrects a removed transaction, never keeps a removed
+  published for a generation or target epoch that was already superseded at the
+  final pre-swap check. It never resurrects a removed transaction, never keeps a removed
   transaction's effects, and never holds the canonical gate and the mempool lane
   together.
-- **Bounded lag after publication.** A canonical write can still be published
-  just after the step-4 check. That is harmless:
-  - The writer notifies the mempool after releasing the gate, which always
-    queues a follow-up rebuild.
-  - Until that rebuild publishes, the published state is at most one
-    generation behind. Admissions against it are provisional and are
-    re-validated by the follow-up rebuild.
-  - Block selection never relies on the mempool overlay. It acquires its own
-    snapshot and re-validates every candidate (block production, below).
+- **Lag contract.** The published mempool state can lag the canonical tip.
+  The design does **not** bound that lag to a number of generations. It
+  guarantees:
+  - **Internally consistent.** The published state is a consistent view of
+    one canonical generation plus the mempool's own transactions, and its
+    snapshot stays retained while in use (§3).
+  - **Provisional admissions.** While a newer generation exists, admissions
+    are provisional against the older one. The rebuild that follows
+    re-validates them, and drops any that fail.
+  - **Multi-generation lag is possible.** Several blocks can be published
+    during one fold, or in the explicitly allowed race between the step-4
+    freshness check and a canonical publication immediately after the swap.
+    Every canonical publication notifies the mempool after the gate is
+    released, so a rebuild is always pending while the published state is
+    behind.
+  - **Bounded retries.** If rebuilds can't catch up within the step-5 and
+    step-6 attempt limits, the mempool enters `CATCHING_UP` (step 7) and stops
+    admitting until a rebuild publishes.
+  - **Forging is independent.** Block selection never relies on the mempool
+    overlay. It acquires its own snapshot and re-validates every candidate
+    (block production, below), so a lagging mempool can't put an invalid
+    transaction into a block.
 - **Which events trigger it.** Forward application and rollback both notify
   the mempool after the canonical gate is released and `canonicalGeneration` is
   published. This replaces `onCanonicalRollbackApplied`
@@ -922,8 +937,13 @@ The final PR merges once S5's gates are green.
     a new epoch are each injected during the fold (step 3). This is tested with
     the mempool unchanged, and separately with appends only, while the
     follow-up rebuild worker is **deliberately held**, so a queued follow-up
-    can't mask a stale publication. In every case the candidate is discarded,
-    never published;
+    can't mask a stale publication. A separate case publishes a block **during
+    append reconciliation** in step 4. In every case the candidate is
+    discarded, never published;
+  - **multi-generation lag:** several blocks are published during one fold.
+    The mempool state stays internally consistent, provisional admissions are
+    re-validated by the next rebuild, and a transaction invalid at the tip is
+    never selected into a block;
   - **synchronous fallback and catching up:**
     - Force the discard limit, then check that the fallback acquires its
       snapshot without holding the lane: a lock-order assertion fails the test
