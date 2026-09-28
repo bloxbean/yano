@@ -291,7 +291,8 @@ public final class CanonicalStateGate {
         return Math.max(slotEpoch, boundary);
     }
 
-    private int epochOf(long slot) {
+    /** @return the epoch of {@code slot}, or -1 when no epoch calculator is configured or it fails */
+    int epochOf(long slot) {
         LongToIntFunction fn = slotToEpoch;
         if (fn == null || slot < 0) {
             return -1;

@@ -156,6 +156,27 @@ class CanonicalLedgerViewLookupTest {
     }
 
     @Test
+    void inactiveRegisteredDRepIsPresent() throws Exception {
+        open(true);
+        setTip(10);
+        apply(slot(10), RegDrepCert.builder()
+                .drepCredential(Credential.builder().type(StakeCredType.ADDR_KEYHASH).hash(DREP).build())
+                .coin(BigInteger.valueOf(500)).build());
+        // A boundary marks the DRep inactive (ratification only); it stays registered: Haskell GOV and
+        // DELEG check vsDReps membership, not activity (Gov.hs:472/595, Deleg.hs:224-226).
+        GovernanceStateStore gov = new GovernanceStateStore(stores.db(), stores.cfState());
+        var record = gov.getDRepState(0, DREP).orElseThrow();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            gov.storeDRepState(0, DREP, record.withExpiry(9, false), batch, new ArrayList<>());
+            stores.db().write(options, batch);
+        }
+
+        DRepState state = read(v -> v.drep(CredentialKey.key(DREP))).require("drep");
+        assertThat(state.deposit()).isEqualTo(BigInteger.valueOf(500));
+        assertThat(state.expiryEpoch()).isEqualTo(9);
+    }
+
+    @Test
     void governanceReadsMapProposalsCommitteeAndRoots() throws Exception {
         open(true);
         setTip(10);

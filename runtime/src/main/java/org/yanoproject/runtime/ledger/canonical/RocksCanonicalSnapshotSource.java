@@ -5,6 +5,7 @@ import org.rocksdb.RocksDB;
 import org.rocksdb.Snapshot;
 import org.yanoproject.api.model.ProtocolParamsSnapshot;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
+import org.yanoproject.ledgerstate.EpochBoundaryPreview;
 import org.yanoproject.ledgerstate.EpochBoundaryProcessor;
 import org.yanoproject.ledgerstate.LedgerStateSnapshotReader;
 import org.yanoproject.runtime.utxo.DefaultUtxoStore;
@@ -27,7 +28,9 @@ import java.util.function.Supplier;
  * instance opened by {@code DirectRocksDBChainState}. The only validation-visible state outside it
  * is the {@code EpochParamTracker}'s in-memory parameter maps, which are mutated inside the same
  * write section as the block that changes them; {@link #capture} runs under the gate's read lock, so
- * the parameter copy it takes belongs to the same tip as the RocksDB snapshot.
+ * the parameter copy it takes belongs to the same tip as the RocksDB snapshot. The same holds for the
+ * inputs of the next boundary's dry run ({@link EpochBoundaryPreview.Inputs}: the tracker's finalized
+ * and pending parameters for {@code ledgerEpoch + 1}).
  * ({@code ProtocolParamsSnapshot} is built fresh by the store on every call, with its own
  * cost-model maps, so the snapshot's copy is not shared with the tracker.)</p>
  */
@@ -104,11 +107,16 @@ public final class RocksCanonicalSnapshotSource implements CanonicalSnapshotSour
             ProtocolParamsSnapshot params = tip.ledgerEpoch() >= 0
                     ? protocolParams.apply(tip.ledgerEpoch()).orElse(null)
                     : null;
+            // In-memory inputs of the next boundary's dry run (TickedLedgerView), copied now so they
+            // belong to the same tip as the RocksDB snapshot. O(1).
+            EpochBoundaryPreview.Inputs boundary = ledger != null && tip.ledgerEpoch() >= 0
+                    ? accounts.captureBoundaryPreviewInputs(tip.ledgerEpoch() + 1)
+                    : null;
             ReadOptions ownedReads = reads;
             return new Captured(ledger, utxo, params, () -> {
                 ownedReads.close();
                 db.releaseSnapshot(snapshot);
-            });
+            }, boundary);
         } catch (RuntimeException | Error e) {
             if (reads != null) {
                 reads.close();

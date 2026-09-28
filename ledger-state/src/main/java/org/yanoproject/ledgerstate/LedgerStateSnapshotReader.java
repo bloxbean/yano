@@ -13,9 +13,13 @@ import org.yanoproject.ledgerstate.governance.GovernanceSnapshotReader;
 import org.yanoproject.ledgerstate.governance.GovernanceStateStore.CredentialKey;
 
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -227,6 +231,76 @@ public final class LedgerStateSnapshotReader {
     public Optional<BigInteger> treasury(int epoch) throws RocksDBException {
         byte[] val = get(DefaultAccountStateStore.adaPotKey(epoch));
         return val == null ? Optional.empty() : Optional.of(AccountStateCborCodec.decodeAdaPot(val).treasury());
+    }
+
+    /**
+     * @return the last epoch-boundary marker as {@code {epoch, step}} (steps are
+     *         {@code EpochBoundaryProcessor.STEP_*}); empty when no boundary was recorded
+     */
+    public Optional<int[]> boundaryState() throws RocksDBException {
+        byte[] val = get(DefaultAccountStateStore.META_BOUNDARY_STEP);
+        if (val == null) {
+            return Optional.empty();
+        }
+        if (val.length != 8) {
+            throw new IllegalStateException("Malformed boundary step metadata length: " + val.length);
+        }
+        ByteBuffer buf = ByteBuffer.wrap(val).order(ByteOrder.BIG_ENDIAN);
+        return Optional.of(new int[]{buf.getInt(), buf.getInt()});
+    }
+
+    /**
+     * A stored reward_rest entry (deferred reward credited at an epoch boundary).
+     *
+     * @param spendableEpoch epoch at whose boundary it is credited
+     * @param type           {@code DefaultAccountStateStore.REWARD_REST_*}
+     * @param credType       0 key hash, 1 script hash
+     * @param credHash       credential hash, lowercase hex
+     * @param amount         lovelace
+     */
+    public record RewardRestEntry(int spendableEpoch, byte type, int credType, String credHash, BigInteger amount) {
+    }
+
+    /** @return the reward_rest entries with {@code spendableEpoch <= maxSpendableEpoch}, in key order */
+    public List<RewardRestEntry> rewardRest(int maxSpendableEpoch) {
+        List<RewardRestEntry> result = new ArrayList<>();
+        try (RocksIterator it = db.newIterator(cfState, reads)) {
+            it.seek(new byte[]{DefaultAccountStateStore.PREFIX_REWARD_REST});
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 7 || key[0] != DefaultAccountStateStore.PREFIX_REWARD_REST) {
+                    break;
+                }
+                int spendableEpoch = ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                if (spendableEpoch > maxSpendableEpoch) {
+                    break;
+                }
+                result.add(new RewardRestEntry(spendableEpoch, key[5], key[6] & 0xFF,
+                        HexUtil.encodeHexString(Arrays.copyOfRange(key, 7, key.length)),
+                        AccountStateCborCodec.decodeRewardRest(it.value()).amount()));
+                it.next();
+            }
+        }
+        return result;
+    }
+
+    /** @return the amount of one reward_rest entry; empty when none is stored under that key */
+    public Optional<BigInteger> rewardRestAmount(int spendableEpoch, byte type, int credType, String credHash)
+            throws RocksDBException {
+        byte[] val = get(DefaultAccountStateStore.rewardRestKey(spendableEpoch, type, credType, credHash));
+        return val == null ? Optional.empty() : Optional.of(AccountStateCborCodec.decodeRewardRest(val).amount());
+    }
+
+    RocksDB db() {
+        return db;
+    }
+
+    ColumnFamilyHandle cfState() {
+        return cfState;
+    }
+
+    ReadOptions reads() {
+        return reads;
     }
 
     private byte[] get(byte[] key) throws RocksDBException {

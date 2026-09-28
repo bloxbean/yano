@@ -120,6 +120,24 @@ public class EpochBoundaryProcessor {
     }
 
 
+    /** @return the governance epoch processor, or {@code null} when governance is not processed */
+    public GovernanceEpochProcessor getGovernanceEpochProcessor() {
+        return governanceEpochProcessor;
+    }
+
+    /**
+     * @return true when the reward/refund processor POOLREAP needs is available; without it a
+     *         boundary that retires a pool fails
+     */
+    boolean isPoolReapRefundProcessorEnabled() {
+        return rewardCalculator != null && rewardCalculator.isEnabled();
+    }
+
+    /** @return true once the rewards network configuration is known (boundaries are deferred or fail before) */
+    boolean isNetworkConfigAvailable() {
+        return cfNetworkConfig != null;
+    }
+
     /**
      * Set the governance epoch processor for Conway-era governance state tracking.
      */

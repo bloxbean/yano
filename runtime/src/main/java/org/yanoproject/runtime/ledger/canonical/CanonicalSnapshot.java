@@ -70,6 +70,14 @@ public final class CanonicalSnapshot implements Retainable, AutoCloseable {
         return tip;
     }
 
+    /**
+     * @return the epoch of {@code slot} by the gate's slot-to-epoch function (-1 when none is
+     *         configured); pure, does not read the snapshot
+     */
+    int epochOfSlot(long slot) {
+        return gate.epochOf(slot);
+    }
+
     /** @return the purpose declared by the acquirer of the first reference */
     public SnapshotPurpose purpose() {
         return purpose;

@@ -3,6 +3,7 @@ package org.yanoproject.ledgerstate.governance;
 import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -146,10 +147,98 @@ public final class GovernanceSnapshotReader {
         return val == null ? Optional.empty() : Optional.of(GovernanceCborCodec.decodeLastEnactedAction(val));
     }
 
+    /** @return every DRep state record (including tombstones), in key order */
+    public Map<CredentialKey, DRepStateRecord> drepStates() {
+        Map<CredentialKey, DRepStateRecord> result = new LinkedHashMap<>();
+        try (RocksIterator it = db.newIterator(cfState, reads)) {
+            it.seek(new byte[]{GovernanceStateStore.PREFIX_DREP_STATE});
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 30 || key[0] != GovernanceStateStore.PREFIX_DREP_STATE) {
+                    break;
+                }
+                result.put(new CredentialKey(key[1] & 0xFF, HexUtil.encodeHexString(Arrays.copyOfRange(key, 2, 30))),
+                        GovernanceCborCodec.decodeDRepState(it.value()));
+                it.next();
+            }
+        }
+        return result;
+    }
+
     /** @return the DRep state record, including tombstones of deregistered DReps */
     public Optional<DRepStateRecord> drepState(int credType, String hash) throws RocksDBException {
         byte[] val = db.get(cfState, reads, GovernanceStateStore.drepStateKey(credType, hash));
         return val == null ? Optional.empty() : Optional.of(GovernanceCborCodec.decodeDRepState(val));
+    }
+
+    /**
+     * @return every stored proposal as the boundary processor reads it
+     *         ({@link GovernanceStateStore#getAllActiveProposals()}): key order, decoded records
+     */
+    public Map<GovActionId, GovActionRecord> proposalRecords() {
+        Map<GovActionId, GovActionRecord> result =
+                new LinkedHashMap<>();
+        try (RocksIterator it = db.newIterator(cfState, reads)) {
+            it.seek(new byte[]{GovernanceStateStore.PREFIX_GOV_ACTION});
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 35 || key[0] != GovernanceStateStore.PREFIX_GOV_ACTION) {
+                    break;
+                }
+                String txHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 1, 33));
+                int index = ((key[33] & 0xFF) << 8) | (key[34] & 0xFF);
+                result.put(new GovActionId(txHash, index),
+                        GovernanceCborCodec.decodeGovAction(it.value()));
+                it.next();
+            }
+        }
+        return result;
+    }
+
+    /** @return the proposals ratified at the previous boundary, awaiting enactment, in key order */
+    public List<GovActionId> pendingEnactments() {
+        return pendingIds(GovernanceStateStore.PREFIX_RATIFIED_IN_EPOCH);
+    }
+
+    /** @return the proposals expired at the previous boundary, awaiting removal, in key order */
+    public List<GovActionId> pendingDrops() {
+        return pendingIds(GovernanceStateStore.PREFIX_EXPIRED_IN_EPOCH);
+    }
+
+    private List<GovActionId> pendingIds(byte prefix) {
+        List<GovActionId> result = new ArrayList<>();
+        try (RocksIterator it = db.newIterator(cfState, reads)) {
+            it.seek(new byte[]{prefix});
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 35 || key[0] != prefix) {
+                    break;
+                }
+                String txHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 1, 33));
+                int index = ((key[33] & 0xFF) << 8) | (key[34] & 0xFF);
+                result.add(new GovActionId(txHash, index));
+                it.next();
+            }
+        }
+        return result;
+    }
+
+    /** @return the committee quorum threshold; empty when none is stored */
+    public Optional<GovernanceCborCodec.CommitteeThreshold> committeeThreshold() throws RocksDBException {
+        byte[] val = db.get(cfState, reads, GovernanceStateStore.committeeThresholdKey());
+        return val == null ? Optional.empty() : Optional.of(GovernanceCborCodec.decodeCommitteeThreshold(val));
+    }
+
+    /** @return false after a NoConfidence enactment (Haskell {@code SNothing} committee); true otherwise */
+    public boolean committeePresent() throws RocksDBException {
+        byte[] val = db.get(cfState, reads, GovernanceStateStore.committeePresentKey());
+        return val == null || val.length == 0 || val[0] != 0;
+    }
+
+    /** @return the recorded first Conway epoch (protocol major 9); -1 when not recorded */
+    public int conwayFirstEpoch() throws RocksDBException {
+        byte[] val = db.get(cfState, reads, GovernanceStateStore.eraFirstEpochKey(9));
+        return val != null ? ByteBuffer.wrap(val, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt() : -1;
     }
 
     private static StoredProposal decodeProposal(String txHash, int index, byte[] val) {

@@ -2,7 +2,10 @@ package org.yanoproject.ledgerstate.governance.epoch;
 
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction;
 import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.api.appchain.l1view.GovernanceProposalStatus;
+import org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason;
 import org.yanoproject.api.era.EraProvider;
 import org.yanoproject.ledgerstate.AdaPotTracker;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
@@ -358,19 +361,17 @@ public class GovernanceEpochProcessor {
         // 2. Store treasury withdrawal amounts as reward_rest (for enacted TreasuryWithdrawalsAction).
         //    Created here (Phase 1) so DRep distribution in Phase 2 includes them via spendableRewardRest.
         if (rewardRestStore != null) {
-            Map<String, BigInteger> aggregatedWithdrawals = new java.util.HashMap<>();
+            Map<String, BigInteger> aggregatedWithdrawals =
+                    aggregateTreasuryWithdrawals(pendingEnactmentIds, allProposals);
             List<ArchiveRewardRest> withdrawalArchiveRows = rewardArchive != null ? new ArrayList<>() : null;
-            for (GovActionId id : pendingEnactmentIds) {
-                GovActionRecord enactedProposal = allProposals.get(id);
-                if (enactedProposal != null && enactedProposal.govAction()
-                        instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction twa) {
-                    if (twa.getWithdrawals() != null) {
+            if (withdrawalArchiveRows != null) {
+                for (GovActionId id : pendingEnactmentIds) {
+                    GovActionRecord enactedProposal = allProposals.get(id);
+                    if (enactedProposal != null && enactedProposal.govAction() instanceof TreasuryWithdrawalsAction twa
+                            && twa.getWithdrawals() != null) {
                         for (var entry : twa.getWithdrawals().entrySet()) {
-                            aggregatedWithdrawals.merge(entry.getKey(), entry.getValue(), BigInteger::add);
-                            if (withdrawalArchiveRows != null) {
-                                withdrawalArchiveRows.add(governanceArchiveRow(
-                                        "governance-treasury", id, entry.getKey(), entry.getValue()));
-                            }
+                            withdrawalArchiveRows.add(governanceArchiveRow(
+                                    "governance-treasury", id, entry.getKey(), entry.getValue()));
                         }
                     }
                 }
@@ -412,80 +413,53 @@ public class GovernanceEpochProcessor {
         Set<GovActionId> removedIds = new java.util.LinkedHashSet<>();
         Map<GovActionId, ProposalLifecycleRecord> lifecycleUpdates = new LinkedHashMap<>();
 
-        // 3a. Enacted proposals: refund deposit + remove
-        for (GovActionId id : pendingEnactmentIds) {
-            putLifecycleUpdate(lifecycleUpdates, id, allProposals,
-                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.ENACTED,
-                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.ENACTED);
-            depositRefunds = depositRefunds.add(
-                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
-                            batch, deltaOps));
-        }
-
-        // 3b. Expired proposals (pending drops from previous boundary): refund deposit + remove
-        for (GovActionId id : pendingDropIds) {
-            appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, allProposals.get(id),
-                    newEpoch, "removal", "dropped_expired", "expired_at_prior_boundary");
-            putLifecycleUpdate(lifecycleUpdates, id, allProposals,
-                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.EXPIRED,
-                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.EXPIRED);
-            depositRefunds = depositRefunds.add(
-                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
-                            batch, deltaOps));
-        }
-
-        // 3c. Siblings and descendants of enacted proposals.
-        //     Haskell's RATIFY rule returns rsRemoved which includes ratified + siblings + descendants.
-        //     In Yano's deferred architecture, sibling/descendant discovery happens here in Phase 1
-        //     against the full active proposal set (which includes fresh-epoch proposals that were
-        //     excluded from ratification in Phase 2 via prevGovSnapshots filtering).
+        // 3a-3d. Enacted proposals, expired proposals (pending drops from the previous boundary),
+        //        siblings of enacted proposals with their descendants, and descendants of expired
+        //        proposals, in that order. The order and de-duplication are fixed by
+        //        planProposalRemovals, which the ADR-056 boundary preview shares.
         int siblingDropCount = 0;
-        for (GovActionId id : pendingEnactmentIds) {
-            GovActionRecord proposal = allProposals.get(id);
-            if (proposal == null) continue;
-            Set<GovActionId> siblings = proposalDropService.findSiblings(id, proposal, allProposals);
-            for (GovActionId sibId : siblings) {
-                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, sibId, allProposals.get(sibId),
-                        newEpoch, "removal", "dropped_sibling", "sibling_of_enacted_action");
-                putLifecycleUpdate(lifecycleUpdates, sibId, allProposals,
-                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
-                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.SUPERSEDED);
-                BigInteger refunded = refundAndRemove(sibId, allProposals, removedIds, aggregatedRefunds,
-                        refundArchiveRows, batch, deltaOps);
-                depositRefunds = depositRefunds.add(refunded);
-                if (refunded.signum() > 0) siblingDropCount++;
-                // Descendants of each dropped sibling
-                GovActionRecord sib = allProposals.get(sibId);
-                if (sib != null) {
-                    for (GovActionId descId : proposalDropService.findDescendants(sibId, sib, allProposals)) {
-                        appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
-                                newEpoch, "removal", "dropped_descendant", "descendant_of_dropped_sibling");
-                        putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
-                                org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
-                                org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
-                        refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds,
-                                refundArchiveRows, batch, deltaOps);
-                        depositRefunds = depositRefunds.add(refunded);
-                        if (refunded.signum() > 0) siblingDropCount++;
-                    }
+        for (RemovalStep step : planProposalRemovals(pendingEnactmentIds, pendingDropIds, allProposals,
+                proposalDropService)) {
+            GovActionId id = step.id();
+            switch (step.cause()) {
+                case ENACTED -> {
+                    putLifecycleUpdate(lifecycleUpdates, id, allProposals,
+                            GovernanceProposalStatus.ENACTED,
+                            GovernanceProposalStatusReason.ENACTED);
+                    depositRefunds = depositRefunds.add(
+                            refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
+                                    batch, deltaOps));
                 }
-            }
-        }
-
-        // 3d. Descendants of expired proposals
-        for (GovActionId id : pendingDropIds) {
-            GovActionRecord proposal = allProposals.get(id);
-            if (proposal == null) continue;
-            for (GovActionId descId : proposalDropService.findDescendants(id, proposal, allProposals)) {
-                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
-                        newEpoch, "removal", "dropped_descendant", "descendant_of_expired_action");
-                putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
-                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
-                        org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
-                BigInteger refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds,
-                        refundArchiveRows, batch, deltaOps);
-                depositRefunds = depositRefunds.add(refunded);
-                if (refunded.signum() > 0) siblingDropCount++;
+                case EXPIRED -> {
+                    appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, allProposals.get(id),
+                            newEpoch, "removal", "dropped_expired", "expired_at_prior_boundary");
+                    putLifecycleUpdate(lifecycleUpdates, id, allProposals,
+                            GovernanceProposalStatus.EXPIRED,
+                            GovernanceProposalStatusReason.EXPIRED);
+                    depositRefunds = depositRefunds.add(
+                            refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
+                                    batch, deltaOps));
+                }
+                case SIBLING_OF_ENACTED, DESCENDANT_OF_SIBLING, DESCENDANT_OF_EXPIRED -> {
+                    String status = step.cause() == RemovalCause.SIBLING_OF_ENACTED
+                            ? "dropped_sibling" : "dropped_descendant";
+                    String reason = switch (step.cause()) {
+                        case SIBLING_OF_ENACTED -> "sibling_of_enacted_action";
+                        case DESCENDANT_OF_SIBLING -> "descendant_of_dropped_sibling";
+                        default -> "descendant_of_expired_action";
+                    };
+                    appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, allProposals.get(id),
+                            newEpoch, "removal", status, reason);
+                    putLifecycleUpdate(lifecycleUpdates, id, allProposals,
+                            GovernanceProposalStatus.DROPPED,
+                            step.cause() == RemovalCause.SIBLING_OF_ENACTED
+                                    ? GovernanceProposalStatusReason.SUPERSEDED
+                                    : GovernanceProposalStatusReason.INVALIDATED);
+                    BigInteger refunded = refundAndRemove(id, allProposals, removedIds, aggregatedRefunds,
+                            refundArchiveRows, batch, deltaOps);
+                    depositRefunds = depositRefunds.add(refunded);
+                    if (refunded.signum() > 0) siblingDropCount++;
+                }
             }
         }
 
@@ -537,8 +511,8 @@ public class GovernanceEpochProcessor {
     private static void putLifecycleUpdate(Map<GovActionId, ProposalLifecycleRecord> updates,
                                            GovActionId id,
                                            Map<GovActionId, GovActionRecord> proposals,
-                                           org.yanoproject.api.appchain.l1view.GovernanceProposalStatus status,
-                                           org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason reason) {
+                                           GovernanceProposalStatus status,
+                                           GovernanceProposalStatusReason reason) {
         GovActionRecord proposal = proposals.get(id);
         if (proposal != null) updates.putIfAbsent(id, lifecycle(proposal, status, reason));
     }
@@ -600,12 +574,10 @@ public class GovernanceEpochProcessor {
                                        Set<GovActionId> removedIds, Map<String, BigInteger> aggregatedRefunds,
                                        List<ArchiveRewardRest> refundArchiveRows,
                                        WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
-        GovActionRecord proposal = allProposals.get(id);
+        GovActionRecord proposal = claimForRemoval(id, allProposals, removedIds, aggregatedRefunds);
         if (proposal == null) return BigInteger.ZERO;
-        if (!removedIds.add(id)) return BigInteger.ZERO;
         BigInteger deposit = proposal.deposit();
         if (deposit.signum() > 0) {
-            aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
             if (refundArchiveRows != null) {
                 refundArchiveRows.add(governanceArchiveRow(
                         "governance-refund", id, proposal.returnAddress(), deposit));
@@ -615,6 +587,111 @@ public class GovernanceEpochProcessor {
         governanceStore.removeVotesForProposal(id.getTransactionId(),
                 id.getGov_action_index(), batch, deltaOps);
         return deposit;
+    }
+
+    // ===== Phase 1 plan (shared with the ADR-056 boundary preview) =====
+
+    /** Why Phase 1 removes a proposal. */
+    public enum RemovalCause {
+        /** A pending enactment (ratified at the previous boundary). */
+        ENACTED,
+        /** A pending drop (expired at the previous boundary). */
+        EXPIRED,
+        /** Same purpose and parent as an enacted proposal. */
+        SIBLING_OF_ENACTED,
+        /** In the subtree of a dropped sibling. */
+        DESCENDANT_OF_SIBLING,
+        /** In the subtree of an expired proposal. */
+        DESCENDANT_OF_EXPIRED
+    }
+
+    /** One removal step of Phase 1, in execution order. The same id may appear more than once. */
+    public record RemovalStep(GovActionId id, RemovalCause cause) {
+    }
+
+    /**
+     * The proposal removals of Phase 1 in the exact order the real path executes them: every pending
+     * enactment, every pending drop, then for each pending enactment its siblings (each followed by
+     * its descendants), then the descendants of each pending drop. Ids may repeat and may be missing
+     * from {@code allProposals}; {@link #claimForRemoval} de-duplicates and skips them. Pure: it
+     * only reads its arguments ({@code allProposals} is not modified).
+     */
+    public static List<RemovalStep> planProposalRemovals(List<GovActionId> pendingEnactmentIds,
+                                                         List<GovActionId> pendingDropIds,
+                                                         Map<GovActionId, GovActionRecord> allProposals,
+                                                         ProposalDropService dropService) {
+        List<RemovalStep> steps = new ArrayList<>();
+        for (GovActionId id : pendingEnactmentIds) {
+            steps.add(new RemovalStep(id, RemovalCause.ENACTED));
+        }
+        for (GovActionId id : pendingDropIds) {
+            steps.add(new RemovalStep(id, RemovalCause.EXPIRED));
+        }
+        for (GovActionId id : pendingEnactmentIds) {
+            GovActionRecord proposal = allProposals.get(id);
+            if (proposal == null) continue;
+            for (GovActionId sibId : dropService.findSiblings(id, proposal, allProposals)) {
+                steps.add(new RemovalStep(sibId, RemovalCause.SIBLING_OF_ENACTED));
+                GovActionRecord sib = allProposals.get(sibId);
+                if (sib != null) {
+                    for (GovActionId descId : dropService.findDescendants(sibId, sib, allProposals)) {
+                        steps.add(new RemovalStep(descId, RemovalCause.DESCENDANT_OF_SIBLING));
+                    }
+                }
+            }
+        }
+        for (GovActionId id : pendingDropIds) {
+            GovActionRecord proposal = allProposals.get(id);
+            if (proposal == null) continue;
+            for (GovActionId descId : dropService.findDescendants(id, proposal, allProposals)) {
+                steps.add(new RemovalStep(descId, RemovalCause.DESCENDANT_OF_EXPIRED));
+            }
+        }
+        return steps;
+    }
+
+    /**
+     * Claims a proposal for removal: returns it when it exists and was not claimed before, and adds
+     * its positive deposit to {@code aggregatedRefunds} under its return address. Returns
+     * {@code null} (and changes nothing) for a missing or already claimed id, so a stale pending id
+     * never blocks a later valid occurrence.
+     */
+    public static GovActionRecord claimForRemoval(GovActionId id, Map<GovActionId, GovActionRecord> allProposals,
+                                                  Set<GovActionId> removedIds,
+                                                  Map<String, BigInteger> aggregatedRefunds) {
+        GovActionRecord proposal = allProposals.get(id);
+        if (proposal == null) return null;
+        if (!removedIds.add(id)) return null;
+        BigInteger deposit = proposal.deposit();
+        if (deposit.signum() > 0) {
+            aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
+        }
+        return proposal;
+    }
+
+    /**
+     * Sums the withdrawals of the enacted TreasuryWithdrawals actions per reward account, in
+     * enactment order (the iteration order of the returned {@link java.util.HashMap} is therefore the
+     * same for the real path and the preview).
+     */
+    public static Map<String, BigInteger> aggregateTreasuryWithdrawals(List<GovActionId> pendingEnactmentIds,
+                                                                       Map<GovActionId, GovActionRecord> allProposals) {
+        Map<String, BigInteger> aggregated = new HashMap<>();
+        for (GovActionId id : pendingEnactmentIds) {
+            GovActionRecord enactedProposal = allProposals.get(id);
+            if (enactedProposal != null && enactedProposal.govAction() instanceof TreasuryWithdrawalsAction twa
+                    && twa.getWithdrawals() != null) {
+                for (var entry : twa.getWithdrawals().entrySet()) {
+                    aggregated.merge(entry.getKey(), entry.getValue(), BigInteger::add);
+                }
+            }
+        }
+        return aggregated;
+    }
+
+    /** @return the era provider used for the Conway genesis bootstrap check, or {@code null} */
+    public EraProvider eraProvider() {
+        return eraProvider;
     }
 
     static String governanceRewardSourceId(String prefix, GovActionId id) {
@@ -766,19 +843,19 @@ public class GovernanceEpochProcessor {
         lifecycleSnapshot.putAll(enactment.lifecycleUpdates());
         for (var entry : activeProposals.entrySet()) {
             lifecycleSnapshot.put(entry.getKey(), lifecycle(entry.getValue(),
-                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.ACTIVE,
-                    org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.NONE));
+                    GovernanceProposalStatus.ACTIVE,
+                    GovernanceProposalStatusReason.NONE));
         }
         for (RatificationResult result : results) {
             var status = switch (result.status()) {
-                case ACTIVE -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.ACTIVE;
-                case RATIFIED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.RATIFIED;
-                case EXPIRED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.EXPIRED;
+                case ACTIVE -> GovernanceProposalStatus.ACTIVE;
+                case RATIFIED -> GovernanceProposalStatus.RATIFIED;
+                case EXPIRED -> GovernanceProposalStatus.EXPIRED;
             };
             var reason = switch (result.status()) {
-                case ACTIVE -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.NONE;
-                case RATIFIED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.RATIFIED;
-                case EXPIRED -> org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.EXPIRED;
+                case ACTIVE -> GovernanceProposalStatusReason.NONE;
+                case RATIFIED -> GovernanceProposalStatusReason.RATIFIED;
+                case EXPIRED -> GovernanceProposalStatusReason.EXPIRED;
             };
             lifecycleSnapshot.put(result.govActionId(), lifecycle(result.proposal(), status, reason));
         }
@@ -842,8 +919,8 @@ public class GovernanceEpochProcessor {
 
     private static ProposalLifecycleRecord lifecycle(
             GovActionRecord proposal,
-            org.yanoproject.api.appchain.l1view.GovernanceProposalStatus status,
-            org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason reason) {
+            GovernanceProposalStatus status,
+            GovernanceProposalStatusReason reason) {
         return new ProposalLifecycleRecord(actionType(proposal.actionType()), status, reason,
                 proposal.proposedInEpoch(), proposal.expiresAfterEpoch());
     }

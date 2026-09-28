@@ -174,7 +174,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final int INITIAL_MARK_SNAPSHOT_KEY = -1;
     // Epoch boundary completion tracking — stores the last completed step for crash recovery.
     // Format: 8 bytes (epoch as int, step as int). Steps: 0=started, 1=rewards, 2=snapshot, 3=poolreap, 4=governance, 5=complete
-    private static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
+    static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_BOUNDARY_COORDINATES =
             "meta.boundary.coordinates.v1".getBytes(StandardCharsets.UTF_8);
     private static final byte[] MARKER_PV10_REVERSE_REBUILD = "meta.pv10_drep_reverse_rebuild".getBytes(StandardCharsets.UTF_8);
@@ -535,6 +535,37 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             throw new IllegalStateException("snapshot was taken on a different RocksDB instance");
         }
         return new LedgerStateSnapshotReader(db, cfState, reads, governanceBlockProcessor != null);
+    }
+
+    /**
+     * Captures the in-memory inputs of an {@link EpochBoundaryPreview} of the boundary into
+     * {@code newEpoch}: the parameter tracker's relevant state, the era answers for the new epoch and
+     * the boundary configuration. Cheap (a few era-metadata reads). Call it while no block is being applied (under the canonical gate's read lock), together
+     * with the RocksDB snapshot the preview will read.
+     *
+     * <p>Assumes the wiring of {@code LedgerStateSubsystem}: the tracker set here is the one the
+     * boundary processor finalizes and the enactment processor updates.</p>
+     */
+    public EpochBoundaryPreview.Inputs captureBoundaryPreviewInputs(int newEpoch) {
+        EpochBoundaryProcessor processor = epochBoundaryProcessor;
+        if (!enabled) {
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch, "account state is disabled");
+        }
+        if (processor == null) {
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch, "epoch boundary processing is not configured");
+        }
+        if (!processor.isNetworkConfigAvailable()) {
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch,
+                    "epoch boundary processing is not ready (no rewards network configuration)");
+        }
+        try {
+            return EpochBoundaryPreview.Inputs.capture(newEpoch, paramTracker, epochParamProvider,
+                    processor.getGovernanceEpochProcessor(), processor.isPoolReapRefundProcessorEnabled());
+        } catch (RuntimeException e) {
+            // Never fail the canonical snapshot itself; only its dry run becomes unavailable.
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch,
+                    "the boundary dry-run inputs could not be captured: " + e);
+        }
     }
 
     /**
@@ -1733,13 +1764,29 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     @Override
     public Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        return protocolParamsSnapshot(paramTracker, epochParamProvider, epoch);
+    }
+
+    /**
+     * Builds the effective {@link ProtocolParamsSnapshot} of {@code epoch} from a parameter tracker
+     * (when enabled) or the static provider. {@link #getProtocolParameters(int)} calls it with the
+     * live tracker; the ADR-056 boundary preview calls it with
+     * {@link EpochParamTracker#previewView}, so both build the snapshot with the same code.
+     *
+     * @param paramTracker       tracker, or {@code null}
+     * @param epochParamProvider static provider used when the tracker is absent or disabled
+     */
+    public static Optional<ProtocolParamsSnapshot> protocolParamsSnapshot(EpochParamTracker paramTracker,
+                                                                         EpochParamProvider epochParamProvider,
+                                                                         int epoch) {
         if (epoch < 0) return Optional.empty();
         if (paramTracker != null && paramTracker.isEnabled()
                 && paramTracker.getResolvedParams(epoch) == null) {
             return Optional.empty();
         }
 
-        EpochParamProvider provider = effectiveEpochParamProvider();
+        EpochParamProvider provider = paramTracker != null && paramTracker.isEnabled()
+                ? paramTracker : epochParamProvider;
         var trackedParams = paramTracker != null && paramTracker.isEnabled()
                 ? paramTracker.getResolvedParams(epoch)
                 : null;
@@ -1818,10 +1865,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 drepActivity,
                 provider.getMinFeeRefScriptCostPerByte(epoch)
         ));
-    }
-
-    private EpochParamProvider effectiveEpochParamProvider() {
-        return paramTracker != null && paramTracker.isEnabled() ? paramTracker : epochParamProvider;
     }
 
     private static BigDecimal ratio(UnitInterval interval) {
@@ -2082,17 +2125,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                                    BigInteger amount, int earnedEpoch, long slot,
                                    org.rocksdb.WriteBatch batch,
                                    java.util.List<DeltaOp> deltaOps) throws RocksDBException {
-        if (rewardAccountHex == null || rewardAccountHex.length() < 58 || amount.signum() <= 0) {
+        RewardRestCredential credential = rewardRestCredential(rewardAccountHex, amount);
+        if (credential == null) {
             return false;
         }
-        int headerByte;
-        try {
-            headerByte = Integer.parseInt(rewardAccountHex.substring(0, 2), 16);
-        } catch (NumberFormatException e) {
-            return false;
-        }
-        int credType = ((headerByte & 0x10) != 0) ? 1 : 0;
-        String credHash = rewardAccountHex.substring(2, 58);
+        int credType = credential.credType();
+        String credHash = credential.credHash();
 
         // Check if the stake credential is registered. Per Haskell spec,
         // deposits for deregistered addresses go to treasury (return false).
@@ -2119,6 +2157,36 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         batch.put(cfState, key, val);
         deltaOps.add(new DeltaOp(OP_PUT, key, prev));
         return true;
+    }
+
+    /**
+     * The stake credential {@link #storeRewardRest} files a reward_rest entry under: the header's
+     * credential type and the 28-byte hash that follows it (as written, not re-cased).
+     *
+     * @return the credential, or {@code null} when the account is malformed or the amount is not
+     *         positive ({@link #storeRewardRest} then stores nothing and returns false)
+     */
+    public static RewardRestCredential rewardRestCredential(String rewardAccountHex, BigInteger amount) {
+        if (rewardAccountHex == null || rewardAccountHex.length() < 58 || amount.signum() <= 0) {
+            return null;
+        }
+        int headerByte;
+        try {
+            headerByte = Integer.parseInt(rewardAccountHex.substring(0, 2), 16);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        int credType = ((headerByte & 0x10) != 0) ? 1 : 0;
+        return new RewardRestCredential(credType, rewardAccountHex.substring(2, 58));
+    }
+
+    /**
+     * Stake credential of a reward_rest entry.
+     *
+     * @param credType 0 key hash, 1 script hash
+     * @param credHash credential hash hex, as taken from the reward account
+     */
+    public record RewardRestCredential(int credType, String credHash) {
     }
 
     /**

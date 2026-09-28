@@ -1,6 +1,7 @@
 package org.yanoproject.runtime.ledger.canonical;
 
 import org.yanoproject.api.model.ProtocolParamsSnapshot;
+import org.yanoproject.ledgerstate.EpochBoundaryPreview;
 import org.yanoproject.ledgerstate.LedgerStateSnapshotReader;
 import org.yanoproject.runtime.utxo.UtxoSnapshotReader;
 
@@ -51,11 +52,22 @@ public interface CanonicalSnapshotSource {
      *                       cost models), taken under the gate's read lock; {@code null} when they are
      *                       not available
      * @param release        frees the RocksDB snapshot and read options; called exactly once
+     * @param boundaryInputs in-memory inputs for a dry run of the boundary into
+     *                       {@code ledgerEpoch + 1} ({@link TickedLedgerView}), captured with the
+     *                       RocksDB snapshot; {@code null} when unavailable (account state disabled or
+     *                       ledger epoch unknown)
      */
     record Captured(LedgerStateSnapshotReader ledger, UtxoSnapshotReader utxo,
-                    ProtocolParamsSnapshot protocolParams, Runnable release) {
+                    ProtocolParamsSnapshot protocolParams, Runnable release,
+                    EpochBoundaryPreview.Inputs boundaryInputs) {
         public Captured {
             Objects.requireNonNull(release, "release");
+        }
+
+        /** A capture without boundary-preview inputs. */
+        public Captured(LedgerStateSnapshotReader ledger, UtxoSnapshotReader utxo,
+                        ProtocolParamsSnapshot protocolParams, Runnable release) {
+            this(ledger, utxo, protocolParams, release, null);
         }
     }
 }

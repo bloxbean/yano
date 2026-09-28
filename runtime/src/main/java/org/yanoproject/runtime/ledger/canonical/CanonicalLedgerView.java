@@ -90,7 +90,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *       canonical pending future VRF cannot drop the old one the way Haskell does; that quirk only
  *       matters from PV11.</li>
  *   <li><b>DReps.</b> Registration and deposit come from the certificate record; the expiry from the
- *       governance DRep record. Yano defers Haskell's per-transaction dormant flush to epoch
+ *       governance DRep record, whether or not that record is marked active (activity only matters to
+ *       ratification; a registered but inactive DRep can still vote and be delegated to). Yano defers Haskell's per-transaction dormant flush to epoch
  *       boundaries, so after a proposal-carrying transaction {@code (expiry, dormantEpochs)} can
  *       differ from Haskell's pair mid-epoch; their sum (the effective expiry) agrees.</li>
  *   <li><b>Committee.</b> The governance committee record (members, and hot-key placeholders with
@@ -227,23 +228,31 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (ledger == null) {
                 return Lookup.unavailable("account state is disabled");
             }
-            String hash = poolId.hashHex();
-            Optional<PoolRegistrationData> live = ledger.poolRegistration(hash);
-            if (live.isEmpty()) {
-                return Lookup.absent();
-            }
-            Lookup<String> vrf = activeVrf(ledger, hash, live.get());
-            if (!(vrf instanceof Lookup.Present<String> present)) {
-                return Lookup.unavailable(((Lookup.Unavailable<String>) vrf).reason());
-            }
-            Long retiring = ledger.poolRetirementEpoch(hash).orElse(null);
-            return Lookup.present(new PoolState(poolId, live.get().deposit(), present.value(), retiring, null, null));
+            return readPool(ledger, poolId, snapshot.tip().ledgerEpoch());
         });
     }
 
-    /** The VRF key hash of the parameters active at the ledger epoch (see the class doc). */
-    private Lookup<String> activeVrf(LedgerStateSnapshotReader ledger, String poolHash, PoolRegistrationData live) {
-        int epoch = snapshot.tip().ledgerEpoch();
+    /**
+     * Reads a pool as it is at ledger epoch {@code epoch} (see the class doc for the active VRF key
+     * hash). Shared with {@link TickedLedgerView}, which reads at the ticked epoch.
+     */
+    static Lookup<PoolState> readPool(LedgerStateSnapshotReader ledger, PoolId poolId, int epoch) throws Exception {
+        String hash = poolId.hashHex();
+        Optional<PoolRegistrationData> live = ledger.poolRegistration(hash);
+        if (live.isEmpty()) {
+            return Lookup.absent();
+        }
+        Lookup<String> vrf = activeVrf(ledger, hash, live.get(), epoch);
+        if (!(vrf instanceof Lookup.Present<String> present)) {
+            return Lookup.unavailable(((Lookup.Unavailable<String>) vrf).reason());
+        }
+        Long retiring = ledger.poolRetirementEpoch(hash).orElse(null);
+        return Lookup.present(new PoolState(poolId, live.get().deposit(), present.value(), retiring, null, null));
+    }
+
+    /** The VRF key hash of the parameters active at ledger epoch {@code epoch} (see the class doc). */
+    private static Lookup<String> activeVrf(LedgerStateSnapshotReader ledger, String poolHash,
+                                            PoolRegistrationData live, int epoch) {
         if (epoch < 0) {
             return Lookup.unavailable("ledger epoch is unknown; cannot tell active from future pool parameters");
         }
@@ -272,27 +281,39 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
         if (closed.get()) {
             return Lookup.unavailable("pool by VRF key hash: canonical ledger view closed");
         }
-        Lookup<Map<String, PoolId>> index = snapshot.memoized("pool-vrf-index", "pool VRF index", state -> {
-            LedgerStateSnapshotReader ledger = state.ledger();
-            if (ledger == null) {
-                return Lookup.unavailable("account state is disabled");
-            }
-            Map<String, PoolId> byVrf = new HashMap<>();
-            for (Map.Entry<String, PoolRegistrationData> pool : ledger.pools().entrySet()) {
-                PoolId id = new PoolId(pool.getKey());
-                Lookup<String> active = activeVrf(ledger, pool.getKey(), pool.getValue());
-                if (!(active instanceof Lookup.Present<String> present)) {
-                    return Lookup.unavailable(((Lookup.Unavailable<String>) active).reason());
-                }
-                byVrf.put(HexStrings.normalize(present.value(), "vrf key hash"), id);
-                String liveVrf = pool.getValue().vrfKeyHash();
-                if (liveVrf != null && !liveVrf.isBlank()) {
-                    byVrf.put(HexStrings.normalize(liveVrf, "vrf key hash"), id);
-                }
-            }
-            return Lookup.present(Map.copyOf(byVrf));
-        });
+        int epoch = snapshot.tip().ledgerEpoch();
+        Lookup<Map<String, PoolId>> index = snapshot.memoized("pool-vrf-index", "pool VRF index",
+                state -> vrfIndex(state, epoch, Set.of()));
         return index.map(byVrf -> byVrf.get(key));
+    }
+
+    /**
+     * Builds the VRF index at ledger epoch {@code epoch} over every registered pool except
+     * {@code excluded} (pool ids, lowercase hex). Shared with {@link TickedLedgerView}.
+     */
+    static Lookup<Map<String, PoolId>> vrfIndex(CanonicalSnapshotSource.Captured state, int epoch,
+                                                Set<String> excluded) {
+        LedgerStateSnapshotReader ledger = state.ledger();
+        if (ledger == null) {
+            return Lookup.unavailable("account state is disabled");
+        }
+        Map<String, PoolId> byVrf = new HashMap<>();
+        for (Map.Entry<String, PoolRegistrationData> pool : ledger.pools().entrySet()) {
+            if (excluded.contains(pool.getKey())) {
+                continue;
+            }
+            PoolId id = new PoolId(pool.getKey());
+            Lookup<String> active = activeVrf(ledger, pool.getKey(), pool.getValue(), epoch);
+            if (!(active instanceof Lookup.Present<String> present)) {
+                return Lookup.unavailable(((Lookup.Unavailable<String>) active).reason());
+            }
+            byVrf.put(HexStrings.normalize(present.value(), "vrf key hash"), id);
+            String liveVrf = pool.getValue().vrfKeyHash();
+            if (liveVrf != null && !liveVrf.isBlank()) {
+                byVrf.put(HexStrings.normalize(liveVrf, "vrf key hash"), id);
+            }
+        }
+        return Lookup.present(Map.copyOf(byVrf));
     }
 
     // ------------------------------------------------------------------ DReps
@@ -311,15 +332,42 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (deposit.isEmpty()) {
                 return Lookup.absent();
             }
+            // Registration is the certificate record; the governance record's `active` flag is a
+            // ratification concern (Haskell GOV and DELEG check only vsDReps membership,
+            // Gov.hs:472/595, Deleg.hs:224-226), so an inactive registered DRep is Present.
             Optional<DRepStateRecord> record = governance.get().drepState(type, credential.hashHex());
-            if (record.isEmpty() || !record.get().active()) {
-                return Lookup.unavailable("registered DRep " + credential + " has no active governance record");
+            if (record.isEmpty()) {
+                return Lookup.unavailable("registered DRep " + credential + " has no governance record");
             }
             return Lookup.present(new DRepState(credential, deposit.get(), record.get().expiryEpoch()));
         });
     }
 
     // ------------------------------------------------------------------ committee
+
+    /**
+     * The governance committee records a committee read uses: the stored ones in the canonical view,
+     * the post-enactment ones in {@link TickedLedgerView}.
+     */
+    interface CommitteeRecords {
+        Optional<CommitteeMemberRecord> member(int credType, String coldHash) throws Exception;
+
+        Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> all() throws Exception;
+    }
+
+    static CommitteeRecords storedCommittee(GovernanceSnapshotReader governance) {
+        return new CommitteeRecords() {
+            @Override
+            public Optional<CommitteeMemberRecord> member(int credType, String coldHash) throws Exception {
+                return governance.committeeMember(credType, coldHash);
+            }
+
+            @Override
+            public Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> all() {
+                return governance.committeeMembers();
+            }
+        };
+    }
 
     @Override
     public Lookup<CommitteeMemberState> committeeMemberByCold(CredentialKey cold) {
@@ -330,22 +378,28 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (ledger == null || governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            int type = cold.type().tag();
-            Optional<CommitteeMemberRecord> record = governance.get().committeeMember(type, cold.hashHex());
-            if (record.isPresent()) {
-                return Lookup.present(toMember(cold, record.get()));
-            }
-            if (ledger.committeeResigned(type, cold.hashHex())) {
-                return Lookup.present(new CommitteeMemberState(cold, null, true, null));
-            }
-            Optional<LedgerStateSnapshotReader.CommitteeHotAuthorization> hot =
-                    ledger.committeeHotKey(type, cold.hashHex());
-            if (hot.isPresent()) {
-                CredentialKey hotKey = credential(hot.get().hotCredType(), hot.get().hotHash());
-                return Lookup.present(new CommitteeMemberState(cold, hotKey, false, null));
-            }
-            return Lookup.absent();
+            return committeeMemberByCold(ledger, storedCommittee(governance.get()), cold);
         });
+    }
+
+    static Lookup<CommitteeMemberState> committeeMemberByCold(LedgerStateSnapshotReader ledger,
+                                                              CommitteeRecords records,
+                                                              CredentialKey cold) throws Exception {
+        int type = cold.type().tag();
+        Optional<CommitteeMemberRecord> record = records.member(type, cold.hashHex());
+        if (record.isPresent()) {
+            return Lookup.present(toMember(cold, record.get()));
+        }
+        if (ledger.committeeResigned(type, cold.hashHex())) {
+            return Lookup.present(new CommitteeMemberState(cold, null, true, null));
+        }
+        Optional<LedgerStateSnapshotReader.CommitteeHotAuthorization> hot =
+                ledger.committeeHotKey(type, cold.hashHex());
+        if (hot.isPresent()) {
+            CredentialKey hotKey = credential(hot.get().hotCredType(), hot.get().hotHash());
+            return Lookup.present(new CommitteeMemberState(cold, hotKey, false, null));
+        }
+        return Lookup.absent();
     }
 
     @Override
@@ -356,17 +410,21 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            List<CommitteeMemberState> members = new ArrayList<>();
-            for (Map.Entry<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> entry
-                    : governance.get().committeeMembers().entrySet()) {
-                CommitteeMemberState member = toMember(
-                        credential(entry.getKey().credType(), entry.getKey().hash()), entry.getValue());
-                if (!member.resigned() && hot.equals(member.hot())) {
-                    members.add(member);
-                }
-            }
-            return Lookup.present(List.copyOf(members));
+            return committeeMembersByHot(storedCommittee(governance.get()), hot);
         });
+    }
+
+    static Lookup<List<CommitteeMemberState>> committeeMembersByHot(CommitteeRecords records, CredentialKey hot)
+            throws Exception {
+        List<CommitteeMemberState> members = new ArrayList<>();
+        for (Map.Entry<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> entry : records.all().entrySet()) {
+            CommitteeMemberState member = toMember(
+                    credential(entry.getKey().credType(), entry.getKey().hash()), entry.getValue());
+            if (!member.resigned() && hot.equals(member.hot())) {
+                members.add(member);
+            }
+        }
+        return Lookup.present(List.copyOf(members));
     }
 
     private static CommitteeMemberState toMember(CredentialKey cold, CommitteeMemberRecord record) {
@@ -392,24 +450,28 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (ledger == null || governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            Map<String, CommitteeMemberState> byCold = new TreeMap<>();
-            for (Map.Entry<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> entry
-                    : governance.get().committeeMembers().entrySet()) {
-                CredentialKey cold = credential(entry.getKey().credType(), entry.getKey().hash());
-                byCold.put(sortKey(cold), toMember(cold, entry.getValue()));
-            }
-            for (GovernanceStateStore.CredentialKey resigned : ledger.committeeResignations()) {
-                CredentialKey cold = credential(resigned.credType(), resigned.hash());
-                byCold.putIfAbsent(sortKey(cold), new CommitteeMemberState(cold, null, true, null));
-            }
-            for (Map.Entry<GovernanceStateStore.CredentialKey, LedgerStateSnapshotReader.CommitteeHotAuthorization>
-                    entry : ledger.committeeHotKeys().entrySet()) {
-                CredentialKey cold = credential(entry.getKey().credType(), entry.getKey().hash());
-                CredentialKey hot = credential(entry.getValue().hotCredType(), entry.getValue().hotHash());
-                byCold.putIfAbsent(sortKey(cold), new CommitteeMemberState(cold, hot, false, null));
-            }
-            return Lookup.present(List.copyOf(byCold.values()));
+            return committeeMembers(ledger, storedCommittee(governance.get()));
         });
+    }
+
+    static Lookup<List<CommitteeMemberState>> committeeMembers(LedgerStateSnapshotReader ledger,
+                                                               CommitteeRecords records) throws Exception {
+        Map<String, CommitteeMemberState> byCold = new TreeMap<>();
+        for (Map.Entry<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> entry : records.all().entrySet()) {
+            CredentialKey cold = credential(entry.getKey().credType(), entry.getKey().hash());
+            byCold.put(sortKey(cold), toMember(cold, entry.getValue()));
+        }
+        for (GovernanceStateStore.CredentialKey resigned : ledger.committeeResignations()) {
+            CredentialKey cold = credential(resigned.credType(), resigned.hash());
+            byCold.putIfAbsent(sortKey(cold), new CommitteeMemberState(cold, null, true, null));
+        }
+        for (Map.Entry<GovernanceStateStore.CredentialKey, LedgerStateSnapshotReader.CommitteeHotAuthorization>
+                entry : ledger.committeeHotKeys().entrySet()) {
+            CredentialKey cold = credential(entry.getKey().credType(), entry.getKey().hash());
+            CredentialKey hot = credential(entry.getValue().hotCredType(), entry.getValue().hotHash());
+            byCold.putIfAbsent(sortKey(cold), new CommitteeMemberState(cold, hot, false, null));
+        }
+        return Lookup.present(List.copyOf(byCold.values()));
     }
 
     /** Credential type, then hash: the order of {@link #committeeMembers()} in every view. */
@@ -424,22 +486,27 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            Set<CredentialKey> candidates = new HashSet<>();
-            for (StoredProposal proposal : governance.get().proposals()) {
-                if (proposal.record().actionType() != GovActionType.UPDATE_COMMITTEE) {
-                    continue;
-                }
-                GovAction action = decodeAction(proposal);
-                if (!(action instanceof UpdateCommittee update)) {
-                    return Lookup.unavailable("UpdateCommittee proposal " + proposal.txHash() + "#"
-                            + proposal.index() + " has no stored payload");
-                }
-                if (update.getNewMembersAndTerms() != null) {
-                    update.getNewMembersAndTerms().keySet().forEach(c -> candidates.add(CredentialKey.of(c)));
-                }
-            }
-            return Lookup.present(Set.copyOf(candidates));
+            return committeeCandidates(governance.get().proposals());
         });
+    }
+
+    /** Cold credentials added by the UpdateCommittee proposals among {@code proposals}. */
+    static Lookup<Set<CredentialKey>> committeeCandidates(List<StoredProposal> proposals) throws Exception {
+        Set<CredentialKey> candidates = new HashSet<>();
+        for (StoredProposal proposal : proposals) {
+            if (proposal.record().actionType() != GovActionType.UPDATE_COMMITTEE) {
+                continue;
+            }
+            GovAction action = decodeAction(proposal);
+            if (!(action instanceof UpdateCommittee update)) {
+                return Lookup.unavailable("UpdateCommittee proposal " + proposal.txHash() + "#"
+                        + proposal.index() + " has no stored payload");
+            }
+            if (update.getNewMembersAndTerms() != null) {
+                update.getNewMembersAndTerms().keySet().forEach(c -> candidates.add(CredentialKey.of(c)));
+            }
+        }
+        return Lookup.present(Set.copyOf(candidates));
     }
 
     // ------------------------------------------------------------------ governance
@@ -468,19 +535,24 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            List<StoredProposal> stored = new ArrayList<>(governance.get().proposals());
-            stored.sort(Comparator.comparingLong((StoredProposal p) -> p.record().proposalSlot())
-                    .thenComparing(StoredProposal::txHash)
-                    .thenComparingInt(StoredProposal::index));
-            List<ProposalState> proposals = new ArrayList<>(stored.size());
-            for (StoredProposal proposal : stored) {
-                proposals.add(toProposalState(proposal));
-            }
-            return Lookup.present(List.copyOf(proposals));
+            return activeProposals(governance.get().proposals());
         });
     }
 
-    private static ProposalState toProposalState(StoredProposal stored) throws Exception {
+    /** Orders {@code stored} as {@link #activeProposals()} does and maps them to the view model. */
+    static Lookup<List<ProposalState>> activeProposals(List<StoredProposal> stored) throws Exception {
+        List<StoredProposal> sorted = new ArrayList<>(stored);
+        sorted.sort(Comparator.comparingLong((StoredProposal p) -> p.record().proposalSlot())
+                .thenComparing(StoredProposal::txHash)
+                .thenComparingInt(StoredProposal::index));
+        List<ProposalState> proposals = new ArrayList<>(sorted.size());
+        for (StoredProposal proposal : sorted) {
+            proposals.add(toProposalState(proposal));
+        }
+        return Lookup.present(List.copyOf(proposals));
+    }
+
+    static ProposalState toProposalState(StoredProposal stored) throws Exception {
         GovActionRecord record = stored.record();
         GovActionId prev = record.prevActionTxHash() != null
                 ? new GovActionId(record.prevActionTxHash(), record.prevActionIndex())
@@ -508,7 +580,7 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
         });
     }
 
-    private static GovActionId root(GovernanceSnapshotReader gov, GovActionType purposeType) throws Exception {
+    static GovActionId root(GovernanceSnapshotReader gov, GovActionType purposeType) throws Exception {
         Optional<LastEnactedAction> last = gov.lastEnacted(purposeType);
         return last.map(l -> new GovActionId(l.txHash(), l.govActionIndex())).orElse(null);
     }
@@ -520,13 +592,16 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            Optional<ConstitutionRecord> constitution = governance.get().constitution();
-            if (constitution.isEmpty()) {
-                return Lookup.unavailable("no constitution is stored (governance not bootstrapped)");
-            }
-            String hash = constitution.get().scriptHash();
-            return hash == null || hash.isBlank() ? Lookup.absent() : Lookup.present(hash.toLowerCase(Locale.ROOT));
+            return guardrail(governance.get().constitution());
         });
+    }
+
+    static Lookup<String> guardrail(Optional<ConstitutionRecord> constitution) {
+        if (constitution.isEmpty()) {
+            return Lookup.unavailable("no constitution is stored (governance not bootstrapped)");
+        }
+        String hash = constitution.get().scriptHash();
+        return hash == null || hash.isBlank() ? Lookup.absent() : Lookup.present(hash.toLowerCase(Locale.ROOT));
     }
 
     @Override
@@ -573,12 +648,12 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
 
     // ------------------------------------------------------------------ helpers
 
-    private static Optional<GovernanceSnapshotReader> governance(CanonicalSnapshotSource.Captured state) {
+    static Optional<GovernanceSnapshotReader> governance(CanonicalSnapshotSource.Captured state) {
         LedgerStateSnapshotReader ledger = state.ledger();
         return ledger != null ? ledger.governance() : Optional.empty();
     }
 
-    private static CredentialKey credential(int credType, String hashHex) {
+    static CredentialKey credential(int credType, String hashHex) {
         return new CredentialKey(CredentialType.fromTag(credType), hashHex);
     }
 
