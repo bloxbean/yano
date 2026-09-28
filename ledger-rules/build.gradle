@@ -1,7 +1,23 @@
+plugins {
+    id 'java-test-fixtures'
+}
+
 dependencies {
     api project(':core-api')
     api libs.cardano.client.core  // CCL core types: ProtocolParams, Utxo, Transaction
+
+    // Test fixtures shared with the engines' conformance suites (ADR-056 Phase 2, ADR-057 Phase B):
+    // AmaruScenarioLoader reads Amaru's implementation-generic JSON scenarios into LedgerViews.
+    testFixturesApi libs.junit.jupiter.api
+    testFixturesImplementation libs.jackson.databind
+    testFixturesCompileOnly libs.lombok
+    testFixturesAnnotationProcessor libs.lombok
 }
+
+// The test fixtures are a build-time aid for Yano's own engine tests, not a published API: keep them
+// out of the Maven publication so the published ledger-rules artifact is unchanged.
+components.java.withVariantsFromConfiguration(configurations.testFixturesApiElements) { skip() }
+components.java.withVariantsFromConfiguration(configurations.testFixturesRuntimeElements) { skip() }
 
 publishing {
     publications {

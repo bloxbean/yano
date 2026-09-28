@@ -45,6 +45,15 @@ include ':archive-modules:archive-api'
 include ':archive-modules:archive-core'
 include ':archive-modules:archive-store-ducklake'
 
+// ADR-057: the optional Amaru wasm transaction validator. Only a build run with
+// -PwithAmaru=true includes it; every other build, distribution and publication
+// behaves as if the module did not exist.
+def withAmaru = providers.gradleProperty('withAmaru').map { it.toBoolean() }.getOrElse(false)
+if (withAmaru) {
+    include 'amaru-validator'
+    project(':amaru-validator').projectDir = file('amaru-validator')
+}
+
 gradle.settingsEvaluated {
-    logger.lifecycle('Yano build configured with {} projects', yanoModules.size() + 4)
+    logger.lifecycle('Yano build configured with {} projects', yanoModules.size() + 4 + (withAmaru ? 1 : 0))
 }

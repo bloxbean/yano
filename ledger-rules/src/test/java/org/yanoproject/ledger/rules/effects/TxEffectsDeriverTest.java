@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.Credential;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.spec.UnitInterval;
+import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
@@ -28,6 +29,7 @@ import com.bloxbean.cardano.client.transaction.spec.cert.UnregDRepCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.UpdateDRepCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.VoteDelegCert;
 import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
+import com.bloxbean.cardano.client.transaction.spec.governance.Anchor;
 import com.bloxbean.cardano.client.transaction.spec.governance.ProposalProcedure;
 import com.bloxbean.cardano.client.transaction.spec.governance.Vote;
 import com.bloxbean.cardano.client.transaction.spec.governance.VoterType;
@@ -403,6 +405,29 @@ class TxEffectsDeriverTest {
         OverlayLedgerView after = OverlayLedgerView.over(base().build()).apply(effects);
         assertThat(after.proposal(new GovActionId(TX_ID, 2)).isPresent()).isTrue();
         assertThat(after.committeeCandidates().require("c")).containsExactly(keyCred(0x33));
+    }
+
+    @Test
+    void submittedParameterChangesCarryTheirUpdateKeysFromTheTransactionBytes() throws Exception {
+        ParameterChangeAction change = new ParameterChangeAction(null,
+                ProtocolParamUpdate.builder().maxTxSize(16_384).collateralPercent(150).build(), null);
+        Anchor anchor = new Anchor("https://example.org", new byte[32]);
+        String rewardAccount = new Address(HexUtil.decodeHexString(Fixtures.rewardAddressHex(1))).toBech32();
+        Transaction tx = tx(body().proposalProcedures(List.of(
+                new ProposalProcedure(GOV_ACTION_DEPOSIT, rewardAccount, change, anchor),
+                new ProposalProcedure(GOV_ACTION_DEPOSIT, rewardAccount, new InfoAction(), anchor)))
+                .build());
+        byte[] txCbor = tx.serialize();
+
+        TxEffects effects = deriver.derive(txCbor, tx, null, base().build(), Fixtures.env(), true);
+
+        List<ProposalState> proposals = effects.changes().stream()
+                .filter(c -> c instanceof ProposalSubmitted)
+                .map(c -> ((ProposalSubmitted) c).proposal()).toList();
+        assertThat(proposals.get(0).paramUpdateKeys()).containsExactlyInAnyOrder(3, 23);
+        assertThat(proposals.get(0).anyInSecurityGroup()).isTrue();
+        assertThat(proposals.get(1).paramUpdateKeys()).isNull();
+        assertThat(proposals.get(1).anyInSecurityGroup()).isFalse();
     }
 
     @Test

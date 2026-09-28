@@ -1,0 +1,9 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "\\Qorg/yanoproject/ledger/amaru/generated/AmaruValidatorModule.meta\\E"
+      }
+    ]
+  }
+}

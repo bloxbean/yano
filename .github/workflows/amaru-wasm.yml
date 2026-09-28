@@ -183,6 +183,16 @@ jobs:
           path: amaru-validator-wasm/target/publish/
           if-no-files-found: error
 
+      # The reference request/response documents of every scenario, for the Java engine's golden tests
+      # (amaru-validator, -PamaruRequestDumps=<dir>) and for offline debugging. Not part of a release.
+      - name: Upload the reference request dumps
+        uses: actions/upload-artifact@v4
+        with:
+          name: amaru-validator-scenario-requests
+          path: amaru-validator-wasm/target/scenario-requests/
+          if-no-files-found: error
+          retention-days: 30
+
   release:
     # On a Yano release tag, attach the bundle and the module to the GitHub release. The release is
     # created by release-dist.yml (softprops/action-gh-release) only: this job never creates one, so

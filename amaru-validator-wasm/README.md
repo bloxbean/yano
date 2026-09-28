@@ -5,7 +5,19 @@ validator into a sandboxed `wasm32-wasip1` module. The module has a small, versi
 owned by Yano (ADR-057, `adr/057-optional-amaru-wasm-transaction-validator.md`).
 
 The crate sits outside the Gradle build, and nothing in the default Yano build needs Rust. The
-optional Java module that loads the `.wasm` with Endive is ADR-057 Phase B.
+optional Java module that loads the `.wasm` with Endive is `../amaru-validator` (ADR-057 Phase B), built
+only with `-PwithAmaru=true`:
+
+```sh
+# from the repository root: build the module, compile it to JVM bytecode, run the engine on the scenarios
+AMARU_SCENARIOS_DIR=<amaru clone at the pinned tag> \
+  ./gradlew -PwithAmaru=true -PamaruBuild=local :amaru-validator:test
+# or use an already built module
+./gradlew -PwithAmaru=true -PamaruWasm=/path/to/amaru_validator.wasm :amaru-validator:test
+```
+
+Its golden tests compare the Java request encoder with the requests `cargo test` dumps into
+`target/scenario-requests` (see "Replay every scenario" below).
 
 | File | What it is |
 |---|---|

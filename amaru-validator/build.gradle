@@ -1,0 +1,241 @@
+import java.security.MessageDigest
+
+import javax.inject.Inject
+
+// ADR-057: optional Amaru wasm transaction validator. This project exists only in builds run with
+// -PwithAmaru=true (settings.gradle). It never publishes (see the end of this file) and is excluded from
+// the Central deployment scope and the BOM.
+//
+// Where the wasm comes from (task prepareWasm):
+//   -PamaruBuild=local               build it with ../amaru-validator-wasm/scripts/build-wasm.sh
+//                                    (rustup + zig or WASI_SDK_PATH + wasm-opt; see that crate's README)
+//   -PamaruWasm=/path/to/module.wasm use that file (checked against <file>.sha256 when one is next to it)
+//   (neither)                        download the Yano release asset pinned below and verify its sha256
+//
+// The module is then compiled ahead of time to JVM bytecode by Endive's build-time compiler (task
+// generateAmaruAot). Only the build-time AOT classes and the stripped .meta module ship: the runtime
+// compiler is never on the classpath, so the same jar works in a GraalVM native image.
+
+description = 'Optional Amaru WebAssembly transaction validator (ADR-057)'
+
+// The release that carries the pinned module (amaru-wasm.yml attaches amaru_validator.wasm and its
+// .sha256 to Yano's GitHub release). No release has published the module yet: until one does, both
+// stay empty and prepareWasm asks for -PamaruBuild=local or -PamaruWasm.
+def pinnedWasmReleaseTag = providers.gradleProperty('amaruWasmReleaseTag').getOrElse('')
+def pinnedWasmSha256 = providers.gradleProperty('amaruWasmSha256').getOrElse('')
+def wasmReleaseUrlPattern = 'https://github.com/bloxbean/yano/releases/download/%s/amaru_validator.wasm'
+
+def amaruBuild = providers.gradleProperty('amaruBuild').getOrElse('')
+def amaruWasmPath = providers.gradleProperty('amaruWasm').getOrElse('')
+def interpreterFallback = providers.gradleProperty('amaruInterpreterFallback').getOrElse('WARN')
+def wasmCrateDir = rootProject.file('amaru-validator-wasm')
+
+configurations {
+    endiveBuildTimeCompiler
+}
+
+dependencies {
+    api project(':ledger-rules')
+    implementation libs.endive.runtime
+    implementation libs.endive.wasm
+
+    endiveBuildTimeCompiler libs.endive.build.time.compiler
+
+    testImplementation testFixtures(project(':ledger-rules'))
+}
+
+abstract class PrepareAmaruWasm extends DefaultTask {
+    @Input abstract Property<String> getMode()
+    // The given module and its optional .sha256 sidecar are file inputs: a changed file re-runs the task
+    // (and, through the output, the AOT compilation).
+    @Optional @InputFile @PathSensitive(PathSensitivity.NONE) abstract RegularFileProperty getSourceFile()
+    @Optional @InputFile @PathSensitive(PathSensitivity.NONE) abstract RegularFileProperty getSourceSidecar()
+    @Internal abstract Property<String> getSourcePath()
+    @Input abstract Property<String> getReleaseTag()
+    @Input abstract Property<String> getPinnedSha256()
+    @Input abstract Property<String> getUrlPattern()
+    @Internal abstract DirectoryProperty getCrateDir()
+    @OutputFile abstract RegularFileProperty getWasm()
+
+    @Inject abstract ExecOperations getExecOperations()
+
+    PrepareAmaruWasm() {
+        // A local build re-runs cargo, which is incremental; the AOT task below only re-runs when the
+        // module's bytes change.
+        outputs.upToDateWhen { mode.get() != 'local' }
+    }
+
+    @TaskAction
+    void prepare() {
+        def target = wasm.get().asFile
+        target.parentFile.mkdirs()
+        switch (mode.get()) {
+            case 'local':
+                def crate = crateDir.get().asFile
+                execOperations.exec {
+                    workingDir crate
+                    commandLine 'bash', new File(crate, 'scripts/build-wasm.sh').absolutePath
+                }
+                def targetDir = System.getenv('CARGO_TARGET_DIR') ?: new File(crate, 'target').absolutePath
+                def built = new File(targetDir, 'wasm-out/amaru_validator.wasm')
+                verifyAgainstSidecar(built)
+                copy(built, target)
+                break
+            case 'file':
+                if (!sourceFile.isPresent()) {
+                    throw new GradleException("-PamaruWasm=${sourcePath.get()} does not exist")
+                }
+                def given = sourceFile.get().asFile
+                verifyAgainstSidecar(given)
+                copy(given, target)
+                break
+            default:
+                if (releaseTag.get().isBlank() || pinnedSha256.get().isBlank()) {
+                    throw new GradleException('No released amaru_validator.wasm is pinned yet ' +
+                            '(amaruWasmReleaseTag / amaruWasmSha256 are empty). Build the module locally with ' +
+                            '-PamaruBuild=local (needs rustup, zig or WASI_SDK_PATH, and wasm-opt; see ' +
+                            'amaru-validator-wasm/README.md) or pass a built module with ' +
+                            '-PamaruWasm=/path/to/amaru_validator.wasm.')
+                }
+                def url = String.format(urlPattern.get(), releaseTag.get())
+                logger.lifecycle("Downloading ${url}")
+                def partial = new File(target.parentFile, target.name + '.part')
+                try {
+                    def connection = URI.create(url).toURL().openConnection()
+                    connection.connectTimeout = 30_000
+                    connection.readTimeout = 120_000
+                    connection.inputStream.withCloseable { input -> partial.withOutputStream { it << input } }
+                } catch (IOException e) {
+                    partial.delete()
+                    throw new GradleException("Cannot download ${url}: ${e.message}. Build the module " +
+                            'locally with -PamaruBuild=local or pass -PamaruWasm=/path/to/amaru_validator.wasm.', e)
+                }
+                def actual = sha256(partial)
+                if (actual != pinnedSha256.get().toLowerCase(Locale.ROOT)) {
+                    partial.delete()
+                    throw new GradleException("sha256 mismatch for ${url}: expected ${pinnedSha256.get()}, got ${actual}")
+                }
+                copy(partial, target)
+                partial.delete()
+        }
+        logger.lifecycle("amaru_validator.wasm: ${target.length()} bytes, sha256 ${sha256(target)}")
+    }
+
+    private static void verifyAgainstSidecar(File module) {
+        def sidecar = new File(module.parentFile, module.name + '.sha256')
+        if (sidecar.isFile()) {
+            def expected = sidecar.text.trim().split(/\s+/)[0].toLowerCase(Locale.ROOT)
+            def actual = sha256(module)
+            if (expected != actual) {
+                throw new GradleException("${module} does not match ${sidecar}: expected ${expected}, got ${actual}")
+            }
+        }
+    }
+
+    private static void copy(File from, File to) {
+        to.bytes = from.bytes
+    }
+
+    private static String sha256(File file) {
+        MessageDigest.getInstance('SHA-256').digest(file.bytes).encodeHex().toString()
+    }
+}
+
+def prepareWasm = tasks.register('prepareWasm', PrepareAmaruWasm) {
+    group = 'build'
+    description = 'Provides amaru_validator.wasm: local cargo build, a given file, or the pinned release asset.'
+    mode = amaruBuild == 'local' ? 'local' : (amaruWasmPath ? 'file' : 'release')
+    sourcePath = amaruWasmPath
+    if (amaruWasmPath && new File(amaruWasmPath).isFile()) {
+        sourceFile = new File(amaruWasmPath)
+        def sidecar = new File(amaruWasmPath + '.sha256')
+        if (sidecar.isFile()) {
+            sourceSidecar = sidecar
+        }
+    }
+    releaseTag = pinnedWasmReleaseTag
+    pinnedSha256 = pinnedWasmSha256
+    urlPattern = wasmReleaseUrlPattern
+    crateDir = wasmCrateDir
+    wasm = layout.buildDirectory.file('amaru-wasm/amaru_validator.wasm')
+}
+
+def aotName = 'org.yanoproject.ledger.amaru.generated.AmaruValidatorModule'
+def aotClasses = layout.buildDirectory.dir('generated/endive/classes')
+def aotSources = layout.buildDirectory.dir('generated/endive/sources')
+def aotResources = layout.buildDirectory.dir('generated/endive/resources')
+
+def generateAmaruAot = tasks.register('generateAmaruAot', JavaExec) {
+    group = 'build'
+    description = 'Compiles amaru_validator.wasm to JVM bytecode with the Endive build-time compiler.'
+    inputs.file(prepareWasm.flatMap { it.wasm })
+    inputs.property('interpreterFallback', interpreterFallback)
+    outputs.dir(aotClasses)
+    outputs.dir(aotSources)
+    outputs.dir(aotResources)
+    classpath = configurations.endiveBuildTimeCompiler
+    mainClass = 'run.endive.build.time.compiler.GeneratorMain'
+    maxHeapSize = '4g'
+    doFirst {
+        [aotClasses, aotSources, aotResources].each { project.delete(it) }
+        [aotClasses, aotSources, aotResources].each { it.get().asFile.mkdirs() }
+    }
+    argumentProviders.add({
+        [prepareWasm.get().wasm.get().asFile.absolutePath,
+         aotName,
+         aotClasses.get().asFile.absolutePath,
+         aotSources.get().asFile.absolutePath,
+         aotResources.get().asFile.absolutePath,
+         interpreterFallback] as List<String>
+    } as CommandLineArgumentProvider)
+}
+
+sourceSets {
+    main {
+        java.srcDir(files(aotSources).builtBy(generateAmaruAot))
+        resources.srcDir(files(aotResources).builtBy(generateAmaruAot))
+        output.dir(aotClasses, builtBy: generateAmaruAot)
+    }
+}
+
+dependencies {
+    // The generated module class refers to the generated machine class, which exists only as bytecode.
+    compileOnly files(aotClasses).builtBy(generateAmaruAot)
+}
+
+tasks.named('sourceJar') {
+    dependsOn generateAmaruAot
+}
+
+tasks.withType(Javadoc).configureEach {
+    exclude 'org/yanoproject/ledger/amaru/generated/**'
+}
+
+tasks.withType(Test).configureEach {
+    maxHeapSize = '4g'
+    def scenarios = providers.gradleProperty('amaruScenariosDir')
+            .orElse(providers.environmentVariable('AMARU_SCENARIOS_DIR')).getOrElse('')
+    if (scenarios) {
+        systemProperty 'amaru.scenarios.dir', scenarios
+    }
+    // Reference request documents dumped by the Rust gate (`AMARU_DUMP_REQUESTS_DIR`), for the golden
+    // test over the whole corpus. The committed golden subset runs without them.
+    def dumps = providers.gradleProperty('amaruRequestDumps')
+            .orElse(providers.environmentVariable('AMARU_REQUEST_DUMPS_DIR'))
+            .getOrElse(new File(wasmCrateDir, 'target/scenario-requests').absolutePath)
+    systemProperty 'amaru.request.dumps.dir', dumps
+    systemProperty 'amaru.scenario.latency', providers.gradleProperty('amaruLatency').getOrElse('false')
+}
+
+// Never published: an opt-in developer and oracle module (ADR-057 §3). The root build also lists it in
+// centralDeploymentExclusions.
+def amaruPublication = publishing.publications.findByName('mavenJava')
+if (amaruPublication != null) {
+    publishing.publications.remove(amaruPublication)
+}
+tasks.withType(PublishToMavenRepository).configureEach {
+    enabled = false
+}
+tasks.withType(PublishToMavenLocal).configureEach {
+    enabled = false
+}

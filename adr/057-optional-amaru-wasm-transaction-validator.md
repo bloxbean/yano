@@ -6,6 +6,10 @@ Accepted (2026-09-28). The design was reviewed by Fable and in four Codex
 review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
 with the decisions recorded at the end of this ADR.
 
+Phase A is implemented (`amaru-validator-wasm/`). Phase B is implemented
+(2026-09-29, module `amaru-validator`); its results and deviations are in
+"Phase B results" under the implementation plan.
+
 ## Date
 
 2026-09-28
@@ -56,7 +60,10 @@ with the decisions recorded at the end of this ADR.
     `ValidationContext` on 2026-08-20.
 - **Chicory has moved.** Chicory's last Dylibso release is 1.7.5. It continues
   at the Bytecode Alliance as **Endive** (`run.endive:*`, 1.1.0 on 2026-09-03):
-  same maintainers, same API, new package name.
+  same maintainers, same API, new package name. Phase B uses Endive 1.1.0 from
+  Maven Central (`run.endive:runtime`, `run.endive:wasm`, and
+  `run.endive:build-time-compiler` at build time only); no Chicory fallback
+  was needed.
   - Build-time (AOT) compilation and the interpreter work in a GraalVM 25 native
     image. The runtime compiler does not.
   - A wasm trap surfaces as a catchable exception. By contrast, a Rust panic
@@ -70,7 +77,7 @@ with the decisions recorded at the end of this ADR.
    defines a **versioned interface**: exports plus a CBOR request/response
    schema.
 2. **Optional Java module `amaru-validator`.** It loads the module with **Endive**
-   (build-time AOT) and implements ADR-056's `TransactionValidator`.
+   (build-time AOT) and implements ADR-056's `LedgerValidationEngine`.
    - It is excluded from default builds and distributions.
    - Developers opt in at build time, and select it at run time with
      `yano.validation.engine=amaru`.
@@ -247,7 +254,7 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
     Endive build-time compiler or a Gradle task calling its `Generator`, with
     `interpreterFallback=WARN` until the three oversized functions are split
     upstream or in the wrapper.
-  - `AmaruTransactionValidator implements TransactionValidator`.
+  - `AmaruTransactionValidator implements LedgerValidationEngine`.
   - All Java code lives in `org.yanoproject.ledger.amaru`, next to ADR-056's
     `org.yanoproject.ledger.rules`. The Endive-generated AOT classes go under
     `org.yanoproject.ledger.amaru.generated`.
@@ -271,13 +278,16 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
   caller waits with `yano.validation.amaru.timeout-ms` (default 2000).
   - On timeout the transaction is rejected (`AmaruEngineFailure`), and the
     instance and its thread are poisoned and replaced.
-  - If Endive supports interruption or fuel metering, the thread is reclaimed.
-    If not, it keeps running, which pins a core until the guest returns.
+  - Endive checks the thread's interrupt flag on every call and backward
+    branch of compiled code (it has no fuel metering), so the interrupted
+    guest stops and its thread is reclaimed. Only a worker stuck outside wasm
+    code can keep running; it counts as abandoned.
   - To stop a hostile or looping input from exhausting the node, a hard cap of
     `yano.validation.amaru.max-abandoned` (default 2) applies. When it is
     reached, the engine is marked **unhealthy**: admission through `amaru`
     fails closed, and a health check and metric alert fire until restart.
-  - Verifying Endive's interrupt and fuel support is a Phase B gate.
+  - Endive's interrupt and fuel support was verified in Phase B (open
+    question 3).
   - Normal work is bounded: phase-1 by transaction size, and Amaru phase-2
     (`full` mode) by ExUnits.
 - **Configuration:**
@@ -395,7 +405,8 @@ Shipped in the same final PR as ADR-056, through the stacked steps S2 (A, B), S4
 - Build `amaru-validator` with Endive AOT, the WASI host, the instance pool and
   watchdog, the request builder from `LedgerView`, response mapping,
   `phase2: scalus|amaru`, and the `-PwithAmaru`/`prepareWasm` plumbing.
-- Wire `yano.validation.engine=amaru` and shadow-engine registration.
+- Wire `yano.validation.engine=amaru` and shadow-engine registration (moved
+  to ADR-056 step 1d; see "What step 1d must provide" below).
 - Gates:
   - unit tests, including golden interface tests for the request encoding;
   - absence handling: a fresh pool registration, deregistration followed by
@@ -407,6 +418,193 @@ Shipped in the same final PR as ADR-056, through the stacked steps S2 (A, B), S4
   - the abandoned-thread cap turns the engine unhealthy and fails closed;
   - Endive interrupt and fuel support is determined and documented;
   - absence of the module leaves default builds unchanged.
+
+#### Phase B results (2026-09-29)
+
+**Module and build.**
+- `amaru-validator/` (package `org.yanoproject.ledger.amaru`, with `.runtime`
+  for the Endive instance, WASI host and pool, `.wire` for the v1 codec, and
+  `.generated` for the AOT classes). `settings.gradle` includes it only with
+  `-PwithAmaru=true`; `./gradlew projects` without the flag does not list it.
+  It is in `centralDeploymentExclusions`, removes its own Maven publication
+  (so `verifyMavenReleasePublicationScope` still reports the default 24
+  projects with the flag), and is not in the BOM.
+- `prepareWasm`: `-PamaruBuild=local` runs `amaru-validator-wasm/scripts/build-wasm.sh`
+  and checks the result against the `.sha256` it writes; `-PamaruWasm=<file>`
+  uses a given module (checked against `<file>.sha256` when present);
+  otherwise it downloads
+  `https://github.com/bloxbean/yano/releases/download/<amaruWasmReleaseTag>/amaru_validator.wasm`
+  and verifies it against `amaruWasmSha256`. No release carries the module
+  yet, so both properties are empty and the task fails with a message naming
+  the two local options.
+- `generateAmaruAot` runs Endive's `GeneratorMain` (build-time compiler) over
+  the module: 3.4 MB of classes plus a 1.7 MB stripped `.meta`, generated
+  under `build/generated/endive` and packaged in the jar. With
+  `interpreterFallback=WARN` (property `amaruInterpreterFallback`) **four**
+  functions (indices 21, 188, 241, 392) exceed the JVM method-size limit and
+  run in the interpreter; the spike saw three. The AOT classes reference only
+  `run.endive:runtime` and `run.endive:wasm`: the runtime compiler is never
+  on the classpath. `META-INF/native-image/.../resource-config.json`
+  registers the `.meta` resource; the native image itself is Phase E.
+- The build is reproducible: a second local build gives the same sha256
+  (`90f1c154…`), so the AOT task stays up to date.
+
+**Engine** (`AmaruTransactionValidator implements LedgerValidationEngine`,
+name `amaru`):
+- Minimal WASI host (`clock_time_get`, `random_get`, `environ_*`/`args_*`
+  empty, `fd_write` to SLF4J debug, `proc_exit` → trap, `sched_yield`),
+  `_initialize`, `abi_version` check at construction (a mismatch fails
+  startup), `amaru_version` logged.
+- Instance pool: one instance per dedicated platform worker (256 MiB stack by
+  default, since AOT wasm calls are Java calls), `ByteArrayMemory` limited to
+  `max-memory-pages`, caller waits `timeout` in total. A trap or a malformed
+  response discards the instance; a timeout interrupts and replaces the worker;
+  `max-abandoned` stuck workers make the engine unhealthy until restart
+  (`isHealthy()`, `ENGINE.AmaruEngineUnhealthy`, no module call).
+- Request flow as in §2: MEMPOOL step (`org.yanoproject.ledger.rules.conway.mempool.MempoolRule`,
+  shared with the Java engine), `required_keys`, three-outcome resolution
+  (Unavailable → `ENGINE.LedgerStateUnavailable` with no `validate` call),
+  full committee and candidates, all proposals, roots, treasury, dormant
+  epochs, guardrail, parameters, era history and global parameters.
+- `phase2`: `full` sends `mode = full`; `scalus` sends `mode = phase_one` and
+  then calls the new SPI `org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator`,
+  comparing its result with `is_valid` (`UTXOS.ValidationTagMismatch`). Without
+  an evaluator, a transaction with redeemers fails closed.
+- On `ok`, effects come from `TxEffectsDeriver`, and the ADR-056 origin
+  policy applies (`is_valid = false` only from `SYNC`).
+- `AmaruNetworkParameters` carries the network magic, era history and
+  global parameters; its Javadoc says how step 1d fills it from the genesis
+  files and hard-fork history.
+
+**Gates.**
+- Scenario gate: **276 of 276** scenarios through the full Java path (the
+  shared loader → `InMemoryLedgerView` → engine in `full` mode → module):
+  275 with the expected verdict, rule and Haskell constructor, and scenario
+  00203 (a hard-fork proposal at protocol version 9) refused with
+  `ENGINE.EraNotSupported` by invariant 6, as intended. UTxO outputs are
+  re-encoded from CCL on this path; no verdict changed.
+- Golden interface tests: the Java encoder, fed each scenario through the
+  loader, reproduces **all 549** reference requests the Rust gate dumps
+  (276 `full` + 273 `phase_one`), byte for byte, including Amaru's
+  31-element parameter layout and the test-only constants. Eleven of them are
+  committed under `amaru-validator/src/test/resources/golden`, and the
+  `amaru-wasm.yml` workflow uploads the full dump as an artifact
+  (`amaru-validator-scenario-requests`).
+- Engine request equivalence: for **272 of 272** scenarios that send state
+  (all but the 3 decoding failures and the PV 9 one) the request the engine
+  builds from the view (key resolution, canonical order, re-encoded outputs)
+  carries the same state as the reference request restricted to the keys
+  `required_keys` named. Slice order, certificate pointers and the output
+  envelope are ignored; address bytes, value, datum (hash or exact inline
+  bytes) and exact reference-script bytes must match.
+- Absence: a first-time DRep registration, a deregistration followed by a
+  registration, and a fresh pool registration (00111, with the minimum pool
+  cost lowered to its cost) pass with the key left out of the request; an
+  absent pool gives `DELEG.DelegateeStakePoolNotRegisteredDELEG`; injected
+  Unavailable reads of a UTxO, an account and a pool reject with
+  `LedgerStateUnavailable` and never call `validate`.
+- A real wasm trap (out-of-bounds `validate` buffer) and a timeout each reject
+  with `AmaruEngineFailure` and the next call succeeds on a fresh instance;
+  two workers stuck outside wasm turn the engine unhealthy and it fails
+  closed. A replacement instance costs about 0.3–0.9 ms (instantiation and
+  `_initialize`, warm; `EndiveRuntimeTest.instantiationCost`), so trap
+  recovery needs no rate limit or cooldown.
+- The pool charges `timeout` to the call itself (waiting for a free worker
+  has its own bound and fails as busy), hands a call over with a deadline,
+  and stops workers that finish a call after `close()`.
+- `prepareWasm` tracks `-PamaruWasm=<file>` and its `.sha256` sidecar as file
+  inputs: changing the file's content at the same path re-runs it (checked
+  by hand: unchanged → UP-TO-DATE; one byte appended → re-run; sidecar
+  mismatch → failure). Downloads use connect and read timeouts and delete the
+  partial file on failure.
+- MEMPOOL: an all-spent duplicate reports only `LEDGER.ConwayMempoolFailure`
+  without calling the module (rule `LEDGER` gives `UTXO.BadInputsUTxO`);
+  scenario 00154 and 00167 (hot key authorised by the transaction's own
+  certificate) are rejected under MEMPOOL at PV 10 and pass under LEDGER; at
+  PV 11 (00171) the rejection is `GOV.VotersDoNotExist`.
+- Security group: on scenario 00182 (an SPO votes on a pending parameter
+  change) the vote passes with keys `{30}` (`govActionDeposit` only), fails
+  `GOV.DisallowedVoters` with `{23}`, and unknown keys reject with
+  `LedgerStateUnavailable` without calling `validate`.
+- `phase2: scalus`: a malformed Plutus witness script (00256) reaches the
+  evaluator and its `Rejected` failure is returned; witness scripts without
+  redeemers and inputs with reference scripts also require the evaluator.
+- Default builds: `./gradlew :ledger-rules:test --offline` is green (the
+  scenario tests skip without `AMARU_SCENARIOS_DIR`).
+
+**Latency** (OpenJDK 25, Apple M4 Max, warm, 5 × 276 calls, `full` mode, from `AmaruScenarioGateTest`):
+the whole engine path (request building, two module calls, CCL decode,
+effects) p50 **0.48 ms**, p90 1.2 ms, p99 1.8 ms; the module's `validate`
+alone p50 0.31 ms, p99 1.9 ms. That is inside the Phase E target (p50 ≤ 2 ms,
+p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
+
+**Deviations and findings.**
+1. **MEMPOOL continues into LEDGER after the unelected-voter check.** Haskell's
+   `failOnNonEmpty` records the failure and the transition still runs
+   `LEDGER`, whose failures are appended; only the all-spent check
+   short-circuits (`whenFailureFreeDefault`). `MempoolRule` follows Haskell.
+2. **`ScriptPhaseEvaluator` signature.** It takes the original transaction
+   bytes and `Map<Outpoint, UtxoEntry>` instead of ADR-056 §5's
+   `Map<Outpoint, Utxo>`: CCL's `Utxo` keeps only a reference script's hash,
+   and re-serialising the transaction can change the id in the script context.
+3. **Undecodable transactions** are `ENGINE.DecodingFailure` (Haskell has no
+   ledger constructor; the node rejects them when deserialising).
+4. **Security group of pending parameter changes.** CCL's
+   `ProtocolParamUpdate` has no fields for the Conway keys, so a decoded action
+   cannot say whether a proposal touches Haskell's security group (keys 0, 1,
+   2, 3, 4, 17, 21, 22, 30, 33; `Conway/PParams.hs`; 30 `govActionDeposit` and
+   33 `minFeeRefScriptCostPerByte` are invisible to CCL). `ProposalState` now
+   carries `paramUpdateKeys` (the keys of the `protocol_param_update` map, read
+   from the original CBOR by `ProposalParamUpdateKeys`), and
+   `any_in_security_group` is computed from them. `TxEffectsDeriver` fills them
+   for proposals submitted through an overlay (mempool, same block), and the
+   scenario loader fills them. **When they are unknown for a pending
+   parameter change, the engine does not guess**: it rejects with
+   `ENGINE.LedgerStateUnavailable` and never calls the module, because a wrong
+   flag would reject a legitimate SPO vote (`GOV.DisallowedVoters`) or accept
+   a disallowed one. **Consequence:** the canonical view does not populate the
+   keys yet (TODO for step 1d in `CanonicalLedgerView.toProposalState`), so
+   until it does, under `engine: amaru` every transaction validated while a
+   parameter-change proposal is pending in canonical state fails closed.
+5. **Rationals** are sent as the shortest decimal fraction of Yano's
+   `BigDecimal` (`0.0577` → `577/10000`). Amaru compares parameters by value
+   and never hashes them, so verdicts do not depend on the representation.
+6. **Certificate pointers** (account delegations, DRep registration) are sent
+   as `null`; Yano's view does not track them and Amaru's rules do not read
+   them at the pinned tag.
+7. **Slices are canonically ordered** (inputs by id and index, credentials by
+   type then hash, pools and proposals by id), so a request depends only on
+   the state.
+8. **CCL decoding** is still needed next to Amaru (MEMPOOL inputs and voters,
+   effects). A transaction Amaru accepts but CCL cannot decode fails closed.
+9. **Scalus-mode gaps.** Phase-one mode does not report
+   `MalformedScriptWitnesses` or `CollectErrors` (`NoCostModel`,
+   `BadTranslation`, V3 non-disjoint inputs); it does report
+   `MalformedReferenceScripts` for the transaction's own outputs (00151). The
+   engine therefore calls the `ScriptPhaseEvaluator` whenever the transaction
+   has redeemers **or** Plutus witness scripts, or a resolved input carries a
+   reference script, not only for redeemers. The SPI's `Rejected` result
+   carries these failures; the Scalus evaluator (step 1d) must produce them,
+   and the scenario gate has to be re-run in `scalus` mode then.
+10. **Input buffers are freed only after a successful call.** After a trap or
+    an interrupt the instance is discarded; freeing in a `finally` would call
+    into it again and hide the original exception.
+
+**What step 1d must provide.**
+- Configuration wiring: `yano.validation.engine=amaru`, shadow-engine
+  registration, and `yano.validation.amaru.{phase2, pool-size, timeout-ms,
+  max-abandoned, max-memory-pages}` mapped to `AmaruEngineConfig`
+  (`pool-size: 0` resolved to the validation-thread count), with a clear
+  startup failure when the module is not on the classpath.
+- `AmaruNetworkParameters` from the loaded genesis files and the network's
+  hard-fork history (see its Javadoc), and the health check and metric for
+  `isHealthy()`.
+- The Scalus `ScriptPhaseEvaluator` in `scalus-bridge`, including the
+  phase-1 failures listed in deviation 9.
+- The canonical view's `paramUpdateKeys` for pending parameter changes, from
+  the stored action payload (`ProposalParamUpdateKeys.fromGovAction`;
+  deviation 4). Until then `engine: amaru` fails closed whenever such a
+  proposal is pending.
 
 ### Phase C — Overlays and runtime parity
 
@@ -518,8 +716,18 @@ reverts this ADR completely. No persisted state is involved.
    Custom devnet eras: `EraHistory::new` is public at `d72e9b5`, so arbitrary
    era histories for custom devnets (short epochs, 1000 ms slots) are likely
    supported. Phase A confirms it with a devnet bundle.
-3. Does Endive support interrupting a running call (thread interrupt or fuel
-   metering)? This is a Phase B gate.
+3. *Resolved in Phase B: interruption yes, fuel metering no.* Endive 1.1.0
+   emits a `Thread.isInterrupted()` check before every call and on every
+   backward branch of AOT-compiled code (`Compiler`/`Emitters`,
+   `Shaded.checkInterruption`), and the interpreter checks it too
+   (`InterpreterMachine.checkInterruption`); an interrupted guest throws
+   `WasmInterruptedException`. There is no fuel or instruction metering. The
+   engine therefore interrupts a timed-out worker and counts it as abandoned
+   only if it has not stopped 250 ms later (possible only outside wasm code).
+   `EndiveRuntimeTest.anInterruptStopsAGuestMidCall` proves it on the real
+   module: an interrupt raised 0.05–2 ms into `validate` of the heaviest
+   Plutus scenario stops the guest inside the export, from deeper compiled
+   frames than the entry check.
 4. Should the `.wasm` also be published as a Maven artifact
    (`org.yanoproject:yano-amaru-validator-wasm`) as well as a GitHub release
    asset?

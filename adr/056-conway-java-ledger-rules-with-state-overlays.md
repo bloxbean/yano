@@ -508,7 +508,11 @@ checks.
      constructor of `ConwayLedgerPredFailure` (`Conway/Rules/Mempool.hs:86`,
      `Ledger.hs:124`).
 
-   Only if MEMPOOL passes does `LEDGER` run:
+   `LEDGER` then runs unless the all-spent check failed. The unelected-voter
+   check uses `failOnNonEmpty`, which records its failure without
+   short-circuiting, so `LEDGER`'s failures accumulate after it
+   (`Conway/Rules/Mempool.hs:103-138`: `trans @"LEDGER"` sits inside the
+   `whenFailureFreeDefault` block that only the all-spent check can skip):
 
 1. **If `isValid=true`, the LEDGER pre-checks**, against pre-certificate state:
    - treasury value (`ConwayTreasuryValueMismatch`);

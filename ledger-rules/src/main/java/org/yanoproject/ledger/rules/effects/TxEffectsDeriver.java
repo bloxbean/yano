@@ -53,6 +53,7 @@ import org.yanoproject.ledger.rules.effects.LedgerChange.RewardWithdrawn;
 import org.yanoproject.ledger.rules.effects.LedgerChange.StakeDelegated;
 import org.yanoproject.ledger.rules.effects.LedgerChange.VoteCast;
 import org.yanoproject.ledger.rules.effects.LedgerChange.VoteDelegated;
+import org.yanoproject.ledger.rules.util.ProposalParamUpdateKeys;
 import org.yanoproject.ledger.rules.util.RewardAddresses;
 import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
 import org.yanoproject.ledger.rules.view.LedgerView;
@@ -71,6 +72,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Computes a valid transaction's {@link TxEffects} from (transaction, pre-state, protocol
@@ -100,7 +102,8 @@ import java.util.Objects;
 public final class TxEffectsDeriver {
 
     /**
-     * @param txCbor      the transaction bytes, used for the id when {@code txId} is null
+     * @param txCbor      the transaction bytes, used for the id when {@code txId} is null and for the
+     *                    parameter-update keys of submitted proposals ({@code null} leaves them unknown)
      * @param tx          the decoded transaction
      * @param txId        the transaction id (lowercase hex), or {@code null} to compute it
      * @param preState    the state the transaction was validated against; its
@@ -135,7 +138,7 @@ public final class TxEffectsDeriver {
             fold = fold.step(certificateChanges(fold.current(), cert, pp, env));
         }
         List<LedgerChange> changes = new ArrayList<>(fold.changes());
-        changes.addAll(proposalChanges(id, body, pp, env));
+        changes.addAll(proposalChanges(txCbor, id, body, pp, env));
         changes.addAll(voteChanges(body));
         return new TxEffects(id, true, consumed, produced, changes);
     }
@@ -295,22 +298,40 @@ public final class TxEffectsDeriver {
      * Proposal ids are (txId, index in proposal_procedures) and expire after
      * {@code currentEpoch + govActionLifetime} (Gov.hs:483-486, 561-563; mkGovActionState :409-417).
      */
-    private static List<LedgerChange> proposalChanges(String txId, TransactionBody body, ProtocolParams pp,
-                                                      ValidationEnv env) {
+    private static List<LedgerChange> proposalChanges(byte[] txCbor, String txId, TransactionBody body,
+                                                      ProtocolParams pp, ValidationEnv env) {
         List<ProposalProcedure> procedures = nullToEmpty(body.getProposalProcedures());
         if (procedures.isEmpty()) {
             return List.of();
         }
         long lifetime = requireInt(pp.getGovActionLifetime(), "govActionLifetime");
+        List<Set<Integer>> paramKeys = paramUpdateKeys(txCbor, procedures.size());
         List<LedgerChange> changes = new ArrayList<>();
         for (int i = 0; i < procedures.size(); i++) {
             ProposalProcedure p = procedures.get(i);
             GovAction action = Objects.requireNonNull(p.getGovAction(), "govAction");
             changes.add(new ProposalSubmitted(new ProposalState(new GovActionId(txId, i), action.getType(), action,
                     prevActionId(action), env.currentEpoch(), env.currentEpoch() + lifetime,
-                    Objects.requireNonNull(p.getDeposit(), "proposal deposit"), p.getRewardAccount())));
+                    Objects.requireNonNull(p.getDeposit(), "proposal deposit"), p.getRewardAccount(),
+                    paramKeys != null ? paramKeys.get(i) : null)));
         }
         return changes;
+    }
+
+    /**
+     * The {@code protocol_param_update} keys of each proposal, from the original transaction bytes (CCL's
+     * decoded update lacks the Conway keys); null when the bytes are not available.
+     */
+    private static List<Set<Integer>> paramUpdateKeys(byte[] txCbor, int proposals) {
+        if (txCbor == null) {
+            return null;
+        }
+        List<Set<Integer>> keys = ProposalParamUpdateKeys.fromTransaction(txCbor);
+        if (keys.size() != proposals) {
+            throw new IllegalArgumentException("transaction bytes carry " + keys.size() + " proposals, the decoded "
+                    + "transaction " + proposals);
+        }
+        return keys;
     }
 
     private static GovActionId prevActionId(GovAction action) {
