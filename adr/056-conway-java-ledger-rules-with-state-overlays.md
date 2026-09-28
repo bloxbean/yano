@@ -263,12 +263,12 @@ renamed by this ADR.
 
 | Package | Contents |
 |---|---|
-| `org.yanoproject.ledger.rules` | Public API: `TransactionValidator`, `TransactionEvaluator`, `TxValidationRequest`/`TxValidationOutcome`, `ValidationEnv`, `ValidationResult`/`ValidationError`, parameter and slot-config suppliers |
-| `org.yanoproject.ledger.rules.view` | `LedgerView`, `CanonicalLedgerView`, `TickedLedgerView`, `OverlayLedgerView` |
+| `org.yanoproject.ledger.rules` | Public API: `LedgerValidationEngine`, `TransactionValidator` (legacy), `TransactionEvaluator`, `TxValidationRequest`/`TxValidationOutcome`, `ValidatedTx`, `ValidationEnv`, `LedgerFailure`/`LedgerRuleName`, `TxIdentity`, `ValidationResult`/`ValidationError`, parameter and slot-config suppliers |
+| `org.yanoproject.ledger.rules.view` | `LedgerView`, `Lookup`, `CanonicalLedgerView`, `TickedLedgerView`, `OverlayLedgerView`, `InMemoryLedgerView` (fixtures); state records in `view.model` |
 | `org.yanoproject.ledger.rules.effects` | `TxEffects`, `TxEffectsDeriver` |
 | `org.yanoproject.ledger.rules.phase2` | `ScriptPhaseEvaluator` SPI and result types |
 | `org.yanoproject.ledger.rules.conway` | `ConwayLedgerTransition`, protocol version gates, REAPPLY static/dynamic labels |
-| `org.yanoproject.ledger.rules.conway.failure` | `LedgerFailure` and the typed constructors, per Haskell rule |
+| `org.yanoproject.ledger.rules.conway.failure` | The typed constructors per Haskell rule, which produce the API's `LedgerFailure` |
 | `org.yanoproject.ledger.rules.conway.{mempool,ledger,certs,gov,utxow,utxo,utxos}` | One package per Haskell rule family |
 | `org.yanoproject.ledger.rules.util` | Former CCL utilities: `TxBalanceCalculator`, `LedgerMinFeeCalculator`, `NativeScriptEvaluator`, `RequiredWitnessResolver`, `UtxoUtil` |
 
@@ -279,11 +279,14 @@ unchanged into `org.yanoproject.ledger.rules.view.slice`.
 ### 2. Validation API
 
 ```java
-public interface TransactionValidator {
+/** The engine SPI: scalus | java | amaru (§7). */
+public interface LedgerValidationEngine {
+    String name();
     TxValidationOutcome validate(TxValidationRequest request);
+}
 
-    /** Legacy adapter over a canonical view. Removed in Phase 6. */
-    @Deprecated
+/** Unchanged legacy interface over canonical state; removed in Phase 6. */
+public interface TransactionValidator {
     ValidationResult validate(byte[] txCbor, Set<Utxo> inputUtxos);
 }
 
@@ -295,7 +298,7 @@ public record TxValidationRequest(byte[] txCbor, LedgerView view, ValidationEnv 
 }
 
 public record ValidationEnv(long currentSlot, long currentEpoch, int protocolMajor,
-                            NetworkId networkId, SlotConfig slotConfig,
+                            int protocolMinor, NetworkId networkId, SlotConfig slotConfig,
                             byte[] phase2EnvDigest) {}           // §6 invalidation rules
 
 /** Provenance of a successful full validation; kept by the mempool per transaction. */
@@ -323,6 +326,17 @@ public sealed interface Lookup<T> {
   verdict is still usable.
 - `ValidatedTx` is the only form in which a transaction's earlier verdict is
   carried. Raw bytes plus a mode flag can't express where a verdict came from.
+- **Two interfaces until Phase 6.** `LedgerValidationEngine` is the new engine
+  SPI. `TransactionValidator` keeps its current single method unchanged: it is
+  the legacy adapter that runtime, Scalus and tests still call (and implement as
+  a lambda). Phase 6 moves callers to `LedgerValidationEngine` and removes it.
+- **Parameters come from the view.** `ValidationEnv` holds only what is not
+  ledger state. Epoch-effective protocol parameters (deposits,
+  `govActionLifetime`, `drepActivity`, cost models) are read from
+  `LedgerView.protocolParams()`, so ticking changes them with the rest of the
+  state. `protocolMajor`/`protocolMinor` repeat the view's version for PV gates.
+- **Transaction id.** `TxIdentity` hashes the body bytes sliced from the
+  original transaction bytes, never a re-serialisation.
 
 `LedgerFailure` carries:
 - the Haskell rule (`MEMPOOL`, `LEDGER`, `CERTS`, `DELEG`, `POOL`, `GOVCERT`,
@@ -433,6 +447,14 @@ REST, n2n and n2c rejection paths are unchanged.
     - proposals expired, and those enacted with their new roots;
     - committee changes;
     - the new epoch's protocol parameters.
+  - **Expired proposals stay readable until removed.** Haskell keeps a proposal
+    in `Proposals` after its `expiresAfter` epoch until a boundary removes it,
+    so GOV reports `VotingOnExpiredGovAction` (`Gov.hs:360-362, 607`), not
+    `GovActionsDoNotExist` (`:605`), and the same set feeds the committee
+    candidates (`Ledger.hs:370`). The boundary into epoch `E+1` removes a
+    proposal when `expiresAfter < E`, where `E` is the epoch ratification ran
+    in (`reCurrentEpoch`, `Ratify.hs:357-358`, `DRepPulser.hs:398-404`), **not**
+    `expiresAfter < E+1`. The ticked view must apply exactly that rule.
   - These values come from `ledger-state`'s epoch processing, run as a pure
     **dry run** over a snapshot, never persisted.
   - If a dry run isn't available for a value, the ticked view fails closed: it
@@ -916,7 +938,11 @@ The final PR merges once S5's gates are green.
     register→deregister refund, proposal→vote in one block, UTXOW sees
     pre-certificate refunds, snapshot isolation.
   - **Effects cross-check:** `TxEffectsDeriver` agrees with `ledger-state`
-    block application for a sample of synced blocks.
+    block application for a sample of synced **PV ≥ 10** blocks. Earlier blocks
+    are excluded: before PV10 Haskell's DRep reverse-delegation index could
+    diverge from the forward delegations (`Deleg.hs:363-373`, repaired at the
+    PV10 fork by `HardFork.hs:70-104`), and the overlay clears delegations of a
+    deregistered DRep from the forward side.
 
 ### Phase 2 — Conformance harness first
 

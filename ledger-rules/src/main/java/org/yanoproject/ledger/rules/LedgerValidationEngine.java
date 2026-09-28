@@ -1,0 +1,26 @@
+package org.yanoproject.ledger.rules;
+
+/**
+ * A selectable admission engine (ADR-056 §2, §7): {@code scalus}, {@code java} or {@code amaru}.
+ *
+ * <p>This is the new engine SPI. {@link TransactionValidator} stays unchanged as the legacy
+ * adapter over canonical state until Phase 6 removes it.</p>
+ *
+ * <p>Contract:</p>
+ * <ul>
+ *   <li>Side-effect free: nothing is written anywhere; effects are returned (invariant 3).</li>
+ *   <li>Fail closed: an unavailable read, a conversion error or an unexpected exception is an
+ *       {@link TxValidationOutcome.Invalid} with an {@link LedgerRuleName#ENGINE} failure, never a
+ *       thrown exception and never {@code Valid} (invariant 2).</li>
+ *   <li>Deterministic effects: a {@code Valid} outcome's effects come from
+ *       {@code TxEffectsDeriver} for the verdict, so they do not depend on the engine
+ *       (invariant 4).</li>
+ * </ul>
+ */
+public interface LedgerValidationEngine {
+
+    /** @return the engine name used in configuration and metrics */
+    String name();
+
+    TxValidationOutcome validate(TxValidationRequest request);
+}
