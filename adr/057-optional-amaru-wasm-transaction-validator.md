@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed (revised after the Fable review and the Codex review of PR #155,
-2026-09-28)
+Accepted (2026-09-28). The design was reviewed by Fable and in four Codex
+review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
+with the decisions recorded at the end of this ADR.
 
 ## Date
 
@@ -474,15 +475,14 @@ reverts this ADR completely. No persisted state is involved.
    (`org.yanoproject:yano-amaru-validator-wasm`) as well as a GitHub release
    asset?
 
-## Review decisions requested
+## Decisions (accepted 2026-09-28)
 
-1. Approve Yano owning `amaru-validator-wasm/`, with a git dependency on a pinned
-   Amaru tag and a pinned nightly toolchain.
-2. Approve **Endive build-time AOT** as the only execution mode, with the
-   runtime compiler disabled.
-3. Approve the default `phase2: scalus` for `engine: amaru`, and `full` for
-   oracle runs.
-4. Approve the timeout and abandoned-thread policy (fail closed and unhealthy
-   after the cap).
-5. Approve proposing the interface upstream to Pragma as a published wasm
-   artifact.
+1. Yano owns `amaru-validator-wasm/`, with a git dependency on a pinned Amaru
+   tag and a pinned nightly toolchain.
+2. **Endive build-time AOT** is the only execution mode. The runtime compiler
+   is disabled.
+3. `engine: amaru` defaults to `phase2: scalus`. Oracle runs use `full`.
+4. Timeouts and abandoned threads: the engine fails closed and turns unhealthy
+   once the cap is reached.
+5. Yano proposes the interface upstream to Pragma as a published wasm artifact.
+   Yano's own build does not depend on that.

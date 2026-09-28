@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed (revised after the Fable review and four Codex review rounds of PR #155,
-2026-09-28)
+Accepted (2026-09-28). The design was reviewed by Fable and in four Codex
+review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
+with the decisions recorded at the end of this ADR.
 
 ## Date
 
@@ -85,9 +86,10 @@ Proposed (revised after the Fable review and four Codex review rounds of PR #155
    - shadow validation of synced PV10+ blocks;
    - a mutation matrix;
    - JVM/native parity.
-7. **One PR, built as a stack.** The work lands as one PR from the integration
-   branch `feat/conway-ledger-rules`. Each phase is reviewed as a stacked PR into
-   that branch before the final merge (see Implementation plan).
+7. **One PR, reviewed phase by phase.** The work lands as one PR (#155) from
+   `feat/conway-ledger-rules`. Each logical step or phase is implemented,
+   reviewed by independent sub-agent reviewers (Fable), fixed, tested, then
+   committed and pushed to the PR (see Implementation plan).
 
 ## Context
 
@@ -805,9 +807,15 @@ run everything except shadow sync and the Haskell differential.
 ## Implementation plan
 
 **Branch model.** `feat/conway-ledger-rules` is the integration branch and the
-single PR into `main`. Each numbered step below is a stacked PR into the
-integration branch, reviewed on its own, with the Fable review pass. Order
-across both ADRs:
+single PR (#155) into `main`. Each logical step or phase is:
+1. implemented;
+2. reviewed by independent sub-agent reviewers (Fable), with every rule
+   cross-checked against the Haskell ledger or Amaru;
+3. fixed;
+4. tested;
+5. committed and pushed to the PR, with the PR description updated.
+
+Order across both ADRs:
 
 | Step | Contents |
 |---|---|
@@ -1076,19 +1084,29 @@ The final PR merges once S5's gates are green.
 - Divergence risk remains in value conservation, the script integrity hash and
   min-UTxO. The oracles mitigate it; they don't eliminate it.
 
-## Review decisions requested
+## Decisions (accepted 2026-09-28)
 
-1. Approve Conway **PV10+ only** (no PV9 bootstrap).
-2. Approve the **ticked base view** approach: an in-memory dry run of the
-   boundary effects that are visible to validation.
-3. Set the **mempool budget**: admission p99 and maximum rebuild time at the
-   configured maximum mempool size.
-4. Approve the **integration branch plus stacked PRs** model for the single
-   final PR.
-5. Decide whether `ledger-rules` should later move to CCL for reuse by Yaci
-   DevKit and yaci-store.
-6. Approve **rejecting phase-2-invalid transactions from every origin** in this
-   PR, and deferring collateral-collecting admission (with block-builder
-   `invalid_txs` support) to a follow-up ADR.
-7. Approve the package root **`org.yanoproject.ledger.rules`**, which renames
-   the existing `org.yanoproject.ledgerrules` API package as well.
+1. **Scope:** Conway **PV10+ only**. The PV9 bootstrap phase is out of scope.
+2. **Ticked base view:** an in-memory dry run of the validation-visible boundary
+   effects (§3), with its Phase 1 gate. Accepted.
+3. **Mempool budget.** Initial targets, measured in Phase 6 at the configured
+   maximum mempool size (`yano.tx.mempool.max-txs` = 10,000; JVM, warm).
+   Changing them needs a recorded reason in this ADR.
+
+   | Operation | Target |
+   |---|---|
+   | Admission latency, `engine: java`, transaction without Plutus | p99 ≤ 20 ms |
+   | Admission latency, `engine: java`, transaction with Plutus | p99 ≤ 20 ms plus script evaluation time |
+   | Synchronous truncate-and-reapply on removal (lane held) | ≤ 50 ms for a 1,000-transaction suffix; ≤ 500 ms for 10,000 |
+   | Off-lane rebuild with re-application only | ≤ 2 s for 10,000 transactions |
+   | Off-lane rebuild that needs full validation (hard fork or cost-model change) | No latency target; `CATCHING_UP` is the accepted fallback |
+
+4. **Delivery:** one PR (#155), reviewed phase by phase by sub-agent reviewers,
+   and committed and pushed after each reviewed phase (Branch model above).
+5. **Where `ledger-rules` lives:** it stays in the Yano project. There is **no
+   plan** to move it to CCL.
+6. **Phase-2-invalid transactions:** rejected from every origin in this PR.
+   Collateral-collecting admission, with block-builder `invalid_txs` support,
+   is deferred to a follow-up ADR.
+7. **Package root:** `org.yanoproject.ledger.rules`, which also renames the
+   existing `org.yanoproject.ledgerrules` API package.
