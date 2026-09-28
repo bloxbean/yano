@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (revised after the Fable review and two Codex review rounds of PR #155,
+Proposed (revised after the Fable review and three Codex review rounds of PR #155,
 2026-09-28)
 
 ## Date
@@ -592,7 +592,10 @@ public interface ScriptPhaseEvaluator {
   together.
   - Admission reads only the published state's own snapshot, never the gate.
   - Canonical writers notify the mempool only after releasing the gate.
-  - Rebuilds acquire their snapshot before taking the lane.
+  - Rebuilds acquire their snapshot before taking the lane. This includes the
+    synchronous fallback (step 6 below).
+  - Freshness checks under the lane read the **published** `canonicalGeneration`
+    and tip, a `volatile` read. They never take the gate.
 - **Admission** (under the lane). Run rule `MEMPOOL` against the published
   overlay. On success, append the `ValidatedTx` and its effects layer and swap.
   - The admission holds a reference to the published state for its duration.
@@ -619,36 +622,72 @@ public interface ScriptPhaseEvaluator {
   forward block, a rollback, or an epoch change of the next slot. One rebuild
   worker runs at a time. Triggers that arrive while it runs are coalesced into
   one follow-up rebuild against the newest snapshot.
-  1. Acquire a new `CanonicalSnapshot` (§3), outside the lane.
+  1. Acquire a new `CanonicalSnapshot` (§3), outside the lane. Record its
+     generation `Gs` and the **target epoch** `Es`, the epoch of the `nextSlot`
+     the ticked view is built for.
   2. Under the lane, take a reference to the published `MempoolLedgerState` S
      and record its mutation-log position.
   3. Outside the lane, fold S's `ValidatedTx` list over
      `TickedLedgerView(newSnapshot, nextSlot)` with rule `MEMPOOL`. Each
      transaction's `previous` decides between re-application and full
      validation. Failures are dropped. This produces a candidate state R.
-  4. Under the lane, **publish only if the published state still descends from
-     S by appends alone**, meaning S's mutation log since the recorded position
-     contains only appends. If so, validate those appended transactions in
-     order on top of R, dropping failures, and swap in the result.
+  4. Under the lane, publish only if **both** checks pass:
+     - **Canonical freshness:** the published `canonicalGeneration` still
+       equals `Gs`, and the epoch of the current `nextSlot` still equals `Es`.
+       Mempool ancestry is never taken as proof of canonical freshness.
+     - **Mempool descent:** S's mutation log since the recorded position
+       contains only appends. If so, validate those appended transactions in
+       order on top of R, dropping failures.
 
-     Otherwise, **discard** R. That covers any removal, eviction, clear, or a
-     newer canonical generation published by another rebuild. Then restart
-     from step 1. After `yano.validation.rebuild-max-restarts` (default 3),
-     the next attempt runs steps 1–4 synchronously while holding the lane, so
-     progress is guaranteed.
-  5. **Ownership transfer.**
+     If both pass, swap in the result.
+  5. If either check fails, **discard** R and release `newSnapshot`:
+     - A canonical freshness failure restarts from step 1 against the newest
+       snapshot.
+     - A descent failure (removal, eviction or clear) also restarts from
+       step 1.
+  6. **Synchronous fallback.** After `yano.validation.rebuild-max-restarts`
+     (default 3) consecutive discards, the next attempt changes how it uses the
+     lane, but not the lock order:
+     - It acquires the snapshot outside the lane, exactly as in step 1.
+     - It then takes the lane **before** step 2 and holds it through steps
+       2–4, so the mempool can't change. Only the canonical writer can then
+       invalidate the attempt, and the freshness check in step 4 still applies.
+     - If the canonical generation or target epoch moved during the attempt, it
+       releases the lane and the snapshot and tries again, up to
+       `yano.validation.rebuild-sync-attempts` (default 3).
+  7. **Catching up.** Holding the lane can't stop blocks from arriving. If the
+     synchronous attempts are also exhausted (for example during fast catch-up
+     sync, when blocks arrive faster than a fold), the mempool enters
+     `CATCHING_UP` rather than publish a stale result:
+     - Admission is rejected with a retryable `MempoolCatchingUp` status. Local
+       submitters get a retryable error; peer transactions aren't requested.
+     - Block selection skips the mempool.
+     - The worker keeps retrying with each newly published generation. The
+       first successful publication returns the mempool to `READY`.
+     - `CATCHING_UP` is exported as a metric and on the health endpoint.
+  8. **Ownership transfer.**
      - On a successful swap, the new published state keeps the reference to
        `newSnapshot` that the rebuild acquired. The rebuild does not release
        it.
      - The replaced state is **retired**. It releases its own snapshot
        reference only once every admission and frozen shadow view that
        retained it has released theirs, through reference counting.
-     - If the rebuild's result is discarded, the rebuild releases `newSnapshot`
-       itself.
+     - Every discarded attempt releases its own `newSnapshot`.
 
   This keeps O(N) × validation time off the admission path. A rebuild is never
-  published against a tip it didn't read, never resurrects a removed
-  transaction, and never keeps a removed transaction's effects.
+  published for a generation or target epoch that was already superseded when it
+  was checked. It never resurrects a removed transaction, never keeps a removed
+  transaction's effects, and never holds the canonical gate and the mempool lane
+  together.
+- **Bounded lag after publication.** A canonical write can still be published
+  just after the step-4 check. That is harmless:
+  - The writer notifies the mempool after releasing the gate, which always
+    queues a follow-up rebuild.
+  - Until that rebuild publishes, the published state is at most one
+    generation behind. Admissions against it are provisional and are
+    re-validated by the follow-up rebuild.
+  - Block selection never relies on the mempool overlay. It acquires its own
+    snapshot and re-validates every candidate (block production, below).
 - **Which events trigger it.** Forward application and rollback both notify
   the mempool after the canonical gate is released and `canonicalGeneration` is
   published. This replaces `onCanonicalRollbackApplied`
@@ -879,8 +918,21 @@ The final PR merges once S5's gates are green.
     protocol-major change and across a cost-model parameter change. Every
     re-application is a full validation (including Plutus), and transactions
     that became invalid are dropped;
-  - **publication race:** a forward block and a rollback are each injected
-    during a rebuild. The stale rebuild is discarded, never published;
+  - **publication race:** a forward block, a rollback, and a slot crossing into
+    a new epoch are each injected during the fold (step 3). This is tested with
+    the mempool unchanged, and separately with appends only, while the
+    follow-up rebuild worker is **deliberately held**, so a queued follow-up
+    can't mask a stale publication. In every case the candidate is discarded,
+    never published;
+  - **synchronous fallback and catching up:**
+    - Force the discard limit, then check that the fallback acquires its
+      snapshot without holding the lane: a lock-order assertion fails the test
+      if the gate and the lane are ever held together.
+    - Advance the canonical tip during the fallback. It retries, then enters
+      `CATCHING_UP`.
+    - While `CATCHING_UP`, admission returns the retryable status and block
+      selection skips the mempool.
+    - The next successful publication returns the mempool to `READY`;
   - **mempool removals during a rebuild:** removal, TTL eviction and clear are
     each injected during an off-lane rebuild, with the canonical tip unchanged.
     The case includes stake register (A) → delegate (B) with independent UTxO
@@ -951,6 +1003,7 @@ The final PR merges once S5's gates are green.
 | A rebuild or snapshot mixes two canonical tips | Canonical write gate around whole-block application; snapshots acquired under the read lock; paused-writer and mid-read write gates |
 | A published or shadow view reads through a released snapshot | Reference-counted `CanonicalSnapshot`; ownership transferred on swap; retire-then-release; ownership gate with leak metric |
 | Removed transactions resurrected, or their effects kept | Immutable `MempoolLedgerState`; synchronous truncate-and-reapply on removal; rebuild publishes only on append-only descent |
+| Mempool unavailable (`CATCHING_UP`) during fast catch-up sync | Retryable status, never a stale publication; health and metric visibility; exits on the first successful publication |
 | A cached phase-2 verdict survives a hard fork or cost-model change | `ValidatedTx` provenance; shared invalidation rules; pending-mempool hard-fork gate |
 | Valid first-time registrations rejected as "missing state" | Three-outcome `Lookup`; Phase 1 lookup gate |
 | A phase-2-invalid transaction reaches a block the builder can't encode | Rejected at admission until the follow-up ADR lands |
