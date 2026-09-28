@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (revised after independent review, 2026-09-28)
+Proposed (revised after the Fable review and the Codex review of PR #155,
+2026-09-28)
 
 ## Date
 
@@ -36,14 +37,22 @@ Proposed (revised after independent review, 2026-09-28)
 - Haskell `cardano-ledger` is the source of truth for rule semantics. Amaru and
   Scalus are references and oracles only. Where they disagree with Haskell,
   Haskell wins, and Yano records the divergence.
+- **Pinned Haskell revision.** Phase 1 pins the `cardano-ledger` revision used
+  by the Haskell node version Yano targets. Every Haskell reference in this ADR
+  (module paths, rule order, `reapplyTx`/`reapplyValidatedTx`, static labels)
+  is re-checked against that revision and recorded in
+  `ledger-rules/docs/conway-rule-coverage.md`. The local reference checkout
+  (`42d088ed8`, 2026-04-29) predates upstream changes to mempool re-application.
 
 ## Decision summary
 
 1. **One Java rules module.** Rename `ccl-ledger-rules` to `ledger-rules`, fold
    it into the existing `ledger-rules` API module, and move the code from the
-   copied `com.bloxbean.cardano.client.ledger` package to
-   `org.yanoproject.ledgerrules`. The Aiken and julc script evaluators move to a
-   new `script-evaluators` module so `ledger-rules` stays pure Java.
+   copied `com.bloxbean.cardano.client.ledger` package, and the existing
+   `org.yanoproject.ledgerrules` API package, to one package root:
+   **`org.yanoproject.ledger.rules`** (layout in §1). No `com.bloxbean` package
+   remains in Yano's ledger-rules code. The Aiken and julc script evaluators move
+   to a new `script-evaluators` module so `ledger-rules` stays pure Java.
 2. **A complete Conway transaction transition.** Implement Conway `LEDGER`, plus
    the `MEMPOOL` rule for admission, as one ordered transition that mirrors the
    Haskell composition. Each leaf predicate failure maps to a typed failure
@@ -188,8 +197,16 @@ Proposed (revised after independent review, 2026-09-28)
 
 1. **Source of truth.** Rule semantics follow Haskell `cardano-ledger` for the
    active protocol version.
-2. **Fail closed.** A missing state read, conversion error or unexpected
-   exception rejects the transaction as phase-1. It never admits it.
+2. **Fail closed on unavailable state, not on absent records.** Every
+   `LedgerView` read returns one of three outcomes: **present** (with a value),
+   **confirmed absent**, or **unavailable** (read failure, store not ready,
+   snapshot expired).
+   - Confirmed absence is ordinary ledger data: a pool registering for the
+     first time, a credential registering after a deregistration. It reaches
+     the rules, which report the typed ledger failure if one applies.
+   - An unavailable read, a conversion error or an unexpected exception rejects
+     the transaction as a phase-1 engine failure (`LedgerStateUnavailable`). It
+     never admits it.
 3. **Validation is side-effect free.** A successful validation returns
    `TxEffects`. Only the caller applies them to an overlay. Canonical RocksDB
    state is never mutated by validation.
@@ -228,10 +245,29 @@ Proposed (revised after independent review, 2026-09-28)
 | Module | After this ADR |
 |---|---|
 | `ledger-rules` | Validation API, `LedgerView` and overlays, the ticking adapter, `TxEffects`, and the Conway rule engine. Pure Java. Depends on `core-api` and CCL core. |
-| `ccl-ledger-rules` | **Removed.** Its code moves into `ledger-rules` under `org.yanoproject.ledgerrules.conway.*`. Removed from `settings.gradle` and the BOM. No external consumer was found in yano-x, yaci-store or yaci-devkit, so no relocation shim is needed. |
-| `script-evaluators` (new) | `AikenTxEvaluator`, `JulcTxEvaluator` and `YaciScriptSupplier`, moved from `ledger-rules` with their tests. They keep the `TransactionEvaluator` interface. |
-| `scalus-bridge` | The Scalus engine, the Scalus `TransactionEvaluator`, and the Scalus `ScriptPhaseEvaluator`. |
-| `amaru-validator` (ADR-057) | Optional. Depends on `ledger-rules`. |
+| `ccl-ledger-rules` | **Removed.** Its code moves into `ledger-rules` under `org.yanoproject.ledger.rules.*`. Removed from `settings.gradle` and the BOM. No external consumer was found in yano-x, yaci-store or yaci-devkit, so no relocation shim is needed. |
+| `script-evaluators` (new) | `AikenTxEvaluator`, `JulcTxEvaluator` and `YaciScriptSupplier`, moved from `ledger-rules` with their tests, into `org.yanoproject.ledger.scripteval`. They keep the `TransactionEvaluator` interface. |
+| `scalus-bridge` | The Scalus engine, the Scalus `TransactionEvaluator`, and the Scalus `ScriptPhaseEvaluator`. Package unchanged (`org.yanoproject.scalusbridge`). |
+| `amaru-validator` (ADR-057) | Optional. Depends on `ledger-rules`. Package `org.yanoproject.ledger.amaru`. |
+
+**Package layout.** The root is `org.yanoproject.ledger`, a domain name as
+`AGENTS.md` requires, not a product name. `org.yanoproject.ledgerstate` is not
+renamed by this ADR.
+
+| Package | Contents |
+|---|---|
+| `org.yanoproject.ledger.rules` | Public API: `TransactionValidator`, `TransactionEvaluator`, `TxValidationRequest`/`TxValidationOutcome`, `ValidationEnv`, `ValidationResult`/`ValidationError`, parameter and slot-config suppliers |
+| `org.yanoproject.ledger.rules.view` | `LedgerView`, `CanonicalLedgerView`, `TickedLedgerView`, `OverlayLedgerView` |
+| `org.yanoproject.ledger.rules.effects` | `TxEffects`, `TxEffectsDeriver` |
+| `org.yanoproject.ledger.rules.phase2` | `ScriptPhaseEvaluator` SPI and result types |
+| `org.yanoproject.ledger.rules.conway` | `ConwayLedgerTransition`, protocol version gates, REAPPLY static/dynamic labels |
+| `org.yanoproject.ledger.rules.conway.failure` | `LedgerFailure` and the typed constructors, per Haskell rule |
+| `org.yanoproject.ledger.rules.conway.{mempool,ledger,certs,gov,utxow,utxo,utxos}` | One package per Haskell rule family |
+| `org.yanoproject.ledger.rules.util` | Former CCL utilities: `TxBalanceCalculator`, `LedgerMinFeeCalculator`, `NativeScriptEvaluator`, `RequiredWitnessResolver`, `UtxoUtil` |
+
+The copied CCL state slices (`UtxoSlice`, `AccountsSlice`, …, and the `Yaci*Slice`
+implementations) are replaced by `LedgerView` in Phase 1. Until then they move
+unchanged into `org.yanoproject.ledger.rules.view.slice`.
 
 ### 2. Validation API
 
@@ -245,19 +281,41 @@ public interface TransactionValidator {
 }
 
 public record TxValidationRequest(byte[] txCbor, LedgerView view, ValidationEnv env,
-                                  Mode mode, Origin origin) {
-    public enum Mode { FULL, REAPPLY }            // §6
-    public enum Origin { LOCAL, PEER, BLOCK_BUILD } // §6, isValid=false policy
+                                  Rule rule, Origin origin,
+                                  ValidatedTx previous) {        // null = never validated
+    public enum Rule { MEMPOOL, LEDGER }            // §4: admission vs block contexts
+    public enum Origin { LOCAL, PEER, BLOCK_BUILD, SYNC }
 }
 
 public record ValidationEnv(long currentSlot, long currentEpoch, int protocolMajor,
-                            NetworkId networkId, SlotConfig slotConfig) {}
+                            NetworkId networkId, SlotConfig slotConfig,
+                            byte[] phase2EnvDigest) {}           // §6 invalidation rules
+
+/** Provenance of a successful full validation; kept by the mempool per transaction. */
+public record ValidatedTx(byte[] txCbor, byte[] txId, int validatedProtocolMajor,
+                          long validatedEpoch, byte[] validatedPhase2EnvDigest,
+                          boolean phase2Valid, Origin origin) {}
 
 public sealed interface TxValidationOutcome {
-    record Valid(TxEffects effects, boolean phase2Valid) implements TxValidationOutcome {}
+    record Valid(TxEffects effects, ValidatedTx validated, boolean reapplied)
+            implements TxValidationOutcome {}
     record Invalid(List<LedgerFailure> failures) implements TxValidationOutcome {}
 }
+
+/** Result of every LedgerView read (invariant 2). */
+public sealed interface Lookup<T> {
+    record Present<T>(T value) implements Lookup<T> {}
+    record Absent<T>() implements Lookup<T> {}
+    record Unavailable<T>(String reason) implements Lookup<T> {}
+}
 ```
+
+- The caller doesn't choose `FULL` or `REAPPLY`. The validator decides from
+  `previous` and the environment, using the invalidation rules in §6. So
+  mempool rebuilds and block selection can't disagree about when a cached
+  verdict is still usable.
+- `ValidatedTx` is the only form in which a transaction's earlier verdict is
+  carried. Raw bytes plus a mode flag can't express where a verdict came from.
 
 `LedgerFailure` carries:
 - the Haskell rule (`MEMPOOL`, `LEDGER`, `CERTS`, `DELEG`, `POOL`, `GOVCERT`,
@@ -285,9 +343,30 @@ REST, n2n and n2c rejection paths are unchanged.
 | Parameters | epoch-effective `ProtocolParams` and cost models (ADR-024) |
 
 - **`CanonicalLedgerView`** reads `UtxoState`, `LedgerStateProvider`, the
-  `GovernanceStateStore` and the epoch parameter tracker. Each read is fail
-  closed. The one accessor still to confirm is the candidate payload of pending
-  `UpdateCommittee` proposals.
+  `GovernanceStateStore` and the epoch parameter tracker. Reads follow the
+  three-outcome contract of invariant 2. The one accessor still to confirm is
+  the candidate payload of pending `UpdateCommittee` proposals.
+- **Canonical snapshot contract.** A `CanonicalLedgerView` is always a
+  **snapshot of one fully applied canonical tip**. It never reads live stores,
+  whose parts could describe different tips while a block is being applied.
+  - **Generation.** Canonical application publishes a monotonic
+    `canonicalGeneration` together with the tip (slot, hash). The counter is
+    bumped only after a forward block **or** a rollback has been fully applied
+    to every store the view reads: UTxO, accounts, pools, DReps, governance,
+    epoch parameters and AdaPot.
+  - **Consistent reads.** A snapshot pins its generation. Where the stores
+    share one RocksDB instance, it holds a RocksDB read snapshot. Otherwise it
+    reads under a generation seqlock: it records the generation before and
+    after each read batch and retries if the two differ. Which mechanism
+    applies is settled by a Phase 1 gate.
+  - **Ownership and lifetime.** The snapshot is owned by whoever opened it:
+    one admission, one rebuild, one block-selection pass, or one shadow
+    validation. It is closed in `finally`. Asynchronous shadow readers get
+    their own snapshot and must finish within `yano.validation.snapshot-max-age-ms`
+    (default 30 s). After that, reads return `Unavailable` and the shadow
+    result is discarded, not counted as a disagreement.
+  - **Bounded resources.** The number of open snapshots is capped, so a slow
+    reader can't pin RocksDB resources indefinitely.
 - **`TickedLedgerView(canonical, slot)`** — the answer to "what is the state at
   slot `s`".
   - If `s` is in the tip's epoch, it is the canonical view.
@@ -327,8 +406,23 @@ REST, n2n and n2c rejection paths are unchanged.
 
 ### 4. The Conway transition in Java
 
-`ConwayLedgerTransition.apply(view, env, tx)` follows Haskell Conway `LEDGER`
-(`eras/conway/impl/src/Cardano/Ledger/Conway/Rules/Ledger.hs`):
+`ConwayLedgerTransition.apply(view, env, tx, rule)` follows Haskell Conway.
+Admission and mempool rebuilds run `MEMPOOL`, which runs its own checks and then
+invokes `LEDGER` (`Conway/Rules/Mempool.hs`). Block selection and shadow sync
+run `LEDGER` only (`Conway/Rules/Ledger.hs`), without the admission-only
+checks.
+
+0. **MEMPOOL** (only when `rule = MEMPOOL`), against the **incoming** state,
+   before anything in `LEDGER`:
+   - `ConwayMempoolFailure` when **all** inputs are already spent ("probably a
+     duplicate"). If this fails, every other check is skipped, as Haskell's
+     `whenFailureFreeDefault` does. So a duplicate reports only this failure.
+   - Before `hardforkConwayDisallowUnelectedCommitteeFromVoting` (PV11): reject
+     votes by unelected committee members, judged against the incoming
+     committee state, not post-certificate state. From PV11 the same check
+     lives in `GOV`.
+
+   Only if MEMPOOL passes does `LEDGER` run:
 
 1. **If `isValid=true`, the LEDGER pre-checks**, against pre-certificate state:
    - treasury value (`ConwayTreasuryValueMismatch`);
@@ -367,9 +461,6 @@ REST, n2n and n2c rejection paths are unchanged.
      and value conservation (deposits, refunds, proposal deposits, donations).
 5. **UTXOS.** Phase-2 through `ScriptPhaseEvaluator`, compared with the
    transaction's `isValid` flag.
-6. **MEMPOOL** (admission only, `Conway/Rules/Mempool.hs`): `ConwayMempoolFailure`
-   for a transaction whose inputs are all already spent, and for the other
-   mempool-only checks at the active protocol version.
 
 Protocol version gates are data: each check declares its PV range, and the
 constructor it reports is the one valid at that version. The coverage matrix
@@ -398,53 +489,118 @@ public interface ScriptPhaseEvaluator {
 
 ### 6. Runtime integration
 
-**Handling phase-2-invalid transactions (`isValid=false` outcome).**
-- **Local submission** (REST, n2c): reject a transaction whose Plutus fails
-  while it claims `isValid=true`. This protects the submitter's collateral,
-  which is Haskell's `Intervene` behaviour.
-- **Peer submission** (n2n): follows Haskell's `DoNotIntervene` behaviour
-  (confirm against ouroboros-consensus in Phase 1). If such a transaction is
-  admitted, its effects are collateral-only, consistent with
-  `DefaultMempoolEvictionPolicy`'s existing collateral handling.
+**Phase-2-invalid transactions: rejected at admission in this ADR.**
+- **Current block-builder limitation.** Yano's block builder can't yet encode a
+  phase-2-invalid transaction. `DevnetBlockBuilder.splitTransaction`
+  (`runtime/.../blockproducer/DevnetBlockBuilder.java:479-505`) ignores
+  `is_valid` ("For now, assume all txs are valid"). `computeBlockBody` always
+  emits an empty `invalid_txs` array (`:220-252`). The signed builder inherits
+  this. Admitting a transaction whose effects are collateral-only would
+  therefore produce blocks that Haskell rejects.
+- **Admission policy for every origin** (local and peer):
+  - a transaction claiming `isValid=true` whose scripts fail is rejected
+    (`UTXOS.ValidationTagMismatch`);
+  - a transaction submitted with `isValid=false` is rejected with the Yano
+    policy failure `Phase2InvalidTxNotSupported`, even if it is ledger-valid.
+
+  This matches Yano's behaviour today: Scalus rejects any phase-2 failure.
+- **Collateral effects still exist.** `TxEffectsDeriver` keeps its
+  collateral-only branch, because shadow sync validates synced blocks that
+  contain phase-2-invalid transactions.
+- **Follow-up, not in this PR.** Admitting peer transactions as phase-2 invalid
+  (Haskell's `DoNotIntervene`, which collects collateral) needs its own ADR,
+  covering:
+  - `ValidatedTx` keeping the **corrected** validity flag when a peer
+    transaction arrives claiming `isValid=true`. Mempool storage, diffusion and
+    block encoding must all use the corrected transaction bytes. The body, and
+    so the transaction id, are unchanged; only the `is_valid` field changes.
+  - Collateral-aware mempool indexes: spend collateral, produce the collateral
+    return, not the regular inputs or outputs.
+  - Populating `invalid_txs` in block encoding, and in body size and hash.
+  - A Haskell-follower test with a phase-2-invalid transaction in a
+    Yano-produced block.
+  - Confirming the `WhetherToIntervene` semantics against the pinned
+    ouroboros-consensus revision.
 
 **Mempool.**
-- **Admission.** `DefaultMemPool` owns one `OverlayLedgerView` over
-  `TickedLedgerView(canonical, nextSlot)`. Admission validates in `FULL` mode
-  against it, then appends the effects under the existing mutation lane. The
-  UTxO indexes stay as indexes; `resolve` is served by the overlay.
-- **Rebuild without stalling admission.** A new block, rollback, eviction or
-  epoch change triggers a rebuild:
-  1. Take the ordered transaction list under the lane.
-  2. Re-apply it in `REAPPLY` mode **outside the lane**, over a fresh ticked
-     base.
-  3. Swap the result in under the lane, together with a sequence check.
-     Transactions admitted during the rebuild are re-applied on top before the
-     swap completes, and any that now fail are dropped.
+- **Admission.** `DefaultMemPool` keeps one `OverlayLedgerView` over
+  `TickedLedgerView(snapshot, nextSlot)`. Admission runs rule `MEMPOOL` against
+  it, stores the resulting `ValidatedTx`, and appends the effects under the
+  existing mutation lane. The UTxO indexes stay as indexes; `resolve` is served
+  by the overlay.
+- **Two generations.** The mempool tracks a `mempoolGeneration`, bumped on
+  every admission, removal or eviction. Canonical state has its
+  `canonicalGeneration` (§3).
+- **Rebuild without stalling admission.** Triggers: a forward block, rollback,
+  eviction, or an epoch change of the next slot.
+  1. Under the lane, capture `(canonicalGeneration, mempoolGeneration)` and the
+     ordered `ValidatedTx` list.
+  2. Outside the lane, open one canonical snapshot at the captured generation.
+     Re-apply the list over `TickedLedgerView(snapshot, nextSlot)` with rule
+     `MEMPOOL`. Each transaction's `previous` decides between re-application
+     and full validation (invalidation rules below).
+  3. Under the lane, **publish only if the canonical generation is unchanged**.
+     - If `canonicalGeneration` moved, a forward block or rollback happened
+       meanwhile. Discard the result and restart from step 1. After
+       `yano.validation.rebuild-max-restarts` (default 3), admission holds the
+       lane for one synchronous rebuild so progress is guaranteed.
+     - If only `mempoolGeneration` moved, validate the transactions admitted
+       during the rebuild on top of the new overlay, drop those that now fail,
+       then publish.
+  4. Close the snapshot.
 
-  This avoids blocking admission for O(N) × validation time.
-- **Which rollback event.** A rollback rebuild waits for the **ledger-state**
-  rollback (accounts and governance) to complete, not only
-  `UtxoStateRolledBackEvent`. The `onCanonicalRollbackApplied` hook
-  (`TxSubsystem.java:655`) moves to the ledger-state completion signal.
+  This avoids blocking admission for O(N) × validation time, and a completed
+  rebuild is never published against a tip it didn't read.
+- **Which events trigger it.** Forward application and rollback both trigger
+  rebuilds, keyed on `canonicalGeneration`. The generation is bumped only after
+  **all** stores have applied the block or rollback, so a rebuild can't observe
+  a half-applied state. This replaces `onCanonicalRollbackApplied`
+  (`TxSubsystem.java:655`), which fires on the UTxO rollback alone.
 - **Epoch boundary.** When the next slot crosses into a new epoch, the ticked
-  base changes, which triggers a rebuild.
+  base changes. That triggers a rebuild, which applies the invalidation rules
+  below.
 
-**`REAPPLY` mode** follows Haskell `reapplyTx`, which skips
-`lblStatic`-labelled checks (`Shelley/API/Mempool.hs`). Phase-2 is part of
-the static set (`Alonzo/Rules/Utxos.hs`, `when2Phase`). Every other check is
-re-run against the new environment.
+**Re-application and invalidation.** Mempool rebuilds and block selection use
+the same rule. The validator re-applies a transaction (skipping static checks)
+only when `previous` is present **and** none of the following changed since
+`previous` was produced:
+- **protocol major version** (Haskell `reapplyValidatedTx` on upstream master
+  forces full validation on a major-version change; to be confirmed at the
+  pinned revision);
+- **`phase2EnvDigest`**: the hash of what a phase-2 verdict depends on besides
+  the resolved inputs. That is the cost models of the languages the transaction
+  uses, the ExUnits price and limit parameters, and the Plutus language
+  versions allowed at the current protocol version;
+- **resolved inputs**: any spending, reference or collateral input resolving to
+  different bytes (for example after a rollback);
+- **origin**: a `LOCAL` or `PEER` verdict can be re-applied in `BLOCK_BUILD`;
+  a `SYNC` verdict is never re-used for admission.
+
+If any of these changed, the transaction is validated in full, including
+Plutus. Its new `ValidatedTx` replaces the old one. Phase 6 includes a
+**pending-mempool hard-fork test**: transactions sit in the mempool across a
+protocol-major change and a cost-model change, and every re-application is
+checked to be a full validation.
+
+**Static checks** follow Haskell `reapplyTx`, which skips `lblStatic`-labelled
+checks (`Shelley/API/Mempool.hs`). Phase-2 is part of the static set
+(`Alonzo/Rules/Utxos.hs`, `when2Phase`). Every other check is re-run against
+the new environment.
 
 | Skipped in REAPPLY (static) | Re-run in REAPPLY (depend on state or environment) |
 |---|---|
 | vkey and bootstrap signature verification, metadata hash/validity, native script evaluation, empty inputs, bootstrap address attributes, network ids (tx body, outputs, withdrawals), max tx size, **Plutus execution** | input existence, validity interval and forecast, fees, min-UTxO, value size, ExUnits limits, script integrity hash (cost models may have changed), needed witnesses, reference input disjointness, all CERTS, GOV and LEDGER checks, MEMPOOL |
 
 **Block production.**
-- `BlockTransactionSelectors.selectMempool` builds a fresh block-local
-  `OverlayLedgerView` over `TickedLedgerView(canonical, forgeSlot)`. It
-  deliberately does not reuse the mempool overlay: only selected transactions
-  are applied, in selection order.
-- It validates each candidate in `REAPPLY` mode, falling back to `FULL` if the
-  candidate's admission environment differs.
+- `BlockTransactionSelectors.selectMempool` opens one canonical snapshot. It
+  builds a fresh block-local `OverlayLedgerView` over
+  `TickedLedgerView(snapshot, forgeSlot)`. It deliberately does not reuse the
+  mempool overlay: only selected transactions are applied, in selection order.
+- It validates each candidate with rule `LEDGER`, passing the candidate's
+  `ValidatedTx`. The invalidation rules above decide between re-application and
+  full validation.
+- If `canonicalGeneration` changes before the block is forged, the selection is
+  discarded and redone.
 - `BlockBuildUtxoOverlay` is removed.
 
 **Scalus under overlays.** An overlay-aware adapter makes `OverlayLedgerView`
@@ -512,13 +668,24 @@ The final PR merges once S5's gates are green.
 
 ### Phase 0 — Module consolidation (no behaviour change)
 
-- Move the `ccl-ledger-rules` sources into `ledger-rules` and change packages.
-- Move the Aiken and julc evaluators to `script-evaluators`.
-- Update `settings.gradle`, the BOM, `scalus-bridge`, `runtime` and
-  `tx-services`, native-image metadata, and docs.
+- Move the `ccl-ledger-rules` sources into `ledger-rules`, from
+  `com.bloxbean.cardano.client.ledger.*` to the `org.yanoproject.ledger.rules.*`
+  layout in §1.
+- Rename the existing API package `org.yanoproject.ledgerrules` to
+  `org.yanoproject.ledger.rules`, and update every importer: `runtime`,
+  `tx-services`, `scalus-bridge` (Java and Scala sources), `app`, and tests.
+- Move the Aiken and julc evaluators to `script-evaluators`
+  (`org.yanoproject.ledger.scripteval`).
+- Update `settings.gradle`, the BOM, native-image metadata (any
+  reflection/resource/JNI config naming the old packages), Quarkus
+  configuration that names classes, and docs.
 - Move tests: `TxBalanceCalculatorTest`, and the evaluator tests to
   `script-evaluators`.
-- Gate: the full JVM suite is green; a native smoke test passes.
+- Gates:
+  - the full JVM suite is green;
+  - a native smoke test passes;
+  - `grep` finds no `com.bloxbean.cardano.client.ledger` and no
+    `org.yanoproject.ledgerrules` left in Yano sources.
 
 ### Phase 1 — API, views, ticking, effects, engine selection
 
@@ -526,8 +693,19 @@ The final PR merges once S5's gates are green.
   `TickedLedgerView`, `OverlayLedgerView` and `TxEffectsDeriver`.
 - Add the Scalus engine adapter and the overlay-aware `LedgerStateProvider`.
 - Add the `engine`/`shadow-engines` config. The default stays `scalus`.
-- Confirm the Haskell `WhetherToIntervene` policy against ouroboros-consensus.
+- Add `ValidatedTx`, the `Lookup` read contract, `canonicalGeneration`
+  publication after full block and rollback application, and canonical
+  snapshots.
+- Pin the `cardano-ledger` and ouroboros-consensus revisions, and re-check every
+  Haskell reference in this ADR against them.
 - Gates:
+  - **Snapshot gate:** decide between a RocksDB snapshot and a generation
+    seqlock for each store the view reads. A concurrency test applies forward
+    blocks and rollbacks while snapshots are read, and no snapshot ever mixes
+    two tips.
+  - **Lookup gate:** a fresh pool registration, deregistration followed by
+    registration, and a first-time DRep registration all reach the rules as
+    confirmed absence. An injected store failure yields `LedgerStateUnavailable`.
   - **Ticking gate:** for the last N preprod and preview epoch boundaries, the
     `TickedLedgerView` dry run equals the state `ledger-state` persists after
     the real boundary, for every validation-visible value in §3.
@@ -558,17 +736,40 @@ The final PR merges once S5's gates are green.
 
 ### Phase 5 — GOV, LEDGER pre-checks, MEMPOOL
 
-- Gate: all Amaru scenarios pass, or each remaining one has a recorded,
-  Haskell-backed divergence. The coverage matrix is 100%.
+- Implement `MEMPOOL` as the admission entry point in front of `LEDGER` (§4,
+  step 0).
+- Gates:
+  - all Amaru scenarios pass, or each remaining one has a recorded,
+    Haskell-backed divergence;
+  - the coverage matrix is 100%;
+  - MEMPOOL fixtures:
+    - an all-inputs-spent duplicate reports **only** `ConwayMempoolFailure`;
+    - at PV10, an unelected-committee vote is judged against the incoming
+      committee state, even when the same transaction's certificates would
+      change it;
+    - at PV11 the check moves to `GOV`;
+    - rule `LEDGER` (block selection, shadow sync) never reports a MEMPOOL
+      failure.
 
 ### Phase 6 — Runtime overlays
 
-- Add the mempool overlay with off-lane rebuild and swap, the ledger-state
-  rollback signal, rebuild at the epoch boundary, the origin-dependent
-  `isValid=false` policy, and the block-production overlay.
+- Add the mempool overlay with off-lane rebuild and generation-checked
+  publication, rebuild triggers for forward blocks, rollbacks and epoch
+  boundaries, per-transaction `ValidatedTx` provenance with the shared
+  invalidation rules, the phase-2-invalid rejection policy, and the
+  block-production overlay.
 - Remove `BlockBuildUtxoOverlay` and the legacy validator overload.
 - Migrate the mempool and selector tests.
 - Gates:
+  - **pending-mempool hard fork:** transactions sit in the mempool across a
+    protocol-major change and across a cost-model parameter change. Every
+    re-application is a full validation (including Plutus), and transactions
+    that became invalid are dropped;
+  - **publication race:** a forward block and a rollback are each injected
+    during a rebuild. The stale rebuild is discarded, never published;
+  - **phase-2-invalid:** an `isValid=false` transaction, and an `isValid=true`
+    transaction whose script fails, are both rejected from local and peer
+    origins, and no Yano-produced block contains a non-empty `invalid_txs`;
   - devnet end-to-end with dependent chains in one block and in the mempool
     (stake register→delegate→vote, DRep register→delegate, proposal→vote,
     register→deregister);
@@ -619,6 +820,10 @@ The final PR merges once S5's gates are green.
 | The ticked-view dry run diverges from real boundary processing | Phase 1 ticking gate against persisted boundaries; fail closed on values not computable as a dry run |
 | Value conservation, script integrity hash or min-UTxO diverges from Haskell | Amaru scenarios, blueprint vectors, shadow sync, Amaru differential |
 | Mempool rebuild latency under load | Off-lane rebuild and swap; REAPPLY; measured budget gate |
+| A rebuild or snapshot mixes two canonical tips | Snapshots pinned to `canonicalGeneration`; generation-checked publication; concurrency gate |
+| A cached phase-2 verdict survives a hard fork or cost-model change | `ValidatedTx` provenance; shared invalidation rules; pending-mempool hard-fork gate |
+| Valid first-time registrations rejected as "missing state" | Three-outcome `Lookup`; Phase 1 lookup gate |
+| A phase-2-invalid transaction reaches a block the builder can't encode | Rejected at admission until the follow-up ADR lands |
 | PV11 constructor and ordering changes | (constructor, PV) keyed matrix; tests on both sides of each gate |
 | The scope makes the final PR hard to review | Stacked PRs into the integration branch, each gated and reviewed |
 
@@ -679,3 +884,8 @@ The final PR merges once S5's gates are green.
    final PR.
 5. Decide whether `ledger-rules` should later move to CCL for reuse by Yaci
    DevKit and yaci-store.
+6. Approve **rejecting phase-2-invalid transactions from every origin** in this
+   PR, and deferring collateral-collecting admission (with block-builder
+   `invalid_txs` support) to a follow-up ADR.
+7. Approve the package root **`org.yanoproject.ledger.rules`**, which renames
+   the existing `org.yanoproject.ledgerrules` API package as well.

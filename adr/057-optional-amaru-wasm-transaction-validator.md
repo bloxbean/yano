@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (revised after independent review, 2026-09-28)
+Proposed (revised after the Fable review and the Codex review of PR #155,
+2026-09-28)
 
 ## Date
 
@@ -127,9 +128,20 @@ everything the transaction needs.
 2. The wasm module is pure: no file system, network or environment access. The
    WASI imports are satisfied by a minimal host (clock, random, stdout/stderr
    sink, `proc_exit` → trap).
-3. **Every request is self-contained**, built from a `LedgerView` snapshot.
-   Amaru never sees partial state. Missing required keys fail closed on the
-   Java side before the call.
+3. **Every request is self-contained**, built from one ADR-056 canonical
+   snapshot plus overlay. Each required key is resolved with the three-outcome
+   `Lookup` contract (ADR-056 invariant 2):
+   - **Present:** the entry is included in the request.
+   - **Confirmed absent:** the entry is left out of the corresponding slice. That
+     is exactly how Amaru represents absence: its preparation step returns only
+     the keys that exist, because, for example, a pool may be registering for the
+     first time (`context/default/preparation.rs`, `resolve_pools`, at
+     `d72e9b5`). The rules then report any typed ledger failure themselves.
+   - **Unavailable:** the request is not sent. The transaction is rejected with
+     `LedgerStateUnavailable` (an engine failure, not a ledger failure).
+
+   Amaru never sees partial state, and a legitimately absent record is never
+   turned into a host-side rejection.
 4. **A trap, a timeout or an undecodable response rejects the transaction as
    phase-1** (`AmaruEngineFailure`), and the instance is discarded and
    re-created.
@@ -217,7 +229,14 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
     `interpreterFallback=WARN` until the three oversized functions are split
     upstream or in the wrapper.
   - `AmaruTransactionValidator implements TransactionValidator`.
+  - All Java code lives in `org.yanoproject.ledger.amaru`, next to ADR-056's
+    `org.yanoproject.ledger.rules`. The Endive-generated AOT classes go under
+    `org.yanoproject.ledger.amaru.generated`.
 - **Request flow.**
+  0. For rule `MEMPOOL`, run ADR-056's Java `MEMPOOL` step against the incoming
+     state first (all-inputs-spent, then the pre-PV11 unelected-committee
+     check). Amaru's `validate_transaction` implements `LEDGER` only, so failure
+     precedence stays identical across engines.
   1. Decode the tx.
   2. Call `required_keys`.
   3. Resolve each key through the request's `LedgerView` (the overlay).
@@ -341,6 +360,10 @@ Shipped in the same final PR as ADR-056, through the stacked steps S2 (A, B), S4
 - Wire `yano.validation.engine=amaru` and shadow-engine registration.
 - Gates:
   - unit tests, including golden interface tests for the request encoding;
+  - absence handling: a fresh pool registration, deregistration followed by
+    registration, and a first-time DRep registration pass through Amaru with
+    their expected verdicts. An injected unavailable read rejects with
+    `LedgerStateUnavailable` without calling the module;
   - scenarios pass through the full Java engine path;
   - a trap and a timeout each reject and recover;
   - the abandoned-thread cap turns the engine unhealthy and fails closed;
