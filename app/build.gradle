@@ -108,6 +108,12 @@ dependencies {
     implementation(project(':tx-services')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
+    // ADR-057: the optional Amaru engine exists only in builds run with -PwithAmaru=true; the uber-jar,
+    // Docker and native images of every other build do not contain it (yano.validation.engine=amaru then
+    // fails startup with a clear message).
+    if (findProject(':amaru-validator') != null) {
+        runtimeOnly project(':amaru-validator')
+    }
     implementation project(':archive-modules:archive-api')
     implementation project(':archive-modules:archive-core')
     runtimeOnly project(':archive-modules:archive-store-ducklake')

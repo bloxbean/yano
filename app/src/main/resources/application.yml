@@ -334,11 +334,43 @@ yano:
       rocksdb:
         seconds: 30
   validation:
-    default-validator-enabled: true
-    # CCL "supplementary rules" (GOVCERT/governance/delegatee gap rules) layered on top of Scalus.
-    # Disabled by default — they don't yet account for intra-tx state changes within a single block.
-    # Set to true to opt in for testing.
-    supplementary-rules-enabled: false
+    # Transaction validation engines (ADR-056 §7, ADR-057).
+    # Admission engine: scalus (default) | java | amaru.
+    #   scalus - Scalus Conway rules. With no shadow engines this is the legacy validator, unchanged.
+    #   java   - the Java Conway rules; not available yet (ADR-056 Phases 3-5): startup fails.
+    #   amaru  - Amaru's rules as WebAssembly; needs a build with -PwithAmaru=true, otherwise startup fails.
+    # Any engine other than scalus validates admission against one canonical snapshot ticked to the slot
+    # after the tip (or, right after a producer applied the next boundary, the first slot of that epoch).
+    # Block production keeps the legacy Scalus selection until ADR-056 Phase 6.
+    # supplementary-rules-enabled=true applies to the legacy validator only: combined with another engine
+    # startup fails.
+    engine: scalus
+    # Engines run asynchronously on frozen copies of each admission and never change the verdict. With
+    # engine: scalus admission stays on the legacy validator; the shadows use their own snapshot and are
+    # compared with the legacy verdict (valid/invalid, plus the Haskell constructor where the legacy name
+    # maps to one). Disagreements are counted (yano_validation_disagreements_total{engine,rule}) and logged
+    # once per tx. e.g. shadow-engines: amaru   or, with engine: amaru, shadow-engines: scalus
+    shadow-engines: ""
+    # When set, a JSON replay bundle (tx CBOR + every ledger-view read both engines made) is written
+    # here for each disagreement.
+    shadow-dump-dir: ""
+    # Shadow-validate synced PV10+ blocks (ADR-056 Phase 7). Accepted but not active yet.
+    shadow-sync: false
+    # A shadow task older than this (from the admission snapshot's capture) is cancelled and releases
+    # its snapshot; it is not counted as a disagreement.
+    snapshot-max-age-ms: 30000
+    # Soft cap on live canonical snapshots; when reached, new shadow tasks are dropped (never admission).
+    max-live-snapshots: 4
+    amaru:
+      phase2: scalus            # scalus (default): Amaru phase one + Scalus Plutus | amaru: Amaru for both
+      pool-size: 0              # Amaru instances; 0 = validation threads (admission + shadow workers)
+      timeout-ms: 2000          # a call that takes longer is rejected and its instance replaced
+      max-abandoned: 2          # stuck calls tolerated before the engine turns unhealthy (fails closed)
+      max-memory-pages: 2048    # 128 MiB linear memory per instance
+    # Deprecated (ADR-056 §7; removed in Phase 8, a WARN is logged when set). Defaults unchanged:
+    #   default-validator-enabled: true   - register the built-in admission validator listener
+    #   supplementary-rules-enabled: false - CCL GOVCERT/governance/delegatee rules on top of the legacy
+    #                                        Scalus validator (they ignore intra-block state changes)
   utxo:
     # One-shot migration for a pre-ADR-041 full-history DB. Requires all canonical
     # block bodies through Byron; leave false after the first successful rebuild.

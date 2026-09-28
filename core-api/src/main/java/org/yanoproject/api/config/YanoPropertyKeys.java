@@ -235,10 +235,32 @@ public final class YanoPropertyKeys {
      * Transaction validation listener settings.
      */
     public static final class Validation {
+        /** Deprecated (ADR-056 §7): removed in ADR-056 Phase 8; a WARN is logged when it is set. */
         public static final String DEFAULT_VALIDATOR_ENABLED = "yano.validation.default-validator-enabled";
+        /** Deprecated (ADR-056 §7): removed in ADR-056 Phase 8; a WARN is logged when it is set. */
         public static final String SUPPLEMENTARY_RULES_ENABLED = "yano.validation.supplementary-rules-enabled";
         /** ADR-056: soft cap on live canonical ledger snapshots (default 4); only shadow requests are refused. */
         public static final String MAX_LIVE_SNAPSHOTS = "yano.validation.max-live-snapshots";
+        /** ADR-056 §7: admission engine, {@code scalus} (default) | {@code java} | {@code amaru}. */
+        public static final String ENGINE = "yano.validation.engine";
+        /** ADR-056 §7: engines run in the shadow of admission, comma-separated (default none). */
+        public static final String SHADOW_ENGINES = "yano.validation.shadow-engines";
+        /** ADR-056 §7: directory for replay bundles of engine disagreements (default empty: no dumps). */
+        public static final String SHADOW_DUMP_DIR = "yano.validation.shadow-dump-dir";
+        /** ADR-056 §7: validate synced PV10+ blocks with the shadow engines (Phase 7; not wired yet). */
+        public static final String SHADOW_SYNC = "yano.validation.shadow-sync";
+        /** ADR-056 §3: a shadow task older than this is cancelled and its snapshot released (default 30000). */
+        public static final String SNAPSHOT_MAX_AGE_MS = "yano.validation.snapshot-max-age-ms";
+        /** ADR-057 §2: who runs Plutus under {@code engine: amaru}, {@code scalus} (default) | {@code amaru}. */
+        public static final String AMARU_PHASE2 = "yano.validation.amaru.phase2";
+        /** ADR-057 §2: Amaru instances; 0 (default) means one per validation thread. */
+        public static final String AMARU_POOL_SIZE = "yano.validation.amaru.pool-size";
+        /** ADR-057 §2: how long a caller waits for one Amaru module call (default 2000). */
+        public static final String AMARU_TIMEOUT_MS = "yano.validation.amaru.timeout-ms";
+        /** ADR-057 §2: stuck calls tolerated before the Amaru engine turns unhealthy (default 2). */
+        public static final String AMARU_MAX_ABANDONED = "yano.validation.amaru.max-abandoned";
+        /** ADR-057 §2: linear-memory page limit per Amaru instance (default 2048 = 128 MiB). */
+        public static final String AMARU_MAX_MEMORY_PAGES = "yano.validation.amaru.max-memory-pages";
 
         private Validation() {
         }

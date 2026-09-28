@@ -16,6 +16,7 @@ import org.yanoproject.runtime.sync.validation.BodyValidator;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.yanoproject.runtime.tx.TransactionServices;
+import org.yanoproject.runtime.validation.ValidationEngineConfigurationException;
 import org.yanoproject.runtime.tx.TransactionServicesFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -270,6 +271,10 @@ public final class YanoAssembly {
                         .create(new RuntimeTransactionBootstrapContext(runtimeNode, config, inMemoryGenesis),
                                 transactionBootstrapOptions)
                         .orElse(null);
+            } catch (ValidationEngineConfigurationException e) {
+                // ADR-056 §7 / ADR-057 §2: a configured engine that is not available stops the node; it never
+                // falls back to another engine or to no validation.
+                throw e;
             } catch (Exception e) {
                 log.warn("Transaction validation/evaluation not initialized: {}", e.getMessage(), e);
                 return;
@@ -285,6 +290,9 @@ public final class YanoAssembly {
             }
             if (services.scriptEvaluator() != null) {
                 runtimeNode.setScriptEvaluator(services.scriptEvaluator());
+            }
+            if (services.validationEngines() != null) {
+                runtimeNode.setValidationEngines(services.validationEngines());
             }
         }
 

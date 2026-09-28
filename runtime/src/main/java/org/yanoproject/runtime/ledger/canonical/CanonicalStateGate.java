@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.IntSupplier;
+import java.util.function.IntToLongFunction;
 import java.util.function.LongToIntFunction;
 import java.util.function.Supplier;
 
@@ -69,9 +70,23 @@ public final class CanonicalStateGate {
     private final Set<CanonicalSnapshot> liveSnapshots = ConcurrentHashMap.newKeySet();
     private final AtomicLong shadowRefusals = new AtomicLong();
     private final AtomicLong overCapAcquisitions = new AtomicLong();
+    // Derived values shared by every snapshot of one generation (ADR-056 step 1d, M5): snapshots of the same
+    // generation hold the same state, so a boundary dry run computed for one serves them all.
+    private final ConcurrentHashMap<String, GenerationValue> generationMemo = new ConcurrentHashMap<>();
+    private final AtomicLong generationMemoComputations = new AtomicLong();
+
+    private record GenerationValue(long generation, Lookup<?> value) {
+    }
+
+    /** A derived value computation that may fail with a store error. */
+    @FunctionalInterface
+    interface Computation<T> {
+        Lookup<T> compute() throws Exception;
+    }
 
     private volatile CanonicalTip tip = CanonicalTip.UNKNOWN;
     private volatile LongToIntFunction slotToEpoch;
+    private volatile IntToLongFunction epochStartSlot;
     private volatile IntSupplier completedBoundaryEpoch = () -> -1;
     private volatile CanonicalSnapshotSource snapshotSource;
     private volatile int maxLiveSnapshots = DEFAULT_MAX_LIVE_SNAPSHOTS;
@@ -130,6 +145,24 @@ public final class CanonicalStateGate {
         try (WriteSection section = enterWrite()) {
             section.markUnchanged();
             tip = readTip(tip.generation());
+        }
+    }
+
+    /** Installs the epoch-to-first-slot function (the inverse of the epoch calculator). */
+    public void configureEpochStartSlot(IntToLongFunction epochStartSlot) {
+        this.epochStartSlot = epochStartSlot;
+    }
+
+    /** @return the first slot of {@code epoch}, or -1 when no function is configured or it fails */
+    long epochStartSlot(int epoch) {
+        IntToLongFunction fn = epochStartSlot;
+        if (fn == null || epoch < 0) {
+            return -1;
+        }
+        try {
+            return fn.applyAsLong(epoch);
+        } catch (RuntimeException e) {
+            return -1;
         }
     }
 
@@ -402,14 +435,56 @@ public final class CanonicalStateGate {
     }
 
     /**
+     * Admission check for a shadow task that will keep an <em>existing</em> snapshot alive (ADR-056 §7: a
+     * frozen view retains the admission's snapshot rather than acquiring a new one). Such a task adds no
+     * snapshot now but can keep a generation live after admission releases it, so it obeys the same cap as
+     * {@link #acquireSnapshot(SnapshotPurpose) SHADOW acquisitions}: refused, and counted in
+     * {@link #shadowRefusals()}, when the live snapshots reach {@code max-live-snapshots}.
+     *
+     * @return true when the shadow task may retain a snapshot
+     */
+    public boolean admitShadow() {
+        if (liveSnapshots.size() >= maxLiveSnapshots) {
+            shadowRefusals.incrementAndGet();
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Invalidates every live snapshot: frees its RocksDB snapshot and makes its reads unavailable.
      * Must be called before the database the snapshots were taken on is closed or replaced.
      * Holders still release their references as usual.
      */
     public void invalidateSnapshots(String reason) {
+        generationMemo.clear();
         for (CanonicalSnapshot snapshot : List.copyOf(liveSnapshots)) {
             snapshot.invalidate(reason);
         }
+    }
+
+    /**
+     * Returns a derived value for {@code generation}, computing it at most once per generation and key. Only
+     * Present results are kept; entries of other generations are evicted when a new one is stored.
+     */
+    @SuppressWarnings("unchecked")
+    <T> Lookup<T> generationMemoized(long generation, String key, Computation<T> compute) throws Exception {
+        GenerationValue cached = generationMemo.get(key);
+        if (cached != null && cached.generation() == generation) {
+            return (Lookup<T>) cached.value();
+        }
+        Lookup<T> computed = compute.compute();
+        generationMemoComputations.incrementAndGet();
+        if (computed.isPresent()) {
+            generationMemo.values().removeIf(v -> v.generation() != generation);
+            generationMemo.put(key, new GenerationValue(generation, computed));
+        }
+        return computed;
+    }
+
+    /** @return how many generation-scoped values were computed (not served from the memo) */
+    public long generationMemoComputations() {
+        return generationMemoComputations.get();
     }
 
     void onSnapshotFreed(CanonicalSnapshot snapshot) {

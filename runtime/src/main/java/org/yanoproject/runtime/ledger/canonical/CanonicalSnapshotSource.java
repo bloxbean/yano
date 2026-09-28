@@ -2,6 +2,7 @@ package org.yanoproject.runtime.ledger.canonical;
 
 import org.yanoproject.api.model.ProtocolParamsSnapshot;
 import org.yanoproject.ledgerstate.EpochBoundaryPreview;
+import org.yanoproject.ledgerstate.governance.ConwayGenesisGovernance;
 import org.yanoproject.ledgerstate.LedgerStateSnapshotReader;
 import org.yanoproject.runtime.utxo.UtxoSnapshotReader;
 
@@ -56,18 +57,28 @@ public interface CanonicalSnapshotSource {
      *                       {@code ledgerEpoch + 1} ({@link TickedLedgerView}), captured with the
      *                       RocksDB snapshot; {@code null} when unavailable (account state disabled or
      *                       ledger epoch unknown)
+     * @param genesisGovernance the Conway genesis committee, constitution and initial treasury, used as a
+     *                       view-level fallback while the genesis bootstrap is not yet persisted (a fresh
+     *                       devnet before its first boundary); {@code null} when unknown
      */
     record Captured(LedgerStateSnapshotReader ledger, UtxoSnapshotReader utxo,
                     ProtocolParamsSnapshot protocolParams, Runnable release,
-                    EpochBoundaryPreview.Inputs boundaryInputs) {
+                    EpochBoundaryPreview.Inputs boundaryInputs, ConwayGenesisGovernance genesisGovernance) {
         public Captured {
             Objects.requireNonNull(release, "release");
+        }
+
+        /** A capture without genesis governance. */
+        public Captured(LedgerStateSnapshotReader ledger, UtxoSnapshotReader utxo,
+                        ProtocolParamsSnapshot protocolParams, Runnable release,
+                        EpochBoundaryPreview.Inputs boundaryInputs) {
+            this(ledger, utxo, protocolParams, release, boundaryInputs, null);
         }
 
         /** A capture without boundary-preview inputs. */
         public Captured(LedgerStateSnapshotReader ledger, UtxoSnapshotReader utxo,
                         ProtocolParamsSnapshot protocolParams, Runnable release) {
-            this(ledger, utxo, protocolParams, release, null);
+            this(ledger, utxo, protocolParams, release, null, null);
         }
     }
 }

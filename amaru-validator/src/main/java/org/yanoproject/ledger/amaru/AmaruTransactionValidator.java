@@ -115,7 +115,8 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
             Comparator.comparing(Outpoint::txHash).thenComparingInt(Outpoint::index);
 
     private final AmaruEngineConfig config;
-    private final AmaruNetworkParameters network;
+    private final Supplier<AmaruNetworkParameters> networkSupplier;
+    private volatile AmaruNetworkParameters network;
     private final ScriptPhaseEvaluator phase2Evaluator;
     private final AmaruLedgerConstants ledgerConstants;
     private final AmaruInstancePool pool;
@@ -136,6 +137,17 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
     }
 
     /**
+     * For a node whose network facts may be known only after startup (a devnet resolves its system start
+     * late): {@code network} is called on the first validation and its result kept. Until it succeeds every
+     * request fails closed with {@code ENGINE.AmaruEngineFailure}.
+     */
+    public AmaruTransactionValidator(AmaruEngineConfig config, Supplier<AmaruNetworkParameters> network,
+                                     ScriptPhaseEvaluator phase2Evaluator) {
+        this(config, network, phase2Evaluator, AmaruLedgerConstants.HASKELL,
+                () -> new WasmAmaruInstance(config.maxMemoryPages()));
+    }
+
+    /**
      * Full constructor, for tests and oracle runs.
      *
      * @param ledgerConstants test-only overrides of Haskell's hardcoded constants
@@ -145,8 +157,19 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
     public AmaruTransactionValidator(AmaruEngineConfig config, AmaruNetworkParameters network,
                                      ScriptPhaseEvaluator phase2Evaluator, AmaruLedgerConstants ledgerConstants,
                                      Supplier<? extends AmaruInstance> instances) {
+        this(config, fixed(Objects.requireNonNull(network, "network")), phase2Evaluator, ledgerConstants, instances);
+    }
+
+    private static Supplier<AmaruNetworkParameters> fixed(AmaruNetworkParameters network) {
+        return () -> network;
+    }
+
+    /** Full constructor with a late-resolved network (see the three-argument supplier constructor). */
+    public AmaruTransactionValidator(AmaruEngineConfig config, Supplier<AmaruNetworkParameters> network,
+                                     ScriptPhaseEvaluator phase2Evaluator, AmaruLedgerConstants ledgerConstants,
+                                     Supplier<? extends AmaruInstance> instances) {
         this.config = Objects.requireNonNull(config, "config");
-        this.network = Objects.requireNonNull(network, "network");
+        this.networkSupplier = Objects.requireNonNull(network, "network");
         this.phase2Evaluator = phase2Evaluator;
         this.ledgerConstants = Objects.requireNonNull(ledgerConstants, "ledgerConstants");
         Objects.requireNonNull(instances, "instances");
@@ -175,7 +198,23 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         return NAME;
     }
 
+    /** @return the network facts, resolved once from the supplier */
+    AmaruNetworkParameters network() {
+        AmaruNetworkParameters resolved = network;
+        if (resolved == null) {
+            try {
+                resolved = Objects.requireNonNull(networkSupplier.get(), "network parameters");
+            } catch (RuntimeException e) {
+                throw new AmaruEngineException(AmaruEngineException.Kind.BAD_RESPONSE,
+                        "the network parameters are not known yet: " + e.getMessage(), e);
+            }
+            network = resolved;
+        }
+        return resolved;
+    }
+
     /** @return false once {@code max-abandoned} stuck calls were reached; stays false until restart */
+    @Override
     public boolean isHealthy() {
         return pool.isHealthy();
     }
@@ -260,7 +299,7 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         if (resolution.unavailable() != null) {
             return TxValidationOutcome.Invalid.of(LedgerFailure.ledgerStateUnavailable(resolution.unavailable()));
         }
-        AmaruRequest amaruRequest = new AmaruRequest(mode, txCbor, network, protocolParameters, ledgerConstants,
+        AmaruRequest amaruRequest = new AmaruRequest(mode, txCbor, network(), protocolParameters, ledgerConstants,
                 resolution.dormantEpochs(), resolution.guardrail(), resolution.roots(), resolution.treasury(),
                 env.currentSlot(), 0, resolution.utxo(), resolution.accounts(), resolution.pools(),
                 resolution.dreps(), resolution.committee(), resolution.proposals());
@@ -335,7 +374,8 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         } else {
             ScriptPhaseResult result;
             try {
-                result = phase2Evaluator.evaluate(txCbor, tx, Map.copyOf(resolvedInputs), params, env.slotConfig());
+                result = phase2Evaluator.evaluate(txCbor, tx, Map.copyOf(resolvedInputs), params, env.slotConfig(),
+                        env.currentSlot());
             } catch (LedgerStateUnavailableException e) {
                 throw e;
             } catch (RuntimeException e) {
@@ -350,9 +390,12 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
             }
         }
         if (scriptsPassed != tx.isValid()) {
+            // Detail as the module words it: "<tag mismatch>: <reason>".
             String mismatch = tx.isValid() ? "FailedUnexpectedly" : "PassedUnexpectedly";
             return new Phase2(false, TxValidationOutcome.Invalid.of(new LedgerFailure(LedgerRuleName.UTXOS,
-                    "ValidationTagMismatch", LedgerFailure.Phase.PHASE_2, mismatch)));
+                    "ValidationTagMismatch", LedgerFailure.Phase.PHASE_2, mismatch + ": "
+                    + (tx.isValid() ? "a Plutus script failed (phase2 = scalus)"
+                    : "every Plutus script succeeded (phase2 = scalus)"))));
         }
         return new Phase2(scriptsPassed, null);
     }
@@ -501,11 +544,9 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
      * the keys are unknown the request is not sent: guessing would let Amaru reject a legitimate SPO vote
      * ({@code GOV.DisallowedVoters}) or accept a disallowed one.</p>
      *
-     * <p>TODO(ADR-056 step 1d): the canonical view ({@code CanonicalLedgerView.toProposalState}) does not
-     * populate the keys yet, so under {@code engine: amaru} every transaction that meets a pending
-     * parameter change in the proposal set fails closed with {@code LedgerStateUnavailable}. It must read
-     * them from the stored action payload ({@code ProposalParamUpdateKeys.fromGovAction}). Proposals
-     * submitted through an overlay already carry them ({@code TxEffectsDeriver}).</p>
+     * <p>The canonical view reads the keys from the stored action payload
+     * ({@code CanonicalLedgerView.paramUpdateKeys}, ADR-056 step 1d) and overlays from the submitting
+     * transaction ({@code TxEffectsDeriver}); only a stored proposal without a payload still fails closed.</p>
      */
     static ProposalKind proposalKind(ProposalState proposal) {
         return switch (proposal.type()) {
@@ -529,7 +570,7 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
 
     private AmaruRequest emptyRequest(AmaruRequest.Mode mode, byte[] txCbor, byte[] protocolParameters,
                                       ValidationEnv env) {
-        return new AmaruRequest(mode, txCbor, network, protocolParameters, ledgerConstants, 0, null,
+        return new AmaruRequest(mode, txCbor, network(), protocolParameters, ledgerConstants, 0, null,
                 EnactedRoots.NONE, BigInteger.ZERO, env.currentSlot(), 0, List.of(), List.of(), List.of(),
                 List.of(), List.of(), List.of());
     }

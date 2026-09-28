@@ -826,7 +826,13 @@ yano:
     shadow-sync: false        # validate synced PV10+ blocks with the java engine (observe only)
 ```
 
-- The admission verdict comes only from `engine`.
+- The admission verdict comes only from `engine`. Shadow engines never change
+  admission: with `engine: scalus`, admission stays on the legacy
+  `TransactionValidator` path unchanged, and shadows validate against their own
+  `SHADOW` snapshot and are compared with the legacy verdict (valid/invalid,
+  plus the Haskell constructor where the legacy failure name maps to exactly
+  one). Only a non-`scalus` admission engine switches admission to the engine
+  API.
 - **Shadow engines** receive `TxValidationRequest` with a `freeze()`d view
   (§3). That view retains the admission's own `CanonicalSnapshot` and overlay
   layers, and shadow engines run asynchronously.
@@ -839,7 +845,9 @@ yano:
   `default-validator-enabled` (`application.yml:336-341`, and the profile
   overrides) are deprecated.
   - `supplementary-rules-enabled=true` maps to `engine: scalus` plus the Java
-    GOV and GOVCERT families as a post-filter until Phase 8.
+    GOV and GOVCERT families as a post-filter until Phase 8. Combined with a
+    non-`scalus` admission engine it is a startup error, never silently
+    dropped.
   - Both keys are removed in Phase 8, and startup logs a warning if they are set.
 
 ### 8. Conformance and completeness
@@ -947,6 +955,56 @@ The final PR merges once S5's gates are green.
     diverge from the forward delegations (`Deleg.hs:363-373`, repaired at the
     PV10 fork by `HardFork.hs:70-104`), and the overlay clears delegations of a
     deregistered DRep from the forward side.
+
+#### Phase 1 results: engine selection and shadowing (step 1d, 2026-09-29)
+
+- **Engine SPI.** `LedgerValidationEngineFactory` (ServiceLoader) with an
+  `EngineContext`: `scalus` (scalus-bridge) and `amaru` (amaru-validator, only
+  in `-PwithAmaru=true` builds). `java` is refused at startup until Phases 3–5;
+  `amaru` without its module, an admission engine listed as a shadow, and
+  `supplementary-rules-enabled` with a non-`scalus` engine also stop startup.
+- **Admission** with a non-`scalus` engine: one `ADMISSION` snapshot per
+  admission, acquired before the mempool lane, ticked to the slot after the
+  tip; UTxOs through the mempool resolver over that snapshot (chained outputs
+  until Phase 6); rule `MEMPOOL`, origin `LOCAL` (REST, n2c) or `PEER` (n2n);
+  the outcome maps to `ValidationResult`. Block selection stays on the legacy
+  validator (Phase 6).
+- **Scalus engine adapter** over the view, with an overlay-aware
+  `LedgerStateProvider`; only Plutus evaluation outcomes are phase 2 (the
+  legacy class-name labelling is fixed there, the legacy path is unchanged).
+- **Scalus `ScriptPhaseEvaluator`**: `MalformedScriptWitnesses`,
+  `MalformedReferenceScripts` (the transaction's own outputs, as Haskell),
+  `CollectErrors` (`NoCostModel`; `BadTranslation` for Conway-only features,
+  certificates and purposes under V1/V2, V1 inline datums and reference
+  scripts, Byron addresses, V3 non-disjoint reference inputs from PV 11, and
+  `TimeTranslationPastHorizon`). The horizon is the hard-fork combinator's: the
+  first epoch boundary at or after `next(tip) + 3k/f`, exclusive
+  (ouroboros-consensus `HardFork/History/Summary.hs`, `Shelley/Ledger/Ledger.hs`
+  `StandardSafeZone`). The Amaru scenario gate passes 276/276 in both
+  `phase2: amaru` and `phase2: scalus` mode.
+- **Shadows**: bounded pool, frozen views owning a snapshot reference, the
+  live-snapshot cap, the max-age cancel, disagreement counters, logs and JSON
+  replay bundles (`ShadowDumpBundle`).
+- **Decision 6a — fresh devnets.** Before Yano persists its Conway genesis
+  bootstrap (a devnet starting in Conway does so at its first boundary), the
+  canonical view answers from the Conway genesis: constitution and guardrail,
+  committee members and threshold (`Conway/Translation.hs:169-178`), the
+  initial treasury Yano stores in its first AdaPot, empty roots, proposals and
+  dormant epochs. Nothing is persisted (invariant 8). A genesis with
+  `initialDReps` or `delegs` (`Conway/Transition.hs:82-92`) makes account and
+  DRep reads unavailable until the bootstrap is persisted. A ticked view across
+  the bootstrap boundary itself stays unavailable.
+- **Decision 6b — producer window.** When a producer has applied the next
+  boundary before forging (ledger epoch one ahead of the next slot's epoch),
+  admission validates at the first slot of the ledger epoch on the unticked
+  canonical view; larger gaps stay unavailable.
+- **Dry run off the lane.** A ticked boundary dry run is computed when the
+  admission snapshot is acquired, before the mempool lane, and shared by every
+  snapshot of the same canonical generation.
+- **Native image (Phase 7/ADR-057 Phase E).** The engine factories are
+  `META-INF/services` entries; native builds must register them (GraalVM's
+  service-loader support covers classpath services; the Amaru AOT classes are
+  Phase E).
 
 ### Phase 2 — Conformance harness first
 

@@ -15,6 +15,7 @@ import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import org.yanoproject.api.model.ProtocolParamsSnapshot;
 import org.yanoproject.api.utxo.model.Outpoint;
+import org.yanoproject.ledger.rules.util.ProposalParamUpdateKeys;
 import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.Lookup;
 import org.yanoproject.ledger.rules.view.model.AccountState;
@@ -37,6 +38,7 @@ import org.yanoproject.ledgerstate.AccountStateCborCodec.StakeAccount;
 import org.yanoproject.ledgerstate.LedgerStateSnapshotReader;
 import org.yanoproject.ledgerstate.governance.GovernanceCborCodec.ConstitutionRecord;
 import org.yanoproject.ledgerstate.governance.GovernanceCborCodec.LastEnactedAction;
+import org.yanoproject.ledgerstate.governance.ConwayGenesisGovernance;
 import org.yanoproject.ledgerstate.governance.GovernanceSnapshotReader;
 import org.yanoproject.ledgerstate.governance.GovernanceSnapshotReader.StoredProposal;
 import org.yanoproject.ledgerstate.governance.GovernanceStateStore;
@@ -194,6 +196,10 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (ledger == null) {
                 return Lookup.unavailable("account state is disabled");
             }
+            String genesisUnmodelled = genesisStateUnmodelled(state);
+            if (genesisUnmodelled != null) {
+                return Lookup.unavailable(genesisUnmodelled);
+            }
             int type = credential.type().tag();
             Optional<StakeAccount> account = ledger.stakeAccount(type, credential.hashHex());
             if (account.isEmpty()) {
@@ -327,6 +333,10 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (ledger == null || governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
+            String genesisUnmodelled = genesisStateUnmodelled(state);
+            if (genesisUnmodelled != null) {
+                return Lookup.unavailable(genesisUnmodelled);
+            }
             int type = credential.type().tag();
             Optional<BigInteger> deposit = ledger.drepDeposit(type, credential.hashHex());
             if (deposit.isEmpty()) {
@@ -355,6 +365,82 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
         Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> all() throws Exception;
     }
 
+    /** The stored committee, or the Conway genesis committee overlaid by stored records before the bootstrap. */
+    static CommitteeRecords committeeRecords(CanonicalSnapshotSource.Captured state,
+                                             GovernanceSnapshotReader governance) throws Exception {
+        Optional<ConwayGenesisGovernance> genesis = genesisFallback(state);
+        return genesis.isPresent() ? genesisCommittee(governance, genesis.get()) : storedCommittee(governance);
+    }
+
+    /**
+     * Haskell's Conway translation installs the genesis committee ({@code Conway/Translation.hs:169-178});
+     * Yano persists it only at its first Conway boundary. Stored records (hot-key authorizations,
+     * resignations made before that boundary) keep their hot key and resignation; genesis members keep their
+     * genesis term.
+     */
+    static CommitteeRecords genesisCommittee(GovernanceSnapshotReader governance, ConwayGenesisGovernance genesis) {
+        return new CommitteeRecords() {
+            @Override
+            public Optional<CommitteeMemberRecord> member(int credType, String coldHash) throws Exception {
+                Optional<CommitteeMemberRecord> stored = governance.committeeMember(credType, coldHash);
+                Integer expiry = genesis.members().get(new GovernanceStateStore.CredentialKey(credType, coldHash));
+                return merge(stored.orElse(null), expiry);
+            }
+
+            @Override
+            public Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> all() {
+                Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> all = new LinkedHashMap<>();
+                genesis.members().forEach((cold, expiry) -> all.put(cold, CommitteeMemberRecord.noHotKey(expiry)));
+                governance.committeeMembers().forEach((cold, stored) ->
+                        all.put(cold, merge(stored, genesis.members().get(cold)).orElseThrow()));
+                return all;
+            }
+
+            private Optional<CommitteeMemberRecord> merge(CommitteeMemberRecord stored, Integer expiry) {
+                if (stored == null) {
+                    return expiry == null ? Optional.empty() : Optional.of(CommitteeMemberRecord.noHotKey(expiry));
+                }
+                return Optional.of(expiry == null ? stored
+                        : new CommitteeMemberRecord(stored.hotCredType(), stored.hotHash(), expiry, stored.resigned()));
+            }
+        };
+    }
+
+    /**
+     * ADR-056 step 1d (decision 6a): the view-level Conway genesis fallback. It applies while the ledger is in
+     * Conway (protocol version 9 or later) and Yano has not yet persisted its Conway genesis bootstrap (no
+     * committee threshold and no constitution stored), which on a fresh devnet lasts until the first epoch
+     * boundary. Nothing is persisted; canonical ledger-state mutation is unchanged (invariant 8).
+     */
+    static Optional<ConwayGenesisGovernance> genesisFallback(CanonicalSnapshotSource.Captured state) throws Exception {
+        ConwayGenesisGovernance genesis = state.genesisGovernance();
+        Optional<GovernanceSnapshotReader> governance = governance(state);
+        if (genesis == null || governance.isEmpty()) {
+            return Optional.empty();
+        }
+        ProtocolParamsSnapshot params = state.protocolParams();
+        if (params == null || params.protocolMajorVer() == null || params.protocolMajorVer() < 9) {
+            return Optional.empty();
+        }
+        GovernanceSnapshotReader gov = governance.get();
+        boolean bootstrapped = gov.committeeThreshold().isPresent() || gov.constitution().isPresent();
+        return bootstrapped ? Optional.empty() : Optional.of(genesis);
+    }
+
+    /**
+     * @return why account and DRep reads cannot be answered before the bootstrap: the Conway genesis registers
+     *         DReps or delegations ({@code initialDReps}/{@code delegs}, {@code Conway/Transition.hs:82-92}),
+     *         which Yano does not model; otherwise {@code null}
+     */
+    static String genesisStateUnmodelled(CanonicalSnapshotSource.Captured state) throws Exception {
+        Optional<ConwayGenesisGovernance> genesis = genesisFallback(state);
+        if (genesis.isPresent() && (genesis.get().hasInitialDReps() || genesis.get().hasDelegations())) {
+            return "the Conway genesis registers initialDReps/delegs, which are not modelled before the genesis "
+                    + "bootstrap is persisted (first epoch boundary)";
+        }
+        return null;
+    }
+
     static CommitteeRecords storedCommittee(GovernanceSnapshotReader governance) {
         return new CommitteeRecords() {
             @Override
@@ -378,7 +464,7 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (ledger == null || governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            return committeeMemberByCold(ledger, storedCommittee(governance.get()), cold);
+            return committeeMemberByCold(ledger, committeeRecords(state, governance.get()), cold);
         });
     }
 
@@ -410,7 +496,7 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            return committeeMembersByHot(storedCommittee(governance.get()), hot);
+            return committeeMembersByHot(committeeRecords(state, governance.get()), hot);
         });
     }
 
@@ -450,7 +536,7 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (ledger == null || governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            return committeeMembers(ledger, storedCommittee(governance.get()));
+            return committeeMembers(ledger, committeeRecords(state, governance.get()));
         });
     }
 
@@ -561,7 +647,27 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
         var type = com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionType
                 .valueOf(record.actionType().name());
         return new ProposalState(new GovActionId(stored.txHash(), stored.index()), type, decodeAction(stored), prev,
-                record.proposedInEpoch(), record.expiresAfterEpoch(), record.deposit(), record.returnAddress());
+                record.proposedInEpoch(), record.expiresAfterEpoch(), record.deposit(), record.returnAddress(),
+                paramUpdateKeys(stored));
+    }
+
+    /**
+     * The {@code protocol_param_update} keys of a stored ParameterChange (ADR-057 Phase B deviation 4), read
+     * straight from the stored action CBOR with {@link ProposalParamUpdateKeys}, not from a decoded CCL
+     * action (CCL has no fields for the Conway keys 25-33). The stored bytes are yaci's re-serialisation of
+     * its parsed action; yaci's {@code ProtocolParamUpdate} carries every Conway key and its serializer
+     * writes each set field under its CDDL key, so the key set survives the round trip
+     * ({@code CanonicalParamUpdateKeysTest}). A stored proposal without a payload keeps {@code null}, so
+     * engines that need the keys fail closed.
+     *
+     * @return the keys for a ParameterChange with a stored payload, otherwise {@code null}
+     */
+    static Set<Integer> paramUpdateKeys(StoredProposal stored) {
+        if (stored.record().actionType() != GovActionType.PARAMETER_CHANGE_ACTION) {
+            return null;
+        }
+        byte[] cbor = stored.govActionCbor();
+        return cbor == null ? null : ProposalParamUpdateKeys.fromGovAction(cbor);
     }
 
     @Override
@@ -592,7 +698,16 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             if (governance.isEmpty()) {
                 return Lookup.unavailable("governance tracking is disabled");
             }
-            return guardrail(governance.get().constitution());
+            Optional<ConstitutionRecord> stored = governance.get().constitution();
+            if (stored.isEmpty()) {
+                Optional<ConwayGenesisGovernance> genesis = genesisFallback(state);
+                if (genesis.isPresent()) {
+                    // A genesis without a constitution means Haskell's default constitution: no guardrail.
+                    ConstitutionRecord fromGenesis = genesis.get().constitution();
+                    return fromGenesis == null ? Lookup.absent() : guardrail(Optional.of(fromGenesis));
+                }
+            }
+            return guardrail(stored);
         });
     }
 
@@ -629,6 +744,14 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
                 return Lookup.unavailable("ledger epoch is unknown");
             }
             Optional<BigInteger> treasury = ledger.treasury(epoch);
+            if (treasury.isEmpty()) {
+                // Before the first boundary no AdaPot exists; Yano's first AdaPot stores this treasury
+                // (EpochBoundaryProcessor.bootstrapAdaPotIfNeeded; Haskell createInitialState starts at 0).
+                Optional<ConwayGenesisGovernance> genesis = genesisFallback(state);
+                if (genesis.isPresent()) {
+                    return Lookup.present(genesis.get().initialTreasury());
+                }
+            }
             return treasury.<Lookup<BigInteger>>map(Lookup::present)
                     .orElseGet(() -> Lookup.unavailable("no AdaPot is stored for epoch " + epoch));
         });

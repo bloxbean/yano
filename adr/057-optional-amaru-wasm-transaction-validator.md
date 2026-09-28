@@ -606,6 +606,27 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   deviation 4). Until then `engine: amaru` fails closed whenever such a
   proposal is pending.
 
+#### Step 1d results (2026-09-29)
+
+- `AmaruEngineFactory` (`META-INF/services`) maps `yano.validation.amaru.*` to
+  `AmaruEngineConfig` (`pool-size: 0` = the validation threads: one admission
+  lane plus the shadow workers); `phase2: scalus` uses the Scalus
+  `ScriptPhaseEvaluator`, which now reports the deviation-9 checks and the
+  forecast horizon.
+- `AmaruNetworks` builds `AmaruNetworkParameters` from the genesis: Amaru's
+  public-network era histories (mainnet, preprod, preview) and a single Conway
+  era (after a Byron era when present) on devnets; resolved on first use.
+- `yano.validation.engine=amaru` without the module stops startup with a clear
+  message. Readiness (`validation-engine`) goes down when the Amaru admission
+  engine turns unhealthy; `yano_validation_engine_healthy{engine}` reports every
+  engine.
+- The canonical view fills `ProposalState.paramUpdateKeys` from the stored
+  action bytes (yaci keeps the Conway keys), so pending parameter changes no
+  longer fail closed.
+- A devnet test admits and rejects payments through the real module on a fresh
+  devnet before its first boundary (genesis fallback); the scenario gate passes
+  276/276 in `scalus` mode.
+
 ### Phase C — Overlays and runtime parity
 
 - Run the ADR-056 Phase 6 devnet matrix with `engine: amaru`: dependent chains

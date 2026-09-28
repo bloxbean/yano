@@ -26,6 +26,7 @@ import org.yanoproject.runtime.kernel.SubsystemContext;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.internal.RuntimeNode;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
+import org.yanoproject.runtime.validation.ValidationEngines;
 
 import java.util.List;
 import java.util.Map;
@@ -197,6 +198,12 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
             canonicalBlockReference(long blockNumber) {
         return chainQuery instanceof RuntimeNode node
                 ? node.getCanonicalBlockReference(blockNumber) : java.util.Optional.empty();
+    }
+
+    @Override
+    public Optional<ValidationEngines> validationEngines() {
+        return chainQuery instanceof RuntimeNode node
+                ? Optional.ofNullable(node.getValidationEngines()) : Optional.empty();
     }
 
     @Override

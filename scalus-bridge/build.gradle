@@ -22,12 +22,20 @@ dependencies {
     api libs.blst.java
 
     testImplementation libs.junit.jupiter.api
+    // Amaru's JSON scenarios as ledger views (ADR-056 Phase 2 loader): real Plutus transactions for the
+    // Scalus ScriptPhaseEvaluator tests. They skip unless AMARU_SCENARIOS_DIR / -PamaruScenariosDir is set.
+    testImplementation testFixtures(project(':ledger-rules'))
     testRuntimeOnly libs.junit.jupiter.engine
     testRuntimeOnly libs.junit.platform.launcher
 }
 
 test {
     useJUnitPlatform()
+    def scenarios = providers.gradleProperty('amaruScenariosDir')
+            .orElse(providers.environmentVariable('AMARU_SCENARIOS_DIR')).getOrElse('')
+    if (scenarios) {
+        systemProperty 'amaru.scenarios.dir', scenarios
+    }
 }
 
 // Java factory in src/main/java/ references Scala types from src/main/scala/.

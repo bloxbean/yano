@@ -50,4 +50,15 @@ public interface ScriptPhaseEvaluator {
      */
     ScriptPhaseResult evaluate(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
                                ProtocolParams params, SlotConfig slotConfig);
+
+    /**
+     * As {@link #evaluate(byte[], Transaction, Map, ProtocolParams, SlotConfig)}, for a transaction validated
+     * at {@code validationSlot} (the slot after the ledger tip). Evaluators that know the network's
+     * {@link ForecastHorizon} use it to report {@code UTXOS.CollectErrors}
+     * ({@code BadTranslation TimeTranslationPastHorizon}) for a validity bound past the horizon.
+     */
+    default ScriptPhaseResult evaluate(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
+                                       ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
+        return evaluate(txCbor, tx, resolvedInputs, params, slotConfig);
+    }
 }

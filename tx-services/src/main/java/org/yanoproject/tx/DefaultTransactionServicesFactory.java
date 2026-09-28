@@ -20,6 +20,9 @@ import org.yanoproject.runtime.tx.ProtocolParamsMapper;
 import org.yanoproject.runtime.tx.TransactionBootstrapContext;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
 import org.yanoproject.runtime.tx.TransactionServices;
+import org.yanoproject.runtime.validation.ValidationEngineConfigurationException;
+import org.yanoproject.runtime.validation.ValidationEngineSettings;
+import org.yanoproject.runtime.validation.ValidationEngines;
 import org.yanoproject.scalusbridge.ScalusTransactionFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +47,10 @@ public final class DefaultTransactionServicesFactory {
     public static Optional<TransactionServices> create(TransactionBootstrapContext context,
                                                        TransactionBootstrapOptions options) {
         if (options == null || !options.enabled()) {
+            if (enginesConfigured(context)) {
+                log.warn("yano.validation.engine / shadow-engines are set but transaction validation is disabled; "
+                        + "no validation engine is created");
+            }
             return Optional.empty();
         }
 
@@ -104,6 +111,10 @@ public final class DefaultTransactionServicesFactory {
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
         } catch (Exception e) {
+            if (enginesConfigured(context)) {
+                throw new ValidationEngineConfigurationException("Validation engine configured but transaction "
+                        + "validation cannot be initialized: " + e.getMessage(), e);
+            }
             log.warn("Transaction validation/evaluation not initialized: {}", e.getMessage(), e);
             return Optional.empty();
         }
@@ -141,13 +152,26 @@ public final class DefaultTransactionServicesFactory {
                     + "The /utils/txs/evaluate endpoint will not work. Error: {}", scriptEvaluator, e.getMessage(), e);
         }
 
-        if (validator == null && transactionEvaluator == null) {
+        // ADR-056 §7: the engine API is used for admission only when configured; otherwise nothing changes.
+        ValidationEngines engines = ValidationEngineBootstrap.create(context.globals(), genesis, epochSlotCalc,
+                slotConfigSupplier, protocolParamsSupplier, currentSlotSupplier, yaciConfig.getProtocolMagic(),
+                networkId, supplementaryRulesEnabled).orElse(null);
+
+        if (validator == null && transactionEvaluator == null && engines == null) {
             log.error("Neither transaction validator nor script evaluator could be initialized. "
                     + "Plutus script transactions will not be validated!");
             return Optional.empty();
         }
 
-        return Optional.of(new TransactionServices(validator, transactionEvaluator));
+        return Optional.of(new TransactionServices(validator, transactionEvaluator, engines));
+    }
+
+    private static boolean enginesConfigured(TransactionBootstrapContext context) {
+        try {
+            return ValidationEngineSettings.fromGlobals(context.globals()).usesEngineApi();
+        } catch (RuntimeException e) {
+            return true; // invalid settings: the engine bootstrap reports them
+        }
     }
 
     private static ProtocolParamsResolution resolveTransactionProtocolParams(TransactionBootstrapContext context,

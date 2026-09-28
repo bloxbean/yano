@@ -9,6 +9,7 @@ import org.yanoproject.ledger.rules.TransactionValidator;
 import org.yanoproject.ledger.rules.ScriptReferenceResolverScope;
 import org.yanoproject.ledger.rules.ValidationError;
 import org.yanoproject.ledger.rules.ValidationResult;
+import org.yanoproject.runtime.validation.EngineAdmission;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
@@ -23,10 +24,51 @@ public class TransactionValidationService {
 
     private final TransactionValidator validator;
     private final UtxoState utxoState;
+    private volatile EngineAdmission engineAdmission;
 
     public TransactionValidationService(TransactionValidator validator, UtxoState utxoState) {
         this.validator = validator;
         this.utxoState = utxoState;
+    }
+
+    /**
+     * Routes mempool admission through the validation engines (ADR-056 step 1d); {@code null} restores the
+     * legacy path. Block selection ({@link #validate(byte[], Function)}) always stays on the legacy validator
+     * until the Phase 6 block overlay.
+     */
+    public void setEngineAdmission(EngineAdmission engineAdmission) {
+        this.engineAdmission = engineAdmission;
+    }
+
+    /** @return the engine admission path, or {@code null} for the legacy path */
+    public EngineAdmission engineAdmission() {
+        return engineAdmission;
+    }
+
+    /**
+     * Mempool admission. With no validation engines configured this is exactly the legacy
+     * {@link #validate(byte[], Function)} / {@link #validate(byte[])}; otherwise the configured admission
+     * engine decides (ADR-056 §7).
+     *
+     * @param resolver the admission-scoped mempool resolver, or {@code null}
+     */
+    public ValidationResult validateAdmission(byte[] txCbor, String txHash, String origin,
+                                              Function<Outpoint, org.yanoproject.api.utxo.model.Utxo> resolver) {
+        EngineAdmission engines = engineAdmission;
+        if (engines == null) {
+            return resolver != null ? validate(txCbor, resolver) : validate(txCbor);
+        }
+        if (engines.engines().legacyAdmission()) {
+            // Shadows never change admission (ADR-056 §7): the legacy verdict decides, the shadows compare.
+            ValidationResult legacy = resolver != null ? validate(txCbor, resolver) : validate(txCbor);
+            try {
+                engines.shadowLegacy(txCbor, txHash, origin, resolver, legacy);
+            } catch (RuntimeException e) {
+                log.debug("Shadow submission failed for tx {}: {}", txHash, e.toString());
+            }
+            return legacy;
+        }
+        return engines.validate(txCbor, txHash, origin, resolver);
     }
 
     /**

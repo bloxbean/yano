@@ -42,6 +42,11 @@ dependencies {
     endiveBuildTimeCompiler libs.endive.build.time.compiler
 
     testImplementation testFixtures(project(':ledger-rules'))
+    // The Scalus ScriptPhaseEvaluator for the phase2 = scalus scenario gate (ADR-056 step 1d).
+    testImplementation project(':scalus-bridge')
+    // A devnet admission through the real runtime wiring (yano.validation.engine=amaru).
+    testImplementation project(':tx-services')
+    testImplementation project(':testkit')
 }
 
 abstract class PrepareAmaruWasm extends DefaultTask {

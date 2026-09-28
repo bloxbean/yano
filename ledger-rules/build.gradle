@@ -10,6 +10,8 @@ dependencies {
     // AmaruScenarioLoader reads Amaru's implementation-generic JSON scenarios into LedgerViews.
     testFixturesApi libs.junit.jupiter.api
     testFixturesImplementation libs.jackson.databind
+    // Shadow-dump bundles (ADR-056 §7) are JSON.
+    implementation libs.jackson.databind
     testFixturesCompileOnly libs.lombok
     testFixturesAnnotationProcessor libs.lombok
 }

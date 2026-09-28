@@ -40,8 +40,12 @@ import org.yanoproject.p2p.tx.diffusion.TxDiffusion;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusionMode;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusionStats;
 import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
+import org.yanoproject.runtime.ledger.canonical.SnapshotPurpose;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
+import org.yanoproject.runtime.validation.AdmissionContext;
 import org.yanoproject.runtime.validation.DefaultTransactionValidatorListener;
+import org.yanoproject.runtime.validation.EngineAdmission;
+import org.yanoproject.runtime.validation.ValidationEngines;
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -53,6 +57,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static org.yanoproject.runtime.util.LifecycleFailures.rethrowIfProcessFatalReachable;
@@ -83,6 +88,9 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     private volatile TransactionValidationService transactionValidationService;
     private volatile TransactionEvaluationService transactionEvaluationService;
+    private volatile ValidationEngines validationEngines;
+    private volatile EngineAdmission engineAdmission;
+    private volatile Supplier<CanonicalStateGate> canonicalStateGate = () -> null;
     private MempoolEvictionPolicy mempoolEvictionPolicy;
     private SubscriptionHandle mempoolEvictionSubscription;
     private SubscriptionHandle mempoolUtxoAppliedSubscription;
@@ -254,6 +262,10 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         validatorListenerSubscriptions = List.of();
         validatorListenerRegistered = false;
         mempoolEvictionPolicy = null;
+        ValidationEngines engines = validationEngines;
+        if (engines != null) {
+            engines.close();
+        }
     }
 
     public synchronized void setTransactionEvaluator(TransactionValidator evaluator) {
@@ -265,7 +277,9 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
             return;
         }
 
-        this.transactionValidationService = new TransactionValidationService(evaluator, utxoState);
+        TransactionValidationService service = new TransactionValidationService(evaluator, utxoState);
+        service.setEngineAdmission(engineAdmission);
+        this.transactionValidationService = service;
 
         boolean defaultValidatorEnabled = resolveBoolean(
                 runtimeOptions.globals(), YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, true);
@@ -281,6 +295,37 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         }
 
         log.info("Transaction evaluator set");
+    }
+
+    /**
+     * Installs the validation engines (ADR-056 §7). Mempool admission then goes through the configured
+     * admission engine against one canonical snapshot per admission; block selection keeps the legacy
+     * validator. {@code null} restores the legacy admission path.
+     *
+     * @param gate supplies the canonical state gate snapshots are acquired from
+     */
+    public synchronized void setValidationEngines(ValidationEngines engines, Supplier<CanonicalStateGate> gate) {
+        ValidationEngines previous = this.validationEngines;
+        this.canonicalStateGate = gate != null ? gate : () -> null;
+        this.validationEngines = engines;
+        this.engineAdmission = engines != null ? new EngineAdmission(engines, this.canonicalStateGate) : null;
+        TransactionValidationService service = transactionValidationService;
+        if (service != null) {
+            service.setEngineAdmission(engineAdmission);
+        }
+        if (previous != null && previous != engines) {
+            previous.close();
+        }
+        if (engines != null) {
+            log.info("Mempool admission uses validation engine '{}' (shadow engines: {})",
+                    engines.admissionEngineName(),
+                    engines.shadowEngines().stream().map(e -> e.name()).toList());
+        }
+    }
+
+    /** @return the installed validation engines, or {@code null} on the legacy path */
+    public ValidationEngines validationEngines() {
+        return validationEngines;
     }
 
     public synchronized void setScriptEvaluator(TransactionEvaluator scriptEvaluator) {
@@ -363,36 +408,66 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         try {
             ensureAccepting();
             String eventOrigin = normalizeOrigin(origin);
-            UtxoState canonicalState = utxoStateSupplier.get();
-            var admission = memPool.tryAdmit(
-                    txCbor,
-                    outpoint -> canonicalState != null
-                            ? canonicalState.getUtxo(outpoint).orElse(null) : null,
-                    (admissionBytes, txHash, resolver) -> {
-                        var validateEvent = new TransactionValidateEvent(
-                                admissionBytes, txHash, eventOrigin, resolver);
-                        eventBus.publish(validateEvent,
-                                EventMetadata.builder().origin(eventOrigin).build(),
-                                PublishOptions.builder().build());
-                        return validateEvent.rejections();
-                    },
-                    new MempoolAdmissionLimits(
-                            mempoolMaxTxs, mempoolMaxBytes, mempoolMaxUtxoIndexEntries),
-                    memPoolTransaction -> eventBus.publish(
-                            new MemPoolTransactionReceivedEvent(memPoolTransaction),
-                            EventMetadata.builder().origin(eventOrigin).build(),
-                            PublishOptions.builder().build()));
-
-            if (admission.status() == MempoolAdmissionResult.Status.LEDGER_REJECTED) {
-                throw new TransactionValidationException(admission.rejections());
+            EngineAdmission engines = engineAdmission;
+            if (engines == null) {
+                UtxoState canonicalState = utxoStateSupplier.get();
+                return admit(txCbor, eventOrigin, outpoint -> canonicalState != null
+                        ? canonicalState.getUtxo(outpoint).orElse(null) : null);
             }
-            if (!admission.present()) {
-                throw new MempoolAdmissionException(admission);
+            if (engines.engines().legacyAdmission()) {
+                // engine: scalus with shadow engines: admission is exactly the legacy path; the shadows get their
+                // own SHADOW snapshot, acquired here before the mempool lane (refused at the snapshot cap).
+                UtxoState canonicalState = utxoStateSupplier.get();
+                try (AdmissionContext ignored = AdmissionContext.open(canonicalStateGate.get(),
+                        SnapshotPurpose.SHADOW)) {
+                    return admit(txCbor, eventOrigin, outpoint -> canonicalState != null
+                            ? canonicalState.getUtxo(outpoint).orElse(null) : null);
+                }
             }
-            return admission.txHash();
+            // ADR-056 lock order: the admission snapshot is acquired here, before the mempool lane is taken,
+            // and the mempool resolves canonical UTxOs from it rather than from the live store.
+            try (AdmissionContext context = AdmissionContext.open(canonicalStateGate.get())) {
+                Function<Outpoint, Utxo> canonicalResolver = context.mempoolCanonicalResolver();
+                if (canonicalResolver == null) {
+                    // No snapshot: the engine rejects with LedgerStateUnavailable; other listeners keep the
+                    // live store.
+                    UtxoState canonicalState = utxoStateSupplier.get();
+                    canonicalResolver = outpoint -> canonicalState != null
+                            ? canonicalState.getUtxo(outpoint).orElse(null) : null;
+                }
+                return admit(txCbor, eventOrigin, canonicalResolver);
+            }
         } finally {
             readLock.unlock();
         }
+    }
+
+    private String admit(byte[] txCbor, String eventOrigin, Function<Outpoint, Utxo> canonicalResolver) {
+        var admission = memPool.tryAdmit(
+                txCbor,
+                canonicalResolver,
+                (admissionBytes, txHash, resolver) -> {
+                    var validateEvent = new TransactionValidateEvent(
+                            admissionBytes, txHash, eventOrigin, resolver);
+                    eventBus.publish(validateEvent,
+                            EventMetadata.builder().origin(eventOrigin).build(),
+                            PublishOptions.builder().build());
+                    return validateEvent.rejections();
+                },
+                new MempoolAdmissionLimits(
+                        mempoolMaxTxs, mempoolMaxBytes, mempoolMaxUtxoIndexEntries),
+                memPoolTransaction -> eventBus.publish(
+                        new MemPoolTransactionReceivedEvent(memPoolTransaction),
+                        EventMetadata.builder().origin(eventOrigin).build(),
+                        PublishOptions.builder().build()));
+
+        if (admission.status() == MempoolAdmissionResult.Status.LEDGER_REJECTED) {
+            throw new TransactionValidationException(admission.rejections());
+        }
+        if (!admission.present()) {
+            throw new MempoolAdmissionException(admission);
+        }
+        return admission.txHash();
     }
 
     @Override
@@ -551,7 +626,11 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
                 Map.entry("txDiffusionEnabled", txDiffusionEnabled()),
                 Map.entry("txDiffusionMaxInFlightTxsPerPeer", txDiffusionMaxInFlightTxsPerPeer),
                 Map.entry("txDiffusionMaxInFlightBytesPerPeer", txDiffusionMaxInFlightBytesPerPeer),
-                Map.entry("txDiffusionPeerCooldownMs", txDiffusionPeerCooldownMs)));
+                Map.entry("txDiffusionPeerCooldownMs", txDiffusionPeerCooldownMs),
+                Map.entry("validationEngine", validationEngines != null
+                        ? validationEngines.admissionEngineName() : ValidationEngines.LEGACY),
+                Map.entry("validationEngineHealthy", validationEngines == null
+                        || validationEngines.admissionHealthy())));
     }
 
     private void resolveTxConfig() {

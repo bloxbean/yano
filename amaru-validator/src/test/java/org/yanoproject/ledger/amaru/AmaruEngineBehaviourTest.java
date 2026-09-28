@@ -392,7 +392,7 @@ class AmaruEngineBehaviourTest {
             LedgerFailure mismatch = onlyFailure(ScenarioSupport.validate(engine, plutus, Rule.LEDGER, Origin.LOCAL));
             assertThat(mismatch.qualifiedName()).isEqualTo("UTXOS.ValidationTagMismatch");
             assertThat(mismatch.phase()).isEqualTo(LedgerFailure.Phase.PHASE_2);
-            assertThat(mismatch.detail()).isEqualTo("FailedUnexpectedly");
+            assertThat(mismatch.detail()).startsWith("FailedUnexpectedly: ");
 
             LedgerFailure malformed = new LedgerFailure(LedgerRuleName.UTXOW, "MalformedScriptWitnesses",
                     LedgerFailure.Phase.PHASE_1, "");

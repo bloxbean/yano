@@ -166,6 +166,30 @@ public final class TickedLedgerView implements LedgerView, AutoCloseable {
                 "target slot " + targetSlot + " (epoch " + targetEpoch + ") precedes the ledger epoch " + ledgerEpoch);
     }
 
+    /**
+     * The slot mempool admission validates at (ADR-056 step 1d, decision 6b): the slot after the tip, as
+     * Haskell's mempool ticks to. When a block producer has already applied the next epoch's boundary in its
+     * own write section (the ledger epoch is one ahead of that slot's epoch), the ledger state already
+     * <em>is</em> the new epoch's, and the next block will be in it: the slot is moved to the first slot of the
+     * ledger epoch, so the view is the unticked canonical one and {@code ValidationEnv.currentEpoch} equals
+     * the ledger epoch. Larger gaps are left as they are ({@link Mode#UNAVAILABLE}).
+     *
+     * @return the admission slot for {@code snapshot}
+     */
+    public static long admissionSlot(CanonicalSnapshot snapshot) {
+        long tipSlot = snapshot.tip().slot();
+        long target = tipSlot >= 0 ? tipSlot + 1 : 0;
+        int ledgerEpoch = snapshot.tip().ledgerEpoch();
+        int targetEpoch = snapshot.epochOfSlot(target);
+        if (ledgerEpoch >= 0 && targetEpoch >= 0 && targetEpoch == ledgerEpoch - 1) {
+            long start = snapshot.epochStartSlot(ledgerEpoch);
+            if (start >= 0) {
+                return Math.max(target, start);
+            }
+        }
+        return target;
+    }
+
     /** @return how this view answers */
     public Mode mode() {
         return mode;
@@ -224,7 +248,8 @@ public final class TickedLedgerView implements LedgerView, AutoCloseable {
             if (inputs == null || inputs.newEpoch() != epoch) {
                 return Lookup.unavailable("no boundary dry-run inputs were captured for epoch " + epoch);
             }
-            return Lookup.present(EpochBoundaryPreview.compute(ledger, inputs));
+            return snapshot.generationMemoized("ticked-boundary:" + epoch,
+                    () -> Lookup.present(EpochBoundaryPreview.compute(ledger, inputs)));
         });
     }
 

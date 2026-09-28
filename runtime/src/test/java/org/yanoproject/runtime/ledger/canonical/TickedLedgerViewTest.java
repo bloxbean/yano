@@ -288,6 +288,31 @@ class TickedLedgerViewTest {
         }
     }
 
+    /**
+     * ADR-056 step 1d (M5): successive snapshots of one generation (one per admission) share the boundary dry
+     * run; a new generation computes it again.
+     */
+    @Test
+    void dryRunIsSharedAcrossSnapshotsOfOneGeneration() throws Exception {
+        node = baseState(true, true);
+        long before = node.gate.generationMemoComputations();
+        EpochBoundaryPreview first;
+        try (CanonicalLedgerView a = view(); TickedLedgerView ticked = TickedLedgerView.of(a, slot(11))) {
+            first = ticked.boundaryPreview().require("preview");
+        }
+        try (CanonicalLedgerView b = view(); TickedLedgerView ticked = TickedLedgerView.of(b, slot(11))) {
+            assertThat(ticked.boundaryPreview().require("preview")).isSameAs(first);
+        }
+        assertThat(node.gate.generationMemoComputations() - before).isEqualTo(1);
+
+        node.applyCerts(slot(10) + 150, StakeRegistration.builder().stakeCredential(StakeCredential.builder()
+                .type(StakeCredType.ADDR_KEYHASH).hash("13".repeat(28)).build()).build());
+        try (CanonicalLedgerView c = view(); TickedLedgerView ticked = TickedLedgerView.of(c, slot(11))) {
+            assertThat(ticked.boundaryPreview().require("preview")).isNotSameAs(first);
+        }
+        assertThat(node.gate.generationMemoComputations() - before).isEqualTo(2);
+    }
+
     @Test
     void closedViewIsUnavailable() throws Exception {
         node = baseState(true, true);

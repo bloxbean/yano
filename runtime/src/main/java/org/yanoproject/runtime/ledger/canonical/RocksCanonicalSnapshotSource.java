@@ -6,6 +6,7 @@ import org.rocksdb.Snapshot;
 import org.yanoproject.api.model.ProtocolParamsSnapshot;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
 import org.yanoproject.ledgerstate.EpochBoundaryPreview;
+import org.yanoproject.ledgerstate.governance.ConwayGenesisGovernance;
 import org.yanoproject.ledgerstate.EpochBoundaryProcessor;
 import org.yanoproject.ledgerstate.LedgerStateSnapshotReader;
 import org.yanoproject.runtime.utxo.DefaultUtxoStore;
@@ -59,6 +60,7 @@ public final class RocksCanonicalSnapshotSource implements CanonicalSnapshotSour
     private final Supplier<DefaultUtxoStore> utxoStore;
     private final IntFunction<Optional<ProtocolParamsSnapshot>> protocolParams;
     private final BooleanSupplier asyncUtxoApply;
+    private final Supplier<ConwayGenesisGovernance> genesisGovernance;
 
     /**
      * @param database       the shared RocksDB instance (re-read on every capture: restores reopen it)
@@ -72,6 +74,20 @@ public final class RocksCanonicalSnapshotSource implements CanonicalSnapshotSour
                                         Supplier<DefaultUtxoStore> utxoStore,
                                         IntFunction<Optional<ProtocolParamsSnapshot>> protocolParams,
                                         BooleanSupplier asyncUtxoApply) {
+        this(database, accountStore, utxoStore, protocolParams, asyncUtxoApply, () -> null);
+    }
+
+    /**
+     * @param genesisGovernance the Conway genesis governance for the pre-bootstrap view fallback, or a
+     *                          supplier of {@code null}
+     */
+    public RocksCanonicalSnapshotSource(Supplier<RocksDB> database,
+                                        Supplier<DefaultAccountStateStore> accountStore,
+                                        Supplier<DefaultUtxoStore> utxoStore,
+                                        IntFunction<Optional<ProtocolParamsSnapshot>> protocolParams,
+                                        BooleanSupplier asyncUtxoApply,
+                                        Supplier<ConwayGenesisGovernance> genesisGovernance) {
+        this.genesisGovernance = Objects.requireNonNull(genesisGovernance, "genesisGovernance");
         this.database = Objects.requireNonNull(database, "database");
         this.accountStore = Objects.requireNonNull(accountStore, "accountStore");
         this.utxoStore = Objects.requireNonNull(utxoStore, "utxoStore");
@@ -116,7 +132,7 @@ public final class RocksCanonicalSnapshotSource implements CanonicalSnapshotSour
             return new Captured(ledger, utxo, params, () -> {
                 ownedReads.close();
                 db.releaseSnapshot(snapshot);
-            }, boundary);
+            }, boundary, genesisGovernance.get());
         } catch (RuntimeException | Error e) {
             if (reads != null) {
                 reads.close();

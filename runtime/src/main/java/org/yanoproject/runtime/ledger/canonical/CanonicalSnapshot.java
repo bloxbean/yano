@@ -78,6 +78,16 @@ public final class CanonicalSnapshot implements Retainable, AutoCloseable {
         return gate.epochOf(slot);
     }
 
+    /** @return the first slot of {@code epoch} by the gate's configuration (-1 when unknown); pure */
+    long epochStartSlot(int epoch) {
+        return gate.epochStartSlot(epoch);
+    }
+
+    /** A value derived from this snapshot's state, shared with every snapshot of the same generation. */
+    <T> Lookup<T> generationMemoized(String key, CanonicalStateGate.Computation<T> compute) throws Exception {
+        return gate.generationMemoized(generation(), key, compute);
+    }
+
     /** @return the purpose declared by the acquirer of the first reference */
     public SnapshotPurpose purpose() {
         return purpose;

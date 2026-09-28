@@ -125,6 +125,7 @@ import org.yanoproject.runtime.devnet.spi.DevnetRuntime;
 import org.yanoproject.runtime.devnet.spi.DevnetRuntimeProvider;
 import org.yanoproject.runtime.events.PropagatingEventBus;
 import org.yanoproject.api.util.EpochSlotCalc;
+import org.yanoproject.ledgerstate.governance.ConwayGenesisGovernance;
 import org.yanoproject.runtime.kernel.KernelLifecycleException;
 import org.yanoproject.runtime.kernel.KernelState;
 import org.yanoproject.runtime.kernel.NodeKernel;
@@ -153,12 +154,14 @@ import org.yanoproject.runtime.sync.validation.BodyValidator;
 import org.yanoproject.runtime.db.RocksDbSupplier;
 import org.yanoproject.runtime.tx.TxSubsystem;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusionStats;
+import org.yanoproject.runtime.config.NetworkGenesisValuesFactory;
 import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.ledger.canonical.RocksCanonicalSnapshotSource;
 import org.yanoproject.runtime.utxo.DefaultUtxoStore;
 import org.yanoproject.runtime.utxo.UtxoSubsystem;
 import org.yanoproject.runtime.utxo.UtxoStoreWriter;
 import org.yanoproject.runtime.validation.DefaultConsensusListener;
+import org.yanoproject.runtime.validation.ValidationEngines;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.file.Files;
@@ -644,6 +647,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return new IllegalStateException("Runtime construction cleanup failed", failure);
     }
 
+    /**
+     * ADR-056 step 1d (6a): the Conway genesis governance the canonical view falls back to before the
+     * bootstrap is persisted, loaded once from the file the bootstrap reads.
+     */
+    private Supplier<ConwayGenesisGovernance> conwayGenesisGovernance() {
+        AtomicReference<Optional<ConwayGenesisGovernance>> loaded = new AtomicReference<>();
+        return () -> {
+            Optional<ConwayGenesisGovernance> value = loaded.get();
+            if (value == null) {
+                value = ConwayGenesisGovernance.load(config.getConwayGenesisFile(),
+                        NetworkGenesisValuesFactory.knownInitialTreasury((int) config.getProtocolMagic()));
+                loaded.compareAndSet(null, value);
+            }
+            return value.orElse(null);
+        };
+    }
+
     private RocksDbSupplier rocksDbSupplierOrNull() {
         return chainStorage.rocksDbSupplierOrNull();
     }
@@ -668,6 +688,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             EpochParamProvider provider = getEpochParamProvider();
             return provider != null ? provider.getEpochSlotCalc().slotToEpoch(slot) : -1;
         });
+        gate.configureEpochStartSlot(epoch -> {
+            EpochParamProvider provider = getEpochParamProvider();
+            return provider != null ? provider.getEpochSlotCalc().epochToStartSlot(epoch) : -1;
+        });
         RocksDbAccess rocks = rocksDbAccessOrNull();
         if (rocks == null) {
             return;
@@ -677,7 +701,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 () -> getDefaultAccountStateStore().orElse(null),
                 () -> utxoSubsystem.store() instanceof DefaultUtxoStore store ? store : null,
                 epoch -> getDefaultAccountStateStore().flatMap(store -> store.getProtocolParameters(epoch)),
-                utxoSubsystem::isApplyAsync));
+                utxoSubsystem::isApplyAsync,
+                conwayGenesisGovernance()));
     }
 
     /**
@@ -2651,6 +2676,24 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     public void setScriptEvaluator(TransactionEvaluator scriptEvaluator) {
         txSubsystem.setScriptEvaluator(scriptEvaluator);
+    }
+
+    /**
+     * Installs the validation engines (ADR-056 §7): mempool admission then validates against canonical
+     * snapshots of this node's state gate.
+     */
+    public void setValidationEngines(ValidationEngines engines) {
+        txSubsystem.setValidationEngines(engines, () -> CanonicalStateGate.of(chainState));
+    }
+
+    /** @return the installed validation engines, or {@code null} when admission uses the legacy validator */
+    public ValidationEngines getValidationEngines() {
+        return txSubsystem.validationEngines();
+    }
+
+    /** @return the runtime globals (configuration forwarded by the host) */
+    public Map<String, Object> runtimeGlobals() {
+        return runtimeOptions.globals() != null ? runtimeOptions.globals() : Map.of();
     }
 
     @Override

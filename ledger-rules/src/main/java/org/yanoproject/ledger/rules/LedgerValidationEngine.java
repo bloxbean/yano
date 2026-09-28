@@ -23,4 +23,15 @@ public interface LedgerValidationEngine {
     String name();
 
     TxValidationOutcome validate(TxValidationRequest request);
+
+    /**
+     * Whether the engine can currently answer requests. An unhealthy engine keeps failing closed (every
+     * request is {@link TxValidationOutcome.Invalid}); the node reports it through its health checks.
+     *
+     * @return true unless the engine has turned unhealthy (for example the Amaru engine after too many
+     *         abandoned calls)
+     */
+    default boolean isHealthy() {
+        return true;
+    }
 }
