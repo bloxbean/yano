@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (revised after the Fable review and the Codex review of PR #155,
+Proposed (revised after the Fable review and two Codex review rounds of PR #155,
 2026-09-28)
 
 ## Date
@@ -346,27 +346,74 @@ REST, n2n and n2c rejection paths are unchanged.
   `GovernanceStateStore` and the epoch parameter tracker. Reads follow the
   three-outcome contract of invariant 2. The one accessor still to confirm is
   the candidate payload of pending `UpdateCommittee` proposals.
-- **Canonical snapshot contract.** A `CanonicalLedgerView` is always a
-  **snapshot of one fully applied canonical tip**. It never reads live stores,
-  whose parts could describe different tips while a block is being applied.
-  - **Generation.** Canonical application publishes a monotonic
-    `canonicalGeneration` together with the tip (slot, hash). The counter is
-    bumped only after a forward block **or** a rollback has been fully applied
-    to every store the view reads: UTxO, accounts, pools, DReps, governance,
-    epoch parameters and AdaPot.
-  - **Consistent reads.** A snapshot pins its generation. Where the stores
-    share one RocksDB instance, it holds a RocksDB read snapshot. Otherwise it
-    reads under a generation seqlock: it records the generation before and
-    after each read batch and retries if the two differ. Which mechanism
-    applies is settled by a Phase 1 gate.
-  - **Ownership and lifetime.** The snapshot is owned by whoever opened it:
-    one admission, one rebuild, one block-selection pass, or one shadow
-    validation. It is closed in `finally`. Asynchronous shadow readers get
-    their own snapshot and must finish within `yano.validation.snapshot-max-age-ms`
-    (default 30 s). After that, reads return `Unavailable` and the shadow
-    result is discarded, not counted as a disagreement.
-  - **Bounded resources.** The number of open snapshots is capped, so a slow
-    reader can't pin RocksDB resources indefinitely.
+- **Canonical snapshot contract.** A `CanonicalLedgerView` is always backed by
+  a **`CanonicalSnapshot` of one fully applied canonical tip**. It never reads
+  live stores, whose parts could describe different tips while a block is being
+  applied.
+  - **Storage facts** (confirmed in Phase 1).
+    - UTxO, account, pool, DRep and governance state appear to live in **one
+      RocksDB instance**, as column families. `DirectRocksDBChainState.java:295`
+      is the only production `RocksDB.open`. `DefaultAccountStateStore`
+      receives that `db` (`DefaultAccountStateStore.java:369`).
+    - Yano already reads through RocksDB snapshots elsewhere, for example
+      `RocksUtxoReadView.java:54`.
+    - A RocksDB snapshot is consistent at the database level. But on its own it
+      can be taken between two of a block's writes, so it isn't necessarily a
+      fully applied ledger tip.
+  - **Writer protocol.** A `CanonicalStateGate` is a fair read-write lock
+    around canonical application.
+    - Forward block application and rollback each hold the **write lock** from
+      before their first store mutation until after their last one, across
+      every store the view reads (UTxO, accounts, pools, DReps, governance,
+      epoch parameters, AdaPot).
+    - Writers are already serialized by the single chain-application path. The
+      gate makes that explicit.
+    - Before releasing the write lock, the writer publishes `canonicalGeneration`
+      (monotonic) and the tip (slot, hash) in a `volatile` field.
+    - Event listeners (mempool, block producer) are notified **after** release.
+  - **Acquisition.** `CanonicalSnapshot.acquire()`:
+    1. Takes the gate's **read lock**, so it waits while a writer is mid-block.
+    2. Reads `canonicalGeneration` and the tip.
+    3. Takes one RocksDB `Snapshot` of the shared instance.
+    4. Copies every validation-visible value that is held in memory rather than
+       in RocksDB into an immutable object tagged with the same generation:
+       effective protocol parameters and cost models, and any in-memory
+       governance or AdaPot cache. Phase 1 lists each of them.
+    5. Releases the read lock.
+
+    Acquisition is O(1) plus that small copy, so writers are delayed only
+    briefly. Every later read goes to the retained RocksDB snapshot or the
+    immutable copy, never to live stores. A write can't overlap a capture, and
+    no individual read batch needs checking.
+  - **Stores outside the shared instance.** If Phase 1 finds a
+    validation-visible store outside the shared RocksDB, it must be copied
+    immutably at step 4 or versioned by generation. The option of checking a
+    generation before and after each read batch is **rejected**: it can't
+    detect a writer that is part-way through a block, and it can't make
+    separately checked batches into one snapshot.
+  - **No "open generation G later".** A snapshot exists only as the handle
+    returned by `acquire()`. Nothing opens an arbitrary historical generation
+    afterwards. A consumer that needs the current tip acquires a new handle.
+  - **Reference-counted ownership.**
+    - `CanonicalSnapshot` is reference counted (`retain()`/`release()`). The
+      RocksDB snapshot and the immutable copy are freed when the count reaches
+      zero.
+    - Every derived view (`TickedLedgerView`, `OverlayLedgerView`, a shadow
+      request) **retains** its base snapshot for as long as it exists, and
+      releases it when it is retired.
+    - Handing a view to another owner transfers a reference. It never closes
+      the base.
+  - **Bounded resources.**
+    - At most `yano.validation.max-live-snapshots` (default 4) generations can
+      be retained at once: the published mempool base, a rebuild in progress,
+      block selection, and shadow work.
+    - When the cap is reached, new **shadow** requests are dropped (counted in
+      `yano_validation_shadow_dropped_total`), never admission or block
+      selection.
+    - A shadow task older than `yano.validation.snapshot-max-age-ms` (default
+      30 s) is cancelled and releases its reference. Its result is discarded,
+      not counted as a disagreement.
+    - A metric exports live snapshots per generation, so a leak is visible.
 - **`TickedLedgerView(canonical, slot)`** — the answer to "what is the state at
   slot `s`".
   - If `s` is in the tip's epoch, it is the canonical view.
@@ -383,15 +430,20 @@ REST, n2n and n2c rejection paths are unchanged.
     **dry run** over a snapshot, never persisted.
   - If a dry run isn't available for a value, the ticked view fails closed: it
     rejects transactions whose verdict depends on that value, and never guesses.
-  - Its result is cached per (tip hash, target epoch).
+  - Its result is cached per (`canonicalGeneration`, target epoch). A cache
+    entry retains its `CanonicalSnapshot` and releases it on eviction, when the
+    generation it belongs to is no longer published and no view uses it.
   - Phase 1 establishes which boundary values `ledger-state` can compute
     without persisting. That is the riskiest dependency in this ADR, so it has
     its own gate.
 - **`OverlayLedgerView(base)`** is an ordered stack of `TxEffects` over a base
   view.
   - `apply(TxEffects)` pushes a layer. Reads resolve newest layer first.
-  - `snapshot()` returns an immutable view, used for asynchronous shadow
-    engines. The mempool overlay keeps changing after admission.
+  - Layers are immutable, and a view is a persistent (shared-structure) stack.
+    `freeze()` returns an immutable view containing the same layers plus a
+    retained reference to the **same** `CanonicalSnapshot`. Asynchronous shadow
+    engines therefore see exactly the generation and layers the admission
+    request saw, never a later tip.
   - `rebuild(...)`: see §6.
 - **`TxEffects`** holds what a valid transaction changes and later rules can
   observe:
@@ -523,38 +575,83 @@ public interface ScriptPhaseEvaluator {
     ouroboros-consensus revision.
 
 **Mempool.**
-- **Admission.** `DefaultMemPool` keeps one `OverlayLedgerView` over
-  `TickedLedgerView(snapshot, nextSlot)`. Admission runs rule `MEMPOOL` against
-  it, stores the resulting `ValidatedTx`, and appends the effects under the
-  existing mutation lane. The UTxO indexes stay as indexes; `resolve` is served
-  by the overlay.
-- **Two generations.** The mempool tracks a `mempoolGeneration`, bumped on
-  every admission, removal or eviction. Canonical state has its
-  `canonicalGeneration` (§3).
-- **Rebuild without stalling admission.** Triggers: a forward block, rollback,
-  eviction, or an epoch change of the next slot.
-  1. Under the lane, capture `(canonicalGeneration, mempoolGeneration)` and the
-     ordered `ValidatedTx` list.
-  2. Outside the lane, open one canonical snapshot at the captured generation.
-     Re-apply the list over `TickedLedgerView(snapshot, nextSlot)` with rule
-     `MEMPOOL`. Each transaction's `previous` decides between re-application
-     and full validation (invalidation rules below).
-  3. Under the lane, **publish only if the canonical generation is unchanged**.
-     - If `canonicalGeneration` moved, a forward block or rollback happened
-       meanwhile. Discard the result and restart from step 1. After
-       `yano.validation.rebuild-max-restarts` (default 3), admission holds the
-       lane for one synchronous rebuild so progress is guaranteed.
-     - If only `mempoolGeneration` moved, validate the transactions admitted
-       during the rebuild on top of the new overlay, drop those that now fail,
-       then publish.
-  4. Close the snapshot.
+- **One immutable published state.** The mempool's ledger-facing state is one
+  immutable `MempoolLedgerState`. It holds:
+  - the ordered `ValidatedTx` list;
+  - the UTxO produced/spent indexes and dependency edges;
+  - the `OverlayLedgerView`, one layer per transaction, in list order;
+  - a retained reference to the overlay's `CanonicalSnapshot`;
+  - a monotonic `mempoolGeneration`;
+  - an append-only **mutation log**, with an entry per append or removal
+    since the state's creation.
 
-  This avoids blocking admission for O(N) × validation time, and a completed
-  rebuild is never published against a tip it didn't read.
-- **Which events trigger it.** Forward application and rollback both trigger
-  rebuilds, keyed on `canonicalGeneration`. The generation is bumped only after
-  **all** stores have applied the block or rollback, so a rebuild can't observe
-  a half-applied state. This replaces `onCanonicalRollbackApplied`
+  Under the mutation lane, every change builds a new `MempoolLedgerState` and
+  swaps the published reference. So the list, provenance, indexes and overlay
+  are always published together, and they are consistent with each other.
+- **Lock order.** The canonical gate (§3) and the mempool lane are never held
+  together.
+  - Admission reads only the published state's own snapshot, never the gate.
+  - Canonical writers notify the mempool only after releasing the gate.
+  - Rebuilds acquire their snapshot before taking the lane.
+- **Admission** (under the lane). Run rule `MEMPOOL` against the published
+  overlay. On success, append the `ValidatedTx` and its effects layer and swap.
+  - The admission holds a reference to the published state for its duration.
+    A concurrent swap therefore can't release the base it is reading.
+  - Any canonical UTxO the transaction needs, even one no earlier transaction
+    touched, is read from that retained snapshot.
+- **Removal, eviction or clear while the canonical tip is unchanged** (under
+  the lane, synchronously).
+  1. Truncate the overlay to the layer before the earliest removed transaction.
+  2. Re-apply the remaining suffix in order. The canonical base is unchanged,
+     so every `previous` is still valid under the invalidation rules below.
+     Re-application skips signatures and Plutus, so it costs only the dynamic
+     checks.
+  3. Drop any suffix transaction that now fails (cascading). This covers
+     certificate and governance dependencies, not just UTxO parents: a
+     delegation whose registering transaction was evicted fails re-application
+     and is dropped.
+  4. Swap.
+
+  A removed transaction's effects therefore never stay visible, even briefly,
+  to later admissions. The suffix re-application time is part of the Phase 6
+  budget.
+- **Rebuild on a canonical change without stalling admission.** Triggers: a
+  forward block, a rollback, or an epoch change of the next slot. One rebuild
+  worker runs at a time. Triggers that arrive while it runs are coalesced into
+  one follow-up rebuild against the newest snapshot.
+  1. Acquire a new `CanonicalSnapshot` (§3), outside the lane.
+  2. Under the lane, take a reference to the published `MempoolLedgerState` S
+     and record its mutation-log position.
+  3. Outside the lane, fold S's `ValidatedTx` list over
+     `TickedLedgerView(newSnapshot, nextSlot)` with rule `MEMPOOL`. Each
+     transaction's `previous` decides between re-application and full
+     validation. Failures are dropped. This produces a candidate state R.
+  4. Under the lane, **publish only if the published state still descends from
+     S by appends alone**, meaning S's mutation log since the recorded position
+     contains only appends. If so, validate those appended transactions in
+     order on top of R, dropping failures, and swap in the result.
+
+     Otherwise, **discard** R. That covers any removal, eviction, clear, or a
+     newer canonical generation published by another rebuild. Then restart
+     from step 1. After `yano.validation.rebuild-max-restarts` (default 3),
+     the next attempt runs steps 1–4 synchronously while holding the lane, so
+     progress is guaranteed.
+  5. **Ownership transfer.**
+     - On a successful swap, the new published state keeps the reference to
+       `newSnapshot` that the rebuild acquired. The rebuild does not release
+       it.
+     - The replaced state is **retired**. It releases its own snapshot
+       reference only once every admission and frozen shadow view that
+       retained it has released theirs, through reference counting.
+     - If the rebuild's result is discarded, the rebuild releases `newSnapshot`
+       itself.
+
+  This keeps O(N) × validation time off the admission path. A rebuild is never
+  published against a tip it didn't read, never resurrects a removed
+  transaction, and never keeps a removed transaction's effects.
+- **Which events trigger it.** Forward application and rollback both notify
+  the mempool after the canonical gate is released and `canonicalGeneration` is
+  published. This replaces `onCanonicalRollbackApplied`
   (`TxSubsystem.java:655`), which fires on the UTxO rollback alone.
 - **Epoch boundary.** When the next slot crosses into a new epoch, the ticked
   base changes. That triggers a rebuild, which applies the invalidation rules
@@ -592,8 +689,9 @@ the new environment.
 | vkey and bootstrap signature verification, metadata hash/validity, native script evaluation, empty inputs, bootstrap address attributes, network ids (tx body, outputs, withdrawals), max tx size, **Plutus execution** | input existence, validity interval and forecast, fees, min-UTxO, value size, ExUnits limits, script integrity hash (cost models may have changed), needed witnesses, reference input disjointness, all CERTS, GOV and LEDGER checks, MEMPOOL |
 
 **Block production.**
-- `BlockTransactionSelectors.selectMempool` opens one canonical snapshot. It
-  builds a fresh block-local `OverlayLedgerView` over
+- `BlockTransactionSelectors.selectMempool` acquires one `CanonicalSnapshot`
+  (§3) and releases it after the block is forged or the selection is discarded.
+  It builds a fresh block-local `OverlayLedgerView` over
   `TickedLedgerView(snapshot, forgeSlot)`. It deliberately does not reuse the
   mempool overlay: only selected transactions are applied, in selection order.
 - It validates each candidate with rule `LEDGER`, passing the candidate's
@@ -619,8 +717,9 @@ yano:
 ```
 
 - The admission verdict comes only from `engine`.
-- **Shadow engines** receive `TxValidationRequest` with an immutable
-  `snapshot()` view and run asynchronously.
+- **Shadow engines** receive `TxValidationRequest` with a `freeze()`d view
+  (§3). That view retains the admission's own `CanonicalSnapshot` and overlay
+  layers, and shadow engines run asynchronously.
   - Disagreements increment
     `yano_validation_disagreements_total{engine,rule}` and are logged once
     with the transaction hash.
@@ -693,16 +792,30 @@ The final PR merges once S5's gates are green.
   `TickedLedgerView`, `OverlayLedgerView` and `TxEffectsDeriver`.
 - Add the Scalus engine adapter and the overlay-aware `LedgerStateProvider`.
 - Add the `engine`/`shadow-engines` config. The default stays `scalus`.
-- Add `ValidatedTx`, the `Lookup` read contract, `canonicalGeneration`
-  publication after full block and rollback application, and canonical
-  snapshots.
+- Add `ValidatedTx`, the `Lookup` read contract, the `CanonicalStateGate`
+  around whole-block application and rollback, `canonicalGeneration`
+  publication, and reference-counted `CanonicalSnapshot` acquisition.
 - Pin the `cardano-ledger` and ouroboros-consensus revisions, and re-check every
   Haskell reference in this ADR against them.
 - Gates:
-  - **Snapshot gate:** decide between a RocksDB snapshot and a generation
-    seqlock for each store the view reads. A concurrency test applies forward
-    blocks and rollbacks while snapshots are read, and no snapshot ever mixes
-    two tips.
+  - **Snapshot gate:**
+    - Confirm that every validation-visible store is in the shared RocksDB
+      instance, or is copied immutably at acquisition.
+    - Instrument a writer to **pause after the UTxO update and before the
+      account/governance updates** while a capture is attempted. The capture
+      must wait for the writer; it never returns mixed data.
+    - Separately, inject a write **between two read batches** of one snapshot.
+      Both batches must return the snapshot's generation.
+    - A soak test applies forward blocks and rollbacks under concurrent
+      acquisition, and no snapshot ever mixes two tips.
+  - **Ownership gate:**
+    - Complete a rebuild, let the rebuild release its local resources, then
+      admit a transaction spending a canonical UTxO outside the rebuild's read
+      set. The read succeeds from the published state's retained snapshot.
+    - Keep a frozen shadow view alive while the mempool state is replaced
+      twice. It still reads its original generation.
+    - After all holders finish, the live-snapshot metric returns to the
+      published baseline: no leaked handles.
   - **Lookup gate:** a fresh pool registration, deregistration followed by
     registration, and a first-time DRep registration all reach the rules as
     confirmed absence. An injected store failure yields `LedgerStateUnavailable`.
@@ -753,8 +866,9 @@ The final PR merges once S5's gates are green.
 
 ### Phase 6 — Runtime overlays
 
-- Add the mempool overlay with off-lane rebuild and generation-checked
-  publication, rebuild triggers for forward blocks, rollbacks and epoch
+- Add the immutable `MempoolLedgerState`, synchronous truncate-and-reapply on
+  removal, the off-lane rebuild that publishes only on append-only descent with
+  snapshot ownership transfer, rebuild triggers for forward blocks, rollbacks and epoch
   boundaries, per-transaction `ValidatedTx` provenance with the shared
   invalidation rules, the phase-2-invalid rejection policy, and the
   block-production overlay.
@@ -767,6 +881,20 @@ The final PR merges once S5's gates are green.
     that became invalid are dropped;
   - **publication race:** a forward block and a rollback are each injected
     during a rebuild. The stale rebuild is discarded, never published;
+  - **mempool removals during a rebuild:** removal, TTL eviction and clear are
+    each injected during an off-lane rebuild, with the canonical tip unchanged.
+    The case includes stake register (A) → delegate (B) with independent UTxO
+    inputs, where A is evicted. Checks:
+    - removed transactions are never resurrected;
+    - their effects are absent;
+    - B is re-validated and dropped;
+    - a concurrent append plus removal also takes the discard-and-restart
+      path;
+    - an append-only interleaving publishes with the appended transactions
+      re-validated on the new base;
+  - **removal without a rebuild:** evicting A synchronously truncates and
+    re-applies the suffix, so an admission immediately after the eviction
+    can't observe A's registration;
   - **phase-2-invalid:** an `isValid=false` transaction, and an `isValid=true`
     transaction whose script fails, are both rejected from local and peer
     origins, and no Yano-produced block contains a non-empty `invalid_txs`;
@@ -820,7 +948,9 @@ The final PR merges once S5's gates are green.
 | The ticked-view dry run diverges from real boundary processing | Phase 1 ticking gate against persisted boundaries; fail closed on values not computable as a dry run |
 | Value conservation, script integrity hash or min-UTxO diverges from Haskell | Amaru scenarios, blueprint vectors, shadow sync, Amaru differential |
 | Mempool rebuild latency under load | Off-lane rebuild and swap; REAPPLY; measured budget gate |
-| A rebuild or snapshot mixes two canonical tips | Snapshots pinned to `canonicalGeneration`; generation-checked publication; concurrency gate |
+| A rebuild or snapshot mixes two canonical tips | Canonical write gate around whole-block application; snapshots acquired under the read lock; paused-writer and mid-read write gates |
+| A published or shadow view reads through a released snapshot | Reference-counted `CanonicalSnapshot`; ownership transferred on swap; retire-then-release; ownership gate with leak metric |
+| Removed transactions resurrected, or their effects kept | Immutable `MempoolLedgerState`; synchronous truncate-and-reapply on removal; rebuild publishes only on append-only descent |
 | A cached phase-2 verdict survives a hard fork or cost-model change | `ValidatedTx` provenance; shared invalidation rules; pending-mempool hard-fork gate |
 | Valid first-time registrations rejected as "missing state" | Three-outcome `Lookup`; Phase 1 lookup gate |
 | A phase-2-invalid transaction reaches a block the builder can't encode | Rejected at admission until the follow-up ADR lands |
