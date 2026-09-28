@@ -3,7 +3,7 @@ package org.yanoproject.runtime.tx;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.model.MemPoolTransaction;
 import org.yanoproject.api.utxo.UtxoState;
-import org.yanoproject.ledgerrules.ValidationResult;
+import org.yanoproject.ledger.rules.ValidationResult;
 import org.yanoproject.runtime.blockproducer.BlockBuildUtxoOverlay;
 import org.yanoproject.runtime.blockproducer.TransactionValidationService;
 import org.yanoproject.runtime.chain.MemPool;

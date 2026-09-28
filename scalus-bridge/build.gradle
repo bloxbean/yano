@@ -13,7 +13,6 @@ tasks.withType(ScalaCompile).configureEach {
 dependencies {
     api project(':ledger-rules')
     api project(':core-api')
-    api project(':ccl-ledger-rules')
 
     api libs.scala3.library
     api(libs.scalus.bloxbean.ccl) {

@@ -6,7 +6,7 @@ import com.bloxbean.cardano.client.api.model.Utxo;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import org.yanoproject.api.util.EpochSlotCalc;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

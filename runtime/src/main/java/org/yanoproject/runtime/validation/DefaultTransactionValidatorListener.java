@@ -2,8 +2,8 @@ package org.yanoproject.runtime.validation;
 
 import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
 import org.yanoproject.api.events.TransactionValidateEvent;
-import org.yanoproject.ledgerrules.ValidationError;
-import org.yanoproject.ledgerrules.ValidationResult;
+import org.yanoproject.ledger.rules.ValidationError;
+import org.yanoproject.ledger.rules.ValidationResult;
 import org.yanoproject.runtime.blockproducer.TransactionValidationService;
 import lombok.extern.slf4j.Slf4j;
 

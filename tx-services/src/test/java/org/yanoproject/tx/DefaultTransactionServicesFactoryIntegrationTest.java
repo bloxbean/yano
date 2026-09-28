@@ -2,7 +2,7 @@ package org.yanoproject.tx;
 
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
 import org.yanoproject.runtime.assembly.YanoAssembly;
 import org.yanoproject.runtime.assembly.Yano;
 import org.yanoproject.runtime.config.InMemoryDevnetGenesis;

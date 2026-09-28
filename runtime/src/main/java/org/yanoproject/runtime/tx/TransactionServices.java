@@ -1,7 +1,7 @@
 package org.yanoproject.runtime.tx;
 
-import org.yanoproject.ledgerrules.TransactionEvaluator;
-import org.yanoproject.ledgerrules.TransactionValidator;
+import org.yanoproject.ledger.rules.TransactionEvaluator;
+import org.yanoproject.ledger.rules.TransactionValidator;
 
 /**
  * Transaction services created by an edge adapter and installed by runtime assembly.

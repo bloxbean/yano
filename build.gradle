@@ -376,7 +376,7 @@ publishing {
             // yano-runtime api-depends on plugin-catalog, consensus, p2p,
             // ledger-rules and ledger-state, so these two coordinates give a
             // downstream application the whole node stack transitively.
-            // Optional modules -- scalus-bridge, ccl-ledger-rules, archive-*,
+            // Optional modules -- scalus-bridge, script-evaluators, archive-*,
             // tx-services, bootstrap-providers -- stay opt-in, and the testkits
             // must never reach an application's compile classpath. Use
             // :yano-bom to align versions when adding them.

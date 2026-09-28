@@ -1,8 +1,8 @@
 package org.yanoproject.runtime.blockproducer;
 
 import com.bloxbean.cardano.yaci.events.api.VetoableEvent;
-import org.yanoproject.ledgerrules.ValidationError;
-import org.yanoproject.ledgerrules.ValidationResult;
+import org.yanoproject.ledger.rules.ValidationError;
+import org.yanoproject.ledger.rules.ValidationResult;
 
 import java.util.List;
 import java.util.stream.Collectors;

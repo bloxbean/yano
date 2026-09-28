@@ -1,18 +1,6 @@
 dependencies {
     api project(':core-api')
     api libs.cardano.client.core  // CCL core types: ProtocolParams, Utxo, Transaction
-
-    implementation(libs.aiken.java.binding) {
-        exclude group: 'com.bloxbean.cardano'
-    }
-
-    implementation(libs.julc.cardano.client.lib) {
-        exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
-    }
-
-    implementation(libs.julc.vm.java) {
-        exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
-    }
 }
 
 publishing {
@@ -20,7 +8,7 @@ publishing {
         mavenJava(MavenPublication) {
             pom {
                 name = 'Yano Ledger Rules'
-                description = 'Yano Ledger Rules - Transaction validation interface for Cardano ledger rules'
+                description = 'Yano Ledger Rules - Conway transaction validation API and ledger rule engine'
             }
         }
     }

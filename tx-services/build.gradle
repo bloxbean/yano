@@ -2,6 +2,7 @@ dependencies {
     api project(':runtime')
 
     implementation project(':scalus-bridge')
+    implementation project(':script-evaluators')
 }
 
 java {

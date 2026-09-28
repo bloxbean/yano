@@ -18,8 +18,8 @@ import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovAction
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.ParameterChangeAction;
 import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.util.EpochSlotCalc;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
-import org.yanoproject.ledgerrules.ValidationError;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.ValidationError;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

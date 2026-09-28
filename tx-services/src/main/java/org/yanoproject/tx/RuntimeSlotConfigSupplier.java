@@ -4,7 +4,7 @@ import com.bloxbean.cardano.client.common.model.SlotConfig;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.util.EpochSlotCalc;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
 import org.yanoproject.runtime.blockproducer.GenesisConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

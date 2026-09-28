@@ -25,7 +25,7 @@ def yanoModules = [
         'app-e2e-testkit'             : 'app-e2e-testkit',
         'ledger-rules'                : 'ledger-rules',
         'ledger-state'                : 'ledger-state',
-        'ccl-ledger-rules'            : 'ccl-ledger-rules',
+        'script-evaluators'           : 'script-evaluators',
         'scalus-bridge'               : 'scalus-bridge',
         'yano-bom'                    : 'bom',
         'appchain-config'             : 'appchain/appchain-config',

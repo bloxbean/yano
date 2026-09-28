@@ -3,7 +3,7 @@ package org.yanoproject.runtime.tx;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.util.EpochSlotCalc;
-import org.yanoproject.ledgerrules.EpochProtocolParamsSupplier;
+import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
 
 import java.util.Objects;
 
