@@ -22,10 +22,11 @@ import java.util.Optional;
  * cardano-ledger {@code f649f975}.
  *
  * <p>Wrapper constructors ({@code ConwayUtxowFailure}, {@code CertFailure}, …) are not listed. The catalogue
- * keeps the three constructors that cannot occur at protocol version 10 or 11
+ * keeps the four constructors that cannot occur at protocol version 10 or 11
  * ({@code DisallowedProposalDuringBootstrap}, {@code DisallowedVotesDuringBootstrap}: PV 9 only;
- * {@code OutputTooSmallUTxO}: unreachable in Conway) with {@code reachable = false}, so the table stays
- * complete; {@link #inScope()} leaves them out.</p>
+ * {@code OutputTooSmallUTxO}: unreachable in Conway; {@code OutsideForecast}: unreachable at the pin, its check
+ * cannot fail) with {@code reachable = false}, so the table stays complete; {@link #inScope()} leaves them
+ * out.</p>
  */
 public final class ConwayConstructorCatalogue {
 

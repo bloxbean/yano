@@ -869,11 +869,11 @@
       "fields": "SlotNo",
       "pvMin": 10,
       "pvMax": null,
-      "reachable": true,
+      "reachable": false,
       "phase": 1,
       "check": "dynamic",
       "pvGate": "",
-      "notes": "Alonzo/Rules/Utxo.hs:377-385. Only if there are redeemers and an upper bound"
+      "notes": "Unreachable at pin (Conway), no negative test: Alonzo/Rules/Utxo.hs:377-386 translates the bound with unsafeLinearExtendEpochInfo slotNo ei (cardano-slotting EpochInfo/Extend.hs), which cannot fail for a translatable current slot. A bound past the forecast horizon is UTXOS.CollectErrors [BadTranslation TimeTranslationPastHorizon] instead (Amaru's corpus spells that OutsideForecast)"
     },
     {
       "rule": "UTXO",

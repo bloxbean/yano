@@ -21,9 +21,20 @@ import java.util.Objects;
  * @param validatedPhase2EnvDigest the {@link ValidationEnv#phase2EnvDigest()} it was validated with
  * @param phase2Valid              the phase-2 verdict
  * @param origin                   where the verdict came from
+ * @param resolvedInputsDigest     a digest of what the spending, collateral and reference inputs resolved to when
+ *                                 the verdict was produced (§6 "resolved inputs"), or {@code null} when the engine
+ *                                 did not record one; without it an engine cannot prove the inputs unchanged and
+ *                                 validates in full
  */
 public record ValidatedTx(byte[] txCbor, byte[] txId, int validatedProtocolMajor, long validatedEpoch,
-                          byte[] validatedPhase2EnvDigest, boolean phase2Valid, Origin origin) {
+                          byte[] validatedPhase2EnvDigest, boolean phase2Valid, Origin origin,
+                          byte[] resolvedInputsDigest) {
+
+    /** Provenance without a resolved-inputs digest (engines that never re-apply). */
+    public ValidatedTx(byte[] txCbor, byte[] txId, int validatedProtocolMajor, long validatedEpoch,
+                       byte[] validatedPhase2EnvDigest, boolean phase2Valid, Origin origin) {
+        this(txCbor, txId, validatedProtocolMajor, validatedEpoch, validatedPhase2EnvDigest, phase2Valid, origin, null);
+    }
 
     public ValidatedTx {
         txCbor = Objects.requireNonNull(txCbor, "txCbor").clone();
@@ -34,6 +45,13 @@ public record ValidatedTx(byte[] txCbor, byte[] txId, int validatedProtocolMajor
         validatedPhase2EnvDigest = Objects.requireNonNull(validatedPhase2EnvDigest, "validatedPhase2EnvDigest")
                 .clone();
         Objects.requireNonNull(origin, "origin");
+        resolvedInputsDigest = resolvedInputsDigest != null ? resolvedInputsDigest.clone() : null;
+    }
+
+    /** @return a copy of the resolved-inputs digest, or {@code null} when none was recorded */
+    @Override
+    public byte[] resolvedInputsDigest() {
+        return resolvedInputsDigest != null ? resolvedInputsDigest.clone() : null;
     }
 
     @Override
@@ -65,13 +83,14 @@ public record ValidatedTx(byte[] txCbor, byte[] txId, int validatedProtocolMajor
                 && origin == other.origin
                 && Arrays.equals(txId, other.txId)
                 && Arrays.equals(txCbor, other.txCbor)
-                && Arrays.equals(validatedPhase2EnvDigest, other.validatedPhase2EnvDigest);
+                && Arrays.equals(validatedPhase2EnvDigest, other.validatedPhase2EnvDigest)
+                && Arrays.equals(resolvedInputsDigest, other.resolvedInputsDigest);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(Arrays.hashCode(txId), validatedProtocolMajor, validatedEpoch,
-                Arrays.hashCode(validatedPhase2EnvDigest), phase2Valid, origin);
+                Arrays.hashCode(validatedPhase2EnvDigest), phase2Valid, origin, Arrays.hashCode(resolvedInputsDigest));
     }
 
     @Override

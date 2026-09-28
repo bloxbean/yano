@@ -22,11 +22,11 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 | GOVCERT | 6 | 0 | 0 | 3 | 3 |
 | GOV | 17 | 0 | 0 | 11 | 6 |
 | UTXOW | 18 | 6 | 0 | 3 | 9 |
-| UTXO | 21 | 10 | 0 | 8 | 3 |
-| UTXOS | 2 | 0 | 0 | 1 | 1 |
-| **Total** | **85** | **16** | **0** | **40** | **29** |
+| UTXO | 20 | 17 | 3 | 0 | 0 |
+| UTXOS | 2 | 2 | 0 | 0 | 0 |
+| **Total** | **84** | **25** | **3** | **31** | **25** |
 
-88 constructors in the catalogue; 85 reachable at protocol version 10 or 11. Out of scope: `GOV.DisallowedProposalDuringBootstrap` (9 only), `GOV.DisallowedVotesDuringBootstrap` (9 only), `UTXO.OutputTooSmallUTxO` (unreachable).
+88 constructors in the catalogue; 84 reachable at protocol version 10 or 11. Out of scope: `GOV.DisallowedProposalDuringBootstrap` (9 only), `GOV.DisallowedVotesDuringBootstrap` (9 only), `UTXO.OutsideForecast` (unreachable), `UTXO.OutputTooSmallUTxO` (unreachable).
 
 ## Protocol-version gates to test on both sides
 
@@ -53,91 +53,91 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 
 | Rule | Constructor | PV | Check | Java rule | Tests | Amaru scenarios | Status |
 |---|---|---|---|---|---|---|---|
-| LEDGER | `ConwayMempoolFailure` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| LEDGER | `ConwayTreasuryValueMismatch` | 10+ | dynamic | TBD (P3–5) | – | 00054 | scenario only |
-| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 10+ | dynamic | TBD (P3–5) | – | 00055, 00056, 00057 | scenario only |
-| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | TBD (P3–5) | – | 00058 | scenario only |
-| LEDGER | `ConwayWithdrawalsMissingAccounts` | 11+ | dynamic | TBD (P3–5) | – | – | gap |
-| LEDGER | `ConwayIncompleteWithdrawals` | 11+ | dynamic | TBD (P3–5) | – | – | gap |
-| CERTS | `WithdrawalsNotInRewardsCERTS` | 10 | dynamic | TBD (P3–5) | – | 00125, 00126 | scenario only |
-| DELEG | `IncorrectDepositDELEG` | 10 | dynamic | TBD (P3–5) | – | 00072, 00273 | scenario only |
-| DELEG | `DepositIncorrectDELEG` | 11+ | dynamic | TBD (P3–5) | – | – | gap |
-| DELEG | `RefundIncorrectDELEG` | 11+ | dynamic | TBD (P3–5) | – | – | gap |
-| DELEG | `StakeKeyRegisteredDELEG` | 10+ | dynamic | TBD (P3–5) | – | 00106, 00107, 00108, 00109, 00272 | scenario only |
-| DELEG | `StakeKeyNotRegisteredDELEG` | 10+ | dynamic | TBD (P3–5) | – | 00100, 00101, 00102, 00103 | scenario only |
-| DELEG | `StakeKeyHasNonZeroAccountBalanceDELEG` | 10+ | dynamic | TBD (P3–5) | – | 00104, 00105 | scenario only |
-| DELEG | `DelegateeDRepNotRegisteredDELEG` | 10+ | dynamic | TBD (P3–5) | – | 00061, 00062, 00063, 00064 | scenario only |
-| DELEG | `DelegateeStakePoolNotRegisteredDELEG` | 10+ | dynamic | TBD (P3–5) | – | 00065, 00066, 00067, 00068 | scenario only |
-| POOL | `StakePoolNotRegisteredOnKeyPOOL` | 10+ | dynamic | TBD (P3–5) | – | 00112, 00113 | scenario only |
-| POOL | `StakePoolRetirementWrongEpochPOOL` | 10+ | dynamic | TBD (P3–5) | – | 00114, 00115 | scenario only |
-| POOL | `StakePoolCostTooLowPOOL` | 10+ | dynamic | TBD (P3–5) | – | 00110, 00111 | scenario only |
-| POOL | `WrongNetworkPOOL` | 10+ | dynamic | TBD (P3–5) | – | 00271 | scenario only |
-| POOL | `PoolMedataHashTooBig` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| POOL | `VRFKeyHashAlreadyRegistered` | 11+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOVCERT | `ConwayDRepAlreadyRegistered` | 10+ | dynamic | TBD (P3–5) | – | 00059, 00060 | scenario only |
-| GOVCERT | `ConwayDRepIncorrectDeposit` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOVCERT | `ConwayDRepNotRegistered` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOVCERT | `ConwayDRepIncorrectRefund` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 10+ | dynamic | TBD (P3–5) | – | 00206, 00207, 00208, 00209, 00210, 00217 | scenario only |
-| GOVCERT | `ConwayCommitteeIsUnknown` | 10+ | dynamic | TBD (P3–5) | – | 00201, 00204, 00205, 00220 | scenario only |
-| GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | TBD (P3–5) | – | – | gap |
+| LEDGER | `ConwayMempoolFailure` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| LEDGER | `ConwayTreasuryValueMismatch` | 10+ | dynamic | TBD (P3b–5) | – | 00054 | scenario only |
+| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 10+ | dynamic | TBD (P3b–5) | – | 00055, 00056, 00057 | scenario only |
+| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | TBD (P3b–5) | – | 00058 | scenario only |
+| LEDGER | `ConwayWithdrawalsMissingAccounts` | 11+ | dynamic | TBD (P3b–5) | – | – | gap |
+| LEDGER | `ConwayIncompleteWithdrawals` | 11+ | dynamic | TBD (P3b–5) | – | – | gap |
+| CERTS | `WithdrawalsNotInRewardsCERTS` | 10 | dynamic | TBD (P3b–5) | – | 00125, 00126 | scenario only |
+| DELEG | `IncorrectDepositDELEG` | 10 | dynamic | TBD (P3b–5) | – | 00072, 00273 | scenario only |
+| DELEG | `DepositIncorrectDELEG` | 11+ | dynamic | TBD (P3b–5) | – | – | gap |
+| DELEG | `RefundIncorrectDELEG` | 11+ | dynamic | TBD (P3b–5) | – | – | gap |
+| DELEG | `StakeKeyRegisteredDELEG` | 10+ | dynamic | TBD (P3b–5) | – | 00106, 00107, 00108, 00109, 00272 | scenario only |
+| DELEG | `StakeKeyNotRegisteredDELEG` | 10+ | dynamic | TBD (P3b–5) | – | 00100, 00101, 00102, 00103 | scenario only |
+| DELEG | `StakeKeyHasNonZeroAccountBalanceDELEG` | 10+ | dynamic | TBD (P3b–5) | – | 00104, 00105 | scenario only |
+| DELEG | `DelegateeDRepNotRegisteredDELEG` | 10+ | dynamic | TBD (P3b–5) | – | 00061, 00062, 00063, 00064 | scenario only |
+| DELEG | `DelegateeStakePoolNotRegisteredDELEG` | 10+ | dynamic | TBD (P3b–5) | – | 00065, 00066, 00067, 00068 | scenario only |
+| POOL | `StakePoolNotRegisteredOnKeyPOOL` | 10+ | dynamic | TBD (P3b–5) | – | 00112, 00113 | scenario only |
+| POOL | `StakePoolRetirementWrongEpochPOOL` | 10+ | dynamic | TBD (P3b–5) | – | 00114, 00115 | scenario only |
+| POOL | `StakePoolCostTooLowPOOL` | 10+ | dynamic | TBD (P3b–5) | – | 00110, 00111 | scenario only |
+| POOL | `WrongNetworkPOOL` | 10+ | dynamic | TBD (P3b–5) | – | 00271 | scenario only |
+| POOL | `PoolMedataHashTooBig` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| POOL | `VRFKeyHashAlreadyRegistered` | 11+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOVCERT | `ConwayDRepAlreadyRegistered` | 10+ | dynamic | TBD (P3b–5) | – | 00059, 00060 | scenario only |
+| GOVCERT | `ConwayDRepIncorrectDeposit` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOVCERT | `ConwayDRepNotRegistered` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOVCERT | `ConwayDRepIncorrectRefund` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 10+ | dynamic | TBD (P3b–5) | – | 00206, 00207, 00208, 00209, 00210, 00217 | scenario only |
+| GOVCERT | `ConwayCommitteeIsUnknown` | 10+ | dynamic | TBD (P3b–5) | – | 00201, 00204, 00205, 00220 | scenario only |
+| GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | TBD (P3b–5) | – | – | gap |
 | GOV | `DisallowedProposalDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `ProposalCantFollow` | 10+ | dynamic | TBD (P3–5) | – | 00202, 00203 | scenario only |
-| GOV | `MalformedProposal` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | TBD (P3–5) | – | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | scenario only |
-| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | TBD (P3–5) | – | 00117, 00118, 00119 | scenario only |
-| GOV | `ProposalDepositIncorrect` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOV | `ProposalProcedureNetworkIdMismatch` | 10+ | dynamic | TBD (P3–5) | – | 00282 | scenario only |
-| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOV | `InvalidGuardrailsScriptHash` | 10+ | dynamic | TBD (P3–5) | – | 00191, 00192, 00193, 00194, 00195 | scenario only |
-| GOV | `ZeroTreasuryWithdrawals` | 10+ | dynamic | TBD (P3–5) | – | 00130 | scenario only |
-| GOV | `ConflictingCommitteeUpdate` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOV | `ExpirationEpochTooSmall` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| GOV | `InvalidPrevGovActionId` | 10+ | dynamic | TBD (P3–5) | – | 00148, 00149, 00150 | scenario only |
-| GOV | `VotersDoNotExist` | 10+ | dynamic | TBD (P3–5) | – | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | scenario only |
-| GOV | `GovActionsDoNotExist` | 10+ | dynamic | TBD (P3–5) | – | 00221, 00222, 00223, 00224 | scenario only |
+| GOV | `ProposalCantFollow` | 10+ | dynamic | TBD (P3b–5) | – | 00202, 00203 | scenario only |
+| GOV | `MalformedProposal` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | TBD (P3b–5) | – | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | scenario only |
+| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | TBD (P3b–5) | – | 00117, 00118, 00119 | scenario only |
+| GOV | `ProposalDepositIncorrect` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOV | `ProposalProcedureNetworkIdMismatch` | 10+ | dynamic | TBD (P3b–5) | – | 00282 | scenario only |
+| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOV | `InvalidGuardrailsScriptHash` | 10+ | dynamic | TBD (P3b–5) | – | 00191, 00192, 00193, 00194, 00195 | scenario only |
+| GOV | `ZeroTreasuryWithdrawals` | 10+ | dynamic | TBD (P3b–5) | – | 00130 | scenario only |
+| GOV | `ConflictingCommitteeUpdate` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOV | `ExpirationEpochTooSmall` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| GOV | `InvalidPrevGovActionId` | 10+ | dynamic | TBD (P3b–5) | – | 00148, 00149, 00150 | scenario only |
+| GOV | `VotersDoNotExist` | 10+ | dynamic | TBD (P3b–5) | – | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | scenario only |
+| GOV | `GovActionsDoNotExist` | 10+ | dynamic | TBD (P3b–5) | – | 00221, 00222, 00223, 00224 | scenario only |
 | GOV | `DisallowedVotesDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `VotingOnExpiredGovAction` | 10+ | dynamic | TBD (P3–5) | – | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | scenario only |
-| GOV | `DisallowedVoters` | 10+ | dynamic | TBD (P3–5) | – | 00172, 00173, 00174, 00175 | scenario only |
-| UTXOW | `InvalidWitnessesUTXOW` | 10+ | static | TBD (P3–5) | MutationMatrixTest#invalidWitness | 00076, 00079 | test + scenario |
-| UTXOW | `MissingVKeyWitnessesUTXOW` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#missingVKeyWitness | 00084, 00085, 00086 | test + scenario |
-| UTXOW | `MissingScriptWitnessesUTXOW` | 10+ | dynamic | TBD (P3–5) | – | 00184, 00186, 00188, 00190, 00262 | scenario only |
-| UTXOW | `ExtraneousScriptWitnessesUTXOW` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#extraneousScriptWitness | 00259, 00260 | test + scenario |
-| UTXOW | `ScriptWitnessNotValidatingUTXOW` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `MissingTxBodyMetadataHash` | 10+ | static | TBD (P3–5) | MutationMatrixTest#missingMetadataHash | 00082 | test + scenario |
-| UTXOW | `MissingTxMetadata` | 10+ | static | TBD (P3–5) | MutationMatrixTest#missingMetadata | 00083 | test + scenario |
-| UTXOW | `ConflictingMetadataHash` | 10+ | static | TBD (P3–5) | MutationMatrixTest#conflictingMetadataHash | 00053 | test + scenario |
-| UTXOW | `InvalidMetadata` | 10+ | static | TBD (P3–5) | – | – | gap |
-| UTXOW | `MissingRedeemers` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `ExtraRedeemers` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `MissingRequiredDatums` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `NotAllowedSupplementalDatums` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `UnspendableUTxONoDatumHash` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `PPViewHashesDontMatch` | 10 | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `ScriptIntegrityHashMismatch` | 11+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOW | `MalformedScriptWitnesses` | 10+ | static | TBD (P3–5) | – | 00256, 00257, 00258 | scenario only |
-| UTXOW | `MalformedReferenceScripts` | 10+ | static | TBD (P3–5) | – | 00151 | scenario only |
-| UTXO | `BabbageNonDisjointRefInputs` | 10 | dynamic | TBD (P3–5) | – | 00048 | scenario only |
-| UTXO | `OutsideValidityIntervalUTxO` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#expired | 00089, 00090, 00091 | test + scenario |
-| UTXO | `OutsideForecast` | 10+ | dynamic | TBD (P3–5) | – | 00088 | scenario only |
-| UTXO | `InputSetEmptyUTxO` | 10+ | static | TBD (P3–5) | – | 00074 | scenario only |
-| UTXO | `FeeTooSmallUTxO` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#feeTooSmall | 00069, 00070, 00071 | test + scenario |
-| UTXO | `ScriptsNotPaidUTxO` | 10+ | dynamic | TBD (P3–5) | – | 00099 | scenario only |
-| UTXO | `CollateralContainsNonADA` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXO | `InsufficientCollateral` | 10+ | dynamic | TBD (P3–5) | – | 00075 | scenario only |
-| UTXO | `IncorrectTotalCollateralField` | 10+ | dynamic | TBD (P3–5) | – | 00073 | scenario only |
-| UTXO | `NoCollateralInputs` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#noCollateral | 00278 | test + scenario |
-| UTXO | `BadInputsUTxO` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#badInput | 00050, 00051, 00052 | test + scenario |
-| UTXO | `ValueNotConservedUTxO` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#valueNotConserved | 00120, 00121, 00122, 00123, 00124 | test + scenario |
-| UTXO | `BabbageOutputTooSmallUTxO` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#outputTooSmall | 00049, 00254 | test + scenario |
-| UTXO | `OutputTooBigUTxO` | 10+ | dynamic | TBD (P3–5) | – | 00087, 00280 | scenario only |
-| UTXO | `OutputBootAddrAttrsTooBig` | 10+ | static | TBD (P3–5) | – | – | gap |
-| UTXO | `WrongNetwork` | 10+ | static | TBD (P3–5) | MutationMatrixTest#wrongNetworkOutput | 00128 | test + scenario |
-| UTXO | `WrongNetworkWithdrawal` | 10+ | static | TBD (P3–5) | – | 00129 | scenario only |
-| UTXO | `WrongNetworkInTxBody` | 10+ | static | TBD (P3–5) | MutationMatrixTest#wrongNetworkInTxBody | 00127 | test + scenario |
-| UTXO | `MaxTxSizeUTxO` | 10+ | static | TBD (P3–5) | MutationMatrixTest#maxTxSize | 00081, 00131 | test + scenario |
-| UTXO | `ExUnitsTooBigUTxO` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXO | `TooManyCollateralInputs` | 10+ | dynamic | TBD (P3–5) | MutationMatrixTest#tooManyCollateralInputs | 00116 | test + scenario |
-| UTXO | `OutputTooSmallUTxO` | unreachable | dynamic | – | – | – | out of scope |
-| UTXOS | `CollectErrors` | 10+ | dynamic | TBD (P3–5) | – | – | gap |
-| UTXOS | `ValidationTagMismatch` | 10+ | static (phase 2) | TBD (P3–5) | – | 00198, 00199, 00200 | scenario only |
+| GOV | `VotingOnExpiredGovAction` | 10+ | dynamic | TBD (P3b–5) | – | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | scenario only |
+| GOV | `DisallowedVoters` | 10+ | dynamic | TBD (P3b–5) | – | 00172, 00173, 00174, 00175 | scenario only |
+| UTXOW | `InvalidWitnessesUTXOW` | 10+ | static | TBD (P3b–5) | MutationMatrixTest#invalidWitness | 00076, 00079 | test + scenario |
+| UTXOW | `MissingVKeyWitnessesUTXOW` | 10+ | dynamic | TBD (P3b–5) | MutationMatrixTest#missingVKeyWitness | 00084, 00085, 00086 | test + scenario |
+| UTXOW | `MissingScriptWitnessesUTXOW` | 10+ | dynamic | TBD (P3b–5) | – | 00184, 00186, 00188, 00190, 00262 | scenario only |
+| UTXOW | `ExtraneousScriptWitnessesUTXOW` | 10+ | dynamic | TBD (P3b–5) | MutationMatrixTest#extraneousScriptWitness | 00259, 00260 | test + scenario |
+| UTXOW | `ScriptWitnessNotValidatingUTXOW` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `MissingTxBodyMetadataHash` | 10+ | static | TBD (P3b–5) | MutationMatrixTest#missingMetadataHash | 00082 | test + scenario |
+| UTXOW | `MissingTxMetadata` | 10+ | static | TBD (P3b–5) | MutationMatrixTest#missingMetadata | 00083 | test + scenario |
+| UTXOW | `ConflictingMetadataHash` | 10+ | static | TBD (P3b–5) | MutationMatrixTest#conflictingMetadataHash | 00053 | test + scenario |
+| UTXOW | `InvalidMetadata` | 10+ | static | TBD (P3b–5) | – | – | gap |
+| UTXOW | `MissingRedeemers` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `ExtraRedeemers` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `MissingRequiredDatums` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `NotAllowedSupplementalDatums` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `UnspendableUTxONoDatumHash` | 10+ | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `PPViewHashesDontMatch` | 10 | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `ScriptIntegrityHashMismatch` | 11+ | dynamic | TBD (P3b–5) | – | – | gap |
+| UTXOW | `MalformedScriptWitnesses` | 10+ | static | TBD (P3b–5) | – | 00256, 00257, 00258 | scenario only |
+| UTXOW | `MalformedReferenceScripts` | 10+ | static | TBD (P3b–5) | – | 00151 | scenario only |
+| UTXO | `BabbageNonDisjointRefInputs` | 10 | dynamic | `UtxoRule` | MutationMatrixTest#nonDisjointReferenceInputs<br>UtxoRuleTest#referenceInputsMustBeDisjointFromSpendingInputsBeforeProtocolVersion11 | 00048 | test + scenario |
+| UTXO | `OutsideValidityIntervalUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#expired<br>MutationMatrixTest#notYetValid<br>UtxoRuleTest#validityIntervalIsLowerInclusiveUpperExclusive | 00089, 00090, 00091 | test + scenario |
+| UTXO | `OutsideForecast` | unreachable | dynamic | – | – | – | unreachable at pin |
+| UTXO | `InputSetEmptyUTxO` | 10+ | static | `UtxoRule` | MutationMatrixTest#emptyInputs<br>UtxoRuleTest#emptyInputSet | 00074 | test + scenario |
+| UTXO | `FeeTooSmallUTxO` | 10+ | dynamic | `UtxoRule` | MinFeeTest#referenceScriptsOfReferenceInputsAreCharged<br>MutationMatrixTest#feeTooSmall<br>UtxoRuleTest#feeOneLovelaceBelowTheMinimum | 00069, 00070, 00071 | test + scenario |
+| UTXO | `ScriptsNotPaidUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#scriptsNotPaid<br>UtxoRuleTest#collateralLockedByAScript | 00099 | test + scenario |
+| UTXO | `CollateralContainsNonADA` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#collateralContainsNonAda<br>UtxoRuleTest#collateralWithATokenAndNoReturn | – | test |
+| UTXO | `InsufficientCollateral` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#insufficientCollateral<br>UtxoRuleTest#collateralBelowThePercentageOfTheFee | 00075 | test + scenario |
+| UTXO | `IncorrectTotalCollateralField` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#incorrectTotalCollateral<br>UtxoRuleTest#declaredTotalCollateralDiffersFromTheBalance | 00073 | test + scenario |
+| UTXO | `NoCollateralInputs` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#noCollateral<br>UtxoRuleTest#redeemersWithoutCollateral | 00278 | test + scenario |
+| UTXO | `BadInputsUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#badInput<br>UtxoRuleTest#unknownSpendingCollateralAndReferenceInputs | 00050, 00051, 00052 | test + scenario |
+| UTXO | `ValueNotConservedUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#valueNotConserved<br>UtxoRuleTest#changeOneLovelaceTooLarge | 00120, 00121, 00122, 00123, 00124 | test + scenario |
+| UTXO | `BabbageOutputTooSmallUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#outputTooSmall<br>UtxoRuleTest#outputBelowItsMinimumUtxoValue | 00049, 00254 | test + scenario |
+| UTXO | `OutputTooBigUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#outputTooBig<br>UtxoRuleTest#outputValueSerialisesAboveMaxValSize | 00087, 00280 | test + scenario |
+| UTXO | `OutputBootAddrAttrsTooBig` | 10+ | static | `UtxoRule` | MutationMatrixTest#bootAddrAttrsTooBig<br>UtxoRuleTest#byronAddressWithOversizedAttributes | – | test |
+| UTXO | `WrongNetwork` | 10+ | static | `UtxoRule` | MutationMatrixTest#wrongNetworkOutput<br>UtxoRuleTest#outputToAMainnetAddress | 00128 | test + scenario |
+| UTXO | `WrongNetworkWithdrawal` | 10+ | static | `UtxoRule` | UtxoRuleTest#withdrawalFromAMainnetRewardAccount | 00129 | test + scenario |
+| UTXO | `WrongNetworkInTxBody` | 10+ | static | `UtxoRule` | MutationMatrixTest#wrongNetworkInTxBody<br>UtxoRuleTest#bodyNetworkIdForAnotherNetwork | 00127 | test + scenario |
+| UTXO | `MaxTxSizeUTxO` | 10+ | static | `UtxoRule` | MutationMatrixTest#maxTxSize<br>UtxoRuleTest#transactionAboveMaxTxSize | 00081, 00131 | test + scenario |
+| UTXO | `ExUnitsTooBigUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#exUnitsTooBig<br>UtxoRuleTest#redeemerAboveMaxTxExUnits | – | test |
+| UTXO | `TooManyCollateralInputs` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#tooManyCollateralInputs<br>UtxoRuleTest#moreCollateralInputsThanAllowed | 00116 | test + scenario |
+| UTXO | `OutputTooSmallUTxO` | unreachable | dynamic | – | – | – | unreachable at pin |
+| UTXOS | `CollectErrors` | 10+ | dynamic | `UtxosRule` | JavaEngineScriptPreparationTest#aPlutusSpendWithoutARedeemerIsNotAccepted<br>JavaEngineScriptPreparationTest#aValidityBoundPastTheForecastHorizonIsCollectErrors<br>UtxosRuleTest#collectErrorsAreReportedAndStopTheScripts | 00088 | test + scenario |
+| UTXOS | `ValidationTagMismatch` | 10+ | static (phase 2) | `UtxosRule` | MutationMatrixTest#passedUnexpectedly<br>MutationMatrixTest#scriptFails<br>UtxosRuleTest#aFailingScriptClaimedValid<br>UtxosRuleTest#passingScriptsClaimedInvalid | 00198, 00199, 00200 | test + scenario |

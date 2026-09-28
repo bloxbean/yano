@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.transaction.spec.VkeyWitness;
 
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.engines.BaselineEngines;
+import org.yanoproject.ledger.conformance.engines.JavaViewEngine;
 import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
 import org.yanoproject.ledger.conformance.runner.ConformanceRunner;
@@ -14,6 +15,10 @@ import org.yanoproject.ledger.conformance.runner.Observation;
 import org.yanoproject.ledger.rules.TxIdentity;
 import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalogue;
 import org.yanoproject.ledger.rules.fixtures.conformance.Covers;
+import org.yanoproject.ledger.rules.fixtures.tx.BuiltTx;
+import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
+import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
+import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
 
 import java.math.BigInteger;
 import java.util.HashSet;
@@ -31,15 +36,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       over its own body (except the invalid-witness mutant, whose first signature is the fault);</li>
  *   <li>with the Amaru reference engine in the build ({@code -PwithAmaru=true}), the base is valid and the mutant is
  *       rejected with the covered constructor, or, for a fault Haskell reports with several constructors
- *       ({@link Mutation#haskellFailures()}), only with constructors of that list.</li>
+ *       ({@link Mutation#haskellFailures()}), only with constructors of that list; where Amaru names the fault
+ *       differently from Haskell ({@link Mutation#amaruReports()}, a recorded divergence), with that name;</li>
+ *   <li>the Java engine ({@code java-engine}) accepts the bases and rejects every mutant of the families it
+ *       implements (Phase 3a: {@code UTXO}, {@code UTXOS}) with exactly Haskell's failure list, or the single
+ *       covered constructor.</li>
  * </ul>
  *
- * <p>How the other engines judge the mutants is the baseline ({@code ConformanceBaselineTest}), not a gate. From
- * Phase 3 on the Java engine must match these too.</p>
+ * <p>How the other engines judge the mutants is the baseline ({@code ConformanceBaselineTest}), not a gate.</p>
  */
 class MutationMatrixTest {
 
     private static final Optional<ConformanceEngine> REFERENCE = BaselineEngines.amaru();
+    private static final ConformanceEngine JAVA = new JavaViewEngine();
+    /** The rule families the Java engine implements so far (ADR-056 Phase 3a). */
+    private static final Set<String> JAVA_FAMILIES = Set.of("UTXO", "UTXOS");
 
     @Test
     void testKeysAreAmarusCorpusCredentials() {
@@ -69,6 +80,8 @@ class MutationMatrixTest {
         }
         REFERENCE.ifPresent(amaru -> Mutations.baseCases().forEach(c ->
                 assertThat(ConformanceRunner.run(amaru, c).observation().valid()).as("%s under amaru", c.id()).isTrue()));
+        Mutations.baseCases().forEach(c -> assertThat(ConformanceRunner.run(JAVA, c).observation().label())
+                .as("%s under the java engine", c.id()).isEqualTo("Valid"));
     }
 
     @Test
@@ -173,6 +186,79 @@ class MutationMatrixTest {
         assertThat(mutant.tx().getAuxiliaryData()).isNull();
     }
 
+    @Test
+    @Covers("UTXO.InputSetEmptyUTxO")
+    void emptyInputs() {
+        assertThat(check("empty-inputs").tx().getBody().getInputs()).isEmpty();
+    }
+
+    @Test
+    @Covers("UTXO.OutsideValidityIntervalUTxO")
+    void notYetValid() {
+        check("not-yet-valid");
+    }
+
+    @Test
+    @Covers("UTXO.ScriptsNotPaidUTxO")
+    void scriptsNotPaid() {
+        check("scripts-not-paid");
+    }
+
+    @Test
+    @Covers("UTXO.CollateralContainsNonADA")
+    void collateralContainsNonAda() {
+        check("collateral-non-ada");
+    }
+
+    @Test
+    @Covers("UTXO.InsufficientCollateral")
+    void insufficientCollateral() {
+        check("insufficient-collateral");
+    }
+
+    @Test
+    @Covers("UTXO.IncorrectTotalCollateralField")
+    void incorrectTotalCollateral() {
+        assertThat(check("incorrect-total-collateral").tx().getBody().getTotalCollateral())
+                .isEqualTo(MutationWorld.COLLATERAL_LOVELACE.subtract(BigInteger.ONE));
+    }
+
+    @Test
+    @Covers("UTXO.OutputTooBigUTxO")
+    void outputTooBig() {
+        check("output-too-big");
+    }
+
+    @Test
+    @Covers("UTXO.OutputBootAddrAttrsTooBig")
+    void bootAddrAttrsTooBig() {
+        check("boot-addr-attrs-too-big");
+    }
+
+    @Test
+    @Covers("UTXO.ExUnitsTooBigUTxO")
+    void exUnitsTooBig() {
+        check("ex-units-too-big");
+    }
+
+    @Test
+    @Covers("UTXO.BabbageNonDisjointRefInputs")
+    void nonDisjointReferenceInputs() {
+        check("non-disjoint-reference-inputs");
+    }
+
+    @Test
+    @Covers("UTXOS.ValidationTagMismatch")
+    void scriptFails() {
+        check("script-fails");
+    }
+
+    @Test
+    @Covers("UTXOS.ValidationTagMismatch")
+    void passedUnexpectedly() {
+        assertThat(check("passed-unexpectedly").tx().isValid()).isFalse();
+    }
+
     /** Builds a mutant, checks it is well formed, and has the reference engine confirm the single fault. */
     private static BuiltTx check(String id) {
         Mutation mutation = Mutations.find(id).orElseThrow();
@@ -182,15 +268,23 @@ class MutationMatrixTest {
         assertThat(mutant.fee()).as("%s fee", id).isEqualTo(mutant.minFee().add(feeAdjust(mutation)));
         assertSignatures(mutant, !id.equals("invalid-witness"));
 
+        ConformanceCase testCase = Mutations.mutantCase(mutation);
         REFERENCE.ifPresent(amaru -> {
-            ConformanceCase testCase = Mutations.mutantCase(mutation);
             Observation observation = ConformanceRunner.run(amaru, testCase).observation();
             assertThat(observation.valid()).as("%s under amaru", id).isFalse();
             List<String> failures = observation.failures().stream().map(Observation.Failure::qualifiedName).toList();
-            Set<String> allowed = testCase.acceptedFirst();
+            Set<String> allowed = mutation.amaruReports() != null ? Set.of(mutation.amaruReports())
+                    : testCase.acceptedFirst();
             assertThat(failures).as("%s under amaru", id).isNotEmpty();
             assertThat(allowed).as("%s under amaru: only the mutation's fault", id).containsAll(failures);
         });
+        if (JAVA_FAMILIES.contains(mutation.covers().split("\\.")[0])) {
+            Observation observation = ConformanceRunner.run(JAVA, testCase).observation();
+            List<String> failures = observation.failures().stream().map(Observation.Failure::qualifiedName).toList();
+            List<String> expected = mutation.haskellFailures().isEmpty() ? List.of(mutation.covers())
+                    : mutation.haskellFailures();
+            assertThat(failures).as("%s under the java engine: Haskell's failure list", id).isEqualTo(expected);
+        }
         return mutant;
     }
 

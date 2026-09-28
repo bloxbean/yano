@@ -1146,6 +1146,161 @@ The final PR merges once S5's gates are green.
   labelling.
 - Gate: all UTXO-family scenarios pass, and their matrix rows are complete.
 
+#### Phase 3a results: engine skeleton, UTXO and UTXOS (2026-09-29)
+
+- **Raw transaction model** (`org.yanoproject.ledger.rules.conway.tx`).
+  `RawTransaction` reads the original bytes: the body, witness-set and
+  auxiliary-data slices, the transaction id (blake2b-256 of the body slice),
+  Haskell's size (`toCBORForSizeComputation`: `1 + body + witnesses + (aux |
+  null)`, the same rule as `YanoTransactionSizeValidator`), every output and
+  the collateral return as slices (their lengths are the `Sized` sizes of the
+  minimum-UTxO rule), the scalar body fields (a validity bound is absent or
+  present, never `0`), inputs, withdrawals, mint, and the redeemers keyed as
+  Haskell's `Redeemers` map (a later duplicate key wins in both forms:
+  `decodeMapRedeemers` reverses its accumulator before `Map.fromList`,
+  Alonzo/TxWits.hs:571-577), never empty, keyed by a `Word8` tag 0–5 and a `Word32` index.
+  Definite and indefinite containers and tag-258 sets are read (indefinite
+  byte strings with definite chunks only). It mirrors Conway's version-9
+  decoder, and everything Haskell would not decode is
+  `ENGINE.DecodingFailure`: unknown body or witness-set keys, duplicate keys
+  in any map (body, witness set, withdrawals, mint and value policies and
+  asset names, output maps), empty set-like body fields (certificates,
+  withdrawals, mint, collateral, required signers, reference inputs, votes,
+  proposals), a zero donation, empty witness lists, zero multi-asset
+  quantities or empty asset maps, out-of-range mint quantities, fixed-size
+  vkeys, signatures and hashes, duplicate inputs, missing required fields,
+  and output addresses Haskell's strict decoder refuses (unused header bits,
+  lengths, left-over bytes, pointers that do not fit `Word32`/`Word16`, Byron
+  addresses with a bad CRC or shape). Not checked: the compact-representation
+  bound on multi-assets (`isMultiAssetSmallEnough`). Validity bounds are
+  `Word64`. The CCL `Transaction` is kept for structure only
+  (certificates, proposals, votes) and is never re-serialised.
+- **Transition** (`ConwayLedgerTransition`, `JavaLedgerValidationEngine`,
+  `JavaEngineFactory`, name `java`). Rooted at `MEMPOOL` (with `MempoolRule`)
+  or `LEDGER`; `LEDGER` pre-checks, `CERTS` and `GOV` are `SubRule` slots that
+  record nothing until Phases 4–5, `UTXOW` is the script preparation only
+  until Phase 3b. The preparation runs whenever a Plutus script can be needed:
+  redeemers, a Plutus witness, or a Plutus reference script on a resolved
+  spending or reference input (and own outputs' reference scripts, for
+  well-formedness). A needed Plutus script without a redeemer is therefore
+  `UTXOS.CollectErrors [NoRedeemer …]` now (the Scalus evaluator reports
+  `NoRedeemer`); **3b dependency:** `UTXOW.MissingRedeemers`, which Haskell
+  reports for the same fault and lists first, comes with Phase 3b. Without an
+  evaluator such a transaction fails closed. `UTXOW → UTXO → UTXOS` are nested as in Haskell.
+  - *Failure order.* `RuleFrame` reproduces `small-steps` exactly: a failing
+    predicate prepends its failures reversed, a sub-rule prepends its list one
+    failure at a time (`Extended.hs:668-731`), and nothing reverses the final
+    list. Rooted at `LEDGER`, `UTXOW` failures therefore come first in
+    execution order, then `UTXOS`, then `UTXO`'s in reverse execution order;
+    rooted at `MEMPOOL` everything flips once more. The Phase 2 note that
+    Haskell reports `[InsufficientCollateral, NoCollateralInputs]` is the
+    `MEMPOOL` order; the `LEDGER` list is `[NoCollateralInputs,
+    InsufficientCollateral]` (both are accepted by the harness).
+  - *`whenFailureFree`* is the transition-wide "is failing" flag, so Plutus
+    runs only when no rule of the transition has failed.
+  - *PV gates and REAPPLY labels are data*: `ConwayPredicate` gives each
+    constructor its rule, PV range, static/dynamic label and Haskell location;
+    `TransitionContext.check` skips a check outside its PV range, and a static
+    check on re-application. A test checks the enum against the catalogue.
+  - *REAPPLY* (`ReapplyPolicy`, §6): re-application needs `previous` for the
+    same transaction and `is_valid` flag, the same protocol major version and
+    phase-2 environment digest, the same resolved spending, collateral and
+    reference inputs, and an origin rule (`SYNC` verdicts are re-used for
+    `SYNC` only). **API change:** `ValidatedTx` gains `resolvedInputsDigest`
+    (the old seven-argument constructor remains and records none; such a
+    `previous` is never re-applied).
+  - *Phase-2 SPI change:* `ScriptPhaseEvaluator.collect(...)` separates
+    Haskell's collection step (`?!: CollectErrors`, dynamic, also after other
+    failures and on re-application) from execution (`when2Phase $
+    whenFailureFree`, static). The default runs `evaluate`; the Scalus
+    evaluator overrides it without running scripts.
+  - *Gating:* the factory refuses to create the engine (as admission or
+    shadow) unless `yano.validation.java-engine.experimental=true`; the node
+    stops at startup with the old "'java' is not available yet" message.
+- **UTXO** (`conway.utxo.UtxoRule`, `MinFee`, `ValueBalance`): all 21
+  reachable constructors in Haskell's order (`babbageUtxoValidation`,
+  Babbage/Rules/Utxo.hs:342-412): exact minimum fee (size, ExUnits price
+  rounded up, tiered reference-script fee over spending ∪ reference inputs,
+  checked against Haskell's `tierRefScriptFee` unit vector); collateral parts
+  3–7 only with redeemers; bad inputs over spending ∪ collateral ∪ reference;
+  value conservation against the pre-certificate state with Haskell's
+  deposit/refund functions (`shelleyTotalRefundsTxCerts`' same-transaction
+  registration set, recorded deposits, DRep refunds from the certificate,
+  pool deposits only for unregistered pools, proposal deposits, donation,
+  withdrawals, mint); minimum UTxO from each output's original size; value
+  size from Haskell's re-serialisation; bootstrap attributes; the three
+  network checks; `BabbageNonDisjointRefInputs` at PV 9–10 only.
+- **UTXOS** (`conway.utxos.UtxosRule`): `CollectErrors` from the evaluator's
+  preparation; `ValidationTagMismatch` in both directions (no scripts pass
+  trivially, so `isValid = false` without scripts is `PassedUnexpectedly`);
+  `isValid = false` transactions get collateral-only effects and, except from
+  `SYNC`, `ENGINE.Phase2InvalidTxNotSupported`.
+- **Gate** (`JavaEnginePhase3aGateTest`): the 148 scenarios expected to pass
+  or to fail in `UTXO`/`UTXOS` (114 + 34): 147 match Amaru's expectation
+  (verdict and first constructor, or a constructor of Haskell's list), 1
+  (00280) matches Haskell where Amaru diverges (below). The mutation matrix grows to 28
+  mutants; the Java engine reports exactly Haskell's failure list on every
+  `UTXO`/`UTXOS` mutant and accepts both bases. Baseline row (regenerated
+  `ledger-conformance/docs/baseline-2026-09.md`): `java-engine` 165/276
+  verdicts, 154/276 constructors, 22/28 mutants (the 6 misses are `UTXOW`),
+  114/114 pass scenarios, about 0.25 ms per scenario. Coverage: every
+  reachable `UTXO`/`UTXOS` constructor has a `@Covers` test.
+- **Haskell-vs-Amaru findings** (Haskell wins; divergences are recorded in the gate
+  test and the mutation matrix):
+  - *Forecast horizon.* Haskell's `UTXO.OutsideForecast` is unreachable in
+    Conway at `f649f975`: `validateOutsideForecast` translates the bound with
+    `unsafeLinearExtendEpochInfo slotNo ei` (Alonzo/Rules/Utxo.hs:377-386,
+    cardano-slotting `EpochInfo/Extend.hs`), which cannot fail for a
+    translatable current slot. The Java check is kept, in Haskell's order, as
+    a no-op; the catalogue marks the constructor unreachable at the pin (84
+    constructors in scope, no negative test). The horizon is still enforced,
+    by the script context: Conway's mempool (`defaultApplyTxWithValidation
+    @"MEMPOOL"`, Conway.hs:50-59, `mkStAnnTx (epochInfo globals)`,
+    Shelley/API/Mempool.hs:283-293) and `LEDGERS` (Babbage/Rules/Ledgers.hs:
+    126-133) use the unextended epoch info (the linear extension is
+    Alonzo-era only, Alonzo.hs:83-90), so `transValidityInterval`
+    (Alonzo/Plutus/TxInfo.hs:252-274) fails and `UTXOS` reports
+    `CollectErrors [BadTranslation TimeTranslationPastHorizon]`
+    (Babbage/Rules/Utxos.hs:143, 206). The Scalus evaluator's
+    `ForecastHorizon` check provides it; the node wires it
+    (`ValidationEngineBootstrap`) and so does the harness (from each case's
+    era history). Amaru's Haskell checker names that failure
+    "OutsideForecast" (`ValidatePhaseOne/Run.hs:443-445`), so the corpus
+    alias now maps `OutsideForecast` to `UTXOS.CollectErrors`
+    (`AmaruCorpusNames`, and in `amaru-validator-wasm` `failure.rs` and
+    `tests/amaru_scenarios.rs`; the module was rebuilt and `cargo test`
+    passes all scenarios). Scenario 00088 is `UTXOS.CollectErrors`, no longer
+    a divergence.
+  - *Horizon basis.* The horizon is based on `next(tip)` of the state the
+    transaction is applied to. The engine uses `ValidationEnv.currentSlot`
+    (`TransitionContext.forecastBasisSlot`), exact for `MEMPOOL` and for the
+    Amaru fixtures; for block validation it is the block's slot, which can
+    only make the horizon later. Phases 6 (block building) and 7 (shadow
+    sync) must pass the tip explicitly before they use the engine.
+  - *Scenario 00280*: Amaru names an oversized Byron attribute
+    `OutputTooBigUTxO`; the value is 5 bytes, so Haskell reports
+    `OutputBootAddrAttrsTooBig` (mutant `boot-addr-attrs-too-big` likewise).
+  - *Non-ADA collateral*: Amaru maps it to `ValueNotConservedUTxO`; Haskell
+    reports `CollateralContainsNonADA` (mutant `collateral-non-ada`).
+  - *First failures*: Amaru stops at its own first failure, Haskell lists
+    every failure. Scenario 00050 is `[ValueNotConservedUTxO, BadInputsUTxO]`
+    in Haskell (the unknown input is left out of the consumed value), 00124
+    `[ValueNotConservedUTxO, InsufficientCollateral]`; both are now in
+    `HaskellFailureLists`.
+- **Follow-up for the evaluator** (not changed here): the Scalus evaluator
+  does not report `BadTranslation (TranslationLogicMissingInput …)` for a
+  script transaction with an unknown spending or reference input; that only
+  changes which failure comes first.
+- **Precondition**: prices and `minFeeRefScriptCostPerByte` reach the rules
+  as CCL `BigDecimal`s and are used exactly; that is exact for every value
+  with a terminating decimal expansion (all public networks and fixtures). A
+  non-terminating rational (for example 1/3) needs numerator/denominator in
+  the view first (`ConwayParams`).
+- **Deviation**: the mutation world, builder and test keys moved from
+  `ledger-conformance` to `ledger-rules`' test fixtures
+  (`org.yanoproject.ledger.rules.fixtures.tx`) so the rule unit tests use
+  them; mutants can record an Amaru divergence (`Mutation.amaruReports`).
+
 ### Phase 4 — CERTS, DELEG, POOL, GOVCERT
 
 - Gate: the certificate scenarios pass, and their matrix rows are complete.

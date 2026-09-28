@@ -257,7 +257,13 @@ fn phase_one_names(err: &PhaseOneError, context: &MappingContext<'_>) -> Names {
         E::TreasuryValueMismatch { .. } => (LEDGER, Some("ConwayTreasuryValueMismatch")),
         E::ValidityInterval(e) => match e {
             InvalidValidityInterval::OutsideValidityInterval { .. } => (UTXO, Some("OutsideValidityIntervalUTxO")),
-            InvalidValidityInterval::OutsideForecast(_) => (UTXO, Some("OutsideForecast")),
+            // Amaru's check is Haskell's script-context translation failure, not Haskell's `OutsideForecast`:
+            // at the pinned cardano-ledger `validateOutsideForecast` extends the epoch info linearly from the
+            // current slot and cannot fail, while `transValidityInterval` uses the unextended one in Conway
+            // (`Shelley/API/Mempool.hs:283-293`, `Babbage/Rules/Ledgers.hs:126-133`) and reports
+            // `CollectErrors [BadTranslation (TimeTranslationPastHorizon ..)]` (`Babbage/Rules/Utxos.hs:143, 206`).
+            // Amaru's own Haskell checker spells that failure "OutsideForecast" (`Run.hs:443-445`).
+            InvalidValidityInterval::OutsideForecast(_) => (UTXOS, Some("CollectErrors")),
         },
         E::ValueNotPreserved(_) => (UTXO, Some("ValueNotConservedUTxO")),
     }

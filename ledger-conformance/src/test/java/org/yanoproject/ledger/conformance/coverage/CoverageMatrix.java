@@ -1,12 +1,14 @@
 package org.yanoproject.ledger.conformance.coverage;
 
 import org.yanoproject.ledger.conformance.coverage.CoversScanner.Covering;
+import org.yanoproject.ledger.rules.conway.failure.ConwayPredicate;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
 import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalogue;
 import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalogue.Entry;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +28,8 @@ public final class CoverageMatrix {
         TEST("test"),
         SCENARIO_ONLY("scenario only"),
         GAP("gap"),
+        /** Cannot occur at protocol version 10 or later at the pinned revision (no negative test is possible). */
+        UNREACHABLE("unreachable at pin"),
         OUT_OF_SCOPE("out of scope");
 
         private final String label;
@@ -48,7 +52,7 @@ public final class CoverageMatrix {
 
         public Status status() {
             if (!entry.inScope()) {
-                return Status.OUT_OF_SCOPE;
+                return !entry.reachable() && entry.pvMin() >= 10 ? Status.UNREACHABLE : Status.OUT_OF_SCOPE;
             }
             if (!tests.isEmpty()) {
                 return scenarios.isEmpty() ? Status.TEST : Status.TEST_AND_SCENARIO;
@@ -112,6 +116,25 @@ public final class CoverageMatrix {
 
     public long inScope() {
         return rows.stream().filter(r -> r.entry().inScope()).count();
+    }
+
+    /**
+     * @return the Java engine class that reports the constructor (from {@link ConwayPredicate}), {@code TBD} while no
+     *         phase has implemented it, or {@code –} when it is out of scope
+     */
+    static String javaRule(Entry e) {
+        if (!e.inScope()) {
+            return "–";
+        }
+        return Arrays.stream(ConwayPredicate.values())
+                .filter(p -> p.qualifiedName().equals(e.qualifiedName()))
+                .findFirst()
+                .map(p -> switch (p.rule()) {
+                    case UTXO -> "`UtxoRule`";
+                    case UTXOS -> "`UtxosRule`";
+                    default -> "`" + p.rule().name() + "`";
+                })
+                .orElse("TBD (P3b–5)");
     }
 
     /** @return the matrix as the {@code conway-rule-coverage.md} document */
@@ -178,7 +201,7 @@ public final class CoverageMatrix {
             Entry e = row.entry();
             md.append("| ").append(e.rule()).append(" | `").append(e.constructor()).append("` | ").append(e.pvRange())
                     .append(" | ").append(e.check()).append(e.phase() == 2 ? " (phase 2)" : "")
-                    .append(" | ").append(e.inScope() ? "TBD (P3–5)" : "–")
+                    .append(" | ").append(javaRule(e))
                     .append(" | ").append(row.tests().isEmpty() ? "–" : String.join("<br>", row.tests()))
                     .append(" | ").append(scenarioIds(row.scenarios()))
                     .append(" | ").append(row.status().label()).append(" |\n");

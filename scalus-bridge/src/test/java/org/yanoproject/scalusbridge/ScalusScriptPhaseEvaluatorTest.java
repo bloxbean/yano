@@ -222,7 +222,8 @@ class ScalusScriptPhaseEvaluatorTest {
 
         List<String> errors = ScalusScriptPhaseEvaluator.collectErrors(tx, Map.of(), params, 10, needed);
 
-        assertThat(errors).containsExactly("NoCostModel PlutusV3",
+        // A needed script without a redeemer is NoRedeemer (Alonzo/Plutus/Evaluate.hs:151-155).
+        assertThat(errors).containsExactly("NoCostModel PlutusV3", "NoRedeemer mint[1]",
                 "BadTranslation ByronTxOutInContext output 0 for PlutusV2");
     }
 

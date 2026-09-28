@@ -3,10 +3,6 @@ package org.yanoproject.ledger.conformance.mutation;
 import com.bloxbean.cardano.client.common.model.Networks;
 import com.bloxbean.cardano.client.metadata.cbor.CBORMetadata;
 import com.bloxbean.cardano.client.metadata.cbor.CBORMetadataList;
-import com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData;
-import com.bloxbean.cardano.client.plutus.spec.ExUnits;
-import com.bloxbean.cardano.client.plutus.spec.Redeemer;
-import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
@@ -17,6 +13,11 @@ import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
+import org.yanoproject.ledger.rules.fixtures.tx.BuiltTx;
+import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
+import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
+import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
+import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
 import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
 
 import java.math.BigInteger;
@@ -30,13 +31,12 @@ import static org.yanoproject.ledger.conformance.mutation.Mutation.Base.SIMPLE;
 
 /**
  * The mutation matrix: the base transactions and their single-fault mutants (ADR-056 §8). Phase 2 covers the
- * UTXO and UTXOW basics; Phases 3–5 add a mutant per constructor.
+ * UTXO and UTXOW basics, Phase 3a every UTXO and UTXOS constructor a transaction edit can produce; Phases 3b–5 add
+ * the rest.
  */
 public final class Mutations {
 
-    /** The payment every base makes. */
-    static final BigInteger PAYMENT = BigInteger.valueOf(10_000_000);
-    private static final long TTL = MutationWorld.SLOT + 10_000;
+    private static final BigInteger PAYMENT = MutationWorld.PAYMENT;
 
     private static final List<Mutation> ALL = List.of(
             new Mutation("fee-too-small", "UTXO.FeeTooSmallUTxO", List.of(), SIMPLE,
@@ -100,7 +100,55 @@ public final class Mutations {
                     s -> {
                         s.metadata = smallMetadata();
                         s.dropAuxData = true;
-                    }));
+                    }),
+            // ---- Phase 3a: UTXO and UTXOS
+            new Mutation("empty-inputs", "UTXO.InputSetEmptyUTxO", HaskellFailureLists.EMPTY_INPUTS, SIMPLE,
+                    "no spending input and a 5 ADA change paid from nothing (not a single fault: value conservation "
+                            + "fails with it)",
+                    s -> {
+                        s.inputs.clear();
+                        s.outputs.clear();
+                        s.changeAdjust = BigInteger.valueOf(5_000_000);
+                    }),
+            new Mutation("not-yet-valid", "UTXO.OutsideValidityIntervalUTxO", List.of(), SIMPLE,
+                    "validity interval starting one slot after the current slot",
+                    s -> s.validityStart = MutationWorld.SLOT + 1),
+            new Mutation("scripts-not-paid", "UTXO.ScriptsNotPaidUTxO", List.of(), SCRIPT,
+                    "the collateral input is locked by the always-succeeds script",
+                    s -> s.collateral = new ArrayList<>(List.of(MutationWorld.SCRIPT_COLLATERAL_INPUT))),
+            new Mutation("collateral-non-ada", "UTXO.CollateralContainsNonADA", List.of(), SCRIPT,
+                    "the collateral input carries a token and there is no collateral return",
+                    s -> s.collateral = new ArrayList<>(List.of(MutationWorld.TOKEN_COLLATERAL_INPUT)),
+                    "UTXO.ValueNotConservedUTxO"),
+            new Mutation("insufficient-collateral", "UTXO.InsufficientCollateral", List.of(), SCRIPT,
+                    "0.2 ADA of collateral, below 150% of the fee",
+                    s -> s.collateral = new ArrayList<>(List.of(MutationWorld.SMALL_COLLATERAL_INPUT))),
+            new Mutation("incorrect-total-collateral", "UTXO.IncorrectTotalCollateralField", List.of(), SCRIPT,
+                    "total collateral declared one lovelace below the collateral balance",
+                    s -> s.totalCollateral = MutationWorld.COLLATERAL_LOVELACE.subtract(BigInteger.ONE)),
+            new Mutation("output-too-big", "UTXO.OutputTooBigUTxO", List.of(), SIMPLE,
+                    "also spends " + MutationWorld.MANY_ASSETS + " tokens with 32-byte names into the change, whose "
+                            + "value then serialises above maxValSize",
+                    s -> s.inputs.add(MutationWorld.MANY_ASSETS_INPUT)),
+            new Mutation("boot-addr-attrs-too-big", "UTXO.OutputBootAddrAttrsTooBig", List.of(), SIMPLE,
+                    "the payment goes to a testnet Byron address with 70 bytes of unknown attributes",
+                    s -> s.outputs.set(0, MutationWorld.output(MutationWorld.byronAddress(70), PAYMENT)),
+                    "UTXO.OutputTooBigUTxO"),
+            new Mutation("ex-units-too-big", "UTXO.ExUnitsTooBigUTxO", List.of(), SCRIPT,
+                    "the redeemer declares 15M memory units where maxTxExUnits allows 14M (fee paid)",
+                    s -> s.redeemers.set(0, MutationWorld.spendRedeemer(15_000_000))),
+            new Mutation("non-disjoint-reference-inputs", "UTXO.BabbageNonDisjointRefInputs", List.of(), SIMPLE,
+                    "the spent input is also a reference input (protocol version 10)",
+                    s -> s.referenceInputs.add(MutationWorld.KEY_INPUT)),
+            new Mutation("script-fails", "UTXOS.ValidationTagMismatch", List.of(), SCRIPT,
+                    "spends from the always-fails script instead, with is_valid = true",
+                    s -> {
+                        s.inputs.set(1, MutationWorld.FAIL_SCRIPT_INPUT);
+                        s.plutusScripts.set(0, MutationWorld.ALWAYS_FAILS);
+                    }),
+            new Mutation("passed-unexpectedly", "UTXOS.ValidationTagMismatch", List.of(), SCRIPT,
+                    "is_valid = false although the always-succeeds script passes",
+                    s -> s.isValid = false));
 
     private Mutations() {
     }
@@ -116,27 +164,7 @@ public final class Mutations {
 
     /** @return the base spec */
     public static TxSpec base(Mutation.Base base) {
-        TxSpec spec = new TxSpec();
-        spec.inputs.add(MutationWorld.KEY_INPUT);
-        spec.outputs.add(MutationWorld.output(TestKey.DEV_AA.enterpriseAddress(MutationWorld.NETWORK), PAYMENT));
-        spec.changeAddress = TestKey.DEV_42.enterpriseAddress(MutationWorld.NETWORK);
-        spec.ttl = TTL;
-        spec.signers.add(TestKey.DEV_42);
-        if (base == SCRIPT) {
-            // Inputs are a set ordered by (id, index): KEY_INPUT (11…) sorts before SCRIPT_INPUT (22…), so the
-            // spending redeemer points at index 1.
-            spec.inputs.add(MutationWorld.SCRIPT_INPUT);
-            spec.collateral.add(MutationWorld.collateralInput(0));
-            spec.plutusScripts.add(MutationWorld.ALWAYS_SUCCEEDS);
-            spec.redeemers.add(Redeemer.builder()
-                    .tag(RedeemerTag.Spend)
-                    .index(BigInteger.ONE)
-                    .data(ConstrPlutusData.of(0))
-                    .exUnits(ExUnits.builder().mem(BigInteger.valueOf(100_000))
-                            .steps(BigInteger.valueOf(50_000_000)).build())
-                    .build());
-        }
-        return spec;
+        return base == SCRIPT ? MutationWorld.scriptSpec() : MutationWorld.simpleSpec();
     }
 
     /** @return the base transaction */

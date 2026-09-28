@@ -1,4 +1,4 @@
-package org.yanoproject.ledger.conformance.mutation;
+package org.yanoproject.ledger.rules.fixtures.tx;
 
 import co.nstant.in.cbor.model.Array;
 import co.nstant.in.cbor.model.ByteString;
@@ -19,11 +19,13 @@ import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.spec.AuxiliaryData;
+import com.bloxbean.cardano.client.transaction.spec.MultiAsset;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
+import com.bloxbean.cardano.client.transaction.spec.Value;
 
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.view.LedgerView;
@@ -67,10 +69,15 @@ public final class ConwayTxBuilder {
     public static BuiltTx build(TxSpec spec, LedgerView view) {
         ProtocolParams params = view.protocolParams().require("protocol parameters");
         BigInteger available = BigInteger.ZERO;
+        List<MultiAsset> availableAssets = new ArrayList<>();
         for (TransactionInput input : spec.inputs) {
             Outpoint outpoint = Outpoints.of(input.getTransactionId(), input.getIndex());
             if (view.utxo(outpoint) instanceof Lookup.Present<UtxoEntry> present) {
-                available = available.add(present.value().output().getValue().getCoin());
+                Value value = present.value().output().getValue();
+                available = available.add(value.getCoin());
+                if (value.getMultiAssets() != null) {
+                    availableAssets = MultiAsset.mergeMultiAssetLists(availableAssets, value.getMultiAssets());
+                }
             }
         }
         BigInteger spent = spec.outputs.stream().map(o -> o.getValue().getCoin()).reduce(BigInteger.ZERO, BigInteger::add);
@@ -79,7 +86,7 @@ public final class ConwayTxBuilder {
         BigInteger fee = BigInteger.ZERO;
         for (int i = 0; i < MAX_ITERATIONS; i++) {
             BigInteger change = available.subtract(spent).subtract(fee).add(spec.changeAdjust);
-            BuiltTx built = assemble(spec, params, fee, change, scriptFee);
+            BuiltTx built = assemble(spec, params, fee, change, availableAssets, scriptFee);
             BigInteger next = built.minFee().add(spec.feeAdjust);
             if (next.equals(fee)) {
                 return built;
@@ -90,10 +97,14 @@ public final class ConwayTxBuilder {
     }
 
     private static BuiltTx assemble(TxSpec spec, ProtocolParams params, BigInteger fee, BigInteger change,
-                                    BigInteger scriptFee) {
+                                    List<MultiAsset> changeAssets, BigInteger scriptFee) {
         try {
             List<TransactionOutput> outputs = new ArrayList<>(spec.outputs);
-            outputs.add(MutationWorld.output(spec.changeAddress, change));
+            TransactionOutput changeOutput = MutationWorld.output(spec.changeAddress, change);
+            if (!changeAssets.isEmpty()) {
+                changeOutput.getValue().setMultiAssets(new ArrayList<>(changeAssets));
+            }
+            outputs.add(changeOutput);
 
             AuxiliaryData auxData = null;
             byte[] auxDataHash = null;
@@ -112,6 +123,27 @@ public final class ConwayTxBuilder {
                     .auxiliaryDataHash(auxDataHash);
             if (spec.ttl != null) {
                 body.ttl(spec.ttl);
+            }
+            if (spec.validityStart != null) {
+                body.validityStartInterval(spec.validityStart);
+            }
+            if (spec.totalCollateral != null) {
+                body.totalCollateral(spec.totalCollateral);
+            }
+            if (!spec.referenceInputs.isEmpty()) {
+                body.referenceInputs(new ArrayList<>(spec.referenceInputs));
+            }
+            if (!spec.certs.isEmpty()) {
+                body.certs(new ArrayList<>(spec.certs));
+            }
+            if (!spec.withdrawals.isEmpty()) {
+                body.withdrawals(new ArrayList<>(spec.withdrawals));
+            }
+            if (!spec.proposals.isEmpty()) {
+                body.proposalProcedures(new ArrayList<>(spec.proposals));
+            }
+            if (spec.donation != null) {
+                body.donation(spec.donation);
             }
             if (spec.bodyNetworkId != null) {
                 body.networkId(spec.bodyNetworkId);
@@ -140,7 +172,7 @@ public final class ConwayTxBuilder {
                     .body(body.build())
                     .witnessSet(witnesses)
                     .auxiliaryData(auxData)
-                    .isValid(true)
+                    .isValid(spec.isValid)
                     .build();
             byte[] cbor = sign(unsigned.serialize(), spec);
             // Haskell sizes a transaction without its is_valid flag (Alonzo toCBORForSizeComputation): one byte less.
@@ -194,7 +226,7 @@ public final class ConwayTxBuilder {
     }
 
     /** Haskell {@code txscriptfee}: {@code ⌈priceMem · mem + priceSteps · steps⌉}. */
-    static BigInteger scriptFee(List<Redeemer> redeemers, ProtocolParams params) {
+    public static BigInteger scriptFee(List<Redeemer> redeemers, ProtocolParams params) {
         BigInteger mem = BigInteger.ZERO;
         BigInteger steps = BigInteger.ZERO;
         for (Redeemer redeemer : redeemers) {

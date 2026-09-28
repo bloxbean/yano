@@ -1,0 +1,160 @@
+package org.yanoproject.ledger.rules.conway.utxos;
+
+import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.util.HexUtil;
+
+import org.junit.jupiter.api.Test;
+import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.LedgerRuleName;
+import org.yanoproject.ledger.rules.TxValidationOutcome;
+import org.yanoproject.ledger.rules.TxValidationRequest;
+import org.yanoproject.ledger.rules.conway.EngineTestSupport;
+import org.yanoproject.ledger.rules.conway.EngineTestSupport.StubEvaluator;
+import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
+import org.yanoproject.ledger.rules.fixtures.conformance.Covers;
+import org.yanoproject.ledger.rules.fixtures.tx.BuiltTx;
+import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
+import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
+import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
+import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
+import org.yanoproject.ledger.rules.phase2.ScriptOutcome;
+import org.yanoproject.ledger.rules.phase2.ScriptPhaseResult;
+import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
+
+import java.math.BigInteger;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** The {@code UTXOS} rule: {@code CollectErrors}, then Plutus under {@code when2Phase $ whenFailureFree}. */
+class UtxosRuleTest {
+
+    private static final ScriptPhaseResult.Failed FAILED = new ScriptPhaseResult.Failed(List.of(
+            new ScriptOutcome("spend", 1, false, 0, 0, List.of(), "error")));
+
+    @Test
+    @Covers("UTXOS.CollectErrors")
+    void collectErrorsAreReportedAndStopTheScripts() {
+        StubEvaluator evaluator = new StubEvaluator();
+        evaluator.collect = List.of(new LedgerFailure(LedgerRuleName.UTXOS, "CollectErrors",
+                LedgerFailure.Phase.PHASE_1, "NoCostModel PlutusV3"));
+        TxValidationOutcome outcome = EngineTestSupport.validate(evaluator, build(MutationWorld.scriptSpec()));
+        assertThat(EngineTestSupport.names(outcome)).containsExactly("UTXOS.CollectErrors");
+        assertThat(evaluator.evaluations).as("no script runs after a failure").isZero();
+    }
+
+    @Test
+    @Covers("UTXOS.ValidationTagMismatch")
+    void aFailingScriptClaimedValid() {
+        StubEvaluator evaluator = new StubEvaluator();
+        evaluator.result = FAILED;
+        TxValidationOutcome outcome = EngineTestSupport.validate(evaluator, build(MutationWorld.scriptSpec()));
+        assertThat(EngineTestSupport.names(outcome)).containsExactly("UTXOS.ValidationTagMismatch");
+        LedgerFailure failure = ((TxValidationOutcome.Invalid) outcome).failures().getFirst();
+        assertThat(failure.phase()).isEqualTo(LedgerFailure.Phase.PHASE_2);
+        assertThat(failure.detail()).contains("IsValid True", "FailedUnexpectedly", "spend[1]");
+    }
+
+    @Test
+    @Covers("UTXOS.ValidationTagMismatch")
+    void passingScriptsClaimedInvalid() {
+        TxSpec spec = MutationWorld.scriptSpec();
+        spec.isValid = false;
+        TxValidationOutcome outcome = EngineTestSupport.validate(new StubEvaluator(), build(spec));
+        assertThat(EngineTestSupport.names(outcome)).containsExactly("UTXOS.ValidationTagMismatch");
+        assertThat(((TxValidationOutcome.Invalid) outcome).failures().getFirst().detail())
+                .contains("IsValid False", "PassedUnexpectedly");
+
+        TxSpec noScripts = MutationWorld.simpleSpec();
+        noScripts.isValid = false;
+        assertThat(EngineTestSupport.names(EngineTestSupport.validate(new StubEvaluator(), build(noScripts))))
+                .as("evalPlutusScripts [] passes").containsExactly("UTXOS.ValidationTagMismatch");
+    }
+
+    @Test
+    void anInvalidTransactionWithAFailingScriptCollectsCollateralOnSyncButIsNotAdmitted() {
+        TxSpec spec = MutationWorld.scriptSpec();
+        spec.isValid = false;
+        byte[] cbor = build(spec);
+        StubEvaluator evaluator = new StubEvaluator();
+        evaluator.result = FAILED;
+
+        TxValidationOutcome sync = EngineTestSupport.validate(evaluator, cbor);
+        assertThat(sync).isInstanceOf(TxValidationOutcome.Valid.class);
+        TxValidationOutcome.Valid valid = (TxValidationOutcome.Valid) sync;
+        assertThat(valid.effects().phase2Valid()).isFalse();
+        assertThat(valid.effects().consumed()).singleElement()
+                .satisfies(o -> assertThat(o.txHash()).isEqualTo(MutationWorld.collateralInput(0).getTransactionId()));
+
+        TxValidationOutcome local = new JavaLedgerValidationEngine(evaluator).validate(new TxValidationRequest(cbor,
+                MutationWorld.view(), MutationWorld.env(), TxValidationRequest.Rule.MEMPOOL,
+                TxValidationRequest.Origin.LOCAL, null));
+        assertThat(EngineTestSupport.names(local)).containsExactly("ENGINE.Phase2InvalidTxNotSupported");
+    }
+
+    @Test
+    void scriptsDoNotRunAfterAPhaseOneFailure() {
+        TxSpec spec = MutationWorld.scriptSpec();
+        spec.feeAdjust = BigInteger.ONE.negate();
+        StubEvaluator evaluator = new StubEvaluator();
+        evaluator.result = FAILED;
+        assertThat(EngineTestSupport.names(EngineTestSupport.validate(evaluator, build(spec))))
+                .containsExactly("UTXO.FeeTooSmallUTxO");
+        assertThat(evaluator.evaluations).isZero();
+        assertThat(evaluator.collections).as("CollectErrors is dynamic and still prepared").isOne();
+    }
+
+    @Test
+    void withoutAnEvaluatorARedeemerFailsClosed() {
+        assertThat(EngineTestSupport.names(EngineTestSupport.validate(null, build(MutationWorld.scriptSpec()))))
+                .containsExactly("ENGINE.PhaseTwoEvaluatorUnavailable");
+        assertThat(EngineTestSupport.names(EngineTestSupport.validate(null, build(MutationWorld.simpleSpec()))))
+                .containsExactly("Valid");
+    }
+
+    @Test
+    void malformedScriptsFromThePreparationAreUtxowFailures() {
+        StubEvaluator evaluator = new StubEvaluator();
+        evaluator.collect = List.of(new LedgerFailure(LedgerRuleName.UTXOW, "MalformedScriptWitnesses",
+                LedgerFailure.Phase.PHASE_1, "x"));
+        assertThat(EngineTestSupport.names(EngineTestSupport.validate(evaluator, build(MutationWorld.scriptSpec()))))
+                .containsExactly("UTXOW.MalformedScriptWitnesses");
+    }
+
+    /**
+     * A Plutus script provided by a reference input's UTxO makes the transaction need preparation even without
+     * redeemers: a needed script without a redeemer is {@code CollectErrors [NoRedeemer]}.
+     */
+    @Test
+    void scriptsProvidedByReferenceInputsArePrepared() {
+        TransactionInput withScript = new TransactionInput("c".repeat(64), 0);
+        TransactionOutput output = MutationWorld.output(TestKey.DEV_42.enterpriseAddress(MutationWorld.NETWORK),
+                BigInteger.valueOf(5_000_000));
+        output.setScriptRef(HexUtil.decodeHexString("820346450101002499"));
+        InMemoryLedgerView view = MutationWorld.builder(MutationWorld.protocolParams())
+                .utxo(withScript.getTransactionId(), withScript.getIndex(), output).build();
+        TxSpec spec = MutationWorld.simpleSpec();
+        spec.referenceInputs.add(withScript);
+        spec.feeAdjust = BigInteger.valueOf(90); // the 6-byte reference script at 15 lovelace per byte
+        byte[] cbor = ConwayTxBuilder.build(spec, view).cbor();
+
+        StubEvaluator evaluator = new StubEvaluator();
+        evaluator.collect = List.of(new LedgerFailure(LedgerRuleName.UTXOS, "CollectErrors",
+                LedgerFailure.Phase.PHASE_1, "NoRedeemer spend[1]"));
+        assertThat(EngineTestSupport.names(EngineTestSupport.validate(evaluator, cbor, view, MutationWorld.env(),
+                null))).containsExactly("UTXOS.CollectErrors");
+        assertThat(evaluator.collections).isOne();
+        assertThat(EngineTestSupport.names(EngineTestSupport.validate(null, cbor, view, MutationWorld.env(), null)))
+                .as("fails closed without an evaluator").containsExactly("ENGINE.PhaseTwoEvaluatorUnavailable");
+
+        StubEvaluator notNeeded = new StubEvaluator();
+        EngineTestSupport.validate(notNeeded, EngineTestSupport.build(MutationWorld.simpleSpec()).cbor());
+        assertThat(notNeeded.collections).as("no Plutus anywhere: nothing to prepare").isZero();
+    }
+
+    private static byte[] build(TxSpec spec) {
+        BuiltTx tx = EngineTestSupport.build(spec);
+        return tx.cbor();
+    }
+}

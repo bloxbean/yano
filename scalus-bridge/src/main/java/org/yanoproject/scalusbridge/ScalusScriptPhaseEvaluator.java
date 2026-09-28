@@ -66,8 +66,9 @@ import java.util.TreeSet;
  *             forecast horizon ({@code TimeTranslationPastHorizon}, {@code Alonzo/Plutus/TxInfo.hs:252-274}).</li>
  *       </ul></li>
  * </ol>
- * <p>{@code NoRedeemer} and {@code NoWitness} are left to phase one ({@code MissingRedeemers},
- * {@code MissingScriptWitnessesUTXOW}).</p>
+ * <p>{@code NoRedeemer} is reported for a needed Plutus script without a redeemer (UTXOW's
+ * {@code MissingRedeemers} reports the same fault separately); {@code NoWitness} cannot occur, as only provided
+ * Plutus scripts are collected ({@code MissingScriptWitnessesUTXOW} covers a missing one).</p>
  *
  * <p>Then every script runs; the first failure (Scalus stops there) makes the result
  * {@link ScriptPhaseResult.Failed}. Comparing with {@code is_valid} is the engine's job. Anything else Scalus
@@ -103,6 +104,33 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
     @Override
     public ScriptPhaseResult evaluate(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
                                       ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
+        Preparation preparation = prepare(txCbor, tx, resolvedInputs, params, slotConfig, validationSlot);
+        if (!preparation.failures().isEmpty()) {
+            return new ScriptPhaseResult.Rejected(preparation.failures());
+        }
+        if (preparation.needed().isEmpty()) {
+            return new ScriptPhaseResult.Passed(List.of());
+        }
+        ScalusPhaseTwo.Evaluation evaluation = ScalusPhaseTwo.evaluate(txCbor, resolvedInputs.values(), params,
+                slotConfig);
+        return evaluation.passed()
+                ? new ScriptPhaseResult.Passed(evaluation.scripts())
+                : new ScriptPhaseResult.Failed(evaluation.scripts());
+    }
+
+    /** The checks {@link #evaluate} makes before running any script, without running one. */
+    @Override
+    public List<LedgerFailure> collect(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
+                                       ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
+        return prepare(txCbor, tx, resolvedInputs, params, slotConfig, validationSlot).failures();
+    }
+
+    /** What the preparation found: failures (malformed scripts, or CollectErrors), and the scripts to run. */
+    private record Preparation(List<LedgerFailure> failures, List<NeededPlutusScript> needed) {
+    }
+
+    private Preparation prepare(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
+                                ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
         Objects.requireNonNull(txCbor, "txCbor");
         Objects.requireNonNull(tx, "tx");
         Objects.requireNonNull(resolvedInputs, "resolvedInputs");
@@ -123,7 +151,7 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
                     LedgerFailure.Phase.PHASE_1, String.join(", ", references)));
         }
         if (!malformed.isEmpty()) {
-            return new ScriptPhaseResult.Rejected(malformed);
+            return new Preparation(malformed, List.of());
         }
 
         List<NeededPlutusScript> needed = ScalusPhaseTwo.neededPlutusScripts(txCbor, resolvedInputs.values(),
@@ -134,17 +162,10 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
                     .ifPresent(e -> collectErrors.add("BadTranslation " + e));
         }
         if (!collectErrors.isEmpty()) {
-            return new ScriptPhaseResult.Rejected(List.of(new LedgerFailure(LedgerRuleName.UTXOS, COLLECT_ERRORS,
-                    LedgerFailure.Phase.PHASE_1, String.join("; ", collectErrors))));
+            return new Preparation(List.of(new LedgerFailure(LedgerRuleName.UTXOS, COLLECT_ERRORS,
+                    LedgerFailure.Phase.PHASE_1, String.join("; ", collectErrors))), needed);
         }
-        if (needed.isEmpty()) {
-            return new ScriptPhaseResult.Passed(List.of());
-        }
-        ScalusPhaseTwo.Evaluation evaluation = ScalusPhaseTwo.evaluate(txCbor, resolvedInputs.values(), params,
-                slotConfig);
-        return evaluation.passed()
-                ? new ScriptPhaseResult.Passed(evaluation.scripts())
-                : new ScriptPhaseResult.Failed(evaluation.scripts());
+        return new Preparation(List.of(), needed);
     }
 
     // ------------------------------------------------------------------ CollectErrors
@@ -155,7 +176,9 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
         Set<Integer> languages = new TreeSet<>();
         for (NeededPlutusScript script : needed) {
             if (!script.hasRedeemer()) {
-                continue; // NoRedeemer: phase one reports MissingRedeemers first
+                // NoRedeemer (Alonzo/Plutus/Evaluate.hs:151-155): UTXOW reports MissingRedeemers too, UTXOS this.
+                errors.add("NoRedeemer " + script.purpose() + "[" + script.index() + "]");
+                continue;
             }
             if (!hasCostModel(params, script.languageName())) {
                 errors.add("NoCostModel " + script.languageName());

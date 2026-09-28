@@ -1,4 +1,4 @@
-package org.yanoproject.ledger.conformance.mutation;
+package org.yanoproject.ledger.rules.fixtures.tx;
 
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 

@@ -11,8 +11,8 @@ Generated 2026-09-29 by
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
 - **Scenarios**: 276 Haskell-cross-checked Amaru scenarios (tag `v10.11.20260925`), rule `LEDGER`, origin `SYNC`, one `InMemoryLedgerView` per scenario.
-- **Mutants**: 16 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions (preprod-like PV 10 world, signed with Amaru's corpus test keys, re-signed after every edit).
-- **Constructors**: 88 Conway leaf predicate failures at cardano-ledger `f649f975 (cardano-ledger-conway 1.23.0.0)`, 85 reachable at PV 10–11 ([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).
+- **Mutants**: 28 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions (preprod-like PV 10 world, signed with Amaru's corpus test keys, re-signed after every edit).
+- **Constructors**: 88 Conway leaf predicate failures at cardano-ledger `f649f975 (cardano-ledger-conway 1.23.0.0)`, 84 reachable at PV 10–11 ([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).
 - **Verdict match**: accepted exactly when Haskell accepts. **Constructor match**: the verdict matches and the engine's *first* failure is the expected Haskell `RULE.Constructor` (a decoding failure must be reported as one). **Constructor found**: the expected constructor is among the engine's failures in any position (the copied Java rules report every failure, in their own order).
 
 | Engine | What runs |
@@ -21,64 +21,78 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 | `scalus-legacy+supplementary` | ScalusBasedTransactionValidator with the supplementary CCL certificate and governance rules, behind TransactionValidationService's decode and UTxO-resolution pre-checks |
 | `scalus-engine` | ScalusLedgerValidationEngine over the LedgerView (engine API, step 1d) |
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
+| `java-engine` | JavaLedgerValidationEngine (ADR-056 Phase 3a: UTXO, UTXOS) over the LedgerView, Scalus phase 2 |
 | `amaru` | AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057) |
 
 ## Summary
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 16/16 | 2/2 | 22/85 | 1.96 |
-| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 16/16 | 2/2 | 31/85 | 0.36 |
-| `scalus-engine` | 193/276 | 184/276 | 184/276 | 16/16 | 2/2 | 35/85 | 0.36 |
-| `java-legacy` | 158/276 | 31/276 | 117/276 | 7/16 | 0/2 | 19/85 | 0.35 |
-| `amaru` | 276/276 | 275/276 | 275/276 | 16/16 | 2/2 | 56/85 | 2.72 |
+| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 26/28 | 2/2 | 25/84 | 2.17 |
+| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 26/28 | 2/2 | 34/84 | 0.41 |
+| `scalus-engine` | 193/276 | 185/276 | 185/276 | 26/28 | 2/2 | 37/84 | 0.41 |
+| `java-legacy` | 158/276 | 32/276 | 117/276 | 11/28 | 0/2 | 19/84 | 0.40 |
+| `java-engine` | 165/276 | 154/276 | 154/276 | 22/28 | 2/2 | 24/84 | 0.30 |
+| `amaru` | 276/276 | 275/276 | 275/276 | 26/28 | 2/2 | 57/84 | 2.85 |
 
-*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 56 of the 85 constructors; the rest need Phase 3–5 mutants.
+*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 59 of the 84 constructors; the rest need Phase 3–5 mutants.
 
 ## Scenarios per rule family
 
 Verdict matches / constructor matches, by the rule family of the expected constructor (`PASS`: expected valid; `DECODING`: expected not to decode).
 
-| Family | Scenarios | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `amaru` |
-|---|---:|---:|---:|---:|---:|---:|
-| PASS | 114 | 67 / 67 | 58 / 58 | 110 / 110 | 6 / 6 | 114 / 114 |
-| DECODING | 3 | 3 / 3 | 3 / 3 | 3 / 3 | 2 / 0 | 3 / 3 |
-| LEDGER | 5 | 4 / 0 | 4 / 0 | 0 / 0 | 2 / 0 | 5 / 5 |
-| CERTS | 2 | 2 / 0 | 2 / 0 | 2 / 2 | 2 / 0 | 2 / 2 |
-| DELEG | 21 | 21 / 0 | 21 / 0 | 13 / 11 | 21 / 0 | 21 / 21 |
-| POOL | 7 | 7 / 0 | 7 / 0 | 7 / 7 | 7 / 0 | 7 / 7 |
-| GOVCERT | 12 | 4 / 0 | 9 / 3 | 4 / 2 | 12 / 0 | 12 / 12 |
-| GOV | 59 | 9 / 0 | 51 / 42 | 1 / 0 | 59 / 1 | 59 / 58 |
-| UTXOW | 19 | 19 / 12 | 19 / 12 | 19 / 19 | 16 / 3 | 19 / 19 |
-| UTXO | 31 | 31 / 17 | 31 / 17 | 31 / 27 | 28 / 21 | 31 / 31 |
-| UTXOS | 3 | 3 / 3 | 3 / 3 | 3 / 3 | 3 / 0 | 3 / 3 |
+| Family | Scenarios | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-engine` | `amaru` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| PASS | 114 | 67 / 67 | 58 / 58 | 110 / 110 | 6 / 6 | 114 / 114 | 114 / 114 |
+| DECODING | 3 | 3 / 3 | 3 / 3 | 3 / 3 | 2 / 0 | 3 / 3 | 3 / 3 |
+| LEDGER | 5 | 4 / 0 | 4 / 0 | 0 / 0 | 2 / 0 | 0 / 0 | 5 / 5 |
+| CERTS | 2 | 2 / 0 | 2 / 0 | 2 / 2 | 2 / 0 | 1 / 0 | 2 / 2 |
+| DELEG | 21 | 21 / 0 | 21 / 0 | 13 / 11 | 21 / 0 | 6 / 0 | 21 / 21 |
+| POOL | 7 | 7 / 0 | 7 / 0 | 7 / 7 | 7 / 0 | 2 / 0 | 7 / 7 |
+| GOVCERT | 12 | 4 / 0 | 9 / 3 | 4 / 2 | 12 / 0 | 0 / 0 | 12 / 12 |
+| GOV | 59 | 9 / 0 | 51 / 42 | 1 / 0 | 59 / 1 | 1 / 0 | 59 / 58 |
+| UTXOW | 19 | 19 / 12 | 19 / 12 | 19 / 19 | 16 / 3 | 4 / 4 | 19 / 19 |
+| UTXO | 30 | 30 / 17 | 30 / 17 | 30 / 28 | 27 / 22 | 30 / 29 | 30 / 30 |
+| UTXOS | 4 | 4 / 3 | 4 / 3 | 4 / 3 | 4 / 0 | 4 / 4 | 4 / 4 |
 
 ## Mutation matrix
 
 `✓`: the expected verdict and constructor; otherwise the engine's first failure (or `Valid`).
 
-| Case | Expected | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `amaru` |
-|---|---|---|---|---|---|---|
-| `base:simple` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `base:script` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:fee-too-small` | UTXO.FeeTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:bad-input` | UTXO.BadInputsUTxO | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:value-not-conserved` | UTXO.ValueNotConservedUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:output-too-small` | UTXO.BabbageOutputTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:wrong-network-output` | UTXO.WrongNetwork | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:expired` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:missing-vkey-witness` | UTXOW.MissingVKeyWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:invalid-witness` | UTXOW.InvalidWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:max-tx-size` | UTXO.MaxTxSizeUTxO | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:no-collateral` | UTXO.NoCollateralInputs (Haskell: UTXO.InsufficientCollateral, UTXO.NoCollateralInputs) | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:too-many-collateral` | UTXO.TooManyCollateralInputs | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:wrong-network-in-body` | UTXO.WrongNetworkInTxBody | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:extraneous-script-witness` | UTXOW.ExtraneousScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:conflicting-metadata-hash` | UTXOW.ConflictingMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:missing-metadata-hash` | UTXOW.MissingTxBodyMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
-| `mutant:missing-metadata` | UTXOW.MissingTxMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ |
+| Case | Expected | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-engine` | `amaru` |
+|---|---|---|---|---|---|---|---|
+| `base:simple` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `base:script` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:fee-too-small` | UTXO.FeeTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:bad-input` | UTXO.BadInputsUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:value-not-conserved` | UTXO.ValueNotConservedUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:output-too-small` | UTXO.BabbageOutputTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:wrong-network-output` | UTXO.WrongNetwork | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:expired` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:missing-vkey-witness` | UTXOW.MissingVKeyWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:invalid-witness` | UTXOW.InvalidWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:max-tx-size` | UTXO.MaxTxSizeUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:no-collateral` | UTXO.NoCollateralInputs (Haskell: UTXO.NoCollateralInputs, UTXO.InsufficientCollateral) | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:too-many-collateral` | UTXO.TooManyCollateralInputs | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:wrong-network-in-body` | UTXO.WrongNetworkInTxBody | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:extraneous-script-witness` | UTXOW.ExtraneousScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:conflicting-metadata-hash` | UTXOW.ConflictingMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:missing-metadata-hash` | UTXOW.MissingTxBodyMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:missing-metadata` | UTXOW.MissingTxMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:empty-inputs` | UTXO.InputSetEmptyUTxO (Haskell: UTXO.ValueNotConservedUTxO, UTXO.InputSetEmptyUTxO) | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | ✓ | ✓ | ✓ |
+| `mutant:not-yet-valid` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:scripts-not-paid` | UTXO.ScriptsNotPaidUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:collateral-non-ada` | UTXO.CollateralContainsNonADA | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | `UTXO.ValueNotConservedUTxO` |
+| `mutant:insufficient-collateral` | UTXO.InsufficientCollateral | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:incorrect-total-collateral` | UTXO.IncorrectTotalCollateralField | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:output-too-big` | UTXO.OutputTooBigUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:boot-addr-attrs-too-big` | UTXO.OutputBootAddrAttrsTooBig | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `UTXO.OutputTooBigUTxO` |
+| `mutant:ex-units-too-big` | UTXO.ExUnitsTooBigUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:non-disjoint-reference-inputs` | UTXO.BabbageNonDisjointRefInputs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:script-fails` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:passed-unexpectedly` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 
-Mutants (16):
+Mutants (28):
 
 - `fee-too-small` → `UTXO.FeeTooSmallUTxO`: fee one lovelace below the minimum for the final bytes (change +1 keeps the balance)
 - `bad-input` → `UTXO.BadInputsUTxO`: an extra spending input that is not in the UTxO set (the balance counts only known inputs)
@@ -96,72 +110,87 @@ Mutants (16):
 - `conflicting-metadata-hash` → `UTXOW.ConflictingMetadataHash`: metadata whose body hash is the hash of different metadata
 - `missing-metadata-hash` → `UTXOW.MissingTxBodyMetadataHash`: metadata attached without its hash in the body
 - `missing-metadata` → `UTXOW.MissingTxMetadata`: a metadata hash in the body without the metadata
+- `empty-inputs` → `UTXO.InputSetEmptyUTxO`: no spending input and a 5 ADA change paid from nothing (not a single fault: value conservation fails with it)
+- `not-yet-valid` → `UTXO.OutsideValidityIntervalUTxO`: validity interval starting one slot after the current slot
+- `scripts-not-paid` → `UTXO.ScriptsNotPaidUTxO`: the collateral input is locked by the always-succeeds script
+- `collateral-non-ada` → `UTXO.CollateralContainsNonADA`: the collateral input carries a token and there is no collateral return
+- `insufficient-collateral` → `UTXO.InsufficientCollateral`: 0.2 ADA of collateral, below 150% of the fee
+- `incorrect-total-collateral` → `UTXO.IncorrectTotalCollateralField`: total collateral declared one lovelace below the collateral balance
+- `output-too-big` → `UTXO.OutputTooBigUTxO`: also spends 160 tokens with 32-byte names into the change, whose value then serialises above maxValSize
+- `boot-addr-attrs-too-big` → `UTXO.OutputBootAddrAttrsTooBig`: the payment goes to a testnet Byron address with 70 bytes of unknown attributes
+- `ex-units-too-big` → `UTXO.ExUnitsTooBigUTxO`: the redeemer declares 15M memory units where maxTxExUnits allows 14M (fee paid)
+- `non-disjoint-reference-inputs` → `UTXO.BabbageNonDisjointRefInputs`: the spent input is also a reference input (protocol version 10)
+- `script-fails` → `UTXOS.ValidationTagMismatch`: spends from the always-fails script instead, with is_valid = true
+- `passed-unexpectedly` → `UTXOS.ValidationTagMismatch`: is_valid = false although the always-succeeds script passes
 
 ## Constructors demonstrated per engine
 
 In-scope constructors that at least one scenario or mutant expects, with the engines that report them as Haskell does (first failure). Constructors no case expects are gaps of the corpus and the mutation matrix, listed after the table.
 
-| Constructor | Cases | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `amaru` |
-|---|---:|---|---|---|---|---|
-| `LEDGER.ConwayTreasuryValueMismatch` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `LEDGER.ConwayTxRefScriptsSizeTooBig` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `CERTS.WithdrawalsNotInRewardsCERTS` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `DELEG.IncorrectDepositDELEG` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `DELEG.StakeKeyRegisteredDELEG` | 5 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `DELEG.StakeKeyNotRegisteredDELEG` | 4 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `DELEG.StakeKeyHasNonZeroAccountBalanceDELEG` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `DELEG.DelegateeDRepNotRegisteredDELEG` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `DELEG.DelegateeStakePoolNotRegisteredDELEG` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `POOL.StakePoolNotRegisteredOnKeyPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `POOL.StakePoolRetirementWrongEpochPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `POOL.StakePoolCostTooLowPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `POOL.WrongNetworkPOOL` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `GOVCERT.ConwayDRepAlreadyRegistered` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `GOVCERT.ConwayCommitteeHasPreviouslyResigned` | 6 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `GOVCERT.ConwayCommitteeIsUnknown` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `GOV.ProposalCantFollow` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.ProposalReturnAccountDoesNotExist` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.ProposalProcedureNetworkIdMismatch` | 1 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `GOV.InvalidGuardrailsScriptHash` | 5 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.ZeroTreasuryWithdrawals` | 1 | ✗ | ✓ | ✗ | ✓ | ✓ |
-| `GOV.InvalidPrevGovActionId` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.VotersDoNotExist` | 12 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `GOV.GovActionsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `GOV.DisallowedVoters` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `UTXOW.InvalidWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingVKeyWitnessesUTXOW` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingScriptWitnessesUTXOW` | 5 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.ExtraneousScriptWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.MissingTxBodyMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.MissingTxMetadata` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.ConflictingMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.MalformedScriptWitnesses` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.MalformedReferenceScripts` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ |
-| `UTXO.BabbageNonDisjointRefInputs` | 1 | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `UTXO.OutsideValidityIntervalUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.OutsideForecast` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `UTXO.InputSetEmptyUTxO` | 1 | ✗ | ✗ | ✗ | ✓ | ✓ |
-| `UTXO.FeeTooSmallUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.ScriptsNotPaidUTxO` | 1 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.InsufficientCollateral` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.IncorrectTotalCollateralField` | 1 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.NoCollateralInputs` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ |
-| `UTXO.BadInputsUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.ValueNotConservedUTxO` | 6 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.BabbageOutputTooSmallUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.OutputTooBigUTxO` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.WrongNetwork` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.WrongNetworkWithdrawal` | 1 | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `UTXO.WrongNetworkInTxBody` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.MaxTxSizeUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.TooManyCollateralInputs` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOS.ValidationTagMismatch` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ |
-| **Total** | | **22** | **31** | **35** | **19** | **56** |
+| Constructor | Cases | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-engine` | `amaru` |
+|---|---:|---|---|---|---|---|---|
+| `LEDGER.ConwayTreasuryValueMismatch` | 1 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `LEDGER.ConwayTxRefScriptsSizeTooBig` | 3 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 1 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `CERTS.WithdrawalsNotInRewardsCERTS` | 2 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `DELEG.IncorrectDepositDELEG` | 2 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `DELEG.StakeKeyRegisteredDELEG` | 5 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `DELEG.StakeKeyNotRegisteredDELEG` | 4 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `DELEG.StakeKeyHasNonZeroAccountBalanceDELEG` | 2 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `DELEG.DelegateeDRepNotRegisteredDELEG` | 4 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `DELEG.DelegateeStakePoolNotRegisteredDELEG` | 4 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `POOL.StakePoolNotRegisteredOnKeyPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `POOL.StakePoolRetirementWrongEpochPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `POOL.StakePoolCostTooLowPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `POOL.WrongNetworkPOOL` | 1 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `GOVCERT.ConwayDRepAlreadyRegistered` | 2 | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `GOVCERT.ConwayCommitteeHasPreviouslyResigned` | 6 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOVCERT.ConwayCommitteeIsUnknown` | 4 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.ProposalCantFollow` | 2 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.ProposalReturnAccountDoesNotExist` | 7 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 3 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.ProposalProcedureNetworkIdMismatch` | 1 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.InvalidGuardrailsScriptHash` | 5 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.ZeroTreasuryWithdrawals` | 1 | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |
+| `GOV.InvalidPrevGovActionId` | 3 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.VotersDoNotExist` | 12 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.GovActionsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.DisallowedVoters` | 4 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `UTXOW.InvalidWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
+| `UTXOW.MissingVKeyWitnessesUTXOW` | 4 | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
+| `UTXOW.MissingScriptWitnessesUTXOW` | 5 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `UTXOW.ExtraneousScriptWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `UTXOW.MissingTxBodyMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `UTXOW.MissingTxMetadata` | 2 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `UTXOW.ConflictingMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `UTXOW.MalformedScriptWitnesses` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MalformedReferenceScripts` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXO.BabbageNonDisjointRefInputs` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.OutsideValidityIntervalUTxO` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.InputSetEmptyUTxO` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| `UTXO.FeeTooSmallUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.ScriptsNotPaidUTxO` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.CollateralContainsNonADA` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ |
+| `UTXO.InsufficientCollateral` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.IncorrectTotalCollateralField` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.NoCollateralInputs` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| `UTXO.BadInputsUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.ValueNotConservedUTxO` | 8 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.BabbageOutputTooSmallUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.OutputTooBigUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.OutputBootAddrAttrsTooBig` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
+| `UTXO.WrongNetwork` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.WrongNetworkWithdrawal` | 1 | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.WrongNetworkInTxBody` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.MaxTxSizeUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.ExUnitsTooBigUTxO` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXO.TooManyCollateralInputs` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOS.CollectErrors` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `UTXOS.ValidationTagMismatch` | 5 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| **Total** | | **25** | **34** | **37** | **19** | **24** | **57** |
 
-No scenario or mutant expects (29): `LEDGER.ConwayMempoolFailure`, `LEDGER.ConwayWithdrawalsMissingAccounts`, `LEDGER.ConwayIncompleteWithdrawals`, `DELEG.DepositIncorrectDELEG`, `DELEG.RefundIncorrectDELEG`, `POOL.PoolMedataHashTooBig`, `POOL.VRFKeyHashAlreadyRegistered`, `GOVCERT.ConwayDRepIncorrectDeposit`, `GOVCERT.ConwayDRepNotRegistered`, `GOVCERT.ConwayDRepIncorrectRefund`, `GOV.UnelectedCommitteeVoters`, `GOV.MalformedProposal`, `GOV.ProposalDepositIncorrect`, `GOV.TreasuryWithdrawalsNetworkIdMismatch`, `GOV.ConflictingCommitteeUpdate`, `GOV.ExpirationEpochTooSmall`, `UTXOW.ScriptWitnessNotValidatingUTXOW`, `UTXOW.InvalidMetadata`, `UTXOW.MissingRedeemers`, `UTXOW.ExtraRedeemers`, `UTXOW.MissingRequiredDatums`, `UTXOW.NotAllowedSupplementalDatums`, `UTXOW.UnspendableUTxONoDatumHash`, `UTXOW.PPViewHashesDontMatch`, `UTXOW.ScriptIntegrityHashMismatch`, `UTXO.CollateralContainsNonADA`, `UTXO.OutputBootAddrAttrsTooBig`, `UTXO.ExUnitsTooBigUTxO`, `UTXOS.CollectErrors`.
+No scenario or mutant expects (25): `LEDGER.ConwayMempoolFailure`, `LEDGER.ConwayWithdrawalsMissingAccounts`, `LEDGER.ConwayIncompleteWithdrawals`, `DELEG.DepositIncorrectDELEG`, `DELEG.RefundIncorrectDELEG`, `POOL.PoolMedataHashTooBig`, `POOL.VRFKeyHashAlreadyRegistered`, `GOVCERT.ConwayDRepIncorrectDeposit`, `GOVCERT.ConwayDRepNotRegistered`, `GOVCERT.ConwayDRepIncorrectRefund`, `GOV.UnelectedCommitteeVoters`, `GOV.MalformedProposal`, `GOV.ProposalDepositIncorrect`, `GOV.TreasuryWithdrawalsNetworkIdMismatch`, `GOV.ConflictingCommitteeUpdate`, `GOV.ExpirationEpochTooSmall`, `UTXOW.ScriptWitnessNotValidatingUTXOW`, `UTXOW.InvalidMetadata`, `UTXOW.MissingRedeemers`, `UTXOW.ExtraRedeemers`, `UTXOW.MissingRequiredDatums`, `UTXOW.NotAllowedSupplementalDatums`, `UTXOW.UnspendableUTxONoDatumHash`, `UTXOW.PPViewHashesDontMatch`, `UTXOW.ScriptIntegrityHashMismatch`.
 
 ## Main causes of constructor mismatches
 
@@ -191,18 +220,17 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 | `UNMAPPED.StakeCertificates` | 2 | DELEG.IncorrectDepositDELEG, DELEG.StakeKeyRegisteredDELEG |
 | `DELEG.DelegateeStakePoolNotRegisteredDELEG` | 2 | Pass |
 
-**`scalus-engine`** (92 mismatches)
+**`scalus-engine`** (91 mismatches)
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
 | `Valid` | 79 | DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, GOV.DisallowedVoters, GOV.GovActionsDoNotExist, … (18 kinds) |
 | `ENGINE.DecodingFailure` | 8 | GOV.ProposalReturnAccountDoesNotExist, GOVCERT.ConwayCommitteeIsUnknown, Pass, UTXO.InputSetEmptyUTxO |
 | `UTXOW.MissingScriptWitnessesUTXOW` | 2 | DELEG.StakeKeyNotRegisteredDELEG |
-| `UTXOS.ValidationTagMismatch` | 1 | UTXO.OutsideForecast |
-| `UTXO.InsufficientCollateral` | 1 | UTXO.ValueNotConservedUTxO |
+| `UTXOS.ValidationTagMismatch` | 1 | UTXOS.CollectErrors |
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
 
-**`java-legacy`** (245 mismatches)
+**`java-legacy`** (244 mismatches)
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
@@ -210,9 +238,18 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 | `Valid` | 10 | DecodingFailure, LEDGER.ConwayTxRefScriptsSizeTooBig, UTXO.BadInputsUTxO, UTXO.FeeTooSmallUTxO, … (7 kinds) |
 | `UTXO.FeeTooSmallUTxO` | 1 | Pass |
 | `GOV.ZeroTreasuryWithdrawals` | 1 | Pass |
-| `UTXO.InsufficientCollateral` | 1 | UTXO.ValueNotConservedUTxO |
 | `UTXO.BabbageNonDisjointRefInputs` | 1 | Pass |
 | `UTXOW.PPViewHashesDontMatch` | 1 | Pass |
+
+**`java-engine`** (122 mismatches)
+
+| Reported first | Count | Expected (examples) |
+|---|---:|---|
+| `Valid` | 111 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.StakeKeyHasNonZeroAccountBalanceDELEG, … (32 kinds) |
+| `ENGINE.JavaEngineFailure` | 7 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.StakeKeyNotRegisteredDELEG, POOL.StakePoolNotRegisteredOnKeyPOOL |
+| `UTXO.ValueNotConservedUTxO` | 2 | DELEG.IncorrectDepositDELEG |
+| `ENGINE.EraNotSupported` | 1 | GOV.ProposalCantFollow |
+| `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
 
 **`amaru`** (1 mismatches)
 
@@ -289,7 +326,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00083-fail-body-hash-without-auxiliary-data | UTXOW.MissingTxMetadata | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00084-fail-vkey-locked-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00086-fail-byron-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `UNMAPPED.IllegalArgument` | IllegalArgument: Validation error: requirement failed: Invalid Bech32: missing separator '1'. |
-| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXO.OutsideForecast | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXOS.CollectErrors | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00089-fail-current-slot-before-invalid-before | UTXO.OutsideValidityIntervalUTxO | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00090-fail-slot-equals-invalid-after-exclusive-upper-bound | UTXO.OutsideValidityIntervalUTxO | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00091-fail-slot-equals-end-with-no-lower-bound | UTXO.OutsideValidityIntervalUTxO | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
@@ -319,7 +356,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00117-fail-treasury-withdrawal-with-a-missing-target-reward-account | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00118-fail-treasury-withdrawal-with-multiple-missing-target-reward-accounts | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00119-fail-treasury-withdrawal-with-multiple-target-reward-accounts-where-one-is-missing | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
-| 00124-fail-plutus-spend-collateral-return-exceeds-collateral-input | UTXO.ValueNotConservedUTxO | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00124-fail-plutus-spend-collateral-return-exceeds-collateral-input | UTXO.ValueNotConservedUTxO (Haskell: UTXO.ValueNotConservedUTxO, UTXO.InsufficientCollateral) | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00125-fail-withdrawal-from-an-account-that-isnt-registered | CERTS.WithdrawalsNotInRewardsCERTS | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00126-fail-withdrawal-that-doesnt-drain-the-full-reward-balance | CERTS.WithdrawalsNotInRewardsCERTS | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00127-fail-body-network-id-disagrees-with-fixture-network | UTXO.WrongNetworkInTxBody | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
@@ -471,7 +508,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00083-fail-body-hash-without-auxiliary-data | UTXOW.MissingTxMetadata | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00084-fail-vkey-locked-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00086-fail-byron-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `UNMAPPED.IllegalArgument` | IllegalArgument: Validation error: requirement failed: Invalid Bech32: missing separator '1'. |
-| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXO.OutsideForecast | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXOS.CollectErrors | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00089-fail-current-slot-before-invalid-before | UTXO.OutsideValidityIntervalUTxO | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00090-fail-slot-equals-invalid-after-exclusive-upper-bound | UTXO.OutsideValidityIntervalUTxO | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00091-fail-slot-equals-end-with-no-lower-bound | UTXO.OutsideValidityIntervalUTxO | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
@@ -495,7 +532,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00117-fail-treasury-withdrawal-with-a-missing-target-reward-account | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00118-fail-treasury-withdrawal-with-multiple-missing-target-reward-accounts | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00119-fail-treasury-withdrawal-with-multiple-target-reward-accounts-where-one-is-missing | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
-| 00124-fail-plutus-spend-collateral-return-exceeds-collateral-input | UTXO.ValueNotConservedUTxO | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00124-fail-plutus-spend-collateral-return-exceeds-collateral-input | UTXO.ValueNotConservedUTxO (Haskell: UTXO.ValueNotConservedUTxO, UTXO.InsufficientCollateral) | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00125-fail-withdrawal-from-an-account-that-isnt-registered | CERTS.WithdrawalsNotInRewardsCERTS | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00126-fail-withdrawal-that-doesnt-drain-the-full-reward-balance | CERTS.WithdrawalsNotInRewardsCERTS | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00127-fail-body-network-id-disagrees-with-fixture-network | UTXO.WrongNetworkInTxBody | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
@@ -554,7 +591,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 
 </details>
 
-<details><summary><code>scalus-engine</code>: 92 of 276 without a constructor match</summary>
+<details><summary><code>scalus-engine</code>: 91 of 276 without a constructor match</summary>
 
 | Scenario | Expected | Reported first | Engine detail |
 |---|---|---|---|
@@ -573,7 +610,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00067-fail-stake-reg-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
 | 00068-fail-stake-vote-reg-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
 | 00074-fail-empty-input-set | UTXO.InputSetEmptyUTxO | `ENGINE.DecodingFailure` | Scalus cannot decode the transaction: java.lang.IllegalArgumentException: requirement failed: Empty list found, expected non-empty (input position 6) |
-| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXO.OutsideForecast | `UTXOS.ValidationTagMismatch` | FailedUnexpectedly: PlutusScriptValidationException: Plutus script validation failed for transactionId "7ceb0ab6ce199200e6e3049332805753319e8cf89e5a51a248709... |
+| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXOS.CollectErrors | `UTXOS.ValidationTagMismatch` | FailedUnexpectedly: PlutusScriptValidationException: Plutus script validation failed for transactionId "7ceb0ab6ce199200e6e3049332805753319e8cf89e5a51a248709... |
 | 00092-fail-parameter-change-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
 | 00093-fail-hard-fork-initiation-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
 | 00094-fail-treasury-withdrawals-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
@@ -586,7 +623,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00117-fail-treasury-withdrawal-with-a-missing-target-reward-account | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
 | 00118-fail-treasury-withdrawal-with-multiple-missing-target-reward-accounts | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
 | 00119-fail-treasury-withdrawal-with-multiple-target-reward-accounts-where-one-is-missing | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
-| 00124-fail-plutus-spend-collateral-return-exceeds-collateral-input | UTXO.ValueNotConservedUTxO | `UTXO.InsufficientCollateral` | FeesOkException: Fee or collateral validation failed for transaction "b0fa37292cfa80896d106c851b2f752152d190ad7e7645ca6cdfdf0cd204f14a": collateral Coin(-100... |
 | 00130-fail-treasury-withdrawals-with-all-zeros | GOV.ZeroTreasuryWithdrawals | `Valid` |  |
 | 00144-pass-gov-update-committee-follows-in-flight | Pass | `ENGINE.DecodingFailure` | Scalus cannot decode the transaction: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00145-pass-gov-update-committee-follows-root | Pass | `ENGINE.DecodingFailure` | Scalus cannot decode the transaction: Expected Map-Header but got Start of unbounded Map (input position 1) |
@@ -653,7 +689,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 
 </details>
 
-<details><summary><code>java-legacy</code>: 245 of 276 without a constructor match</summary>
+<details><summary><code>java-legacy</code>: 244 of 276 without a constructor match</summary>
 
 | Scenario | Expected | Reported first | Engine detail |
 |---|---|---|---|
@@ -727,7 +763,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00082-fail-auxiliary-data-without-body-hash | UTXOW.MissingTxBodyMetadataHash | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00083-fail-body-hash-without-auxiliary-data | UTXOW.MissingTxMetadata | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00086-fail-byron-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `Valid` |  |
-| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXO.OutsideForecast | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
+| 00088-fail-upper-validity-bound-past-forecast-horizon-with-plutus-redeemer | UTXOS.CollectErrors | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00092-fail-parameter-change-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00093-fail-hard-fork-initiation-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00094-fail-treasury-withdrawals-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
@@ -755,7 +791,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00117-fail-treasury-withdrawal-with-a-missing-target-reward-account | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00118-fail-treasury-withdrawal-with-multiple-missing-target-reward-accounts | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00119-fail-treasury-withdrawal-with-multiple-target-reward-accounts-where-one-is-missing | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
-| 00124-fail-plutus-spend-collateral-return-exceeds-collateral-input | UTXO.ValueNotConservedUTxO | `UTXO.InsufficientCollateral` | FeeAndCollateral: Insufficient collateral: provided -1000000 lovelace, required 1500000 lovelace (150% of fee 1000000) |
 | 00125-fail-withdrawal-from-an-account-that-isnt-registered | CERTS.WithdrawalsNotInRewardsCERTS | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00126-fail-withdrawal-that-doesnt-drain-the-full-reward-balance | CERTS.WithdrawalsNotInRewardsCERTS | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00131-fail-transaction-size-just-above-max-transaction-size | UTXO.MaxTxSizeUTxO | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
@@ -902,6 +937,135 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00280-fail-output-to-a-byron-address-with-oversized-attributes | UTXO.OutputTooBigUTxO | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00281-pass-invalid-transaction-with-a-plutus-v3-script-returning-a-non-unit-constant | Pass | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00282-fail-info-proposal-with-a-mainnet-return-account | GOV.ProposalProcedureNetworkIdMismatch | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
+
+</details>
+
+<details><summary><code>java-engine</code>: 122 of 276 without a constructor match</summary>
+
+| Scenario | Expected | Reported first | Engine detail |
+|---|---|---|---|
+| 00053-fail-auxiliary-data-hash-mismatch | UTXOW.ConflictingMetadataHash | `Valid` |  |
+| 00054-fail-current-treasury-value-disagrees-with-ledger-treasury | LEDGER.ConwayTreasuryValueMismatch | `Valid` |  |
+| 00055-fail-single-reference-script-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
+| 00056-fail-summed-reference-scripts-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
+| 00057-fail-script-on-a-spent-input-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
+| 00058-fail-withdrawal-from-an-account-not-delegated-to-a-drep | LEDGER.ConwayWdrlNotDelegatedToDRep | `Valid` |  |
+| 00059-fail-drep-registration-on-already-registered-key-hash-credential | GOVCERT.ConwayDRepAlreadyRegistered | `Valid` |  |
+| 00060-fail-drep-registration-on-already-registered-script-hash-credential | GOVCERT.ConwayDRepAlreadyRegistered | `Valid` |  |
+| 00061-fail-vote-delegation-to-unregistered-drep | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` |  |
+| 00062-fail-stake-vote-delegation-to-unregistered-drep | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` |  |
+| 00063-fail-vote-reg-delegation-to-unregistered-drep | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` |  |
+| 00064-fail-stake-vote-reg-delegation-to-unregistered-drep | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` |  |
+| 00065-fail-stake-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
+| 00066-fail-stake-vote-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
+| 00067-fail-stake-reg-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
+| 00068-fail-stake-vote-reg-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
+| 00072-fail-stake-registration-cert-with-incorrect-deposit | DELEG.IncorrectDepositDELEG | `UTXO.ValueNotConservedUTxO` | Mismatch {mismatchSupplied = Coin 5000000, mismatchExpected = Coin 6000000} |
+| 00076-fail-invalid-vkey-signature | UTXOW.InvalidWitnessesUTXOW | `Valid` |  |
+| 00079-fail-bootstrap-witness-with-mismatched-signature | UTXOW.InvalidWitnessesUTXOW | `Valid` |  |
+| 00082-fail-auxiliary-data-without-body-hash | UTXOW.MissingTxBodyMetadataHash | `Valid` |  |
+| 00083-fail-body-hash-without-auxiliary-data | UTXOW.MissingTxMetadata | `Valid` |  |
+| 00084-fail-vkey-locked-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `Valid` |  |
+| 00085-fail-required-signers-entry-without-matching-witness | UTXOW.MissingVKeyWitnessesUTXOW | `Valid` |  |
+| 00086-fail-byron-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `Valid` |  |
+| 00092-fail-parameter-change-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
+| 00093-fail-hard-fork-initiation-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
+| 00094-fail-treasury-withdrawals-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
+| 00095-fail-no-confidence-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
+| 00096-fail-update-committee-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
+| 00097-fail-new-constitution-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
+| 00098-fail-information-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
+| 00100-fail-delegation-after-deregistration-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account key:93c191b1094746961f6f00fba27f3d8eff6a66490b... |
+| 00101-fail-delegation-after-conway-unreg-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account key:93c191b1094746961f6f00fba27f3d8eff6a66490b... |
+| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account script:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb... |
+| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account script:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb... |
+| 00104-fail-deregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `Valid` |  |
+| 00105-fail-conway-unregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `Valid` |  |
+| 00106-fail-reg-cert-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `Valid` |  |
+| 00107-fail-stake-reg-delegation-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `Valid` |  |
+| 00108-fail-vote-reg-delegation-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `Valid` |  |
+| 00109-fail-stake-vote-reg-delegation-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `Valid` |  |
+| 00110-fail-pool-registration-with-cost-zero | POOL.StakePoolCostTooLowPOOL | `Valid` |  |
+| 00111-fail-pool-registration-with-cost-one-below-minimum | POOL.StakePoolCostTooLowPOOL | `Valid` |  |
+| 00112-fail-retirement-of-a-never-registered-pool | POOL.StakePoolNotRegisteredOnKeyPOOL | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: pool pool:93c191b1094746961f6f00fba27f3d8eff6a66490baf... |
+| 00113-fail-retirement-of-a-pool-absent-from-a-non-empty-pools-set | POOL.StakePoolNotRegisteredOnKeyPOOL | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: pool pool:93c191b1094746961f6f00fba27f3d8eff6a66490baf... |
+| 00114-fail-pool-retirement-at-current-epoch | POOL.StakePoolRetirementWrongEpochPOOL | `Valid` |  |
+| 00115-fail-pool-retirement-beyond-max-epoch | POOL.StakePoolRetirementWrongEpochPOOL | `Valid` |  |
+| 00117-fail-treasury-withdrawal-with-a-missing-target-reward-account | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
+| 00118-fail-treasury-withdrawal-with-multiple-missing-target-reward-accounts | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
+| 00119-fail-treasury-withdrawal-with-multiple-target-reward-accounts-where-one-is-missing | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
+| 00125-fail-withdrawal-from-an-account-that-isnt-registered | CERTS.WithdrawalsNotInRewardsCERTS | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account key:93c191b1094746961f6f00fba27f3d8eff6a66490b... |
+| 00126-fail-withdrawal-that-doesnt-drain-the-full-reward-balance | CERTS.WithdrawalsNotInRewardsCERTS | `Valid` |  |
+| 00130-fail-treasury-withdrawals-with-all-zeros | GOV.ZeroTreasuryWithdrawals | `Valid` |  |
+| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId | `Valid` |  |
+| 00149-fail-parameter-change-proposal-chaining-to-a-parent-of-a-different-purpose | GOV.InvalidPrevGovActionId | `Valid` |  |
+| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId | `Valid` |  |
+| 00158-fail-vote-cast-by-a-drep-key-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
+| 00159-fail-vote-cast-by-a-drep-script-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
+| 00160-fail-vote-cast-by-a-credential-registered-as-a-stake-account-but-not-as-a-drep | GOV.VotersDoNotExist | `Valid` |  |
+| 00161-fail-vote-cast-by-a-committee-hot-key-with-an-empty-committee | GOV.VotersDoNotExist | `Valid` |  |
+| 00162-fail-vote-cast-by-a-committee-hot-key-the-member-has-rotated-away-from | GOV.VotersDoNotExist | `Valid` |  |
+| 00163-fail-vote-cast-by-a-committee-hot-key-of-a-member-that-authorized-none | GOV.VotersDoNotExist | `Valid` |  |
+| 00164-fail-vote-cast-by-a-committee-members-cold-credential-instead-of-its-hot-one | GOV.VotersDoNotExist | `Valid` |  |
+| 00165-fail-vote-cast-by-a-committee-hot-script-credential-that-no-member-authorized | GOV.VotersDoNotExist | `Valid` |  |
+| 00166-fail-vote-cast-by-a-stake-pool-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
+| 00169-fail-vote-cast-by-a-committee-hot-key-whose-member-resigned-earlier-in-the-same-transaction | GOV.VotersDoNotExist | `Valid` |  |
+| 00170-fail-vote-cast-by-a-committee-hot-key-rotated-away-from-earlier-in-the-same-transaction | GOV.VotersDoNotExist | `Valid` |  |
+| 00171-fail-vote-cast-by-an-unelected-committee-member-with-an-authorized-hot-key-v11 | GOV.VotersDoNotExist | `Valid` |  |
+| 00172-fail-vote-cast-by-a-committee-member-on-a-committee-update | GOV.DisallowedVoters | `Valid` |  |
+| 00173-fail-vote-cast-by-a-stake-pool-on-a-new-constitution | GOV.DisallowedVoters | `Valid` |  |
+| 00174-fail-vote-cast-by-a-stake-pool-on-a-treasury-withdrawal | GOV.DisallowedVoters | `Valid` |  |
+| 00175-fail-vote-cast-by-a-stake-pool-on-a-parameter-change-outside-the-security-group | GOV.DisallowedVoters | `Valid` |  |
+| 00184-fail-drep-unregistration-of-a-script-hash-drep-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
+| 00186-fail-drep-update-of-a-script-hash-drep-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
+| 00188-fail-vote-delegation-from-a-script-hash-stake-credential-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
+| 00190-fail-committee-hot-key-authorization-by-a-script-hash-cold-credential-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
+| 00191-fail-parameter-change-proposal-with-a-policy-the-constitution-has-no-script-for | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
+| 00192-fail-parameter-change-proposal-omitting-the-constitutions-guardrails-script | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
+| 00193-fail-parameter-change-proposal-naming-a-script-other-than-the-constitutions | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
+| 00194-fail-treasury-withdrawals-proposal-with-a-policy-the-constitution-has-no-script-for | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
+| 00195-fail-treasury-withdrawals-proposal-omitting-the-constitutions-guardrails-script | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
+| 00201-fail-hot-key-authorization-for-a-cold-credential-the-same-transaction-proposes-to-elect | GOVCERT.ConwayCommitteeIsUnknown | `Valid` |  |
+| 00202-fail-gov-hardfork-initiation-repeating-the-in-flight-version | GOV.ProposalCantFollow | `Valid` |  |
+| 00203-fail-gov-hardfork-initiation-chains-two-majors | GOV.ProposalCantFollow | `ENGINE.EraNotSupported` | the java engine validates Conway at protocol versions 10–11, not 9 |
+| 00204-fail-hot-key-authorization-for-a-cold-credential-absent-from-the-committee | GOVCERT.ConwayCommitteeIsUnknown | `Valid` |  |
+| 00205-fail-resignation-for-a-cold-credential-the-same-transaction-proposes-to-elect | GOVCERT.ConwayCommitteeIsUnknown | `Valid` |  |
+| 00206-fail-hot-key-authorization-for-a-member-that-has-resigned | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` |  |
+| 00207-fail-resignation-for-a-member-that-has-already-resigned | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` |  |
+| 00208-fail-hot-key-authorization-for-a-member-that-resigned-earlier-in-the-same-transaction | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` |  |
+| 00209-fail-second-resignation-for-a-member-that-resigned-earlier-in-the-same-transaction | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` |  |
+| 00210-fail-hot-key-authorization-for-an-unelected-member-that-has-resigned | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` |  |
+| 00217-fail-resignation-for-an-unelected-member-that-has-resigned | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` |  |
+| 00220-fail-resignation-for-a-cold-credential-absent-from-the-committee | GOVCERT.ConwayCommitteeIsUnknown | `Valid` |  |
+| 00221-fail-vote-cast-on-a-governance-action-absent-from-the-proposals-state | GOV.GovActionsDoNotExist | `Valid` |  |
+| 00222-fail-vote-cast-on-a-governance-action-whose-index-does-not-match-any-proposal | GOV.GovActionsDoNotExist | `Valid` |  |
+| 00223-fail-vote-cast-by-a-committee-member-on-a-governance-action-that-does-not-exist | GOV.GovActionsDoNotExist | `Valid` |  |
+| 00224-fail-vote-cast-on-two-governance-actions-of-which-only-one-exists | GOV.GovActionsDoNotExist | `Valid` |  |
+| 00225-fail-yes-vote-cast-by-a-registered-drep-key-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00226-fail-no-vote-cast-by-a-registered-drep-key-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00227-fail-abstention-cast-by-a-registered-drep-key-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00228-fail-yes-vote-cast-by-a-registered-drep-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00229-fail-no-vote-cast-by-a-registered-drep-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00230-fail-abstention-cast-by-a-registered-drep-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00231-fail-yes-vote-cast-by-an-authorized-committee-hot-key-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00232-fail-no-vote-cast-by-an-authorized-committee-hot-key-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00233-fail-abstention-cast-by-an-authorized-committee-hot-key-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00234-fail-yes-vote-cast-by-an-authorized-committee-hot-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00235-fail-no-vote-cast-by-an-authorized-committee-hot-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00236-fail-abstention-cast-by-an-authorized-committee-hot-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00237-fail-yes-vote-cast-by-a-registered-stake-pool-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00238-fail-no-vote-cast-by-a-registered-stake-pool-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00239-fail-abstention-cast-by-a-registered-stake-pool-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00240-fail-one-voter-balloting-on-a-live-governance-action-and-an-expired-one | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00241-fail-expired-governance-action-balloted-on-by-the-second-of-two-voters | GOV.VotingOnExpiredGovAction | `Valid` |  |
+| 00259-fail-plutus-v2-script-supplied-as-both-a-witness-and-a-reference-script | UTXOW.ExtraneousScriptWitnessesUTXOW | `Valid` |  |
+| 00260-fail-plutus-v2-script-supplied-as-both-a-witness-and-a-spent-input-reference-script | UTXOW.ExtraneousScriptWitnessesUTXOW | `Valid` |  |
+| 00262-fail-committee-resignation-by-a-script-hash-cold-credential-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
+| 00271-fail-pool-registration-with-a-mainnet-reward-account | POOL.WrongNetworkPOOL | `Valid` |  |
+| 00272-fail-old-style-stake-registration-of-an-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `Valid` |  |
+| 00273-fail-stake-registration-with-a-zero-deposit | DELEG.IncorrectDepositDELEG | `UTXO.ValueNotConservedUTxO` | Mismatch {mismatchSupplied = Coin 5000000, mismatchExpected = Coin 7000000} |
+| 00280-fail-output-to-a-byron-address-with-oversized-attributes | UTXO.OutputTooBigUTxO | `UTXO.OutputBootAddrAttrsTooBig` | output 0 82d818588983581c149ad4b736608c56aa72fba87b7f72343fed0f0b78b2fd39b5eff808a201586258605be51343581011594d82a1e32dfc2c5e0ab8be4a32aab4fbf3bcf9e17991a53c... |
+| 00282-fail-info-proposal-with-a-mainnet-return-account | GOV.ProposalProcedureNetworkIdMismatch | `Valid` |  |
 
 </details>
 

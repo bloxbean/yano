@@ -334,7 +334,8 @@ fn haskell_name(corpus: &str) -> Option<(&'static str, &'static str)> {
         "MissingVerificationKeyWitnessesUTXOW" => ("UTXOW", "MissingVKeyWitnessesUTXOW"),
         "NoCollateralInputs" => ("UTXO", "NoCollateralInputs"),
         "OutputTooBigUTxO" => ("UTXO", "OutputTooBigUTxO"),
-        "OutsideForecast" => ("UTXO", "OutsideForecast"),
+        // Amaru's checker names `CollectErrors [BadTranslation TimeTranslationPastHorizon]` so (Run.hs:443-445).
+        "OutsideForecast" => ("UTXOS", "CollectErrors"),
         "OutsideValidityIntervalUTxO" => ("UTXO", "OutsideValidityIntervalUTxO"),
         "ProposalCantFollow" => ("GOV", "ProposalCantFollow"),
         "ProposalProcedureNetworkIdMismatch" => ("GOV", "ProposalProcedureNetworkIdMismatch"),

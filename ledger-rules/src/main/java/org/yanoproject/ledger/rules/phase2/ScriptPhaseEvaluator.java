@@ -5,8 +5,10 @@ import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 
 import org.yanoproject.api.utxo.model.Outpoint;
+import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -60,5 +62,26 @@ public interface ScriptPhaseEvaluator {
     default ScriptPhaseResult evaluate(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
                                        ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
         return evaluate(txCbor, tx, resolvedInputs, params, slotConfig);
+    }
+
+    /**
+     * Only the preparation step: the phase-one failures of {@link ScriptPhaseResult.Rejected} (malformed scripts,
+     * {@code UTXOS.CollectErrors}), without running any script.
+     *
+     * <p>Haskell collects the script contexts ({@code ?!: CollectErrors}, unlabelled, so also on re-application
+     * and after other failures) separately from running the scripts ({@code when2Phase $ whenFailureFree},
+     * Babbage/Rules/Utxos.hs:139-157), so an engine needs the two steps apart. The default runs
+     * {@link #evaluate(byte[], Transaction, Map, ProtocolParams, SlotConfig, long)} and keeps only a rejection;
+     * evaluators that can prepare without running should override it.</p>
+     *
+     * @return the failures, empty when the scripts can be run
+     */
+    default List<LedgerFailure> collect(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
+                                        ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
+        return switch (evaluate(txCbor, tx, resolvedInputs, params, slotConfig, validationSlot)) {
+            case ScriptPhaseResult.Rejected rejected -> rejected.failures();
+            case ScriptPhaseResult.Passed passed -> List.of();
+            case ScriptPhaseResult.Failed failed -> List.of();
+        };
     }
 }

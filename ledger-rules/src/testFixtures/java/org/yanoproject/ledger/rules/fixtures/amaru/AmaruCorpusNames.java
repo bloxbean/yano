@@ -60,7 +60,10 @@ public final class AmaruCorpusNames {
                     name(LedgerRuleName.UTXOW, "MissingVKeyWitnessesUTXOW")),
             entry("NoCollateralInputs", name(LedgerRuleName.UTXO, "NoCollateralInputs")),
             entry("OutputTooBigUTxO", name(LedgerRuleName.UTXO, "OutputTooBigUTxO")),
-            entry("OutsideForecast", name(LedgerRuleName.UTXO, "OutsideForecast")),
+            // Amaru's Haskell checker names CollectErrors [BadTranslation TimeTranslationPastHorizon] so
+            // (crates/amaru/tests/conformance/validation-rules/.../ValidatePhaseOne/Run.hs:443-445); Haskell's own
+            // OutsideForecast is unreachable in Conway at f649f975 (ADR-056 Phase 3a results).
+            entry("OutsideForecast", name(LedgerRuleName.UTXOS, "CollectErrors")),
             entry("OutsideValidityIntervalUTxO", name(LedgerRuleName.UTXO, "OutsideValidityIntervalUTxO")),
             entry("ProposalCantFollow", name(LedgerRuleName.GOV, "ProposalCantFollow")),
             entry("ProposalProcedureNetworkIdMismatch",

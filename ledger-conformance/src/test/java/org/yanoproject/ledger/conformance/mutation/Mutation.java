@@ -1,7 +1,9 @@
 package org.yanoproject.ledger.conformance.mutation;
 
-import java.util.Objects;
+import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
+
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 
 /**
@@ -11,14 +13,17 @@ import java.util.function.Consumer;
  * @param covers       the Haskell {@code RULE.Constructor} the mutant must be rejected with
  * @param haskellFailures when Haskell necessarily reports this fault with more than one constructor, its whole
  *                     failure list in Haskell's order, containing {@code covers} (for no collateral:
- *                     {@code InsufficientCollateral, NoCollateralInputs}, Babbage {@code feesOK} parts 5 and 7); empty
+ *                     {@code NoCollateralInputs, InsufficientCollateral}: Babbage {@code feesOK} parts 5 and 7, in the
+ *                     order of Haskell's {@code LEDGER} list, see {@code RuleFrame}); empty
  *                     for a single fault
  * @param base         the base transaction the edit applies to
  * @param description  what the edit does
  * @param edit         the edit, applied to a copy of the base spec before it is rebuilt and signed again
+ * @param amaruReports when Amaru is known to name this fault differently from Haskell (a recorded divergence,
+ *                     ADR-056 "Phase 3a results"), the {@code RULE.Constructor} Amaru reports; null otherwise
  */
 public record Mutation(String id, String covers, List<String> haskellFailures, Base base, String description,
-                       Consumer<TxSpec> edit) {
+                       Consumer<TxSpec> edit, String amaruReports) {
 
     /** The valid base transactions. */
     public enum Base {
@@ -26,6 +31,11 @@ public record Mutation(String id, String covers, List<String> haskellFailures, B
         SIMPLE,
         /** Also spends an always-succeeds PlutusV3 UTxO with one redeemer and one collateral input. */
         SCRIPT
+    }
+
+    public Mutation(String id, String covers, List<String> haskellFailures, Base base, String description,
+                    Consumer<TxSpec> edit) {
+        this(id, covers, haskellFailures, base, description, edit, null);
     }
 
     public Mutation {

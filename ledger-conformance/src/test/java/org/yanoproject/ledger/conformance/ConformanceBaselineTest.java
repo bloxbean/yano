@@ -76,7 +76,23 @@ class ConformanceBaselineTest {
                 assertThat(Observation.isEraNotSupported(miss.observation().first())).isTrue();
             });
         }
-        assertThat(amaru.mutations()).as("amaru over the mutation matrix").allMatch(CaseResult::constructorMatch);
+        assertThat(amaru.mutations()).as("amaru over the mutation matrix")
+                .allMatch(ConformanceBaselineTest::matchesOrRecordedAmaruDivergence);
+    }
+
+    /**
+     * A mutant Amaru judges as Haskell does, or one whose fault Amaru names differently from Haskell and for which
+     * that divergence is recorded ({@code Mutation#amaruReports()}).
+     */
+    private static boolean matchesOrRecordedAmaruDivergence(CaseResult result) {
+        if (result.constructorMatch()) {
+            return true;
+        }
+        String id = result.testCase().id();
+        return Mutations.all().stream()
+                .filter(m -> m.caseId().equals(id) && m.amaruReports() != null)
+                .anyMatch(m -> !result.observation().valid()
+                        && m.amaruReports().equals(result.observation().first().qualifiedName()));
     }
 
     private static long count(List<CaseResult> results, boolean verdict) {

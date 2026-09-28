@@ -1,4 +1,4 @@
-package org.yanoproject.ledger.conformance.mutation;
+package org.yanoproject.ledger.rules.fixtures.tx;
 
 import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.address.Credential;
