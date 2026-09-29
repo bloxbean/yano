@@ -10,6 +10,7 @@ import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.failure.ConwayPredicate;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
+import org.yanoproject.ledger.rules.effects.IntraTxFold;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
 import org.yanoproject.ledger.rules.view.LedgerView;
@@ -33,7 +34,8 @@ import java.util.function.Supplier;
  * <p>The UTxO entries of every spending, collateral and reference input are read once, up front: an
  * {@link Lookup.Unavailable} read rejects the transaction (invariant 2) before any rule runs, and every rule
  * then sees the same answer. {@code UTXOW}/{@code UTXO}/{@code UTXOS} read {@link #preState()}, the state
- * before the transaction's certificates (invariant 5).</p>
+ * before the transaction's certificates (invariant 5); {@code CERTS} and {@code GOV} read and advance
+ * {@link #certState()}, the intra-transaction state in body order.</p>
  */
 public final class TransitionContext {
 
@@ -55,6 +57,7 @@ public final class TransitionContext {
     private final Map<TxInRef, UtxoEntry> utxo;
     private boolean failing;
     private List<LedgerFailure> collectFailures = List.of();
+    private IntraTxFold certState;
 
     /**
      * @param resolved the UTxO entries of the inputs, from {@link #resolve(RawTransaction, LedgerView)}
@@ -214,5 +217,25 @@ public final class TransitionContext {
 
     public void collectFailures(List<LedgerFailure> failures) {
         this.collectFailures = List.copyOf(failures);
+    }
+
+    /**
+     * The certificate state as the {@code LEDGER} branch threads it (ADR-056 invariant 5): the pre-transaction
+     * state, then — once {@code CERTS} ran — the state after the pre-certificate step (Haskell's {@code CERTS}
+     * base case before protocol version 11, the {@code LEDGER} step from 11) and after each certificate, in body
+     * order. {@code GOV} reads it after {@code CERTS} ({@code certStateAfterCERTS}, Conway/Rules/Ledger.hs:394-421).
+     *
+     * @return the fold; a fold with no steps over {@link #preState()} until a rule advances it
+     */
+    public IntraTxFold certState() {
+        if (certState == null) {
+            certState = IntraTxFold.start(raw.txIdHex(), preState);
+        }
+        return certState;
+    }
+
+    /** Replaces the certificate state with a fold that advanced {@link #certState()}. */
+    public void certState(IntraTxFold advanced) {
+        this.certState = Objects.requireNonNull(advanced, "advanced");
     }
 }

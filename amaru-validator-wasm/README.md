@@ -23,7 +23,7 @@ Its golden tests compare the Java request encoder with the requests `cargo test`
 |---|---|
 | `Cargo.toml`, `Cargo.lock` | Git dependencies on `amaru-kernel`, `amaru-ledger` and `amaru-plutus` at the pinned tag. The lockfile pins the exact commit. |
 | `rust-toolchain.toml` | The nightly that Amaru pins at that tag, plus the `wasm32-wasip1` target. |
-| `AMARU_VERSION` | `tag=`, `commit=` and `toolchain=` lines. Embedded in the module and returned by `amaru_version`. |
+| `AMARU_VERSION` | `tag=`, `commit=` and `toolchain=` lines. Embedded in the module and returned by `amaru_version`, followed by `crate=<Cargo.toml version>`. Bump the crate version whenever the failure mapping (`src/failure.rs`) or any other host-visible behaviour changes; Yano's conformance harness refuses a module whose `crate=` differs from `Cargo.toml`. |
 | `INTERFACE.md` | Interface v1: exports, CBOR request and response schemas (CDDL), and absence semantics. |
 | `src/interface.rs` | The reference codec for the v1 documents. |
 | `src/engine.rs` | `required_keys` and `validate`, built on Amaru's public API. |

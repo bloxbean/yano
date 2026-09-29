@@ -37,6 +37,9 @@ if (withAmaru) {
 def scenariosDir = providers.gradleProperty('amaruScenariosDir')
         .orElse(providers.environmentVariable('AMARU_SCENARIOS_DIR')).getOrElse('')
 def strict = providers.gradleProperty('conformance.strict').getOrElse('false')
+// The Amaru module under test must report this crate version (amaru_version()'s crate= line); the reference engine
+// refuses a stale module.
+def amaruCrateVersion = (rootProject.file('amaru-validator-wasm/Cargo.toml').text =~ /(?m)^version\s*=\s*"([^"]+)"/)[0][1]
 
 tasks.withType(Test).configureEach {
     if (scenariosDir) {
@@ -44,6 +47,11 @@ tasks.withType(Test).configureEach {
     }
     systemProperty 'conformance.strict', strict
     systemProperty 'conformance.withAmaru', withAmaru.toString()
+    if (withAmaru) {
+        systemProperty 'amaru.wasm.crateVersion', amaruCrateVersion
+        systemProperty 'amaru.wasm.file', project(':amaru-validator').layout.buildDirectory
+                .file('amaru-wasm/amaru_validator.wasm').get().asFile.absolutePath
+    }
     // Test classes of other modules scanned for @Covers (ledger-rules' rule tests from Phase 3 on).
     systemProperty 'conformance.scan.dirs',
             project(':ledger-rules').layout.buildDirectory.dir('classes/java/test').get().asFile.absolutePath

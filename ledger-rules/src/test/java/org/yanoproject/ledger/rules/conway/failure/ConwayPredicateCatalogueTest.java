@@ -6,6 +6,7 @@ import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalo
 
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -28,12 +29,16 @@ class ConwayPredicateCatalogueTest {
     }
 
     @Test
-    void phase3CoversEveryReachableUtxoUtxowAndUtxosConstructor() {
+    void phases3And4CoverEveryReachableConstructorOfTheirFamilies() {
         var implemented = Arrays.stream(ConwayPredicate.values()).map(ConwayPredicate::qualifiedName).toList();
-        // Every in-scope UTXO/UTXOW/UTXOS constructor, plus OutsideForecast: unreachable at the pin, but Haskell
-        // still runs its (never failing) check, so the engine keeps it in Haskell's order.
+        // Every in-scope UTXO/UTXOW/UTXOS (Phase 3) and CERTS/DELEG/POOL/GOVCERT (Phase 4) constructor, plus
+        // OutsideForecast: unreachable at the pin, but Haskell still runs its (never failing) check, so the engine
+        // keeps it in Haskell's order.
+        var families = Set.of("UTXO", "UTXOW", "UTXOS", "CERTS", "DELEG", "POOL", "GOVCERT");
+        // Phase 4 also implements the two protocol-version-11 LEDGER withdrawal checks (LedgerPreChecks).
+        var ledgerWithdrawals = Set.of("LEDGER.ConwayWithdrawalsMissingAccounts", "LEDGER.ConwayIncompleteWithdrawals");
         var expected = ConwayConstructorCatalogue.get().all().stream()
-                .filter(e -> e.family().equals("UTXO") || e.family().equals("UTXOW") || e.family().equals("UTXOS"))
+                .filter(e -> families.contains(e.family()) || ledgerWithdrawals.contains(e.qualifiedName()))
                 .filter(e -> e.inScope() || e.constructor().equals("OutsideForecast"))
                 .map(ConwayConstructorCatalogue.Entry::qualifiedName).toList();
         assertThat(implemented).containsExactlyInAnyOrderElementsOf(expected);

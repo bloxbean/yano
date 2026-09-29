@@ -5,6 +5,7 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.Map;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.address.AddressProvider;
+import com.bloxbean.cardano.client.address.Credential;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.api.util.CostModelUtil;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
@@ -23,11 +24,14 @@ import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
 import com.bloxbean.cardano.client.spec.NetworkId;
+import com.bloxbean.cardano.client.spec.UnitInterval;
 import com.bloxbean.cardano.client.transaction.spec.Asset;
 import com.bloxbean.cardano.client.transaction.spec.MultiAsset;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Value;
+import com.bloxbean.cardano.client.transaction.spec.cert.PoolRegistration;
+import com.bloxbean.cardano.client.transaction.spec.cert.StakeCredential;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
 import com.bloxbean.cardano.client.transaction.spec.script.RequireTimeAfter;
 import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
@@ -37,6 +41,12 @@ import com.bloxbean.cardano.client.util.HexUtil;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
+import org.yanoproject.ledger.rules.view.model.AccountState;
+import org.yanoproject.ledger.rules.view.model.CommitteeMemberState;
+import org.yanoproject.ledger.rules.view.model.CredentialKey;
+import org.yanoproject.ledger.rules.view.model.DRepState;
+import org.yanoproject.ledger.rules.view.model.DRepTarget;
+import org.yanoproject.ledger.rules.view.model.PoolId;
 
 import java.math.BigDecimal;
 import java.security.MessageDigest;
@@ -44,7 +54,9 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.LongStream;
 import java.util.zip.CRC32;
 
@@ -72,7 +84,21 @@ import java.util.zip.CRC32;
  *   <li>{@link #MALFORMED_SCRIPT_INPUT}: 10 ADA at the address of {@link #MALFORMED_SCRIPT};</li>
  *   <li>{@link #TRAILING_BYTES_SCRIPT_INPUT} and {@link #UNAVAILABLE_BUILTIN_SCRIPT_INPUT}: 10 ADA each at the
  *       addresses of {@link #TRAILING_BYTES_SCRIPT} and {@link #UNAVAILABLE_BUILTIN_SCRIPT};</li>
- *   <li>{@link #BYRON_INPUT}: 10 ADA at {@code dev-42}'s bootstrap address.</li>
+ *   <li>{@link #BYRON_INPUT}: 10 ADA at {@code dev-42}'s bootstrap address;</li>
+ *   <li>{@link #RICH_INPUT}: 2,000 ADA at {@code dev-42}'s address (enough for DRep and pool deposits).</li>
+ * </ul>
+ *
+ * <p>Certificate state (ADR-056 Phase 4), with the two keys that are not in Amaru's corpus, so that {@code dev-42}
+ * and {@code dev-aa} stay unregistered everywhere:</p>
+ * <ul>
+ *   <li>stake accounts: {@code dev-77} (deposit 2 ADA, balance 0, delegated to {@code dev-77}'s pool and DRep) and
+ *       {@code dev-bb} (deposit 2 ADA, balance {@link #REWARD_BALANCE}, delegated to {@code dev-77}'s pool and to
+ *       {@code AlwaysAbstain});</li>
+ *   <li>pools: {@code dev-77}'s (VRF {@link #POOL_77_VRF}) and {@code dev-bb}'s (VRF {@link #POOL_BB_VRF}), each
+ *       owned by its operator, with its operator's testnet reward account;</li>
+ *   <li>DRep: {@code dev-77} (deposit 500 ADA, expiry epoch 20);</li>
+ *   <li>committee: {@code dev-77} (elected until epoch {@value #COMMITTEE_TERM}, no hot key) and {@code dev-bb}
+ *       (elected, resigned).</li>
  * </ul>
  *
  * <p>The protocol parameters are preprod's Conway values (the same numbers as Amaru's
@@ -141,6 +167,24 @@ public final class MutationWorld {
     public static final TransactionInput BYRON_INPUT = input('1', 1);
     public static final TransactionInput TRAILING_BYTES_SCRIPT_INPUT = input('9', 1);
     public static final TransactionInput UNAVAILABLE_BUILTIN_SCRIPT_INPUT = input('9', 2);
+    public static final TransactionInput RICH_INPUT = input('1', 7);
+    public static final BigInteger RICH_INPUT_LOVELACE = BigInteger.valueOf(2_000_000_000L);
+
+    /** The world's {@code ppKeyDeposit}, {@code ppPoolDeposit} and {@code ppDRepDeposit}. */
+    public static final BigInteger KEY_DEPOSIT = BigInteger.valueOf(2_000_000);
+    public static final BigInteger POOL_DEPOSIT = BigInteger.valueOf(500_000_000);
+    public static final BigInteger DREP_DEPOSIT = BigInteger.valueOf(500_000_000);
+    /** {@code dev-bb}'s reward balance. */
+    public static final BigInteger REWARD_BALANCE = BigInteger.valueOf(5_000_000);
+    /** The world's {@code ppMinPoolCost}. */
+    public static final BigInteger MIN_POOL_COST = BigInteger.valueOf(340_000_000);
+    public static final byte[] POOL_77_VRF = filled(32, 0x71);
+    public static final byte[] POOL_BB_VRF = filled(32, 0xb1);
+    /** A VRF key hash no pool of the world uses. */
+    public static final byte[] FRESH_VRF = filled(32, 0x41);
+    /** The epoch the elected committee members' terms end. */
+    public static final long COMMITTEE_TERM = 100;
+    public static final long DREP_EXPIRY = 20;
 
     /** The chain code of the world's bootstrap addresses (32 zero bytes). */
     public static final byte[] BOOTSTRAP_CHAIN_CODE = new byte[32];
@@ -164,6 +208,12 @@ public final class MutationWorld {
     private static final long EPOCH_LENGTH = 432_000;
 
     private MutationWorld() {
+    }
+
+    private static byte[] filled(int length, int value) {
+        byte[] bytes = new byte[length];
+        Arrays.fill(bytes, (byte) value);
+        return bytes;
     }
 
     private static TransactionInput input(char hexDigit, int index) {
@@ -209,6 +259,65 @@ public final class MutationWorld {
         return builder(protocolParams()).build();
     }
 
+    /** @return the base state at another protocol major version (10 or 11) */
+    public static InMemoryLedgerView view(int protocolMajor) {
+        return builder(protocolParams(protocolMajor)).build();
+    }
+
+    /** @return a key's stake credential */
+    public static StakeCredential stakeCredential(TestKey key) {
+        return StakeCredential.fromKeyHash(HexUtil.decodeHexString(key.keyHash()));
+    }
+
+    /** @return a key's credential (DRep, committee) */
+    public static Credential credential(TestKey key) {
+        return Credential.fromKey(key.keyHash());
+    }
+
+    /** @return a key's credential as a view key */
+    public static CredentialKey credentialKey(TestKey key) {
+        return CredentialKey.key(key.keyHash());
+    }
+
+    /** @return a key's reward account on {@code network}, bech32 */
+    public static String rewardAccount(TestKey key, Network network) {
+        return AddressProvider.getRewardAddress(credential(key), network).toBech32();
+    }
+
+    /**
+     * A pool registration whose operator and only owner is {@code operator}, with pledge 0 and margin 0.
+     *
+     * @param rewardNetwork    the reward account's network
+     * @param metadataHashHex  the metadata hash (any length), or null for no metadata
+     */
+    public static PoolRegistration poolRegistration(TestKey operator, byte[] vrf, BigInteger cost, Network rewardNetwork,
+                                                    String metadataHashHex) {
+        byte[] reward = AddressProvider.getRewardAddress(credential(operator), rewardNetwork).getBytes();
+        Set<String> owners = new LinkedHashSet<>(List.of(operator.keyHash()));
+        return PoolRegistration.builder()
+                .operator(HexUtil.decodeHexString(operator.keyHash()))
+                .vrfKeyHash(vrf.clone())
+                .pledge(BigInteger.ZERO)
+                .cost(cost)
+                .margin(new UnitInterval(BigInteger.ZERO, BigInteger.ONE))
+                .rewardAccount(HexUtil.encodeHexString(reward))
+                .poolOwners(owners)
+                .relays(new ArrayList<>())
+                .poolMetadataUrl(metadataHashHex != null ? "https://example.com/pool.json" : null)
+                .poolMetadataHash(metadataHashHex)
+                .build();
+    }
+
+    /** @return the registration of {@code dev-77}'s pool as the world holds it */
+    public static PoolRegistration pool77() {
+        return poolRegistration(TestKey.DEV_77, POOL_77_VRF, MIN_POOL_COST, NETWORK, null);
+    }
+
+    /** @return the pool id of a key's pool */
+    public static PoolId poolId(TestKey operator) {
+        return new PoolId(operator.keyHash());
+    }
+
     /**
      * @param params the protocol parameters (for example {@link #protocolParams()} with another version)
      * @return a builder holding the base state, to add to
@@ -243,6 +352,19 @@ public final class MutationWorld {
         utxo(view, TRAILING_BYTES_SCRIPT_INPUT, output(address(TRAILING_BYTES_SCRIPT), SCRIPT_INPUT_LOVELACE));
         utxo(view, UNAVAILABLE_BUILTIN_SCRIPT_INPUT, output(address(UNAVAILABLE_BUILTIN_SCRIPT),
                 SCRIPT_INPUT_LOVELACE));
+        utxo(view, RICH_INPUT, output(owner, RICH_INPUT_LOVELACE));
+
+        // Certificate state (dev-42 and dev-aa stay unregistered everywhere).
+        PoolId pool77 = poolId(TestKey.DEV_77);
+        view.pool(pool77(), POOL_DEPOSIT);
+        view.pool(poolRegistration(TestKey.DEV_BB, POOL_BB_VRF, MIN_POOL_COST, NETWORK, null), POOL_DEPOSIT);
+        view.account(new AccountState(credentialKey(TestKey.DEV_77), KEY_DEPOSIT, BigInteger.ZERO, pool77,
+                DRepTarget.credential(credentialKey(TestKey.DEV_77))));
+        view.account(new AccountState(credentialKey(TestKey.DEV_BB), KEY_DEPOSIT, REWARD_BALANCE, pool77,
+                DRepTarget.ALWAYS_ABSTAIN));
+        view.drep(new DRepState(credentialKey(TestKey.DEV_77), DREP_DEPOSIT, DREP_EXPIRY));
+        view.committeeMember(new CommitteeMemberState(credentialKey(TestKey.DEV_77), null, false, COMMITTEE_TERM));
+        view.committeeMember(new CommitteeMemberState(credentialKey(TestKey.DEV_BB), null, true, COMMITTEE_TERM));
         return view;
     }
 
@@ -367,7 +489,12 @@ public final class MutationWorld {
     }
 
     public static ValidationEnv env() {
-        return new ValidationEnv(SLOT, SLOT / EPOCH_LENGTH, 10, 0, NetworkId.TESTNET,
+        return env(10);
+    }
+
+    /** @return the environment at another protocol major version (10 or 11) */
+    public static ValidationEnv env(int protocolMajor) {
+        return new ValidationEnv(SLOT, SLOT / EPOCH_LENGTH, protocolMajor, 0, NetworkId.TESTNET,
                 new SlotConfig(1000, 0, SYSTEM_START_MS), new byte[32]);
     }
 
@@ -378,6 +505,13 @@ public final class MutationWorld {
         return new AmaruScenario.Network("preprod", 1, 129_600, List.of(conway),
                 new AmaruScenario.GlobalParameters(2160, 10, 20, BigInteger.valueOf(45_000_000_000_000_000L), 129_600,
                         62, SYSTEM_START_MS));
+    }
+
+    /** @return the world's parameters at another protocol major version (10 or 11) */
+    public static ProtocolParams protocolParams(int protocolMajor) {
+        ProtocolParams params = protocolParams();
+        params.setProtocolMajorVer(protocolMajor);
+        return params;
     }
 
     public static ProtocolParams protocolParams() {

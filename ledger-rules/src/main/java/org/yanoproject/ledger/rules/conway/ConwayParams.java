@@ -94,6 +94,16 @@ public final class ConwayParams {
         return integer(params.getGovActionDeposit(), "govActionDeposit");
     }
 
+    /** {@code ppMinPoolCost} */
+    public BigInteger minPoolCost() {
+        return integer(params.getMinPoolCost(), "minPoolCost");
+    }
+
+    /** {@code ppEMax}: how many epochs ahead a pool retirement may be scheduled */
+    public long eMax() {
+        return integer(params.getEMax(), "eMax").longValueExact();
+    }
+
     private static BigInteger integer(Object value, String name) {
         return switch (value) {
             case null -> throw new IllegalStateException("protocol parameter " + name + " is missing");

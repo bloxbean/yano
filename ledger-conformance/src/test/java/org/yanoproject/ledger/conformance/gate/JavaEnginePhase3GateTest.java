@@ -21,8 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * implements.
  *
  * <p><b>Gate set.</b> Every scenario whose expected constructor is in the {@code UTXOW}, {@code UTXO} or
- * {@code UTXOS} family, and every scenario expected to pass. The other families ({@code LEDGER} pre-checks,
- * {@code CERTS}, {@code GOV}) record nothing yet, so a valid transaction passes exactly when these rules accept it,
+ * {@code UTXOS} family, and every scenario expected to pass. When it was the gate the other families ({@code LEDGER}
+ * pre-checks, {@code CERTS}, {@code GOV}) recorded nothing, so a valid transaction passed exactly when these rules
+ * accepted it (since Phase 4 {@code CERTS} runs too; {@link JavaEnginePhase4GateTest} is the current gate),
  * which makes every {@code Pass} scenario a false-rejection check of the three families (witnesses, signatures,
  * native scripts, script and redeemer exactness, datums, script integrity, metadata; value conservation with
  * deposits, refunds, proposals, donations and withdrawals; fees with reference scripts; collateral; phase 2).

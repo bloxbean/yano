@@ -13,7 +13,9 @@ import java.util.Objects;
  * (cardano-ledger {@code f649f975}; the pinned table is {@code adr/reports/adr-056-haskell-pinned-revisions.md}
  * §3d/§3e, and {@code ConwayConstructorCatalogueConsistencyTest} checks this enum against it).
  *
- * <p>Phase 3a lists the {@code UTXO} and {@code UTXOS} families, Phase 3b {@code UTXOW}; later phases add theirs.
+ * <p>Phase 3a lists the {@code UTXO} and {@code UTXOS} families, Phase 3b {@code UTXOW}, Phase 4 {@code CERTS},
+ * {@code DELEG}, {@code POOL} and {@code GOVCERT} with the two protocol-version-11 {@code LEDGER} withdrawal checks;
+ * Phase 5 adds {@code GOV} and the other {@code LEDGER} predicates.
  * Wrapper constructors ({@code UtxosFailure}, {@code UtxoFailure}, …) are not listed: {@link LedgerFailure} names
  * the leaf with its rule.</p>
  */
@@ -112,7 +114,69 @@ public enum ConwayPredicate {
     COLLECT_ERRORS(LedgerRuleName.UTXOS, "CollectErrors", PvRange.ALWAYS, CheckLabel.DYNAMIC,
             "Babbage/Rules/Utxos.hs:143 (valid), 206 (invalid): ?!: is unlabelled"),
     VALIDATION_TAG_MISMATCH(LedgerRuleName.UTXOS, "ValidationTagMismatch", PvRange.ALWAYS, CheckLabel.STATIC,
-            "Babbage/Rules/Utxos.hs:145-157, 208-222: when2Phase (static) $ whenFailureFree");
+            "Babbage/Rules/Utxos.hs:145-157, 208-222: when2Phase (static) $ whenFailureFree"),
+
+    // ---------------------------------------------------------------- LEDGER (Conway/Rules/Ledger.hs:350-440)
+    CONWAY_WITHDRAWALS_MISSING_ACCOUNTS(LedgerRuleName.LEDGER, "ConwayWithdrawalsMissingAccounts", PvRange.from(11),
+            CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:383-386 (hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule); "
+            + "Shelley/Rules/Ledger.hs:351-358 (testIncompleteAndMissingWithdrawals): failOnNonEmptyMap"),
+    CONWAY_INCOMPLETE_WITHDRAWALS(LedgerRuleName.LEDGER, "ConwayIncompleteWithdrawals", PvRange.from(11),
+            CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:383-386; Shelley/Rules/Ledger.hs:359: failOnNonEmptyMap, after "
+            + "the missing accounts"),
+
+    // ---------------------------------------------------------------- CERTS (Conway/Rules/Certs.hs:204-241)
+    WITHDRAWALS_NOT_IN_REWARDS(LedgerRuleName.CERTS, "WithdrawalsNotInRewardsCERTS", PvRange.between(9, 10),
+            CheckLabel.DYNAMIC, "Conway/Rules/Certs.hs:222-236 (base case, before the first certificate; "
+            + "hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule moves it to LEDGER from PV 11): failOnJust"),
+
+    // ---------------------------------------------------------------- DELEG (Conway/Rules/Deleg.hs:187-301)
+    INCORRECT_DEPOSIT_DELEG(LedgerRuleName.DELEG, "IncorrectDepositDELEG", PvRange.between(9, 10),
+            CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:199-211 (checkDepositAgainstPParams), 242-259 (checkInvalidRefund); "
+            + "PV ≤ 10: not hardforkConwayDELEGIncorrectDepositsAndRefunds"),
+    DEPOSIT_INCORRECT_DELEG(LedgerRuleName.DELEG, "DepositIncorrectDELEG", PvRange.from(11), CheckLabel.DYNAMIC,
+            "Conway/Rules/Deleg.hs:199-211 (checkDepositAgainstPParams); PV ≥ 11"),
+    REFUND_INCORRECT_DELEG(LedgerRuleName.DELEG, "RefundIncorrectDELEG", PvRange.from(11), CheckLabel.DYNAMIC,
+            "Conway/Rules/Deleg.hs:242-259 (checkInvalidRefund, only for a registered credential); PV ≥ 11"),
+    STAKE_KEY_REGISTERED_DELEG(LedgerRuleName.DELEG, "StakeKeyRegisteredDELEG", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Deleg.hs:212-214 (checkStakeKeyNotRegistered)"),
+    STAKE_KEY_NOT_REGISTERED_DELEG(LedgerRuleName.DELEG, "StakeKeyNotRegisteredDELEG", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:271 (UnReg), 283 (Deleg): failBecause"),
+    STAKE_KEY_HAS_NON_ZERO_ACCOUNT_BALANCE_DELEG(LedgerRuleName.DELEG, "StakeKeyHasNonZeroAccountBalanceDELEG",
+            PvRange.ALWAYS, CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:260-268: failOnJust"),
+    DELEGATEE_DREP_NOT_REGISTERED_DELEG(LedgerRuleName.DELEG, "DelegateeDRepNotRegisteredDELEG", PvRange.from(10),
+            CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:220-226 (skipped while hardforkConwayBootstrapPhase)"),
+    DELEGATEE_STAKE_POOL_NOT_REGISTERED_DELEG(LedgerRuleName.DELEG, "DelegateeStakePoolNotRegisteredDELEG",
+            PvRange.ALWAYS, CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:216-219 (checkPoolRegistered)"),
+
+    // ---------------------------------------------------------------- POOL (Shelley/Rules/Pool.hs:209-323)
+    STAKE_POOL_NOT_REGISTERED_ON_KEY(LedgerRuleName.POOL, "StakePoolNotRegisteredOnKeyPOOL", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Shelley/Rules/Pool.hs:308 (RetirePool)"),
+    STAKE_POOL_RETIREMENT_WRONG_EPOCH(LedgerRuleName.POOL, "StakePoolRetirementWrongEpochPOOL", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Shelley/Rules/Pool.hs:309-322: cEpoch < e ≤ cEpoch + eMax"),
+    STAKE_POOL_COST_TOO_LOW(LedgerRuleName.POOL, "StakePoolCostTooLowPOOL", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Shelley/Rules/Pool.hs:252-261"),
+    WRONG_NETWORK_POOL(LedgerRuleName.POOL, "WrongNetworkPOOL", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Shelley/Rules/Pool.hs:231-243 (hardforkAlonzoValidatePoolAccountAddressNetID, always in Conway)"),
+    POOL_METADATA_HASH_TOO_BIG(LedgerRuleName.POOL, "PoolMedataHashTooBig", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Shelley/Rules/Pool.hs:245-250 (restrictPoolMetadataHash, always in Conway): size ≤ 32"),
+    VRF_KEY_HASH_ALREADY_REGISTERED(LedgerRuleName.POOL, "VRFKeyHashAlreadyRegistered", PvRange.from(11),
+            CheckLabel.DYNAMIC, "Shelley/Rules/Pool.hs:265-267 (new pool), 279-282 (re-registration); "
+            + "hardforkConwayDisallowDuplicatedVRFKeys, PV ≥ 11"),
+
+    // ---------------------------------------------------------------- GOVCERT (Conway/Rules/GovCert.hs:180-276)
+    CONWAY_DREP_ALREADY_REGISTERED(LedgerRuleName.GOVCERT, "ConwayDRepAlreadyRegistered", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/GovCert.hs:210-212"),
+    CONWAY_DREP_NOT_REGISTERED(LedgerRuleName.GOVCERT, "ConwayDRepNotRegistered", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/GovCert.hs:241 (UnRegDRep), 257-258 (UpdateDRep)"),
+    CONWAY_DREP_INCORRECT_DEPOSIT(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/GovCert.hs:213-219"),
+    CONWAY_DREP_INCORRECT_REFUND(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectRefund", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/GovCert.hs:236-242: failOnJust"),
+    CONWAY_COMMITTEE_HAS_PREVIOUSLY_RESIGNED(LedgerRuleName.GOVCERT, "ConwayCommitteeHasPreviouslyResigned",
+            PvRange.ALWAYS, CheckLabel.DYNAMIC, "Conway/Rules/GovCert.hs:190-196: failOnJust"),
+    CONWAY_COMMITTEE_IS_UNKNOWN(LedgerRuleName.GOVCERT, "ConwayCommitteeIsUnknown", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/GovCert.hs:197-205: current committee or a pending UpdateCommittee "
+            + "proposal (Ledger.hs:367-370, the pre-transaction proposals)");
 
     private final LedgerRuleName rule;
     private final String constructor;

@@ -22,9 +22,11 @@ import java.util.function.Consumer;
  * @param amaruReports when Amaru is known to name this fault differently from Haskell (a recorded divergence,
  *                     ADR-056 "Phase 3a results"), the {@code RULE.Constructor} Amaru reports, or
  *                     {@link #AMARU_ACCEPTS} when Amaru accepts the mutant; null otherwise
+ * @param protocolMajor the protocol major version of the world the mutant is built and validated in (10, or 11 for
+ *                     the constructors that exist only from 11)
  */
 public record Mutation(String id, String covers, List<String> haskellFailures, Base base, String description,
-                       Consumer<TxSpec> edit, String amaruReports) {
+                       Consumer<TxSpec> edit, String amaruReports, int protocolMajor) {
 
     /** {@link #amaruReports()} for a mutant Amaru accepts although Haskell rejects it (a recorded divergence). */
     public static final String AMARU_ACCEPTS = "Valid";
@@ -39,7 +41,22 @@ public record Mutation(String id, String covers, List<String> haskellFailures, B
 
     public Mutation(String id, String covers, List<String> haskellFailures, Base base, String description,
                     Consumer<TxSpec> edit) {
-        this(id, covers, haskellFailures, base, description, edit, null);
+        this(id, covers, haskellFailures, base, description, edit, null, 10);
+    }
+
+    public Mutation(String id, String covers, List<String> haskellFailures, Base base, String description,
+                    Consumer<TxSpec> edit, String amaruReports) {
+        this(id, covers, haskellFailures, base, description, edit, amaruReports, 10);
+    }
+
+    /** @return this mutation in the protocol version 11 world */
+    public Mutation atProtocolVersion11() {
+        return new Mutation(id, covers, haskellFailures, base, description, edit, amaruReports, 11);
+    }
+
+    /** @return this mutation with a recorded Amaru divergence */
+    public Mutation withAmaruReports(String constructor) {
+        return new Mutation(id, covers, haskellFailures, base, description, edit, constructor, protocolMajor);
     }
 
     public Mutation {
@@ -51,6 +68,9 @@ public record Mutation(String id, String covers, List<String> haskellFailures, B
         }
         Objects.requireNonNull(base, "base");
         Objects.requireNonNull(edit, "edit");
+        if (protocolMajor != 10 && protocolMajor != 11) {
+            throw new IllegalArgumentException(id + ": the mutation worlds are protocol versions 10 and 11");
+        }
     }
 
     /** @return the case id, {@code mutant:<id>} */

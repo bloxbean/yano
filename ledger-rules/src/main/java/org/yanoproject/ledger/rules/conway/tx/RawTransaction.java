@@ -612,7 +612,21 @@ public final class RawTransaction {
                     if (!seen.add(voter)) {
                         throw new TxDecodingException("duplicate voter " + voter);
                     }
-                    v.skip();
+                    // {+ gov_action_id => voting_procedure}, voting_procedure = [vote, anchor / null]: the anchor is
+                    // decoded with its bounds, the rest skipped.
+                    long actions = v.readMapHeader();
+                    for (long j = 0; v.hasNext(actions, j); j++) {
+                        v.skip();
+                        long fields = v.readArrayHeader();
+                        if (fields != 2 && fields != CborReader.INDEFINITE) {
+                            throw new TxDecodingException("a voting procedure has 2 elements");
+                        }
+                        v.skip();
+                        BoundedFields.anchorOrNull(v, "vote");
+                        if (fields == CborReader.INDEFINITE && v.hasNext(fields, 2)) {
+                            throw new TxDecodingException("a voting procedure has 2 elements");
+                        }
+                    }
                 }
                 nonEmpty(seen.isEmpty(), "VotingProcedures");
                 voters.addAll(seen);

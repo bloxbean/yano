@@ -2,6 +2,7 @@ package org.yanoproject.ledger.conformance.engines;
 
 import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -25,6 +26,12 @@ public final class BaselineEngines {
             return Optional.of((ConformanceEngine) type.getDeclaredConstructor().newInstance());
         } catch (ClassNotFoundException e) {
             return Optional.empty();
+        } catch (InvocationTargetException e) {
+            // A stale module (AmaruReferenceEngine.verifyModule): fail with its message, not a wrapped one.
+            if (e.getCause() instanceof RuntimeException cause) {
+                throw cause;
+            }
+            throw new IllegalStateException("cannot create the Amaru reference engine", e);
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException("cannot create the Amaru reference engine", e);
         }

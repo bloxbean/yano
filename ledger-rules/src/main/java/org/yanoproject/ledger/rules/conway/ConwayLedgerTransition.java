@@ -3,6 +3,8 @@ package org.yanoproject.ledger.rules.conway;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.TxValidationRequest;
+import org.yanoproject.ledger.rules.conway.certs.CertsRule;
+import org.yanoproject.ledger.rules.conway.ledger.LedgerPreChecks;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
 import org.yanoproject.ledger.rules.conway.utxow.UtxowRule;
 
@@ -26,7 +28,10 @@ import java.util.Objects;
  * <p>Each family is a {@link SubRule}. Failures accumulate with Haskell's STS semantics ({@link RuleFrame}); only
  * {@code whenFailureFree} blocks are skipped ({@code UTXOS}' script execution). Families that later phases
  * implement are plugged in through the constructor; until then they are {@link SubRule#NOT_YET_IMPLEMENTED}
- * ({@code LEDGER} pre-checks and {@code GOV} are Phase 5, {@code CERTS} Phase 4).</p>
+ * ({@code GOV} is Phase 5). {@code CERTS} (Phase 4, {@link CertsRule}) and the {@code LEDGER} pre-checks
+ * ({@link LedgerPreChecks}: so far only the protocol-version-11 pre-certificate state step; its predicates are Phase
+ * 5) thread the intra-transaction certificate state ({@link TransitionContext#certState()}) that {@code GOV} will
+ * read.</p>
  *
  * <p>Stateless and thread-safe; each run gets its own {@link TransitionContext}.</p>
  */
@@ -67,10 +72,13 @@ public final class ConwayLedgerTransition {
         this.utxow = Objects.requireNonNull(utxow, "utxow");
     }
 
-    /** @return the families implemented so far (Phase 3: {@code UTXOW}, {@code UTXO}, {@code UTXOS}) */
+    /**
+     * @return the families implemented so far: {@code UTXOW}, {@code UTXO}, {@code UTXOS} (Phase 3), {@code CERTS}
+     *         with {@code DELEG}, {@code POOL}, {@code GOVCERT} (Phase 4)
+     */
     public static ConwayLedgerTransition standard() {
-        return new ConwayLedgerTransition(SubRule.NOT_YET_IMPLEMENTED, SubRule.NOT_YET_IMPLEMENTED,
-                SubRule.NOT_YET_IMPLEMENTED, UtxowRule::apply);
+        return new ConwayLedgerTransition(LedgerPreChecks::apply, CertsRule::apply, SubRule.NOT_YET_IMPLEMENTED,
+                UtxowRule::apply);
     }
 
     /**

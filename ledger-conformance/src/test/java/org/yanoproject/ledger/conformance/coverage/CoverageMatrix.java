@@ -133,9 +133,14 @@ public final class CoverageMatrix {
                     case UTXOW -> "`UtxowRule`";
                     case UTXO -> "`UtxoRule`";
                     case UTXOS -> "`UtxosRule`";
+                    case CERTS -> "`CertsRule`";
+                    case DELEG -> "`DelegRule`";
+                    case POOL -> "`PoolRule`";
+                    case GOVCERT -> "`GovCertRule`";
+                    case LEDGER -> "`LedgerPreChecks`";
                     default -> "`" + p.rule().name() + "`";
                 })
-                .orElse("TBD (P4–5)");
+                .orElse("TBD (P5)");
     }
 
     /** @return the matrix as the {@code conway-rule-coverage.md} document */

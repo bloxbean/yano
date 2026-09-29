@@ -262,7 +262,9 @@ class UtxoRuleTest {
                 Credential.fromKey(HexUtil.decodeHexString(TestKey.DEV_42.keyHash())), Networks.mainnet())
                 .toBech32();
         spec.withdrawals.add(new Withdrawal(mainnetRewardAccount, BigInteger.ZERO));
-        assertThat(run(spec)).containsExactly("UTXO.WrongNetworkWithdrawal");
+        // CERTS' base case (PV <= 10) treats a withdrawal on another network as one without an account
+        // (categorizeWithdrawals, State/Account.hs:262-264); LEDGER lists UTXOW's (UTXO's) failures before CERTS'.
+        assertThat(run(spec)).containsExactly("UTXO.WrongNetworkWithdrawal", "CERTS.WithdrawalsNotInRewardsCERTS");
     }
 
     @Test

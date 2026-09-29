@@ -8,6 +8,12 @@ public enum LedgerRuleName {
     MEMPOOL,
     LEDGER,
     CERTS,
+    /**
+     * Conway {@code CERT}, the dispatch from {@code CERTS} to {@code DELEG}, {@code POOL} and {@code GOVCERT}
+     * (Conway/Rules/Cert.hs). It has no predicate of its own, so no {@link LedgerFailure} names it; the Java engine
+     * uses it to label that rule's frame.
+     */
+    CERT,
     DELEG,
     POOL,
     GOVCERT,

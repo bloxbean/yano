@@ -64,12 +64,25 @@ public final class HaskellFailureLists {
     public static final List<String> SCRIPT_DELEGATION_AFTER_DEREGISTRATION =
             List.of("UTXOW.MissingScriptWitnessesUTXOW", "DELEG.StakeKeyNotRegisteredDELEG");
 
+    /**
+     * Scenarios 00072 and 00273: a registration certificate states a deposit other than {@code ppKeyDeposit} and the
+     * transaction balances with the stated amount. {@code DELEG} reports the certificate
+     * ({@code checkDepositAgainstPParams}, Conway/Rules/Deleg.hs:199-211: {@code IncorrectDepositDELEG} before
+     * protocol version 11), and value conservation charges {@code ppKeyDeposit}, not the stated amount
+     * ({@code shelleyTotalDepositsTxCerts} via {@code conwayTotalDepositsTxCerts}, Conway/TxCert.hs:817-826), so
+     * {@code UTXO} reports {@code ValueNotConservedUTxO} too; {@code LEDGER} lists {@code UTXOW}'s subtree first.
+     */
+    public static final List<String> STATED_KEY_DEPOSIT_BALANCED =
+            List.of("UTXO.ValueNotConservedUTxO", "DELEG.IncorrectDepositDELEG");
+
     private static final Map<String, List<String>> SCENARIOS = Map.of(
             "00278-fail-transaction-with-redeemers-but-no-collateral-inputs", NO_COLLATERAL,
             "00050-fail-unknown-spent-input", UNKNOWN_SPENT_INPUT,
             "00124-fail-plutus-spend-collateral-return-exceeds-collateral-input", NEGATIVE_COLLATERAL_AND_UNBALANCED,
             "00102-fail-script-credential-delegation-after-deregistration", SCRIPT_DELEGATION_AFTER_DEREGISTRATION,
-            "00103-fail-script-credential-delegation-after-conway-unreg", SCRIPT_DELEGATION_AFTER_DEREGISTRATION);
+            "00103-fail-script-credential-delegation-after-conway-unreg", SCRIPT_DELEGATION_AFTER_DEREGISTRATION,
+            "00072-fail-stake-registration-cert-with-incorrect-deposit", STATED_KEY_DEPOSIT_BALANCED,
+            "00273-fail-stake-registration-with-a-zero-deposit", STATED_KEY_DEPOSIT_BALANCED);
 
     private HaskellFailureLists() {
     }

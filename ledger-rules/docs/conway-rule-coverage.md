@@ -15,16 +15,16 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 | Family | Constructors (PV 10–11) | test + scenario | test | scenario only | gap |
 |---|---:|---:|---:|---:|---:|
 | MEMPOOL | 1 | 0 | 0 | 0 | 1 |
-| LEDGER | 5 | 0 | 0 | 3 | 2 |
-| CERTS | 1 | 0 | 0 | 1 | 0 |
-| DELEG | 8 | 0 | 0 | 6 | 2 |
-| POOL | 6 | 0 | 0 | 4 | 2 |
-| GOVCERT | 6 | 0 | 0 | 3 | 3 |
+| LEDGER | 5 | 0 | 2 | 3 | 0 |
+| CERTS | 1 | 1 | 0 | 0 | 0 |
+| DELEG | 8 | 6 | 2 | 0 | 0 |
+| POOL | 6 | 4 | 2 | 0 | 0 |
+| GOVCERT | 6 | 3 | 3 | 0 | 0 |
 | GOV | 17 | 0 | 0 | 11 | 6 |
 | UTXOW | 18 | 9 | 9 | 0 | 0 |
 | UTXO | 20 | 17 | 3 | 0 | 0 |
 | UTXOS | 2 | 2 | 0 | 0 | 0 |
-| **Total** | **84** | **28** | **12** | **28** | **16** |
+| **Total** | **84** | **42** | **21** | **14** | **7** |
 
 88 constructors in the catalogue; 84 reachable at protocol version 10 or 11. Out of scope: `GOV.DisallowedProposalDuringBootstrap` (9 only), `GOV.DisallowedVotesDuringBootstrap` (9 only), `UTXO.OutsideForecast` (unreachable), `UTXO.OutputTooSmallUTxO` (unreachable).
 
@@ -53,52 +53,52 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 
 | Rule | Constructor | PV | Check | Java rule | Tests | Amaru scenarios | Status |
 |---|---|---|---|---|---|---|---|
-| LEDGER | `ConwayMempoolFailure` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| LEDGER | `ConwayTreasuryValueMismatch` | 10+ | dynamic | TBD (P4–5) | – | 00054 | scenario only |
-| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 10+ | dynamic | TBD (P4–5) | – | 00055, 00056, 00057 | scenario only |
-| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | TBD (P4–5) | – | 00058 | scenario only |
-| LEDGER | `ConwayWithdrawalsMissingAccounts` | 11+ | dynamic | TBD (P4–5) | – | – | gap |
-| LEDGER | `ConwayIncompleteWithdrawals` | 11+ | dynamic | TBD (P4–5) | – | – | gap |
-| CERTS | `WithdrawalsNotInRewardsCERTS` | 10 | dynamic | TBD (P4–5) | – | 00125, 00126 | scenario only |
-| DELEG | `IncorrectDepositDELEG` | 10 | dynamic | TBD (P4–5) | – | 00072, 00273 | scenario only |
-| DELEG | `DepositIncorrectDELEG` | 11+ | dynamic | TBD (P4–5) | – | – | gap |
-| DELEG | `RefundIncorrectDELEG` | 11+ | dynamic | TBD (P4–5) | – | – | gap |
-| DELEG | `StakeKeyRegisteredDELEG` | 10+ | dynamic | TBD (P4–5) | – | 00106, 00107, 00108, 00109, 00272 | scenario only |
-| DELEG | `StakeKeyNotRegisteredDELEG` | 10+ | dynamic | TBD (P4–5) | – | 00100, 00101, 00102, 00103 | scenario only |
-| DELEG | `StakeKeyHasNonZeroAccountBalanceDELEG` | 10+ | dynamic | TBD (P4–5) | – | 00104, 00105 | scenario only |
-| DELEG | `DelegateeDRepNotRegisteredDELEG` | 10+ | dynamic | TBD (P4–5) | – | 00061, 00062, 00063, 00064 | scenario only |
-| DELEG | `DelegateeStakePoolNotRegisteredDELEG` | 10+ | dynamic | TBD (P4–5) | – | 00065, 00066, 00067, 00068 | scenario only |
-| POOL | `StakePoolNotRegisteredOnKeyPOOL` | 10+ | dynamic | TBD (P4–5) | – | 00112, 00113 | scenario only |
-| POOL | `StakePoolRetirementWrongEpochPOOL` | 10+ | dynamic | TBD (P4–5) | – | 00114, 00115 | scenario only |
-| POOL | `StakePoolCostTooLowPOOL` | 10+ | dynamic | TBD (P4–5) | – | 00110, 00111 | scenario only |
-| POOL | `WrongNetworkPOOL` | 10+ | dynamic | TBD (P4–5) | – | 00271 | scenario only |
-| POOL | `PoolMedataHashTooBig` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| POOL | `VRFKeyHashAlreadyRegistered` | 11+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOVCERT | `ConwayDRepAlreadyRegistered` | 10+ | dynamic | TBD (P4–5) | – | 00059, 00060 | scenario only |
-| GOVCERT | `ConwayDRepIncorrectDeposit` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOVCERT | `ConwayDRepNotRegistered` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOVCERT | `ConwayDRepIncorrectRefund` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 10+ | dynamic | TBD (P4–5) | – | 00206, 00207, 00208, 00209, 00210, 00217 | scenario only |
-| GOVCERT | `ConwayCommitteeIsUnknown` | 10+ | dynamic | TBD (P4–5) | – | 00201, 00204, 00205, 00220 | scenario only |
-| GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | TBD (P4–5) | – | – | gap |
+| LEDGER | `ConwayMempoolFailure` | 10+ | dynamic | TBD (P5) | – | – | gap |
+| LEDGER | `ConwayTreasuryValueMismatch` | 10+ | dynamic | TBD (P5) | – | 00054 | scenario only |
+| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 10+ | dynamic | TBD (P5) | – | 00055, 00056, 00057 | scenario only |
+| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | TBD (P5) | – | 00058 | scenario only |
+| LEDGER | `ConwayWithdrawalsMissingAccounts` | 11+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aWithdrawalNeedsARegisteredAccountOnTheLedgersNetwork<br>MutationMatrixTest#withdrawalMissingAccountV11 | – | test |
+| LEDGER | `ConwayIncompleteWithdrawals` | 11+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aWithdrawalDrainsTheWholeBalance<br>MutationMatrixTest#withdrawalIncompleteV11 | – | test |
+| CERTS | `WithdrawalsNotInRewardsCERTS` | 10 | dynamic | `CertsRule` | CertsRuleTest#withdrawalsMustDrainRegisteredAccountsBeforeProtocolVersion11<br>MutationMatrixTest#withdrawalNotDraining | 00125, 00126 | test + scenario |
+| DELEG | `IncorrectDepositDELEG` | 10 | dynamic | `DelegRule` | DelegRuleTest#aDeregistrationMustStateTheRecordedDeposit<br>DelegRuleTest#aRegistrationMustStateTheKeyDeposit<br>MutationMatrixTest#deregistrationRefundIncorrect<br>MutationMatrixTest#registrationDepositIncorrect | 00072, 00273 | test + scenario |
+| DELEG | `DepositIncorrectDELEG` | 11+ | dynamic | `DelegRule` | DelegRuleTest#aRegistrationMustStateTheKeyDeposit<br>MutationMatrixTest#registrationDepositIncorrectV11 | – | test |
+| DELEG | `RefundIncorrectDELEG` | 11+ | dynamic | `DelegRule` | DelegRuleTest#aDeregistrationMustStateTheRecordedDeposit<br>MutationMatrixTest#deregistrationRefundIncorrectV11 | – | test |
+| DELEG | `StakeKeyRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#aRegisteredCredentialCannotRegisterAgain<br>MutationMatrixTest#registrationOfARegisteredCredential | 00106, 00107, 00108, 00109, 00272 | test + scenario |
+| DELEG | `StakeKeyNotRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#anUnregisteredCredentialCannotDeregisterOrDelegate<br>MutationMatrixTest#deregistrationOfAnUnregisteredCredential | 00100, 00101, 00102, 00103 | test + scenario |
+| DELEG | `StakeKeyHasNonZeroAccountBalanceDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#aCredentialWithARewardBalanceCannotDeregister<br>MutationMatrixTest#deregistrationWithARewardBalance | 00104, 00105 | test + scenario |
+| DELEG | `DelegateeDRepNotRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#theDelegateeDRepMustBeRegistered<br>MutationMatrixTest#delegationToAnUnregisteredDRep | 00061, 00062, 00063, 00064 | test + scenario |
+| DELEG | `DelegateeStakePoolNotRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#theDelegateePoolMustBeRegistered<br>MutationMatrixTest#delegationToAnUnregisteredPool | 00065, 00066, 00067, 00068 | test + scenario |
+| POOL | `StakePoolNotRegisteredOnKeyPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#retirementOfAnUnregisteredPool<br>PoolRuleTest#onlyARegisteredPoolRetires | 00112, 00113 | test + scenario |
+| POOL | `StakePoolRetirementWrongEpochPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#retirementAtTheCurrentEpoch<br>PoolRuleTest#theRetirementEpochIsAfterTheCurrentEpochAndWithinEMax | 00114, 00115 | test + scenario |
+| POOL | `StakePoolCostTooLowPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#poolCostTooLow<br>PoolRuleTest#theCostIsAtLeastMinPoolCost | 00110, 00111 | test + scenario |
+| POOL | `WrongNetworkPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#poolRewardAccountOnAnotherNetwork<br>PoolRuleTest#theRewardAccountIsOnTheLedgersNetwork | 00271 | test + scenario |
+| POOL | `PoolMedataHashTooBig` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#poolMetadataHashTooBig<br>PoolRuleTest#theMetadataHashIsAtMost32Bytes | – | test |
+| POOL | `VRFKeyHashAlreadyRegistered` | 11+ | dynamic | `PoolRule` | MutationMatrixTest#poolVrfKeyHashTakenV11<br>PoolRuleTest#fromProtocolVersion11AVrfKeyHashBelongsToOnePool | – | test |
+| GOVCERT | `ConwayDRepAlreadyRegistered` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#aRegisteredDRepCannotRegisterAgain<br>MutationMatrixTest#drepAlreadyRegistered | 00059, 00060 | test + scenario |
+| GOVCERT | `ConwayDRepIncorrectDeposit` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theDRepDepositIsPpDRepDeposit<br>MutationMatrixTest#drepDepositIncorrect | – | test |
+| GOVCERT | `ConwayDRepNotRegistered` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#onlyARegisteredDRepDeregistersOrUpdates<br>MutationMatrixTest#drepNotRegistered | – | test |
+| GOVCERT | `ConwayDRepIncorrectRefund` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theDRepRefundIsTheRecordedDeposit<br>MutationMatrixTest#drepRefundIncorrect | – | test |
+| GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#aResignedMemberCannotAuthorizeOrResignAgain<br>MutationMatrixTest#committeeMemberResigned | 00206, 00207, 00208, 00209, 00210, 00217 | test + scenario |
+| GOVCERT | `ConwayCommitteeIsUnknown` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theColdCredentialIsAMemberOrAProposedMember<br>MutationMatrixTest#committeeMemberUnknown | 00201, 00204, 00205, 00220 | test + scenario |
+| GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | TBD (P5) | – | – | gap |
 | GOV | `DisallowedProposalDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `ProposalCantFollow` | 10+ | dynamic | TBD (P4–5) | – | 00202, 00203 | scenario only |
-| GOV | `MalformedProposal` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | TBD (P4–5) | – | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | scenario only |
-| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | TBD (P4–5) | – | 00117, 00118, 00119 | scenario only |
-| GOV | `ProposalDepositIncorrect` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOV | `ProposalProcedureNetworkIdMismatch` | 10+ | dynamic | TBD (P4–5) | – | 00282 | scenario only |
-| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOV | `InvalidGuardrailsScriptHash` | 10+ | dynamic | TBD (P4–5) | – | 00191, 00192, 00193, 00194, 00195 | scenario only |
-| GOV | `ZeroTreasuryWithdrawals` | 10+ | dynamic | TBD (P4–5) | – | 00130 | scenario only |
-| GOV | `ConflictingCommitteeUpdate` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOV | `ExpirationEpochTooSmall` | 10+ | dynamic | TBD (P4–5) | – | – | gap |
-| GOV | `InvalidPrevGovActionId` | 10+ | dynamic | TBD (P4–5) | – | 00148, 00149, 00150 | scenario only |
-| GOV | `VotersDoNotExist` | 10+ | dynamic | TBD (P4–5) | – | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | scenario only |
-| GOV | `GovActionsDoNotExist` | 10+ | dynamic | TBD (P4–5) | – | 00221, 00222, 00223, 00224 | scenario only |
+| GOV | `ProposalCantFollow` | 10+ | dynamic | TBD (P5) | – | 00202, 00203 | scenario only |
+| GOV | `MalformedProposal` | 10+ | dynamic | TBD (P5) | – | – | gap |
+| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | TBD (P5) | – | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | scenario only |
+| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | TBD (P5) | – | 00117, 00118, 00119 | scenario only |
+| GOV | `ProposalDepositIncorrect` | 10+ | dynamic | TBD (P5) | – | – | gap |
+| GOV | `ProposalProcedureNetworkIdMismatch` | 10+ | dynamic | TBD (P5) | – | 00282 | scenario only |
+| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 10+ | dynamic | TBD (P5) | – | – | gap |
+| GOV | `InvalidGuardrailsScriptHash` | 10+ | dynamic | TBD (P5) | – | 00191, 00192, 00193, 00194, 00195 | scenario only |
+| GOV | `ZeroTreasuryWithdrawals` | 10+ | dynamic | TBD (P5) | – | 00130 | scenario only |
+| GOV | `ConflictingCommitteeUpdate` | 10+ | dynamic | TBD (P5) | – | – | gap |
+| GOV | `ExpirationEpochTooSmall` | 10+ | dynamic | TBD (P5) | – | – | gap |
+| GOV | `InvalidPrevGovActionId` | 10+ | dynamic | TBD (P5) | – | 00148, 00149, 00150 | scenario only |
+| GOV | `VotersDoNotExist` | 10+ | dynamic | TBD (P5) | – | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | scenario only |
+| GOV | `GovActionsDoNotExist` | 10+ | dynamic | TBD (P5) | – | 00221, 00222, 00223, 00224 | scenario only |
 | GOV | `DisallowedVotesDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `VotingOnExpiredGovAction` | 10+ | dynamic | TBD (P4–5) | – | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | scenario only |
-| GOV | `DisallowedVoters` | 10+ | dynamic | TBD (P4–5) | – | 00172, 00173, 00174, 00175 | scenario only |
+| GOV | `VotingOnExpiredGovAction` | 10+ | dynamic | TBD (P5) | – | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | scenario only |
+| GOV | `DisallowedVoters` | 10+ | dynamic | TBD (P5) | – | 00172, 00173, 00174, 00175 | scenario only |
 | UTXOW | `InvalidWitnessesUTXOW` | 10+ | static | `UtxowRule` | MutationMatrixTest#invalidWitness<br>UtxowRuleTest#aSignatureThatDoesNotVerifyIsInvalid<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#ofDuplicateBootstrapWitnessesTheLastIsKept | 00076, 00079 | test + scenario |
 | UTXOW | `MissingVKeyWitnessesUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#missingVKeyWitness<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#keyWitnessesNeededPerPurpose<br>UtxowRuleTest#theInputOwnerMustSign | 00084, 00085, 00086 | test + scenario |
 | UTXOW | `MissingScriptWitnessesUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#missingScriptWitness<br>UtxowRuleTest#aNeededScriptThatIsNotProvidedIsMissing | 00184, 00186, 00188, 00190, 00262 | test + scenario |
@@ -114,7 +114,7 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 | UTXOW | `NotAllowedSupplementalDatums` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#notAllowedSupplementalDatum<br>UtxowRuleTest#supplementalDatumsMustBeNamedByAnOutputOrAReferenceInput | – | test |
 | UTXOW | `UnspendableUTxONoDatumHash` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#unspendableNoDatum<br>UtxowRuleTest#aPlutusV2InputWithoutADatumIsUnspendable | – | test |
 | UTXOW | `PPViewHashesDontMatch` | 10 | dynamic | `UtxowRule` | MutationMatrixTest#scriptIntegrityHash<br>UtxowRuleTest#datumsAloneNeedAnIntegrityHash<br>UtxowRuleTest#theScriptIntegrityHashConstructorDependsOnTheProtocolVersion | – | test |
-| UTXOW | `ScriptIntegrityHashMismatch` | 11+ | dynamic | `UtxowRule` | UtxowRuleTest#theScriptIntegrityHashConstructorDependsOnTheProtocolVersion | – | test |
+| UTXOW | `ScriptIntegrityHashMismatch` | 11+ | dynamic | `UtxowRule` | MutationMatrixTest#scriptIntegrityHashV11<br>UtxowRuleTest#theScriptIntegrityHashConstructorDependsOnTheProtocolVersion | – | test |
 | UTXOW | `MalformedScriptWitnesses` | 10+ | static | `UtxowRule` | MutationMatrixTest#malformedScriptWitness<br>MutationMatrixTest#scriptTrailingBytes<br>MutationMatrixTest#scriptUnavailableBuiltin<br>UtxowRuleTest#malformedPlutusWitnessScripts | 00256, 00257, 00258 | test + scenario |
 | UTXOW | `MalformedReferenceScripts` | 10+ | static | `UtxowRule` | MutationMatrixTest#malformedReferenceScript<br>UtxowRuleTest#malformedReferenceScriptsOfOwnOutputs | 00151 | test + scenario |
 | UTXO | `BabbageNonDisjointRefInputs` | 10 | dynamic | `UtxoRule` | MutationMatrixTest#nonDisjointReferenceInputs<br>UtxoRuleTest#referenceInputsMustBeDisjointFromSpendingInputsBeforeProtocolVersion11 | 00048 | test + scenario |

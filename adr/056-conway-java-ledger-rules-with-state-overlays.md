@@ -1418,6 +1418,143 @@ The final PR merges once S5's gates are green.
 
 - Gate: the certificate scenarios pass, and their matrix rows are complete.
 
+#### Phase 4 results: CERTS, DELEG, POOL, GOVCERT (2026-09-29)
+
+- **`CERTS`** (`conway.certs.CertsRule`, `conwayCertsTransition`, Conway/Rules/Certs.hs:204-246, and `CERT`,
+  Cert.hs:210-223), run by `LEDGER` only when `isValid = True`, after the pre-checks and before `GOV`
+  (`ConwayLedgerTransition.standard()` now plugs `LedgerPreChecks` and `CertsRule`; `GOV` is still empty).
+  - *Recursion.* `CERTS (gamma :|> c)` runs `CERTS gamma` as a sub-rule, then `CERT c` on the state `gamma` left, so
+    the base case (`Empty`) runs before the first certificate and certificates run in body order. The failure list
+    is built by exactly this nesting: frame `CERTS(k)` folds in `CERTS(k-1)`, then `CERT(k)`, which folds in
+    `DELEG`/`POOL`/`GOVCERT` (`CERT` frames carry the new `LedgerRuleName.CERT`, which no failure names). One
+    certificate's failures reach `LEDGER` in execution order (four reversals), and so
+    do several certificates' single failures, but a base-case failure interleaves: with `W` and failing
+    certificates `A, B, C` Haskell lists `[B, W, A, C]` (`CertsRuleTest#theRecursionListsFailuresInHaskellsOrder`).
+    `LEDGER` lists `UTXOW`'s own failures, then `UTXO`'s, then `CERTS`'.
+  - *After a failure nothing stops*: `small-steps` continues with the state the failed sub-rule returned
+    (Extended.hs:713-724), and later certificates see it. `CertState` steps `TransitionContext.certState()` (an
+    `IntraTxFold`) with `TxEffectsDeriver.preCertificateChanges`/`certificateChanges`, the functions that derive a
+    valid transaction's effects, so validation and effects cannot diverge. For a failing certificate this is also
+    Haskell's resulting state, except where Haskell returns its input state (deregistration or delegation of an
+    unregistered credential, deregistration or update of an unregistered DRep, retirement of an unregistered pool):
+    the rules then signal "no change". Consequences Haskell has and the engine reproduces: a failing registration of
+    a registered credential re-registers it with balance 0 (`registerConwayAccount` overwrites), so a deregistration
+    after it reports no `StakeKeyHasNonZeroAccountBalanceDELEG`; a failed deregistration leaves the credential free
+    for a registration after it. (Haskell also records the retirement of an unregistered pool in `psRetiring`; nothing
+    in `CERTS` or `GOV` reads it for a pool that does not exist, so the fold keeps no entry.)
+  - *Base case.* Before protocol version 11: `WithdrawalsNotInRewardsCERTS` (`withdrawalsThatDoNotDrainAccounts`: a
+    withdrawal on another network or without an account is invalid, one that is not the exact balance incomplete)
+    against the incoming accounts, then the dormant-DRep bump, the voting DReps' expiry refresh and the drain
+    (Certs.hs:223-241; the drain skips accounts that do not exist, `updateAccountBalances`, which only a failing
+    transaction has). From 11 (`hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule`) the base case is the identity
+    and `conway.ledger.LedgerPreChecks` does both before `CERTS` (Ledger.hs:383-392): `testIncompleteAndMissingWithdrawals`
+    (Shelley/Rules/Ledger.hs:351-359) as two `LEDGER` predicates, `ConwayWithdrawalsMissingAccounts` (another network
+    or no account) then `ConwayIncompleteWithdrawals` (so `LEDGER` lists the incomplete ones first), against the
+    incoming accounts, then the same pre-certificate step. They share `CertsRule.withdrawalsThatDoNotDrainAccounts`
+    with the base case. `LedgerPreChecks` keeps marked slots, in Haskell's order before them, for the Phase 5
+    predicates `ConwayTreasuryValueMismatch` (:364), `ConwayTxRefScriptsSizeTooBig` (:365) and
+    `ConwayWdrlNotDelegatedToDRep` (:379-381). **Hard gate unchanged:** no protocol-version-11 admission with
+    `engine: java` before Phase 5 completes those three and `GOV` (the engine stays behind the experimental flag).
+- **`DELEG`** (`DelegRule`, Deleg.hs:187-301), **`POOL`** (`PoolRule`, Shelley/Rules/Pool.hs:209-323) and
+  **`GOVCERT`** (`GovCertRule`, GovCert.hs:180-276): all 20 constructors (every check is unlabelled, so dynamic;
+  REAPPLY runs them all), in Haskell's order within each certificate:
+
+  | Constructor | Condition (order within the certificate) | PV |
+  |---|---|---|
+  | `IncorrectDepositDELEG` / `DepositIncorrectDELEG` | tags 7, 11–13: stated deposit ≠ `ppKeyDeposit` (first) | ≤ 10 / ≥ 11 |
+  | `IncorrectDepositDELEG` / `RefundIncorrectDELEG` | tag 8, registered credential: stated refund ≠ recorded deposit (first) | ≤ 10 / ≥ 11 |
+  | `StakeKeyRegisteredDELEG` | tags 0, 7, 11–13: credential registered (after the deposit) | all |
+  | `StakeKeyHasNonZeroAccountBalanceDELEG` | tags 1, 8: balance ≠ 0 (after the refund) | all |
+  | `StakeKeyNotRegisteredDELEG` | tags 1, 8 (last) and 2, 9, 10 (after the delegatee): no account; state unchanged | all |
+  | `DelegateeStakePoolNotRegisteredDELEG` | tags 2, 10, 11, 13: pool not in the running state (before the DRep) | all |
+  | `DelegateeDRepNotRegisteredDELEG` | tags 9, 10, 12, 13: DRep credential not registered (predefined DReps pass) | ≥ 10 |
+  | `WrongNetworkPOOL` | tag 3: reward account network ≠ ledger network (first) | all |
+  | `PoolMedataHashTooBig` | tag 3: metadata hash > 32 bytes | all |
+  | `StakePoolCostTooLowPOOL` | tag 3: cost < `minPoolCost` | all |
+  | `VRFKeyHashAlreadyRegistered` | tag 3: VRF key hash held by any pool (active or future), unless a re-registration keeps its active one (last) | ≥ 11 |
+  | `StakePoolNotRegisteredOnKeyPOOL` | tag 4: pool not registered (then the epoch) | all |
+  | `StakePoolRetirementWrongEpochPOOL` | tag 4: not `cEpoch < e ≤ cEpoch + eMax` | all |
+  | `ConwayDRepAlreadyRegistered`, `ConwayDRepIncorrectDeposit` | tag 16, in this order (deposit vs `ppDRepDeposit`) | all |
+  | `ConwayDRepNotRegistered`, `ConwayDRepIncorrectRefund` | tag 17, in this order (refund vs recorded deposit, registered only); tag 18: not registered | all |
+  | `ConwayCommitteeHasPreviouslyResigned`, `ConwayCommitteeIsUnknown` | tags 14, 15, in this order: resignation in the running committee state; neither elected nor a candidate of a pending `UpdateCommittee` | all |
+
+  Environment: `DELEG` reads the pools and DReps of the running state (a pool or DRep registered earlier in the
+  transaction is a delegatee, one deregistered earlier is not); `GOVCERT` judges membership against the state
+  before the transaction (the committee changes only at a boundary, and `committeeProposals` is taken before `GOV`
+  adds this transaction's proposals, Ledger.hs:367-370: scenarios 00201/00205), but resignation against the running
+  state (00208/00209). **VRF semantics** follow `psVRFKeyHashes` exactly, including Haskell's quirk that a pool
+  re-registering twice in one epoch with the same new VRF key hash fails the second time (`sppVrf == spsVrf ||
+  Map.notMember sppVrf psVRFKeyHashes`, Pool.hs:279-282), and that a VRF key hash a re-registration left in the
+  same transaction is free again. Unavailable reads fail closed (`ENGINE.LedgerStateUnavailable`).
+- **Raw certificates.** `RawCertificate` now reads every field the rules check from the original bytes: deposits and
+  refunds, the delegatee (pool, DRep kind 0–3), the committee hot credential, the retirement epoch, and of a pool
+  registration the VRF key hash (32 bytes, else `DecodingFailure`), cost, reward account (an account address,
+  header `& 0xEE == 0xE0`) and metadata hash size. The CCL certificate is used only for the effects step; the two
+  lists must agree tag by tag, otherwise `ENGINE.JavaEngineFailure`.
+- **Bounded fields at decoding** (`tx.BoundedFields`, `ENGINE.DecodingFailure` otherwise; decoder version ≥ 9):
+  `Url` and `DnsName` at most 128 bytes of valid UTF-8 (BaseTypes.hs:678-697); `Anchor` a two-element array with a
+  32-byte hash (:996-1004); the pool margin a tag-30 `UnitInterval` (two integers, non-zero denominator, reduced
+  ratio in [0, 1], `Word64` parts; Plain.hs:159-167, BaseTypes.hs:386-402); relays `[0, port/null, ipv4/null,
+  ipv6/null]`, `[1, port/null, dns]`, `[2, dns]` with a `Word16` port and 4- or 16-byte addresses (StakePool.hs:406-421,
+  `binaryGetDecoder` refuses left-over bytes). Applied to the anchors of certificates (tags 15, 16, 18), proposals,
+  the `NewConstitution` constitution and voting procedures (`[vote, anchor/null]`, which `RawTransaction` now walks
+  instead of skipping), and to a pool's metadata URL, margin and relays (`BoundedFieldsTest`).
+- **Tests.** `DelegRuleTest`, `PoolRuleTest`, `GovCertRuleTest`, `CertsRuleTest` (36 tests) and
+  `LedgerPreChecksTest` (4): one `@Covers` test per
+  constructor with Haskell's whole list, both sides of each PV gate, several failures of one certificate, and
+  same-transaction sequencing (register → delegate / deregister, deregister → re-register / delegate, DRep
+  registered → delegated to, DRep deregistered → delegation fails, pool registered → delegated to / retired,
+  retiring pool still a delegatee, resign → authorise, withdrawal drained → deregistration, the two failure
+  continuations above, `isValid = false` skips `CERTS`, effects of a register → delegate → vote-delegate
+  transaction). The mutation world gained certificate state with two keys outside Amaru's corpus (`dev-77`,
+  `dev-bb`: stake accounts, two pools, a DRep, an elected and a resigned committee member; `dev-42` and `dev-aa`
+  stay unregistered) and a 2,000 ADA UTxO for deposits, and a **protocol-version-11 world** (`Mutation.protocolMajor`,
+  bases valid in both). 25 new mutants (66 in all): one per `CERTS`/`DELEG`/`POOL`/`GOVCERT` constructor, and the
+  PV-11-only constructors (`DepositIncorrectDELEG`, `RefundIncorrectDELEG`, `VRFKeyHashAlreadyRegistered`,
+  `ConwayWithdrawalsMissingAccounts`, `ConwayIncompleteWithdrawals`, and 3b's `ScriptIntegrityHashMismatch`) in the
+  PV 11 world. The Java engine reports exactly the single covered constructor
+  on each.
+- **Gate** (`JavaEnginePhase4GateTest`): all 209 scenarios of the implemented families and every pass scenario
+  (114 pass, 2 `CERTS`, 21 `DELEG`, 7 `POOL`, 12 `GOVCERT`, 19 `UTXOW`, 30 `UTXO`, 4 `UTXOS`): 208 match Amaru and
+  Haskell, 1 (00280) matches Haskell where Amaru diverges. All 114 pass scenarios stay valid with `CERTS` running
+  (no false rejection from the intra-transaction state). Scenarios 00072 and 00273 (a registration stating a wrong
+  deposit, the transaction balanced with the stated amount) are `[UTXO.ValueNotConservedUTxO,
+  DELEG.IncorrectDepositDELEG]` in Haskell: value conservation charges `ppKeyDeposit`, not the stated amount
+  (`conwayTotalDepositsTxCerts`, Conway/TxCert.hs:817-826); recorded in `HaskellFailureLists`. Coverage: all 21
+  certificate rows have a test (14 test + scenario, 7 test only: the PV 11 constructors, `PoolMedataHashTooBig` and
+  three `GOVCERT` DRep constructors the corpus does not exercise), and so do the two PV 11 `LEDGER` withdrawal rows
+  (test only); the matrix names the Java rule class.
+- **Baseline** (regenerated `ledger-conformance/docs/baseline-2026-09.md`): `java-engine` 213/276 verdicts,
+  211/276 constructors, 66/66 mutants, 4/4 bases, 63/84 constructors demonstrated, about 0.54 ms per scenario
+  (one pass). Of
+  the 65 constructor misses, 64 are the `GOV` (59) and `LEDGER` (5) scenarios of Phase 5 and one is 00280 (the
+  recorded divergence, where the engine reports Haskell's constructor).
+- **Haskell-vs-Amaru divergences** (Haskell wins; recorded on the mutants, `Mutation.amaruReports`):
+  - *`ConwayDRepNotRegistered` on update:* Amaru's `DRepsSlice::update` (context/default/validation.rs:263-266 at
+    the pinned tag) does not check the registration and accepts `UpdateDRepCert` of an unregistered DRep; Yano's
+    adapter then cannot derive its effects and reports `ENGINE.AmaruEngineFailure`. Haskell: GovCert.hs:256-258.
+  - *`PoolMedataHashTooBig`:* Amaru's decoder refuses a metadata hash that is not 32 bytes (`DecodingFailure`);
+    Haskell decodes any size (`pmHash :: ByteArray`, StakePool.hs:522-524) and `POOL` rejects it.
+  - *`VRFKeyHashAlreadyRegistered` (PV 11):* Amaru accepts; its request carries pool ids only, no VRF index.
+  - Amaru agrees on every other new mutant, including the PV 11 names `DepositIncorrectDELEG`,
+    `RefundIncorrectDELEG`, `ConwayWithdrawalsMissingAccounts`, `ConwayIncompleteWithdrawals` and
+    `ScriptIntegrityHashMismatch`.
+- **Pinned reference module.** A review run with a module built before Phase 3a's `OutsideForecast →
+  UTXOS.CollectErrors` alias scored Amaru 274 (00088) instead of 275. The `amaru-validator-wasm` crate version is now
+  bumped whenever the failure mapping changes (0.1.0 → 0.1.1 for that alias) and `amaru_version()` appends
+  `crate=<version>`; the conformance harness's reference engine refuses a module whose crate version is not the one
+  in `amaru-validator-wasm/Cargo.toml` (checked once, before any case runs, with a message naming the module and the
+  rebuild command), and the generated baseline records the module's crate version and sha256. The strict 275/276
+  assertion stays.
+- **Test fixture change:** `UtxoRuleTest`'s mainnet-withdrawal test now expects `[UTXO.WrongNetworkWithdrawal,
+  CERTS.WithdrawalsNotInRewardsCERTS]`: at PV ≤ 10 the base case treats a withdrawal on another network as one
+  without an account.
+- **Phase 5 hooks.** `LedgerPreChecks` is the `LEDGER` slot: Phase 5 fills its three marked slots
+  (`ConwayTreasuryValueMismatch`, the reference-script size, `ConwayWdrlNotDelegatedToDRep` on the pre-certificate
+  accounts), which run before the PV 11 withdrawal checks already there. `GOV` must read `TransitionContext.certState().current()`
+  (`certStateAfterCERTS`) for voters, delegations and committee hot keys, and the pre-transaction proposals
+  (`preState()`) plus its own earlier proposals for lineage.
+
 ### Phase 5 — GOV, LEDGER pre-checks, MEMPOOL
 
 - Implement `MEMPOOL` as the admission entry point in front of `LEDGER` (§4,

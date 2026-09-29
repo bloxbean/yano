@@ -45,7 +45,9 @@ public record RawProposal(int index, int actionTag, byte[] policyHash) {
         byte[] policy = null;
         for (int i = 1; i < expected; i++) {
             boolean policyField = (tag == 0 && i == 3) || (tag == 2 && i == 2);
-            if (policyField && !reader.peekNull()) {
+            if (tag == 5 && i == 2) {
+                constitution(reader);
+            } else if (policyField && !reader.peekNull()) {
                 policy = reader.readBytes();
                 if (policy.length != RawCredential.HASH_LENGTH) {
                     throw new TxDecodingException("a guardrails policy hash is 28 bytes");
@@ -60,11 +62,24 @@ public record RawProposal(int index, int actionTag, byte[] policyHash) {
         if (actionLength == CborReader.INDEFINITE && reader.hasNext(actionLength, expected)) {
             throw new TxDecodingException("governance action tag " + tag + " has extra elements");
         }
-        reader.skip(); // anchor
+        BoundedFields.anchor(reader, "proposal");
         if (length == CborReader.INDEFINITE && reader.hasNext(length, 4)) {
             throw new TxDecodingException("a proposal procedure has 4 elements");
         }
         return new RawProposal(index, (int) tag, policy);
+    }
+
+    /** {@code constitution = [anchor, script_hash / null]}: the anchor with its bounds, the rest skipped. */
+    private static void constitution(CborReader reader) {
+        long length = reader.readArrayHeader();
+        if (length != 2 && length != CborReader.INDEFINITE) {
+            throw new TxDecodingException("a constitution has 2 elements");
+        }
+        BoundedFields.anchor(reader, "constitution");
+        reader.skip();
+        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
+            throw new TxDecodingException("a constitution has 2 elements");
+        }
     }
 
     @Override

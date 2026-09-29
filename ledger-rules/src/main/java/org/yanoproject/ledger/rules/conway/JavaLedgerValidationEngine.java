@@ -41,9 +41,9 @@ import java.util.Objects;
  *   <li><b>Effects</b> come from {@link TxEffectsDeriver} for the verdict (invariant 4).</li>
  * </ul>
  *
- * <p>Phase 3 implements {@code UTXOW}, {@code UTXO} and {@code UTXOS}; {@code CERTS}, {@code GOV} and the
- * {@code LEDGER} pre-checks follow in Phases 4–5, so the engine is not selectable for production admission
- * yet ({@link JavaEngineFactory}). Thread-safe and stateless.</p>
+ * <p>Phase 3 implements {@code UTXOW}, {@code UTXO} and {@code UTXOS}, Phase 4 {@code CERTS} with {@code DELEG},
+ * {@code POOL} and {@code GOVCERT}; {@code GOV} and the {@code LEDGER} predicates follow in Phase 5, so the engine
+ * is not selectable for production admission yet ({@link JavaEngineFactory}). Thread-safe and stateless.</p>
  */
 public final class JavaLedgerValidationEngine implements LedgerValidationEngine {
 

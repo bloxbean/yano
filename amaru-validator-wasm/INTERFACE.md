@@ -44,7 +44,7 @@ that each request round-trips byte for byte.
 | Export | Signature (wasm) | Meaning |
 |---|---|---|
 | `abi_version` | `() -> i32` | Interface version, `1`. A host refuses a module whose version it does not support (invariant 5). |
-| `amaru_version` | `() -> i32` (ptr) | Buffer holding the UTF-8 text of `AMARU_VERSION`: `tag=…`, `commit=…`, `toolchain=…` lines. |
+| `amaru_version` | `() -> i32` (ptr) | Buffer holding the UTF-8 text of `AMARU_VERSION` (`tag=…`, `commit=…`, `toolchain=…` lines) followed by `crate=<version>`, this crate's `Cargo.toml` version. The crate version is bumped whenever host-visible behaviour changes without an Amaru upgrade (for example the failure-name mapping), so a host can refuse a stale module. |
 | `alloc` | `(len: i32) -> i32` (ptr) | Allocates `len` bytes (zeroed) for the host to write into. |
 | `dealloc` | `(ptr: i32, len: i32)` | Frees a buffer from `alloc` (the same `len`), or a returned buffer (`4 + payload length`). |
 | `required_keys` | `(tx_ptr, tx_len, env_ptr, env_len: i32) -> i32` (ptr) | Runs Amaru's `prepare_transaction` and returns the keys the host must resolve. |

@@ -39,9 +39,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       ({@link Mutation#haskellFailures()}), only with constructors of that list; where Amaru names the fault
  *       differently from Haskell ({@link Mutation#amaruReports()}, a recorded divergence), with that name;</li>
  *   <li>the Java engine ({@code java-engine}) accepts the bases and rejects every mutant of the families it
- *       implements (Phase 3: {@code UTXOW}, {@code UTXO}, {@code UTXOS}) with exactly Haskell's failure list, or
- *       the single covered constructor.</li>
+ *       implements (Phase 3: {@code UTXOW}, {@code UTXO}, {@code UTXOS}; Phase 4: {@code CERTS}, {@code DELEG},
+ *       {@code POOL}, {@code GOVCERT}) with exactly Haskell's failure list, or the single covered constructor.</li>
  * </ul>
+ *
+ * <p>Mutants of constructors that exist only from protocol version 11 are built and validated in the protocol
+ * version 11 world ({@link Mutation#protocolMajor()}), whose bases must be valid too.</p>
  *
  * <p>How the other engines judge the mutants is the baseline ({@code ConformanceBaselineTest}), not a gate.</p>
  */
@@ -49,8 +52,12 @@ class MutationMatrixTest {
 
     private static final Optional<ConformanceEngine> REFERENCE = BaselineEngines.amaru();
     private static final ConformanceEngine JAVA = new JavaViewEngine();
-    /** The rule families the Java engine implements so far (ADR-056 Phase 3). */
-    private static final Set<String> JAVA_FAMILIES = Set.of("UTXO", "UTXOW", "UTXOS");
+    /**
+     * The rule families the Java engine implements so far (ADR-056 Phases 3 and 4; of {@code LEDGER} only the two
+     * protocol-version-11 withdrawal checks, the only {@code LEDGER} mutants until Phase 5).
+     */
+    private static final Set<String> JAVA_FAMILIES = Set.of("UTXO", "UTXOW", "UTXOS", "CERTS", "DELEG", "POOL",
+            "GOVCERT", "LEDGER");
 
     @Test
     void testKeysAreAmarusCorpusCredentials() {
@@ -73,10 +80,12 @@ class MutationMatrixTest {
 
     @Test
     void baseTransactionsAreValidAndExact() {
-        for (Mutation.Base base : Mutation.Base.values()) {
-            BuiltTx built = Mutations.buildBase(base);
-            assertThat(built.fee()).as("%s pays exactly the minimum fee", base).isEqualTo(built.minFee());
-            assertSignatures(built, true);
+        for (int world : Mutations.WORLDS) {
+            for (Mutation.Base base : Mutation.Base.values()) {
+                BuiltTx built = Mutations.buildBase(base, world);
+                assertThat(built.fee()).as("%s pays exactly the minimum fee", base).isEqualTo(built.minFee());
+                assertSignatures(built, true);
+            }
         }
         REFERENCE.ifPresent(amaru -> Mutations.baseCases().forEach(c ->
                 assertThat(ConformanceRunner.run(amaru, c).observation().valid()).as("%s under amaru", c.id()).isTrue()));
@@ -337,10 +346,162 @@ class MutationMatrixTest {
         assertThat(check("invalid-metadata").tx().getAuxiliaryData()).isNotNull();
     }
 
+    // ------------------------------------------------------------------ Phase 4 (and the protocol version 11 world)
+
+    @Test
+    @Covers("UTXOW.ScriptIntegrityHashMismatch")
+    void scriptIntegrityHashV11() {
+        check("script-integrity-hash-v11");
+    }
+
+    @Test
+    @Covers("CERTS.WithdrawalsNotInRewardsCERTS")
+    void withdrawalNotDraining() {
+        check("withdrawal-not-draining");
+    }
+
+    @Test
+    @Covers("LEDGER.ConwayWithdrawalsMissingAccounts")
+    void withdrawalMissingAccountV11() {
+        check("withdrawal-missing-account-v11");
+    }
+
+    @Test
+    @Covers("LEDGER.ConwayIncompleteWithdrawals")
+    void withdrawalIncompleteV11() {
+        check("withdrawal-incomplete-v11");
+    }
+
+    @Test
+    @Covers("DELEG.IncorrectDepositDELEG")
+    void registrationDepositIncorrect() {
+        check("reg-deposit-incorrect");
+    }
+
+    @Test
+    @Covers("DELEG.IncorrectDepositDELEG")
+    void deregistrationRefundIncorrect() {
+        check("unreg-refund-incorrect");
+    }
+
+    @Test
+    @Covers("DELEG.DepositIncorrectDELEG")
+    void registrationDepositIncorrectV11() {
+        check("reg-deposit-incorrect-v11");
+    }
+
+    @Test
+    @Covers("DELEG.RefundIncorrectDELEG")
+    void deregistrationRefundIncorrectV11() {
+        check("unreg-refund-incorrect-v11");
+    }
+
+    @Test
+    @Covers("DELEG.StakeKeyRegisteredDELEG")
+    void registrationOfARegisteredCredential() {
+        check("reg-already-registered");
+    }
+
+    @Test
+    @Covers("DELEG.StakeKeyNotRegisteredDELEG")
+    void deregistrationOfAnUnregisteredCredential() {
+        check("unreg-not-registered");
+    }
+
+    @Test
+    @Covers("DELEG.StakeKeyHasNonZeroAccountBalanceDELEG")
+    void deregistrationWithARewardBalance() {
+        check("unreg-non-zero-balance");
+    }
+
+    @Test
+    @Covers("DELEG.DelegateeStakePoolNotRegisteredDELEG")
+    void delegationToAnUnregisteredPool() {
+        check("deleg-pool-not-registered");
+    }
+
+    @Test
+    @Covers("DELEG.DelegateeDRepNotRegisteredDELEG")
+    void delegationToAnUnregisteredDRep() {
+        check("deleg-drep-not-registered");
+    }
+
+    @Test
+    @Covers("POOL.StakePoolNotRegisteredOnKeyPOOL")
+    void retirementOfAnUnregisteredPool() {
+        check("retire-unregistered-pool");
+    }
+
+    @Test
+    @Covers("POOL.StakePoolRetirementWrongEpochPOOL")
+    void retirementAtTheCurrentEpoch() {
+        check("retire-wrong-epoch");
+    }
+
+    @Test
+    @Covers("POOL.StakePoolCostTooLowPOOL")
+    void poolCostTooLow() {
+        check("pool-cost-too-low");
+    }
+
+    @Test
+    @Covers("POOL.WrongNetworkPOOL")
+    void poolRewardAccountOnAnotherNetwork() {
+        check("pool-wrong-network");
+    }
+
+    @Test
+    @Covers("POOL.PoolMedataHashTooBig")
+    void poolMetadataHashTooBig() {
+        check("pool-metadata-hash-too-big");
+    }
+
+    @Test
+    @Covers("POOL.VRFKeyHashAlreadyRegistered")
+    void poolVrfKeyHashTakenV11() {
+        check("pool-vrf-taken-v11");
+    }
+
+    @Test
+    @Covers("GOVCERT.ConwayDRepAlreadyRegistered")
+    void drepAlreadyRegistered() {
+        check("drep-already-registered");
+    }
+
+    @Test
+    @Covers("GOVCERT.ConwayDRepIncorrectDeposit")
+    void drepDepositIncorrect() {
+        check("drep-deposit-incorrect");
+    }
+
+    @Test
+    @Covers("GOVCERT.ConwayDRepNotRegistered")
+    void drepNotRegistered() {
+        check("drep-not-registered");
+    }
+
+    @Test
+    @Covers("GOVCERT.ConwayDRepIncorrectRefund")
+    void drepRefundIncorrect() {
+        check("drep-refund-incorrect");
+    }
+
+    @Test
+    @Covers("GOVCERT.ConwayCommitteeHasPreviouslyResigned")
+    void committeeMemberResigned() {
+        check("committee-resigned");
+    }
+
+    @Test
+    @Covers("GOVCERT.ConwayCommitteeIsUnknown")
+    void committeeMemberUnknown() {
+        check("committee-unknown");
+    }
+
     /** Builds a mutant, checks it is well formed, and has the reference engine confirm the single fault. */
     private static BuiltTx check(String id) {
         Mutation mutation = Mutations.find(id).orElseThrow();
-        BuiltTx base = Mutations.buildBase(mutation.base());
+        BuiltTx base = Mutations.buildBase(mutation.base(), mutation.protocolMajor());
         BuiltTx mutant = Mutations.buildMutant(mutation);
         assertThat(mutant.cbor()).as("%s differs from its base", id).isNotEqualTo(base.cbor());
         assertThat(mutant.fee()).as("%s fee", id).isEqualTo(mutant.minFee().add(feeAdjust(mutation)));

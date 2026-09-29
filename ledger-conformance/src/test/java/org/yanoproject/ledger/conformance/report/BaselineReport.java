@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.conformance.report;
 
 import org.yanoproject.ledger.conformance.ConformanceSettings;
+import org.yanoproject.ledger.conformance.engines.BaselineEngines;
 import org.yanoproject.ledger.conformance.mutation.Mutation;
 import org.yanoproject.ledger.conformance.mutation.Mutations;
 import org.yanoproject.ledger.conformance.runner.CaseResult;
@@ -70,6 +71,12 @@ public final class BaselineReport {
         md.append("Generated ").append(LocalDate.now()).append(" by\n\n```\n./gradlew :ledger-conformance:conformanceReport "
                 + "-PwithAmaru=true -PamaruWasm=<amaru_validator.wasm> -PamaruScenariosDir=<amaru clone at "
                 + ConformanceSettings.AMARU_TAG + ">\n```\n\n");
+        if (runs.stream().anyMatch(r -> r.engine().name().equals(BaselineEngines.AMARU))) {
+            md.append("Amaru module: `amaru-validator-wasm` crate ")
+                    .append(ConformanceSettings.amaruCrateVersion().orElse("?")).append(", sha256 `")
+                    .append(ConformanceSettings.amaruWasmSha256().orElse("?"))
+                    .append("` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).\n\n");
+        }
         md.append("Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected ")
                 .append("to disagree with Haskell, and nothing here gates the build.\n\n");
         md.append("- **Scenarios**: ").append(scenarioCount == 0 ? "not configured"
@@ -77,8 +84,10 @@ public final class BaselineReport {
                 .append(", rule `LEDGER`, origin `SYNC`, one `InMemoryLedgerView` per scenario.\n");
         md.append("- **Mutants**: ").append(Mutations.all().size())
                 .append(" mutants (single faults, or Haskell's whole failure list where a fault always has several) of ")
-                .append(Mutation.Base.values().length).append(" valid base transactions (preprod-like PV 10 world, ")
-                .append("signed with Amaru's corpus test keys, re-signed after every edit).\n");
+                .append(Mutation.Base.values().length).append(" valid base transactions in a preprod-like PV 10 world ")
+                .append("and a PV 11 copy for the constructors that exist only from 11 (bases valid in both), with a ")
+                .append("registered stake account, pools, a DRep and committee members; signed with Amaru's corpus test ")
+                .append("keys and two more, re-signed after every edit.\n");
         md.append("- **Constructors**: ").append(catalogue.all().size()).append(" Conway leaf predicate failures at ")
                 .append("cardano-ledger `").append(catalogue.cardanoLedger()).append("`, ")
                 .append(catalogue.inScope().size()).append(" reachable at PV 10–11 ")
@@ -118,7 +127,7 @@ public final class BaselineReport {
                 .append("scenario or mutant that expects them (where Haskell always reports a fault with several ")
                 .append("constructors, any of them counts). The scenarios and mutants can demonstrate ")
                 .append(demonstrable().size()).append(" of the ").append(catalogue.inScope().size())
-                .append(" constructors; the rest need Phase 4–5 mutants or are covered by unit tests only.\n\n");
+                .append(" constructors; the rest need Phase 5 mutants or are covered by unit tests only.\n\n");
     }
 
     private void families(StringBuilder md) {

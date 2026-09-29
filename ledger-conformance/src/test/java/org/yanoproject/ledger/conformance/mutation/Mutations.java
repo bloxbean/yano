@@ -10,7 +10,21 @@ import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.transaction.spec.Withdrawal;
+import com.bloxbean.cardano.client.transaction.spec.cert.AuthCommitteeHotCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
+import com.bloxbean.cardano.client.transaction.spec.cert.PoolRetirement;
+import com.bloxbean.cardano.client.transaction.spec.cert.RegCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.RegDRepCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.StakeDelegation;
+import com.bloxbean.cardano.client.transaction.spec.cert.StakePoolId;
+import com.bloxbean.cardano.client.transaction.spec.cert.UnregCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.UnregDRepCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.UpdateDRepCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.VoteDelegCert;
+import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
+import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.HaskellFailureLists;
@@ -37,7 +51,11 @@ import static org.yanoproject.ledger.conformance.mutation.Mutation.Base.SIMPLE;
 /**
  * The mutation matrix: the base transactions and their single-fault mutants (ADR-056 §8). Phase 2 covers the
  * UTXO and UTXOW basics, Phase 3a every UTXO and UTXOS constructor a transaction edit can produce, Phase 3b every
- * UTXOW constructor the protocol version 10 world can produce; Phases 4–5 add the rest.
+ * UTXOW constructor the protocol version 10 world can produce, Phase 4 every CERTS, DELEG, POOL and GOVCERT
+ * constructor and, in a protocol version 11 world, the constructors that exist only from 11
+ * ({@code ScriptIntegrityHashMismatch}, {@code DepositIncorrectDELEG}, {@code RefundIncorrectDELEG},
+ * {@code VRFKeyHashAlreadyRegistered}, {@code ConwayWithdrawalsMissingAccounts}, {@code ConwayIncompleteWithdrawals});
+ * Phase 5 adds GOV and the other LEDGER constructors.
  */
 public final class Mutations {
 
@@ -216,7 +234,125 @@ public final class Mutations {
                             TestKey.DEV_AA.enterpriseAddress(MutationWorld.NETWORK), PAYMENT)))),
             new Mutation("invalid-metadata", "UTXOW.InvalidMetadata", List.of(), SIMPLE,
                     "auxiliary data (hash included) carrying a PlutusV3 script whose bytes are not a program",
-                    s -> s.auxPlutusScripts.add(MutationWorld.MALFORMED_SCRIPT)));
+                    s -> s.auxPlutusScripts.add(MutationWorld.MALFORMED_SCRIPT)),
+            new Mutation("script-integrity-hash-v11", "UTXOW.ScriptIntegrityHashMismatch", List.of(), SCRIPT,
+                    "one bit of the body's script integrity hash flipped (protocol version 11)",
+                    s -> s.corruptScriptDataHash = true).atProtocolVersion11(),
+            // ---- Phase 4: CERTS, DELEG, POOL, GOVCERT. Each adds one certificate (or withdrawal) whose only fault is
+            // the covered one, with the deposits, refunds and withdrawals Haskell counts balanced (changeAdjust), and
+            // the credential's key as an extra signer. World: MutationWorld's certificate state.
+            new Mutation("withdrawal-not-draining", "CERTS.WithdrawalsNotInRewardsCERTS", List.of(), SIMPLE,
+                    "withdraws 1 ADA of dev-bb's 5 ADA reward balance (a withdrawal must drain it)",
+                    s -> {
+                        withdraw(s, TestKey.DEV_BB, ada(1));
+                        s.changeAdjust = ada(1);
+                    }),
+            new Mutation("withdrawal-missing-account-v11", "LEDGER.ConwayWithdrawalsMissingAccounts", List.of(), SIMPLE,
+                    "withdraws 0 from dev-aa's reward account, which has no account (protocol version 11)",
+                    s -> withdraw(s, TestKey.DEV_AA, BigInteger.ZERO)).atProtocolVersion11(),
+            new Mutation("withdrawal-incomplete-v11", "LEDGER.ConwayIncompleteWithdrawals", List.of(), SIMPLE,
+                    "withdraws 1 ADA of dev-bb's 5 ADA reward balance (protocol version 11)",
+                    s -> {
+                        withdraw(s, TestKey.DEV_BB, ada(1));
+                        s.changeAdjust = ada(1);
+                    }).atProtocolVersion11(),
+            new Mutation("reg-deposit-incorrect", "DELEG.IncorrectDepositDELEG", List.of(), SIMPLE,
+                    "registers dev-42 stating a 1 ADA deposit (ppKeyDeposit is 2 ADA, which the balance pays)",
+                    s -> certificate(s, new RegCert(MutationWorld.stakeCredential(TestKey.DEV_42), ada(1)), ada(-2))),
+            new Mutation("unreg-refund-incorrect", "DELEG.IncorrectDepositDELEG", List.of(), SIMPLE,
+                    "deregisters dev-77 stating a 1 ADA refund (the recorded deposit, credited, is 2 ADA)",
+                    s -> certificate(s, new UnregCert(MutationWorld.stakeCredential(TestKey.DEV_77), ada(1)), ada(2),
+                            TestKey.DEV_77)),
+            new Mutation("reg-deposit-incorrect-v11", "DELEG.DepositIncorrectDELEG", List.of(), SIMPLE,
+                    "registers dev-42 stating a 1 ADA deposit (protocol version 11)",
+                    s -> certificate(s, new RegCert(MutationWorld.stakeCredential(TestKey.DEV_42), ada(1)), ada(-2)))
+                    .atProtocolVersion11(),
+            new Mutation("unreg-refund-incorrect-v11", "DELEG.RefundIncorrectDELEG", List.of(), SIMPLE,
+                    "deregisters dev-77 stating a 1 ADA refund (protocol version 11)",
+                    s -> certificate(s, new UnregCert(MutationWorld.stakeCredential(TestKey.DEV_77), ada(1)), ada(2),
+                            TestKey.DEV_77)).atProtocolVersion11(),
+            new Mutation("reg-already-registered", "DELEG.StakeKeyRegisteredDELEG", List.of(), SIMPLE,
+                    "registers dev-77, which is registered",
+                    s -> certificate(s, new RegCert(MutationWorld.stakeCredential(TestKey.DEV_77), ada(2)), ada(-2),
+                            TestKey.DEV_77)),
+            new Mutation("unreg-not-registered", "DELEG.StakeKeyNotRegisteredDELEG", List.of(), SIMPLE,
+                    "deregisters dev-42, which is not registered (no refund is credited)",
+                    s -> certificate(s, new UnregCert(MutationWorld.stakeCredential(TestKey.DEV_42), ada(2)),
+                            BigInteger.ZERO)),
+            new Mutation("unreg-non-zero-balance", "DELEG.StakeKeyHasNonZeroAccountBalanceDELEG", List.of(), SIMPLE,
+                    "deregisters dev-bb, whose reward balance is 5 ADA",
+                    s -> certificate(s, new UnregCert(MutationWorld.stakeCredential(TestKey.DEV_BB), ada(2)), ada(2),
+                            TestKey.DEV_BB)),
+            new Mutation("deleg-pool-not-registered", "DELEG.DelegateeStakePoolNotRegisteredDELEG", List.of(), SIMPLE,
+                    "delegates dev-77's stake to a pool id no pool has (dev-42's key hash)",
+                    s -> certificate(s, new StakeDelegation(MutationWorld.stakeCredential(TestKey.DEV_77),
+                            new StakePoolId(HexUtil.decodeHexString(TestKey.DEV_42.keyHash()))), BigInteger.ZERO,
+                            TestKey.DEV_77)),
+            new Mutation("deleg-drep-not-registered", "DELEG.DelegateeDRepNotRegisteredDELEG", List.of(), SIMPLE,
+                    "delegates dev-77's vote to dev-42's key hash, which is no DRep",
+                    s -> certificate(s, new VoteDelegCert(MutationWorld.stakeCredential(TestKey.DEV_77),
+                            DRep.addrKeyHash(TestKey.DEV_42.keyHash())), BigInteger.ZERO, TestKey.DEV_77)),
+            new Mutation("retire-unregistered-pool", "POOL.StakePoolNotRegisteredOnKeyPOOL", List.of(), SIMPLE,
+                    "retires pool dev-42, which is not registered",
+                    s -> certificate(s, new PoolRetirement(HexUtil.decodeHexString(TestKey.DEV_42.keyHash()), 1),
+                            BigInteger.ZERO)),
+            new Mutation("retire-wrong-epoch", "POOL.StakePoolRetirementWrongEpochPOOL", List.of(), SIMPLE,
+                    "retires dev-77's pool at the current epoch (it must be later, and at most eMax later)",
+                    s -> certificate(s, new PoolRetirement(HexUtil.decodeHexString(TestKey.DEV_77.keyHash()),
+                            MutationWorld.env().currentEpoch()), BigInteger.ZERO, TestKey.DEV_77)),
+            new Mutation("pool-cost-too-low", "POOL.StakePoolCostTooLowPOOL", List.of(), SIMPLE,
+                    "re-registers dev-77's pool with a cost one lovelace below minPoolCost",
+                    s -> certificate(s, MutationWorld.poolRegistration(TestKey.DEV_77, MutationWorld.POOL_77_VRF,
+                            MutationWorld.MIN_POOL_COST.subtract(BigInteger.ONE), MutationWorld.NETWORK, null),
+                            BigInteger.ZERO, TestKey.DEV_77)),
+            new Mutation("pool-wrong-network", "POOL.WrongNetworkPOOL", List.of(), SIMPLE,
+                    "re-registers dev-77's pool with a mainnet reward account on a testnet ledger",
+                    s -> certificate(s, MutationWorld.poolRegistration(TestKey.DEV_77, MutationWorld.POOL_77_VRF,
+                            MutationWorld.MIN_POOL_COST, Networks.mainnet(), null), BigInteger.ZERO, TestKey.DEV_77)),
+            new Mutation("pool-metadata-hash-too-big", "POOL.PoolMedataHashTooBig", List.of(), SIMPLE,
+                    "re-registers dev-77's pool with a 33-byte metadata hash",
+                    s -> certificate(s, MutationWorld.poolRegistration(TestKey.DEV_77, MutationWorld.POOL_77_VRF,
+                            MutationWorld.MIN_POOL_COST, MutationWorld.NETWORK, "ab".repeat(33)), BigInteger.ZERO,
+                            TestKey.DEV_77))
+                    // Recorded divergence: Amaru's decoder refuses a metadata hash that is not 32 bytes; Haskell
+                    // decodes any size (PoolMetadata's pmHash is a ByteArray, StakePool.hs:522-524) and POOL rejects
+                    // it (Shelley/Rules/Pool.hs:245-250).
+                    .withAmaruReports("ENGINE.DecodingFailure"),
+            new Mutation("pool-vrf-taken-v11", "POOL.VRFKeyHashAlreadyRegistered", List.of(), SIMPLE,
+                    "re-registers dev-77's pool with the VRF key hash of dev-bb's pool (protocol version 11)",
+                    s -> certificate(s, MutationWorld.poolRegistration(TestKey.DEV_77, MutationWorld.POOL_BB_VRF,
+                            MutationWorld.MIN_POOL_COST, MutationWorld.NETWORK, null), BigInteger.ZERO,
+                            TestKey.DEV_77)).atProtocolVersion11()
+                    // Recorded divergence: Amaru has no psVRFKeyHashes (the request carries pool ids only) and accepts.
+                    .withAmaruReports(Mutation.AMARU_ACCEPTS),
+            new Mutation("drep-already-registered", "GOVCERT.ConwayDRepAlreadyRegistered", List.of(), SIMPLE,
+                    "registers dev-77 as a DRep again, with the right deposit",
+                    s -> certificate(s, new RegDRepCert(MutationWorld.credential(TestKey.DEV_77), ada(500), null),
+                            ada(-500), TestKey.DEV_77)),
+            new Mutation("drep-deposit-incorrect", "GOVCERT.ConwayDRepIncorrectDeposit", List.of(), SIMPLE,
+                    "registers dev-42 as a DRep stating 400 ADA (ppDRepDeposit is 500 ADA, which the balance pays)",
+                    s -> certificate(s, new RegDRepCert(MutationWorld.credential(TestKey.DEV_42), ada(400), null),
+                            ada(-500))),
+            new Mutation("drep-not-registered", "GOVCERT.ConwayDRepNotRegistered", List.of(), SIMPLE,
+                    "updates dev-42's DRep, which is not registered",
+                    s -> certificate(s, new UpdateDRepCert(MutationWorld.credential(TestKey.DEV_42), null),
+                            BigInteger.ZERO))
+                    // Recorded divergence: Amaru's DRepsSlice::update does not check the registration
+                    // (context/default/validation.rs:263-266 at the pinned tag) and accepts; Yano's adapter then
+                    // cannot derive the update's effects and fails closed. Haskell: GovCert.hs:256-258.
+                    .withAmaruReports("ENGINE.AmaruEngineFailure"),
+            new Mutation("drep-refund-incorrect", "GOVCERT.ConwayDRepIncorrectRefund", List.of(), SIMPLE,
+                    "deregisters dev-77's DRep stating (and crediting) 400 ADA; its deposit is 500 ADA",
+                    s -> certificate(s, new UnregDRepCert(MutationWorld.credential(TestKey.DEV_77), ada(400)),
+                            ada(400), TestKey.DEV_77)),
+            new Mutation("committee-resigned", "GOVCERT.ConwayCommitteeHasPreviouslyResigned", List.of(), SIMPLE,
+                    "dev-bb, an elected member that resigned, authorizes a hot key",
+                    s -> certificate(s, new AuthCommitteeHotCert(MutationWorld.credential(TestKey.DEV_BB),
+                            MutationWorld.credential(TestKey.DEV_42)), BigInteger.ZERO, TestKey.DEV_BB)),
+            new Mutation("committee-unknown", "GOVCERT.ConwayCommitteeIsUnknown", List.of(), SIMPLE,
+                    "dev-42, neither a member nor proposed, authorizes a hot key",
+                    s -> certificate(s, new AuthCommitteeHotCert(MutationWorld.credential(TestKey.DEV_42),
+                            MutationWorld.credential(TestKey.DEV_AA)), BigInteger.ZERO)));
 
     private Mutations() {
     }
@@ -230,29 +366,43 @@ public final class Mutations {
         return ALL.stream().filter(m -> m.id().equals(id)).findFirst();
     }
 
+    /** The protocol versions of the mutation worlds. */
+    public static final List<Integer> WORLDS = List.of(10, 11);
+
     /** @return the base spec */
     public static TxSpec base(Mutation.Base base) {
         return base == SCRIPT ? MutationWorld.scriptSpec() : MutationWorld.simpleSpec();
     }
 
-    /** @return the base transaction */
+    /** @return the base transaction in the protocol version 10 world */
     public static BuiltTx buildBase(Mutation.Base base) {
-        return ConwayTxBuilder.build(base(base), MutationWorld.view());
+        return buildBase(base, 10);
+    }
+
+    /** @return the base transaction in a world */
+    public static BuiltTx buildBase(Mutation.Base base, int protocolMajor) {
+        return ConwayTxBuilder.build(base(base), MutationWorld.view(protocolMajor));
     }
 
     /** @return the mutant of {@code mutation} */
     public static BuiltTx buildMutant(Mutation mutation) {
         TxSpec spec = base(mutation.base()).copy();
         mutation.edit().accept(spec);
-        return ConwayTxBuilder.build(spec, MutationWorld.view());
+        return ConwayTxBuilder.build(spec, MutationWorld.view(mutation.protocolMajor()));
     }
 
-    /** @return the base transactions as cases (expected: valid) */
+    /** @return the base transactions of every world as cases (expected: valid) */
     public static List<ConformanceCase> baseCases() {
-        return Arrays.stream(Mutation.Base.values())
-                .map(base -> testCase("base:" + base.name().toLowerCase(), "valid base transaction (" + base + ")",
-                        ConformanceCase.Kind.MUTATION_BASE, buildBase(base).cbor(), new Expected.Pass(), List.of()))
-                .toList();
+        List<ConformanceCase> cases = new ArrayList<>();
+        for (int world : WORLDS) {
+            for (Mutation.Base base : Mutation.Base.values()) {
+                String id = "base:" + base.name().toLowerCase() + (world == 10 ? "" : "-v" + world);
+                cases.add(testCase(id, "valid base transaction (" + base + ", protocol version " + world + ")",
+                        ConformanceCase.Kind.MUTATION_BASE, buildBase(base, world).cbor(), new Expected.Pass(),
+                        List.of(), world));
+            }
+        }
+        return cases;
     }
 
     /** @return every mutant as a case (expected: the mutation's constructor) */
@@ -265,14 +415,36 @@ public final class Mutations {
         Expected expected = new Expected.Predicate(name[1], LedgerRuleName.valueOf(name[0]), name[1],
                 LedgerFailure.Phase.PHASE_1, null);
         return testCase(mutation.caseId(), mutation.description(), ConformanceCase.Kind.MUTANT,
-                buildMutant(mutation).cbor(), expected, mutation.haskellFailures());
+                buildMutant(mutation).cbor(), expected, mutation.haskellFailures(), mutation.protocolMajor());
     }
 
     private static ConformanceCase testCase(String id, String title, ConformanceCase.Kind kind, byte[] cbor,
-                                            Expected expected, List<String> haskellFailures) {
-        InMemoryLedgerView view = MutationWorld.view();
-        return new ConformanceCase(id, title, kind, cbor, view, MutationWorld.env(), MutationWorld.network(),
-                AmaruScenario.LedgerConstants.NONE, expected, haskellFailures);
+                                            Expected expected, List<String> haskellFailures, int protocolMajor) {
+        InMemoryLedgerView view = MutationWorld.view(protocolMajor);
+        return new ConformanceCase(id, title, kind, cbor, view, MutationWorld.env(protocolMajor),
+                MutationWorld.network(), AmaruScenario.LedgerConstants.NONE, expected, haskellFailures);
+    }
+
+    private static BigInteger ada(long amount) {
+        return BigInteger.valueOf(amount).multiply(BigInteger.valueOf(1_000_000));
+    }
+
+    /**
+     * Adds {@code certificate} and {@link MutationWorld#RICH_INPUT} (for deposits), balances the implicit coin Haskell
+     * counts ({@code implicit}: refunds and withdrawals minus deposits) and has the credentials' keys sign.
+     */
+    private static void certificate(TxSpec spec, Certificate certificate, BigInteger implicit, TestKey... signers) {
+        spec.inputs.add(MutationWorld.RICH_INPUT);
+        spec.certs.add(certificate);
+        spec.changeAdjust = implicit;
+        for (TestKey key : signers) {
+            spec.signers.add(key);
+        }
+    }
+
+    private static void withdraw(TxSpec spec, TestKey key, BigInteger amount) {
+        spec.withdrawals.add(new Withdrawal(MutationWorld.rewardAccount(key, MutationWorld.NETWORK), amount));
+        spec.signers.add(key);
     }
 
     private static TransactionInput phantomInput() {

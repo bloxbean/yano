@@ -12,12 +12,16 @@ import java.util.Arrays;
 
 /**
  * Deterministic Ed25519 test keys: the seeds of Amaru's corpus test credentials
- * ({@code common/test-credentials}: {@code dev-42} is {@code 0x42} × 32, {@code dev-aa} is {@code 0xAA} × 32).
- * Public test material; never hold funds with them.
+ * ({@code common/test-credentials}: {@code dev-42} is {@code 0x42} × 32, {@code dev-aa} is {@code 0xAA} × 32), and two
+ * more keys that are not in the corpus ({@code 0x77} × 32, {@code 0xBB} × 32) for the mutation world's certificate
+ * state (a registered stake account, pool, DRep and committee members). Public test material; never hold funds with
+ * them.
  */
 public enum TestKey {
     DEV_42((byte) 0x42),
-    DEV_AA((byte) 0xAA);
+    DEV_AA((byte) 0xAA),
+    DEV_77((byte) 0x77),
+    DEV_BB((byte) 0xBB);
 
     private final SecretKey secretKey;
     private final byte[] verificationKey;

@@ -9,7 +9,7 @@
 //! | Export | Returns |
 //! |---|---|
 //! | `abi_version() -> u32` | [`ABI_VERSION`] |
-//! | `amaru_version() -> ptr` | `[u32 LE len][UTF-8]`: the contents of `AMARU_VERSION` |
+//! | `amaru_version() -> ptr` | `[u32 LE len][UTF-8]`: [`VERSION_TEXT`], `AMARU_VERSION` plus a `crate=` line |
 //! | `alloc(len) -> ptr` / `dealloc(ptr, len)` | guest memory for requests and responses |
 //! | `required_keys(tx_ptr, tx_len, env_ptr, env_len) -> ptr` | `[u32 LE len][CBOR]` key set |
 //! | `validate(req_ptr, req_len) -> ptr` | `[u32 LE len][CBOR]` verdict |
@@ -25,6 +25,15 @@ pub use interface::{ABI_VERSION, Mode, Request, RequiredKeys, Response};
 
 /// `tag=…`, `commit=…`, `toolchain=…` lines: the Amaru revision compiled into this module.
 pub const AMARU_VERSION: &str = include_str!("../AMARU_VERSION");
+
+/// This crate's version (`Cargo.toml`). It is bumped whenever the module's behaviour seen by the host changes
+/// without an Amaru upgrade, for example the failure-name mapping in [`failure`], so that a stale module can be
+/// told apart from the current one (Yano's conformance harness refuses a module whose crate version is not the
+/// one in `Cargo.toml`).
+pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What `amaru_version` returns: the `AMARU_VERSION` lines, then `crate=<CRATE_VERSION>`.
+pub const VERSION_TEXT: &str = concat!(include_str!("../AMARU_VERSION"), "crate=", env!("CARGO_PKG_VERSION"), "\n");
 
 /// Copy `payload` into a fresh `[u32 LE len][payload]` buffer and leak it to the host.
 fn into_host_buffer(payload: &[u8]) -> *mut u8 {
@@ -50,10 +59,11 @@ pub extern "C" fn abi_version() -> u32 {
     ABI_VERSION
 }
 
-/// The Amaru revision this module was built from, as `[u32 LE len][UTF-8]`.
+/// The Amaru revision this module was built from and this crate's version ([`VERSION_TEXT`]), as
+/// `[u32 LE len][UTF-8]`.
 #[unsafe(no_mangle)]
 pub extern "C" fn amaru_version() -> *mut u8 {
-    into_host_buffer(AMARU_VERSION.as_bytes())
+    into_host_buffer(VERSION_TEXT.as_bytes())
 }
 
 /// Allocate `len` bytes of guest memory for the host to write a request into.
@@ -118,6 +128,7 @@ mod tests {
     fn amaru_version_round_trips_through_host_buffer() {
         let text = String::from_utf8(read_host_buffer(amaru_version())).unwrap();
         assert!(text.starts_with("tag=v"), "{text}");
+        assert!(text.ends_with(&format!("crate={CRATE_VERSION}\n")), "{text}");
         assert_eq!(abi_version(), 1);
     }
 
