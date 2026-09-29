@@ -2984,6 +2984,30 @@ preview (`~/yano-shadow/preview`). The findings below were triaged against the c
 `drep_updates`, `tx_info`, `tx_cbor`), the recorded reads in the `shadow-dumps/` bundles, and cardano-ledger
 `f649f975`.
 
+**Gate result (2026-09-30): passed.** A fresh sync from genesis of both networks with every fix below, built from
+`943a5b6e0` with the combined local Julc `0.1.0-pre18-yano-local2` (bloxbean/julc PRs #219, #221, #227, #228) and
+shadow sync on `java-julc,java-scalus`, reached the tip with:
+
+| | Conway transactions (PV 9, 10, 11) | `java-julc` | `java-scalus` | Findings |
+|---|---|---|---|---|
+| preprod, tip epoch 316 | 4,240,097 | all agreed | all agreed | 0 |
+| preview, tip epoch 1435 | 2,117,011 | all agreed | all agreed | 0 |
+
+- The built-in AdaPot verification (treasury and reserves against `expected_ada_pots_{preprod,preview}.json`) passed at
+  every epoch boundary on both networks.
+- A read-only comparison with Koios matched:
+  - treasury, reserves and fees for every epoch (preprod 312, preview 1,435);
+  - the deposit residue for every epoch, meaning no phantom key deposits are left;
+  - the registered DRep set (292 and 9,164);
+  - the DRep distribution totals of the last two epochs, to the lovelace;
+  - every governance proposal's state at the tip (124 and 1,552).
+- The one remaining difference is preview's exact deposit figure at the tip: Yano is 14,500 ADA (29 × 500 ADA) above a
+  Koios-derived value. Koios `pool_list` still reports 29 pools as registered whose registration and retirement are in
+  the same transaction. POOLREAP retired those pools and refunded their deposits, as Yano did: Yano has 727 pools,
+  Koios reports 756 registered or retiring.
+- The first sync (before the fixes) had 465 disagreements and 18 engine failures across the two networks. Its reports
+  are kept beside the new run.
+
 **Findings**
 
 - **`DELEG.StakeKeyRegisteredDELEG` and `GOVCERT.ConwayDRepAlreadyRegistered`: Yano's canonical ledger state was wrong
