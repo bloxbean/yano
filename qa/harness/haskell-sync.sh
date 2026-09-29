@@ -2,7 +2,7 @@
 # test-haskell-sync / test-native-haskell-sync on isolated ports.
 # pv10 epochLength=1200, slotLength=0.2 -> 240 s/epoch; 2-epoch bar = slot >= 2400.
 # Optional knobs (defaults keep the standard test):
-#   YANO_EXTRA_OPTS   extra -D options for Yano, e.g. "-Dyano.validation.engine=java
+#   YANO_EXTRA_OPTS   extra -D options for Yano, e.g. "-Dyano.validation.engine=java-julc
 #                     -Dyano.validation.java-engine.experimental=true" (ADR-056 Phase 6b)
 #   HS_GENESIS_PATCH  a command run with G=<genesis copy> before either node starts
 #   HS_WORKLOAD       a command run in the background once the Haskell node follows, with
@@ -74,7 +74,7 @@ HERR=$(grep -iE 'error|invalid|reject' "$RUN/haskell.log" | grep -vE 'Node confi
 echo "haskell error-like lines: $(printf '%s' "$HERR" | grep -c .)"; printf '%s\n' "$HERR" | cut -c1-260 | head -5
 echo "yano ERROR lines: $(grep -c ' ERROR ' "$RUN/yano.log")"; grep ' ERROR ' "$RUN/yano.log" | cut -c1-220 | head -5
 echo "yano epoch transitions: $(grep -c 'Epoch transition detected' "$RUN/yano.log")"
-NATIVE_ERRS=$(grep -cE 'NoClassDefFoundError|ClassNotFoundException|UnsupportedFeatureError|MissingReflectionRegistrationError' "$RUN/yano.log")
+NATIVE_ERRS=$(grep -cE "$NATIVE_IMAGE_ERRORS" "$RUN/yano.log")
 echo "native-init errors: $NATIVE_ERRS"
 kill_tracked
 DELTA=$(( LAST_YSLOT - LAST_SLOT ))

@@ -40,7 +40,7 @@ jobs:
         run: chmod +x gradlew
       - name: Run retained integration tests
         run: ./gradlew extendedTest -PskipSigning=true --stacktrace
-      - name: Ledger-rules devnet gate (ADR-056 Phase 6b, engine java)
+      - name: Ledger-rules devnet gate (ADR-056 Phase 6b, engine java-julc)
         run: ./gradlew :tx-services:test --tests '*JavaEngineDevnetGateTest' -PledgerRulesGate=true -PskipSigning=true --stacktrace
 
   distribution-check:

@@ -13,6 +13,8 @@
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 QA_DIR=$REPO/qa
+# The harness ports are fixed for release QA (common.sh honours inherited values for manual runs).
+unset HTTP_A N2N_A HTTP_B N2N_B
 export REPO QA_HOME=${QA_HOME:-$QA_DIR/work}
 export QA_BIN=${QA_BIN:-$QA_HOME/bin}
 
@@ -34,7 +36,8 @@ compat-jvm|compat|jvm|SDK compatibility: CCL, Mesh, Evolution|40|qa/harness/comp
 compat-native|compat|native|SDK compatibility: CCL, Mesh, Evolution|40|qa/harness/compat.sh native "qa-$RUN_ID-compat-native" --compat-only
 load-jvm|load|jvm|SDK load and chained transactions|60|qa/harness/compat.sh jvm "qa-$RUN_ID-load-jvm" --load-only
 docker-dist|docker|jvm|Docker Compose bundle on devnet: launcher, mounts, API, snapshots, upgrade|30|qa/harness/docker-dist.sh
-docker-public|docker-public|jvm|Docker Compose bundle on preprod, preview and mainnet|75|qa/harness/docker-public.sh'
+docker-public|docker-public|jvm|Docker Compose bundle on preprod, preview and mainnet|75|qa/harness/docker-public.sh
+ledger-rules-native|ledger-rules|native|Validation engines: JVM vs native parity (java-julc, java-scalus, scalus; PV 9-11)|90|qa/harness/ledger-rules-native-parity.sh'
 DEFAULT_CATEGORIES=l1,appchain,e2e,compat,docker
 HARNESS_PORTS="7171 7172 13441 13442 3103 12889 12899 7181 13451 7191 13461 9199 7281 7282 7283 13551 13552 13553"
 
@@ -43,8 +46,8 @@ usage() {
 Usage: qa/release-qa.sh [options]
 
   --categories LIST  comma-separated: l1, appchain, e2e, compat, docker, load,
-                     docker-public (default: l1,appchain,e2e,compat,docker;
-                     load and docker-public are opt-in)
+                     docker-public, ledger-rules (default: l1,appchain,e2e,compat,docker;
+                     load, docker-public and ledger-rules are opt-in)
   --only IDS         run exactly these test ids (see --list); overrides --categories
   --quick            skip native variants
   --build            always rebuild the JVM jar and native binary
@@ -95,16 +98,18 @@ say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$PROGRESS"; }
 # ------------------------------------------------------------------ selection ----
 contains() { case ",$1," in *",$2,"*) return 0 ;; esac; return 1; }
 SELECTED=""
+QUICK_SKIPPED=""
 while IFS='|' read -r id cat mode _; do
   if [ -n "$ONLY" ]; then contains "$ONLY" "$id" || continue
   else contains "$CATEGORIES" "$cat" || continue
-       [ "$QUICK" = 1 ] && [ "$mode" = native ] && continue
+       [ "$QUICK" = 1 ] && [ "$mode" = native ] && { QUICK_SKIPPED="$QUICK_SKIPPED $id"; continue; }
   fi
   SELECTED="$SELECTED $id"
 done <<EOF
 $REGISTRY
 EOF
 SELECTED=${SELECTED# }
+[ -n "$QUICK_SKIPPED" ] && echo "--quick skips the native tests:$QUICK_SKIPPED" >&2
 [ -n "$SELECTED" ] || { echo "No tests selected." >&2; exit 2; }
 if [ -n "$ONLY" ]; then
   for id in $(echo "$ONLY" | tr ',' ' '); do

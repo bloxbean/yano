@@ -15,13 +15,18 @@ if [ -z "${JAVA:-}" ]; then
 fi
 HASKELL_NODE_DIR=${HASKELL_NODE_DIR:-$REPO/test-data-dir/haskell-node}
 
-HTTP_A=7171
-N2N_A=13441
-HTTP_B=7172
-N2N_B=13442
+# Overridable for a manual run next to nodes that hold these ports (release-qa uses the defaults).
+HTTP_A=${HTTP_A:-7171}
+N2N_A=${N2N_A:-13441}
+HTTP_B=${HTTP_B:-7172}
+N2N_B=${N2N_B:-13442}
 HS_PORT=3103
 HS_EKG=12889
 HS_PROM=12899
+
+# Log lines that mean a native-image gap (missing reachability metadata, unsupported feature, a service provider
+# that cannot be loaded). JVM runs are checked with the same pattern.
+NATIVE_IMAGE_ERRORS='NoClassDefFoundError|ClassNotFoundException|UnsupportedFeature|Missing(Reflection|Resource|JNI)Registration|ServiceConfigurationError|InvalidDefinitionException'
 
 PIDFILE=${PIDFILE:-$SP/pids.txt}
 mkdir -p "$SP"
