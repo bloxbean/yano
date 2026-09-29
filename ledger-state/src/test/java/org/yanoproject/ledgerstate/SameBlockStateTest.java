@@ -38,6 +38,8 @@ import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 import org.slf4j.LoggerFactory;
 import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.api.account.LedgerStateProvider;
+import org.yanoproject.api.era.EraProvider;
 import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.ledgerstate.governance.GovernanceBlockProcessor;
 import org.yanoproject.ledgerstate.governance.GovernanceStateStore;
@@ -99,6 +101,10 @@ class SameBlockStateTest {
     private static final String PREVIEW_KEY_75AE = "75aedc755a6f1a962b85cb3595c3ce15c63adc6f66b288bbc3002b33";
     /** preprod, {@code GOVCERT.ConwayDRepAlreadyRegistered}. */
     private static final String PREPROD_DREP_7397 = "739701e411d342e6a385dcbec1f78edc31434ad1ad166d20954912d7";
+    /** preview, PV 9: the delegator's stake key and its old DRep ({@code drep1ytx7qr0…}) share this hash. */
+    private static final String PREVIEW_KEY_CDE0 = "cde00dff51f163f4c5dc98137f3e23d28a2e0b27d9665920877e6e81";
+    /** preview: the new DRep {@code drep1ygdsvk24…}, missing from Yano's DRep distribution before the fix. */
+    private static final String PREVIEW_DREP_1B06 = "1b0659556d778135e189997b26aa5db7ac7aa3bc9a3d6dd2768be8f1";
 
     private static final String KEY_A = "a1".repeat(28);
     private static final String KEY_B = "b2".repeat(28);
@@ -210,6 +216,43 @@ class SameBlockStateTest {
         assertThat(registered.registeredAtSlot()).isEqualTo(69866725L);
         assertThat(registered.previousDeregistrationSlot()).isEqualTo(69866635L);
         assertThat(store.getTotalDeposited()).isEqualTo(new BigInteger("500000000"));
+    }
+
+    @Test
+    void pv9DelegationMadeBeforeTheDRepRegisteredIsNotClearedByTheDRepsRetirement() throws Exception {
+        // PV 9 (bootstrap): delegating to an unregistered DRep is allowed (Deleg.hs:225-226), and
+        // the reverse-set insert is a Map.adjust on an absent DRep, so the delegator never enters
+        // drepDelegs (Deleg.hs:363-365); ConwayRegDRep starts with an empty set (GovCert.hs:229).
+        store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                LoggerFactory.getLogger(SameBlockStateTest.class), true, pv9Params());
+        store.setGovernanceBlockProcessor(new GovernanceBlockProcessor(rocks.governanceStore(), pv9Params()));
+        store.setEraProvider(new EraProvider() {
+            @Override
+            public boolean isConwayOrLater(int epoch) {
+                return true;
+            }
+        });
+        // preview blocks 2619484/2619485: the delegator's StakeRegistration (cert 13) and DRep B's registration.
+        applyReal(2619484, "769eddf56db170f7a7fa44d7c43697b994977db2c9d1f903ec742c1654fe0d85");
+        applyReal(2619485, "a5ac530930e282e5475f072d91885b2f8352c8427ed23e62ca50c24aee73949e");
+        long beforeSlot = txs.get("a5ac530930e282e5475f072d91885b2f8352c8427ed23e62ca50c24aee73949e").slot();
+        Map<String, String> before = stateColumn();
+
+        // preview block 2619755, tx 99e03aae…: [VoteDelegCert(-> A), RegDRep A]
+        applyReal(2619755, "99e03aae11844a59b179337d8b8060370d5d8bc7713c9f84cd653c3a5885e0e9");
+        assertThat(store.getDRepDelegation(0, PREVIEW_KEY_CDE0))
+                .contains(new LedgerStateProvider.DRepDelegation(0, PREVIEW_KEY_CDE0));
+
+        // preview block 2619757, tx 0c9775f6…: [VoteDelegCert(-> B), UnRegDRep A]. A's drepDelegs is
+        // empty, so the retirement clears nothing and the delegation to B stays (Koios: B has the
+        // delegator's 519.649682 ADA).
+        applyReal(2619757, "0c9775f6cf4d83984a33f8b2ddffea513575c0eab2ff06fef8fe6ecdf08e65e8");
+        assertThat(store.isDRepRegistered(0, PREVIEW_KEY_CDE0)).isFalse();
+        assertThat(store.getDRepDelegation(0, PREVIEW_KEY_CDE0))
+                .contains(new LedgerStateProvider.DRepDelegation(0, PREVIEW_DREP_1B06));
+
+        store.rollbackToSlot(beforeSlot);
+        assertThat(stateColumn()).isEqualTo(before);
     }
 
     @Test
@@ -575,6 +618,25 @@ class SameBlockStateTest {
             @Override
             public BigInteger getPoolDeposit(long epoch) {
                 return BigInteger.valueOf(500_000_000L);
+            }
+        };
+    }
+
+    private static EpochParamProvider pv9Params() {
+        return new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return KEY_DEPOSIT;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.valueOf(500_000_000L);
+            }
+
+            @Override
+            public int getProtocolMajor(long epoch) {
+                return 9;
             }
         };
     }

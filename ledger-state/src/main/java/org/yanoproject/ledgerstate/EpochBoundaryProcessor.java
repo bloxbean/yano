@@ -16,7 +16,6 @@ import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -146,6 +145,10 @@ public class EpochBoundaryProcessor {
         if (processor != null) {
             processor.setEpochArchiveStagingSink(archiveStaging);
             if (archiveBoundary != null) processor.setBoundaryCoordinates(archiveBoundary);
+        }
+        // The PV 10 DRep delegation rebuild runs inside governance Phase 1, after the hard fork is enacted
+        if (processor != null && snapshotCreator != null) {
+            processor.setHardForkDRepDelegationRebuilder(snapshotCreator::rebuildDRepDelegReverseIndexIfNeeded);
         }
         // Wire AdaPot batch adjuster so governance treasury adjustment is atomic with Phase 2
         if (processor != null && adaPotTracker != null && adaPotTracker.isEnabled() && snapshotCreator != null) {
@@ -516,25 +519,6 @@ public class EpochBoundaryProcessor {
                 }
             } else {
                 log.info("Skipping POOLREAP for epoch {} (already committed in previous run)", newEpoch);
-            }
-        }
-
-        // 4c. PV10 hardfork: rebuild DRep delegation reverse index.
-        // Matches Haskell's updateDRepDelegations (HardFork.hs) which rebuilds drepDelegs
-        // from current forward delegations, removing stale PV9 entries and dangling delegations.
-        // Only runs when Conway-or-later AND PV10+. No PV10 work in pre-Conway transitions.
-        EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
-                ? paramTracker : paramProvider;
-        try (var ignored = telemetry.phase("pv10-drep-reverse-index")) {
-            if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null
-                    && snapshotCreator.isConwayOrLater(newEpoch) && ep.getProtocolMajor(newEpoch) >= 10) {
-                try {
-                    Set<String> registeredDRepIds = governanceEpochProcessor.getRegisteredDRepIds();
-                    snapshotCreator.rebuildDRepDelegReverseIndexIfNeeded(newEpoch, registeredDRepIds, ep);
-                } catch (Exception e) {
-                    // Consensus-critical: if rebuild fails, governance must not run with stale reverse index
-                    throw new RuntimeException("PV10 reverse-index rebuild failed at epoch " + newEpoch, e);
-                }
             }
         }
 

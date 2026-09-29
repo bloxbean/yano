@@ -59,6 +59,8 @@ final class TickingTestNode implements AutoCloseable {
     final DefaultAccountStateStore accounts;
     final GovernanceStateStore governance;
     final EpochBoundaryProcessor boundary;
+    /** The governance epoch processor; null unless both governance and the boundary are enabled. */
+    final GovernanceEpochProcessor governanceEpoch;
     final CanonicalStateGate gate;
     private long blockNumber;
     private long chainBlocks;
@@ -112,9 +114,13 @@ final class TickingTestNode implements AutoCloseable {
                         accounts.asRewardRestStore(), null);
                 epochProcessor.setBoundaryDeltaWriter(accounts::commitBoundaryDelta);
                 boundary.setGovernanceEpochProcessor(epochProcessor);
+                governanceEpoch = epochProcessor;
+            } else {
+                governanceEpoch = null;
             }
         } else {
             boundary = null;
+            governanceEpoch = null;
         }
         gate = chain.canonicalStateGate();
         gate.configureLedgerEpochReader(() -> RocksCanonicalSnapshotSource.completedBoundaryEpoch(accounts));
@@ -251,6 +257,11 @@ final class TickingTestNode implements AutoCloseable {
      * {@code shelleyStartSlot}).
      */
     static EpochParamProvider baseParams(long epochLength, long shelleyStartSlot) {
+        return baseParams(epochLength, shelleyStartSlot, 10);
+    }
+
+    /** Same parameters at genesis protocol version {@code protocolMajor}. */
+    static EpochParamProvider baseParams(long epochLength, long shelleyStartSlot, int protocolMajor) {
         return new EpochParamProvider() {
             @Override
             public long getEpochLength() {
@@ -352,7 +363,7 @@ final class TickingTestNode implements AutoCloseable {
 
             @Override
             public int getProtocolMajor(long epoch) {
-                return 10;
+                return protocolMajor;
             }
         };
     }

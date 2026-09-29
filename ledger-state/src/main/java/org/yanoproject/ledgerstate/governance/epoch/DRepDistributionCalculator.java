@@ -168,7 +168,7 @@ public class DRepDistributionCalculator {
                 String drepHash = deleg.drepHash();
 
                 // Check if delegated-to DRep is currently registered
-                DRepDistKey drepKey = resolveDRepKey(drepType, drepHash, activeDReps, deleg.slot());
+                DRepDistKey drepKey = resolveDRepKey(drepType, drepHash, activeDReps);
                 if (drepKey == null) {
                     skippedDrep++;
                     it.next();
@@ -344,39 +344,16 @@ public class DRepDistributionCalculator {
     }
 
     /**
-     * Resolve a DRep delegation target to a distribution key.
-     * Returns null if the DRep is not currently registered, or if the delegation's slot is before
-     * the DRep's previous deregistration's slot.
-     * <p>
-     * The main correctness mechanism is the PV10 reverse-index rebuild + unconditional
-     * cleanup on DRep deregistration. The {@code delegSlot < prevDeregSlot} check is a
-     * defensive safety guard for Yano's tombstone-based DRep state representation; a delegation
-     * in the deregistration's own slot may follow a same-block re-registration.
+     * Resolve a DRep delegation target to a distribution key; null if the credential DRep is not
+     * registered. Every delegation to a registered DRep counts, whenever it was made
+     * (cardano-ledger {@code Conway/Governance/DRepPulser.hs:236-241}): the delegations a retirement
+     * clears are already gone from the account state.
      */
     private DRepDistKey resolveDRepKey(int drepType, String drepHash,
-                                       Map<CredentialKey, DRepStateRecord> activeDReps,
-                                       long delegSlot) {
+                                       Map<CredentialKey, DRepStateRecord> activeDReps) {
         return switch (drepType) {
-            case DREP_KEY, DREP_SCRIPT -> {
-                // Regular DRep — must be registered
-                CredentialKey ck = new CredentialKey(drepType, drepHash);
-                DRepStateRecord drepState = activeDReps.get(ck);
-                if (drepState == null) {
-                    yield null;
-                }
-
-                // Defensive safety guard: a delegation from a slot before the DRep's previous
-                // deregistration is stale. A delegation in the deregistration's own slot may follow
-                // a same-block re-registration, so it is left to the exact (slot, tx, cert) cleanup
-                // on deregistration (clearDRepDelegationsForDeregisteredDRep). Normal correctness
-                // comes from that cleanup and the PV10 reverse-index rebuild.
-                Long prevDeregSlot = drepState.previousDeregistrationSlot();
-                if (prevDeregSlot != null && delegSlot < prevDeregSlot) {
-                    yield null;
-                }
-
-                yield new DRepDistKey(drepType, drepHash);
-            }
+            case DREP_KEY, DREP_SCRIPT -> activeDReps.containsKey(new CredentialKey(drepType, drepHash))
+                    ? new DRepDistKey(drepType, drepHash) : null;
             case DREP_ABSTAIN -> new DRepDistKey(DREP_ABSTAIN, ABSTAIN_HASH);
             case DREP_NO_CONF -> new DRepDistKey(DREP_NO_CONF, NO_CONFIDENCE_HASH);
             default -> null;

@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
  * Orchestrates all governance processing at epoch boundaries.
@@ -95,8 +96,19 @@ public class GovernanceEpochProcessor {
         void adjustTreasury(int epoch, BigInteger treasuryDelta, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException;
     }
 
+    /**
+     * The PV 10 hard fork's DRep delegation rebuild, written into the Phase 1 batch. Injected from
+     * DefaultAccountStateStore ({@code rebuildDRepDelegReverseIndexIfNeeded}).
+     */
+    @FunctionalInterface
+    public interface HardForkDRepDelegationRebuilder {
+        void rebuildIfNeeded(Supplier<Set<String>> registeredDRepIds, WriteBatch batch, List<DeltaOp> deltaOps)
+                throws RocksDBException;
+    }
+
     private volatile BoundaryDeltaWriter boundaryDeltaWriter;
     private volatile AdaPotBatchAdjuster adaPotBatchAdjuster;
+    private volatile HardForkDRepDelegationRebuilder hardForkDRepDelegationRebuilder;
 
     public void setBoundaryDeltaWriter(BoundaryDeltaWriter writer) {
         this.boundaryDeltaWriter = writer;
@@ -104,6 +116,10 @@ public class GovernanceEpochProcessor {
 
     public void setAdaPotBatchAdjuster(AdaPotBatchAdjuster adjuster) {
         this.adaPotBatchAdjuster = adjuster;
+    }
+
+    public void setHardForkDRepDelegationRebuilder(HardForkDRepDelegationRebuilder rebuilder) {
+        this.hardForkDRepDelegationRebuilder = rebuilder;
     }
 
     // Conway era first epoch — resolved from EraProvider at bootstrap time and cached
@@ -250,6 +266,11 @@ public class GovernanceEpochProcessor {
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
             enactment = processEnactmentPhase(previousEpoch, newEpoch, batch, deltaOps, enactmentWriters);
+            // HARDFORK runs after enactment and before the DRep distribution is taken (Epoch.hs:367-372), so the
+            // boundary that enacts PV 10 rebuilds the DRep delegations (HardFork.hs:75-76, 82-105).
+            if (hardForkDRepDelegationRebuilder != null && resolveProtocolMajor(newEpoch) >= 10) {
+                hardForkDRepDelegationRebuilder.rebuildIfNeeded(this::registeredDRepIds, batch, deltaOps);
+            }
             if (boundaryDeltaWriter != null) {
                 boundaryDeltaWriter.commit(boundarySlot, DefaultAccountStateStore.PHASE_GOV_ENACT, batch, deltaOps);
             }
@@ -1073,13 +1094,17 @@ public class GovernanceEpochProcessor {
     }
 
     /**
-     * Get the set of currently registered DRep IDs (format: "drepType:drepHash").
-     * Excludes retired DReps (tombstone records, {@code deregistered}).
-     * Used by EpochBoundaryProcessor for the PV10 hardfork reverse-index rebuild.
+     * The registered DReps ("drepType:drepHash"), excluding retired ones (records with {@code deregistered}),
+     * for the PV 10 DRep delegation rebuild in Phase 1. A full scan of the DRep records.
      */
-    public Set<String> getRegisteredDRepIds() throws RocksDBException {
-        var allDRepStates = governanceStore.getAllDRepStates();
-        Set<String> registered = new java.util.HashSet<>();
+    private Set<String> registeredDRepIds() {
+        Map<CredentialKey, DRepStateRecord> allDRepStates;
+        try {
+            allDRepStates = governanceStore.getAllDRepStates();
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read the DRep records", e);
+        }
+        Set<String> registered = new HashSet<>();
         for (var entry : allDRepStates.entrySet()) {
             var rec = entry.getValue();
             if (!rec.deregistered()) {

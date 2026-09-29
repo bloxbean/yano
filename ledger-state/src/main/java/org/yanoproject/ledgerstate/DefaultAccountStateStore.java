@@ -49,6 +49,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
  * RocksDB-backed account state store.
@@ -64,7 +65,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public static final byte PREFIX_ACCT = 0x01;
     public static final byte PREFIX_POOL_DELEG = 0x02;
     public static final byte PREFIX_DREP_DELEG = 0x03;
-    static final byte PREFIX_DREP_DELEG_REVERSE = 0x04; // DRep → delegators reverse index (PV9 stale, rebuilt at PV10)
+    static final byte PREFIX_DREP_DELEG_REVERSE = 0x04; // registered DRep → delegators (Haskell drepDelegs; PV9 stale, rebuilt at PV10)
     static final byte PREFIX_POOL_DEPOSIT = 0x10;
     static final byte PREFIX_POOL_RETIRE = 0x11;
     static final byte PREFIX_DREP_REG = 0x20;
@@ -220,6 +221,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private ColumnFamilyHandle cfDelta;
     private ColumnFamilyHandle cfBoundaryDelta;
     private ColumnFamilyHandle cfEpochSnapshot;
+
+    /** Largest journal value {@link #commitBoundaryDelta(long, byte, WriteBatch, List)} writes (4 MiB). */
+    static final int MAX_BOUNDARY_DELTA_BYTES = 4 << 20;
 
     // Boundary delta phase constants — identify which epoch-boundary sub-step produced a delta entry
     public static final byte PHASE_REWARDS = 1;
@@ -920,14 +924,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Reverse index key: DRep credential → delegator credential.
+     * Reverse index key: DRep credential → delegator credential, Haskell's {@code drepDelegs}.
      * Key: [PREFIX_DREP_DELEG_REVERSE | drepType(1) | drepHash(28) | delegatorCredType(1) | delegatorHash(28)]
      * <p>
+     * Registered target DReps only: a delegation to an unregistered DRep (PV9 bootstrap) adds no entry.
      * Maintained by {@link #delegateToDRep} and {@link #deregisterStake}. Used by
      * {@link #clearDRepDelegationsForDeregisteredDRep} on DRep deregistration.
      * <p>
      * PV9: stale entries preserved (re-delegated creds not removed from old DRep's set).
-     * PV10: rebuilt at hardfork boundary by {@link #rebuildDRepDelegReverseIndexIfNeeded}
+     * PV10: rebuilt at the boundary that enacts PV10 by {@link #rebuildDRepDelegReverseIndexIfNeeded}
      * to match Haskell's {@code updateDRepDelegations} (HardFork.hs).
      */
     static byte[] drepDelegReverseKey(int drepType, String drepHash,
@@ -3301,13 +3306,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
             case VoteDelegCert vd -> {
                 delegateToDRep(vd.getStakeCredential(), vd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case StakeVoteDelegCert svd -> {
                 delegateToPool(svd.getStakeCredential(), svd.getPoolKeyHash(),
                         slot, txIdx, certIdx, batch, deltaOps);
                 delegateToDRep(svd.getStakeCredential(), svd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case StakeRegDelegCert srd -> {
                 BigInteger deposit = srd.getCoin() != null ? srd.getCoin() : BigInteger.ZERO;
@@ -3321,7 +3326,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 depositDelta = registerStake(vrd.getStakeCredential(), deposit,
                         slot, txIdx, certIdx, batch, deltaOps, blockStateOverlay);
                 delegateToDRep(vrd.getStakeCredential(), vrd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case StakeVoteRegDelegCert svrd -> {
                 BigInteger deposit = svrd.getCoin() != null ? svrd.getCoin() : BigInteger.ZERO;
@@ -3330,7 +3335,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 delegateToPool(svrd.getStakeCredential(), svrd.getPoolKeyHash(),
                         slot, txIdx, certIdx, batch, deltaOps);
                 delegateToDRep(svrd.getStakeCredential(), svrd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case PoolRegistration pr -> {
                 var params = pr.getPoolParams();
@@ -3973,103 +3978,89 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Rebuild PREFIX_DREP_DELEG_REVERSE at PV10 hardfork boundary if not already done.
-     * Matches Haskell's {@code updateDRepDelegations} (HardFork.hs) which:
-     * <ol>
-     *   <li>Resets all drepDelegs to empty</li>
-     *   <li>Rebuilds from current account delegations</li>
-     *   <li>Removes dangling delegations to non-existent DReps</li>
-     * </ol>
-     * Owns its own WriteBatch — opens, rebuilds, writes marker, commits atomically.
+     * The PV 10 hard fork's {@code updateDRepDelegations} (cardano-ledger {@code Conway/Rules/HardFork.hs:82-105}),
+     * once: every DRep's delegator set becomes exactly its current delegators, and a delegation to a DRep that
+     * is not registered is removed. Called by the governance boundary after Phase 1 enactment has set PV 10,
+     * before the Phase 2 DRep distribution, as Haskell's {@code HARDFORK} runs between enactment and
+     * {@code setFreshDRepPulsingState} ({@code Conway/Rules/Epoch.hs:367-372}).
+     * <p>
+     * Writes into the caller's batch and journals every change in {@code deltaOps}, so a rollback of the
+     * boundary restores the PV 9 sets, the removed delegations and the marker. Only the entries that differ
+     * are written.
      *
-     * @param newEpoch          The new epoch number
-     * @param registeredDRepIds Set of "drepType:drepHash" for currently registered DReps
-     *                          (DRep records that are not {@code deregistered})
-     * @param ep                EpochParamProvider for protocol version lookup
+     * @param registeredDRepIdsSupplier "drepType:drepHash" of the registered DReps (records not
+     *                                  {@code deregistered}); read only when the rebuild runs
      */
-    public void rebuildDRepDelegReverseIndexIfNeeded(int newEpoch,
-            Set<String> registeredDRepIds, EpochParamProvider ep) throws RocksDBException {
-        int newMajor = ep.getProtocolMajor(newEpoch);
-        if (newMajor < 10) return;
+    public void rebuildDRepDelegReverseIndexIfNeeded(Supplier<Set<String>> registeredDRepIdsSupplier,
+            WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         if (db.get(cfState, MARKER_PV10_REVERSE_REBUILD) != null) return;
-        // Marker missing and PV10+ → rebuild needed
-        if (registeredDRepIds == null) {
-            throw new IllegalStateException("registeredDRepIds must not be null for PV10 reverse-index rebuild");
-        }
-
-        log.info("PV10 hardfork: rebuilding DRep delegation reverse index...");
-        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            rebuildDRepDelegReverseIndex(registeredDRepIds, batch);
-            batch.put(cfState, MARKER_PV10_REVERSE_REBUILD, new byte[]{1});
-            db.write(wo, batch);
-        }
-    }
-
-    /**
-     * Rebuild reverse index from current forward delegations.
-     * Deletes all existing reverse entries, then rebuilds from PREFIX_DREP_DELEG.
-     * Dangling forward delegations (to non-existent DReps) are deleted.
-     */
-    private void rebuildDRepDelegReverseIndex(Set<String> registeredDRepIds,
-            WriteBatch batch) throws RocksDBException {
-        // Assert overlays are inactive (epoch boundary, not block processing)
+        Set<String> registeredDRepIds = registeredDRepIdsSupplier.get();
+        // Overlays belong to block application; the boundary reads committed state.
         if (batchForwardDeleg != null || batchReverseAdded != null || batchReverseRemoved != null) {
             throw new IllegalStateException("Overlay maps must be null during PV10 reverse-index rebuild");
         }
 
-        // 1. Delete all existing reverse entries
-        byte[] seekPrefix = new byte[]{PREFIX_DREP_DELEG_REVERSE};
+        log.info("PV10 hardfork: rebuilding DRep delegation reverse index...");
+        int removed = 0, added = 0, dangling = 0;
+
+        // 1. Drop reverse entries that are not a current delegation to a registered DRep (stale PV 9 members).
+        byte[] reversePrefix = new byte[]{PREFIX_DREP_DELEG_REVERSE};
         try (RocksIterator it = db.newIterator(cfState)) {
-            it.seek(seekPrefix);
-            while (it.isValid()) {
+            for (it.seek(reversePrefix); it.isValid(); it.next()) {
                 byte[] key = it.key();
-                if (key.length < 1 || key[0] != PREFIX_DREP_DELEG_REVERSE) break;
-                batch.delete(cfState, java.util.Arrays.copyOf(key, key.length));
-                it.next();
-            }
-        }
-
-        // 2. Iterate all forward delegations, rebuild reverse + clean dangling
-        int rebuilt = 0, dangling = 0;
-        byte[] fwdSeek = new byte[]{PREFIX_DREP_DELEG};
-        try (RocksIterator it = db.newIterator(cfState)) {
-            it.seek(fwdSeek);
-            while (it.isValid()) {
-                byte[] key = it.key();
-                if (key.length < 2 || key[0] != PREFIX_DREP_DELEG) break;
-
-                byte[] keyCopy = java.util.Arrays.copyOf(key, key.length);
-                byte[] rawVal = it.value();
-                if (rawVal == null) { it.next(); continue; }
-                byte[] valCopy = java.util.Arrays.copyOf(rawVal, rawVal.length);
-
-                int credType = keyCopy[1] & 0xFF;
-                String credHash = HexUtil.encodeHexString(
-                        java.util.Arrays.copyOfRange(keyCopy, 2, keyCopy.length));
-                var deleg = AccountStateCborCodec.decodeDRepDelegation(valCopy);
-                int drepType = deleg.drepType();
-                String drepHash = deleg.drepHash();
-
-                if (isCredentialDRep(drepType)) {
-                    String drepId = drepType + ":" + drepHash;
-                    if (registeredDRepIds.contains(drepId)) {
-                        // Registered DRep → add reverse entry
-                        byte[] revKey = drepDelegReverseKey(drepType, drepHash, credType, credHash);
-                        batch.put(cfState, revKey, new byte[]{1});
-                        rebuilt++;
-                    } else {
-                        // Dangling delegation to non-existent DRep → delete forward
-                        batch.delete(cfState, keyCopy);
-                        dangling++;
-                    }
+                if (key[0] != PREFIX_DREP_DELEG_REVERSE) break;
+                int drepType = key[1] & 0xFF;
+                String drepHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 2, 30));
+                int delegatorType = key[30] & 0xFF;
+                String delegatorHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 31, key.length));
+                byte[] forward = db.get(cfState, drepDelegKey(delegatorType, delegatorHash));
+                boolean current = forward != null
+                        && registeredDRepIds.contains(drepType + ":" + drepHash)
+                        && isDelegationTo(AccountStateCborCodec.decodeDRepDelegation(forward), drepType, drepHash);
+                if (!current) {
+                    byte[] keyCopy = Arrays.copyOf(key, key.length);
+                    batch.delete(cfState, keyCopy);
+                    deltaOps.add(new DeltaOp(OP_DELETE, keyCopy, it.value()));
+                    removed++;
                 }
-                // Virtual DReps (ABSTAIN, NO_CONFIDENCE): no reverse entry needed
-
-                it.next();
             }
         }
-        log.info("PV10 reverse-index rebuild: {} reverse entries rebuilt, {} dangling forward delegations removed",
-                rebuilt, dangling);
+
+        // 2. Every delegation to a registered credential DRep is in its set; one to an unregistered DRep is removed.
+        byte[] forwardPrefix = new byte[]{PREFIX_DREP_DELEG};
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(forwardPrefix); it.isValid(); it.next()) {
+                byte[] key = it.key();
+                if (key[0] != PREFIX_DREP_DELEG) break;
+                var deleg = AccountStateCborCodec.decodeDRepDelegation(it.value());
+                if (!isCredentialDRep(deleg.drepType())) continue; // AlwaysAbstain / AlwaysNoConfidence
+                byte[] keyCopy = Arrays.copyOf(key, key.length);
+                int credType = keyCopy[1] & 0xFF;
+                String credHash = HexUtil.encodeHexString(Arrays.copyOfRange(keyCopy, 2, keyCopy.length));
+                if (registeredDRepIds.contains(deleg.drepType() + ":" + deleg.drepHash())) {
+                    byte[] revKey = drepDelegReverseKey(deleg.drepType(), deleg.drepHash(), credType, credHash);
+                    if (db.get(cfState, revKey) == null) {
+                        batch.put(cfState, revKey, new byte[]{1});
+                        deltaOps.add(new DeltaOp(OP_PUT, revKey, null));
+                        added++;
+                    }
+                } else {
+                    batch.delete(cfState, keyCopy);
+                    deltaOps.add(new DeltaOp(OP_DELETE, keyCopy, it.value()));
+                    dangling++;
+                }
+            }
+        }
+
+        batch.put(cfState, MARKER_PV10_REVERSE_REBUILD, new byte[]{1});
+        deltaOps.add(new DeltaOp(OP_PUT, MARKER_PV10_REVERSE_REBUILD, null));
+        log.info("PV10 reverse-index rebuild: {} stale reverse entries removed, {} added, "
+                + "{} dangling forward delegations removed", removed, added, dangling);
+    }
+
+    private static boolean isDelegationTo(AccountStateCborCodec.DRepDelegationRecord deleg,
+                                          int drepType, String drepHash) {
+        return deleg.drepType() == drepType && deleg.drepHash().equals(drepHash);
     }
 
     private void delegateToPool(StakeCredential cred, String poolHash,
@@ -4085,7 +4076,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private void delegateToDRep(StakeCredential cred, Drep drep,
                                 long slot, int txIdx, int certIdx, int currentEpoch,
-                                WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                WriteBatch batch, List<DeltaOp> deltaOps,
+                                BatchStateOverlay overlay) throws RocksDBException {
         int ct = credTypeInt(cred.getType());
         String credHash = cred.getHash();
         byte[] key = drepDelegKey(ct, credHash);
@@ -4133,8 +4125,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
         }
 
-        // Add new reverse entry if new DRep is a credential DRep
-        if (isCredentialDRep(newDrepType)) {
+        // Add the delegator to the new DRep's reverse set only if that DRep is registered. Haskell's
+        // insert is a Map.adjust on vsDReps (Conway/Rules/Deleg.hs:363-365, Conway/State/VState.hs:142),
+        // a no-op for an unregistered DRep, which the PV9 bootstrap lets a delegation target
+        // (Deleg.hs:225-226). ConwayRegDRep then starts with an empty set (GovCert.hs:229), so a later
+        // retirement of that DRep does not clear the delegation. Read through the block overlay: the
+        // registration or retirement may be earlier in this block.
+        if (isCredentialDRep(newDrepType)
+                && getStateWithOverlay(drepRegKey(newDrepType, drep.getHash()), overlay) != null) {
             byte[] newRevKey = drepDelegReverseKey(newDrepType, drep.getHash(), ct, credHash);
             byte[] newRevPrev = db.get(cfState, newRevKey);
             batch.put(cfState, newRevKey, new byte[]{1}); // marker value
@@ -5565,8 +5563,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private void undoBoundaryDeltaSlotBounded(long slot) throws RocksDBException {
         for (byte phase : BOUNDARY_PHASE_REVERSE_ORDER) {
             while (true) {
-                byte[] seek = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
-                        .putLong(slot).put(phase).putInt(Integer.MAX_VALUE).array();
+                byte[] seek = boundaryDeltaKey(slot, phase, Integer.MAX_VALUE);
                 byte[] key;
                 byte[] encoded;
                 try (RocksIterator iterator = db.newIterator(cfBoundaryDelta)) {
@@ -6082,20 +6079,64 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Persist a boundary delta journal entry. Called atomically with the same WriteBatch
      * that contains the boundary mutations, ensuring the journal and mutations are committed together.
      *
+     * <p>
+     * The entries go after the phase's committed ones, so a phase that runs again at the same boundary
+     * (crash recovery) never overwrites the journal of its first run, and a journal larger than
+     * {@link #MAX_BOUNDARY_DELTA_BYTES} is split over consecutive sequences. Rollback undoes a phase's
+     * sequences from the highest down, which is the reverse of the order written here.
+     * <p>
+     * Call it at most once per (slot, phase) per uncommitted batch: the next sequence is read from the
+     * committed journal, so a second call before the batch is written would reuse the first call's
+     * sequences and overwrite its entries.
+     *
      * @param slot  the slot of the first block that triggered this epoch boundary
      * @param phase one of PHASE_REWARDS, PHASE_MIR, PHASE_SPENDABLE_REST, PHASE_GOV_ENACT, PHASE_GOV_RATIFY
      */
     public void commitBoundaryDelta(long slot, byte phase, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
-        commitBoundaryDelta(slot, phase, 0, batch, deltaOps);
+        if (deltaOps.isEmpty()) return;
+        int sequence = nextBoundaryDeltaSequence(slot, phase);
+        int from = 0;
+        int bytes = DELTA_HEADER_BYTES;
+        for (int i = 0; i < deltaOps.size(); i++) {
+            int size = encodedSize(deltaOps.get(i));
+            if (i > from && bytes + size > MAX_BOUNDARY_DELTA_BYTES) {
+                commitBoundaryDelta(slot, phase, sequence++, batch, deltaOps.subList(from, i));
+                from = i;
+                bytes = DELTA_HEADER_BYTES;
+            }
+            bytes += size;
+        }
+        commitBoundaryDelta(slot, phase, sequence, batch, deltaOps.subList(from, deltaOps.size()));
+    }
+
+    /**
+     * The sequence after the last committed journal entry of {@code phase} at {@code slot}; 0 when none.
+     * Reads the committed journal only, not an uncommitted batch (see {@link #commitBoundaryDelta}).
+     */
+    private int nextBoundaryDeltaSequence(long slot, byte phase) {
+        byte[] last = boundaryDeltaKey(slot, phase, Integer.MAX_VALUE);
+        try (RocksIterator it = db.newIterator(cfBoundaryDelta)) {
+            it.seekForPrev(last);
+            if (!it.isValid()) return 0;
+            byte[] key = it.key();
+            if (key.length != 13 || ByteBuffer.wrap(key, 0, 8).order(ByteOrder.BIG_ENDIAN).getLong() != slot
+                    || key[8] != phase) {
+                return 0;
+            }
+            return ByteBuffer.wrap(key, 9, 4).order(ByteOrder.BIG_ENDIAN).getInt() + 1;
+        }
     }
 
     public void commitBoundaryDelta(long slot, byte phase, int sequence,
                                     WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         if (deltaOps.isEmpty()) return;
-        byte[] key = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
+        batch.put(cfBoundaryDelta, boundaryDeltaKey(slot, phase, sequence), encodeDelta(slot, deltaOps));
+    }
+
+    /** Boundary journal key: slot(8) | phase(1) | sequence(4), big-endian. */
+    static byte[] boundaryDeltaKey(long slot, byte phase, int sequence) {
+        return ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
                 .putLong(slot).put(phase).putInt(sequence).array();
-        byte[] val = encodeDelta(slot, deltaOps);
-        batch.put(cfBoundaryDelta, key, val);
     }
 
     // --- Delta encoding ---
@@ -6103,16 +6144,23 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public record DeltaOp(byte opType, byte[] key, byte[] prevValue) {}
     private record DecodedDelta(long slot, List<DeltaOp> ops) {}
 
+    /** slot(8) + numOps(4) before an encoded delta's ops. */
+    private static final int DELTA_HEADER_BYTES = 8 + 4;
+
+    private static int encodedSize(DeltaOp op) {
+        return 1 + 2 + op.key.length + 2 + (op.prevValue != null ? op.prevValue.length : 0);
+    }
+
     private byte[] encodeDelta(long slot, List<DeltaOp> ops) {
         // Format: slot(8) + numOps(4) + [opType(1) + keyLen(2) + key(N) + prevLen(2) + prev(M)]*
-        int size = 8 + 4;
+        int size = DELTA_HEADER_BYTES;
         for (DeltaOp op : ops) {
             if (op.key.length > 0xFFFF
                     || (op.prevValue != null && op.prevValue.length > 0xFFFF)) {
                 throw new IllegalArgumentException(
                         "Boundary delta v1 cannot encode keys or values larger than 65535 bytes");
             }
-            size += 1 + 2 + op.key.length + 2 + (op.prevValue != null ? op.prevValue.length : 0);
+            size += encodedSize(op);
         }
 
         ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
