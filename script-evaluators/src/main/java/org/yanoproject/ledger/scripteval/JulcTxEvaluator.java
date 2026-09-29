@@ -6,8 +6,8 @@ import com.bloxbean.cardano.client.api.UtxoSupplier;
 import com.bloxbean.cardano.client.api.common.OrderEnum;
 import com.bloxbean.cardano.client.api.model.Utxo;
 
-import com.bloxbean.cardano.julc.clientlib.eval.JulcTransactionEvaluator;
-import com.bloxbean.cardano.julc.clientlib.eval.SlotConfig;
+import org.julclang.clientlib.eval.JulcTransactionEvaluator;
+import org.julclang.clientlib.eval.SlotConfig;
 import org.yanoproject.ledger.rules.SlotConfigSupplier;
 import org.yanoproject.ledger.rules.TransactionEvaluator;
 

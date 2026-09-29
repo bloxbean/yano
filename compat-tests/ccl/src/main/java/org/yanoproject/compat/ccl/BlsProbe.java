@@ -51,7 +51,9 @@ public final class BlsProbe {
     /**
      * {@code BlsDoublingValidator} compiled by julc 0.1.0-pre16 — source lives in
      * {@code compat-tests/contracts/bls/}, so the smoke test itself needs no julc
-     * toolchain. Rebuild with {@code cd compat-tests/contracts/bls && ../../ccl/gradlew build}
+     * toolchain. The source now builds with julc 0.1.0-pre17 ({@code org.julclang},
+     * typed {@code JulcG1} builtins), which emits a different (larger) script; the
+     * pre16 bytes stay embedded because they are the ones proven against live nodes. Rebuild with {@code cd compat-tests/contracts/bls && ../../ccl/gradlew build}
      * and copy {@code cborHex} from
      * {@code build/classes/java/main/META-INF/plutus/BlsDoublingValidator.plutus.json}.
      */
