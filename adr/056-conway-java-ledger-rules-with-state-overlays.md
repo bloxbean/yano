@@ -2359,6 +2359,207 @@ same base-plus-delta model.
   - zero false rejections in shadow sync over preprod, preview and mainnet from
     the PV10 boundary to the tip.
 
+#### Phase 7b results: cardano-blueprint conformance vectors (2026-09-29)
+
+- **Pin.** cardano-blueprint `main` (`0f0c17e1`) still carries the 2025 tarball: one JSON file per transaction with
+  a `LedgerState`, a different format. The binary `[config, initial NewEpochState, final NewEpochState, [event],
+  title]` vectors Amaru reads are those of cardano-blueprint PR #71 (head `d57b8d76` in `KtorZ/cardano-blueprint`),
+  `src/ledger/conformance-test-vectors/vectors.tar.gz`, sha256 `5041539c…9b727d`. They are the same files as
+  Amaru's `crates/amaru-ledger/tests/data/rules-conformance` at the pinned tag. The pin is in `BlueprintVectorLoader`,
+  and a corpus digest over every extracted file is checked whether the files come from the tarball or from an Amaru
+  checkout. **The pin depends on an unmerged fork commit**: GitHub serves it through `cardano-scaling/cardano-blueprint`
+  only while PR #71's ref exists. The CI step, `BlueprintVectorLoader` and the generated report say so, and the fetch
+  failure message says to re-pin (to the merged commit, or to Amaru's copy of the same files). The tarball is not
+  vendored. 320 vectors, 2487 transactions, 886 tick and 567 epoch events, 44 parameter records. Every vector runs in
+  the Conway era. Grouped by the Imp spec they come from, they run at PV 9 (Shelley 11, Allegra 1, Mary 2, Alonzo 98,
+  Babbage 3: the bootstrap phase) and PV 10 (Conway 205). The vectors record whether Haskell applied a transaction,
+  not its predicate failure, so the gate compares verdicts.
+- **Decoder** (`ledger-rules` test fixtures, `fixtures.blueprint`). `NewEpochStateDecoder` builds an
+  `InMemoryLedgerView` from:
+  - the UTxO, with inline datums' original bytes;
+  - accounts, pools (with future parameters and retirements), DReps and the committee (terms, hot keys,
+    resignations);
+  - proposals (payloads, parents, parameter-update keys) and enacted roots;
+  - the guardrail script, the treasury and the dormant-epoch count;
+  - the current parameters (`ConwayPParamsDecoder`, raw cost models in the ledger's order).
+
+  The vectors come from a ledger before cardano-ledger `38c76760b` (the `Accounts` refactor), so they use the `UMap`
+  account layout and the four-map `PState`. The decoder reads that layout and also the later account map. It fails
+  closed, skipping the vector with the reason, on:
+  - a MemPack-encoded UTxO (the pinned vectors use CBOR `TxIn`/`TxOut`);
+  - the later `PState` layout;
+  - a missing parameter record;
+  - a parameter the rules read (execution prices, `minFeeRefScriptCostPerByte`) that has no exact decimal form.
+
+  A voting threshold of 2/3 is rounded. Only the epoch boundary reads thresholds. All 320 initial states and all 320
+  final states decode. The final states exercise every populated part: accounts in 181 vectors, pools 72, DReps 89,
+  proposals 113, committee state 72.
+- **Runner** (`ledger-conformance`, `blueprint.BlueprintVectorRunner`). Every transaction event goes through the Java
+  engine with:
+  - rule `LEDGER`, origin `SYNC`;
+  - the event's slot, and its epoch `slot / epochSize` (the Imp tests' fixed epoch info; a vector whose config slot
+    and epoch disagree is refused);
+  - the state's protocol version, and the vector's network id and system start;
+  - the Scalus phase-2 evaluator with no forecast horizon, because Imp tests use a fixed epoch info.
+
+  Between transactions the state follows Haskell. An applied transaction's effects go into an `OverlayLedgerView`:
+  the engine's effects, or `TxEffectsDeriver`'s for Haskell's verdict when the engine disagrees. PassTick and
+  PassEpoch events are skipped, as in Amaru. A disagreement in a transaction whose epoch is later than the initial
+  state's `nesEL` is classified `requires epoch`, not `failed`. The boundary comes from the state's epoch, not from
+  the events: `conway/fail-gov-expirationepochtoosmall` records a PassEpoch that its initial state (`nesEL` 900, config
+  epoch 899) already includes.
+- **Final-state check.** 233 vectors stay in one epoch (by `nesEL`) with unchanged parameters. For each of them, the
+  state the harness reaches is compared with the vector's final `NewEpochState`: every touched UTxO entry (the whole
+  output), account (deposit, reward balance, delegations), pool (deposit, VRF key, pending retirement, staged
+  re-registration) and DRep (deposit, expiry), plus the committee state (hot keys, resignations, terms) and the
+  proposals (ids in order, epochs, deposit, type, parent). **All 233 match**, which checks `TxEffectsDeriver` and
+  `OverlayLedgerView` against Haskell on their 977 transactions.
+
+  This is not full-state equality. The comparison leaves out:
+  - votes, proposal payloads beyond type and parent, DRep and constitution anchors, and pool parameter bodies beyond
+    deposit, VRF key and retirement;
+  - the deposit, fee and donation totals, the stake distribution and the snapshots.
+
+  The rules read none of these. The treasury, the enacted roots and the dormant-epoch count are also left out: the
+  rules read them, but only an epoch boundary changes them.
+
+  Seven vectors change the parameters without an event (the Imp test's `modifyPParams`). Three are the Alonzo
+  `no-cost-model` vectors. Their failing transaction is judged against the unmodified parameters, and Java rejects it
+  with `PPViewHashesDontMatch`, not Haskell's `NoCostModel`. They are excluded from the evidence.
+
+  The gate therefore also validates each failing transaction at the parameters Haskell used: the vector's final
+  state, whose parameters hold no cost model at all. There Java reports Haskell's `UTXOS.CollectErrors [NoCostModel]`
+  and nothing else, so the script integrity hash matches, as it also does with only the script's language removed.
+  `PPViewHashesDontMatch` is an artefact of the missing event, not a Java ordering or logic divergence.
+
+  **Fixed divergence.** At those final parameters the engine used to fail closed with
+  `ENGINE.LedgerStateUnavailable`, where Haskell reports `NoCostModel`: `ScriptIntegrity.costModel` read an empty raw
+  cost-model map as unavailable. The `LedgerView#protocolParams` contract now distinguishes three cases:
+  - a `null` raw map means the raw form was not supplied, so the result is unavailable (fail closed);
+  - an empty raw map beside a non-empty named map means the raw form was dropped, so the result is unavailable;
+  - an empty raw map otherwise means no cost model for any language, so the result is `NoCostModel`.
+
+  `ScriptIntegrityTest` covers all three. The runtime is unchanged: the canonical view's `ProtocolParamsMapper.fromSnapshot`
+  sets the raw map only when it is non-empty, so a network without raw data still fails closed. The other readers
+  already agree:
+  - `Phase2EnvDigest` falls back to the named map;
+  - the Scalus evaluator's `hasCostModel` reports `NoCostModel`;
+  - Amaru's `ProtocolParamsEncoder` encodes an empty cost-model map.
+
+  The rule-set manifests are unchanged. The fix is PV-neutral.
+- **Gate** (`BlueprintVectorGateTest`, 10 tests). It checks:
+  - the pin;
+  - that every state decodes;
+  - pinned tallies per Imp spec and PV;
+  - transaction-level agreement: 2471 matching verdicts, and every mismatching transaction index per vector. A new
+    disagreement inside a vector that is already `requires epoch` therefore fails the gate;
+  - that every final state matches where comparable;
+  - that **every vector Amaru passes, Java passes**, unless recorded.
+
+  Amaru's 27 known failures (its `rules-conformance.failures.toml`) are pinned in `amaru-known-failures.txt` and
+  checked against the Amaru checkout when one is configured. Results:
+
+  | | vectors | passed | failed | requires epoch |
+  |---|---:|---:|---:|---:|
+  | PV 9 (non-Conway Imp specs) | 115 | 115 | 0 | 0 |
+  | PV 10 (Conway Imp spec) | 205 | 194 | 1 | 10 |
+
+  Transactions: 2471 of 2487 match Haskell's verdict. Of the 16 that do not, 15 come after a skipped epoch boundary.
+  These are the numbers after the two engine fixes below; before them, PV 10 was 192 passed and 3 failed.
+
+  Compared with Amaru, which passes 293:
+  - **Java passes 309.** That includes 18 of Amaru's 27 known failures:
+    - the metadata decoding case;
+    - the three unregistered-credential vectors (two delegations, one withdrawal);
+    - expired governance actions;
+    - the seven PlutusV1/V2 context checks (inline datums, proposals, votes, treasury donation);
+    - the two guardrail-policy vectors;
+    - the two pool-retirement vectors, where Amaru's harness uses a default era history;
+    - two missing-signature cases.
+  - **The other 9 of Amaru's failures are `requires epoch` for Java as well.** They depend on rewards, deposit refunds,
+    pool reaping, constitution or committee enactment at a boundary.
+  - **Two vectors Amaru passes and Java does not** are recorded (`RECORDED`). Neither is a ledger-rule bug, but the
+    Phase 7 gate "at or above Amaru's pass set" is met only with these two recorded exceptions:
+    - `conway/fail-certs-withdrawing-the-wrong-amount`. **Harness, not an engine bug:** the verdict needs the skipped
+      epoch boundary. The boundaries refund a proposal deposit (`Conway/Rules/Epoch.hs:179-190`), so Haskell rejects
+      tx 7's zero withdrawal. Amaru most likely passes because its harness keeps a failed transaction's partial
+      effects.
+    - `conway/pass-enact-withdrawals-exceeding-maxbound-word64-submitted-in-a-single-proposal`. **Evaluator limit**,
+      fix 2 below.
+- **Engine fixes** (`scalus-bridge`, `ScalusScriptPhaseEvaluator`, the phase-2 evaluator the Java engine uses).
+  1. **PlutusV1 over reference scripts.** `pass-utxos-can-use-reference-scripts` and
+     `pass-utxos-can-use-regular-inputs-for-reference` now pass (tx 2 was
+     `UTXOS.CollectErrors [BadTranslation ReferenceScriptsNotSupported]`).
+     - Conway has its own `transTxOutV1` and `transTxInInfoV1` (`Conway/TxInfo.hs:306-335`; reference inputs go
+       through them at `:411`). They reject an inline datum, then a Byron address, but not a reference script.
+       Only Babbage's `transTxOutV1` (`Babbage/TxInfo.hs:119-121`) does, and `Babbage/Imp/UtxosSpec.hs:71-95`
+       expects "PlutusV1 with references" to succeed after Babbage.
+     - A V1 `TxOut` has no reference-script field, so Haskell drops it (`Alonzo.transTxOut`). Scalus's
+       `getTxOutV1` drops it the same way. Its V1 pre-check rejects only inline datums and Byron addresses, and it
+       leaves reference inputs out of the V1 `TxInfo`.
+     - V2 (`Babbage.transTxOutV2`) and V3 carry the reference script's hash, and Scalus's `getTxOutV2` does the same.
+       Only a Byron address fails there.
+
+     Re-checked against Conway's `TxInfo`, not Babbage's:
+     - the V1/V2 Conway-feature guard (votes, proposals, a non-zero donation, the current treasury value);
+     - `CertificateNotSupported` (`transTxCertV1V2` plus `transTxCertCommon`);
+     - `PlutusPurposeNotSupported` for V1/V2 voting and proposing;
+     - V1 inline datums in spending inputs, reference inputs and outputs;
+     - Byron addresses for every language.
+
+     All matched. Two ordering differences were fixed, so the first failure per language follows Conway's build
+     order (`Conway/TxInfo.hs:399-520`: V1/V2 guard, validity interval, inputs, reference inputs, V3 disjointness,
+     outputs, certificates):
+     - The V3 PV 11 `ReferenceInputsNotDisjointFromInputs` check now comes before the outputs.
+     - `TimeTranslationPastHorizon` is now checked per language, after the V1/V2 guard and before the inputs, and
+       only for a language whose `TxInfo` is built. It is no longer reported next to another translation failure,
+       or for a script with `NoCostModel`.
+  2. **Coins above 2^63−1.** `SignedLongRange` scans the transaction body for an integer in `[2^63, 2^64)` (Haskell's
+     `Coin` and `SlotNo` are `Word64`; Scalus decodes them as a signed long). If it finds one, the evaluator fails
+     closed with **`ENGINE.CoinOutOfEvaluatorRange`**, an explicit engine constructor rather than a ledger verdict,
+     before any Scalus decoding. This replaces the opaque `ENGINE.JavaEngineFailure` "Expected Long but got OverLong".
+     - The body carries no Plutus data (inline datums are byte strings), so only ledger integers are scanned.
+     - No real network can hold such a coin: the supply is below 2^56 lovelace.
+     - On the vector, the only failure is this one. Every phase-1 check, including value conservation and the GOV
+       checks on the oversized withdrawal, passes with `BigInteger` coins.
+     - Scope limits, both theoretical and documented in `SignedLongRange`:
+       - A rational's numerator or denominator inside a `ParameterChange` is a Haskell `Integer`. One at or above
+         2^63 is flagged although Haskell accepts it.
+       - Witness-set and auxiliary-data integers are not scanned. One at or above 2^63 that Scalus reads as a long
+         still surfaces as the opaque `ENGINE.JavaEngineFailure`, which is never an acceptance.
+
+     The vector stays in `RECORDED` with this reason.
+- **Coverage matrix.** `conway-rule-coverage.md` has a new **Blueprint vectors** column. For each constructor it
+  counts, per PV, the vector transactions Haskell rejects that Java rejects with that constructor first:
+  - only before any skipped boundary;
+  - only in vectors whose parameters did not change outside the events.
+
+  This is verdict-level evidence, because the vectors carry no constructor, so it does not change the statuses. 46
+  constructors appear. The only `ENGINE` rejection is `allegra/fail-utxow-invalidmetadata`: Haskell's decoder also
+  refuses metadata text over 64 bytes from Allegra on (`Metadata.hs:153-185`).
+- **CI and local runs.** The `amaru-wasm.yml` `conformance` job downloads the pinned tarball, checks its sha256 and
+  passes `-PblueprintVectors=<tarball>`. The build checks the sha256 again and extracts the tarball; the pinned
+  tarball lists some files twice with identical content. Locally, `-PblueprintVectors=<tarball or directory>` works,
+  or `-PamaruScenariosDir=<Amaru checkout>` alone (the same files). Without either, the gate skips (a JUnit
+  assumption).
+
+  `conformanceReport` writes `ledger-conformance/docs/blueprint-vectors-2026-09.md`:
+  ```
+  ./gradlew :ledger-conformance:test -PblueprintVectors=vectors.tar.gz -PamaruScenariosDir=<amaru>
+  ```
+- **Tests.**
+  - `:ledger-conformance:test` with the Amaru corpus, the Amaru module and the vectors: 131 tests, 0 failures (17
+    new: the gate's 10 tests and `NewEpochStateDecoderTest`, which covers the account layouts, the fail-closed paths,
+    the rounding rule and the vector parser).
+  - Without them: 15 skipped.
+  - `:scalus-bridge:test` with the corpus: 94 tests, 1 skipped (3 new: V1 over reference scripts in every
+    `TxOut`, Conway's translation order, and the signed-long range).
+  - `:ledger-rules:test`: 356 tests, 2 skipped (1 new: `ScriptIntegrityTest`'s raw cost-model states).
+  - The Phase 3/4/5 gates and the baseline scenario columns are unchanged.
+  - `:amaru-validator:test` with the corpus and the module: 47 tests, 2 skipped, 0 failures. That
+    `ProtocolParamsEncoder` encodes an empty raw cost-model map as an empty map was checked by reading the code; no
+    test covers it.
+
 ### Phase 8 — Switch the default, clean up
 
 - Set `engine: java`. Keep `scalus` selectable, and as a default shadow engine

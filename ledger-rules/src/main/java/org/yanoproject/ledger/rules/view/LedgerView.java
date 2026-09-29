@@ -152,8 +152,11 @@ public interface LedgerView {
      * ledger stores it ({@code costModelsValid}): the parameter list in the ledger's canonical order, keyed
      * {@code PlutusV1}/{@code PlutusV2}/{@code PlutusV3}, with no entry for a language that has no cost model. The
      * Java rules hash these lists into the script integrity hash's language views; the named
-     * {@code costModels} map is not used for that, and a view whose parameters carry cost models only in the named
-     * form makes such a transaction {@code ENGINE.LedgerStateUnavailable}.</p>
+     * {@code costModels} map is not used for that. A {@code null} raw map means the view does not supply the raw
+     * form, and an empty raw map while the named map has entries means the raw form was dropped: both make such a
+     * transaction {@code ENGINE.LedgerStateUnavailable} (fail closed). An empty raw map otherwise means the ledger has
+     * no cost model for any language, so a Plutus script is {@code UTXOS.CollectErrors [NoCostModel]}, as in
+     * Haskell.</p>
      */
     Lookup<ProtocolParams> protocolParams();
 }

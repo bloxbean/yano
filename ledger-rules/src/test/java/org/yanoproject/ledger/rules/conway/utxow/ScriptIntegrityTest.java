@@ -81,6 +81,36 @@ class ScriptIntegrityTest {
                 .isEqualTo("a102f6");
     }
 
+    /**
+     * The raw map's three states ({@code LedgerView#protocolParams}): {@code null} is not supplied (fail closed); empty
+     * with an empty or absent named map is "no cost model for any language", so every language view is {@code null}
+     * and a script is {@code NoCostModel}, as in Haskell (the cardano-blueprint {@code no-cost-model} vectors); empty
+     * with a non-empty named map means the raw form was dropped (fail closed).
+     */
+    @Test
+    void anEmptyRawMapIsNoCostModelsAndANullOneIsUnavailable() {
+        ProtocolParams notSupplied = params(null);
+        assertThatThrownBy(() -> ScriptIntegrity.costModel(1, notSupplied))
+                .isInstanceOf(LedgerStateUnavailableException.class);
+
+        ProtocolParams none = params(new LinkedHashMap<>());
+        assertThat(ScriptIntegrity.costModel(1, none)).isEmpty();
+        assertThat(HexUtil.encodeHexString(ScriptIntegrity.languageViews(Set.of(1, 3), none)))
+                .isEqualTo("a2" + "02" + "f6" + "4100" + "41f6");
+        none.setCostModels(new LinkedHashMap<>());
+        assertThat(ScriptIntegrity.costModel(3, none)).isEmpty();
+
+        ProtocolParams dropped = params(new LinkedHashMap<>());
+        LinkedHashMap<String, LinkedHashMap<String, Long>> named = new LinkedHashMap<>();
+        LinkedHashMap<String, Long> v1 = new LinkedHashMap<>();
+        v1.put("a", 1L);
+        named.put("PlutusV1", v1);
+        dropped.setCostModels(named);
+        assertThatThrownBy(() -> ScriptIntegrity.costModel(3, dropped))
+                .as("the named map has cost models but the raw one is empty")
+                .isInstanceOf(LedgerStateUnavailableException.class);
+    }
+
     /** Cross-checked with CCL's independent language-view encoder on the full preprod-like cost models. */
     @Test
     void languageViewsAgreeWithCardanoClientLib() {

@@ -2,6 +2,7 @@ package org.yanoproject.scalusbridge;
 
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
@@ -234,6 +235,76 @@ class ScalusScriptPhaseEvaluatorTest {
             assertThat(ScalusScriptPhaseEvaluator.translationError(byron, Map.of(), 10, language))
                     .hasValueSatisfying(e -> assertThat(e).startsWith("ByronTxOutInContext output 0"));
         }
+    }
+
+    @Test
+    void conwayPlutusV1AcceptsReferenceScriptsInEveryTxOut() {
+        // Conway's own transTxOutV1 / transTxInInfoV1 (Conway/TxInfo.hs:306-335, reference inputs at :411) reject an
+        // inline datum and a Byron address, not a reference script: only Babbage's (Babbage/TxInfo.hs:119-121) did,
+        // and Babbage/Imp/UtxosSpec.hs:71-95 expects "PlutusV1 with references" to succeed after Babbage.
+        byte[] script = HexUtil.decodeHexString("8201" + "4746010000222499");
+        TransactionOutput withScript = TransactionOutput.builder().address(SHELLEY)
+                .value(Value.builder().coin(BigInteger.TEN).build()).scriptRef(script).build();
+        Outpoint spent = Outpoints.normalize(new Outpoint(A, 0));
+        Outpoint referenced = Outpoints.normalize(new Outpoint(B, 0));
+        Map<Outpoint, UtxoEntry> resolved = Map.of(spent, new UtxoEntry(spent, withScript),
+                referenced, new UtxoEntry(referenced, withScript));
+        Transaction tx = tx(List.of(input(A, 0)), List.of(input(B, 0)), List.of(withScript));
+
+        for (int language : List.of(1, 2, 3)) {
+            assertThat(ScalusScriptPhaseEvaluator.translationError(tx, resolved, 10, language)).isEmpty();
+        }
+        // The inline-datum restriction stays, for reference inputs too.
+        TransactionOutput inline = TransactionOutput.builder().address(SHELLEY)
+                .value(Value.builder().coin(BigInteger.TEN).build()).inlineDatum(BigIntPlutusData.of(1)).build();
+        assertThat(ScalusScriptPhaseEvaluator.translationError(tx,
+                Map.of(spent, new UtxoEntry(spent, withScript), referenced, new UtxoEntry(referenced, inline)), 10, 1))
+                .hasValueSatisfying(e -> assertThat(e).startsWith("InlineDatumsNotSupported reference input"));
+    }
+
+    @Test
+    void translationFailuresFollowConwaysTxInfoOrder() {
+        // V3 at PV 11: inputs, reference inputs, then the disjointness check, then outputs (Conway/TxInfo.hs:495-501).
+        Transaction overlapping = tx(List.of(input(A, 0)), List.of(input(A, 0)), List.of(out(BYRON)));
+        assertThat(ScalusScriptPhaseEvaluator.translationError(overlapping, Map.of(), 11, 3))
+                .hasValueSatisfying(e -> assertThat(e).startsWith("ReferenceInputsNotDisjointFromInputs"));
+        // The validity interval comes before the inputs (after the V1/V2 feature guard).
+        Transaction pastHorizon = tx(List.of(input(A, 0)), List.of(), List.of(out(BYRON)));
+        pastHorizon.getBody().setTtl(600);
+        assertThat(ScalusScriptPhaseEvaluator.translationError(pastHorizon, Map.of(), 10, 3, 500))
+                .hasValueSatisfying(e -> assertThat(e).startsWith("TimeTranslationPastHorizon ttl 600"));
+        pastHorizon.getBody().setDonation(BigInteger.ONE);
+        assertThat(ScalusScriptPhaseEvaluator.translationError(pastHorizon, Map.of(), 10, 2, 500))
+                .contains("TreasuryDonationFieldNotSupported");
+        // No TxInfo is built for a language without a cost model, so no horizon failure either.
+        ProtocolParams noCostModels = new ProtocolParams();
+        noCostModels.setCostModelsRaw(new LinkedHashMap<>());
+        assertThat(ScalusScriptPhaseEvaluator.collectErrors(pastHorizon, Map.of(), noCostModels, 10,
+                List.of(new NeededPlutusScript("spend", 0, "cc".repeat(28), 3, true)), 500))
+                .containsExactly("NoCostModel PlutusV3");
+    }
+
+    @Test
+    void anIntegerAboveTheSignedLongRangeFailsClosedBeforeScalusDecodes() throws Exception {
+        // [{0: [], 1: [], 2: 2^63}, {}, true, null]: a fee Haskell decodes as a Word64, Scalus cannot.
+        byte[] tooLarge = HexUtil.decodeHexString("84a300800180021b8000000000000000a0f5f6");
+        byte[] largest = HexUtil.decodeHexString("84a300800180021b7fffffffffffffffa0f5f6");
+        assertThat(SignedLongRange.firstOutOfRange(tooLarge))
+                .hasValueSatisfying(e -> assertThat(e).startsWith("unsigned integer 9223372036854775808"));
+        assertThat(SignedLongRange.firstOutOfRange(largest)).isEmpty();
+        // Plutus data in the witness set is not scanned (a datum integer can be any size).
+        assertThat(SignedLongRange.firstOutOfRange(HexUtil.decodeHexString(
+                "84a30080018002182aa104811b8000000000000000f5f6"))).isEmpty();
+
+        ProtocolParams params = new ProtocolParams();
+        params.setProtocolMajorVer(10);
+        params.setProtocolMinorVer(0);
+        List<LedgerFailure> failures = evaluator.collect(tooLarge, new Transaction(), Map.of(), params,
+                new SlotConfig(1000, 0, 0), -1);
+        assertThat(failures).singleElement().satisfies(f -> {
+            assertThat(f.rule().name()).isEqualTo("ENGINE");
+            assertThat(f.constructor()).isEqualTo(ScalusScriptPhaseEvaluator.COIN_OUT_OF_EVALUATOR_RANGE);
+        });
     }
 
     @Test

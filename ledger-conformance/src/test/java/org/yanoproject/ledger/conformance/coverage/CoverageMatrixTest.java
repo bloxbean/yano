@@ -2,6 +2,7 @@ package org.yanoproject.ledger.conformance.coverage;
 
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.ConformanceSettings;
+import org.yanoproject.ledger.conformance.blueprint.BlueprintVectorResults;
 import org.yanoproject.ledger.conformance.mutation.Mutations;
 import org.yanoproject.ledger.conformance.runner.ScenarioCases;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruCorpusNames;
@@ -70,7 +71,7 @@ class CoverageMatrixTest {
         CoversScanner.Result scan = CoversScanner.scan(ownClasses, ConformanceSettings.scanDirs(),
                 CoverageMatrixTest.class.getClassLoader());
         CoverageMatrix matrix = CoverageMatrix.build(catalogue, scan.coverings(), ScenarioCases.scenarios(),
-                worldEvidence());
+                worldEvidence(), BlueprintVectorResults.get().map(BlueprintVectorResults.Run::rejectionEvidence));
 
         assertThat(matrix.unknownCovers()).as("@Covers values that are not catalogue constructors").isEmpty();
         assertThat(scan.coverings()).as("the mutation matrix's @Covers tests are found").isNotEmpty();

@@ -644,7 +644,7 @@ public final class AmaruScenarioLoader {
      * The inline datum's original CBOR from a post-Alonzo output ({@code 2: [1, #6.24(bytes .cbor
      * plutus_data)]}), or null when the output has none.
      */
-    static byte[] inlineDatumBytes(byte[] output) {
+    public static byte[] inlineDatumBytes(byte[] output) {
         long[] head = head(output, 0);
         if (head[0] != 5) {
             return null; // legacy array output: no inline datum

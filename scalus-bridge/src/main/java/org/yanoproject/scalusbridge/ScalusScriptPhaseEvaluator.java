@@ -59,13 +59,19 @@ import java.util.TreeSet;
  *             Checked: Plutus V1/V2 with Conway-only fields ({@code guardConwayFeaturesForPlutusV1V2},
  *             Conway/TxInfo.hs:352-381), with Conway-only certificates ({@code transTxCertV1V2},
  *             {@code CertificateNotSupported}), or needed for a vote or proposal
- *             ({@code PlutusPurposeNotSupported}); Plutus V1 with an inline datum or reference script in a
- *             spending or reference input or an output ({@code transTxOutV1}, Babbage/TxInfo.hs:119-126);
- *             a Byron address in a spending or reference input or an output, for every language
- *             ({@code ByronTxOutInContext}); and from protocol version 11, Plutus V3 with spending inputs
- *             that are also reference inputs ({@code ReferenceInputsNotDisjointFromInputs},
- *             Conway/TxInfo.hs:497); and, with a {@link ForecastHorizon}, a validity bound at or past the
- *             forecast horizon ({@code TimeTranslationPastHorizon}, {@code Alonzo/Plutus/TxInfo.hs:252-274}).</li>
+ *             ({@code PlutusPurposeNotSupported}); Plutus V1 with an inline datum in a spending or reference
+ *             input or an output (Conway's own {@code transTxOutV1}/{@code transTxInInfoV1},
+ *             Conway/TxInfo.hs:306-335, reference inputs at :411; unlike Babbage's, Babbage/TxInfo.hs:119-121,
+ *             it accepts reference scripts, which a V1 {@code TxOut} simply omits); a Byron address in a
+ *             spending or reference input or an output, for every language ({@code ByronTxOutInContext}); from
+ *             protocol version 11, Plutus V3 with spending inputs that are also reference inputs
+ *             ({@code ReferenceInputsNotDisjointFromInputs}, Conway/TxInfo.hs:497); and, with a
+ *             {@link ForecastHorizon}, a validity bound at or past the forecast horizon
+ *             ({@code TimeTranslationPastHorizon}, {@code Alonzo/Plutus/TxInfo.hs:252-274}). Per language, the
+ *             first failure in the order Conway builds that language's {@code TxInfo} is reported
+ *             (Conway/TxInfo.hs:399-520): the V1/V2 Conway-feature guard, the validity interval, spending
+ *             inputs, reference inputs, the V3 disjointness check (protocol version 11), outputs,
+ *             certificates.</li>
  *       </ul></li>
  * </ol>
  * <p>{@code NoRedeemer} is reported for a needed Plutus script without a redeemer (UTXOW's
@@ -81,6 +87,13 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
 
     /** Haskell {@code ConwayUtxosPredFailure} constructor for collection failures. */
     public static final String COLLECT_ERRORS = "CollectErrors";
+
+    /**
+     * {@code ENGINE} constructor (not a ledger verdict): the transaction body holds an integer in {@code [2^63, 2^64)}
+     * (a coin or slot, a {@code Word64} in Haskell), which Scalus's transaction decoder cannot represent, so the
+     * scripts cannot be evaluated. The evaluator fails closed ({@link SignedLongRange}).
+     */
+    public static final String COIN_OUT_OF_EVALUATOR_RANGE = "CoinOutOfEvaluatorRange";
 
     private final ForecastHorizon horizon;
 
@@ -161,6 +174,15 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
         int major = requireVersion(params.getProtocolMajorVer(), "protocol major version");
         int minor = requireVersion(params.getProtocolMinorVer(), "protocol minor version");
 
+        // Before anything hands the transaction to Scalus's decoder, which reads coins and slots as a signed long.
+        Optional<String> outOfRange = SignedLongRange.firstOutOfRange(txCbor);
+        if (outOfRange.isPresent()) {
+            return new Preparation(List.of(new LedgerFailure(LedgerRuleName.ENGINE, COIN_OUT_OF_EVALUATOR_RANGE,
+                    LedgerFailure.Phase.PHASE_1, "the transaction body holds an integer above 2^63-1 ("
+                    + outOfRange.get() + "): a Word64 coin or slot in Haskell, but Scalus decodes it as a signed long, "
+                    + "so the scripts cannot be evaluated")), List.of());
+        }
+
         List<LedgerFailure> malformed = new ArrayList<>();
         List<String> witnesses = checkWellFormed ? ScalusPhaseTwo.malformedWitnessScripts(txCbor, major, minor)
                 : List.of();
@@ -180,11 +202,8 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
 
         List<NeededPlutusScript> needed = ScalusPhaseTwo.neededPlutusScripts(txCbor, resolvedInputs.values(),
                 major, minor);
-        List<String> collectErrors = collectErrors(tx, resolvedInputs, params, major, needed);
-        if (horizon != null && validationSlot >= 0 && needed.stream().anyMatch(NeededPlutusScript::hasRedeemer)) {
-            horizonError(tx, horizon.exclusiveUpperSlot(validationSlot))
-                    .ifPresent(e -> collectErrors.add("BadTranslation " + e));
-        }
+        long horizonSlot = horizon != null && validationSlot >= 0 ? horizon.exclusiveUpperSlot(validationSlot) : -1;
+        List<String> collectErrors = collectErrors(tx, resolvedInputs, params, major, needed, horizonSlot);
         if (!collectErrors.isEmpty()) {
             return new Preparation(List.of(new LedgerFailure(LedgerRuleName.UTXOS, COLLECT_ERRORS,
                     LedgerFailure.Phase.PHASE_1, String.join("; ", collectErrors))), needed);
@@ -196,6 +215,16 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
 
     static List<String> collectErrors(Transaction tx, Map<Outpoint, UtxoEntry> resolved, ProtocolParams params,
                                       int protocolMajor, List<NeededPlutusScript> needed) {
+        return collectErrors(tx, resolved, params, protocolMajor, needed, -1);
+    }
+
+    /**
+     * @param horizonSlot the first slot past the forecast horizon, or negative to skip that check; like every
+     *                    other translation, it is checked only for a language whose {@code TxInfo} is built (a
+     *                    needed script with a redeemer and a cost model)
+     */
+    static List<String> collectErrors(Transaction tx, Map<Outpoint, UtxoEntry> resolved, ProtocolParams params,
+                                      int protocolMajor, List<NeededPlutusScript> needed, long horizonSlot) {
         List<String> errors = new ArrayList<>();
         Set<Integer> languages = new TreeSet<>();
         for (NeededPlutusScript script : needed) {
@@ -216,7 +245,7 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
             languages.add(script.language());
         }
         for (int language : languages) {
-            translationError(tx, resolved, protocolMajor, language)
+            translationError(tx, resolved, protocolMajor, language, horizonSlot)
                     .ifPresent(e -> errors.add("BadTranslation " + e + " for PlutusV" + language));
         }
         return errors;
@@ -247,6 +276,16 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
     /** @return the first {@code TxInfo} translation failure for {@code language}, in Haskell's order */
     static Optional<String> translationError(Transaction tx, Map<Outpoint, UtxoEntry> resolved,
                                                          int protocolMajor, int language) {
+        return translationError(tx, resolved, protocolMajor, language, -1);
+    }
+
+    /**
+     * @param horizonSlot the first slot past the forecast horizon, or negative to skip that check
+     * @return the first {@code TxInfo} translation failure for {@code language}, in the order Conway builds it
+     *         (Conway/TxInfo.hs:399-520)
+     */
+    static Optional<String> translationError(Transaction tx, Map<Outpoint, UtxoEntry> resolved,
+                                             int protocolMajor, int language, long horizonSlot) {
         TransactionBody body = tx.getBody();
         if (language == 1 || language == 2) {
             if (body.getVotingProcedures() != null && body.getVotingProcedures().getVoting() != null
@@ -263,7 +302,14 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
                 return Optional.of("CurrentTreasuryFieldNotSupported");
             }
         }
-        // Inputs, then reference inputs, then outputs, as the TxInfo is built.
+        // The validity interval (transValidityInterval), after the V1/V2 guard and before the inputs.
+        if (horizonSlot >= 0) {
+            Optional<String> error = horizonError(tx, horizonSlot);
+            if (error.isPresent()) {
+                return error;
+            }
+        }
+        // Inputs, then reference inputs, (V3 from PV 11: disjointness), then outputs, as the TxInfo is built.
         for (TransactionInput input : nullToEmpty(body.getInputs())) {
             Optional<String> error = outputError(output(resolved, input), language, "input " + input);
             if (error.isPresent()) {
@@ -275,6 +321,15 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
                     "reference input " + input);
             if (error.isPresent()) {
                 return error;
+            }
+        }
+        if (language == 3 && protocolMajor >= 11) {
+            Set<String> spending = new LinkedHashSet<>();
+            nullToEmpty(body.getInputs()).forEach(in -> spending.add(key(in)));
+            List<String> common = nullToEmpty(body.getReferenceInputs()).stream().map(ScalusScriptPhaseEvaluator::key)
+                    .filter(spending::contains).sorted().toList();
+            if (!common.isEmpty()) {
+                return Optional.of("ReferenceInputsNotDisjointFromInputs " + common);
             }
         }
         List<TransactionOutput> outputs = nullToEmpty(body.getOutputs());
@@ -291,15 +346,6 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
                 }
             }
         }
-        if (language == 3 && protocolMajor >= 11) {
-            Set<String> spending = new LinkedHashSet<>();
-            nullToEmpty(body.getInputs()).forEach(in -> spending.add(key(in)));
-            List<String> common = nullToEmpty(body.getReferenceInputs()).stream().map(ScalusScriptPhaseEvaluator::key)
-                    .filter(spending::contains).sorted().toList();
-            if (!common.isEmpty()) {
-                return Optional.of("ReferenceInputsNotDisjointFromInputs " + common);
-            }
-        }
         return Optional.empty();
     }
 
@@ -307,10 +353,9 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
         if (output == null) {
             return Optional.empty(); // an unresolved input is phase one's BadInputsUTxO
         }
+        // Conway's transTxOutV1 (Conway/TxInfo.hs:306-320): an inline datum, then a Byron address. A reference
+        // script is not a failure (only Babbage's transTxOutV1 rejects it); the V1 TxOut has no field for it.
         if (language == 1) {
-            if (output.getScriptRef() != null) {
-                return Optional.of("ReferenceScriptsNotSupported " + source);
-            }
             if (output.getInlineDatum() != null) {
                 return Optional.of("InlineDatumsNotSupported " + source);
             }

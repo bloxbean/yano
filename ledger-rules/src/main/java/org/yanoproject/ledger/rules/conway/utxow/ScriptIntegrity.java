@@ -117,15 +117,24 @@ final class ScriptIntegrity {
      * The view's cost model for a language, from {@link ProtocolParams#getCostModelsRaw()} only (the
      * {@code LedgerView#protocolParams()} contract): the named map's order is not the ledger's, so it is never used.
      *
+     * <p>A {@code null} raw map means the view did not supply the raw form: unavailable. An empty raw map means the
+     * ledger has no cost model for any language (Haskell's {@code costModelsValid} is empty), so every language has
+     * none and the script's {@code UTXOS.CollectErrors [NoCostModel]} decides; unless the named map has entries,
+     * which means the raw form was dropped: unavailable.</p>
+     *
      * @return the parameters, or empty when the language has no cost model (encoded {@code null})
-     * @throws LedgerStateUnavailableException when the view carries no raw cost models, or carries the language only
-     *                                         in the named form
+     * @throws LedgerStateUnavailableException when the view carries no raw cost models ({@code null}), or carries
+     *                                         cost models (or this language's) only in the named form
      */
     static Optional<long[]> costModel(int language, ProtocolParams params) {
         String name = "PlutusV" + language;
         Map<String, List<Long>> raw = params.getCostModelsRaw();
-        if (raw == null || raw.isEmpty()) {
+        if (raw == null) {
             throw new LedgerStateUnavailableException("raw cost models unavailable in the view's protocol parameters");
+        }
+        if (raw.isEmpty() && params.getCostModels() != null && !params.getCostModels().isEmpty()) {
+            throw new LedgerStateUnavailableException("the view's protocol parameters carry cost models only in the "
+                    + "named form");
         }
         List<Long> costs = raw.get(name);
         if (costs == null || costs.isEmpty()) {

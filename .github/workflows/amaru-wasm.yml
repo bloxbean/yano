@@ -236,10 +236,35 @@ jobs:
           [[ "$actual" == "$commit" ]] \
             || { echo "::error::tag $tag is at $actual, AMARU_VERSION pins $commit"; exit 1; }
 
-      - name: Conformance harness (Amaru reference, 276 scenarios, mutation matrix, strict coverage)
+      - name: Fetch the pinned cardano-blueprint ledger conformance vectors
+        # ADR-056 Phase 7b: the vectors of cardano-blueprint PR #71 at its head commit (BlueprintVectorLoader
+        # has the pin). The build checks the sha256 again before extracting, and the tests check the files
+        # against the pinned corpus digest.
+        # DEPENDENCY ON AN UNMERGED FORK COMMIT: d57b8d76 lives in KtorZ/cardano-blueprint (PR #71, not merged;
+        # cardano-blueprint main still has the older JSON-format tarball). GitHub serves it through the
+        # cardano-scaling repository only while the PR ref exists. If this download fails, re-pin to the merged
+        # commit (or to Amaru's copy of the same files, crates/amaru-ledger/tests/data/rules-conformance) and
+        # update BlueprintVectorLoader; the tarball is deliberately not vendored.
+        shell: bash
+        env:
+          BLUEPRINT_VECTORS_URL: https://github.com/cardano-scaling/cardano-blueprint/raw/d57b8d765395e54645824b6718b02c6565bc0ffc/src/ledger/conformance-test-vectors/vectors.tar.gz
+          BLUEPRINT_VECTORS_SHA256: 5041539c9e2908cc897512f249ea16ec26bbb04cb1ec288dc59f47024a9b727d
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/blueprint-vectors.tar.gz" "$BLUEPRINT_VECTORS_URL" || {
+            echo "::error::cannot download the pinned cardano-blueprint vectors ($BLUEPRINT_VECTORS_URL). The pin is" \
+              "the head commit of cardano-blueprint PR #71 in the fork KtorZ/cardano-blueprint, which is not merged;" \
+              "if the PR ref is gone, re-pin BlueprintVectorLoader (and this step) to the merged commit or to" \
+              "Amaru's copy of the vectors."
+            exit 1
+          }
+          echo "${BLUEPRINT_VECTORS_SHA256}  $RUNNER_TEMP/blueprint-vectors.tar.gz" | sha256sum -c -
+
+      - name: Conformance harness (Amaru reference, 276 scenarios, blueprint vectors, mutation matrix, strict coverage)
         # conformance.strict is the default since the ADR-056 Phase 5 gate; it is passed explicitly so that
         # this job never runs without it: every in-scope constructor needs a @Covers test, and the Java engine
-        # must match all 276 scenarios (JavaEnginePhase5GateTest).
+        # must match all 276 scenarios (JavaEnginePhase5GateTest) and pass every blueprint vector Amaru passes
+        # (BlueprintVectorGateTest).
         shell: bash
         run: |
           set -euo pipefail
@@ -247,7 +272,8 @@ jobs:
           ./gradlew :ledger-conformance:test -PskipSigning=true --stacktrace \
             -Pconformance.strict=true \
             -PwithAmaru=true -PamaruWasm="$RUNNER_TEMP/amaru-wasm/amaru_validator.wasm" \
-            -PamaruScenariosDir="$RUNNER_TEMP/amaru"
+            -PamaruScenariosDir="$RUNNER_TEMP/amaru" \
+            -PblueprintVectors="$RUNNER_TEMP/blueprint-vectors.tar.gz"
 
       - name: Devnet parity, engine amaru vs java (ADR-057 Phase C)
         shell: bash
@@ -257,7 +283,7 @@ jobs:
             -PledgerRulesGate=true \
             -PwithAmaru=true -PamaruWasm="$RUNNER_TEMP/amaru-wasm/amaru_validator.wasm"
 
-      - name: Upload the baseline and coverage reports
+      - name: Upload the baseline, blueprint-vector and coverage reports
         if: always()
         uses: actions/upload-artifact@v4
         with:

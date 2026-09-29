@@ -10,10 +10,13 @@
 //   -PamaruScenariosDir=<amaru clone or its            the 276 Amaru scenarios (or AMARU_SCENARIOS_DIR)
 //      crates/amaru-ledger/tests/data/transaction>
 //   -PwithAmaru=true -PamaruWasm=<module.wasm>         adds the Amaru engine as the reference
-//   ./gradlew :ledger-conformance:conformanceReport ... regenerates docs/baseline-2026-09.md and
+//   ./gradlew :ledger-conformance:conformanceReport ... regenerates docs/baseline-2026-09.md,
+//                                                       docs/blueprint-vectors-2026-09.md (with the vectors) and
 //                                                       ledger-rules/docs/conway-rule-coverage.md
 //   -Pconformance.strict=false                         report missing coverage instead of failing (strict is the
 //                                                       default since the ADR-056 Phase 5 gate)
+//   -PblueprintVectors=<vectors.tar.gz or dir>         the pinned cardano-blueprint vectors (ADR-056 Phase 7b gate,
+//                                                       BlueprintVectorGateTest); an Amaru checkout also carries them
 
 description = 'ADR-056 conformance harness: Amaru scenarios, coverage matrix, mutation matrix, engine baseline'
 
@@ -37,6 +40,36 @@ if (withAmaru) {
 
 def scenariosDir = providers.gradleProperty('amaruScenariosDir')
         .orElse(providers.environmentVariable('AMARU_SCENARIOS_DIR')).getOrElse('')
+
+// ADR-056 Phase 7b: the cardano-blueprint ledger conformance vectors (BlueprintVectorLoader has the pin).
+// -PblueprintVectors=<vectors.tar.gz> is checked against the pinned sha256 and extracted into the build directory;
+// -PblueprintVectors=<dir> names an extracted copy. Without it, an Amaru checkout (-PamaruScenariosDir) is used, which
+// carries the same files; either way the tests check the files against the pinned corpus digest.
+def blueprintVectors = providers.gradleProperty('blueprintVectors')
+        .orElse(providers.environmentVariable('BLUEPRINT_VECTORS')).getOrElse('')
+def blueprintTarballSha256 = '5041539c9e2908cc897512f249ea16ec26bbb04cb1ec288dc59f47024a9b727d'
+def blueprintExtracted = layout.buildDirectory.dir('blueprint-vectors')
+def blueprintTarball = blueprintVectors && (blueprintVectors.endsWith('.tar.gz') || blueprintVectors.endsWith('.tgz'))
+def blueprintVectorsDir = blueprintTarball ? blueprintExtracted.get().asFile.absolutePath
+        : (blueprintVectors ?: scenariosDir)
+if (blueprintTarball) {
+    def tarball = file(blueprintVectors)
+    tasks.register('extractBlueprintVectors', Sync) {
+        description = 'Checks the cardano-blueprint vectors tarball against its pinned sha256 and extracts it.'
+        from { tarTree(resources.gzip(tarball)) }
+        into blueprintExtracted
+        // The pinned tarball lists some files more than once, always with the same content; the extracted
+        // files are checked against the pinned corpus digest by the tests.
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        doFirst {
+            def actual = java.security.MessageDigest.getInstance('SHA-256').digest(tarball.bytes)
+                    .collect { String.format('%02x', it) }.join()
+            if (actual != blueprintTarballSha256) {
+                throw new GradleException("blueprint vectors ${tarball}: sha256 ${actual}, pinned ${blueprintTarballSha256}")
+            }
+        }
+    }
+}
 // Strict since the ADR-056 Phase 5 gate: an in-scope constructor without a @Covers test fails the build.
 def strict = providers.gradleProperty('conformance.strict').getOrElse('true')
 // The Amaru module under test must report this crate version (amaru_version()'s crate= line); the reference engine
@@ -46,6 +79,12 @@ def amaruCrateVersion = (rootProject.file('amaru-validator-wasm/Cargo.toml').tex
 tasks.withType(Test).configureEach {
     if (scenariosDir) {
         systemProperty 'amaru.scenarios.dir', scenariosDir
+    }
+    if (blueprintVectorsDir) {
+        systemProperty 'blueprint.vectors.dir', blueprintVectorsDir
+    }
+    if (blueprintTarball) {
+        dependsOn 'extractBlueprintVectors'
     }
     systemProperty 'conformance.strict', strict
     systemProperty 'conformance.withAmaru', withAmaru.toString()
@@ -75,10 +114,12 @@ tasks.register('conformanceReport', Test) {
     filter {
         includeTestsMatching '*ConformanceBaselineTest'
         includeTestsMatching '*CoverageMatrixTest'
+        includeTestsMatching '*BlueprintVectorGateTest'
     }
     systemProperty 'conformance.writeDocs', 'true'
     systemProperty 'conformance.baseline.file', file('docs/baseline-2026-09.md').absolutePath
     systemProperty 'conformance.coverage.file', rootProject.file('ledger-rules/docs/conway-rule-coverage.md').absolutePath
+    systemProperty 'conformance.blueprint.file', file('docs/blueprint-vectors-2026-09.md').absolutePath
     doFirst {
         if (!scenariosDir) {
             throw new GradleException('conformanceReport needs the Amaru scenarios: pass -PamaruScenariosDir=<dir> ' +

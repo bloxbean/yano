@@ -52,8 +52,12 @@ public final class CoverageMatrix {
      * @param scenarios the Amaru scenario names expecting it
      * @param versions  per supported protocol version where the constructor exists, the tests that reject a
      *                  transaction with it at that version (ADR-056 Phase 5c)
+     * @param blueprint per protocol version, the cardano-blueprint vector transactions Haskell rejects that the Java
+     *                  engine rejects with this constructor first (verdict-level evidence, ADR-056 Phase 7b; the vectors
+     *                  do not carry Haskell's constructor, so it does not count towards the status)
      */
-    public record Row(Entry entry, List<String> tests, List<String> scenarios, Map<Integer, List<String>> versions) {
+    public record Row(Entry entry, List<String> tests, List<String> scenarios, Map<Integer, List<String>> versions,
+                      Map<Integer, Integer> blueprint) {
 
         public Status status() {
             if (!entry.inScope()) {
@@ -71,22 +75,28 @@ public final class CoverageMatrix {
     private final boolean scenariosConfigured;
     private final List<String> unknownCovers;
     private final List<Integer> protocolVersions;
+    private final boolean blueprintConfigured;
 
     private CoverageMatrix(List<Row> rows, boolean scenariosConfigured, List<String> unknownCovers,
-                           List<Integer> protocolVersions) {
+                           List<Integer> protocolVersions, boolean blueprintConfigured) {
         this.rows = List.copyOf(rows);
         this.scenariosConfigured = scenariosConfigured;
         this.unknownCovers = List.copyOf(unknownCovers);
         this.protocolVersions = List.copyOf(protocolVersions);
+        this.blueprintConfigured = blueprintConfigured;
     }
 
     /**
      * @param worldEvidence per protocol version, per constructor, the mutation-matrix cases that reject a mutant with it
      *                      in that version's world ({@code Mutations.worldCases}); its keys are the supported versions
+     * @param blueprint     per constructor, per protocol version, the cardano-blueprint vector transactions the Java
+     *                      engine rejects with it where Haskell rejects too ({@code BlueprintVectorResults}); empty when
+     *                      the vectors are not configured
      */
     public static CoverageMatrix build(ConwayConstructorCatalogue catalogue, List<Covering> coverings,
                                        Optional<List<AmaruScenario>> scenarios,
-                                       Map<Integer, Map<String, List<String>>> worldEvidence) {
+                                       Map<Integer, Map<String, List<String>>> worldEvidence,
+                                       Optional<Map<String, Map<Integer, Integer>>> blueprint) {
         Map<String, List<String>> tests = new LinkedHashMap<>();
         List<String> unknown = new ArrayList<>();
         for (Covering covering : coverings) {
@@ -117,9 +127,10 @@ public final class CoverageMatrix {
                 byVersion.put(version, List.copyOf(evidence));
             }
             rows.add(new Row(e, tests.getOrDefault(e.qualifiedName(), List.of()),
-                    byConstructor.getOrDefault(e.qualifiedName(), List.of()), byVersion));
+                    byConstructor.getOrDefault(e.qualifiedName(), List.of()), byVersion,
+                    blueprint.map(b -> b.getOrDefault(e.qualifiedName(), Map.of())).orElse(Map.of())));
         }
-        return new CoverageMatrix(rows, scenarios.isPresent(), unknown, versions);
+        return new CoverageMatrix(rows, scenarios.isPresent(), unknown, versions, blueprint.isPresent());
     }
 
     /**
@@ -223,6 +234,14 @@ public final class CoverageMatrix {
                 .append("manifests are `ledger-rules/src/test/resources/org/yanoproject/ledger/rules/conway/ruleset/`).\n");
         md.append("- **Covered at PV**: per supported protocol version where the constructor exists, whether a test ")
                 .append("rejects a transaction with it at that version (see *Coverage per protocol version*).\n");
+        md.append("- **Blueprint vectors**: per protocol version, the cardano-blueprint vector transactions (ADR-056 ")
+                .append("Phase 7b, `BlueprintVectorGateTest`) that Haskell rejects and the Java engine rejects with this ")
+                .append("constructor first. Verdict-level evidence: the vectors record only that Haskell rejected the ")
+                .append("transaction, not its constructor, so the column does not count towards the status.");
+        if (!blueprintConfigured) {
+            md.append(" *Not configured when this file was generated.*");
+        }
+        md.append("\n");
         md.append("- **Status**: `test + scenario`, `test`, `scenario only` (no negative test yet), `gap` ")
                 .append("(neither), `unreachable at pin` (cannot occur in Conway at the pinned revision).\n");
         md.append("- Strict since the Phase 5 gate (`conformance.strict`, on by default): every in-scope constructor ")
@@ -277,8 +296,9 @@ public final class CoverageMatrix {
         md.append("\n");
 
         md.append("## Matrix\n\n");
-        md.append("| Rule | Constructor | PV | Check | Java rule | Tests | Covered at PV | Amaru scenarios | Status |\n");
-        md.append("|---|---|---|---|---|---|---|---|---|\n");
+        md.append("| Rule | Constructor | PV | Check | Java rule | Tests | Covered at PV | Amaru scenarios "
+                + "| Blueprint vectors | Status |\n");
+        md.append("|---|---|---|---|---|---|---|---|---|---|\n");
         for (Row row : rows) {
             Entry e = row.entry();
             md.append("| ").append(e.rule()).append(" | `").append(e.constructor()).append("` | ").append(e.pvRange())
@@ -287,6 +307,7 @@ public final class CoverageMatrix {
                     .append(" | ").append(row.tests().isEmpty() ? "–" : String.join("<br>", row.tests()))
                     .append(" | ").append(versionCoverage(row))
                     .append(" | ").append(scenarioIds(row.scenarios()))
+                    .append(" | ").append(blueprintCounts(row.blueprint()))
                     .append(" | ").append(row.status().label()).append(" |\n");
         }
         return md.toString();
@@ -318,6 +339,16 @@ public final class CoverageMatrix {
         }
         List<String> parts = new ArrayList<>();
         row.versions().forEach((version, evidence) -> parts.add(version + (evidence.isEmpty() ? " ✗" : " ✓")));
+        return String.join(" · ", parts);
+    }
+
+    /** e.g. {@code 9: 3 · 10: 1}: blueprint vector transactions per protocol version. */
+    private static String blueprintCounts(Map<Integer, Integer> perVersion) {
+        if (perVersion.isEmpty()) {
+            return "–";
+        }
+        List<String> parts = new ArrayList<>();
+        new TreeMap<>(perVersion).forEach((version, n) -> parts.add(version + ": " + n));
         return String.join(" · ", parts);
     }
 
