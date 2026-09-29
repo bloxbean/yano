@@ -23,7 +23,9 @@ import java.util.List;
  *   <li>{@link #PHASE2_CASES}: chain-valid transactions with Plutus scripts that shadow sync reported. Each bundle is
  *       the finding's shadow-sync dump (the transaction's own bytes and every ledger-view read the engine made), with
  *       each recorded UTxO replaced by the chain's exact output and inline-datum bytes, taken from the producing
- *       transaction's CBOR on Koios ({@code tx_cbor}). Each must validate under every phase-2 evaluator.</li>
+ *       transaction's CBOR on Koios ({@code tx_cbor}). The three preview cases of the julc engine's 2026-09-30 resync
+ *       are its dumps unchanged: the transaction and every recorded UTxO are byte-identical to Koios {@code tx_cbor}.
+ *       Each must validate under every phase-2 evaluator.</li>
  *   <li>{@link #PREPROD_INDEFINITE_ASSET_MAP_OUTPUT}: the shadow-sync dump, unchanged (its transaction and both
  *       recorded UTxOs are byte-identical to the chain's, Koios {@code tx_cbor}). Output 1's value has a policy with 324
  *       assets: 5001 bytes as encoded (definite-length map head), 5000 as Haskell measures it (indefinite-length map
@@ -91,7 +93,14 @@ public final class PublicNetworkTransactions {
             new Phase2Case("preprod-aee75c1c595f90f893717d0186a96f09abf28579f08b76e412f327fa36bebf9b",
                     "PV 10, an output's PlutusV2 reference script with a Plutus Core 1.1.0 program and bytes after it"),
             new Phase2Case("preview-2c3657d09e194507a4b120c3aeed4616818ad3875382ba68b4e668e6d3d5d625",
-                    "PV 11, UpdateCommittee removals with a set tag"));
+                    "PV 11, UpdateCommittee removals with a set tag"),
+            new Phase2Case("preview-b0e24e31a5e7e5e6e7d2675288a4eb7190c0bce0d622c8b2f514fbcd18e835c9",
+                    "PV 10, PlutusV3 witness script 4f8c8e22 with a 2048-bit integer constant"),
+            new Phase2Case("preview-aec876ad2872e37f07accd0c9e8230017d9f90a60f677356b4c2c2d643b8aa47",
+                    "PV 10, PlutusV2 withdrawal script 0298c2c0 verifies a signature over serialiseData of integers "
+                            + "above 64 bytes"),
+            new Phase2Case("preview-511fb35074242cd923fd51cd5b0759e75b8f5bfb49e69db0ec68861a041843f4",
+                    "PV 9, PlutusV2 withdrawal script b39623ec, the same"));
 
     private PublicNetworkTransactions() {
     }

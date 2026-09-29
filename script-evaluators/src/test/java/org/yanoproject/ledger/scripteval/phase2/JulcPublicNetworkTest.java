@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.julclang.core.cbor.PlutusDataCborEncoder;
 import org.yanoproject.api.utxo.model.Outpoint;
+import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
@@ -38,19 +39,36 @@ import static org.assertj.core.api.Assertions.assertThat;
 class JulcPublicNetworkTest {
 
     /**
-     * julc 0.1.0-pre17 fails {@code verifyEcdsaSecp256k1Signature} for r or s = 0, which libsecp256k1 accepts and
-     * Plutus answers {@code False} for (julc PR #219). {@link #zeroSignatureComponentIsTheKnownJulcDeviation} fails once
-     * the catalog moves to a fixed julc; then remove this case from the exclusion.
+     * Chain-valid transactions julc still judges otherwise, with the failure it gives. Each canary in
+     * {@link #knownJulcDeviationsStillFail} fails once the catalog moves to a julc with the fix; then remove the case.
+     * <ul>
+     *   <li>{@code verifyEcdsaSecp256k1Signature} fails for r or s = 0, which libsecp256k1 accepts and Plutus answers
+     *       {@code False} for (julc PR #219).</li>
+     *   <li>julc's FLAT decoder refuses an integer constant of more than 128 vli7 groups (896 bits); plutus-core
+     *       decodes any size ({@code dInteger = zagZig <$> dUnsigned}, unbounded for {@code Integer},
+     *       plutus-core/flat Decoder/Strict.hs:111-112, 240-249), so the script is {@code MalformedScriptWitnesses}.
+     *       </li>
+     *   <li>julc's {@code serialiseData} writes an integer of more than 64 bytes as one byte string; plutus-core
+     *       chunks it ({@code encodeInteger} and {@code encodeBs}, PlutusCore/Data.hs:180-190), so the signature over
+     *       it does not verify.</li>
+     * </ul>
      */
-    private static final String SECP256K1_ZERO_SIGNATURE =
-            "preprod-031e36a7435259b33cb3b55eebc90d44a4f58efeef1322b929d7d00518cdd732";
+    private static final Map<String, String> KNOWN_JULC_DEVIATIONS = Map.of(
+            "preprod-031e36a7435259b33cb3b55eebc90d44a4f58efeef1322b929d7d00518cdd732",
+            "VerifyEcdsaSecp256k1Signature: r or s out of range",
+            "preview-b0e24e31a5e7e5e6e7d2675288a4eb7190c0bce0d622c8b2f514fbcd18e835c9",
+            "UTXOW.MalformedScriptWitnesses",
+            "preview-aec876ad2872e37f07accd0c9e8230017d9f90a60f677356b4c2c2d643b8aa47",
+            "UTXOS.ValidationTagMismatch",
+            "preview-511fb35074242cd923fd51cd5b0759e75b8f5bfb49e69db0ec68861a041843f4",
+            "UTXOS.ValidationTagMismatch");
 
     private final JavaLedgerValidationEngine engine = new JavaLedgerValidationEngine(new JulcScriptPhaseEvaluator());
 
     @TestFactory
     Stream<DynamicTest> chainValidTransactionsValidate() {
         return PublicNetworkTransactions.PHASE2_CASES.stream()
-                .filter(c -> !c.name().equals(SECP256K1_ZERO_SIGNATURE))
+                .filter(c -> !KNOWN_JULC_DEVIATIONS.containsKey(c.name()))
                 .map(c -> DynamicTest.dynamicTest(c.toString(), () -> {
                     assertThat(c.bundle().txHash()).isEqualTo(c.txId());
                     TxValidationOutcome outcome = engine.validate(c.bundle().replayRequest());
@@ -58,14 +76,17 @@ class JulcPublicNetworkTest {
                 }));
     }
 
-    @Test
-    void zeroSignatureComponentIsTheKnownJulcDeviation() {
-        Phase2Case secp = PublicNetworkTransactions.PHASE2_CASES.stream()
-                .filter(c -> c.name().equals(SECP256K1_ZERO_SIGNATURE)).findFirst().orElseThrow();
-        TxValidationOutcome outcome = engine.validate(secp.bundle().replayRequest());
-        assertThat(outcome).isInstanceOf(TxValidationOutcome.Invalid.class);
-        assertThat(((TxValidationOutcome.Invalid) outcome).failures().getFirst().detail())
-                .contains("VerifyEcdsaSecp256k1Signature: r or s out of range");
+    @TestFactory
+    Stream<DynamicTest> knownJulcDeviationsStillFail() {
+        return PublicNetworkTransactions.PHASE2_CASES.stream()
+                .filter(c -> KNOWN_JULC_DEVIATIONS.containsKey(c.name()))
+                .map(c -> DynamicTest.dynamicTest(c.toString(), () -> {
+                    TxValidationOutcome outcome = engine.validate(c.bundle().replayRequest());
+                    assertThat(outcome).as(c + ": " + outcome).isInstanceOf(TxValidationOutcome.Invalid.class);
+                    LedgerFailure first = ((TxValidationOutcome.Invalid) outcome).failures().getFirst();
+                    assertThat(first.qualifiedName() + ": " + first.detail())
+                            .contains(KNOWN_JULC_DEVIATIONS.get(c.name()));
+                }));
     }
 
     /**
