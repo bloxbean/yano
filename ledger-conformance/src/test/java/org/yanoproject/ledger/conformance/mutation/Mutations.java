@@ -1,5 +1,25 @@
 package org.yanoproject.ledger.conformance.mutation;
 
+import com.bloxbean.cardano.client.address.AddressProvider;
+import com.bloxbean.cardano.client.address.Credential;
+import com.bloxbean.cardano.client.common.model.Network;
+import com.bloxbean.cardano.client.spec.UnitInterval;
+import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
+import com.bloxbean.cardano.client.transaction.spec.ProtocolVersion;
+import com.bloxbean.cardano.client.transaction.spec.governance.Anchor;
+import com.bloxbean.cardano.client.transaction.spec.governance.ProposalProcedure;
+import com.bloxbean.cardano.client.transaction.spec.governance.Vote;
+import com.bloxbean.cardano.client.transaction.spec.governance.Voter;
+import com.bloxbean.cardano.client.transaction.spec.governance.VoterType;
+import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedure;
+import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedures;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovAction;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.HardForkInitiationAction;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.InfoAction;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.ParameterChangeAction;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.TreasuryWithdrawalsAction;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.UpdateCommittee;
 import com.bloxbean.cardano.client.common.model.Networks;
 import com.bloxbean.cardano.client.metadata.cbor.CBORMetadata;
 import com.bloxbean.cardano.client.metadata.cbor.CBORMetadataList;
@@ -30,6 +50,8 @@ import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.HaskellFailureLists;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
+import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
+import org.yanoproject.ledger.rules.conway.utxo.MinFee;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
 import org.yanoproject.ledger.rules.fixtures.tx.BuiltTx;
@@ -42,8 +64,12 @@ import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.yanoproject.ledger.conformance.mutation.Mutation.Base.SCRIPT;
 import static org.yanoproject.ledger.conformance.mutation.Mutation.Base.SIMPLE;
@@ -55,7 +81,8 @@ import static org.yanoproject.ledger.conformance.mutation.Mutation.Base.SIMPLE;
  * constructor and, in a protocol version 11 world, the constructors that exist only from 11
  * ({@code ScriptIntegrityHashMismatch}, {@code DepositIncorrectDELEG}, {@code RefundIncorrectDELEG},
  * {@code VRFKeyHashAlreadyRegistered}, {@code ConwayWithdrawalsMissingAccounts}, {@code ConwayIncompleteWithdrawals});
- * Phase 5 adds GOV and the other LEDGER constructors.
+ * Phase 5 every GOV and LEDGER constructor the worlds can express (all but {@code VotingOnExpiredGovAction}: the worlds are
+ * at epoch 0, so no proposal can be expired; the Amaru scenarios 00225-00241 and the unit tests cover it).
  */
 public final class Mutations {
 
@@ -248,8 +275,13 @@ public final class Mutations {
                         s.changeAdjust = ada(1);
                     }),
             new Mutation("withdrawal-missing-account-v11", "LEDGER.ConwayWithdrawalsMissingAccounts", List.of(), SIMPLE,
-                    "withdraws 0 from dev-aa's reward account, which has no account (protocol version 11)",
-                    s -> withdraw(s, TestKey.DEV_AA, BigInteger.ZERO)).atProtocolVersion11(),
+                    "withdraws 0 from the reward account of the native script, which has no account (protocol version "
+                            + "11; a script credential, so ConwayWdrlNotDelegatedToDRep does not apply)",
+                    s -> {
+                        s.withdrawals.add(new Withdrawal(AddressProvider.getRewardAddress(MutationWorld.NATIVE_SCRIPT,
+                                MutationWorld.NETWORK).toBech32(), BigInteger.ZERO));
+                        s.nativeScripts.add(MutationWorld.NATIVE_SCRIPT);
+                    }).atProtocolVersion11(),
             new Mutation("withdrawal-incomplete-v11", "LEDGER.ConwayIncompleteWithdrawals", List.of(), SIMPLE,
                     "withdraws 1 ADA of dev-bb's 5 ADA reward balance (protocol version 11)",
                     s -> {
@@ -352,7 +384,96 @@ public final class Mutations {
             new Mutation("committee-unknown", "GOVCERT.ConwayCommitteeIsUnknown", List.of(), SIMPLE,
                     "dev-42, neither a member nor proposed, authorizes a hot key",
                     s -> certificate(s, new AuthCommitteeHotCert(MutationWorld.credential(TestKey.DEV_42),
-                            MutationWorld.credential(TestKey.DEV_AA)), BigInteger.ZERO)));
+                            MutationWorld.credential(TestKey.DEV_AA)), BigInteger.ZERO)),
+            // ---- Phase 5: LEDGER and GOV. World: MutationWorld's governance state (two standing proposals, no enacted
+            // roots, no guardrail script, dev-77 elected with hot key dev-42, an unelected member with hot key dev-aa,
+            // dev-cc registered without delegations, a UTxO with a 205,000-byte reference script). A proposal spends
+            // GOV_INPUT and is balanced with ppGovActionDeposit, which Haskell's value conservation counts.
+            new Mutation("treasury-value-mismatch", "LEDGER.ConwayTreasuryValueMismatch", List.of(), SIMPLE,
+                    "states a current treasury value one lovelace above the ledger's",
+                    s -> s.currentTreasuryValue = MutationWorld.TREASURY.add(BigInteger.ONE)),
+            new Mutation("ref-scripts-too-big", "LEDGER.ConwayTxRefScriptsSizeTooBig", List.of(), SIMPLE,
+                    "references a UTxO with a 205,000-byte reference script (limit 200 KiB), paying its tiered fee",
+                    s -> {
+                        s.referenceInputs.add(MutationWorld.BIG_REFERENCE_SCRIPT_INPUT);
+                        s.feeAdjust = MinFee.tierRefScriptFee(ConwayLedgerConstants.HASKELL,
+                                MutationWorld.protocolParams().getMinFeeRefScriptCostPerByte(),
+                                MutationWorld.BIG_REFERENCE_SCRIPT_SIZE);
+                    }),
+            new Mutation("withdrawal-not-delegated-to-drep", "LEDGER.ConwayWdrlNotDelegatedToDRep", List.of(), SIMPLE,
+                    "withdraws dev-cc's whole 5 ADA balance; dev-cc has no DRep delegation",
+                    s -> {
+                        withdraw(s, TestKey.DEV_CC, MutationWorld.REWARD_BALANCE);
+                        s.changeAdjust = MutationWorld.REWARD_BALANCE;
+                    }),
+            new Mutation("proposal-deposit-incorrect", "GOV.ProposalDepositIncorrect", List.of(), SIMPLE,
+                    "an info action stating a deposit one lovelace below ppGovActionDeposit",
+                    s -> propose(s, proposal(new InfoAction(), TestKey.DEV_77, MutationWorld.NETWORK,
+                            MutationWorld.GOV_ACTION_DEPOSIT.subtract(BigInteger.ONE)))),
+            new Mutation("proposal-return-account-missing", "GOV.ProposalReturnAccountDoesNotExist", List.of(), SIMPLE,
+                    "an info action returning its deposit to dev-aa, which has no account",
+                    s -> propose(s, proposal(new InfoAction(), TestKey.DEV_AA, MutationWorld.NETWORK,
+                            MutationWorld.GOV_ACTION_DEPOSIT))),
+            new Mutation("proposal-return-account-network", "GOV.ProposalProcedureNetworkIdMismatch", List.of(), SIMPLE,
+                    "an info action returning its deposit to dev-77's mainnet account",
+                    s -> propose(s, proposal(new InfoAction(), TestKey.DEV_77, Networks.mainnet(),
+                            MutationWorld.GOV_ACTION_DEPOSIT))),
+            new Mutation("treasury-withdrawal-network", "GOV.TreasuryWithdrawalsNetworkIdMismatch", List.of(), SIMPLE,
+                    "a treasury withdrawal of 10 ADA to dev-77's mainnet account",
+                    s -> propose(s, proposal(treasuryWithdrawals(TestKey.DEV_77, Networks.mainnet(), ada(10))))),
+            new Mutation("treasury-withdrawal-account-missing", "GOV.TreasuryWithdrawalReturnAccountsDoNotExist",
+                    List.of(), SIMPLE, "a treasury withdrawal of 10 ADA to dev-aa, which has no account",
+                    s -> propose(s, proposal(treasuryWithdrawals(TestKey.DEV_AA, MutationWorld.NETWORK, ada(10))))),
+            new Mutation("treasury-withdrawal-zero", "GOV.ZeroTreasuryWithdrawals", List.of(), SIMPLE,
+                    "a treasury withdrawal of 0 to dev-77",
+                    s -> propose(s, proposal(treasuryWithdrawals(TestKey.DEV_77, MutationWorld.NETWORK,
+                            BigInteger.ZERO)))),
+            new Mutation("guardrails-script-hash", "GOV.InvalidGuardrailsScriptHash", List.of(), SIMPLE,
+                    "a parameter change naming the native script as its guardrail (provided) while the constitution "
+                            + "has none",
+                    s -> {
+                        propose(s, proposal(new ParameterChangeAction(null, collateralPercent(140),
+                                nativeScriptHash())));
+                        s.nativeScripts.add(MutationWorld.NATIVE_SCRIPT);
+                    }),
+            new Mutation("malformed-proposal", "GOV.MalformedProposal", List.of(), SIMPLE,
+                    "a parameter change setting maxTxSize to 0 (not ppuWellFormed)",
+                    s -> propose(s, proposal(new ParameterChangeAction(null,
+                            ProtocolParamUpdate.builder().maxTxSize(0).build(), null)))),
+            new Mutation("hard-fork-cant-follow", "GOV.ProposalCantFollow", List.of(), SIMPLE,
+                    "a hard fork to 12.0 at protocol version 10.0 (only 11.0 or 10.1 can follow)",
+                    s -> propose(s, proposal(new HardForkInitiationAction(null, new ProtocolVersion(12, 0))))),
+            new Mutation("invalid-prev-gov-action-id", "GOV.InvalidPrevGovActionId", List.of(), SIMPLE,
+                    "a parameter change whose parent is the standing info action (no lineage purpose)",
+                    s -> propose(s, proposal(new ParameterChangeAction(ccl(MutationWorld.INFO_ACTION),
+                            collateralPercent(140), null)))),
+            new Mutation("committee-update-conflict", "GOV.ConflictingCommitteeUpdate", List.of(), SIMPLE,
+                    "an update committee proposal removing and adding dev-bb",
+                    s -> propose(s, proposal(updateCommittee(Set.of(MutationWorld.credential(TestKey.DEV_BB)),
+                            Map.of(MutationWorld.credential(TestKey.DEV_BB), 50))))),
+            new Mutation("committee-expiration-too-small", "GOV.ExpirationEpochTooSmall", List.of(), SIMPLE,
+                    "an update committee proposal adding dev-42 with expiry epoch 0, the current epoch",
+                    s -> propose(s, proposal(updateCommittee(Set.of(),
+                            Map.of(MutationWorld.credential(TestKey.DEV_42), 0))))),
+            new Mutation("voter-does-not-exist", "GOV.VotersDoNotExist", List.of(), SIMPLE,
+                    "dev-aa, not a registered DRep, votes on the standing info action",
+                    s -> vote(s, VoterType.DREP_KEY_HASH, TestKey.DEV_AA, MutationWorld.INFO_ACTION)),
+            new Mutation("gov-action-does-not-exist", "GOV.GovActionsDoNotExist", List.of(), SIMPLE,
+                    "dev-77's DRep votes on an action that is not in the proposals",
+                    s -> vote(s, VoterType.DREP_KEY_HASH, TestKey.DEV_77,
+                            new org.yanoproject.ledger.rules.view.model.GovActionId("e3".repeat(32), 0))),
+            new Mutation("disallowed-voter", "GOV.DisallowedVoters", List.of(), SIMPLE,
+                    "dev-77's pool votes on the standing parameter change, outside the stake-pool security group",
+                    s -> vote(s, VoterType.STAKING_POOL_KEY_HASH, TestKey.DEV_77,
+                            MutationWorld.PARAMETER_CHANGE_ACTION)),
+            new Mutation("unelected-committee-voter-v11", "GOV.UnelectedCommitteeVoters", List.of(), SIMPLE,
+                    "the hot key (dev-aa) of a committee member without a term votes (protocol version 11)",
+                    s -> vote(s, VoterType.CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH, TestKey.DEV_AA,
+                            MutationWorld.INFO_ACTION)).atProtocolVersion11()
+                    // Amaru has no separate name for Haskell's UnelectedCommitteeVoters (Conway/Rules/Gov.hs:478-481)
+                    // and reports VotersDoNotExist, the name its Haskell checker normalises it to
+                    // (ValidatePhaseOne/Run.hs:532-533; scenario 00171). A naming alias, not a verdict difference.
+                    .withAmaruReports("GOV.VotersDoNotExist"));
 
     private Mutations() {
     }
@@ -438,6 +559,64 @@ public final class Mutations {
         spec.certs.add(certificate);
         spec.changeAdjust = implicit;
         for (TestKey key : signers) {
+            spec.signers.add(key);
+        }
+    }
+
+    /** Adds a proposal and {@link MutationWorld#GOV_INPUT}, balanced with {@code ppGovActionDeposit}. */
+    private static void propose(TxSpec spec, ProposalProcedure proposal) {
+        spec.inputs.add(MutationWorld.GOV_INPUT);
+        spec.proposals.add(proposal);
+        spec.changeAdjust = MutationWorld.GOV_ACTION_DEPOSIT.negate();
+    }
+
+    private static ProposalProcedure proposal(GovAction action) {
+        return proposal(action, TestKey.DEV_77, MutationWorld.NETWORK, MutationWorld.GOV_ACTION_DEPOSIT);
+    }
+
+    private static ProposalProcedure proposal(GovAction action, TestKey returnKey, Network network,
+                                              BigInteger deposit) {
+        return ProposalProcedure.builder()
+                .deposit(deposit)
+                .rewardAccount(MutationWorld.rewardAccount(returnKey, network))
+                .govAction(action)
+                .anchor(new Anchor("https://example.com/proposal.json", new byte[32]))
+                .build();
+    }
+
+    private static TreasuryWithdrawalsAction treasuryWithdrawals(TestKey key, Network network, BigInteger amount) {
+        return new TreasuryWithdrawalsAction(new ArrayList<>(List.of(new Withdrawal(
+                MutationWorld.rewardAccount(key, network), amount))), null);
+    }
+
+    private static UpdateCommittee updateCommittee(Set<Credential> remove, Map<Credential, Integer> add) {
+        return new UpdateCommittee(null, new LinkedHashSet<>(remove), new LinkedHashMap<>(add),
+                new UnitInterval(BigInteger.TWO, BigInteger.valueOf(3)));
+    }
+
+    private static ProtocolParamUpdate collateralPercent(int value) {
+        return ProtocolParamUpdate.builder().collateralPercent(value).build();
+    }
+
+    private static byte[] nativeScriptHash() {
+        try {
+            return MutationWorld.NATIVE_SCRIPT.getScriptHash();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static GovActionId ccl(org.yanoproject.ledger.rules.view.model.GovActionId id) {
+        return new GovActionId(id.txHashHex(), id.index());
+    }
+
+    /** One vote by {@code key}'s voter of {@code type} (which signs) on {@code action}. */
+    private static void vote(TxSpec spec, VoterType type, TestKey key,
+                             org.yanoproject.ledger.rules.view.model.GovActionId action) {
+        VotingProcedures votes = new VotingProcedures();
+        votes.add(new Voter(type, Credential.fromKey(key.keyHash())), ccl(action), new VotingProcedure(Vote.YES, null));
+        spec.votingProcedures = votes;
+        if (!spec.signers.contains(key)) {
             spec.signers.add(key);
         }
     }

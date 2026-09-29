@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.conformance.runner;
 
 import org.yanoproject.ledger.rules.ValidationEnv;
+import org.yanoproject.ledger.rules.fixtures.amaru.AmaruCorpusNames;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
 import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalogue;
@@ -93,13 +94,22 @@ public record ConformanceCase(String id, String title, Kind kind, byte[] txCbor,
         };
     }
 
-    /** @return the constructors an engine's first failure may be: the Haskell list, or the expected constructor */
+    /**
+     * @return the constructors an engine's first failure may be: the Haskell list, or the expected constructor; for an
+     *         Amaru scenario also the constructors Amaru's checker reports under the same corpus name
+     *         ({@link AmaruCorpusNames#aliases(String)})
+     */
     public Set<String> acceptedFirst() {
+        Set<String> accepted = new LinkedHashSet<>();
         if (!haskellFailures.isEmpty()) {
-            return new LinkedHashSet<>(haskellFailures);
+            accepted.addAll(haskellFailures);
+        } else if (expectedConstructor() != null) {
+            accepted.add(expectedConstructor());
         }
-        String expectedConstructor = expectedConstructor();
-        return expectedConstructor == null ? Set.of() : Set.of(expectedConstructor);
+        if (kind == Kind.SCENARIO && expected instanceof Expected.Predicate p) {
+            accepted.addAll(AmaruCorpusNames.aliases(p.corpusName()));
+        }
+        return accepted;
     }
 
     /** @return the expected {@code RULE.Constructor}, or null for a pass or a decoding failure */

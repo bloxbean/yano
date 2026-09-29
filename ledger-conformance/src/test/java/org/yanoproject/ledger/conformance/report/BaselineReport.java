@@ -86,8 +86,9 @@ public final class BaselineReport {
                 .append(" mutants (single faults, or Haskell's whole failure list where a fault always has several) of ")
                 .append(Mutation.Base.values().length).append(" valid base transactions in a preprod-like PV 10 world ")
                 .append("and a PV 11 copy for the constructors that exist only from 11 (bases valid in both), with a ")
-                .append("registered stake account, pools, a DRep and committee members; signed with Amaru's corpus test ")
-                .append("keys and two more, re-signed after every edit.\n");
+                .append("registered stake account, pools, a DRep, committee members and governance state (standing ")
+                .append("proposals, a treasury); signed with Amaru's corpus test keys and three more, re-signed after ")
+                .append("every edit.\n");
         md.append("- **Constructors**: ").append(catalogue.all().size()).append(" Conway leaf predicate failures at ")
                 .append("cardano-ledger `").append(catalogue.cardanoLedger()).append("`, ")
                 .append(catalogue.inScope().size()).append(" reachable at PV 10–11 ")
@@ -127,7 +128,9 @@ public final class BaselineReport {
                 .append("scenario or mutant that expects them (where Haskell always reports a fault with several ")
                 .append("constructors, any of them counts). The scenarios and mutants can demonstrate ")
                 .append(demonstrable().size()).append(" of the ").append(catalogue.inScope().size())
-                .append(" constructors; the rest need Phase 5 mutants or are covered by unit tests only.\n\n");
+                .append(" constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is ")
+                .append("reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: ")
+                .append("`MempoolTransitionTest`).\n\n");
     }
 
     private void families(StringBuilder md) {

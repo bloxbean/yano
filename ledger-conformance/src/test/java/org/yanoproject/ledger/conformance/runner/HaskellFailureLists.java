@@ -75,14 +75,31 @@ public final class HaskellFailureLists {
     public static final List<String> STATED_KEY_DEPOSIT_BALANCED =
             List.of("UTXO.ValueNotConservedUTxO", "DELEG.IncorrectDepositDELEG");
 
-    private static final Map<String, List<String>> SCENARIOS = Map.of(
-            "00278-fail-transaction-with-redeemers-but-no-collateral-inputs", NO_COLLATERAL,
-            "00050-fail-unknown-spent-input", UNKNOWN_SPENT_INPUT,
-            "00124-fail-plutus-spend-collateral-return-exceeds-collateral-input", NEGATIVE_COLLATERAL_AND_UNBALANCED,
-            "00102-fail-script-credential-delegation-after-deregistration", SCRIPT_DELEGATION_AFTER_DEREGISTRATION,
-            "00103-fail-script-credential-delegation-after-conway-unreg", SCRIPT_DELEGATION_AFTER_DEREGISTRATION,
-            "00072-fail-stake-registration-cert-with-incorrect-deposit", STATED_KEY_DEPOSIT_BALANCED,
-            "00273-fail-stake-registration-with-a-zero-deposit", STATED_KEY_DEPOSIT_BALANCED);
+    /**
+     * Scenarios 00148 and 00150: a parameter change whose parent is not the enacted root nor a proposal of its purpose,
+     * with a return account the scenario never registered (its state has no accounts). {@code GOV} runs
+     * {@code ProposalReturnAccountDoesNotExist} (Conway/Rules/Gov.hs:504-508, from protocol version 10) before the
+     * lineage check ({@code InvalidPrevGovActionId}, :561-566); both are {@code GOV} predicates, so {@code LEDGER}'s
+     * list holds them in execution order (two reversals).
+     */
+    public static final List<String> BAD_PARENT_UNREGISTERED_RETURN_ACCOUNT =
+            List.of("GOV.ProposalReturnAccountDoesNotExist", "GOV.InvalidPrevGovActionId");
+
+    private static final Map<String, List<String>> SCENARIOS = Map.ofEntries(
+            Map.entry("00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent",
+                    BAD_PARENT_UNREGISTERED_RETURN_ACCOUNT),
+            Map.entry("00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted",
+                    BAD_PARENT_UNREGISTERED_RETURN_ACCOUNT),
+            Map.entry("00278-fail-transaction-with-redeemers-but-no-collateral-inputs", NO_COLLATERAL),
+            Map.entry("00050-fail-unknown-spent-input", UNKNOWN_SPENT_INPUT),
+            Map.entry("00124-fail-plutus-spend-collateral-return-exceeds-collateral-input",
+                    NEGATIVE_COLLATERAL_AND_UNBALANCED),
+            Map.entry("00102-fail-script-credential-delegation-after-deregistration",
+                    SCRIPT_DELEGATION_AFTER_DEREGISTRATION),
+            Map.entry("00103-fail-script-credential-delegation-after-conway-unreg",
+                    SCRIPT_DELEGATION_AFTER_DEREGISTRATION),
+            Map.entry("00072-fail-stake-registration-cert-with-incorrect-deposit", STATED_KEY_DEPOSIT_BALANCED),
+            Map.entry("00273-fail-stake-registration-with-a-zero-deposit", STATED_KEY_DEPOSIT_BALANCED));
 
     private HaskellFailureLists() {
     }

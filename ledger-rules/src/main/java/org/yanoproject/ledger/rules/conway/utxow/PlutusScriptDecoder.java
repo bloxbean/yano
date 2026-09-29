@@ -1,5 +1,8 @@
 package org.yanoproject.ledger.rules.conway.utxow;
 
+import org.yanoproject.ledger.rules.conway.tx.PlutusData;
+import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
+
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -482,100 +485,14 @@ public final class PlutusScriptDecoder {
 
     // ------------------------------------------------------------------ Data
 
-    /** {@code decodeData} (PlutusCore/Data.hs:209-300) over cborg, then no trailing bytes ({@code deserialiseOrFail}). */
+    /** {@code Data} constants: {@link PlutusData} (the ledger's datums and redeemers use the same decoder). */
     private static final class Data {
 
         static void decode(byte[] bytes) {
-            Cbor cbor = new Cbor(bytes, 0, bytes.length);
-            data(cbor);
-            if (!cbor.atEnd()) {
-                throw new Malformed("Data: trailing bytes");
-            }
-        }
-
-        private static void data(Cbor c) {
-            int head = c.peek();
-            int major = head >>> 5;
-            int info = head & 0x1f;
-            switch (major) {
-                case 0, 1 -> c.argument();
-                case 2 -> boundedBytes(c);
-                case 4 -> list(c);
-                case 5 -> {
-                    long n = c.containerHeader(5);
-                    for (long i = 0; c.more(n, i); i++) {
-                        data(c);
-                        data(c);
-                    }
-                }
-                case 6 -> {
-                    if (info == 31) {
-                        throw new Malformed("Data: malformed tag");
-                    }
-                    c.pos++;
-                    BigInteger tag = c.argumentOf(info);
-                    // cborg reports TypeInteger only for the one-byte heads c2/c3; a longer tag head is TypeTag,
-                    // and decodeConstr rejects tags 2 and 3.
-                    if (head == 0xc2 || head == 0xc3) {
-                        if (c.peek() >>> 5 != 2) {
-                            throw new Malformed("Bignum must contain a byte string");
-                        }
-                        boundedBytes(c);
-                    } else if (tag.equals(BigInteger.valueOf(102))) {
-                        long n = c.containerHeader(4);
-                        if (c.peek() >>> 5 != 0) {
-                            throw new Malformed("Data: constructor index is not a Word64");
-                        }
-                        c.argument();
-                        list(c);
-                        if (n == Cbor.INDEFINITE) {
-                            if (c.peek() != 0xff) {
-                                throw new Malformed("Expected exactly two elements");
-                            }
-                            c.pos++;
-                        } else if (n != 2) {
-                            throw new Malformed("Expected exactly two elements");
-                        }
-                    } else if ((tag.compareTo(BigInteger.valueOf(121)) >= 0 && tag.compareTo(BigInteger.valueOf(128)) < 0)
-                            || (tag.compareTo(BigInteger.valueOf(1280)) >= 0
-                            && tag.compareTo(BigInteger.valueOf(1401)) < 0)) {
-                        list(c);
-                    } else {
-                        throw new Malformed("Unrecognized tag " + tag);
-                    }
-                }
-                default -> throw new Malformed("Data: unrecognized value of major type " + major);
-            }
-        }
-
-        private static void list(Cbor c) {
-            long n = c.containerHeader(4);
-            for (long i = 0; c.more(n, i); i++) {
-                data(c);
-            }
-        }
-
-        /** {@code decodeBoundedBytes} / {@code decodeBoundedBytesIndef}: every chunk at most 64 bytes. */
-        private static void boundedBytes(Cbor c) {
-            int head = c.peek();
-            if ((head & 0x1f) == 31) {
-                c.pos++;
-                while (c.peek() != 0xff) {
-                    int chunk = c.peek();
-                    if (chunk >>> 5 != 2 || (chunk & 0x1f) == 31) {
-                        throw new Malformed("Data: an indefinite byte string chunk must be a definite byte string");
-                    }
-                    bounded(c.bytes());
-                }
-                c.pos++;
-            } else {
-                bounded(c.bytes());
-            }
-        }
-
-        private static void bounded(byte[] bytes) {
-            if (bytes.length > 64) {
-                throw new Malformed("ByteString exceeds 64 bytes");
+            try {
+                PlutusData.validate(bytes);
+            } catch (TxDecodingException e) {
+                throw new Malformed(e.getMessage());
             }
         }
     }

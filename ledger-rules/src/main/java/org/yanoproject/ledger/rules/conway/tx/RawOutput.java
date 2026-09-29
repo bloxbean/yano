@@ -63,10 +63,10 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
             if (length != CborReader.INDEFINITE && (length < 2 || length > 3)) {
                 throw new TxDecodingException("a legacy output has 2 or 3 elements, found " + length);
             }
-            address = item.readBytes();
+            address = item.readDefiniteBytes();
             value = readValue(item);
             if (length == 3 || (length == CborReader.INDEFINITE && item.hasNext(length, 2))) {
-                datumHash = item.readBytes();
+                datumHash = item.readDefiniteBytes();
                 if (datumHash.length != 32) {
                     throw new TxDecodingException("output " + index + " has a datum hash that is not 32 bytes");
                 }
@@ -88,7 +88,7 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
                 }
                 seen[(int) key] = true;
                 if (key == 0) {
-                    address = item.readBytes();
+                    address = item.readDefiniteBytes();
                 } else if (key == 1) {
                     value = readValue(item);
                 } else if (key == 2) {
@@ -118,7 +118,7 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
         long kind = reader.readUnsignedLong();
         byte[] hash = null;
         if (kind == 0) {
-            hash = reader.readBytes();
+            hash = reader.readDefiniteBytes();
             if (hash.length != 32) {
                 throw new TxDecodingException("output " + index + " has a datum hash that is not 32 bytes");
             }
@@ -126,7 +126,9 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
             if (reader.readTag() != 24) {
                 throw new TxDecodingException("output " + index + ": an inline datum is wrapped in tag 24");
             }
-            reader.readBytes();
+            // decodeNestedCborBytes (a definite byte string), then makeBinaryData: the bytes must be one
+            // well-formed Plutus Data (cardano-ledger-core Plutus/Data.hs:220-239).
+            PlutusData.validate(reader.readDefiniteBytes());
         } else {
             throw new TxDecodingException("output " + index + ": unknown datum option " + kind);
         }
@@ -141,7 +143,7 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
         if (reader.readTag() != 24) {
             throw new TxDecodingException("a script reference is wrapped in tag 24");
         }
-        CborReader inner = new CborReader(reader.readBytes());
+        CborReader inner = new CborReader(reader.readDefiniteBytes());
         RawScript script = RawScript.readScript(inner);
         if (!inner.atEnd()) {
             throw new TxDecodingException("trailing bytes after a reference script");

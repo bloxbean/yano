@@ -236,12 +236,16 @@ jobs:
           [[ "$actual" == "$commit" ]] \
             || { echo "::error::tag $tag is at $actual, AMARU_VERSION pins $commit"; exit 1; }
 
-      - name: Conformance harness (Amaru reference, 276 scenarios, mutation matrix)
+      - name: Conformance harness (Amaru reference, 276 scenarios, mutation matrix, strict coverage)
+        # conformance.strict is the default since the ADR-056 Phase 5 gate; it is passed explicitly so that
+        # this job never runs without it: every in-scope constructor needs a @Covers test, and the Java engine
+        # must match all 276 scenarios (JavaEnginePhase5GateTest).
         shell: bash
         run: |
           set -euo pipefail
           chmod +x gradlew
           ./gradlew :ledger-conformance:test -PskipSigning=true --stacktrace \
+            -Pconformance.strict=true \
             -PwithAmaru=true -PamaruWasm="$RUNNER_TEMP/amaru-wasm/amaru_validator.wasm" \
             -PamaruScenariosDir="$RUNNER_TEMP/amaru"
 

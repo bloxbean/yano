@@ -38,9 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       rejected with the covered constructor, or, for a fault Haskell reports with several constructors
  *       ({@link Mutation#haskellFailures()}), only with constructors of that list; where Amaru names the fault
  *       differently from Haskell ({@link Mutation#amaruReports()}, a recorded divergence), with that name;</li>
- *   <li>the Java engine ({@code java-engine}) accepts the bases and rejects every mutant of the families it
- *       implements (Phase 3: {@code UTXOW}, {@code UTXO}, {@code UTXOS}; Phase 4: {@code CERTS}, {@code DELEG},
- *       {@code POOL}, {@code GOVCERT}) with exactly Haskell's failure list, or the single covered constructor.</li>
+ *   <li>the Java engine ({@code java-engine}) accepts the bases and rejects every mutant (every family since Phase 5)
+ *       with exactly Haskell's failure list, or the single covered constructor.</li>
  * </ul>
  *
  * <p>Mutants of constructors that exist only from protocol version 11 are built and validated in the protocol
@@ -52,12 +51,9 @@ class MutationMatrixTest {
 
     private static final Optional<ConformanceEngine> REFERENCE = BaselineEngines.amaru();
     private static final ConformanceEngine JAVA = new JavaViewEngine();
-    /**
-     * The rule families the Java engine implements so far (ADR-056 Phases 3 and 4; of {@code LEDGER} only the two
-     * protocol-version-11 withdrawal checks, the only {@code LEDGER} mutants until Phase 5).
-     */
+    /** The rule families the Java engine implements: all of them since ADR-056 Phase 5. */
     private static final Set<String> JAVA_FAMILIES = Set.of("UTXO", "UTXOW", "UTXOS", "CERTS", "DELEG", "POOL",
-            "GOVCERT", "LEDGER");
+            "GOVCERT", "LEDGER", "GOV");
 
     @Test
     void testKeysAreAmarusCorpusCredentials() {
@@ -499,6 +495,120 @@ class MutationMatrixTest {
     }
 
     /** Builds a mutant, checks it is well formed, and has the reference engine confirm the single fault. */
+    @Test
+    @Covers("LEDGER.ConwayTreasuryValueMismatch")
+    void treasuryValueMismatch() {
+        check("treasury-value-mismatch");
+    }
+
+    @Test
+    @Covers("LEDGER.ConwayTxRefScriptsSizeTooBig")
+    void refScriptsTooBig() {
+        check("ref-scripts-too-big");
+    }
+
+    @Test
+    @Covers("LEDGER.ConwayWdrlNotDelegatedToDRep")
+    void withdrawalNotDelegatedToDRep() {
+        check("withdrawal-not-delegated-to-drep");
+    }
+
+    @Test
+    @Covers("GOV.ProposalDepositIncorrect")
+    void proposalDepositIncorrect() {
+        check("proposal-deposit-incorrect");
+    }
+
+    @Test
+    @Covers("GOV.ProposalReturnAccountDoesNotExist")
+    void proposalReturnAccountMissing() {
+        check("proposal-return-account-missing");
+    }
+
+    @Test
+    @Covers("GOV.ProposalProcedureNetworkIdMismatch")
+    void proposalReturnAccountNetwork() {
+        check("proposal-return-account-network");
+    }
+
+    @Test
+    @Covers("GOV.TreasuryWithdrawalsNetworkIdMismatch")
+    void treasuryWithdrawalNetwork() {
+        check("treasury-withdrawal-network");
+    }
+
+    @Test
+    @Covers("GOV.TreasuryWithdrawalReturnAccountsDoNotExist")
+    void treasuryWithdrawalAccountMissing() {
+        check("treasury-withdrawal-account-missing");
+    }
+
+    @Test
+    @Covers("GOV.ZeroTreasuryWithdrawals")
+    void treasuryWithdrawalZero() {
+        check("treasury-withdrawal-zero");
+    }
+
+    @Test
+    @Covers("GOV.InvalidGuardrailsScriptHash")
+    void guardrailsScriptHash() {
+        check("guardrails-script-hash");
+    }
+
+    @Test
+    @Covers("GOV.MalformedProposal")
+    void malformedProposal() {
+        check("malformed-proposal");
+    }
+
+    @Test
+    @Covers("GOV.ProposalCantFollow")
+    void hardForkCantFollow() {
+        check("hard-fork-cant-follow");
+    }
+
+    @Test
+    @Covers("GOV.InvalidPrevGovActionId")
+    void invalidPrevGovActionId() {
+        check("invalid-prev-gov-action-id");
+    }
+
+    @Test
+    @Covers("GOV.ConflictingCommitteeUpdate")
+    void committeeUpdateConflict() {
+        check("committee-update-conflict");
+    }
+
+    @Test
+    @Covers("GOV.ExpirationEpochTooSmall")
+    void committeeExpirationTooSmall() {
+        check("committee-expiration-too-small");
+    }
+
+    @Test
+    @Covers("GOV.VotersDoNotExist")
+    void voterDoesNotExist() {
+        check("voter-does-not-exist");
+    }
+
+    @Test
+    @Covers("GOV.GovActionsDoNotExist")
+    void govActionDoesNotExist() {
+        check("gov-action-does-not-exist");
+    }
+
+    @Test
+    @Covers("GOV.DisallowedVoters")
+    void disallowedVoter() {
+        check("disallowed-voter");
+    }
+
+    @Test
+    @Covers("GOV.UnelectedCommitteeVoters")
+    void unelectedCommitteeVoterV11() {
+        check("unelected-committee-voter-v11");
+    }
+
     private static BuiltTx check(String id) {
         Mutation mutation = Mutations.find(id).orElseThrow();
         BuiltTx base = Mutations.buildBase(mutation.base(), mutation.protocolMajor());

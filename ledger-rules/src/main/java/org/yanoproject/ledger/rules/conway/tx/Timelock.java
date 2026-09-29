@@ -74,7 +74,7 @@ public sealed interface Timelock {
         long expected;
         switch ((int) Math.min(kind, 6)) {
             case 0 -> {
-                byte[] hash = reader.readBytes();
+                byte[] hash = reader.readDefiniteBytes();
                 if (hash.length != RawCredential.HASH_LENGTH) {
                     throw new TxDecodingException("a native script key hash is 28 bytes");
                 }

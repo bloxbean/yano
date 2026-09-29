@@ -137,7 +137,8 @@ public final class CoverageMatrix {
                     case DELEG -> "`DelegRule`";
                     case POOL -> "`PoolRule`";
                     case GOVCERT -> "`GovCertRule`";
-                    case LEDGER -> "`LedgerPreChecks`";
+                    case LEDGER -> p == ConwayPredicate.CONWAY_MEMPOOL_FAILURE ? "`MempoolRule`" : "`LedgerPreChecks`";
+                    case GOV -> "`GovRule`";
                     default -> "`" + p.rule().name() + "`";
                 })
                 .orElse("TBD (P5)");
@@ -163,11 +164,11 @@ public final class CoverageMatrix {
             md.append(" *Not configured when this file was generated.*");
         }
         md.append("\n");
-        md.append("- **Java rule**: the class implementing the check in the Java engine; filled in by Phases 3–5.\n");
+        md.append("- **Java rule**: the class implementing the check in the Java engine (Phases 3–5).\n");
         md.append("- **Status**: `test + scenario`, `test`, `scenario only` (no negative test yet), `gap` ")
                 .append("(neither), `out of scope` (cannot occur at protocol version 10 or 11).\n");
-        md.append("- The Phase 5 gate runs with `-Pconformance.strict=true`: every in-scope constructor must then have ")
-                .append("a `@Covers` test.\n\n");
+        md.append("- Strict since the Phase 5 gate (`conformance.strict`, on by default): every in-scope constructor ")
+                .append("must have a `@Covers` test, or `:ledger-conformance:test` fails.\n\n");
 
         md.append("## Summary\n\n");
         md.append("| Family | Constructors (PV 10–11) | test + scenario | test | scenario only | gap |\n");

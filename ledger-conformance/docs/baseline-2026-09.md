@@ -8,12 +8,12 @@ Generated 2026-09-29 by
 ./gradlew :ledger-conformance:conformanceReport -PwithAmaru=true -PamaruWasm=<amaru_validator.wasm> -PamaruScenariosDir=<amaru clone at v10.11.20260925>
 ```
 
-Amaru module: `amaru-validator-wasm` crate 0.1.1, sha256 `c43eeb3738cdce05caf3a897243485b4bca534a03272102cfab3579010c2c3e3` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
+Amaru module: `amaru-validator-wasm` crate 0.1.1, sha256 `848aae7c46f9aa5e7e7346c50efb50d22561d78bb37e18930e8117784517b68b` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
 
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
 - **Scenarios**: 276 Haskell-cross-checked Amaru scenarios (tag `v10.11.20260925`), rule `LEDGER`, origin `SYNC`, one `InMemoryLedgerView` per scenario.
-- **Mutants**: 66 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions in a preprod-like PV 10 world and a PV 11 copy for the constructors that exist only from 11 (bases valid in both), with a registered stake account, pools, a DRep and committee members; signed with Amaru's corpus test keys and two more, re-signed after every edit.
+- **Mutants**: 85 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions in a preprod-like PV 10 world and a PV 11 copy for the constructors that exist only from 11 (bases valid in both), with a registered stake account, pools, a DRep, committee members and governance state (standing proposals, a treasury); signed with Amaru's corpus test keys and three more, re-signed after every edit.
 - **Constructors**: 88 Conway leaf predicate failures at cardano-ledger `f649f975 (cardano-ledger-conway 1.23.0.0)`, 84 reachable at PV 10–11 ([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).
 - **Verdict match**: accepted exactly when Haskell accepts. **Constructor match**: the verdict matches and the engine's *first* failure is the expected Haskell `RULE.Constructor` (a decoding failure must be reported as one). **Constructor found**: the expected constructor is among the engine's failures in any position (the copied Java rules report every failure, in their own order).
 
@@ -23,21 +23,21 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 | `scalus-legacy+supplementary` | ScalusBasedTransactionValidator with the supplementary CCL certificate and governance rules, behind TransactionValidationService's decode and UTxO-resolution pre-checks |
 | `scalus-engine` | ScalusLedgerValidationEngine over the LedgerView (engine API, step 1d) |
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
-| `java-engine` | JavaLedgerValidationEngine (ADR-056 Phases 3–4: UTXOW, UTXO, UTXOS, CERTS, DELEG, POOL, GOVCERT) over the LedgerView, Scalus phase 2 |
-| `amaru` | AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057); module crate 0.1.1, sha256 c43eeb3738cdce05caf3a897243485b4bca534a03272102cfab3579010c2c3e3 |
+| `java-engine` | JavaLedgerValidationEngine (ADR-056 Phases 3–5: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS) over the LedgerView, Scalus phase 2 |
+| `amaru` | AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057); module crate 0.1.1, sha256 848aae7c46f9aa5e7e7346c50efb50d22561d78bb37e18930e8117784517b68b |
 
 ## Summary
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 38/66 | 4/4 | 33/84 | 2.08 |
-| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 42/66 | 4/4 | 44/84 | 0.38 |
-| `scalus-engine` | 193/276 | 187/276 | 187/276 | 54/66 | 4/4 | 49/84 | 0.36 |
-| `java-legacy` | 158/276 | 32/276 | 119/276 | 11/66 | 0/4 | 19/84 | 0.35 |
-| `java-engine` | 213/276 | 211/276 | 211/276 | 66/66 | 4/4 | 63/84 | 0.54 |
-| `amaru` | 276/276 | 275/276 | 275/276 | 60/66 | 4/4 | 72/84 | 2.09 |
+| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 38/85 | 4/4 | 33/84 | 2.03 |
+| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 51/85 | 4/4 | 47/84 | 0.35 |
+| `scalus-engine` | 193/276 | 187/276 | 187/276 | 54/85 | 4/4 | 49/84 | 0.32 |
+| `java-legacy` | 158/276 | 32/276 | 120/276 | 11/85 | 0/4 | 19/84 | 0.34 |
+| `java-engine` | 276/276 | 274/276 | 274/276 | 85/85 | 4/4 | 83/84 | 0.53 |
+| `amaru` | 276/276 | 275/276 | 275/276 | 78/85 | 4/4 | 77/84 | 2.14 |
 
-*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 77 of the 84 constructors; the rest need Phase 5 mutants or are covered by unit tests only.
+*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 83 of the 84 constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: `MempoolTransitionTest`).
 
 ## Scenarios per rule family
 
@@ -47,12 +47,12 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 |---|---:|---:|---:|---:|---:|---:|---:|
 | PASS | 114 | 67 / 67 | 58 / 58 | 110 / 110 | 6 / 6 | 114 / 114 | 114 / 114 |
 | DECODING | 3 | 3 / 3 | 3 / 3 | 3 / 3 | 2 / 0 | 3 / 3 | 3 / 3 |
-| LEDGER | 5 | 4 / 0 | 4 / 0 | 0 / 0 | 2 / 0 | 0 / 0 | 5 / 5 |
+| LEDGER | 5 | 4 / 0 | 4 / 0 | 0 / 0 | 2 / 0 | 5 / 5 | 5 / 5 |
 | CERTS | 2 | 2 / 0 | 2 / 0 | 2 / 2 | 2 / 0 | 2 / 2 | 2 / 2 |
 | DELEG | 21 | 21 / 0 | 21 / 0 | 13 / 13 | 21 / 0 | 21 / 21 | 21 / 21 |
 | POOL | 7 | 7 / 0 | 7 / 0 | 7 / 7 | 7 / 0 | 7 / 7 | 7 / 7 |
 | GOVCERT | 12 | 4 / 0 | 9 / 3 | 4 / 2 | 12 / 0 | 12 / 12 | 12 / 12 |
-| GOV | 59 | 9 / 0 | 51 / 42 | 1 / 0 | 59 / 1 | 1 / 0 | 59 / 58 |
+| GOV | 59 | 9 / 0 | 51 / 42 | 1 / 0 | 59 / 1 | 59 / 58 | 59 / 58 |
 | UTXOW | 19 | 19 / 12 | 19 / 12 | 19 / 19 | 16 / 3 | 19 / 19 | 19 / 19 |
 | UTXO | 30 | 30 / 17 | 30 / 17 | 30 / 28 | 27 / 22 | 30 / 29 | 30 / 30 |
 | UTXOS | 4 | 4 / 3 | 4 / 3 | 4 / 3 | 4 / 0 | 4 / 4 | 4 / 4 |
@@ -133,8 +133,27 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 | `mutant:drep-refund-incorrect` | GOVCERT.ConwayDRepIncorrectRefund | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:committee-resigned` | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:committee-unknown` | GOVCERT.ConwayCommitteeIsUnknown | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-value-mismatch` | LEDGER.ConwayTreasuryValueMismatch | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:ref-scripts-too-big` | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:withdrawal-not-delegated-to-drep` | LEDGER.ConwayWdrlNotDelegatedToDRep | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:proposal-deposit-incorrect` | GOV.ProposalDepositIncorrect | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:proposal-return-account-missing` | GOV.ProposalReturnAccountDoesNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:proposal-return-account-network` | GOV.ProposalProcedureNetworkIdMismatch | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-withdrawal-network` | GOV.TreasuryWithdrawalsNetworkIdMismatch | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-withdrawal-account-missing` | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-withdrawal-zero` | GOV.ZeroTreasuryWithdrawals | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:guardrails-script-hash` | GOV.InvalidGuardrailsScriptHash | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:malformed-proposal` | GOV.MalformedProposal | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:hard-fork-cant-follow` | GOV.ProposalCantFollow | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:invalid-prev-gov-action-id` | GOV.InvalidPrevGovActionId | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:committee-update-conflict` | GOV.ConflictingCommitteeUpdate | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:committee-expiration-too-small` | GOV.ExpirationEpochTooSmall | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:voter-does-not-exist` | GOV.VotersDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:gov-action-does-not-exist` | GOV.GovActionsDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:disallowed-voter` | GOV.DisallowedVoters | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unelected-committee-voter-v11` | GOV.UnelectedCommitteeVoters | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `GOV.VotersDoNotExist` |
 
-Mutants (66):
+Mutants (85):
 
 - `fee-too-small` → `UTXO.FeeTooSmallUTxO`: fee one lovelace below the minimum for the final bytes (change +1 keeps the balance)
 - `bad-input` → `UTXO.BadInputsUTxO`: an extra spending input that is not in the UTxO set (the balance counts only known inputs)
@@ -179,7 +198,7 @@ Mutants (66):
 - `invalid-metadata` → `UTXOW.InvalidMetadata`: auxiliary data (hash included) carrying a PlutusV3 script whose bytes are not a program
 - `script-integrity-hash-v11` → `UTXOW.ScriptIntegrityHashMismatch`: one bit of the body's script integrity hash flipped (protocol version 11)
 - `withdrawal-not-draining` → `CERTS.WithdrawalsNotInRewardsCERTS`: withdraws 1 ADA of dev-bb's 5 ADA reward balance (a withdrawal must drain it)
-- `withdrawal-missing-account-v11` → `LEDGER.ConwayWithdrawalsMissingAccounts`: withdraws 0 from dev-aa's reward account, which has no account (protocol version 11)
+- `withdrawal-missing-account-v11` → `LEDGER.ConwayWithdrawalsMissingAccounts`: withdraws 0 from the reward account of the native script, which has no account (protocol version 11; a script credential, so ConwayWdrlNotDelegatedToDRep does not apply)
 - `withdrawal-incomplete-v11` → `LEDGER.ConwayIncompleteWithdrawals`: withdraws 1 ADA of dev-bb's 5 ADA reward balance (protocol version 11)
 - `reg-deposit-incorrect` → `DELEG.IncorrectDepositDELEG`: registers dev-42 stating a 1 ADA deposit (ppKeyDeposit is 2 ADA, which the balance pays)
 - `unreg-refund-incorrect` → `DELEG.IncorrectDepositDELEG`: deregisters dev-77 stating a 1 ADA refund (the recorded deposit, credited, is 2 ADA)
@@ -202,6 +221,25 @@ Mutants (66):
 - `drep-refund-incorrect` → `GOVCERT.ConwayDRepIncorrectRefund`: deregisters dev-77's DRep stating (and crediting) 400 ADA; its deposit is 500 ADA
 - `committee-resigned` → `GOVCERT.ConwayCommitteeHasPreviouslyResigned`: dev-bb, an elected member that resigned, authorizes a hot key
 - `committee-unknown` → `GOVCERT.ConwayCommitteeIsUnknown`: dev-42, neither a member nor proposed, authorizes a hot key
+- `treasury-value-mismatch` → `LEDGER.ConwayTreasuryValueMismatch`: states a current treasury value one lovelace above the ledger's
+- `ref-scripts-too-big` → `LEDGER.ConwayTxRefScriptsSizeTooBig`: references a UTxO with a 205,000-byte reference script (limit 200 KiB), paying its tiered fee
+- `withdrawal-not-delegated-to-drep` → `LEDGER.ConwayWdrlNotDelegatedToDRep`: withdraws dev-cc's whole 5 ADA balance; dev-cc has no DRep delegation
+- `proposal-deposit-incorrect` → `GOV.ProposalDepositIncorrect`: an info action stating a deposit one lovelace below ppGovActionDeposit
+- `proposal-return-account-missing` → `GOV.ProposalReturnAccountDoesNotExist`: an info action returning its deposit to dev-aa, which has no account
+- `proposal-return-account-network` → `GOV.ProposalProcedureNetworkIdMismatch`: an info action returning its deposit to dev-77's mainnet account
+- `treasury-withdrawal-network` → `GOV.TreasuryWithdrawalsNetworkIdMismatch`: a treasury withdrawal of 10 ADA to dev-77's mainnet account
+- `treasury-withdrawal-account-missing` → `GOV.TreasuryWithdrawalReturnAccountsDoNotExist`: a treasury withdrawal of 10 ADA to dev-aa, which has no account
+- `treasury-withdrawal-zero` → `GOV.ZeroTreasuryWithdrawals`: a treasury withdrawal of 0 to dev-77
+- `guardrails-script-hash` → `GOV.InvalidGuardrailsScriptHash`: a parameter change naming the native script as its guardrail (provided) while the constitution has none
+- `malformed-proposal` → `GOV.MalformedProposal`: a parameter change setting maxTxSize to 0 (not ppuWellFormed)
+- `hard-fork-cant-follow` → `GOV.ProposalCantFollow`: a hard fork to 12.0 at protocol version 10.0 (only 11.0 or 10.1 can follow)
+- `invalid-prev-gov-action-id` → `GOV.InvalidPrevGovActionId`: a parameter change whose parent is the standing info action (no lineage purpose)
+- `committee-update-conflict` → `GOV.ConflictingCommitteeUpdate`: an update committee proposal removing and adding dev-bb
+- `committee-expiration-too-small` → `GOV.ExpirationEpochTooSmall`: an update committee proposal adding dev-42 with expiry epoch 0, the current epoch
+- `voter-does-not-exist` → `GOV.VotersDoNotExist`: dev-aa, not a registered DRep, votes on the standing info action
+- `gov-action-does-not-exist` → `GOV.GovActionsDoNotExist`: dev-77's DRep votes on an action that is not in the proposals
+- `disallowed-voter` → `GOV.DisallowedVoters`: dev-77's pool votes on the standing parameter change, outside the stake-pool security group
+- `unelected-committee-voter-v11` → `GOV.UnelectedCommitteeVoters`: the hot key (dev-aa) of a committee member without a term votes (protocol version 11)
 
 ## Constructors demonstrated per engine
 
@@ -209,9 +247,9 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 
 | Constructor | Cases | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-engine` | `amaru` |
 |---|---:|---|---|---|---|---|---|
-| `LEDGER.ConwayTreasuryValueMismatch` | 1 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `LEDGER.ConwayTxRefScriptsSizeTooBig` | 3 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 1 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| `LEDGER.ConwayTreasuryValueMismatch` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `LEDGER.ConwayTxRefScriptsSizeTooBig` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `LEDGER.ConwayWithdrawalsMissingAccounts` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `LEDGER.ConwayIncompleteWithdrawals` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `CERTS.WithdrawalsNotInRewardsCERTS` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
@@ -235,17 +273,23 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `GOVCERT.ConwayDRepIncorrectRefund` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `GOVCERT.ConwayCommitteeHasPreviouslyResigned` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOVCERT.ConwayCommitteeIsUnknown` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
-| `GOV.ProposalCantFollow` | 2 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.ProposalReturnAccountDoesNotExist` | 7 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 3 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.ProposalProcedureNetworkIdMismatch` | 1 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.InvalidGuardrailsScriptHash` | 5 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.ZeroTreasuryWithdrawals` | 1 | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |
-| `GOV.InvalidPrevGovActionId` | 3 | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.VotersDoNotExist` | 12 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.GovActionsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
-| `GOV.DisallowedVoters` | 4 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `GOV.UnelectedCommitteeVoters` | 13 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
+| `GOV.ProposalCantFollow` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.MalformedProposal` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalReturnAccountDoesNotExist` | 10 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalDepositIncorrect` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalProcedureNetworkIdMismatch` | 2 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.TreasuryWithdrawalsNetworkIdMismatch` | 1 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.InvalidGuardrailsScriptHash` | 6 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ZeroTreasuryWithdrawals` | 2 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
+| `GOV.ConflictingCommitteeUpdate` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ExpirationEpochTooSmall` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.InvalidPrevGovActionId` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.VotersDoNotExist` | 13 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.GovActionsDoNotExist` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.DisallowedVoters` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `UTXOW.InvalidWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXOW.MissingVKeyWitnessesUTXOW` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXOW.MissingScriptWitnessesUTXOW` | 8 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
@@ -286,9 +330,9 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `UTXO.TooManyCollateralInputs` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
 | `UTXOS.CollectErrors` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `UTXOS.ValidationTagMismatch` | 5 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| **Total** | | **33** | **44** | **49** | **19** | **63** | **72** |
+| **Total** | | **33** | **47** | **49** | **19** | **83** | **77** |
 
-No scenario or mutant expects (7): `LEDGER.ConwayMempoolFailure`, `GOV.UnelectedCommitteeVoters`, `GOV.MalformedProposal`, `GOV.ProposalDepositIncorrect`, `GOV.TreasuryWithdrawalsNetworkIdMismatch`, `GOV.ConflictingCommitteeUpdate`, `GOV.ExpirationEpochTooSmall`.
+No scenario or mutant expects (1): `LEDGER.ConwayMempoolFailure`.
 
 ## Main causes of constructor mismatches
 
@@ -298,7 +342,7 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), … (33 kinds) |
+| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), … (34 kinds) |
 | `Valid` | 59 | GOV.DisallowedVoters, GOV.GovActionsDoNotExist, GOV.InvalidGuardrailsScriptHash, GOV.ProposalProcedureNetworkIdMismatch, … (11 kinds) |
 | `UNMAPPED.IllegalArgument` | 3 | Pass, UTXOW.InvalidWitnessesUTXOW, UTXOW.MissingVKeyWitnessesUTXOW |
 | `UNMAPPED.StakePool` | 3 | POOL.StakePoolNotRegisteredOnKeyPOOL, POOL.WrongNetworkPOOL |
@@ -309,7 +353,7 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), … (33 kinds) |
+| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), … (34 kinds) |
 | `Valid` | 12 | GOV.InvalidGuardrailsScriptHash, GOV.VotersDoNotExist, GOVCERT.ConwayCommitteeHasPreviouslyResigned, LEDGER.ConwayTreasuryValueMismatch |
 | `GOVCERT.ConwayCommitteeIsUnknown` | 4 | GOVCERT.ConwayCommitteeHasPreviouslyResigned, Pass |
 | `UNMAPPED.IllegalArgument` | 3 | Pass, UTXOW.InvalidWitnessesUTXOW, UTXOW.MissingVKeyWitnessesUTXOW |
@@ -322,7 +366,7 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `Valid` | 79 | DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, GOV.DisallowedVoters, GOV.GovActionsDoNotExist, … (18 kinds) |
+| `Valid` | 79 | DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, GOV.DisallowedVoters, GOV.GovActionsDoNotExist, … (19 kinds) |
 | `ENGINE.DecodingFailure` | 8 | GOV.ProposalReturnAccountDoesNotExist, GOVCERT.ConwayCommitteeIsUnknown, Pass, UTXO.InputSetEmptyUTxO |
 | `UTXOS.ValidationTagMismatch` | 1 | UTXOS.CollectErrors |
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
@@ -331,18 +375,17 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `UTXOW.InvalidWitnessesUTXOW` | 230 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), … (42 kinds) |
+| `UTXOW.InvalidWitnessesUTXOW` | 230 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), … (43 kinds) |
 | `Valid` | 10 | DecodingFailure, LEDGER.ConwayTxRefScriptsSizeTooBig, UTXO.BadInputsUTxO, UTXO.FeeTooSmallUTxO, … (7 kinds) |
 | `UTXO.FeeTooSmallUTxO` | 1 | Pass |
 | `GOV.ZeroTreasuryWithdrawals` | 1 | Pass |
 | `UTXO.BabbageNonDisjointRefInputs` | 1 | Pass |
 | `UTXOW.PPViewHashesDontMatch` | 1 | Pass |
 
-**`java-engine`** (65 mismatches)
+**`java-engine`** (2 mismatches)
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `Valid` | 63 | GOV.DisallowedVoters, GOV.GovActionsDoNotExist, GOV.InvalidGuardrailsScriptHash, GOV.InvalidPrevGovActionId, … (14 kinds) |
 | `ENGINE.EraNotSupported` | 1 | GOV.ProposalCantFollow |
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
 
@@ -473,9 +516,9 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00145-pass-gov-update-committee-follows-root | Pass | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00146-pass-gov-update-committee | Pass | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00147-pass-reference-script-whose-constant-is-an-empty-list-of-bls-g1-elements | Pass | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
-| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00149-fail-parameter-change-proposal-chaining-to-a-parent-of-a-different-purpose | GOV.InvalidPrevGovActionId | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
-| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00151-fail-reference-script-carrying-a-bare-bls-g1-element-value | UTXOW.MalformedReferenceScripts | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00158-fail-vote-cast-by-a-drep-key-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
 | 00159-fail-vote-cast-by-a-drep-script-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
@@ -648,9 +691,9 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00145-pass-gov-update-committee-follows-root | Pass | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00146-pass-gov-update-committee | Pass | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00147-pass-reference-script-whose-constant-is-an-empty-list-of-bls-g1-elements | Pass | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
-| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00149-fail-parameter-change-proposal-chaining-to-a-parent-of-a-different-purpose | GOV.InvalidPrevGovActionId | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
-| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
+| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00151-fail-reference-script-carrying-a-bare-bls-g1-element-value | UTXOW.MalformedReferenceScripts | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00167-pass-vote-cast-by-a-committee-hot-key-authorized-earlier-in-the-same-transaction | Pass | `GOV.VotersDoNotExist` | GovernanceValidation: Vote: committee hot voter e4ff642ed686b644c5cb39c230c24b0e8a5d850701971bdde3253cec is not authorized |
 | 00168-pass-vote-cast-by-a-committee-hot-key-rotated-to-earlier-in-the-same-transaction | Pass | `GOV.VotersDoNotExist` | GovernanceValidation: Vote: committee hot voter e4ff642ed686b644c5cb39c230c24b0e8a5d850701971bdde3253cec is not authorized |
@@ -720,9 +763,9 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00144-pass-gov-update-committee-follows-in-flight | Pass | `ENGINE.DecodingFailure` | Scalus cannot decode the transaction: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00145-pass-gov-update-committee-follows-root | Pass | `ENGINE.DecodingFailure` | Scalus cannot decode the transaction: Expected Map-Header but got Start of unbounded Map (input position 1) |
 | 00146-pass-gov-update-committee | Pass | `ENGINE.DecodingFailure` | Scalus cannot decode the transaction: Expected Map-Header but got Start of unbounded Map (input position 1) |
-| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId | `Valid` |  |
+| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `Valid` |  |
 | 00149-fail-parameter-change-proposal-chaining-to-a-parent-of-a-different-purpose | GOV.InvalidPrevGovActionId | `Valid` |  |
-| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId | `Valid` |  |
+| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `Valid` |  |
 | 00158-fail-vote-cast-by-a-drep-key-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
 | 00159-fail-vote-cast-by-a-drep-script-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
 | 00160-fail-vote-cast-by-a-credential-registered-as-a-stake-account-but-not-as-a-drep | GOV.VotersDoNotExist | `Valid` |  |
@@ -902,9 +945,9 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00144-pass-gov-update-committee-follows-in-flight | Pass | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00145-pass-gov-update-committee-follows-root | Pass | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00146-pass-gov-update-committee | Pass | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
-| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
+| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00149-fail-parameter-change-proposal-chaining-to-a-parent-of-a-different-purpose | GOV.InvalidPrevGovActionId | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
-| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
+| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId (Haskell: GOV.ProposalReturnAccountDoesNotExist, GOV.InvalidPrevGovActionId) | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00151-fail-reference-script-carrying-a-bare-bls-g1-element-value | UTXOW.MalformedReferenceScripts | `Valid` |  |
 | 00152-pass-vote-cast-by-an-authorized-committee-hot-key | Pass | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00153-pass-vote-cast-by-an-authorized-committee-hot-script-credential | Pass | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
@@ -1033,75 +1076,12 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 
 </details>
 
-<details><summary><code>java-engine</code>: 65 of 276 without a constructor match</summary>
+<details><summary><code>java-engine</code>: 2 of 276 without a constructor match</summary>
 
 | Scenario | Expected | Reported first | Engine detail |
 |---|---|---|---|
-| 00054-fail-current-treasury-value-disagrees-with-ledger-treasury | LEDGER.ConwayTreasuryValueMismatch | `Valid` |  |
-| 00055-fail-single-reference-script-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
-| 00056-fail-summed-reference-scripts-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
-| 00057-fail-script-on-a-spent-input-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
-| 00058-fail-withdrawal-from-an-account-not-delegated-to-a-drep | LEDGER.ConwayWdrlNotDelegatedToDRep | `Valid` |  |
-| 00092-fail-parameter-change-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00093-fail-hard-fork-initiation-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00094-fail-treasury-withdrawals-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00095-fail-no-confidence-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00096-fail-update-committee-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00097-fail-new-constitution-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00098-fail-information-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00117-fail-treasury-withdrawal-with-a-missing-target-reward-account | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
-| 00118-fail-treasury-withdrawal-with-multiple-missing-target-reward-accounts | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
-| 00119-fail-treasury-withdrawal-with-multiple-target-reward-accounts-where-one-is-missing | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
-| 00130-fail-treasury-withdrawals-with-all-zeros | GOV.ZeroTreasuryWithdrawals | `Valid` |  |
-| 00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent | GOV.InvalidPrevGovActionId | `Valid` |  |
-| 00149-fail-parameter-change-proposal-chaining-to-a-parent-of-a-different-purpose | GOV.InvalidPrevGovActionId | `Valid` |  |
-| 00150-fail-parameter-change-proposal-with-an-empty-parent-after-a-root-was-enacted | GOV.InvalidPrevGovActionId | `Valid` |  |
-| 00158-fail-vote-cast-by-a-drep-key-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
-| 00159-fail-vote-cast-by-a-drep-script-credential-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
-| 00160-fail-vote-cast-by-a-credential-registered-as-a-stake-account-but-not-as-a-drep | GOV.VotersDoNotExist | `Valid` |  |
-| 00161-fail-vote-cast-by-a-committee-hot-key-with-an-empty-committee | GOV.VotersDoNotExist | `Valid` |  |
-| 00162-fail-vote-cast-by-a-committee-hot-key-the-member-has-rotated-away-from | GOV.VotersDoNotExist | `Valid` |  |
-| 00163-fail-vote-cast-by-a-committee-hot-key-of-a-member-that-authorized-none | GOV.VotersDoNotExist | `Valid` |  |
-| 00164-fail-vote-cast-by-a-committee-members-cold-credential-instead-of-its-hot-one | GOV.VotersDoNotExist | `Valid` |  |
-| 00165-fail-vote-cast-by-a-committee-hot-script-credential-that-no-member-authorized | GOV.VotersDoNotExist | `Valid` |  |
-| 00166-fail-vote-cast-by-a-stake-pool-that-is-not-registered | GOV.VotersDoNotExist | `Valid` |  |
-| 00169-fail-vote-cast-by-a-committee-hot-key-whose-member-resigned-earlier-in-the-same-transaction | GOV.VotersDoNotExist | `Valid` |  |
-| 00170-fail-vote-cast-by-a-committee-hot-key-rotated-away-from-earlier-in-the-same-transaction | GOV.VotersDoNotExist | `Valid` |  |
-| 00171-fail-vote-cast-by-an-unelected-committee-member-with-an-authorized-hot-key-v11 | GOV.VotersDoNotExist | `Valid` |  |
-| 00172-fail-vote-cast-by-a-committee-member-on-a-committee-update | GOV.DisallowedVoters | `Valid` |  |
-| 00173-fail-vote-cast-by-a-stake-pool-on-a-new-constitution | GOV.DisallowedVoters | `Valid` |  |
-| 00174-fail-vote-cast-by-a-stake-pool-on-a-treasury-withdrawal | GOV.DisallowedVoters | `Valid` |  |
-| 00175-fail-vote-cast-by-a-stake-pool-on-a-parameter-change-outside-the-security-group | GOV.DisallowedVoters | `Valid` |  |
-| 00191-fail-parameter-change-proposal-with-a-policy-the-constitution-has-no-script-for | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
-| 00192-fail-parameter-change-proposal-omitting-the-constitutions-guardrails-script | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
-| 00193-fail-parameter-change-proposal-naming-a-script-other-than-the-constitutions | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
-| 00194-fail-treasury-withdrawals-proposal-with-a-policy-the-constitution-has-no-script-for | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
-| 00195-fail-treasury-withdrawals-proposal-omitting-the-constitutions-guardrails-script | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
-| 00202-fail-gov-hardfork-initiation-repeating-the-in-flight-version | GOV.ProposalCantFollow | `Valid` |  |
 | 00203-fail-gov-hardfork-initiation-chains-two-majors | GOV.ProposalCantFollow | `ENGINE.EraNotSupported` | the java engine validates Conway at protocol versions 10–11, not 9 |
-| 00221-fail-vote-cast-on-a-governance-action-absent-from-the-proposals-state | GOV.GovActionsDoNotExist | `Valid` |  |
-| 00222-fail-vote-cast-on-a-governance-action-whose-index-does-not-match-any-proposal | GOV.GovActionsDoNotExist | `Valid` |  |
-| 00223-fail-vote-cast-by-a-committee-member-on-a-governance-action-that-does-not-exist | GOV.GovActionsDoNotExist | `Valid` |  |
-| 00224-fail-vote-cast-on-two-governance-actions-of-which-only-one-exists | GOV.GovActionsDoNotExist | `Valid` |  |
-| 00225-fail-yes-vote-cast-by-a-registered-drep-key-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00226-fail-no-vote-cast-by-a-registered-drep-key-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00227-fail-abstention-cast-by-a-registered-drep-key-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00228-fail-yes-vote-cast-by-a-registered-drep-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00229-fail-no-vote-cast-by-a-registered-drep-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00230-fail-abstention-cast-by-a-registered-drep-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00231-fail-yes-vote-cast-by-an-authorized-committee-hot-key-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00232-fail-no-vote-cast-by-an-authorized-committee-hot-key-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00233-fail-abstention-cast-by-an-authorized-committee-hot-key-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00234-fail-yes-vote-cast-by-an-authorized-committee-hot-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00235-fail-no-vote-cast-by-an-authorized-committee-hot-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00236-fail-abstention-cast-by-an-authorized-committee-hot-script-credential-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00237-fail-yes-vote-cast-by-a-registered-stake-pool-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00238-fail-no-vote-cast-by-a-registered-stake-pool-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00239-fail-abstention-cast-by-a-registered-stake-pool-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00240-fail-one-voter-balloting-on-a-live-governance-action-and-an-expired-one | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00241-fail-expired-governance-action-balloted-on-by-the-second-of-two-voters | GOV.VotingOnExpiredGovAction | `Valid` |  |
 | 00280-fail-output-to-a-byron-address-with-oversized-attributes | UTXO.OutputTooBigUTxO | `UTXO.OutputBootAddrAttrsTooBig` | output 0 82d818588983581c149ad4b736608c56aa72fba87b7f72343fed0f0b78b2fd39b5eff808a201586258605be51343581011594d82a1e32dfc2c5e0ab8be4a32aab4fbf3bcf9e17991a53c... |
-| 00282-fail-info-proposal-with-a-mainnet-return-account | GOV.ProposalProcedureNetworkIdMismatch | `Valid` |  |
 
 </details>
 

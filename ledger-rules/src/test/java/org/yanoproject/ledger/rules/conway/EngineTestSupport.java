@@ -80,6 +80,14 @@ public final class EngineTestSupport {
                 TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, previous));
     }
 
+    /** Validates with rule {@code rule} (origin {@code SYNC} for {@code LEDGER}, {@code LOCAL} for {@code MEMPOOL}). */
+    public static TxValidationOutcome validateWith(JavaLedgerValidationEngine engine, byte[] cbor, LedgerView view,
+                                               ValidationEnv env, TxValidationRequest.Rule rule) {
+        TxValidationRequest.Origin origin = rule == TxValidationRequest.Rule.MEMPOOL
+                ? TxValidationRequest.Origin.LOCAL : TxValidationRequest.Origin.SYNC;
+        return engine.validate(new TxValidationRequest(cbor, view, env, rule, origin, null));
+    }
+
     /** @return the qualified failure names, or {@code ["Valid"]} */
     public static List<String> names(TxValidationOutcome outcome) {
         return switch (outcome) {

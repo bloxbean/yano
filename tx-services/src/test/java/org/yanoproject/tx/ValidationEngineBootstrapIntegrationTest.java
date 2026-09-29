@@ -119,7 +119,7 @@ class ValidationEngineBootstrapIntegrationTest {
         assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "java"),
                 new AtomicReference<>()))
                 .isInstanceOf(ValidationEngineConfigurationException.class)
-                .hasMessageContaining("'java' is not available yet");
+                .hasMessageContaining("'java' is experimental");
     }
 
     @Test

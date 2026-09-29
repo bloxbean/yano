@@ -64,6 +64,11 @@ public final class CborReader {
         return peek() >>> 5;
     }
 
+    /** @return the next item's initial byte, not consumed */
+    public int peekInitialByte() {
+        return peek();
+    }
+
     /** @return true when the next byte is the {@code null} simple value */
     public boolean peekNull() {
         return peek() == 0xf6;
@@ -167,6 +172,31 @@ public final class CborReader {
             return out.toByteArray();
         }
         return definiteBytes(initial);
+    }
+
+    /**
+     * @return a definite-length byte string's content: Haskell's {@code decodeBytes} and {@code decodeByteArray} (hashes,
+     *         account addresses, credentials, the {@code PackedBytes} of a {@code Hash}) refuse an indefinite byte string
+     *         below decoder version 12 ({@code decodeBytesDefinite}, {@code decodeByteArrayDefinite},
+     *         cardano-ledger-binary Decoding/Decoder.hs:350-361, 1426-1434)
+     */
+    public byte[] readDefiniteBytes() {
+        if (peek() == 0x5f) {
+            throw new TxDecodingException("an indefinite-length byte string at " + pos
+                    + " (definite only below decoder version 12)");
+        }
+        return readBytes();
+    }
+
+    /**
+     * @return a definite-length text string's UTF-8 bytes: Haskell's {@code decodeString} (cborg's) refuses an
+     *         indefinite text string
+     */
+    public byte[] readDefiniteText() {
+        if (peek() == 0x7f) {
+            throw new TxDecodingException("an indefinite-length text string at " + pos);
+        }
+        return readTextChunks().getFirst();
     }
 
     /**

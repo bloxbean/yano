@@ -172,9 +172,9 @@ public final class AddressBytes {
         CborReader outer = new CborReader(address);
         outer.readArrayHeader();
         outer.readTag();
-        CborReader payload = new CborReader(outer.readBytes());
+        CborReader payload = new CborReader(outer.readDefiniteBytes());
         payload.readArrayHeader();
-        byte[] root = payload.readBytes();
+        byte[] root = payload.readDefiniteBytes();
         if (root.length != 28) {
             throw new TxDecodingException("a bootstrap address root is 28 bytes");
         }
@@ -198,7 +198,7 @@ public final class AddressBytes {
         if (outer.readTag() != 24) {
             throw new TxDecodingException("a bootstrap address wraps its payload in tag 24");
         }
-        byte[] payload = outer.readBytes();
+        byte[] payload = outer.readDefiniteBytes();
         long crc = outer.readUnsignedLong();
         if (!outer.atEnd()) {
             throw new TxDecodingException("trailing bytes after a bootstrap address");
@@ -212,7 +212,7 @@ public final class AddressBytes {
         if (reader.readArrayHeader() != 3) {
             throw new TxDecodingException("a bootstrap address payload is [root, attributes, type]");
         }
-        if (reader.readBytes().length != 28) {
+        if (reader.readDefiniteBytes().length != 28) {
             throw new TxDecodingException("a bootstrap address root is 28 bytes");
         }
         long entries = reader.readMapHeader();
@@ -220,9 +220,9 @@ public final class AddressBytes {
         int size = 0;
         for (long i = 0; reader.hasNext(entries, i); i++) {
             long key = reader.readUnsignedLong();
-            byte[] value = reader.readBytes();
+            byte[] value = reader.readDefiniteBytes();
             if (key == 1) {
-                size += new CborReader(value).readBytes().length;
+                size += new CborReader(value).readDefiniteBytes().length;
             } else if (key == 2) {
                 magic = true;
             } else {

@@ -28,7 +28,7 @@ class JavaEngineFactoryTest {
         assertThat(engines.available()).contains("java");
         assertThatThrownBy(() -> engines.factory("java").create(context(Map.of())))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("'java' is not available yet")
+                .hasMessageContaining("'java' is experimental")
                 .hasMessageContaining(JavaEngineFactory.EXPERIMENTAL_KEY);
         assertThatThrownBy(() -> engines.factory("java").create(context(Map.of(JavaEngineFactory.EXPERIMENTAL_KEY,
                 "yes")))).isInstanceOf(IllegalStateException.class);

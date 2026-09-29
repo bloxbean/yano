@@ -46,7 +46,7 @@ public record RawCredential(boolean script, byte[] hash) implements Comparable<R
         if (kind > 1) {
             throw new TxDecodingException("unknown credential kind " + kind);
         }
-        byte[] hash = reader.readBytes();
+        byte[] hash = reader.readDefiniteBytes();
         if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
             throw new TxDecodingException("a credential is a two-element array");
         }

@@ -19,8 +19,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Amaru scenarios' expected predicates to constructors, and writes {@code ledger-rules/docs/conway-rule-coverage.md}
  * (under {@code conformanceReport}; always to {@code build/conformance/}).
  *
- * <p>Gaps are reported, not failed, until the Phase 5 gate switches {@code -Pconformance.strict=true} on. A
- * {@code @Covers} value that names no catalogue constructor always fails.</p>
+ * <p>Strict by default since the Phase 5 gate: an in-scope constructor without a {@code @Covers} test, or a test class
+ * the scan cannot inspect, fails ({@code -Pconformance.strict=false} reports them instead). A {@code @Covers} value that
+ * names no catalogue constructor always fails.</p>
  */
 class CoverageMatrixTest {
 
@@ -76,8 +77,8 @@ class CoverageMatrixTest {
                     .isEmpty();
             assertThat(missing).as("in-scope constructors without a @Covers test (conformance.strict)").isEmpty();
         } else if (!missing.isEmpty()) {
-            System.out.println("  " + missing.size() + " constructors have no @Covers test yet (reported; "
-                    + "-Pconformance.strict=true fails on them)");
+            System.out.println("  " + missing.size() + " constructors have no @Covers test (reported because "
+                    + "-Pconformance.strict=false)");
         }
     }
 }

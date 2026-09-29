@@ -9,11 +9,12 @@ import java.util.Locale;
 /**
  * {@code yano.validation.engine=java} (ADR-056 §7): the {@link JavaLedgerValidationEngine}.
  *
- * <p>Until the Phase 5 gate (every Conway rule family implemented, the coverage matrix complete) the engine is
- * incomplete: it would admit transactions that {@code UTXOW}, {@code CERTS}, {@code GOV} or the {@code LEDGER}
- * pre-checks reject. The factory therefore refuses to create it, as admission or shadow engine, unless
- * {@value #EXPERIMENTAL_KEY}{@code =true} is set explicitly (tests and the conformance harness set it). The node
- * then stops at startup with this message instead of running an incomplete engine.</p>
+ * <p>Every Conway rule family is implemented and the ADR-056 Phase 5 gate passed (the Amaru scenarios, the complete
+ * coverage matrix, the mutation matrix). The engine is still not the default and has not yet run behind the runtime
+ * overlays (Phase 6), shadow sync or the native-image parity gate (Phase 7); Phase 8 makes it selectable without the
+ * flag. Until then the factory creates it, as admission or shadow engine, only when
+ * {@value #EXPERIMENTAL_KEY}{@code =true} is set explicitly (tests and the conformance harness set it); otherwise the
+ * node stops at startup with this message.</p>
  */
 public final class JavaEngineFactory implements LedgerValidationEngineFactory {
 
@@ -32,10 +33,10 @@ public final class JavaEngineFactory implements LedgerValidationEngineFactory {
                 .filter("true"::equals)
                 .isPresent();
         if (!experimental) {
-            throw new IllegalStateException("Validation engine 'java' is not available yet: the Java Conway rules "
-                    + "are incomplete until ADR-056 Phases 3-5 are done (Phase 3: UTXOW, UTXO and UTXOS only). Use "
-                    + "yano.validation.engine=scalus (the default), or amaru in a build with -PwithAmaru=true. "
-                    + "Tests may set " + EXPERIMENTAL_KEY + "=true.");
+            throw new IllegalStateException("Validation engine 'java' is experimental: the Java Conway rules are "
+                    + "complete (ADR-056 Phases 3-5) but have not yet run behind the runtime overlays, shadow sync and "
+                    + "the native-image gate (Phases 6-7). Set " + EXPERIMENTAL_KEY + "=true to use it, or keep "
+                    + "yano.validation.engine=scalus (the default), or amaru in a build with -PwithAmaru=true.");
         }
         return new JavaLedgerValidationEngine(context.scriptPhaseEvaluator());
     }

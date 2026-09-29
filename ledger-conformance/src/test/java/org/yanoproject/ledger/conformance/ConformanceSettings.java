@@ -21,9 +21,12 @@ public final class ConformanceSettings {
     private ConformanceSettings() {
     }
 
-    /** @return true when missing coverage must fail ({@code -Pconformance.strict=true}, the Phase 5 gate) */
+    /**
+     * @return true when missing coverage must fail: the default since the ADR-056 Phase 5 gate (the build passes
+     *         {@code conformance.strict}; {@code -Pconformance.strict=false} reports instead)
+     */
     public static boolean strict() {
-        return Boolean.getBoolean("conformance.strict");
+        return Boolean.parseBoolean(System.getProperty("conformance.strict", "true"));
     }
 
     /** @return true when the build includes the Amaru engine ({@code -PwithAmaru=true}) */

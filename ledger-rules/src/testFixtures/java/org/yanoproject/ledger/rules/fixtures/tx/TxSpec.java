@@ -17,6 +17,7 @@ import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * A description of a Conway transaction that {@link ConwayTxBuilder} turns into signed bytes. Mutations edit a
@@ -83,6 +84,13 @@ public final class TxSpec {
     public VotingProcedures votingProcedures;
     /** The treasury donation, or null to leave it out. */
     public BigInteger donation;
+    /** The body's current treasury value (key 21), or null to leave it out. */
+    public BigInteger currentTreasuryValue;
+    /**
+     * Edits the body map as encoded, after CCL serialised it and before it is signed (for fields CCL cannot express,
+     * such as a parameter update's Conway keys 25–33); null for none.
+     */
+    public Consumer<co.nstant.in.cbor.model.Map> bodyEdit;
 
     public TxSpec copy() {
         TxSpec copy = new TxSpec();
@@ -118,6 +126,8 @@ public final class TxSpec {
         copy.proposals = new ArrayList<>(proposals);
         copy.votingProcedures = votingProcedures;
         copy.donation = donation;
+        copy.currentTreasuryValue = currentTreasuryValue;
+        copy.bodyEdit = bodyEdit;
         return copy;
     }
 }

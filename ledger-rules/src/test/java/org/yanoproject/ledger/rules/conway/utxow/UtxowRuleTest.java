@@ -43,6 +43,7 @@ import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
 import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.model.AccountState;
 import org.yanoproject.ledger.rules.view.model.CredentialKey;
+import org.yanoproject.ledger.rules.view.model.DRepState;
 
 import java.math.BigInteger;
 import java.util.LinkedHashMap;
@@ -262,10 +263,11 @@ class UtxowRuleTest {
         registration.changeAdjust = BigInteger.valueOf(-2_000_000);
         assertThat(run(registration)).containsExactly("Valid");
 
+        // dev-77's DRep votes on the world's standing info action.
         TxSpec voting = MutationWorld.simpleSpec();
-        voting.votingProcedures = votes(VoterType.DREP_KEY_HASH, DEV_AA);
+        voting.votingProcedures = votes(VoterType.DREP_KEY_HASH, TestKey.DEV_77.keyHash());
         assertThat(run(voting)).containsExactly("UTXOW.MissingVKeyWitnessesUTXOW");
-        voting.signers.add(TestKey.DEV_AA);
+        voting.signers.add(TestKey.DEV_77);
         assertThat(run(voting)).containsExactly("Valid");
     }
 
@@ -285,18 +287,24 @@ class UtxowRuleTest {
         assertThat(names(deregistration, view)).containsExactly("Valid");
 
         // A DRep script voter needs its script.
+        InMemoryLedgerView scriptDRep = MutationWorld.builder(MutationWorld.protocolParams())
+                .drep(new DRepState(CredentialKey.script(scriptHash), MutationWorld.DREP_DEPOSIT, 20))
+                .build();
         TxSpec voting = MutationWorld.simpleSpec();
         voting.votingProcedures = votes(VoterType.DREP_SCRIPT_HASH, scriptHash);
-        assertThat(run(voting)).containsExactly("UTXOW.MissingScriptWitnessesUTXOW");
+        assertThat(names(voting, scriptDRep)).containsExactly("UTXOW.MissingScriptWitnessesUTXOW");
+        voting.nativeScripts.add(MutationWorld.NATIVE_SCRIPT);
+        assertThat(names(voting, scriptDRep)).containsExactly("Valid");
 
         // A parameter change names the guardrails script, which must be provided (proposingScriptsNeeded).
         ProtocolParams params = MutationWorld.protocolParams();
         params.setGovActionDeposit(BigInteger.valueOf(1_000_000));
-        InMemoryLedgerView cheap = MutationWorld.builder(params).build();
+        // The constitution's guardrail is that script and dev-77's account is registered, so only UTXOW fails.
+        InMemoryLedgerView cheap = MutationWorld.builder(params).guardrailScriptHash(scriptHash).build();
         TxSpec proposal = MutationWorld.simpleSpec();
         proposal.proposals.add(ProposalProcedure.builder()
                 .deposit(BigInteger.valueOf(1_000_000))
-                .rewardAccount(AddressProvider.getRewardAddress(Credential.fromKey(TestKey.DEV_42.keyHash()),
+                .rewardAccount(AddressProvider.getRewardAddress(Credential.fromKey(TestKey.DEV_77.keyHash()),
                         MutationWorld.NETWORK).toBech32())
                 .govAction(ParameterChangeAction.builder()
                         .protocolParamUpdate(ProtocolParamUpdate.builder().minFeeA(BigInteger.valueOf(45)).build())
@@ -306,6 +314,8 @@ class UtxowRuleTest {
                 .build());
         proposal.changeAdjust = BigInteger.valueOf(-1_000_000);
         assertThat(names(proposal, cheap)).containsExactly("UTXOW.MissingScriptWitnessesUTXOW");
+        proposal.nativeScripts.add(MutationWorld.NATIVE_SCRIPT);
+        assertThat(names(proposal, cheap)).containsExactly("Valid");
     }
 
     // ------------------------------------------------------------------ metadata
@@ -497,8 +507,8 @@ class UtxowRuleTest {
         Credential credential = type == VoterType.DREP_SCRIPT_HASH ? Credential.fromScript(hash)
                 : Credential.fromKey(hash);
         VotingProcedures procedures = new VotingProcedures();
-        procedures.add(new Voter(type, credential), new GovActionId("0".repeat(64), 0),
-                new VotingProcedure(Vote.YES, null));
+        procedures.add(new Voter(type, credential), new GovActionId(MutationWorld.INFO_ACTION.txHashHex(),
+                MutationWorld.INFO_ACTION.index()), new VotingProcedure(Vote.YES, null));
         return procedures;
     }
 }

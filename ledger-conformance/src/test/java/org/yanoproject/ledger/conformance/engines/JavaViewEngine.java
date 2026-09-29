@@ -42,8 +42,8 @@ public final class JavaViewEngine implements ConformanceEngine {
 
     @Override
     public String description() {
-        return "JavaLedgerValidationEngine (ADR-056 Phases 3–4: UTXOW, UTXO, UTXOS, CERTS, DELEG, POOL, GOVCERT) over "
-                + "the LedgerView, Scalus phase 2";
+        return "JavaLedgerValidationEngine (ADR-056 Phases 3–5: every Conway rule family, LEDGER, GOV, CERTS, DELEG, "
+                + "POOL, GOVCERT, UTXOW, UTXO, UTXOS) over the LedgerView, Scalus phase 2";
     }
 
     @Override

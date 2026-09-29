@@ -157,6 +157,9 @@ public final class ConwayTxBuilder {
             if (spec.donation != null) {
                 body.donation(spec.donation);
             }
+            if (spec.currentTreasuryValue != null) {
+                body.currentTreasuryValue(spec.currentTreasuryValue);
+            }
             if (spec.bodyNetworkId != null) {
                 body.networkId(spec.bodyNetworkId);
             }
@@ -219,6 +222,9 @@ public final class ConwayTxBuilder {
         }
         if (spec.dropAuxData) {
             tx.getDataItems().set(3, SimpleValue.NULL);
+        }
+        if (spec.bodyEdit != null) {
+            spec.bodyEdit.accept(body);
         }
         byte[] bodyHash = Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(body));
         SigningProvider signingProvider = CryptoConfiguration.INSTANCE.getSigningProvider();

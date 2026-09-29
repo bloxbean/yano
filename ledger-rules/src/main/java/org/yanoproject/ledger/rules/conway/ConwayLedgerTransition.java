@@ -4,6 +4,7 @@ import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.conway.certs.CertsRule;
+import org.yanoproject.ledger.rules.conway.gov.GovRule;
 import org.yanoproject.ledger.rules.conway.ledger.LedgerPreChecks;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
 import org.yanoproject.ledger.rules.conway.utxow.UtxowRule;
@@ -26,12 +27,9 @@ import java.util.Objects;
  * </ol>
  *
  * <p>Each family is a {@link SubRule}. Failures accumulate with Haskell's STS semantics ({@link RuleFrame}); only
- * {@code whenFailureFree} blocks are skipped ({@code UTXOS}' script execution). Families that later phases
- * implement are plugged in through the constructor; until then they are {@link SubRule#NOT_YET_IMPLEMENTED}
- * ({@code GOV} is Phase 5). {@code CERTS} (Phase 4, {@link CertsRule}) and the {@code LEDGER} pre-checks
- * ({@link LedgerPreChecks}: so far only the protocol-version-11 pre-certificate state step; its predicates are Phase
- * 5) thread the intra-transaction certificate state ({@link TransitionContext#certState()}) that {@code GOV} will
- * read.</p>
+ * {@code whenFailureFree} blocks are skipped ({@code UTXOS}' script execution). The {@code LEDGER} pre-checks
+ * ({@link LedgerPreChecks}) and {@code CERTS} ({@link CertsRule}) thread the intra-transaction certificate state
+ * ({@link TransitionContext#certState()}) that {@code GOV} ({@link GovRule}) reads after the certificates.</p>
  *
  * <p>Stateless and thread-safe; each run gets its own {@link TransitionContext}.</p>
  */
@@ -73,12 +71,11 @@ public final class ConwayLedgerTransition {
     }
 
     /**
-     * @return the families implemented so far: {@code UTXOW}, {@code UTXO}, {@code UTXOS} (Phase 3), {@code CERTS}
-     *         with {@code DELEG}, {@code POOL}, {@code GOVCERT} (Phase 4)
+     * @return every family: {@code UTXOW}, {@code UTXO}, {@code UTXOS} (Phase 3), {@code CERTS} with {@code DELEG},
+     *         {@code POOL}, {@code GOVCERT} (Phase 4), the {@code LEDGER} pre-checks and {@code GOV} (Phase 5)
      */
     public static ConwayLedgerTransition standard() {
-        return new ConwayLedgerTransition(LedgerPreChecks::apply, CertsRule::apply, SubRule.NOT_YET_IMPLEMENTED,
-                UtxowRule::apply);
+        return new ConwayLedgerTransition(LedgerPreChecks::apply, CertsRule::apply, GovRule::apply, UtxowRule::apply);
     }
 
     /**

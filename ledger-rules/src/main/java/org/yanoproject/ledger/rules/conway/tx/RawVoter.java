@@ -54,7 +54,7 @@ public record RawVoter(int tag, byte[] hash) implements Comparable<RawVoter> {
         if (tag > 4) {
             throw new TxDecodingException("unknown voter tag " + tag);
         }
-        byte[] hash = reader.readBytes();
+        byte[] hash = reader.readDefiniteBytes();
         if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
             throw new TxDecodingException("a voter is a two-element array");
         }

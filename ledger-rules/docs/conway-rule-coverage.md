@@ -6,25 +6,25 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 
 - **Tests**: test methods annotated `@Covers("RULE.Constructor")` (ledger-conformance and ledger-rules test classes).
 - **Amaru scenarios**: scenarios of Amaru's corpus (tag `v10.11.20260925`) whose expected predicate maps to the constructor (`AmaruCorpusNames`).
-- **Java rule**: the class implementing the check in the Java engine; filled in by Phases 3–5.
+- **Java rule**: the class implementing the check in the Java engine (Phases 3–5).
 - **Status**: `test + scenario`, `test`, `scenario only` (no negative test yet), `gap` (neither), `out of scope` (cannot occur at protocol version 10 or 11).
-- The Phase 5 gate runs with `-Pconformance.strict=true`: every in-scope constructor must then have a `@Covers` test.
+- Strict since the Phase 5 gate (`conformance.strict`, on by default): every in-scope constructor must have a `@Covers` test, or `:ledger-conformance:test` fails.
 
 ## Summary
 
 | Family | Constructors (PV 10–11) | test + scenario | test | scenario only | gap |
 |---|---:|---:|---:|---:|---:|
-| MEMPOOL | 1 | 0 | 0 | 0 | 1 |
-| LEDGER | 5 | 0 | 2 | 3 | 0 |
+| MEMPOOL | 1 | 0 | 1 | 0 | 0 |
+| LEDGER | 5 | 3 | 2 | 0 | 0 |
 | CERTS | 1 | 1 | 0 | 0 | 0 |
 | DELEG | 8 | 6 | 2 | 0 | 0 |
 | POOL | 6 | 4 | 2 | 0 | 0 |
 | GOVCERT | 6 | 3 | 3 | 0 | 0 |
-| GOV | 17 | 0 | 0 | 11 | 6 |
+| GOV | 17 | 11 | 6 | 0 | 0 |
 | UTXOW | 18 | 9 | 9 | 0 | 0 |
 | UTXO | 20 | 17 | 3 | 0 | 0 |
 | UTXOS | 2 | 2 | 0 | 0 | 0 |
-| **Total** | **84** | **42** | **21** | **14** | **7** |
+| **Total** | **84** | **56** | **28** | **0** | **0** |
 
 88 constructors in the catalogue; 84 reachable at protocol version 10 or 11. Out of scope: `GOV.DisallowedProposalDuringBootstrap` (9 only), `GOV.DisallowedVotesDuringBootstrap` (9 only), `UTXO.OutsideForecast` (unreachable), `UTXO.OutputTooSmallUTxO` (unreachable).
 
@@ -53,10 +53,10 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 
 | Rule | Constructor | PV | Check | Java rule | Tests | Amaru scenarios | Status |
 |---|---|---|---|---|---|---|---|
-| LEDGER | `ConwayMempoolFailure` | 10+ | dynamic | TBD (P5) | – | – | gap |
-| LEDGER | `ConwayTreasuryValueMismatch` | 10+ | dynamic | TBD (P5) | – | 00054 | scenario only |
-| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 10+ | dynamic | TBD (P5) | – | 00055, 00056, 00057 | scenario only |
-| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | TBD (P5) | – | 00058 | scenario only |
+| LEDGER | `ConwayMempoolFailure` | 10+ | dynamic | `MempoolRule` | MempoolTransitionTest#anAllInputsSpentDuplicateReportsOnlyTheMempoolFailure | – | test |
+| LEDGER | `ConwayTreasuryValueMismatch` | 10+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aStatedTreasuryValueMustBeTheLedgersTreasury<br>MutationMatrixTest#treasuryValueMismatch | 00054 | test + scenario |
+| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 10+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#referenceScriptsFitThePerTransactionLimit<br>MutationMatrixTest#refScriptsTooBig | 00055, 00056, 00057 | test + scenario |
+| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#keyHashWithdrawalAccountsMustBeDelegatedToADRep<br>MutationMatrixTest#withdrawalNotDelegatedToDRep | 00058 | test + scenario |
 | LEDGER | `ConwayWithdrawalsMissingAccounts` | 11+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aWithdrawalNeedsARegisteredAccountOnTheLedgersNetwork<br>MutationMatrixTest#withdrawalMissingAccountV11 | – | test |
 | LEDGER | `ConwayIncompleteWithdrawals` | 11+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aWithdrawalDrainsTheWholeBalance<br>MutationMatrixTest#withdrawalIncompleteV11 | – | test |
 | CERTS | `WithdrawalsNotInRewardsCERTS` | 10 | dynamic | `CertsRule` | CertsRuleTest#withdrawalsMustDrainRegisteredAccountsBeforeProtocolVersion11<br>MutationMatrixTest#withdrawalNotDraining | 00125, 00126 | test + scenario |
@@ -80,25 +80,25 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 | GOVCERT | `ConwayDRepIncorrectRefund` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theDRepRefundIsTheRecordedDeposit<br>MutationMatrixTest#drepRefundIncorrect | – | test |
 | GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#aResignedMemberCannotAuthorizeOrResignAgain<br>MutationMatrixTest#committeeMemberResigned | 00206, 00207, 00208, 00209, 00210, 00217 | test + scenario |
 | GOVCERT | `ConwayCommitteeIsUnknown` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theColdCredentialIsAMemberOrAProposedMember<br>MutationMatrixTest#committeeMemberUnknown | 00201, 00204, 00205, 00220 | test + scenario |
-| GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | TBD (P5) | – | – | gap |
+| GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | `GovRule` | GovRuleTest#unelectedCommitteeMembersDoNotVoteFromProtocolVersion11<br>MutationMatrixTest#unelectedCommitteeVoterV11 | – | test |
 | GOV | `DisallowedProposalDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `ProposalCantFollow` | 10+ | dynamic | TBD (P5) | – | 00202, 00203 | scenario only |
-| GOV | `MalformedProposal` | 10+ | dynamic | TBD (P5) | – | – | gap |
-| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | TBD (P5) | – | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | scenario only |
-| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | TBD (P5) | – | 00117, 00118, 00119 | scenario only |
-| GOV | `ProposalDepositIncorrect` | 10+ | dynamic | TBD (P5) | – | – | gap |
-| GOV | `ProposalProcedureNetworkIdMismatch` | 10+ | dynamic | TBD (P5) | – | 00282 | scenario only |
-| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 10+ | dynamic | TBD (P5) | – | – | gap |
-| GOV | `InvalidGuardrailsScriptHash` | 10+ | dynamic | TBD (P5) | – | 00191, 00192, 00193, 00194, 00195 | scenario only |
-| GOV | `ZeroTreasuryWithdrawals` | 10+ | dynamic | TBD (P5) | – | 00130 | scenario only |
-| GOV | `ConflictingCommitteeUpdate` | 10+ | dynamic | TBD (P5) | – | – | gap |
-| GOV | `ExpirationEpochTooSmall` | 10+ | dynamic | TBD (P5) | – | – | gap |
-| GOV | `InvalidPrevGovActionId` | 10+ | dynamic | TBD (P5) | – | 00148, 00149, 00150 | scenario only |
-| GOV | `VotersDoNotExist` | 10+ | dynamic | TBD (P5) | – | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | scenario only |
-| GOV | `GovActionsDoNotExist` | 10+ | dynamic | TBD (P5) | – | 00221, 00222, 00223, 00224 | scenario only |
+| GOV | `ProposalCantFollow` | 10+ | dynamic | `GovRule` | GovRuleTest#aHardForkMustFollowItsPredecessor<br>MutationMatrixTest#hardForkCantFollow | 00202, 00203 | test + scenario |
+| GOV | `MalformedProposal` | 10+ | dynamic | `GovRule` | GovRuleTest#parameterUpdatesMustBeWellFormed<br>MutationMatrixTest#malformedProposal | – | test |
+| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#theReturnAccountMustBeRegistered<br>MutationMatrixTest#proposalReturnAccountMissing | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | test + scenario |
+| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalAccountsMustBeRegistered<br>MutationMatrixTest#treasuryWithdrawalAccountMissing | 00117, 00118, 00119 | test + scenario |
+| GOV | `ProposalDepositIncorrect` | 10+ | dynamic | `GovRule` | GovRuleTest#theDepositIsTheGovActionDeposit<br>MutationMatrixTest#proposalDepositIncorrect | – | test |
+| GOV | `ProposalProcedureNetworkIdMismatch` | 10+ | dynamic | `GovRule` | GovRuleTest#theReturnAccountIsOnTheLedgersNetwork<br>MutationMatrixTest#proposalReturnAccountNetwork | 00282 | test + scenario |
+| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 10+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalAccountsAreOnTheLedgersNetwork<br>MutationMatrixTest#treasuryWithdrawalNetwork | – | test |
+| GOV | `InvalidGuardrailsScriptHash` | 10+ | dynamic | `GovRule` | GovRuleTest#thePolicyIsTheConstitutionsGuardrailScript<br>MutationMatrixTest#guardrailsScriptHash | 00191, 00192, 00193, 00194, 00195 | test + scenario |
+| GOV | `ZeroTreasuryWithdrawals` | 10+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalsMustWithdrawSomething<br>MutationMatrixTest#treasuryWithdrawalZero | 00130 | test + scenario |
+| GOV | `ConflictingCommitteeUpdate` | 10+ | dynamic | `GovRule` | GovRuleTest#aMemberCannotBeAddedAndRemoved<br>MutationMatrixTest#committeeUpdateConflict | – | test |
+| GOV | `ExpirationEpochTooSmall` | 10+ | dynamic | `GovRule` | GovRuleTest#newMembersExpireAfterTheCurrentEpoch<br>MutationMatrixTest#committeeExpirationTooSmall | – | test |
+| GOV | `InvalidPrevGovActionId` | 10+ | dynamic | `GovRule` | GovRuleTest#theParentIsTheEnactedRootOrAProposalOfTheSamePurpose<br>MutationMatrixTest#invalidPrevGovActionId | 00148, 00149, 00150 | test + scenario |
+| GOV | `VotersDoNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#votersMustExistAfterTheCertificates<br>MutationMatrixTest#voterDoesNotExist | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | test + scenario |
+| GOV | `GovActionsDoNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#votesMustBeOnProposalsInTheState<br>MutationMatrixTest#govActionDoesNotExist | 00221, 00222, 00223, 00224 | test + scenario |
 | GOV | `DisallowedVotesDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `VotingOnExpiredGovAction` | 10+ | dynamic | TBD (P5) | – | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | scenario only |
-| GOV | `DisallowedVoters` | 10+ | dynamic | TBD (P5) | – | 00172, 00173, 00174, 00175 | scenario only |
+| GOV | `VotingOnExpiredGovAction` | 10+ | dynamic | `GovRule` | GovRuleTest#votesAreNotForExpiredActions | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | test + scenario |
+| GOV | `DisallowedVoters` | 10+ | dynamic | `GovRule` | GovRuleTest#theVoterMatrix<br>MutationMatrixTest#disallowedVoter | 00172, 00173, 00174, 00175 | test + scenario |
 | UTXOW | `InvalidWitnessesUTXOW` | 10+ | static | `UtxowRule` | MutationMatrixTest#invalidWitness<br>UtxowRuleTest#aSignatureThatDoesNotVerifyIsInvalid<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#ofDuplicateBootstrapWitnessesTheLastIsKept | 00076, 00079 | test + scenario |
 | UTXOW | `MissingVKeyWitnessesUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#missingVKeyWitness<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#keyWitnessesNeededPerPurpose<br>UtxowRuleTest#theInputOwnerMustSign | 00084, 00085, 00086 | test + scenario |
 | UTXOW | `MissingScriptWitnessesUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#missingScriptWitness<br>UtxowRuleTest#aNeededScriptThatIsNotProvidedIsMissing | 00184, 00186, 00188, 00190, 00262 | test + scenario |

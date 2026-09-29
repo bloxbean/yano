@@ -4,9 +4,12 @@ import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.util.HexUtil;
 
+import org.yanoproject.ledger.rules.view.model.GovActionId;
+
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +35,10 @@ import java.util.function.Consumer;
  * may be the list form or the Conway map form.</p>
  */
 public final class RawTransaction {
+
+    /** Haskell's derived {@code Ord GovActionId}: the transaction id's bytes, then the index. */
+    public static final Comparator<GovActionId> GOV_ACTION_ID_ORDER =
+            Comparator.comparing(GovActionId::txHashHex).thenComparingInt(GovActionId::index);
 
     /** Body keys (Conway CDDL {@code transaction_body}). */
     public static final int BODY_INPUTS = 0;
@@ -125,6 +132,7 @@ public final class RawTransaction {
     private final List<byte[]> datumHashes;
     private final List<RawCertificate> certificates;
     private final List<RawVoter> voters;
+    private final Map<RawVoter, List<GovActionId>> votes;
     private final List<RawProposal> proposals;
     private final List<byte[]> requiredSigners;
     private final byte[] auxDataHash;
@@ -163,6 +171,7 @@ public final class RawTransaction {
         this.datumHashes = List.copyOf(b.datumHashes);
         this.certificates = List.copyOf(b.certificates);
         this.voters = List.copyOf(b.voters);
+        this.votes = Collections.unmodifiableMap(new TreeMap<>(b.votes));
         this.proposals = List.copyOf(b.proposals);
         this.requiredSigners = List.copyOf(b.requiredSigners);
         this.auxDataHash = b.auxDataHash;
@@ -391,6 +400,14 @@ public final class RawTransaction {
         return voters;
     }
 
+    /**
+     * @return the governance actions each voter votes on (body key 19), voters in Haskell's {@code Ord Voter} order and
+     *         each voter's actions in {@code Ord GovActionId} order (transaction id bytes, then index)
+     */
+    public Map<RawVoter, List<GovActionId>> votes() {
+        return votes;
+    }
+
     /** @return the proposal procedures (body key 20), in order */
     public List<RawProposal> proposals() {
         return proposals;
@@ -448,6 +465,7 @@ public final class RawTransaction {
         private final List<byte[]> datumHashes = new ArrayList<>();
         private final List<RawCertificate> certificates = new ArrayList<>();
         private final List<RawVoter> voters = new ArrayList<>();
+        private final Map<RawVoter, List<GovActionId>> votes = new TreeMap<>();
         private final List<RawProposal> proposals = new ArrayList<>();
         private final List<byte[]> requiredSigners = new ArrayList<>();
         private byte[] auxDataHash;
@@ -531,7 +549,7 @@ public final class RawTransaction {
                 long count = w.readMapHeader();
                 Set<String> seen = new HashSet<>();
                 for (long i = 0; w.hasNext(count, i); i++) {
-                    byte[] account = w.readBytes();
+                    byte[] account = w.readDefiniteBytes();
                     if (account.length != 29 || (account[0] & 0xee) != 0xe0) {
                         throw new TxDecodingException("withdrawal key is not an account address");
                     }
@@ -554,10 +572,10 @@ public final class RawTransaction {
                 networkId = (int) network;
             }
             if (optional(BODY_AUX_DATA_HASH)) {
-                auxDataHash = hash(field(BODY_AUX_DATA_HASH).readBytes(), 32, "auxiliary data hash");
+                auxDataHash = hash(field(BODY_AUX_DATA_HASH).readDefiniteBytes(), 32, "auxiliary data hash");
             }
             if (optional(BODY_SCRIPT_DATA_HASH)) {
-                scriptDataHash = hash(field(BODY_SCRIPT_DATA_HASH).readBytes(), 32, "script integrity hash");
+                scriptDataHash = hash(field(BODY_SCRIPT_DATA_HASH).readDefiniteBytes(), 32, "script integrity hash");
             }
             if (optional(BODY_REQUIRED_SIGNERS)) {
                 CborReader r = field(BODY_REQUIRED_SIGNERS);
@@ -566,7 +584,7 @@ public final class RawTransaction {
                 Set<String> seen = new HashSet<>();
                 int n = 0;
                 for (; r.hasNext(count, n); n++) {
-                    byte[] signer = hash(r.readBytes(), 28, "required signer");
+                    byte[] signer = hash(r.readDefiniteBytes(), 28, "required signer");
                     if (!seen.add(HexUtil.encodeHexString(signer))) {
                         throw new TxDecodingException("duplicate required signer");
                     }
@@ -612,21 +630,34 @@ public final class RawTransaction {
                     if (!seen.add(voter)) {
                         throw new TxDecodingException("duplicate voter " + voter);
                     }
-                    // {+ gov_action_id => voting_procedure}, voting_procedure = [vote, anchor / null]: the anchor is
-                    // decoded with its bounds, the rest skipped.
+                    // {+ gov_action_id => voting_procedure}, voting_procedure = [vote, anchor / null]: a non-empty map
+                    // without duplicate action ids (Procedures.hs:408-416), the vote 0–2 (decodeEnumBounded), the
+                    // anchor with its bounds.
                     long actions = v.readMapHeader();
+                    TreeSet<GovActionId> ids = new TreeSet<>(GOV_ACTION_ID_ORDER);
                     for (long j = 0; v.hasNext(actions, j); j++) {
-                        v.skip();
+                        GovActionId id = govActionId(v);
+                        if (!ids.add(id)) {
+                            throw new TxDecodingException("duplicate governance action id " + id + " for " + voter);
+                        }
                         long fields = v.readArrayHeader();
                         if (fields != 2 && fields != CborReader.INDEFINITE) {
                             throw new TxDecodingException("a voting procedure has 2 elements");
                         }
-                        v.skip();
+                        long vote = v.readUnsignedLong();
+                        if (vote > 2) {
+                            throw new TxDecodingException("unknown vote " + vote);
+                        }
                         BoundedFields.anchorOrNull(v, "vote");
                         if (fields == CborReader.INDEFINITE && v.hasNext(fields, 2)) {
                             throw new TxDecodingException("a voting procedure has 2 elements");
                         }
                     }
+                    if (ids.isEmpty()) {
+                        throw new TxDecodingException("VotingProcedures require votes, but Voter: " + voter
+                                + " didn't have any");
+                    }
+                    votes.put(voter, List.copyOf(ids));
                 }
                 nonEmpty(seen.isEmpty(), "VotingProcedures");
                 voters.addAll(seen);
@@ -684,6 +715,26 @@ public final class RawTransaction {
             return key.toString();
         }
 
+        /** {@code gov_action_id = [transaction_id, Word16]}. */
+        private static GovActionId govActionId(CborReader reader) {
+            long length = reader.readArrayHeader();
+            if (length != 2 && length != CborReader.INDEFINITE) {
+                throw new TxDecodingException("a governance action id has 2 elements");
+            }
+            byte[] txId = reader.readDefiniteBytes();
+            if (txId.length != 32) {
+                throw new TxDecodingException("a governance action id's transaction id of " + txId.length + " bytes");
+            }
+            long ix = reader.readUnsignedLong();
+            if (ix > 0xFFFF) {
+                throw new TxDecodingException("a governance action index exceeds Word16: " + ix);
+            }
+            if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
+                throw new TxDecodingException("a governance action id has 2 elements");
+            }
+            return new GovActionId(HexUtil.encodeHexString(txId), (int) ix);
+        }
+
         private static void nonEmpty(boolean empty, String field) {
             if (empty) {
                 throw new TxDecodingException("TxBody: '" + field + "' must be non-empty when supplied");
@@ -716,7 +767,7 @@ public final class RawTransaction {
                 if (elements != 2 && elements != CborReader.INDEFINITE) {
                     throw new TxDecodingException("a transaction input is a two-element array");
                 }
-                byte[] id = reader.readBytes();
+                byte[] id = reader.readDefiniteBytes();
                 if (id.length != TX_ID_LENGTH) {
                     throw new TxDecodingException("transaction id of " + id.length + " bytes");
                 }
@@ -775,16 +826,16 @@ public final class RawTransaction {
             }
             if (witnessFields.containsKey(WITNESS_VKEYS)) {
                 forEachWitness(WITNESS_VKEYS, w -> vkeyWitnesses.add(new VKeyWitness(
-                        checkLength(w.readBytes(), VKEY_LENGTH, "vkey"),
-                        checkLength(w.readBytes(), SIGNATURE_LENGTH, "vkey witness signature"))));
+                        checkLength(w.readDefiniteBytes(), VKEY_LENGTH, "vkey"),
+                        checkLength(w.readDefiniteBytes(), SIGNATURE_LENGTH, "vkey witness signature"))));
             }
             if (witnessFields.containsKey(WITNESS_BOOTSTRAP)) {
                 // The chain code is checked to be 32 bytes only from protocol version 12 (Keys/Bootstrap.hs:72-78).
                 forEachWitness(WITNESS_BOOTSTRAP, w -> bootstrapWitnesses.add(new BootstrapWitness(
-                        checkLength(w.readBytes(), VKEY_LENGTH, "bootstrap witness vkey"),
-                        checkLength(w.readBytes(), SIGNATURE_LENGTH, "bootstrap witness signature"),
-                        w.readBytes(),
-                        w.readBytes())));
+                        checkLength(w.readDefiniteBytes(), VKEY_LENGTH, "bootstrap witness vkey"),
+                        checkLength(w.readDefiniteBytes(), SIGNATURE_LENGTH, "bootstrap witness signature"),
+                        w.readDefiniteBytes(),
+                        w.readDefiniteBytes())));
             }
             if (witnessFields.containsKey(WITNESS_NATIVE_SCRIPTS)) {
                 // nativeScriptsDecoder at version 9: a non-empty list (duplicates collapse in Map.fromList).
@@ -805,7 +856,9 @@ public final class RawTransaction {
                 list.skipTag(SET_TAG);
                 long count = list.readArrayHeader();
                 for (long i = 0; list.hasNext(count, i); i++) {
-                    datumHashes.add(Hashes.blake2b256(list.copy(list.readItem())));
+                    byte[] datum = list.copy(list.readItem());
+                    PlutusData.validate(datum); // DecCBOR (PlutusData era) = Cborg.decode (Plutus/Data.hs:99-103)
+                    datumHashes.add(Hashes.blake2b256(datum));
                 }
             }
             if (witnessFields.containsKey(WITNESS_REDEEMERS)) {
@@ -827,7 +880,7 @@ public final class RawTransaction {
             Set<String> seen = new HashSet<>();
             int n = 0;
             for (; list.hasNext(count, n); n++) {
-                RawScript script = new RawScript(language, list.readBytes());
+                RawScript script = new RawScript(language, list.readDefiniteBytes());
                 if (!seen.add(script.hashHex())) {
                     throw new TxDecodingException("duplicate PlutusV" + language + " script " + script.hashHex());
                 }
@@ -889,7 +942,7 @@ public final class RawTransaction {
                     if (valueLength != 2 && valueLength != CborReader.INDEFINITE) {
                         throw new TxDecodingException("a redeemer value is [data, ex_units]");
                     }
-                    reader.skip(); // data
+                    PlutusData.validate(reader.copy(reader.readItem())); // data: plutus-core's decodeData
                     RawRedeemer redeemer = readExUnits(reader, tag, index);
                     if (valueLength == CborReader.INDEFINITE && reader.hasNext(valueLength, 2)) {
                         throw new TxDecodingException("a redeemer value is [data, ex_units]");
@@ -906,7 +959,7 @@ public final class RawTransaction {
                     }
                     long tag = reader.readUnsignedLong();
                     long index = reader.readUnsignedLong();
-                    reader.skip(); // data
+                    PlutusData.validate(reader.copy(reader.readItem())); // data: plutus-core's decodeData
                     RawRedeemer redeemer = readExUnits(reader, tag, index);
                     if (length == CborReader.INDEFINITE && reader.hasNext(length, 4)) {
                         throw new TxDecodingException("a redeemer is [tag, index, data, ex_units]");

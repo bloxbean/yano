@@ -12,7 +12,8 @@
 //   -PwithAmaru=true -PamaruWasm=<module.wasm>         adds the Amaru engine as the reference
 //   ./gradlew :ledger-conformance:conformanceReport ... regenerates docs/baseline-2026-09.md and
 //                                                       ledger-rules/docs/conway-rule-coverage.md
-//   -Pconformance.strict=true                          missing coverage fails (switched on at the Phase 5 gate)
+//   -Pconformance.strict=false                         report missing coverage instead of failing (strict is the
+//                                                       default since the ADR-056 Phase 5 gate)
 
 description = 'ADR-056 conformance harness: Amaru scenarios, coverage matrix, mutation matrix, engine baseline'
 
@@ -36,7 +37,8 @@ if (withAmaru) {
 
 def scenariosDir = providers.gradleProperty('amaruScenariosDir')
         .orElse(providers.environmentVariable('AMARU_SCENARIOS_DIR')).getOrElse('')
-def strict = providers.gradleProperty('conformance.strict').getOrElse('false')
+// Strict since the ADR-056 Phase 5 gate: an in-scope constructor without a @Covers test fails the build.
+def strict = providers.gradleProperty('conformance.strict').getOrElse('true')
 // The Amaru module under test must report this crate version (amaru_version()'s crate= line); the reference engine
 // refuses a stale module.
 def amaruCrateVersion = (rootProject.file('amaru-validator-wasm/Cargo.toml').text =~ /(?m)^version\s*=\s*"([^"]+)"/)[0][1]

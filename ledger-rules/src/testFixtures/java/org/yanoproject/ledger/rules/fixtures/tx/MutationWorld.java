@@ -32,6 +32,10 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.cert.PoolRegistration;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeCredential;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionType;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.InfoAction;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.ParameterChangeAction;
+import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
 import com.bloxbean.cardano.client.transaction.spec.script.RequireTimeAfter;
 import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
@@ -46,7 +50,9 @@ import org.yanoproject.ledger.rules.view.model.CommitteeMemberState;
 import org.yanoproject.ledger.rules.view.model.CredentialKey;
 import org.yanoproject.ledger.rules.view.model.DRepState;
 import org.yanoproject.ledger.rules.view.model.DRepTarget;
+import org.yanoproject.ledger.rules.view.model.GovActionId;
 import org.yanoproject.ledger.rules.view.model.PoolId;
+import org.yanoproject.ledger.rules.view.model.ProposalState;
 
 import java.math.BigDecimal;
 import java.security.MessageDigest;
@@ -97,9 +103,16 @@ import java.util.zip.CRC32;
  *   <li>pools: {@code dev-77}'s (VRF {@link #POOL_77_VRF}) and {@code dev-bb}'s (VRF {@link #POOL_BB_VRF}), each
  *       owned by its operator, with its operator's testnet reward account;</li>
  *   <li>DRep: {@code dev-77} (deposit 500 ADA, expiry epoch 20);</li>
- *   <li>committee: {@code dev-77} (elected until epoch {@value #COMMITTEE_TERM}, no hot key) and {@code dev-bb}
- *       (elected, resigned).</li>
+ *   <li>committee: {@code dev-77} (elected until epoch {@value #COMMITTEE_TERM}, hot key {@code dev-42}),
+ *       {@code dev-bb} (elected, resigned) and {@link #UNELECTED_COLD} (no term, hot key {@code dev-aa});</li>
+ *   <li>{@code dev-cc}: a stake account with balance {@link #REWARD_BALANCE} and no delegation.</li>
  * </ul>
+ *
+ * <p>Governance state (ADR-056 Phase 5): the standing proposals {@link #INFO_ACTION} and
+ * {@link #PARAMETER_CHANGE_ACTION} (a {@code collateralPercentage} change, outside the stake-pool security group), both
+ * proposed in epoch 0 and expiring after epoch {@value #GOV_ACTION_LIFETIME}; no enacted roots; no guardrail script;
+ * treasury {@link #TREASURY}; {@link #GOV_INPUT} (250,000 ADA, for a proposal deposit) and
+ * {@link #BIG_REFERENCE_SCRIPT_INPUT} (a {@value #BIG_REFERENCE_SCRIPT_SIZE}-byte reference script).</p>
  *
  * <p>The protocol parameters are preprod's Conway values (the same numbers as Amaru's
  * {@code preprod-conway-v10} parameters) with CCL's PlutusV2 and PlutusV3 cost models.</p>
@@ -169,6 +182,31 @@ public final class MutationWorld {
     public static final TransactionInput UNAVAILABLE_BUILTIN_SCRIPT_INPUT = input('9', 2);
     public static final TransactionInput RICH_INPUT = input('1', 7);
     public static final BigInteger RICH_INPUT_LOVELACE = BigInteger.valueOf(2_000_000_000L);
+    /** 250,000 ADA at {@code dev-42}'s address: enough for a governance action deposit ({@link #GOV_ACTION_DEPOSIT}). */
+    public static final TransactionInput GOV_INPUT = input('1', 8);
+    public static final BigInteger GOV_INPUT_LOVELACE = BigInteger.valueOf(250_000_000_000L);
+    /**
+     * 10 ADA at {@code dev-42}'s address with a PlutusV2 reference script of {@value #BIG_REFERENCE_SCRIPT_SIZE} bytes
+     * (the always-succeeding V2 program followed by zero bytes, which PlutusV1/V2 ignore), above the 200 KiB
+     * {@code maxRefScriptSizePerTx}.
+     */
+    public static final TransactionInput BIG_REFERENCE_SCRIPT_INPUT = input('1', 9);
+    public static final int BIG_REFERENCE_SCRIPT_SIZE = 205_000;
+
+    /** The world's {@code ppGovActionDeposit} (preprod's 100,000 ADA) and {@code ppGovActionLifetime}. */
+    public static final BigInteger GOV_ACTION_DEPOSIT = BigInteger.valueOf(100_000_000_000L);
+    public static final long GOV_ACTION_LIFETIME = 6;
+    /** The treasury of the world's epoch. */
+    public static final BigInteger TREASURY = BigInteger.valueOf(1_000_000_000_000L);
+    /** A standing {@code InfoAction} proposal (proposed in epoch 0, expires after epoch 6). */
+    public static final GovActionId INFO_ACTION = new GovActionId("c0".repeat(32), 0);
+    /** A standing parameter change of {@code collateralPercentage} only: outside the stake-pool security group. */
+    public static final GovActionId PARAMETER_CHANGE_ACTION = new GovActionId("c0".repeat(32), 1);
+    /**
+     * The cold credential (a script hash no one holds) of a committee member without a term that has authorised
+     * {@code dev-aa}'s key as its hot credential: an unelected member, as in Amaru's scenario 00171.
+     */
+    public static final CredentialKey UNELECTED_COLD = CredentialKey.script("c1".repeat(28));
 
     /** The world's {@code ppKeyDeposit}, {@code ppPoolDeposit} and {@code ppDRepDeposit}. */
     public static final BigInteger KEY_DEPOSIT = BigInteger.valueOf(2_000_000);
@@ -207,7 +245,23 @@ public final class MutationWorld {
     private static final long SYSTEM_START_MS = 1_654_041_600_000L; // preprod
     private static final long EPOCH_LENGTH = 432_000;
 
+    /** The {@code [2, bytes]} script reference of {@link #BIG_REFERENCE_SCRIPT_INPUT}. */
+    private static final byte[] BIG_REFERENCE_SCRIPT_REF = bigReferenceScriptRef();
+
     private MutationWorld() {
+    }
+
+    private static byte[] bigReferenceScriptRef() {
+        byte[] program = HexUtil.decodeHexString("46010000222499");
+        byte[] script = Arrays.copyOf(program, BIG_REFERENCE_SCRIPT_SIZE);
+        try {
+            Array ref = new Array();
+            ref.add(new UnsignedInteger(2));
+            ref.add(new ByteString(script));
+            return CborSerializationUtil.serialize(ref);
+        } catch (Exception e) {
+            throw new ExceptionInInitializerError(e);
+        }
     }
 
     private static byte[] filled(int length, int value) {
@@ -353,6 +407,10 @@ public final class MutationWorld {
         utxo(view, UNAVAILABLE_BUILTIN_SCRIPT_INPUT, output(address(UNAVAILABLE_BUILTIN_SCRIPT),
                 SCRIPT_INPUT_LOVELACE));
         utxo(view, RICH_INPUT, output(owner, RICH_INPUT_LOVELACE));
+        utxo(view, GOV_INPUT, output(owner, GOV_INPUT_LOVELACE));
+        TransactionOutput bigReference = output(owner, SCRIPT_INPUT_LOVELACE);
+        bigReference.setScriptRef(BIG_REFERENCE_SCRIPT_REF.clone());
+        utxo(view, BIG_REFERENCE_SCRIPT_INPUT, bigReference);
 
         // Certificate state (dev-42 and dev-aa stay unregistered everywhere).
         PoolId pool77 = poolId(TestKey.DEV_77);
@@ -363,8 +421,21 @@ public final class MutationWorld {
         view.account(new AccountState(credentialKey(TestKey.DEV_BB), KEY_DEPOSIT, REWARD_BALANCE, pool77,
                 DRepTarget.ALWAYS_ABSTAIN));
         view.drep(new DRepState(credentialKey(TestKey.DEV_77), DREP_DEPOSIT, DREP_EXPIRY));
-        view.committeeMember(new CommitteeMemberState(credentialKey(TestKey.DEV_77), null, false, COMMITTEE_TERM));
+        view.committeeMember(new CommitteeMemberState(credentialKey(TestKey.DEV_77), credentialKey(TestKey.DEV_42),
+                false, COMMITTEE_TERM));
         view.committeeMember(new CommitteeMemberState(credentialKey(TestKey.DEV_BB), null, true, COMMITTEE_TERM));
+        view.committeeMember(new CommitteeMemberState(UNELECTED_COLD, credentialKey(TestKey.DEV_AA), false, null));
+        view.account(new AccountState(credentialKey(TestKey.DEV_CC), KEY_DEPOSIT, REWARD_BALANCE, null, null));
+
+        // Governance state (ADR-056 Phase 5): two standing proposals, no enacted roots, no guardrail script.
+        view.proposal(new ProposalState(INFO_ACTION, GovActionType.INFO_ACTION, new InfoAction(), null, 0,
+                GOV_ACTION_LIFETIME, GOV_ACTION_DEPOSIT, rewardAccount(TestKey.DEV_77, NETWORK), null));
+        view.proposal(new ProposalState(PARAMETER_CHANGE_ACTION, GovActionType.PARAMETER_CHANGE_ACTION,
+                ParameterChangeAction.builder()
+                        .protocolParamUpdate(ProtocolParamUpdate.builder().collateralPercent(150).build())
+                        .build(),
+                null, 0, GOV_ACTION_LIFETIME, GOV_ACTION_DEPOSIT, rewardAccount(TestKey.DEV_77, NETWORK), Set.of(23)));
+        view.treasury(TREASURY);
         return view;
     }
 

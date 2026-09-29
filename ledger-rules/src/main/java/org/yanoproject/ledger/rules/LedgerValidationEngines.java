@@ -84,9 +84,9 @@ public final class LedgerValidationEngines {
 
     private String unavailableMessage(String key) {
         return switch (key) {
-            case JAVA -> "Validation engine 'java' is not available yet: the Java Conway rules land in ADR-056 "
-                    + "Phases 3-5. Use yano.validation.engine=scalus (the default), or amaru in a build with "
-                    + "-PwithAmaru=true.";
+            case JAVA -> "Validation engine 'java' is not on the classpath: its factory (ledger-rules, "
+                    + "JavaEngineFactory) was not found. Use yano.validation.engine=scalus (the default), or amaru in "
+                    + "a build with -PwithAmaru=true.";
             case AMARU -> "Validation engine 'amaru' is configured but the amaru-validator module is not on the "
                     + "classpath. Build Yano with -PwithAmaru=true (ADR-057), or set "
                     + "yano.validation.engine=scalus and remove amaru from yano.validation.shadow-engines.";

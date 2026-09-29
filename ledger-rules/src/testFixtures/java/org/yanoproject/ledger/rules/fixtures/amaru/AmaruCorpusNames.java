@@ -4,6 +4,7 @@ import org.yanoproject.ledger.rules.LedgerRuleName;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static java.util.Map.entry;
 
@@ -94,7 +95,25 @@ public final class AmaruCorpusNames {
             entry("WrongNetworkPOOL", name(LedgerRuleName.POOL, "WrongNetworkPOOL")),
             entry("WrongNetworkWithdrawal", name(LedgerRuleName.UTXO, "WrongNetworkWithdrawal")));
 
+    /**
+     * Corpus names that Amaru's Haskell checker also uses for another Haskell constructor
+     * ({@code normalizeGovFailure}, {@code crates/amaru/tests/conformance/validation-rules/src/Command/ValidatePhaseOne/Run.hs}):
+     * a scenario expecting the corpus name is satisfied by either. {@code UnelectedCommitteeVoters} (the PV 11 {@code GOV}
+     * predicate, Conway/Rules/Gov.hs:478-481) is normalised to {@code "VotersDoNotExist"} (Run.hs:532-533), so scenario
+     * 00171 names {@code VotersDoNotExist} although Haskell reports {@code UnelectedCommitteeVoters}.
+     */
+    private static final Map<String, Set<String>> ALIASES = Map.of(
+            "VotersDoNotExist", Set.of("GOV.UnelectedCommitteeVoters"));
+
     private AmaruCorpusNames() {
+    }
+
+    /**
+     * @return the other Haskell {@code RULE.Constructor}s Amaru's checker reports under this corpus name (empty for
+     *         most names)
+     */
+    public static Set<String> aliases(String corpusName) {
+        return ALIASES.getOrDefault(corpusName, Set.of());
     }
 
     private static HaskellName name(LedgerRuleName rule, String constructor) {

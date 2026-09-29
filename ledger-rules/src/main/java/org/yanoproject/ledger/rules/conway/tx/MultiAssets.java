@@ -35,7 +35,7 @@ final class MultiAssets {
         TreeMap<String, Map<String, BigInteger>> result = new TreeMap<>();
         long policies = reader.readMapHeader();
         for (long p = 0; reader.hasNext(policies, p); p++) {
-            byte[] policy = reader.readBytes();
+            byte[] policy = reader.readDefiniteBytes();
             if (policy.length != POLICY_ID_LENGTH) {
                 throw new TxDecodingException("policy id of " + policy.length + " bytes");
             }
@@ -46,7 +46,7 @@ final class MultiAssets {
             Map<String, BigInteger> names = new TreeMap<>();
             long assets = reader.readMapHeader();
             for (long a = 0; reader.hasNext(assets, a); a++) {
-                byte[] name = reader.readBytes();
+                byte[] name = reader.readDefiniteBytes();
                 if (name.length > MAX_ASSET_NAME_LENGTH) {
                     throw new TxDecodingException("asset name of " + name.length + " bytes");
                 }

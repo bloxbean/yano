@@ -82,7 +82,7 @@ public final class RawAuxData {
                         case 2, 3, 4 -> {
                             long count = reader.readArrayHeader();
                             for (long n = 0; reader.hasNext(count, n); n++) {
-                                plutus.add(new RawScript((int) key - 1, reader.readBytes()));
+                                plutus.add(new RawScript((int) key - 1, reader.readDefiniteBytes()));
                             }
                         }
                         case 5 -> throw new TxDecodingException("PlutusV4 is not supported in Conway");

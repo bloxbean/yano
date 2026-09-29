@@ -76,7 +76,7 @@ public record RawScript(int language, byte[] bytes) {
             if (reader.readTag() != 24) {
                 throw new TxDecodingException("a script reference is wrapped in tag 24");
             }
-            byte[] inner = reader.readBytes();
+            byte[] inner = reader.readDefiniteBytes();
             if (!reader.atEnd()) {
                 throw new TxDecodingException("trailing bytes after a script reference");
             }
@@ -101,7 +101,7 @@ public record RawScript(int language, byte[] bytes) {
             script = new RawScript(NATIVE, reader.copy(reader.readItem()));
             Timelock.decode(script.bytes);
         } else if (language <= PLUTUS_V3) {
-            script = new RawScript((int) language, reader.readBytes());
+            script = new RawScript((int) language, reader.readDefiniteBytes());
         } else {
             throw new TxDecodingException("script language " + language + " is not supported in Conway");
         }

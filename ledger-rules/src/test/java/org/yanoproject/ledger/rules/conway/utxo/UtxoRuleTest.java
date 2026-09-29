@@ -263,8 +263,10 @@ class UtxoRuleTest {
                 .toBech32();
         spec.withdrawals.add(new Withdrawal(mainnetRewardAccount, BigInteger.ZERO));
         // CERTS' base case (PV <= 10) treats a withdrawal on another network as one without an account
-        // (categorizeWithdrawals, State/Account.hs:262-264); LEDGER lists UTXOW's (UTXO's) failures before CERTS'.
-        assertThat(run(spec)).containsExactly("UTXO.WrongNetworkWithdrawal", "CERTS.WithdrawalsNotInRewardsCERTS");
+        // (categorizeWithdrawals, State/Account.hs:262-264); LEDGER lists UTXOW's (UTXO's) failures before CERTS', and
+        // its own earlier ConwayWdrlNotDelegatedToDRep (dev-42 has no account, so no DRep delegation) last.
+        assertThat(run(spec)).containsExactly("UTXO.WrongNetworkWithdrawal", "CERTS.WithdrawalsNotInRewardsCERTS",
+                "LEDGER.ConwayWdrlNotDelegatedToDRep");
     }
 
     @Test

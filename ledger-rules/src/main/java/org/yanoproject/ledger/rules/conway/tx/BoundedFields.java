@@ -16,7 +16,7 @@ import java.nio.charset.StandardCharsets;
  *       ({@code textDecCBOR 128}, BaseTypes.hs:678-697).</li>
  *   <li>{@code Anchor}: {@code [url, hash]}, the hash a 32-byte {@code SafeHash} (BaseTypes.hs:996-1004, the
  *       record form below decoder version 12).</li>
- *   <li>{@code UnitInterval}: tag 30, two integers, a non-zero denominator, the reduced ratio in [0, 1] with
+ *   <li>{@code UnitInterval}: tag 30, two integers (bignums tagged 2/3 too), a non-zero denominator, the reduced ratio in [0, 1] with
  *       numerator and denominator in {@code Word64} ({@code decodeRationalWithTag}, Plain.hs:159-167;
  *       {@code boundRational}, BaseTypes.hs:386-402).</li>
  *   <li>{@code StakePoolRelay} (StakePool.hs:406-421): {@code [0, port / null, ipv4 / null, ipv6 / null]},
@@ -45,16 +45,14 @@ final class BoundedFields {
     }
 
     private static void text(CborReader reader, String what) {
-        int length = 0;
-        for (byte[] chunk : reader.readTextChunks()) {
-            try {
-                StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(chunk));
-            } catch (CharacterCodingException e) {
-                throw new TxDecodingException(what + " is not valid UTF-8");
-            }
-            length += chunk.length;
+        byte[] text = reader.readDefiniteText();
+        try {
+            StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(text));
+        } catch (CharacterCodingException e) {
+            throw new TxDecodingException(what + " is not valid UTF-8");
         }
+        int length = text.length;
         if (length > MAX_TEXT_BYTES) {
             throw new TxDecodingException(what + " exceeds " + MAX_TEXT_BYTES + " bytes: " + length);
         }
@@ -67,7 +65,7 @@ final class BoundedFields {
             throw new TxDecodingException(what + " anchor is a two-element array");
         }
         url(reader, what + " anchor");
-        byte[] hash = reader.readBytes();
+        byte[] hash = reader.readDefiniteBytes();
         if (hash.length != ANCHOR_HASH_LENGTH) {
             throw new TxDecodingException(what + " anchor data hash of " + hash.length + " bytes");
         }
@@ -87,6 +85,17 @@ final class BoundedFields {
 
     /** Reads a {@code UnitInterval}. */
     static void unitInterval(CborReader reader, String what) {
+        boundedRational(reader, what, true);
+    }
+
+    /**
+     * Reads a {@code UnitInterval} ({@code unit}) or a {@code NonNegativeInterval}: tag 30, two integers, a non-zero
+     * denominator, the reduced ratio in [0, 1] or [0, 2^64 - 1] with numerator and denominator in {@code Word64}
+     * ({@code decodeRationalWithTag}, Plain.hs:159-167; {@code fromRationalBoundedRatio}, BaseTypes.hs:346-376).
+     *
+     * @return the reduced numerator and denominator
+     */
+    static BigInteger[] boundedRational(CborReader reader, String what, boolean unit) {
         if (!reader.skipTag(30)) {
             throw new TxDecodingException(what + " is not a tag-30 rational");
         }
@@ -94,8 +103,8 @@ final class BoundedFields {
         if (length != 2 && length != CborReader.INDEFINITE) {
             throw new TxDecodingException(what + " rational has " + length + " elements");
         }
-        BigInteger n = reader.readInteger();
-        BigInteger d = reader.readInteger();
+        BigInteger n = integer(reader);
+        BigInteger d = integer(reader);
         if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
             throw new TxDecodingException(what + " rational has more than 2 elements");
         }
@@ -110,9 +119,28 @@ final class BoundedFields {
             numerator = numerator.negate();
             denominator = denominator.negate();
         }
-        if (numerator.signum() < 0 || numerator.compareTo(denominator) > 0 || denominator.compareTo(WORD64_MAX) > 0) {
-            throw new TxDecodingException(what + " " + n + "/" + d + " is not in [0, 1]");
+        boolean outOfRange = numerator.signum() < 0 || denominator.compareTo(WORD64_MAX) > 0
+                || (unit ? numerator.compareTo(denominator) > 0 : numerator.compareTo(WORD64_MAX) > 0);
+        if (outOfRange) {
+            throw new TxDecodingException(what + " " + n + "/" + d + (unit ? " is not in [0, 1]"
+                    : " is not a non-negative Word64 ratio"));
         }
+        return new BigInteger[]{numerator, denominator};
+    }
+
+    /**
+     * cborg's {@code decodeInteger}: a major-0/1 integer or a bignum, tag 2 (non-negative) or 3 (negative) with the
+     * one-byte tag head {@code c2}/{@code c3} and a definite byte string (a longer tag head is a plain tag, which
+     * {@code decodeInteger} refuses).
+     */
+    static BigInteger integer(CborReader reader) {
+        int initial = reader.peekInitialByte();
+        if (initial == 0xc2 || initial == 0xc3) {
+            reader.readTag();
+            BigInteger magnitude = new BigInteger(1, reader.readDefiniteBytes());
+            return initial == 0xc2 ? magnitude : magnitude.negate().subtract(BigInteger.ONE);
+        }
+        return reader.readInteger();
     }
 
     /** Reads a {@code StakePoolRelay}. */
@@ -158,7 +186,7 @@ final class BoundedFields {
             reader.readNull();
             return;
         }
-        int length = reader.readBytes().length;
+        int length = reader.readDefiniteBytes().length;
         if (length != bytes) {
             throw new TxDecodingException("relay IPv" + (bytes == 4 ? 4 : 6) + " address of " + length + " bytes");
         }

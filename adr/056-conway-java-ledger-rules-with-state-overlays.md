@@ -1572,6 +1572,153 @@ The final PR merges once S5's gates are green.
     - rule `LEDGER` (block selection, shadow sync) never reports a MEMPOOL
       failure.
 
+#### Phase 5 results: GOV, LEDGER pre-checks, MEMPOOL, strict coverage (2026-09-29)
+
+- **`GOV`** (`conway.gov.GovRule`, `conwayGovTransition`, Conway/Rules/Gov.hs:446-613), run by `LEDGER` when
+  `isValid = True` after `CERTS` (`ConwayLedgerTransition.standard()` now plugs it). Every check is its own predicate
+  (small-steps accumulates, nothing short-circuits); `GOV`'s failures reach `LEDGER`'s list in execution order. All 17
+  constructors in scope at PV 10–11 (the two PV 9 bootstrap constructors stay out of scope, invariant 7), all dynamic:
+
+  | Constructor | Condition (Haskell order) | PV |
+  |---|---|---|
+  | `UnelectedCommitteeVoters` | committee voters whose hot key no *elected* member authorised in the post-`CERTS` committee state; before the proposals (:478-481) | ≥ 11 |
+  | `ProposalCantFollow` | hard fork: `pvCanFollow` against the current version when the parent is the enacted root or the major is beyond the next, else against an in-flight hard-fork parent (`preceedingHardFork`, :673-695; Word32 minor) | all |
+  | `MalformedProposal` | parameter change not `ppuWellFormed pv` (below) | all |
+  | `ProposalReturnAccountDoesNotExist` | the return account's credential (any network) not registered after `CERTS` (:504-508) | ≥ 10 |
+  | `TreasuryWithdrawalReturnAccountsDoNotExist` | treasury withdrawal accounts not registered after `CERTS` (:509-520) | ≥ 10 |
+  | `ProposalDepositIncorrect` | deposit ≠ `ppGovActionDeposit` (:522-530) | all |
+  | `ProposalProcedureNetworkIdMismatch` | return account on another network (:532-535) | all |
+  | `TreasuryWithdrawalsNetworkIdMismatch`, `InvalidGuardrailsScriptHash`, `ZeroTreasuryWithdrawals` | treasury withdrawals, in this order: accounts on another network; policy ≠ the constitution's guardrail; sum = 0 (an empty map too) (:538-550) | all |
+  | `ConflictingCommitteeUpdate`, `ExpirationEpochTooSmall` | update committee, in this order: added ∩ removed; an added member's expiry ≤ current epoch (:551-556) | all |
+  | `InvalidGuardrailsScriptHash` | parameter change: policy ≠ the constitution's guardrail (:557-558) | all |
+  | `InvalidPrevGovActionId` | `proposalsAddAction` fails (last, :561-566); the proposal is then not added | all |
+  | `VotersDoNotExist` | voters absent after `CERTS`: committee hot keys without a current authorisation, DReps, pools (:586-604) | all |
+  | `GovActionsDoNotExist` | known voters' votes on actions not in `Proposals` (with this transaction's accepted proposals) (:568-605) | all |
+  | `VotingOnExpiredGovAction` | known votes with `currentEpoch > expiresAfter` (:607) | all |
+  | `DisallowedVoters` | committee on `NoConfidence`/`UpdateCommittee`; stake pools on `NewConstitution`, `TreasuryWithdrawals` and parameter changes outside the security group; DReps never (Governance/Internal.hs:350-497) (:608) | all |
+
+  - *Lineage model.* `Proposals` = the view's proposals (Haskell's `pProps`, expired ones included until a boundary
+    removes them) plus this transaction's proposals accepted so far, with the view's enacted roots. A parent is valid
+    when it equals the purpose's root (`SNothing` only while nothing of the purpose was enacted) or is a proposal of the
+    same purpose (a node of that purpose's graph); treasury withdrawals and info actions have no lineage. A proposal
+    that fails another check is still added. Haskell also lets a proposal or vote name an earlier proposal of the same
+    transaction; a real transaction cannot (the action id contains the hash of the body naming it), so the tests use
+    `GovRule.apply(frame, proposalTxId)` to exercise it.
+  - *Stake-pool votes on parameter changes* need the changed keys: from the transaction's bytes for its own proposals,
+    from `ProposalState.paramUpdateKeys` for the view's (the canonical view reads them from the stored action CBOR);
+    unknown keys fail closed (`ENGINE.LedgerStateUnavailable`), as does an in-flight hard-fork parent without its
+    action payload.
+- **Raw proposal decoding** (`tx.RawProposal`, rewritten; `tx.RawParamUpdate`, new): every field `GOV` checks is read
+  from the original bytes, as Haskell's `DecCBOR` at decoder versions 9–11 (Procedures.hs:522-535, 875-941): the
+  deposit and withdrawal amounts `Word64`, account addresses (header `& 0xEE == 0xE0`, 29 bytes), `GovActionId`
+  `[32-byte txid, Word16]`, the protocol version `[Word32 ≤ 12, Word32]` (`decodeProtVer`: `succVersion (ProtVerHigh
+  ConwayEra)`), maps and sets without duplicates (optional tag 258), expiry epochs `Word64`, the quorum a
+  `UnitInterval`, 28-byte script hashes; anything else is `ENGINE.DecodingFailure`. **`PParamsUpdate`**
+  (Core/PParams.hs:257-294 over Conway's `eraPParams`): keys 0–11 and 16–33 only (12, 13, 15 are not Conway
+  parameters, 14 is not updatable), no duplicates; coins `Word64` (0, 1, 5, 6, 16, 17, 30, 31), `Word32` (2, 3, 7,
+  22, 28, 29, 32), `Word16` (4, 8, 23, 24, 27), `NonNegativeInterval` (9, 33) and `UnitInterval` (10, 11) as tag-30
+  rationals with `Word64` reduced parts, cost models (a `Word8`-keyed map of `Int64` lists, unknown languages kept,
+  any length: plutus-ledger-api 1.65 only warns on too few), prices, ex-units (≤ `Int64` max), 5 pool and 10 DRep
+  thresholds. **`ppuWellFormed pv`** (Conway/PParams.hs:935-963): keys 2, 3, 4, 22, 23, 28, 29, 6, 30, 31 non-zero;
+  17 non-zero outside PV 9; non-empty; from PV 11 key 8 (`nOpt`) non-zero. The **security group** is keys
+  {0, 1, 2, 3, 4, 17, 21, 22, 30, 33}. Voting procedures now decode the action ids (`[txid, Word16]`, no duplicate per
+  voter), refuse an empty per-voter map and a vote other than 0–2 (Procedures.hs:408-416); `RawTransaction.votes()`
+  exposes them in Haskell's order.
+- **`LEDGER` pre-checks** (`conway.ledger.LedgerPreChecks`, Ledger.hs:361-392), before the PV 11 withdrawal checks:
+  `ConwayTreasuryValueMismatch` (a stated `currentTreasuryValue` ≠ the chain account state's treasury, which only a
+  boundary changes: the view's epoch treasury), `ConwayTxRefScriptsSizeTooBig` (`txNonDistinctRefScriptsSize` over
+  spending ∪ reference inputs, an input in both counted once, > `ppMaxRefScriptSizePerTxG`, the Conway constant
+  200 KiB, Conway/PParams.hs:981), `ConwayWdrlNotDelegatedToDRep` (PV ≥ 10: key-hash withdrawal accounts, any network,
+  whose account is missing or has no DRep delegation, on the accounts *before* the certificates; predefined DReps
+  count as delegated).
+- **`MEMPOOL`**: `MempoolRule` was already in front of `LEDGER`; `ConwayMempoolFailure` is now a `ConwayPredicate`
+  too (for the catalogue and the matrix). Fixtures (`MempoolTransitionTest`, through the whole transition): an
+  all-inputs-spent duplicate reports only `ConwayMempoolFailure` (with a wrong treasury value as a second fault) and
+  rule `LEDGER` reports that transaction's own failures instead; at PV 10 an unelected committee vote is judged on the
+  incoming committee state even when an elected member authorises the key in the same transaction (MEMPOOL rejects,
+  LEDGER accepts); at PV 11 the check is `GOV`'s (`UnelectedCommitteeVoters`, for blocks too), and the in-transaction
+  authorisation makes the vote valid; the unelected-vote failure does not stop `LEDGER` (`MEMPOOL`'s list holds
+  `LEDGER`'s failures, then its own).
+- **Tests.** `GovRuleTest` (one `@Covers` test per `GOV` constructor with Haskell's whole list, the lineage cases
+  — in-flight parent, enacted root, root of another purpose, wrong purpose, missing, same-transaction parent, a parent
+  that was not added, a forward reference —, hard-fork chaining against the current version, an in-flight hard fork and
+  within the transaction, committee conflicts and expiry, the voter matrix for every action type, stake-pool votes on
+  each of the 30 Conway keys, voters registered/deregistered/resigned/authorised earlier in the transaction, expired
+  actions at epochs 6/7, votes on same-transaction proposals, PV 11 unelected voters), `LedgerPreChecksTest` (+6),
+  `MempoolTransitionTest` (5), `RawProposalTest` (8: every parameter type, refused keys and bounds, `ppuWellFormed` per
+  PV, security group, proposal fields and decoder refusals, `pvCanFollow`). The mutation world gained governance state
+  (two standing proposals, a treasury, `dev-77`'s hot key `dev-42`, an unelected member with hot key `dev-aa`, `dev-cc`
+  registered without delegations — new test key `0xCC` × 32 —, a 250,000 ADA UTxO for deposits and a UTxO with a
+  205,000-byte PlutusV2 reference script) and the builder a `currentTreasuryValue` and a raw body edit (for the
+  Conway parameter keys CCL cannot write). **19 new mutants (85 in all)**: every `GOV` and `LEDGER` constructor except
+  `VotingOnExpiredGovAction` (the worlds are at epoch 0; the unit tests and 17 scenarios cover it); the
+  `withdrawal-missing-account-v11` mutant now withdraws from a script credential, since a key credential without an
+  account is also `ConwayWdrlNotDelegatedToDRep`. The Java engine reports exactly the covered constructor on all 85;
+  Amaru agrees on all 19 new ones except `unelected-committee-voter-v11`, where it reports `VotersDoNotExist` (a naming
+  alias: Amaru has no separate name, and its Haskell checker normalises `UnelectedCommitteeVoters` to
+  `VotersDoNotExist`, `ValidatePhaseOne/Run.hs:532-533`).
+- **Gate** (`JavaEnginePhase5GateTest`, all 276 scenarios): **274 match Amaru and Haskell**, 1 (00280) matches Haskell
+  where Amaru diverges (recorded in Phase 3a), 1 (00203) is protocol version 9, refused by design with
+  `ENGINE.EraNotSupported` as Amaru refuses it (invariant 7). Harness additions: a corpus alias
+  (`AmaruCorpusNames.aliases`: `VotersDoNotExist` also accepts `GOV.UnelectedCommitteeVoters`, scenario 00171 at PV 11)
+  and Haskell's lists for 00148/00150 (`[ProposalReturnAccountDoesNotExist, InvalidPrevGovActionId]`: those scenarios
+  register no account). **Coverage matrix 84/84** (56 test + scenario, 28 test only, no gap); **`conformance.strict` is
+  now on by default** in `ledger-conformance` (`-Pconformance.strict=false` reports instead) and passed explicitly in
+  the `amaru-wasm.yml` conformance job.
+- **Baseline** (regenerated `ledger-conformance/docs/baseline-2026-09.md`, module rebuilt with
+  `build-wasm.sh`): `java-engine` **276/276 verdicts, 274/276 constructors, 85/85 mutants, 4/4 bases, 83/84
+  constructors demonstrated** (the 84th, `ConwayMempoolFailure`, is reported under rule `MEMPOOL`, which the harness
+  does not run), about 0.57 ms per scenario; `amaru` 276/276, 275/276, 78/85 mutants (7 recorded divergences).
+- **Engine gating.** `JavaEngineFactory` still requires `yano.validation.java-engine.experimental=true` (defaults are
+  Phase 8's), but no longer says the rules are incomplete: the message and Javadoc now say the engine has not yet run
+  behind the runtime overlays, shadow sync and the native gate (Phases 6–7). `LedgerValidationEngines` names a missing
+  `java` factory instead of "not available yet".
+- **Regressions**: `:ledger-rules:test` (321), `:ledger-conformance:test` with the corpus and Amaru, `:scalus-bridge:test`
+  with the corpus (84), `:runtime:test --tests '*validation*'` (59), `:tx-services:test` (29): green.
+- **Review** (independent Fable pass against `f649f975`): approve; GOV, `ppuWellFormed`, the security group, the
+  lineage, the `LEDGER` pre-checks and `MEMPOOL` confirmed. Applied:
+  - *Definite-length strings (decoder audit, major).* Below decoder version 12 Haskell reads every ledger byte string
+    with `decodeBytesDefinite` / `decodeByteArrayDefinite` (cardano-ledger-binary Decoder.hs:350-376, 1426-1447):
+    hashes and fixed-size keys (`PackedBytes`, DecCBOR.hs:492-498), addresses (Address.hs:483-488, 913-916), asset
+    names (Mary/Value.hs:126-134), Plutus binaries (Language.hs:250-252), vkey and bootstrap witnesses
+    (WitVKey.hs:76-80, Bootstrap.hs:72-84), the tag-24 wrappers of inline datums and reference scripts
+    (`decodeNestedCborBytes`, Decoding.hs:238-239) and Byron address payloads (decoded at `byronProtVer`); text with
+    cborg's definite-only `decodeString`. `CborReader.readDefiniteBytes`/`readDefiniteText` now read every one of them
+    (inputs, outputs, datum hashes, reference scripts, policies, asset names, certificates, the pledge as a `Word64`,
+    withdrawals, required signers, the auxiliary-data and script-integrity hashes, witnesses, witness and auxiliary-data
+    Plutus scripts, native-script key hashes, proposals, anchors, voters, Byron payloads). Only metadata
+    (`decodeMetadatum`, Metadata.hs:151-185, 64 bytes on the concatenation) and Plutus `Data` keep chunks.
+  - *Plutus `Data` at decode time.* Haskell decodes witness datums and redeemer data with plutus-core's `decodeData`
+    (`DecCBOR (PlutusData era) = Cborg.decode`, Plutus/Data.hs:99-103) and inline datums through `makeBinaryData`
+    (:220-239); the Java decoder skipped them. The `Data` decoder of `PlutusScriptDecoder` moved to
+    `tx.PlutusData` and now also validates those three (byte strings definite ≤ 64 bytes or chunked with chunks ≤ 64,
+    tags 121–127, 1280–1400 and 102, bignums, no text or other tags, no trailing bytes).
+  - *Bignum rationals.* Rational parts accept cborg's bignums (one-byte tag heads `c2`/`c3`, definite payload), as
+    `decodeInteger` does (Plain.hs:159-167); `ExUnits` stay `Word64` (`decNat` decodes a `Word64`, ExUnits.hs:204-212).
+  - *`GovRule`*: the `proposalsAddAction` state change no longer runs inside the predicate's supplier.
+  - Tests: `DefiniteLengthDecodingTest` chunks 33 fields (each refused) and a Byron payload, and checks that chunked
+    metadata bytes and text and chunked `Data` byte strings are accepted, a 65-byte `Data` byte string and a non-`Data`
+    inline datum refused; `RawProposalTest` gains the indefinite-string and bignum cases.
+  - The 276-scenario gate, the 85 mutants and every regression suite stay green after the audit.
+- **Phase 6 dependencies** (not implemented here; the runtime views must provide them before the engine validates
+  against canonical or mempool state):
+  - *(a) Committee records.* Canonical committee records must keep members whose term has expired but who were not
+    replaced; otherwise `UnelectedCommitteeVoters` (PV 11, `authorizedElectedHotCommitteeCredentials` reads
+    `committeeMembers`, not the expiry) reports false positives, and `VotersDoNotExist` loses their hot keys.
+  - *(b) Proposal expiry.* `ProposalState.expiresAfterEpoch` must equal `gasProposedIn + govActionLifetime`
+    (`mkGovActionState`, Gov.hs:409-417); verify the values yaci supplies.
+  - *(c) In-block and mempool governance.* Proposals and votes of earlier transactions of the same block or mempool
+    must come from the effects overlay (`TxEffectsDeriver`'s `ProposalSubmitted`), so votes on them and parents naming
+    them resolve.
+  - *(d) Treasury.* `LedgerView.treasury()` must be the treasury of the ticked epoch (the chain account state the
+    transaction is applied to), also across an epoch boundary between the tip and the validated slot.
+- **Remaining risks before Phases 6/8.** (1) The node's views must carry every proposal's parameter-update keys and
+  action payload, or stake-pool votes on parameter changes and hard-fork chaining fail closed. (2) Same-transaction
+  references are exercised only through the test hook. (3) `VotingOnExpiredGovAction` has no mutant (epoch-0 worlds).
+  (4) PV 11 is covered by unit tests and 7 PV 11 mutants only; Amaru's corpus has one PV 11 GOV scenario (00171).
+  (5) `GOV`'s `Proposals` state change stays the effects deriver's (it records proposals and votes, not the removal of
+  replaced or deregistered-DRep votes, which only ratification reads).
+
 ### Phase 6 — Runtime overlays
 
 - Add the immutable `MempoolLedgerState`, synchronous truncate-and-reapply on

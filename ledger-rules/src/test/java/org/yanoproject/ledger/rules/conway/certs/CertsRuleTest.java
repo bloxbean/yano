@@ -67,15 +67,18 @@ class CertsRuleTest {
         full.withdrawals.add(withdrawal(TestKey.DEV_BB, ada(5)));
         assertThat(run(full, 10)).containsExactly("Valid");
 
-        // No account: invalid even for zero.
+        // No account: invalid even for zero. LEDGER's ConwayWdrlNotDelegatedToDRep (a key-hash account without a DRep
+        // delegation: it has no account at all) ran before CERTS, so it comes after CERTS' failure in LEDGER's list.
         TxSpec missing = spec(List.of(), TestKey.DEV_AA);
         missing.withdrawals.add(withdrawal(TestKey.DEV_AA, ada(0)));
-        assertThat(run(missing, 10)).containsExactly("CERTS.WithdrawalsNotInRewardsCERTS");
+        assertThat(run(missing, 10)).containsExactly("CERTS.WithdrawalsNotInRewardsCERTS",
+                "LEDGER.ConwayWdrlNotDelegatedToDRep");
 
         // From 11 the check is LEDGER's (ConwayWithdrawalsMissingAccounts / ConwayIncompleteWithdrawals,
         // LedgerPreChecksTest); CERTS' base case is the identity.
         assertThat(run(partial, 11)).containsExactly("LEDGER.ConwayIncompleteWithdrawals");
-        assertThat(run(missing, 11)).containsExactly("LEDGER.ConwayWithdrawalsMissingAccounts");
+        assertThat(run(missing, 11)).containsExactly("LEDGER.ConwayWithdrawalsMissingAccounts",
+                "LEDGER.ConwayWdrlNotDelegatedToDRep");
         assertThat(run(full, 11)).containsExactly("Valid");
     }
 
@@ -84,7 +87,8 @@ class CertsRuleTest {
         // A withdrawal from a credential registered by the same transaction has no account yet.
         TxSpec registerThenWithdraw = balanced(spec(new RegCert(stakeCredential(TestKey.DEV_42), ada(2))), ada(-2));
         registerThenWithdraw.withdrawals.add(withdrawal(TestKey.DEV_42, ada(0)));
-        assertThat(run(registerThenWithdraw)).containsExactly("CERTS.WithdrawalsNotInRewardsCERTS");
+        assertThat(run(registerThenWithdraw)).containsExactly("CERTS.WithdrawalsNotInRewardsCERTS",
+                "LEDGER.ConwayWdrlNotDelegatedToDRep");
 
         // A withdrawal from a credential the same transaction deregisters is judged (and drained) first.
         TxSpec withdrawThenDeregister = balanced(spec(new UnregCert(stakeCredential(TestKey.DEV_BB), ada(2)),

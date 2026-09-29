@@ -15,7 +15,8 @@ import java.util.Objects;
  *
  * <p>Phase 3a lists the {@code UTXO} and {@code UTXOS} families, Phase 3b {@code UTXOW}, Phase 4 {@code CERTS},
  * {@code DELEG}, {@code POOL} and {@code GOVCERT} with the two protocol-version-11 {@code LEDGER} withdrawal checks;
- * Phase 5 adds {@code GOV} and the other {@code LEDGER} predicates.
+ * Phase 5 adds {@code GOV}, the other {@code LEDGER} predicates and {@code ConwayMempoolFailure} ({@code MEMPOOL}'s own
+ * failure, a {@code ConwayLedgerPredFailure} constructor).
  * Wrapper constructors ({@code UtxosFailure}, {@code UtxoFailure}, …) are not listed: {@link LedgerFailure} names
  * the leaf with its rule.</p>
  */
@@ -117,12 +118,65 @@ public enum ConwayPredicate {
             "Babbage/Rules/Utxos.hs:145-157, 208-222: when2Phase (static) $ whenFailureFree"),
 
     // ---------------------------------------------------------------- LEDGER (Conway/Rules/Ledger.hs:350-440)
+    CONWAY_TREASURY_VALUE_MISMATCH(LedgerRuleName.LEDGER, "ConwayTreasuryValueMismatch", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:364, 442-454 (validateTreasuryValue: only when the body states "
+            + "currentTreasuryValue; against the chain account state's treasury): runTest"),
+    CONWAY_TX_REF_SCRIPTS_SIZE_TOO_BIG(LedgerRuleName.LEDGER, "ConwayTxRefScriptsSizeTooBig", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:365, 456-471 (validateRefScriptSize: txNonDistinctRefScriptsSize "
+            + "over spending ∪ reference inputs ≤ ppMaxRefScriptSizePerTxG = 200 KiB, Conway/PParams.hs:981): runTest"),
+    CONWAY_WDRL_NOT_DELEGATED_TO_DREP(LedgerRuleName.LEDGER, "ConwayWdrlNotDelegatedToDRep", PvRange.from(10),
+            CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:379-381, 473-488 (validateWithdrawalsDelegated: key-hash "
+            + "accounts without a DRep delegation, pre-certificate accounts; unless hardforkConwayBootstrapPhase)"),
+    CONWAY_MEMPOOL_FAILURE(LedgerRuleName.LEDGER, "ConwayMempoolFailure", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Mempool.hs:103-138 (MEMPOOL only: all inputs spent; unelected committee voters while "
+            + "hardforkConwayDisallowUnelectedCommitteeFromVoting is off, PV ≤ 10); MempoolRule"),
     CONWAY_WITHDRAWALS_MISSING_ACCOUNTS(LedgerRuleName.LEDGER, "ConwayWithdrawalsMissingAccounts", PvRange.from(11),
             CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:383-386 (hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule); "
             + "Shelley/Rules/Ledger.hs:351-358 (testIncompleteAndMissingWithdrawals): failOnNonEmptyMap"),
     CONWAY_INCOMPLETE_WITHDRAWALS(LedgerRuleName.LEDGER, "ConwayIncompleteWithdrawals", PvRange.from(11),
             CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:383-386; Shelley/Rules/Ledger.hs:359: failOnNonEmptyMap, after "
             + "the missing accounts"),
+
+    // ---------------------------------------------------------------- GOV (Conway/Rules/Gov.hs:462-613)
+    UNELECTED_COMMITTEE_VOTERS(LedgerRuleName.GOV, "UnelectedCommitteeVoters", PvRange.from(11), CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:478-481 (hardforkConwayDisallowUnelectedCommitteeFromVoting, before the proposals), "
+            + "652-665: failOnNonEmpty"),
+    PROPOSAL_CANT_FOLLOW(LedgerRuleName.GOV, "ProposalCantFollow", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:488-499, 673-695 (preceedingHardFork; pvCanFollow): failOnJust"),
+    MALFORMED_PROPOSAL(LedgerRuleName.GOV, "MalformedProposal", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:393-399, 502 (actionWellFormed: ppuWellFormed pv, Conway/PParams.hs:935-963)"),
+    PROPOSAL_RETURN_ACCOUNT_DOES_NOT_EXIST(LedgerRuleName.GOV, "ProposalReturnAccountDoesNotExist", PvRange.from(10),
+            CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:504-508 (unless hardforkConwayBootstrapPhase; post-CERTS "
+            + "accounts, credential only): ?!"),
+    TREASURY_WITHDRAWAL_RETURN_ACCOUNTS_DO_NOT_EXIST(LedgerRuleName.GOV, "TreasuryWithdrawalReturnAccountsDoNotExist",
+            PvRange.from(10), CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:509-520 (unless hardforkConwayBootstrapPhase; "
+            + "post-CERTS accounts): failOnNonEmpty"),
+    PROPOSAL_DEPOSIT_INCORRECT(LedgerRuleName.GOV, "ProposalDepositIncorrect", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:522-530 (pProcDeposit == ppGovActionDeposit): ?!"),
+    PROPOSAL_PROCEDURE_NETWORK_ID_MISMATCH(LedgerRuleName.GOV, "ProposalProcedureNetworkIdMismatch", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:532-535: ?!"),
+    TREASURY_WITHDRAWALS_NETWORK_ID_MISMATCH(LedgerRuleName.GOV, "TreasuryWithdrawalsNetworkIdMismatch",
+            PvRange.ALWAYS, CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:539-544: failOnNonEmptySet"),
+    INVALID_GUARDRAILS_SCRIPT_HASH(LedgerRuleName.GOV, "InvalidGuardrailsScriptHash", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:420-426, 547 (TreasuryWithdrawals), 557-558 (ParameterChange): "
+            + "runTest checkGuardrailsScriptHash"),
+    ZERO_TREASURY_WITHDRAWALS(LedgerRuleName.GOV, "ZeroTreasuryWithdrawals", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:550 (F.fold wdrls /= mempty, so also an empty map): ?!"),
+    CONFLICTING_COMMITTEE_UPDATE(LedgerRuleName.GOV, "ConflictingCommitteeUpdate", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:551-553: failOnNonEmptySet"),
+    EXPIRATION_EPOCH_TOO_SMALL(LedgerRuleName.GOV, "ExpirationEpochTooSmall", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:555-556 (expiry ≤ currentEpoch): failOnNonEmptyMap"),
+    INVALID_PREV_GOV_ACTION_ID(LedgerRuleName.GOV, "InvalidPrevGovActionId", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:561-566 (proposalsAddAction, Governance/Proposals.hs:297-333): failBecause"),
+    VOTERS_DO_NOT_EXIST(LedgerRuleName.GOV, "VotersDoNotExist", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:591-604 (post-CERTS committee state, DReps and pools): failOnNonEmpty"),
+    GOV_ACTIONS_DO_NOT_EXIST(LedgerRuleName.GOV, "GovActionsDoNotExist", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:568-605 (known voters only; this transaction's proposals included): failOnNonEmpty"),
+    VOTING_ON_EXPIRED_GOV_ACTION(LedgerRuleName.GOV, "VotingOnExpiredGovAction", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:356-362, 607 (currentEpoch > gasExpiresAfter): runTest"),
+    DISALLOWED_VOTERS(LedgerRuleName.GOV, "DisallowedVoters", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Conway/Rules/Gov.hs:364-376, 608 (isCommitteeVotingAllowed / isDRepVotingAllowed / "
+            + "isStakePoolVotingAllowed, Governance/Internal.hs:350-497): runTest"),
 
     // ---------------------------------------------------------------- CERTS (Conway/Rules/Certs.hs:204-241)
     WITHDRAWALS_NOT_IN_REWARDS(LedgerRuleName.CERTS, "WithdrawalsNotInRewardsCERTS", PvRange.between(9, 10),

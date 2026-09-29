@@ -46,13 +46,13 @@ class LedgerValidationEnginesTest {
     }
 
     @Test
-    void javaIsNotAvailableYet() {
+    void javaWithoutItsFactoryIsNamed() {
         LedgerValidationEngines engines = LedgerValidationEngines.of(List.of(new FakeFactory()));
 
         assertThatThrownBy(() -> engines.factory("java"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("'java' is not available yet")
-                .hasMessageContaining("Phases 3-5");
+                .hasMessageContaining("'java' is not on the classpath")
+                .hasMessageContaining("JavaEngineFactory");
     }
 
     @Test

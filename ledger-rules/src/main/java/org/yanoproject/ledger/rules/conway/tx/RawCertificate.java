@@ -74,7 +74,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             RawCredential credential = null;
             long expected;
             if (kind <= 1) {
-                credential = new RawCredential(kind == 1, reader.readBytes());
+                credential = new RawCredential(kind == 1, reader.readDefiniteBytes());
                 expected = 2;
             } else if (kind <= 3) {
                 expected = 1;
@@ -225,7 +225,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             }
             case 2 -> {
                 credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readBytes(), "delegatee pool");
+                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
                 expected = 3;
             }
             case 7, 8, 17 -> {
@@ -240,13 +240,13 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             }
             case 10 -> {
                 credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readBytes(), "delegatee pool");
+                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
                 drep = DRep.read(reader);
                 expected = 4;
             }
             case 11 -> {
                 credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readBytes(), "delegatee pool");
+                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
                 coin = reader.readUnsigned();
                 expected = 4;
             }
@@ -258,7 +258,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             }
             case 13 -> {
                 credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readBytes(), "delegatee pool");
+                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
                 drep = DRep.read(reader);
                 coin = reader.readUnsigned();
                 expected = 5;
@@ -282,15 +282,15 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             case 3 -> {
                 // pool_params, flattened: operator, vrf, pledge, cost, margin, reward account, owners, relays,
                 // metadata (decodeStakePoolParamsFlat)
-                poolId = keyHash(reader.readBytes(), "pool operator");
-                byte[] vrf = reader.readBytes();
+                poolId = keyHash(reader.readDefiniteBytes(), "pool operator");
+                byte[] vrf = reader.readDefiniteBytes();
                 if (vrf.length != VRF_KEY_HASH_LENGTH) {
                     throw new TxDecodingException("VRF key hash of " + vrf.length + " bytes");
                 }
-                reader.skip(); // pledge
+                reader.readUnsigned(); // pledge: a Word64 coin
                 BigInteger cost = reader.readUnsigned();
                 BoundedFields.unitInterval(reader, "pool margin");
-                byte[] rewardAccount = reader.readBytes();
+                byte[] rewardAccount = reader.readDefiniteBytes();
                 // decodeAccountAddress (Address.hs:938-955): header & 0xEE == 0xE0, then a 28-byte hash
                 if (rewardAccount.length != 29 || (rewardAccount[0] & 0xee) != 0xe0) {
                     throw new TxDecodingException("pool reward account is not an account address");
@@ -298,7 +298,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
                 reader.skipTag(258);
                 long count = reader.readArrayHeader();
                 for (long i = 0; reader.hasNext(count, i); i++) {
-                    owners.add(keyHash(reader.readBytes(), "pool owner"));
+                    owners.add(keyHash(reader.readDefiniteBytes(), "pool owner"));
                 }
                 long relays = reader.readArrayHeader();
                 for (long i = 0; reader.hasNext(relays, i); i++) {
@@ -310,7 +310,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
                 } else {
                     long fields = reader.readArrayHeader();
                     BoundedFields.url(reader, "pool metadata");
-                    metadataHashSize = reader.readBytes().length;
+                    metadataHashSize = reader.readDefiniteBytes().length;
                     if (fields == CborReader.INDEFINITE ? reader.hasNext(fields, 2) : fields != 2) {
                         throw new TxDecodingException("pool metadata is a two-element array");
                     }
@@ -319,7 +319,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
                 expected = 10;
             }
             case 4 -> {
-                poolId = keyHash(reader.readBytes(), "pool id");
+                poolId = keyHash(reader.readDefiniteBytes(), "pool id");
                 epoch = reader.readUnsignedLong();
                 expected = 3;
             }
