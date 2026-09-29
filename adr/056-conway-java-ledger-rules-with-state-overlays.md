@@ -2367,10 +2367,12 @@ same base-plus-delta model.
   `src/ledger/conformance-test-vectors/vectors.tar.gz`, sha256 `5041539c…9b727d`. They are the same files as
   Amaru's `crates/amaru-ledger/tests/data/rules-conformance` at the pinned tag. The pin is in `BlueprintVectorLoader`,
   and a corpus digest over every extracted file is checked whether the files come from the tarball or from an Amaru
-  checkout. **The pin depends on an unmerged fork commit**: GitHub serves it through `cardano-scaling/cardano-blueprint`
-  only while PR #71's ref exists. The CI step, `BlueprintVectorLoader` and the generated report say so, and the fetch
-  failure message says to re-pin (to the merged commit, or to Amaru's copy of the same files). The tarball is not
-  vendored. 320 vectors, 2487 transactions, 886 tick and 567 epoch events, 44 parameter records. Every vector runs in
+  checkout. PR #71 is not merged, and its head commit lives in a fork that GitHub serves through
+  `cardano-scaling/cardano-blueprint` only while the PR's ref exists. The extracted vectors (364 files, 3.3 MB,
+  Apache-2.0 with the licence and a NOTICE) are therefore vendored under `ledger-conformance/vectors/cardano-blueprint`.
+  Its README records the pin, where to look for newer vectors (PR #71, cardano-blueprint `main`, Amaru's copy, the
+  generator), and the update steps; `update.sh` replaces the files from a tarball and prints the values to pin.
+  320 vectors, 2487 transactions, 886 tick and 567 epoch events, 44 parameter records. Every vector runs in
   the Conway era. Grouped by the Imp spec they come from, they run at PV 9 (Shelley 11, Allegra 1, Mary 2, Alonzo 98,
   Babbage 3: the bootstrap phase) and PV 10 (Conway 205). The vectors record whether Haskell applied a transaction,
   not its predicate failure, so the gate compares verdicts.
@@ -2537,15 +2539,12 @@ same base-plus-delta model.
   This is verdict-level evidence, because the vectors carry no constructor, so it does not change the statuses. 46
   constructors appear. The only `ENGINE` rejection is `allegra/fail-utxow-invalidmetadata`: Haskell's decoder also
   refuses metadata text over 64 bytes from Allegra on (`Metadata.hs:153-185`).
-- **CI and local runs.** The `amaru-wasm.yml` `conformance` job downloads the pinned tarball, checks its sha256 and
-  passes `-PblueprintVectors=<tarball>`. The build checks the sha256 again and extracts the tarball; the pinned
-  tarball lists some files twice with identical content. Locally, `-PblueprintVectors=<tarball or directory>` works,
-  or `-PamaruScenariosDir=<Amaru checkout>` alone (the same files). Without either, the gate skips (a JUnit
-  assumption).
-
-  `conformanceReport` writes `ledger-conformance/docs/blueprint-vectors-2026-09.md`:
+- **CI and local runs.** The build passes the vendored vectors to the tests by default, so the gate runs in every
+  `:ledger-conformance:test`, in the main build and in the `amaru-wasm.yml` `conformance` job, with no download.
+  `-PblueprintVectors=<directory>` points at another copy (an extracted tarball or an Amaru checkout); the corpus
+  digest is checked either way. `conformanceReport` writes `ledger-conformance/docs/blueprint-vectors-2026-09.md`:
   ```
-  ./gradlew :ledger-conformance:test -PblueprintVectors=vectors.tar.gz -PamaruScenariosDir=<amaru>
+  ./gradlew :ledger-conformance:conformanceReport -PamaruScenariosDir=<amaru>
   ```
 - **Tests.**
   - `:ledger-conformance:test` with the Amaru corpus, the Amaru module and the vectors: 131 tests, 0 failures (17

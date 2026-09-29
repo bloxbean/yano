@@ -32,17 +32,16 @@ import java.util.stream.Stream;
  * Amaru's {@code evaluate_ledger_states.rs} reads, and the exact set in Amaru's
  * {@code crates/amaru-ledger/tests/data/rules-conformance} at the pinned Amaru tag. cardano-blueprint {@code main}
  * ({@code 0f0c17e1}) still carries the older tarball (one JSON file per transaction with a {@code LedgerState}), which
- * is a different format and is not read here. <b>The pin depends on an unmerged fork commit</b>: GitHub serves
- * {@value #TARBALL_URL} only while the PR's ref exists; if it disappears, re-pin to the merged commit or to Amaru's copy
- * of the same files. The tarball is deliberately not vendored into Yano. Because the directory can come from the tarball or from an Amaru
- * checkout, {@link #verifyPin()} checks the extracted files against {@value #CORPUS_DIGEST}, a digest over every
- * file's path and content.</p>
+ * is a different format and is not read here. The extracted files are vendored under
+ * {@code ledger-conformance/vectors/cardano-blueprint}, whose README records the pin, where to look for newer vectors
+ * and how to update them, so no build downloads {@value #TARBALL_URL}. Because another copy (an Amaru checkout) can
+ * also be passed, {@link #verifyPin()} checks the files against {@value #CORPUS_DIGEST}, a digest over every file's
+ * path and content.</p>
  *
  * <p><b>Locating.</b> System property {@value #VECTORS_PROPERTY} or environment variable {@value #VECTORS_ENV}: the
- * extracted directory (holding {@code eras/} and {@code pparams/}). The build sets the property from
- * {@code -PblueprintVectors=<tarball or directory>} (a tarball is checked against the pinned sha256 and extracted), or
- * falls back to the Amaru checkout of {@code -PamaruScenariosDir}. Tests call {@link #requireVectorsDir()}, which
- * skips them (a JUnit assumption) when neither is configured.</p>
+ * extracted directory (holding {@code eras/} and {@code pparams/}), or an Amaru checkout. The build sets the property
+ * to the vendored copy, or to {@code -PblueprintVectors=<directory>}. Tests call {@link #requireVectorsDir()}, which
+ * skips them (a JUnit assumption) when it is not set.</p>
  */
 public final class BlueprintVectorLoader {
 
@@ -99,8 +98,8 @@ public final class BlueprintVectorLoader {
     public static Path requireVectorsDir() {
         Optional<Path> dir = locateVectorsDir();
         Assumptions.assumeTrue(dir.isPresent(), () -> "cardano-blueprint vectors not configured: pass "
-                + "-PblueprintVectors=<vectors.tar.gz or extracted directory> (" + TARBALL_URL + ", sha256 "
-                + TARBALL_SHA256 + "), or set -D" + VECTORS_PROPERTY + " / " + VECTORS_ENV);
+                + "-D" + VECTORS_PROPERTY + " (or " + VECTORS_ENV + ") = ledger-conformance/vectors/cardano-blueprint, "
+                + "as the build does");
         return dir.orElseThrow();
     }
 

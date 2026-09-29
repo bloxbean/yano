@@ -44,8 +44,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>every vector that stays in one epoch with unchanged parameters reaches exactly the vector's final state.</li>
  * </ul>
  *
- * <p>Skips (a JUnit assumption) without the vectors: {@code -PblueprintVectors=<vectors.tar.gz or directory>}, or an
- * Amaru checkout ({@code -PamaruScenariosDir}), which carries the same files.</p>
+ * <p>Reads the vendored vectors ({@code ledger-conformance/vectors/cardano-blueprint}, which the build passes by
+ * default; {@code -PblueprintVectors=<directory>} points at another copy). Skips (a JUnit assumption) only when run
+ * without the build's system property, for example from an IDE without it.</p>
  */
 class BlueprintVectorGateTest {
 
