@@ -294,9 +294,10 @@ public final class ShadowValidationRunner implements AutoCloseable {
                 return;
             }
             Verdict.Disagreement d = disagreement.get();
-            disagreementTotal.increment();
+            // Per-label first: a reader never sees the total ahead of the sum of the labels.
             disagreements.computeIfAbsent(engine.name(), ignored -> new ConcurrentHashMap<>())
                     .computeIfAbsent(d.ruleLabel(), ignored -> new LongAdder()).increment();
+            disagreementTotal.increment();
             if (loggedTx.putIfAbsent(job.txHash() + "|" + engine.name(), Boolean.TRUE) == null) {
                 log.warn("Validation engines disagree on tx {}: {} vs shadow {}: {}", job.txHash(),
                         job.admission().engine(), engine.name(), d);

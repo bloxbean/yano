@@ -983,6 +983,7 @@ public class YanoProducer {
     /** ADR-056 §7 engine selection and shadowing, and ADR-057 §2 Amaru settings, forwarded verbatim. */
     static final List<String> VALIDATION_ENGINE_KEYS = List.of(
             YanoPropertyKeys.Validation.ENGINE,
+            YanoPropertyKeys.Validation.JAVA_ENGINE_EXPERIMENTAL,
             YanoPropertyKeys.Validation.SHADOW_ENGINES,
             YanoPropertyKeys.Validation.SHADOW_DUMP_DIR,
             YanoPropertyKeys.Validation.SHADOW_SYNC,

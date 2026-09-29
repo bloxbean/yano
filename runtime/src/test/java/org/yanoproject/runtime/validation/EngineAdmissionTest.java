@@ -187,7 +187,8 @@ class EngineAdmissionTest {
         ShadowValidationRunner runner = engines.shadowRunner();
         // compared() is counted before the verdict counters, so wait for those (the published state keeps the
         // snapshot live, so the live count no longer marks the end of the jobs).
-        awaitTrue(() -> runner.stats().agreements() == 1 && runner.stats().disagreementTotal() == 1);
+        awaitTrue(() -> runner.stats().agreements() == 1 && runner.stats().disagreementTotal() == 1
+                && runner.disagreements("amaru", "UTXO") == 1);
         // The shadows retained the admission's own base (the published state's snapshot): one capture, not freed
         // while published.
         assertThat(released.get()).isZero();

@@ -8,7 +8,10 @@ with the decisions recorded at the end of this ADR.
 
 Phase A is implemented (`amaru-validator-wasm/`). Phase B is implemented
 (2026-09-29, module `amaru-validator`); its results and deviations are in
-"Phase B results" under the implementation plan.
+"Phase B results" under the implementation plan. Phase C (2026-09-29): the
+ADR-056 Phase 6 devnet matrix passes with `engine: amaru`, with one recorded
+divergence, and a Haskell follower accepts the Amaru-forged chain ("Phase C
+results").
 
 ## Date
 
@@ -298,7 +301,7 @@ yano:
     engine: amaru              # or keep scalus/java and list amaru under shadow-engines
     amaru:
       phase2: scalus           # scalus (default) | amaru
-      pool-size: 0             # 0 = validation threads
+      pool-size: 0             # 0 = validation threads + 2
       timeout-ms: 2000
       max-abandoned: 2         # stuck calls tolerated before the engine turns unhealthy
       max-memory-pages: 2048   # 128 MiB per instance
@@ -609,7 +612,8 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 #### Step 1d results (2026-09-29)
 
 - `AmaruEngineFactory` (`META-INF/services`) maps `yano.validation.amaru.*` to
-  `AmaruEngineConfig` (`pool-size: 0` = the validation threads: one admission
+  `AmaruEngineConfig` (`pool-size: 0` = the validation threads, plus two since
+  Phase C for the rebuild worker and block selection: one admission
   lane plus the shadow workers); `phase2: scalus` uses the Scalus
   `ScriptPhaseEvaluator`, which now reports the deviation-9 checks and the
   forecast horizon.
@@ -634,6 +638,47 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   rollback while chains are pending.
 - Gate: the same verdicts and effects as `engine: java`, and the Haskell
   follower stays in lock-step.
+
+#### Phase C results (2026-09-29)
+
+- **Matrix.** `AmaruDevnetParityTest` (amaru-validator, `-PwithAmaru=true`, module rebuilt with
+  `scripts/build-wasm.sh`, sha256 `c43eeb37…`, passed as `-PamaruWasm=<absolute path>`) runs the ADR-056 Phase 6
+  devnet matrix (`LedgerRulesDevnetMatrix`, see ADR-056 "Phase 6b results") twice on fresh in-process devnets:
+  `engine: amaru` (`phase2: scalus`, pool size 2), then `engine: java`; both runs need
+  `-PledgerRulesGate=true` (CI: the `amaru-wasm.yml` conformance job). Block selection uses the admission engine
+  (rule `LEDGER`, origin `BLOCK_BUILD`), so under `engine: amaru` both admission and forging go through the module.
+- **Same verdicts and effects.** The two runs' observation lists (53 lines: every admission verdict with its
+  Haskell constructor, the mempool contents before forging, after the rollback and before the boundary, block
+  placement, what was dropped at the boundary and why, the refund and the withdrawal) are identical except one
+  recorded divergence (below). Every block the Amaru devnet produced (12–13 blocks, 423 transactions) was re-validated
+  in `SYNC` mode (full validation, no `previous`) against the pre-block snapshot by a separate java engine instance,
+  which is independent of the node, and by Amaru through the node's own admission engine instance (the same
+  module instances that admitted and selected, with a different request): all valid, and the two engines derived
+  equal `TxEffects` for every transaction. Drop reasons agree: `GOV.VotingOnExpiredGovAction` for the vote
+  held across the boundary, `LEDGER.ConwayTreasuryValueMismatch` for the stale treasury value,
+  `LEDGER.ConwayMempoolFailure` for the delegation whose parent was rolled back.
+- **Recorded divergence.** A pool delegation from an unregistered credential: Haskell and the java engine reject
+  with `DELEG.StakeKeyNotRegisteredDELEG` (`Conway/Rules/Deleg.hs`). Amaru's
+  `DefaultValidationContext::delegate_pool` (eaf8ac3) only rejects a source unregistered earlier in the same
+  transaction (`DiffBind::bind_left`), so the module accepts; the adapter cannot derive the effects of the absent
+  account and fails closed with `ENGINE.AmaruEngineFailure`. The transaction is rejected either way, so no invalid
+  transaction is admitted or forged. The Amaru scenario corpus has no such case. `AmaruKnownDivergencesTest` pins
+  it; the parity test's allow-list maps that one line. Candidate fix for Phase D: check the delegator against the
+  accounts slice in the wasm crate's context (or upstream), then re-run the scenario gate.
+- **Pool sizing.** `pool-size: 0` used to resolve to the validation threads, but the mempool rebuild worker (6a)
+  and the producer's block selection (6b) also call the admission engine; with every instance busy a selection
+  candidate could wait up to the 2 s call timeout. `0` now resolves to the validation threads plus two
+  (`AmaruEngineFactory.EXTRA_CALLERS`); an explicit size is used as given.
+- **Budget under `engine: amaru`** with block production running (400 chained payments, three runs): admission
+  p50 1.2–1.4 ms, p99 2.1–2.9 ms, max 2.5–138 ms; last block selection 45–278 ms and last rebuild up to 331 ms at
+  a few hundred mempool transactions (the module call dominates, as recorded for Phase 6a).
+- **Haskell follower** with `engine: amaru`: **PASS** (2026-09-29 14:18–14:26). The same harness and workload as
+  ADR-056 "Phase 6b results", with a `-PwithAmaru=true -PamaruWasm=<module>` JVM distribution and
+  `-Dyano.validation.engine=amaru`: the dependent chains, the `currentTreasuryValue` transaction and the refund
+  withdrawal were admitted and forged by the Amaru engine (the workload built the same 16 transactions, byte for
+  byte, as in the java run; block placement differs only with submission timing), and the Haskell node followed for 4 epochs, 2,362 blocks, tip hash
+  matching at every checkpoint, no Haskell error line. The run shared the machine with a regression build, so Yano
+  missed more slots (202 of 2,564 against 69 in the java run); no block was rejected.
 
 ### Phase D — Oracle integration
 

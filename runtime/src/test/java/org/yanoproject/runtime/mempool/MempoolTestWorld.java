@@ -99,6 +99,26 @@ final class MempoolTestWorld {
             return MempoolBase.of(world, current(), SLOT, SLOT, freed::incrementAndGet);
         }
 
+        /** Block-build bases: the current world at the forge slot (the forecast basis stays {@link #SLOT}). */
+        volatile BooleanSupplier blockBuildUnavailable = () -> false;
+        /** When set, block-build bases read this view instead of the canonical world (same generation). */
+        volatile LedgerView blockBuildWorld;
+        final AtomicInteger blockBuildAcquired = new AtomicInteger();
+
+        @Override
+        public MempoolBase acquireForBlock(long forgeSlot) {
+            if (laneHeld.getAsBoolean()) {
+                acquiredUnderLane.incrementAndGet();
+            }
+            if (unavailable || blockBuildUnavailable.getAsBoolean()) {
+                return MempoolBase.unavailable("test: no canonical state", current());
+            }
+            acquired.incrementAndGet();
+            blockBuildAcquired.incrementAndGet();
+            LedgerView view = blockBuildWorld != null ? blockBuildWorld : world;
+            return MempoolBase.of(view, current(), forgeSlot >= 0 ? forgeSlot : SLOT, SLOT, freed::incrementAndGet);
+        }
+
         @Override
         public CanonicalMark current() {
             return new CanonicalMark(generation, targetEpoch);

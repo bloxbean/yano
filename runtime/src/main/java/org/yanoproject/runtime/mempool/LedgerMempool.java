@@ -1,5 +1,7 @@
 package org.yanoproject.runtime.mempool;
 
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.VetoableEvent;
@@ -43,6 +45,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
@@ -142,6 +145,36 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
 
         default void statusChanged(Status status) {
         }
+
+        /** Every candidate validation of a block selection (rule {@code LEDGER}, origin {@code BLOCK_BUILD}). */
+        default void blockCandidateValidated(String txHash, TxValidationRequest request, TxValidationOutcome outcome) {
+        }
+    }
+
+    /**
+     * The result of {@link #selectForBlock(long)}.
+     *
+     * @param transactions the selected transactions, in mempool order, each valid on top of the previous ones
+     * @param generation   the canonical generation they were validated against (-1 when nothing was validated)
+     * @param forgeSlot    the slot they were validated for (-1 when nothing was validated)
+     * @param rejected     candidates that failed a ledger rule (removed through {@link #removeInvalidated})
+     * @param skipped      candidates skipped without removal (a transient failure, or after one)
+     * @param reapplied    selected candidates that were re-applied (static checks and Plutus skipped)
+     * @param transientFailures the skipped candidates whose own validation failed transiently (not only skipped
+     *                     after an earlier one), with the failure; each counts towards the transient-skip limit
+     */
+    public record BlockSelection(List<byte[]> transactions, long generation, long forgeSlot, List<String> rejected,
+                                 List<String> skipped, int reapplied, Map<String, String> transientFailures) {
+        public BlockSelection {
+            transactions = List.copyOf(transactions);
+            rejected = List.copyOf(rejected);
+            skipped = List.copyOf(skipped);
+            transientFailures = Map.copyOf(transientFailures);
+        }
+
+        static BlockSelection empty() {
+            return new BlockSelection(List.of(), -1, -1, List.of(), List.of(), 0, Map.of());
+        }
     }
 
     private enum Attempt { PUBLISHED, DISCARDED }
@@ -191,6 +224,13 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
     private final AtomicLong deferredRemovals = new AtomicLong();
     private final AtomicLong lockOrderViolations = new AtomicLong();
     private volatile long lastRebuildMillis;
+    private final AtomicLong blockSelections = new AtomicLong();
+    private final AtomicLong blockSelectionRedos = new AtomicLong();
+    private final AtomicLong blockSelectionReapplications = new AtomicLong();
+    private final AtomicLong blockSelectionFullValidations = new AtomicLong();
+    private final AtomicLong blockSelectionRejected = new AtomicLong();
+    private final AtomicLong blockSelectionSkipped = new AtomicLong();
+    private volatile long lastBlockSelectionMillis;
 
     /**
      * @param engine          the admission engine (rule {@code MEMPOOL} for admission and rebuilds)
@@ -859,6 +899,257 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
         }
     }
 
+    // ================================================================== block production
+
+    /** Attempts before a selection whose canonical generation keeps moving gives up (and selects nothing). */
+    private static final int BLOCK_SELECTION_ATTEMPTS = 3;
+
+    /**
+     * Consecutive block selections a candidate may fail transiently before it is removed as invalid: a failure
+     * that persists this long (for example an engine that cannot derive a transaction's effects) is not transient.
+     */
+    static final int TRANSIENT_SKIP_LIMIT = 32;
+
+    /** Consecutive transient block-selection failures per mempool transaction (pruned to the published entries). */
+    private final Map<String, Integer> transientSkips = new ConcurrentHashMap<>();
+
+    /**
+     * Selects transactions for a block forged at {@code forgeSlot} (ADR-056 §6, "Block production").
+     *
+     * <p>Selection never relies on the mempool overlay: it acquires its own {@code BLOCK_BUILD} base (a canonical
+     * snapshot ticked to {@code forgeSlot}, forecast horizon based on the slot after the tip), builds a fresh
+     * block-local overlay over it, and validates the published entries in mempool order with rule {@code LEDGER},
+     * origin {@code BLOCK_BUILD}, passing each entry's {@code ValidatedTx} as {@code previous}; the engine's
+     * invalidation rules decide between re-application and full validation. A valid candidate's effects are
+     * applied to the overlay before the next candidate is validated, so dependent chains (UTxO, certificate and
+     * governance dependencies) are selected in order.</p>
+     *
+     * <p>Failures: a candidate that fails a ledger rule is not selected and is removed with its dependents through
+     * {@link #removeInvalidated} after the selection (deferred to the pending rebuild while the published state
+     * lags, so a transaction invalid only because it was just confirmed never cascades its dependents). A transient
+     * failure (an unavailable read, an engine failure) skips the candidate without removal, and every later failure
+     * of the same selection is skipped without removal too, since it may depend on the skipped one.</p>
+     *
+     * <p>If the canonical generation changes while candidates are validated, the selection is discarded and redone
+     * on a new base (at most {@value #BLOCK_SELECTION_ATTEMPTS} times, then nothing is selected). The producer
+     * checks {@link #canonicalGeneration()} again inside its store section ({@code selectionCurrent}).</p>
+     *
+     * <p>Lock order: the base is acquired while neither the lane nor the canonical gate is held; the published
+     * entries are read without the lane, so admission is never blocked by a selection.</p>
+     *
+     * @param forgeSlot the slot of the block being forged; negative for the slot after the tip
+     */
+    public BlockSelection selectForBlock(long forgeSlot) {
+        if (closed || status == Status.CATCHING_UP) {
+            return BlockSelection.empty();
+        }
+        if (lane.isHeldByCurrentThread() || source.isHeldByCurrentThread()) {
+            lockOrderViolations.incrementAndGet();
+            throw new IllegalStateException("ADR-056 lock order: block selection with the mempool lane or the "
+                    + "canonical gate held");
+        }
+        long started = System.nanoTime();
+        try {
+            BlockSelection selection = null;
+            for (int attempt = 0; attempt < BLOCK_SELECTION_ATTEMPTS && selection == null; attempt++) {
+                MempoolLedgerState s = published;
+                if (s == null || s.isEmpty()) {
+                    return BlockSelection.empty();
+                }
+                selection = selectOnce(s.entries(), forgeSlot);
+                if (selection != null && selection.generation() >= 0
+                        && source.current().generation() != selection.generation()) {
+                    blockSelectionRedos.incrementAndGet();
+                    log.debug("Block selection for slot {} discarded: the canonical generation moved from {} to {}",
+                            forgeSlot, selection.generation(), source.current().generation());
+                    selection = null;
+                }
+            }
+            if (selection == null) {
+                return BlockSelection.empty();
+            }
+            selection = applyTransientLimit(selection);
+            blockSelections.incrementAndGet();
+            blockSelectionRejected.addAndGet(selection.rejected().size());
+            blockSelectionSkipped.addAndGet(selection.skipped().size());
+            if (!selection.rejected().isEmpty()) {
+                removeInvalidated(new LinkedHashSet<>(selection.rejected()));
+            }
+            return selection;
+        } finally {
+            lastBlockSelectionMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+        }
+    }
+
+    /**
+     * Counts the transient failures of this (final) selection per transaction; a transaction whose failures reach
+     * {@link #TRANSIENT_SKIP_LIMIT} consecutive selections is rejected (removed with its dependents). Counters of
+     * transactions selected, rejected, or no longer in the mempool are dropped.
+     */
+    private BlockSelection applyTransientLimit(BlockSelection selection) {
+        MempoolLedgerState s = published;
+        if (s != null) {
+            transientSkips.keySet().removeIf(hash -> !s.indexes().byId().containsKey(hash));
+        }
+        for (byte[] tx : selection.transactions()) {
+            transientSkips.remove(TransactionUtil.getTxHash(tx));
+        }
+        selection.rejected().forEach(transientSkips::remove);
+        List<String> expired = new ArrayList<>();
+        for (Map.Entry<String, String> failure : selection.transientFailures().entrySet()) {
+            int count = transientSkips.merge(failure.getKey(), 1, Integer::sum);
+            if (count >= TRANSIENT_SKIP_LIMIT) {
+                expired.add(failure.getKey());
+                transientSkips.remove(failure.getKey());
+                log.warn("Block selection removes {}: its validation failed in {} consecutive selections ({}); a "
+                        + "failure that persists is not transient", failure.getKey(), count, failure.getValue());
+            }
+        }
+        if (expired.isEmpty()) {
+            return selection;
+        }
+        List<String> rejected = new ArrayList<>(selection.rejected());
+        rejected.addAll(expired);
+        List<String> skipped = new ArrayList<>(selection.skipped());
+        skipped.removeAll(expired);
+        return new BlockSelection(selection.transactions(), selection.generation(), selection.forgeSlot(), rejected,
+                skipped, selection.reapplied(), selection.transientFailures());
+    }
+
+    /** @return the published canonical generation (a volatile read; never takes the gate) */
+    public long canonicalGeneration() {
+        return source.current().generation();
+    }
+
+    /** One selection attempt over {@code entries}; {@code null} only when the attempt must be redone. */
+    private BlockSelection selectOnce(List<MempoolEntry> entries, long forgeSlot) {
+        MempoolBase base = source.acquireForBlock(forgeSlot);
+        try {
+            if (base.isUnavailable()) {
+                log.debug("Block selection for slot {} skips the mempool: {}", forgeSlot, base.unavailableReason());
+                return BlockSelection.empty();
+            }
+            ValidationEnv env;
+            try {
+                env = base.env(envFactory);
+            } catch (LedgerStateUnavailableException e) {
+                log.debug("Block selection for slot {} skips the mempool: {}", forgeSlot, e.getMessage());
+                return BlockSelection.empty();
+            }
+            // Bound the work: the builder keeps a prefix that fits the block's size limit, so candidates past
+            // twice that size can never be forged in this block.
+            long byteCap = selectionByteCap(base);
+            OverlayLedgerView overlay = OverlayLedgerView.over(base.view());
+            List<byte[]> selected = new ArrayList<>();
+            List<String> rejected = new ArrayList<>();
+            List<String> skipped = new ArrayList<>();
+            Map<String, String> transientFailures = new LinkedHashMap<>();
+            boolean tainted = false;
+            long bytes = 0;
+            int reapplied = 0;
+            for (MempoolEntry e : entries) {
+                if (closed) {
+                    return null;
+                }
+                if (bytes >= byteCap) {
+                    break;
+                }
+                if (!e.validated().phase2Valid()) {
+                    // Never forged: the builder cannot encode invalid_txs (ADR-056 §6, decision 6).
+                    rejected.add(e.txHash());
+                    continue;
+                }
+                ValidatedTx previous = e.validated().origin() == TxValidationRequest.Origin.SYNC ? null
+                        : e.validated();
+                TxValidationRequest request = new TxValidationRequest(e.txBytes(), overlay, env,
+                        TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.BLOCK_BUILD, previous);
+                TxValidationOutcome outcome;
+                try {
+                    outcome = engine.validate(request);
+                } catch (RuntimeException ex) {
+                    outcome = TxValidationOutcome.Invalid.of(new LedgerFailure(LedgerRuleName.ENGINE,
+                            "EngineFailure", LedgerFailure.Phase.PHASE_1, ex.toString()));
+                }
+                observer.blockCandidateValidated(e.txHash(), request, outcome);
+                if (outcome instanceof TxValidationOutcome.Valid valid && !valid.validated().phase2Valid()) {
+                    // Phase-2-invalid is only a SYNC verdict; the builder cannot encode it (decision 6): rejected.
+                    rejected.add(e.txHash());
+                    continue;
+                }
+                if (outcome instanceof TxValidationOutcome.Valid valid) {
+                    try {
+                        overlay = overlay.apply(valid.effects());
+                    } catch (RuntimeException ex) {
+                        skipped.add(e.txHash());
+                        transientFailures.put(e.txHash(), "effects not applicable: " + ex.getMessage());
+                        tainted = true;
+                        continue;
+                    }
+                    selected.add(e.txBytes());
+                    bytes += e.size();
+                    if (valid.reapplied()) {
+                        reapplied++;
+                        blockSelectionReapplications.incrementAndGet();
+                    } else {
+                        blockSelectionFullValidations.incrementAndGet();
+                    }
+                    continue;
+                }
+                List<LedgerFailure> failures = outcome instanceof TxValidationOutcome.Invalid invalid
+                        ? invalid.failures() : List.of();
+                if (transientFailure(failures)) {
+                    skipped.add(e.txHash());
+                    transientFailures.put(e.txHash(), failures.stream().map(LedgerFailure::qualifiedName).toList()
+                            .toString());
+                    tainted = true;
+                } else if (tainted) {
+                    skipped.add(e.txHash());
+                } else {
+                    rejected.add(e.txHash());
+                    if (log.isDebugEnabled()) {
+                        log.debug("Block selection for slot {} rejects {}: {}", forgeSlot, e.txHash(),
+                                failures.stream().map(LedgerFailure::qualifiedName).toList());
+                    }
+                }
+            }
+            return new BlockSelection(selected, base.generation(), base.targetSlot(), rejected, skipped, reapplied,
+                    transientFailures);
+        } finally {
+            base.release();
+        }
+    }
+
+    private static long selectionByteCap(MempoolBase base) {
+        try {
+            Lookup<ProtocolParams> params = base.view().protocolParams();
+            if (params instanceof Lookup.Present<ProtocolParams> p
+                    && p.value().getMaxBlockSize() != null && p.value().getMaxBlockSize() > 0) {
+                return 2L * p.value().getMaxBlockSize();
+            }
+        } catch (RuntimeException ignored) {
+            // no cap
+        }
+        return Long.MAX_VALUE;
+    }
+
+    /**
+     * An engine failure other than the Yano policy constructors is transient (an unavailable read, a busy or
+     * unhealthy engine): the candidate may be valid on the next attempt, so it is never removed for it.
+     */
+    private static boolean transientFailure(List<LedgerFailure> failures) {
+        if (failures.isEmpty()) {
+            return true;
+        }
+        for (LedgerFailure failure : failures) {
+            if (failure.rule() == LedgerRuleName.ENGINE
+                    && !LedgerFailure.PHASE2_INVALID_TX_NOT_SUPPORTED.equals(failure.constructor())
+                    && !"DecodingFailure".equals(failure.constructor())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ================================================================== removal (truncate and reapply)
 
     /**
@@ -1272,7 +1563,9 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                 s != null && !s.mark().equals(current), rebuildsPublished.get(), rebuildsDiscarded.get(),
                 synchronousFallbacks.get(), catchingUpEntered.get(), catchingUpRejections.get(),
                 reapplications.get(), fullRevalidations.get(), revalidationDrops.get(), deferredRemovals.get(),
-                lastRebuildMillis, lockOrderViolations.get());
+                lastRebuildMillis, lockOrderViolations.get(), blockSelections.get(), blockSelectionRedos.get(),
+                blockSelectionReapplications.get(), blockSelectionFullValidations.get(), blockSelectionRejected.get(),
+                blockSelectionSkipped.get(), lastBlockSelectionMillis);
     }
 
     /** Test hook: the published state. */

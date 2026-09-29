@@ -17,6 +17,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /** Factory methods for block transaction selection strategies. */
 public final class BlockTransactionSelectors {
@@ -49,6 +50,12 @@ public final class BlockTransactionSelectors {
      * Selection uses an insertion-ordered immutable snapshot. It never removes
      * selected transactions; confirmation cleanup happens after canonical UTXO
      * apply. One selection may be in flight at a time.
+     *
+     * <p>With a ledger-state mempool (an engine-API admission engine, ADR-056 §6) selection is
+     * {@link LedgerMempool#selectForBlock(long)}: a block-local overlay over its own {@code BLOCK_BUILD}
+     * snapshot ticked to the forge slot, rule {@code LEDGER}, each entry's {@code ValidatedTx} as
+     * {@code previous}. The legacy {@code DefaultMemPool} keeps the legacy validator over
+     * {@link BlockBuildUtxoOverlay} until Phase 8.</p>
      */
     private static final class MempoolBlockTransactionSelector implements BlockTransactionSelector {
         private final Supplier<MemPool> memPools;
@@ -57,6 +64,9 @@ public final class BlockTransactionSelectors {
         private final Logger log;
         private final AtomicBoolean selectionInFlight = new AtomicBoolean();
         private volatile Set<String> selectedHashes = Set.of();
+        // ADR-056 §6: the canonical generation a ledger-state selection was validated against (-1: none).
+        private volatile long selectedGeneration = -1;
+        private volatile LedgerMempool selectedFrom;
 
         private MempoolBlockTransactionSelector(
                 Supplier<MemPool> memPools,
@@ -80,34 +90,64 @@ public final class BlockTransactionSelectors {
 
         @Override
         public List<byte[]> drainForBlock() {
+            return drainForBlock(-1);
+        }
+
+        @Override
+        public List<byte[]> drainForBlock(long forgeSlot) {
             if (!selectionInFlight.compareAndSet(false, true)) {
                 throw new IllegalStateException("a block transaction selection is already in flight");
             }
             try {
-                List<byte[]> selected = selectMempool(
-                        validatorServiceSupplier.get(), utxoStateSupplier.get());
+                MemPool memPool = memPool();
+                List<byte[]> selected;
+                if (memPool instanceof LedgerMempool ledger) {
+                    LedgerMempool.BlockSelection selection = ledger.selectForBlock(forgeSlot);
+                    selected = selection.transactions();
+                    selectedGeneration = selected.isEmpty() ? -1 : selection.generation();
+                    selectedFrom = selected.isEmpty() ? null : ledger;
+                    if (!selection.rejected().isEmpty() || !selection.skipped().isEmpty()) {
+                        log.info("Block selection for slot {}: {} selected ({} re-applied), {} rejected, {} skipped",
+                                selection.forgeSlot(), selected.size(), selection.reapplied(),
+                                selection.rejected().size(), selection.skipped().size());
+                    }
+                } else {
+                    selected = selectMempool(validatorServiceSupplier.get(), utxoStateSupplier.get());
+                }
                 if (selected.isEmpty()) {
-                    selectionInFlight.set(false);
+                    clearSelection();
                 } else {
                     selectedHashes = selected.stream()
-                            .map(TransactionUtil::getTxHash).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                            .map(TransactionUtil::getTxHash).collect(Collectors.toUnmodifiableSet());
                 }
                 return selected;
             } catch (RuntimeException | Error e) {
-                selectionInFlight.set(false);
+                clearSelection();
                 throw e;
             }
         }
 
         @Override
+        public boolean selectionCurrent() {
+            LedgerMempool ledger = selectedFrom;
+            long generation = selectedGeneration;
+            return ledger == null || generation < 0 || ledger.canonicalGeneration() == generation;
+        }
+
+        @Override
         public void blockSelectionCompleted() {
-            selectedHashes = Set.of();
-            selectionInFlight.set(false);
+            clearSelection();
         }
 
         @Override
         public void blockSelectionFailed() {
+            clearSelection();
+        }
+
+        private void clearSelection() {
             selectedHashes = Set.of();
+            selectedGeneration = -1;
+            selectedFrom = null;
             selectionInFlight.set(false);
         }
 
@@ -123,18 +163,10 @@ public final class BlockTransactionSelectors {
             blockSelectionCompleted();
         }
 
+        /** The legacy selection (the default {@code engine: scalus} path, until ADR-056 Phase 8). */
         private List<byte[]> selectMempool(TransactionValidationService validatorService,
                                            UtxoState utxoState) {
             MemPool memPool = memPool();
-            if ((validatorService == null || utxoState == null) && memPool instanceof LedgerMempool ledger
-                    && (ledger.isStale() || ledger.status() != LedgerMempool.Status.READY)) {
-                // ADR-056 Phase 6a: without a selection validator, only a ledger-state mempool that is fresh for
-                // the canonical tip may be selected (its transactions were validated in order at that tip); a
-                // lagging one can still hold just-confirmed transactions. 6b replaces this with the block-build
-                // overlay.
-                log.debug("Skipping mempool selection: the ledger-state mempool lags the canonical tip");
-                return List.of();
-            }
             List<MemPoolTransaction> snapshot = memPool.snapshotTransactions(
                     Integer.MAX_VALUE, Long.MAX_VALUE);
             if (validatorService == null || utxoState == null) {

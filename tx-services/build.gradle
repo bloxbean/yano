@@ -1,8 +1,42 @@
+plugins {
+    id 'java-test-fixtures'
+}
+
 dependencies {
     api project(':runtime')
 
     implementation project(':scalus-bridge')
     implementation project(':script-evaluators')
+
+    // ADR-056 Phase 6b / ADR-057 Phase C: the devnet ledger-rules gate (an in-process devnet producer, dependent
+    // chains built with QuickTx, independent re-validation of every produced block). Shared with amaru-validator.
+    testFixturesApi project(':testkit')
+    testFixturesApi project(':scalus-bridge')
+    testFixturesApi libs.junit.jupiter.api
+    testFixturesApi libs.cardano.client.quicktx
+    testFixturesImplementation libs.jackson.databind
+    testImplementation project(':testkit')
+    // The Haskell-follower workload talks to a running node's Blockfrost-shaped REST API.
+    testImplementation libs.cardano.client.backend.blockfrost
+}
+
+// The test fixtures are a build-time aid for Yano's own gate tests, not a published API.
+components.java.withVariantsFromConfiguration(configurations.testFixturesApiElements) { skip() }
+components.java.withVariantsFromConfiguration(configurations.testFixturesRuntimeElements) { skip() }
+
+tasks.named('test') {
+    // ADR-056 Phase 6b devnet gate (JavaEngineDevnetGateTest, about a minute): disabled by default, run with
+    // `./gradlew :tx-services:test --tests '*JavaEngineDevnetGateTest' -PledgerRulesGate=true` (CI: integration.yml).
+    if (project.hasProperty('ledgerRulesGate')) {
+        systemProperty 'yano.gate.devnet', 'true'
+    }
+    // The Haskell-follower workload (ADR-056 Phase 6b) runs only when pointed at a running node.
+    ['yano.gate.remote-url', 'yano.gate.workload-report', 'yano.gate.epoch-length', 'yano.gate.budget-txs'].each { key ->
+        def value = System.getProperty(key)
+        if (value != null) {
+            systemProperty key, value
+        }
+    }
 }
 
 java {

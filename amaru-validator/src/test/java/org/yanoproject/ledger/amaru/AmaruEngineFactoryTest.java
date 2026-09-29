@@ -33,11 +33,11 @@ class AmaruEngineFactoryTest {
     }
 
     @Test
-    void defaultsMapPoolSizeZeroToTheValidationThreads() {
+    void defaultsMapPoolSizeZeroToTheValidationThreadsPlusTheRebuildWorkerAndTheProducer() {
         AmaruEngineConfig config = AmaruEngineFactory.config(context(Map.of(), 3, new ScalusScriptPhaseEvaluator()));
 
         assertThat(config.phase2()).isEqualTo(Phase2Mode.SCALUS);
-        assertThat(config.poolSize()).isEqualTo(3);
+        assertThat(config.poolSize()).isEqualTo(3 + AmaruEngineFactory.EXTRA_CALLERS);
         assertThat(config.timeout()).isEqualTo(Duration.ofMillis(2000));
         assertThat(config.maxAbandoned()).isEqualTo(2);
         assertThat(config.maxMemoryPages()).isEqualTo(2048);

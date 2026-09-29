@@ -675,10 +675,20 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     @Override
     public List<byte[]> drainForBlock() {
+        return drainForBlock(-1);
+    }
+
+    @Override
+    public List<byte[]> drainForBlock(long forgeSlot) {
         if (catchingUp()) {
             return List.of();
         }
-        return blockTransactionSelector.drainForBlock();
+        return blockTransactionSelector.drainForBlock(forgeSlot);
+    }
+
+    @Override
+    public boolean selectionCurrent() {
+        return blockTransactionSelector.selectionCurrent();
     }
 
     @Override

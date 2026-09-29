@@ -2049,12 +2049,15 @@ helper per behaviour; no rule has a `pv == 9` branch.
      decide between re-application and full validation. A valid candidate's effects are applied before the next is
      validated, so UTxO, certificate and governance chains are selected in order. An entry whose provenance is
      phase-2-invalid is never selected.
-  3. Failures: a ledger-rule failure is not selected and is removed with its dependents through the deferred-safe
-     `removeInvalidated` after the fold (deferred to the pending rebuild while the published state lags, so a
-     transaction invalid only because it was just confirmed never cascades its dependents); a transient failure
-     (any `ENGINE` failure other than `Phase2InvalidTxNotSupported` and `DecodingFailure`: an unavailable read, a
-     busy or unhealthy engine) skips the candidate without removal, and every later failure of the same selection is
-     skipped without removal too.
+  3. Failures: a ledger-rule failure, and a `Valid` verdict that is phase-2-invalid (only a `SYNC` verdict may
+     be), are not selected and are removed with their dependents through the deferred-safe `removeInvalidated`
+     after the fold (deferred to the pending rebuild while the published state lags, so a transaction invalid only
+     because it was just confirmed never cascades its dependents); a transient failure (any `ENGINE` failure other
+     than `Phase2InvalidTxNotSupported` and `DecodingFailure`: an unavailable read, a busy or unhealthy engine,
+     effects that cannot be derived or applied) skips the candidate without removal, and every later failure of the
+     same selection is skipped without removal too. A candidate whose own validation fails transiently in 32
+     consecutive selections (`TRANSIENT_SKIP_LIMIT`) is removed as invalid, with a warning naming the failure, so a
+     persistent failure is not re-validated every block until its TTL.
   4. The work is bounded: candidates beyond twice `maxBlockSize` bytes are not validated (the builder keeps a
      prefix that fits the block, as before: `fitTransactions` then applies the size and ex-unit limits unchanged).
   5. If the published canonical generation moved during the fold, the selection is discarded and redone on a new
@@ -2062,9 +2065,11 @@ helper per behaviour; no rule has a `pv == 9` branch.
      before storing (`BlockTransactionSelector.selectionCurrent()`, `BlockProducerHelper.requireCurrentSelection`):
      a stale selection throws `StaleBlockSelectionException`, the section is marked unchanged, a signed builder's
      pending nonce state is rolled back, and the next production attempt selects again.
-- **Builder guard.** `DevnetBlockBuilder.fitTransactions` refuses a selected transaction that claims
-  `isValid=false` (`UnfitBlockTransactionException`, so the producer invalidates it and its dependents instead of
-  failing every block), and `splitTransaction` throws on one; `invalid_txs` stays empty (decision 6).
+- **Builder guard.** `DevnetBlockBuilder.splitTransaction` reads `is_valid` from the transaction it already
+  decodes and refuses one that claims `false` with `UnfitBlockTransactionException` (thrown while the body is
+  computed, before any nonce state is staged), so the producer invalidates it and its dependents instead of
+  failing every block; `invalid_txs` stays empty (decision 6). The unused slot-less
+  `BlockProducerHelper.drainMempool` is removed.
 - **Counters** on `LedgerMempoolStatus` (health details, metrics): selections, redos, re-applied and fully
   validated candidates, rejected and skipped candidates, last selection time.
 - **Dependency (d), the ticked treasury.** Not computed: the treasury of a new epoch depends on the rewards, which
@@ -2074,7 +2079,8 @@ helper per behaviour; no rule has a `pv == 9` branch.
   `currentTreasuryValue` admitted before the boundary block (never forged: `LEDGER.ConwayTreasuryValueMismatch` in
   both the rebuild and the selection once the treasury moved) and one built after it (forged); the Haskell-follower
   workload forges one after its first boundary.
-- **Devnet gate** (`JavaEngineDevnetGateTest`, tx-services; the shared `LedgerRulesDevnetMatrix`,
+- **Devnet gate** (`JavaEngineDevnetGateTest`, tx-services, about a minute: run with `-PledgerRulesGate=true`,
+  which `integration.yml` does in its integration job; the shared `LedgerRulesDevnetMatrix`,
   `DevnetGateNode`, `BlockRevalidator`, `GateWallet` and `GateTxFactory` are tx-services test fixtures, never
   published). An in-process devnet producer (isolated temporary RocksDB and port, 100-slot epochs of 0.2 s,
   500 ms blocks, governance action lifetime patched to 1 epoch), `engine: java` with the experimental flag,
@@ -2084,14 +2090,16 @@ helper per behaviour; no rule has a `pv == 9` branch.
     delegate, proposal → vote, register → deregister (10 transactions, each admitted while its parents were
     pending) plus three rejections (`DELEG.StakeKeyNotRegisteredDELEG`, `GOV.GovActionsDoNotExist`,
     `DELEG.StakeKeyRegisteredDELEG`); all ten forged in one block, mempool empty afterwards.
-  - **B, across blocks:** a chain forged over three blocks, children admitted while parents were pending.
+  - **B, across blocks:** a chain forged over three blocks; each parent-child pair is built first and submitted
+    right after a block, and the gate fails if a parent was confirmed before its child was admitted.
   - **D, rollback:** a delegation and an independent payment pending, the registration's block rolled back (devnet
     rollback API): the rebuild drops the delegation (`LEDGER.ConwayMempoolFailure`: its only input was the rolled-back
     registration's change), keeps the payment, which is forged; the resubmitted chain is forged again.
   - **C, epoch crossing** with chains pending (the producer stopped across the boundary): a vote on a proposal in
     its last epoch is never forged (`GOV.VotingOnExpiredGovAction`, seen by the rebuild and by block selection); the
     pending register → delegate chain is forged in the first block of the new epoch; the stale treasury
-    transaction is dropped, the fresh one forged; the proposal refunds (2,000 ADA) credited at the later boundary
+    transaction is dropped, the fresh one forged (the gate fails if the treasury did not move, which would make
+    this case vacuous); the proposal refunds (2,000 ADA) credited at the later boundary
     are withdrawn in full (after a DRep vote delegation, which PV10 requires: `ConwayWdrlNotDelegatedToDRep`).
   - **Independent re-validation:** every block with transactions (12–13 blocks, 423 transactions per run) is re-read
     from the stored block bytes and validated in order by a separate java engine instance with rule `LEDGER`,
@@ -2101,12 +2109,13 @@ helper per behaviour; no rule has a `pv == 9` branch.
     re-applied (the admission verdict was reusable), 2 candidates rejected by selection (the expired vote and the
     stale treasury value), 1 removal deferred to a rebuild, 0 synchronous fallbacks. The gate itself passed in six
     runs (three alone, one next to `:app:test`, two inside the parity test).
-  - Unit gates (`LedgerMempoolBlockSelectionTest`, 6): chains in order over the block-local overlay with rule
+  - Unit gates (`LedgerMempoolBlockSelectionTest`, 7): chains in order over the block-local overlay with rule
     `LEDGER`, origin `BLOCK_BUILD`, `previous`, forge slot and `next(tip)`; a lagging mempool selects the
     dependents of just-confirmed transactions and defers the removal; a transaction invalid at the forge slot
     (TTL) is rejected and removed with its dependent; a canonical publication during the fold redoes the
     selection, and `selectionCurrent` turns false after one; a transient failure skips without removal and taints
-    the rest; no base or `CATCHING_UP` selects nothing. `DevnetBlockProducerTest` gains the stale-selection discard
+    the rest; a transient failure that persists for `TRANSIENT_SKIP_LIMIT` selections removes the candidate (and
+    its dependent); no base or `CATCHING_UP` selects nothing. `DevnetBlockProducerTest` gains the stale-selection discard
     (nothing stored, the redone selection forged) and the `isValid=false` guard.
 - **Budget with block production running** (decision 3; 400 chained payments from two payers submitted while the
   producer forges every 500 ms; JVM 25, Apple M4 Max; five runs): `engine: java` admission p50 0.23–0.40 ms,
@@ -2127,7 +2136,9 @@ helper per behaviour; no rule has a `pv == 9` branch.
   `test-data-dir/haskell-node`) followed for 4 epochs, 2,497 blocks, with the tip hash matching at every
   checkpoint and at the end (slot delta 0), no Haskell error, invalid or reject line, no Yano `ERROR` line. The
   same run with `engine: amaru` also passes (ADR-057 "Phase C results").
-- **Other changes.** `RuntimeNode.getTxSubsystem()` and `getCanonicalStateGate()` (diagnostics and the gates);
+- **Other changes.** `ShadowValidationRunner` counts the per-(engine, rule) disagreement before the total, so the
+  metrics never show a total above the sum of the labels (and `EngineAdmissionTest` waits for the label; it was
+  flaky under load). `RuntimeNode.getTxSubsystem()` and `getCanonicalStateGate()` (diagnostics and the gates);
   the app forwards `yano.validation.java-engine.experimental` (`YanoPropertyKeys.Validation.JAVA_ENGINE_EXPERIMENTAL`,
   still opt-in) so a packaged node can run the gate.
 - **For Phase 7/8.** Phase 7: shadow sync can reuse `BlockRevalidator`'s path (stored block bytes, pre-block

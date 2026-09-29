@@ -198,15 +198,6 @@ public final class BlockProducerHelper {
         return BlockTransactionSelectors.fromMemPool(memPool, () -> validatorService, () -> utxoState, log);
     }
 
-    public static List<byte[]> drainMempool(MemPool memPool,
-                                      TransactionValidationService validatorService,
-                                      UtxoState utxoState) {
-        BlockTransactionSelector selector = transactionSelector(memPool, validatorService, utxoState);
-        List<byte[]> selected = selector.drainForBlock();
-        selector.blockCandidatePublished();
-        return selected;
-    }
-
     /**
      * Producer boundary section (ADR-056): runs {@link #prepareEpochTransitionBeforeBlock} as one
      * canonical write section, separate from the later store-and-apply section so block selection
@@ -219,6 +210,27 @@ public final class BlockProducerHelper {
                 section.markUnchanged();
             }
         }
+    }
+
+    /**
+     * Inside the store section, just before a forged block with selected transactions is stored: verifies that the
+     * selection is still valid for the canonical state (ADR-056 §6: a selection whose canonical generation changed
+     * is discarded, never forged). On failure the section is marked unchanged and a signed builder's pending nonce
+     * state is rolled back.
+     *
+     * @throws StaleBlockSelectionException when the selection is stale
+     */
+    public static void requireCurrentSelection(BlockTransactionSelector transactions,
+                                               CanonicalStateGate.WriteSection section,
+                                               DevnetBlockBuilder blockBuilder, long slot) {
+        if (transactions.selectionCurrent()) {
+            return;
+        }
+        section.markUnchanged();
+        if (blockBuilder instanceof SignedBlockBuilder signedBlockBuilder) {
+            signedBlockBuilder.rollbackPendingNonceState();
+        }
+        throw new StaleBlockSelectionException(slot);
     }
 
     /**

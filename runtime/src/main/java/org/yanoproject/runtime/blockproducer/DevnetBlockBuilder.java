@@ -479,10 +479,12 @@ public class DevnetBlockBuilder {
     protected void splitTransaction(byte[] txCbor, int index,
                                   Array txBodiesArray, Array txWitnessesArray,
                                   Map auxDataMap) {
+        boolean phase2Invalid = false;
         try {
             DataItem txDI = CborSerializationUtil.deserializeOne(txCbor);
             Array txArray = (Array) txDI;
             List<DataItem> items = txArray.getDataItems();
+            phase2Invalid = items.size() > 2 && SimpleValue.FALSE.equals(items.get(2));
 
             // tx_body (index 0)
             txBodiesArray.add(items.get(0));
@@ -490,8 +492,7 @@ public class DevnetBlockBuilder {
             // witnesses (index 1)
             txWitnessesArray.add(items.get(1));
 
-            // is_valid (index 2) - if false, add to invalid_txs
-            // For now, assume all txs are valid
+            // is_valid (index 2): must be true (checked below), so invalid_txs stays empty.
 
             // aux_data (index 3) - add to map if not null
             if (items.size() > 3 && items.get(3).getMajorType() != MajorType.SPECIAL) {
@@ -502,6 +503,14 @@ public class DevnetBlockBuilder {
             // Add empty placeholders to maintain alignment
             txBodiesArray.add(new Map()); // empty tx body
             txWitnessesArray.add(new Map()); // empty witnesses
+        }
+        // ADR-056 §6 guard: phase-2-invalid transactions are rejected at admission and never selected, so the body
+        // never needs invalid_txs. One that reaches the builder is refused as unfit (the producer invalidates it and
+        // its dependents); forging it would give a block Haskell rejects.
+        if (phase2Invalid) {
+            String hash = TransactionUtil.getTxHash(txCbor);
+            throw new UnfitBlockTransactionException(hash, "Selected transaction " + hash + " at index " + index
+                    + " claims isValid=false; the block builder cannot encode invalid_txs (ADR-056 §6)");
         }
     }
 }

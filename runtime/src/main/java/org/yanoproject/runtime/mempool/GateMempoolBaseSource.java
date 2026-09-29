@@ -53,6 +53,39 @@ public final class GateMempoolBaseSource implements MempoolBaseSource {
         }
     }
 
+    /**
+     * One {@link SnapshotPurpose#BLOCK_BUILD} snapshot ticked to {@code forgeSlot}. A producer applies the epoch
+     * boundary in its own write section before selecting, so the ledger epoch normally equals the forge slot's
+     * epoch and the view is the canonical one; otherwise the boundary is dry-run here, outside the lane. The
+     * forecast horizon is based on the slot after the tip, the forged block's parent (ADR-056 Phase 3a).
+     */
+    @Override
+    public MempoolBase acquireForBlock(long forgeSlot) {
+        CanonicalStateGate g = gate.get();
+        if (g == null) {
+            return MempoolBase.unavailable("no canonical state gate is installed", CanonicalMark.UNKNOWN);
+        }
+        Lookup<CanonicalSnapshot> acquired = g.acquireSnapshot(SnapshotPurpose.BLOCK_BUILD);
+        if (!(acquired instanceof Lookup.Present<CanonicalSnapshot> present)) {
+            String reason = acquired instanceof Lookup.Unavailable<CanonicalSnapshot> u ? u.reason()
+                    : "no canonical snapshot";
+            return MempoolBase.unavailable(reason, mark(g, g.withEpochs(g.tip())));
+        }
+        CanonicalSnapshot snapshot = present.value();
+        try (CanonicalLedgerView canonical = CanonicalLedgerView.over(snapshot)) {
+            CanonicalTip tip = snapshot.tip();
+            long basis = tip.slot() >= 0 ? tip.slot() + 1 : 0;
+            long target = forgeSlot >= 0 ? forgeSlot : TickedLedgerView.admissionSlot(snapshot);
+            TickedLedgerView view = TickedLedgerView.of(canonical, target);
+            if (view.mode() == TickedLedgerView.Mode.TICKED) {
+                view.boundaryPreview();
+            }
+            return MempoolBase.of(view, mark(g, tip), target, basis, view::close);
+        } finally {
+            snapshot.release();
+        }
+    }
+
     @Override
     public CanonicalMark current() {
         CanonicalStateGate g = gate.get();

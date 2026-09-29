@@ -15,9 +15,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.yanoproject.runtime.mempool.MempoolTestWorld.ADA;
 
 /**
- * Review MAJOR-2: without a selection validator (for example the legacy Scalus validator failed to initialise while
- * an engine is configured), block selection never takes transactions from a ledger-state mempool that lags the
- * canonical tip, since it can still hold just-confirmed transactions.
+ * Review MAJOR-2 (6a), now through the Phase 6b block-build overlay: selection from a ledger-state mempool needs no
+ * legacy selection validator, and never re-includes a just-confirmed transaction that a lagging mempool still holds
+ * (it fails rule {@code LEDGER} on the block-build base).
  */
 class LedgerMempoolSelectionTest {
 

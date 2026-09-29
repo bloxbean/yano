@@ -294,13 +294,14 @@ public class DevnetBlockProducer implements BlockProducerService {
                 chainState, eventBus, slot, nextBlockNumber, "devnet-block-producer");
 
         try {
-            List<byte[]> txList = blockBuilder.fitTransactions(slot, drainMempool());
+            List<byte[]> txList = blockBuilder.fitTransactions(slot, drainMempool(slot));
             if (lazy && txList.isEmpty()) {
                 transactions.blockSelectionFailed();
                 return;
             }
             var result = blockBuilder.buildBlock(nextBlockNumber, slot, prevBlockHash, txList);
-            try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+            try (var section = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                BlockProducerHelper.requireCurrentSelection(transactions, section, blockBuilder, slot);
                 storeBlock(result);
 
                 long producedBlockNumber = nextBlockNumber;
@@ -323,14 +324,18 @@ public class DevnetBlockProducer implements BlockProducerService {
             }
             log.warn("Discarded {} mempool transaction(s) after block resource rejection: {}",
                     removed, e.getMessage());
+        } catch (StaleBlockSelectionException e) {
+            // The slot was consumed (lastUsedSlot); the next tick selects again on the new canonical state.
+            transactions.blockSelectionFailed();
+            log.info(e.getMessage());
         } catch (RuntimeException | Error e) {
             transactions.blockSelectionFailed();
             throw e;
         }
     }
 
-    private List<byte[]> drainMempool() {
-        return transactions.drainForBlock();
+    private List<byte[]> drainMempool(long slot) {
+        return transactions.drainForBlock(slot);
     }
 
     private void storeBlock(DevnetBlockBuilder.BlockBuildResult result) {

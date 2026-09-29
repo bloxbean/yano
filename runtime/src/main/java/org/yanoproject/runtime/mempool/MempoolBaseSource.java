@@ -19,6 +19,18 @@ public interface MempoolBaseSource {
      */
     MempoolBase acquire();
 
+    /**
+     * Acquires a base for block selection (ADR-056 §6, "Block production"): a {@code BLOCK_BUILD} snapshot of the
+     * current canonical generation ticked to {@code forgeSlot}, with the forecast horizon based on the slot after
+     * the tip (the forged block's parent). The caller owns the one reference of the result. Like
+     * {@link #acquire()} it may take the canonical gate's read lock, so it is never called with the lane held.
+     *
+     * @param forgeSlot the slot of the block being forged; negative for the slot after the tip
+     */
+    default MempoolBase acquireForBlock(long forgeSlot) {
+        return MempoolBase.unavailable("this base source does not provide block-build bases", current());
+    }
+
     /** @return the published canonical generation and target epoch, without taking the gate */
     CanonicalMark current();
 

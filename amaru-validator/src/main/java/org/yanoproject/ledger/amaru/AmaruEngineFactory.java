@@ -26,6 +26,9 @@ import java.util.Locale;
  */
 public final class AmaruEngineFactory implements LedgerValidationEngineFactory {
 
+    /** Callers of the admission engine outside the validation threads: the mempool rebuild worker and block selection. */
+    static final int EXTRA_CALLERS = 2;
+
     @Override
     public String name() {
         return LedgerValidationEngines.AMARU;
@@ -57,7 +60,9 @@ public final class AmaruEngineFactory implements LedgerValidationEngineFactory {
             throw new IllegalArgumentException(YanoPropertyKeys.Validation.AMARU_POOL_SIZE + " must be >= 0");
         }
         if (poolSize == 0) {
-            poolSize = Math.max(1, context.validationThreads());
+            // One instance per validation thread, plus the two callers outside that pool (ADR-056 Phase 6): the
+            // mempool rebuild worker and the block producer's selection, so neither waits for a busy instance.
+            poolSize = Math.max(1, context.validationThreads()) + EXTRA_CALLERS;
         }
         long timeoutMs = context.longConfig(YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS,
                 AmaruEngineConfig.DEFAULT_TIMEOUT.toMillis());

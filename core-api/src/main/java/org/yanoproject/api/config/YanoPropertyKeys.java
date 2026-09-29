@@ -247,6 +247,11 @@ public final class YanoPropertyKeys {
         public static final String REBUILD_SYNC_ATTEMPTS = "yano.validation.rebuild-sync-attempts";
         /** ADR-056 §7: admission engine, {@code scalus} (default) | {@code java} | {@code amaru}. */
         public static final String ENGINE = "yano.validation.engine";
+        /**
+         * ADR-056 §7: opt-in for {@code engine: java} until the default flips (Phase 8); startup fails without it.
+         * Set only on test and gate nodes (the Phase 6b Haskell-follower run).
+         */
+        public static final String JAVA_ENGINE_EXPERIMENTAL = "yano.validation.java-engine.experimental";
         /** ADR-056 §7: engines run in the shadow of admission, comma-separated (default none). */
         public static final String SHADOW_ENGINES = "yano.validation.shadow-engines";
         /** ADR-056 §7: directory for replay bundles of engine disagreements (default empty: no dumps). */
@@ -257,7 +262,7 @@ public final class YanoPropertyKeys {
         public static final String SNAPSHOT_MAX_AGE_MS = "yano.validation.snapshot-max-age-ms";
         /** ADR-057 §2: who runs Plutus under {@code engine: amaru}, {@code scalus} (default) | {@code amaru}. */
         public static final String AMARU_PHASE2 = "yano.validation.amaru.phase2";
-        /** ADR-057 §2: Amaru instances; 0 (default) means one per validation thread. */
+        /** ADR-057 §2: Amaru instances; 0 (default) means one per validation thread plus two (rebuild, selection). */
         public static final String AMARU_POOL_SIZE = "yano.validation.amaru.pool-size";
         /** ADR-057 §2: how long a caller waits for one Amaru module call (default 2000). */
         public static final String AMARU_TIMEOUT_MS = "yano.validation.amaru.timeout-ms";

@@ -249,6 +249,14 @@ jobs:
             -PwithAmaru=true -PamaruWasm="$RUNNER_TEMP/amaru-wasm/amaru_validator.wasm" \
             -PamaruScenariosDir="$RUNNER_TEMP/amaru"
 
+      - name: Devnet parity, engine amaru vs java (ADR-057 Phase C)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :amaru-validator:test --tests '*AmaruDevnetParityTest' -PskipSigning=true --stacktrace \
+            -PledgerRulesGate=true \
+            -PwithAmaru=true -PamaruWasm="$RUNNER_TEMP/amaru-wasm/amaru_validator.wasm"
+
       - name: Upload the baseline and coverage reports
         if: always()
         uses: actions/upload-artifact@v4

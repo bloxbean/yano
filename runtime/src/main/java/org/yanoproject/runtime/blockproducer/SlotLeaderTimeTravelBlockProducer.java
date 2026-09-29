@@ -375,9 +375,10 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
                 chainState, eventBus, slot, blockNumber, "slot-leader-time-travel");
 
         try {
-            List<byte[]> txList = blockBuilder.fitTransactions(slot, transactions.drainForBlock());
+            List<byte[]> txList = blockBuilder.fitTransactions(slot, transactions.drainForBlock(slot));
             var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
-            try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+            try (var section = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                BlockProducerHelper.requireCurrentSelection(transactions, section, blockBuilder, slot);
                 BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
                 log.debug("Slot-leader time-travel block #{} produced: slot={}, txs={}, hash={}",
@@ -399,6 +400,10 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
             }
             log.warn("Discarded {} mempool transaction(s) after block resource rejection: {}",
                     removed, e.getMessage());
+            return false;
+        } catch (StaleBlockSelectionException e) {
+            transactions.blockSelectionFailed();
+            log.info(e.getMessage());
             return false;
         } catch (RuntimeException | Error e) {
             transactions.blockSelectionFailed();

@@ -2691,6 +2691,16 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return txSubsystem.validationEngines();
     }
 
+    /** @return the transaction subsystem (mempool diagnostics and the ADR-056 Phase 6 gates) */
+    public TxSubsystem getTxSubsystem() {
+        return txSubsystem;
+    }
+
+    /** @return this node's canonical state gate (ADR-056 §3; diagnostics and the Phase 6 gates) */
+    public CanonicalStateGate getCanonicalStateGate() {
+        return CanonicalStateGate.of(chainState);
+    }
+
     /** @return the runtime globals (configuration forwarded by the host) */
     public Map<String, Object> runtimeGlobals() {
         return runtimeOptions.globals() != null ? runtimeOptions.globals() : Map.of();
