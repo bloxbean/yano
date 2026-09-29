@@ -137,6 +137,15 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
         return ScalusPhaseTwo.isWellFormed(language, script, protocolMajor);
     }
 
+    /**
+     * True: at protocol version 9 a transaction with a {@code reg_cert} or {@code unreg_cert} runs over the
+     * bootstrap-phase PlutusV3 context ({@code BootstrapPhaseContexts}, Conway/TxInfo.hs:572-581), not Scalus's.
+     */
+    @Override
+    public boolean translatesBootstrapPhaseCertificateDeposits() {
+        return true;
+    }
+
     /** What the preparation found: failures (malformed scripts, or CollectErrors), and the scripts to run. */
     private record Preparation(List<LedgerFailure> failures, List<NeededPlutusScript> needed) {
     }

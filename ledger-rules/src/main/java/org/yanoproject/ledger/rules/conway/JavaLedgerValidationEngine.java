@@ -29,8 +29,9 @@ import java.util.Objects;
  * request's {@link LedgerView}, with Plutus scripts run by the node's {@link ScriptPhaseEvaluator}.
  *
  * <ul>
- *   <li><b>Scope</b>: Conway at protocol major version 10 or 11 (invariant 7); anything else is
- *       {@code ENGINE.EraNotSupported}, never "accept".</li>
+ *   <li><b>Scope</b>: Conway at protocol major version 9 (the bootstrap phase), 10 or 11 (invariant 7); anything
+ *       else is {@code ENGINE.EraNotSupported}, never "accept". The bootstrap-phase differences are protocol-version
+ *       ranges on the checks ({@link PvRange#BOOTSTRAP}, {@link PvRange#POST_BOOTSTRAP}; ADR-056 Phase 5b).</li>
  *   <li><b>Decoding</b>: the transaction is read from its original bytes ({@link RawTransaction}); bytes Haskell
  *       would not decode are {@code ENGINE.DecodingFailure}.</li>
  *   <li><b>Mode</b>: full validation or re-application, decided from {@code previous} ({@link ReapplyPolicy}).</li>
@@ -52,8 +53,11 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
     public static final String DECODING_FAILURE = "DecodingFailure";
     /** Engine constructor: the engine failed without a ledger verdict. */
     public static final String ENGINE_FAILURE = "JavaEngineFailure";
-    /** The protocol versions the engine validates (invariant 7): Conway after the bootstrap phase. */
-    public static final PvRange SUPPORTED = PvRange.between(10, 11);
+    /**
+     * The protocol versions the engine validates (invariant 7): every Conway version, the bootstrap phase (9)
+     * included since ADR-056 Phase 5b, up to the latest the pinned rules know (11).
+     */
+    public static final PvRange SUPPORTED = PvRange.between(9, 11);
 
     private final ScriptPhaseEvaluator evaluator;
     private final ConwayLedgerConstants constants;
@@ -105,7 +109,7 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
         LedgerView view = request.view();
         ValidationEnv env = request.env();
         ProtocolParams params = view.protocolParams().require("protocol parameters");
-        int major = params.getProtocolMajorVer() != null ? params.getProtocolMajorVer() : env.protocolMajor();
+        int major = env.ledgerProtocolMajor(params);
         if (!SUPPORTED.contains(major)) {
             return TxValidationOutcome.Invalid.of(LedgerFailure.eraNotSupported(
                     "the java engine validates Conway at protocol versions " + SUPPORTED + ", not " + major));

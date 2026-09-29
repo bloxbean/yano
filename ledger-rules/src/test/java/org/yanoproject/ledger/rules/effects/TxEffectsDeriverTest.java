@@ -534,14 +534,21 @@ class TxEffectsDeriverTest {
 
     @Test
     void pv9DRepRegistrationIgnoresDormantEpochsButUpdateDoesNot() {
-        // computeDRepExpiryVersioned (GovCert.hs:280-292) vs computeDRepExpiry for updates (:256-272).
+        // computeDRepExpiryVersioned (GovCert.hs:282-292, hardforkConwayBootstrapPhase of the protocol parameters)
+        // vs computeDRepExpiry for updates (:256-272).
         CredentialKey d = keyCred(0x40);
         LedgerView pre = base().dormantEpochs(2).build();
+        ProtocolParams pp9 = Fixtures.protocolParams();
+        pp9.setProtocolMajorVer(9);
+        LedgerView pre9 = InMemoryLedgerView.builder().protocolParams(pp9).dormantEpochs(2).build();
         Transaction tx = txWithCerts(new RegDRepCert(cred(0x40), DREP_DEPOSIT, null),
                 new UpdateDRepCert(cred(0x40), null));
 
-        TxEffects pv9 = deriver.derive(null, tx, TX_ID, pre, Fixtures.env(9), true);
+        TxEffects pv9 = deriver.derive(null, tx, TX_ID, pre9, Fixtures.env(9), true);
         TxEffects pv10 = derive(tx, pre);
+        // The protocol parameters' version decides, as in Haskell (ppProtocolVersionL), not the environment's.
+        assertThat(deriver.derive(null, tx, TX_ID, pre, Fixtures.env(9), true).changes()).first()
+                .isEqualTo(new DRepRegistered(d, DREP_DEPOSIT, EPOCH + DREP_ACTIVITY - 2));
 
         assertThat(pv9.changes()).containsExactly(new DRepRegistered(d, DREP_DEPOSIT, EPOCH + DREP_ACTIVITY),
                 new DRepUpdated(d, EPOCH + DREP_ACTIVITY - 2));

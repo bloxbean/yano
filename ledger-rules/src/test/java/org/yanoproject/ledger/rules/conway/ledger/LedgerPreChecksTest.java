@@ -170,6 +170,20 @@ class LedgerPreChecksTest {
     }
 
     @Test
+    @Covers("LEDGER.ConwayWdrlNotDelegatedToDRep")
+    void withdrawalsNeedNoDRepDelegationDuringTheBootstrapPhase() {
+        // unless (hardforkConwayBootstrapPhase pv) (Ledger.hs:379-380): not checked at protocol version 9.
+        TxSpec undelegated = withdrawing(TestKey.DEV_CC, MutationWorld.NETWORK, MutationWorld.REWARD_BALANCE);
+        assertThat(run(undelegated, 9)).containsExactly("Valid");
+        assertThat(run(undelegated, 10)).containsExactly("LEDGER.ConwayWdrlNotDelegatedToDRep");
+        // The CERTS withdrawal check (PV 9-10) still runs: a missing account is WithdrawalsNotInRewardsCERTS alone.
+        assertThat(run(withdrawing(TestKey.DEV_AA, MutationWorld.NETWORK, BigInteger.ZERO), 9))
+                .containsExactly("CERTS.WithdrawalsNotInRewardsCERTS");
+        assertThat(run(withdrawing(TestKey.DEV_BB, MutationWorld.NETWORK, ada(1)), 9))
+                .containsExactly("CERTS.WithdrawalsNotInRewardsCERTS");
+    }
+
+    @Test
     void scriptHashWithdrawalAccountsAreNotChecked() throws Exception {
         String scriptHash = HexUtil.encodeHexString(MutationWorld.NATIVE_SCRIPT.getScriptHash());
         InMemoryLedgerView view = MutationWorld.builder(MutationWorld.protocolParams())

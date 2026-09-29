@@ -29,16 +29,21 @@ class CoverageMatrixTest {
 
     @Test
     void catalogueMatchesThePinnedTable() {
-        // 3d-table at cardano-ledger f649f975: 88 leaf constructors; four cannot occur from protocol version 10
-        // (the two bootstrap-only GOV constructors, the Babbage-superseded OutputTooSmallUTxO, and OutsideForecast,
-        // whose check extends the epoch info linearly and cannot fail: ADR-056 Phase 3a results).
+        // 3d-table at cardano-ledger f649f975: 88 leaf constructors; two cannot occur in Conway (the Babbage-superseded
+        // OutputTooSmallUTxO, and OutsideForecast, whose check extends the epoch info linearly and cannot fail: ADR-056
+        // Phase 3a results). The two bootstrap-only GOV constructors are in scope since Phase 5b (PV 9).
         assertThat(catalogue.all()).hasSize(88);
-        assertThat(catalogue.inScope()).hasSize(84);
+        assertThat(catalogue.inScope()).hasSize(86);
         assertThat(catalogue.all().stream().filter(e -> !e.inScope()).map(Entry::qualifiedName))
-                .containsExactlyInAnyOrder("GOV.DisallowedProposalDuringBootstrap",
-                        "GOV.DisallowedVotesDuringBootstrap", "UTXO.OutputTooSmallUTxO", "UTXO.OutsideForecast");
+                .containsExactlyInAnyOrder("UTXO.OutputTooSmallUTxO", "UTXO.OutsideForecast");
         assertThat(catalogue.find("UTXOS.ValidationTagMismatch")).get().extracting(Entry::phase).isEqualTo(2);
-        assertThat(catalogue.find("DELEG.IncorrectDepositDELEG")).get().extracting(Entry::pvRange).isEqualTo("10");
+        assertThat(catalogue.find("GOV.DisallowedProposalDuringBootstrap")).get().extracting(Entry::pvRange)
+                .isEqualTo("9");
+        assertThat(catalogue.find("GOV.DisallowedVotesDuringBootstrap")).get().extracting(Entry::pvRange)
+                .isEqualTo("9");
+        assertThat(catalogue.find("GOV.ProposalReturnAccountDoesNotExist")).get().extracting(Entry::pvRange)
+                .isEqualTo("10+");
+        assertThat(catalogue.find("DELEG.IncorrectDepositDELEG")).get().extracting(Entry::pvRange).isEqualTo("9–10");
         assertThat(catalogue.find("DELEG.DepositIncorrectDELEG")).get().extracting(Entry::pvRange).isEqualTo("11+");
         assertThat(catalogue.find("LEDGER.ConwayMempoolFailure")).get().extracting(Entry::family).isEqualTo("MEMPOOL");
     }

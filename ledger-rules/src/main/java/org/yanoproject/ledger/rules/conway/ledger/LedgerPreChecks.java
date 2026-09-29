@@ -38,7 +38,8 @@ import java.util.Optional;
  *       reference scripts of the spending ∪ reference inputs ({@code txNonDistinctRefScriptsSize}, an input in both
  *       counted once) at most {@code ppMaxRefScriptSizePerTxG}, a constant 200 KiB in Conway (Conway/PParams.hs:981;
  *       {@link ConwayLedgerConstants}).</li>
- *   <li>{@code ConwayWdrlNotDelegatedToDRep} (PV ≥ 10, :379-381, {@code validateWithdrawalsDelegated} :473-488): the
+ *   <li>{@code ConwayWdrlNotDelegatedToDRep} (from PV 10: {@code unless hardforkConwayBootstrapPhase}, :379-381,
+ *       {@code validateWithdrawalsDelegated} :473-488): the
  *       key-hash withdrawal accounts (any network) whose account is missing or has no DRep delegation, against the
  *       accounts <em>before</em> the certificates, so a transaction can withdraw everything and deregister.</li>
  *   <li>From protocol version 11 ({@code hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule}, :383-392):

@@ -23,7 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.SortedSet;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.function.Supplier;
 
 /**
@@ -57,6 +59,7 @@ public final class TransitionContext {
     private final Map<TxInRef, UtxoEntry> utxo;
     private boolean failing;
     private List<LedgerFailure> collectFailures = List.of();
+    private SortedSet<Integer> plutusLanguagesUsed = Collections.emptySortedSet();
     private IntraTxFold certState;
 
     /**
@@ -216,6 +219,18 @@ public final class TransitionContext {
 
     public void collectFailures(List<LedgerFailure> failures) {
         this.collectFailures = List.copyOf(failures);
+    }
+
+    /**
+     * @return Haskell's {@code plutusLanguagesUsed} as {@code UTXOW} computed it: the languages (1–3) of the needed,
+     *         provided Plutus scripts; empty before {@code UTXOW} ran
+     */
+    public SortedSet<Integer> plutusLanguagesUsed() {
+        return plutusLanguagesUsed;
+    }
+
+    public void plutusLanguagesUsed(SortedSet<Integer> languages) {
+        this.plutusLanguagesUsed = Collections.unmodifiableSortedSet(new TreeSet<>(languages));
     }
 
     /**

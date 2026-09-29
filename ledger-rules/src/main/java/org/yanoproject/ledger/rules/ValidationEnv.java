@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.rules;
 
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.util.HexUtil;
@@ -57,6 +58,16 @@ public record ValidationEnv(long currentSlot, long currentEpoch, int protocolMaj
     }
 
     /** @return this environment with the forecast horizon based on {@code slot} */
+    /**
+     * The protocol major version the rules gate on: Haskell reads the protocol parameters' ({@code ppProtocolVersionL}),
+     * so the view's parameters decide when they state one, else this environment's {@link #protocolMajor()}.
+     *
+     * @param params the protocol parameters of the view the transaction is validated against
+     */
+    public int ledgerProtocolMajor(ProtocolParams params) {
+        return params != null && params.getProtocolMajorVer() != null ? params.getProtocolMajorVer() : protocolMajor;
+    }
+
     public ValidationEnv withForecastBasisSlot(long slot) {
         return slot == forecastBasisSlot ? this : new ValidationEnv(currentSlot, currentEpoch, protocolMajor,
                 protocolMinor, networkId, slotConfig, phase2EnvDigest, slot);

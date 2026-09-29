@@ -17,6 +17,7 @@ import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovAction
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.HardForkInitiationAction;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.InfoAction;
+import com.bloxbean.cardano.client.transaction.spec.governance.actions.NoConfidence;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.ParameterChangeAction;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.TreasuryWithdrawalsAction;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.UpdateCommittee;
@@ -82,7 +83,9 @@ import static org.yanoproject.ledger.conformance.mutation.Mutation.Base.SIMPLE;
  * ({@code ScriptIntegrityHashMismatch}, {@code DepositIncorrectDELEG}, {@code RefundIncorrectDELEG},
  * {@code VRFKeyHashAlreadyRegistered}, {@code ConwayWithdrawalsMissingAccounts}, {@code ConwayIncompleteWithdrawals});
  * Phase 5 every GOV and LEDGER constructor the worlds can express (all but {@code VotingOnExpiredGovAction}: the worlds are
- * at epoch 0, so no proposal can be expired; the Amaru scenarios 00225-00241 and the unit tests cover it).
+ * at epoch 0, so no proposal can be expired; the Amaru scenarios 00225-00241 and the unit tests cover it); Phase 5b, in a
+ * protocol version 9 (bootstrap) world, the two bootstrap-only GOV constructors, and {@link #BOOTSTRAP_ACCEPTED}: the
+ * faults protocol version 10 rejects that the bootstrap phase accepts.
  */
 public final class Mutations {
 
@@ -473,7 +476,66 @@ public final class Mutations {
                     // Amaru has no separate name for Haskell's UnelectedCommitteeVoters (Conway/Rules/Gov.hs:478-481)
                     // and reports VotersDoNotExist, the name its Haskell checker normalises it to
                     // (ValidatePhaseOne/Run.hs:532-533; scenario 00171). A naming alias, not a verdict difference.
-                    .withAmaruReports("GOV.VotersDoNotExist"));
+                    .withAmaruReports("GOV.VotersDoNotExist"),
+            new Mutation("malformed-proposal-coins-per-byte", "GOV.MalformedProposal", List.of(), SIMPLE,
+                    "a parameter change setting coinsPerUTxOByte to 0 (not ppuWellFormed from protocol version 10; "
+                            + "the protocol version 9 world accepts it, BOOTSTRAP_ACCEPTED)",
+                    s -> propose(s, proposal(new ParameterChangeAction(null, ProtocolParamUpdate.builder()
+                            .adaPerUtxoByte(BigInteger.ZERO).build(), null)))),
+            // ---- Phase 5b: the protocol version 9 (bootstrap) world, the same state at protocol version 9.0. Amaru
+            // refuses protocol version 9 (Mutation.AMARU_REFUSES_PV9); each mutant cites its Haskell evidence.
+            new Mutation("bootstrap-proposal-v9", "GOV.DisallowedProposalDuringBootstrap", List.of(), SIMPLE,
+                    "a no-confidence proposal at protocol version 9 (Gov.hs:435-444, 483: only ParameterChange, "
+                            + "HardForkInitiation and InfoAction, isBootstrapAction :633-639)",
+                    s -> propose(s, proposal(new NoConfidence(null)))).atProtocolVersion9(),
+            new Mutation("bootstrap-treasury-withdrawal-v9", "GOV.DisallowedProposalDuringBootstrap", List.of(), SIMPLE,
+                    "a treasury withdrawal to dev-aa, which has no account, returning its deposit to dev-aa, at protocol "
+                            + "version 9: disallowed, and the account checks are skipped (unless "
+                            + "hardforkConwayBootstrapPhase, Gov.hs:504-520), so it is the only failure",
+                    s -> propose(s, proposal(treasuryWithdrawals(TestKey.DEV_AA, MutationWorld.NETWORK, ada(10)),
+                            TestKey.DEV_AA, MutationWorld.NETWORK, MutationWorld.GOV_ACTION_DEPOSIT)))
+                    .atProtocolVersion9(),
+            new Mutation("bootstrap-drep-vote-v9", "GOV.DisallowedVotesDuringBootstrap", List.of(), SIMPLE,
+                    "dev-77's DRep votes on the standing parameter change at protocol version 9 (Gov.hs:378-391, 606: "
+                            + "DReps vote only on InfoAction during the bootstrap phase)",
+                    s -> vote(s, VoterType.DREP_KEY_HASH, TestKey.DEV_77, MutationWorld.PARAMETER_CHANGE_ACTION))
+                    .atProtocolVersion9());
+
+    /**
+     * Faults that protocol version 10 rejects and the bootstrap phase accepts (ADR-056 Phase 5b): each names a mutant
+     * of the protocol version 10 world (the rejecting side, confirmed by Amaru) whose edit the protocol version 9
+     * world must accept, with the Haskell gate.
+     *
+     * @param mutationId the protocol version 10 mutant
+     * @param gate       why protocol version 9 accepts it
+     */
+    public record BootstrapAcceptance(String mutationId, String gate) {
+    }
+
+    public static final List<BootstrapAcceptance> BOOTSTRAP_ACCEPTED = List.of(
+            new BootstrapAcceptance("withdrawal-not-delegated-to-drep",
+                    "Ledger.hs:379-380: unless hardforkConwayBootstrapPhase $ validateWithdrawalsDelegated"),
+            new BootstrapAcceptance("deleg-drep-not-registered",
+                    "Deleg.hs:220-226: unless hardforkConwayBootstrapPhase, DelegateeDRepNotRegisteredDELEG"),
+            new BootstrapAcceptance("proposal-return-account-missing",
+                    "Gov.hs:504-508: unless hardforkConwayBootstrapPhase, ProposalReturnAccountDoesNotExist"),
+            new BootstrapAcceptance("malformed-proposal-coins-per-byte",
+                    "Conway/PParams.hs:949-950: hardforkConwayBootstrapPhase pv || coinsPerUTxOByte /= 0"));
+
+    /** @return the edit of {@code acceptance}'s mutant, built in the protocol version 9 world */
+    public static BuiltTx buildBootstrapAccepted(BootstrapAcceptance acceptance) {
+        Mutation mutation = find(acceptance.mutationId()).orElseThrow();
+        TxSpec spec = base(mutation.base()).copy();
+        mutation.edit().accept(spec);
+        return ConwayTxBuilder.build(spec, MutationWorld.view(9));
+    }
+
+    /** @return {@code acceptance}'s protocol version 9 transaction as a case (expected: valid) */
+    public static ConformanceCase bootstrapAcceptedCase(BootstrapAcceptance acceptance) {
+        return testCase("bootstrap-accepts:" + acceptance.mutationId(), acceptance.gate(),
+                ConformanceCase.Kind.MUTATION_BASE, buildBootstrapAccepted(acceptance).cbor(), new Expected.Pass(),
+                List.of(), 9);
+    }
 
     private Mutations() {
     }
@@ -488,7 +550,7 @@ public final class Mutations {
     }
 
     /** The protocol versions of the mutation worlds. */
-    public static final List<Integer> WORLDS = List.of(10, 11);
+    public static final List<Integer> WORLDS = List.of(9, 10, 11);
 
     /** @return the base spec */
     public static TxSpec base(Mutation.Base base) {

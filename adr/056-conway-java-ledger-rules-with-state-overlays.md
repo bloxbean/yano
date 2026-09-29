@@ -80,8 +80,9 @@ with the decisions recorded at the end of this ADR.
    the `MEMPOOL` rule for admission, as one ordered transition that mirrors the
    Haskell composition. Each leaf predicate failure maps to a typed failure
    named after the Haskell constructor.
-   - **Scope:** Conway, **protocol version 10 and later**, like Amaru.
-   - The PV9 Conway bootstrap phase is out of scope.
+   - **Scope:** Conway, **protocol version 9 (the bootstrap phase) and later**
+     (Phase 5b; until then PV10 and later, like Amaru). Amaru, the oracle,
+     stays PV10+.
 3. **Ledger view plus overlays.** Validation reads state through a read-only
    `LedgerView`. The base view is canonical state **ticked to the validation
    slot**, so an epoch boundary between the tip and that slot is applied first.
@@ -255,10 +256,13 @@ with the decisions recorded at the end of this ADR.
 6. **Ticked base.** The base view for validation at slot `s` is canonical state
    advanced through any epoch boundary between the tip and `s`
    (see Detailed decision §3).
-7. **Conway, PV10 and later.** The Java engine returns `EraNotSupported` for
-   non-Conway bodies or a ticked protocol version below 10, and Yano never falls
-   back to "accept". This applies to mempool admission and block production.
-   Networks still at PV9 keep `engine: scalus`.
+7. **Conway, PV9 and later.** The Java engine returns `EraNotSupported` for
+   non-Conway bodies or a ticked protocol version below 9 (or above the latest
+   the pinned rules know, 11), and Yano never falls back to "accept". This
+   applies to mempool admission and block production. The bootstrap phase (PV9)
+   is in scope since Phase 5b: its differences are protocol-version ranges on
+   the checks (`PvRange.BOOTSTRAP` / `POST_BOOTSTRAP`). Amaru stays PV10+
+   (invariant 6), so PV9 evidence is Haskell source, not the oracle.
 8. **Canonical state is read-only here.** No change to canonical ledger-state
    mutation, rewards, AdaPot or ratification. This ADR only reads them.
 
@@ -562,7 +566,8 @@ checks.
      unelected committee voters (PV11 in `GOV`);
    - expired actions and disallowed voter classes.
 
-   The PV9 bootstrap disallow rules are out of scope (invariant 7).
+   At PV9 the bootstrap disallow rules (`DisallowedProposalDuringBootstrap`,
+   `DisallowedVotesDuringBootstrap`) run too (Phase 5b, invariant 7).
 4. **UTXOW and UTXO**, with the **pre-certificate** certificate state
    (invariant 5):
    - **Witnesses:** vkey and bootstrap witnesses; needed key hashes across all
@@ -1719,6 +1724,93 @@ The final PR merges once S5's gates are green.
   (5) `GOV`'s `Proposals` state change stays the effects deriver's (it records proposals and votes, not the removal of
   replaced or deregistered-DRep votes, which only ratification reads).
 
+#### Phase 5b results: Conway protocol version 9, the bootstrap phase (2026-09-29)
+
+Decided 2026-09-29 by Satya, so that Phase 7 shadow sync can validate every Conway-era transaction (Decisions item 1).
+`JavaLedgerValidationEngine.SUPPORTED` is now PV 9–11; anything else is still `ENGINE.EraNotSupported`. The Amaru engine
+keeps its own PV 10 minimum (invariant 6) and refuses PV 9, so PV 9 evidence is the Haskell source (cardano-ledger
+`f649f975`, `hardforkConwayBootstrapPhase pv = pvMajor pv == 9`, Conway/Era.hs:257-258). Every PV difference is data:
+`PvRange.BOOTSTRAP` (9 only) and `PvRange.POST_BOOTSTRAP` (`unless` bootstrap, 10+) on `ConwayPredicate`, or one named
+helper per behaviour; no rule has a `pv == 9` branch.
+
+- **Every use of `hardforkConwayBootstrapPhase` and every PV 9/10 gate in the Conway rules and the helpers they use:**
+  - *GOV* `DisallowedProposalDuringBootstrap` (new, `BOOTSTRAP`): `checkBootstrapProposal` (Gov.hs:435-444), the first
+    check of `processProposal` (:483); allowed: `ParameterChange`, `HardForkInitiation`, `InfoAction`
+    (`isBootstrapAction`, :633-639; `GovRule.isBootstrapAction`).
+  - *GOV* `DisallowedVotesDuringBootstrap` (new, `BOOTSTRAP`): `checkBootstrapVotes` (:378-391) at :606, after
+    `GovActionsDoNotExist` and before `VotingOnExpiredGovAction` / `DisallowedVoters`: DReps only on `InfoAction`,
+    committee and pools only on bootstrap actions.
+  - *GOV* `ProposalReturnAccountDoesNotExist`, `TreasuryWithdrawalReturnAccountsDoNotExist` (Gov.hs:504-520),
+    *LEDGER* `ConwayWdrlNotDelegatedToDRep` (Ledger.hs:379-380), *DELEG* `DelegateeDRepNotRegisteredDELEG`
+    (Deleg.hs:220-226): `POST_BOOTSTRAP` (gated since Phases 4-5, now named).
+  - *GOV* `MalformedProposal`: `ppuWellFormed` allows `coinsPerUTxOByte` (17) = 0 at PV 9 (Conway/PParams.hs:949-950);
+    `RawParamUpdate`'s non-zero rules are now a key → `PvRange` table (17 `POST_BOOTSTRAP`, 8 from 11).
+  - *GOVCERT* `computeDRepExpiryVersioned` (GovCert.hs:282-292): a DRep registered at PV 9 expires at
+    `currentEpoch + drepActivity`, ignoring dormant epochs; `TxEffectsDeriver.drepExpiryVersioned`, which now reads the
+    version from the protocol parameters, as Haskell does, instead of the environment.
+  - *PlutusV3 context* (Conway/TxInfo.hs:572-581, certifying purpose :636-640): at PV 9 `transTxCert` gives
+    `TxCertRegStaking cred Nothing` / `TxCertUnRegStaking cred Nothing` for `reg_cert` / `unreg_cert` (tags 7, 8), in
+    the `TxInfo` certificates, the `TxInfo` redeemer map's certifying purposes and the certifying `ScriptInfo`; tags
+    0/1 never carry a deposit and `RegDepositDelegTxCert` (11–13) always does. Plutus V1/V2 contexts are unaffected
+    (`transTxCertV1V2`, :383-397, maps tags 7/8 to deposit-less `DCertDelegRegKey`/`DCertDelegDeRegKey` at every PV).
+    Scalus 1.1.1 (`LedgerToPlutusTranslation.getTxCertV3`, no protocol version) always includes the deposit, so the
+    Scalus evaluator now builds the bootstrap-phase V3 context itself: `scalus-bridge` `BootstrapPhaseContexts` runs
+    PV 9 transactions with a tag 7/8 certificate through its own evaluation loop (Scalus's `evalPlutusScriptsWithContexts`
+    semantics, validate mode) over the translated `TxInfo` and `ScriptInfo`; every other transaction keeps Scalus's
+    evaluator. `ScriptPhaseEvaluator.translatesBootstrapPhaseCertificateDeposits()` (default false; Scalus: true)
+    tells the engine; an evaluator that does not translate makes `UtxosRule` fail closed with
+    `ENGINE.PhaseTwoContextUnsupported`, only when `plutusLanguagesUsed` (now on `TransitionContext`, set by `UTXOW`)
+    contains PlutusV3. Verified with real PlutusV3 certifying scripts that read the deposit in the `TxInfo` and the
+    `ScriptInfo` (`BootstrapPhaseContextsTest`: `Nothing` at PV 9, `Just` at 10, for `reg_cert` and `unreg_cert`).
+  - *DELEG* `preserveIncorrectDelegation = pvMajor pv < 10` (Deleg.hs:288, 298, 348-372): a re-delegation to another
+    DRep credential leaves a stale reverse entry, and a delegation to an unregistered DRep (allowed at PV 9) adds
+    none, so a PV 9 `UnRegDRep` (GovCert.hs:246-255) can clear a delegation that moved on and keep one to the DRep
+    itself. Not modelled by `OverlayLedgerView` (no reverse index in `LedgerView`), deliberately: no PV 9 rule reads a
+    DRep delegation (the only reader is `ConwayWdrlNotDelegatedToDRep`, `POST_BOOTSTRAP`), overlays never span an epoch
+    boundary, and the PV 10 repair (`updateDRepDelegations`, HardFork.hs:70-104) is canonical ledger-state's
+    (`rebuildDRepDelegReverseIndexIfNeeded`); the ticked view fails closed on a boundary that enacts a hard fork.
+  - Verified unchanged at PV 9: the `MEMPOOL` unelected-committee check (PV ≤ 10, Mempool.hs:123);
+    `WithdrawalsNotInRewardsCERTS`, `IncorrectDepositDELEG`, `PPViewHashesDontMatch`, `BabbageNonDisjointRefInputs`
+    (PV 9–10); `DisallowedVoters` (the `is*VotingAllowed` helpers use `emptyPParams`/`def`, no PV dependence);
+    Plutus language (V3 from `changPV` 9), `builtinsAvailableIn` (V3 batches 1–4 from 9, batch 5 and V2 4b from 10)
+    and semantics variants (no 9/10 difference) — `PlutusScriptDecoder` was already exact; decoders: every
+    `ifDecoderVersionAtLeast` on the Conway transaction path is `@9` (Conway's minimum) or `@12`, so decoder version 9
+    equals 10. Ratification-side bootstrap rules (Governance/Internal.hs:467, 519; Ratify.hs:216) are not
+    transaction rules.
+- **Catalogue:** the two bootstrap constructors are reachable (PV 9): **86 in scope**; every ungated constructor starts at
+  PV 9, the four `unless`-bootstrap ones at 10; `OutsideForecast` and `OutputTooSmallUTxO` stay unreachable. Strict
+  coverage: 86/86 (56 test + scenario, 30 test, 0 gap).
+- **Tests:** `GovRuleTest` (both bootstrap constructors, every action and voter class, order against the other GOV
+  checks; return accounts and key 17 at 9 vs 10), `DelegRuleTest` (DRep delegatee at 9 vs 10; a re-delegation and the
+  old DRep's deregistration in one PV 9 transaction), `LedgerPreChecksTest` (withdrawal delegation at 9 vs 10),
+  `UtxosRuleTest` (with an evaluator that does not translate: PlutusV3 fails closed at PV 9, runs at 10 or with a
+  translating evaluator; a PlutusV2 certifying script with a tag 7 certificate, tag 0 and script-free transactions
+  pass), `TxEffectsDeriverTest`, `JavaEngineFactoryTest` (9–11 valid; 8 and 12 refused), `BootstrapPhaseContextsTest`
+  (scalus-bridge, above). Refactor readiness: `CertsRule.WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER` (`PvRange.from(11)`)
+  replaces `protocolMajor > 10`, and `ValidationEnv.ledgerProtocolMajor(params)` is the one "parameters' version, else
+  the environment's" helper.
+- **Mutation matrix:** a PV 9 world (`WORLDS` 9, 10, 11; its bases are valid under the Java and Scalus engines) with
+  `bootstrap-proposal-v9`, `bootstrap-treasury-withdrawal-v9` (the account checks are skipped, so it is the only
+  failure) and `bootstrap-drep-vote-v9`, each citing its Haskell lines, Amaru marked `AMARU_REFUSES_PV9`; a new PV 10
+  mutant `malformed-proposal-coins-per-byte` (Amaru confirms); and `BOOTSTRAP_ACCEPTED`: four PV 10 mutants
+  (withdrawal not delegated, DRep delegatee, return account, key 17) whose edits the PV 9 world accepts, the rejecting
+  side confirmed by Amaru. 89 mutants; `java-engine` 89/89.
+- **Corpus:** scenario **00203** (PV 9.0 starting state, a hard fork to 11.0 chained to an in-flight 10.0; expected
+  `ProposalCantFollow`) is now validated and matches. Phase 5 gate: 274 match Amaru and Haskell, 1 matches Haskell where
+  Amaru diverges, 1 (00203) matches Haskell at PV 9 = 276/276. Amaru still refuses 00203 (`EraNotSupported`).
+- **Regressions:** `:ledger-rules:test` (338, 2 skipped), `:ledger-conformance:test` with the corpus and Amaru (102),
+  `:scalus-bridge:test` with the corpus (91, 1 skipped): green. Coverage matrix and baseline regenerated (the baseline
+  now records the Amaru module built in this worktree, sha256 `c43eeb37…`). No runtime change: no view-level guard
+  refused PV 9.
+- **Not exact, by design or limitation:** (1) The overlay's DRep delegations after a PV 9 deregistration (above;
+  unobservable by any verdict). (2) The bootstrap constructors have Java-only evidence plus one corpus scenario;
+  Phase 7 shadow sync over the PV 9 epochs of preprod and mainnet is their cross-check.
+- **Phase 7 inputs.** (a) Block level: `totalRefScriptSizeInBlock` (Conway/Rules/Bbody.hs:357-362) measures each
+  transaction's reference scripts against the pre-block UTxO at PV ≤ 10 (so PV 9 too) and cumulatively from PV 11;
+  shadow sync of whole blocks must follow the same split. (b) The PV 9 overlay's forward-delegation divergence after a
+  DRep deregistration surfaces only if shadow sync diffs state or effects, not verdicts; a PV 9 state or effects diff
+  must compare with Haskell's reverse-index semantics or exclude account DRep delegations.
+
 ### Phase 6 — Runtime overlays
 
 - Add the immutable `MempoolLedgerState`, synchronous truncate-and-reapply on
@@ -1938,6 +2030,112 @@ The final PR merges once S5's gates are green.
   the devnet end-to-end chains in one block and in the mempool, the epoch crossing with chains pending (including
   the ticked treasury, dependency (d)), rollback with chains pending, the Haskell follower; ADR-057 Phase C.
 
+#### Phase 6b results: block-production overlay, devnet and Haskell-follower gates (2026-09-29)
+
+- **Scope.** Like 6a, the block-production overlay runs whenever an engine-API admission engine is configured
+  (the mempool is a `LedgerMempool`); the legacy default (`engine: scalus`, `DefaultMemPool`) keeps its selector,
+  the legacy validator and `BlockBuildUtxoOverlay` until Phase 8.
+- **Selection** (`LedgerMempool.selectForBlock(forgeSlot)`, called by `BlockTransactionSelectors` through the new
+  `BlockTransactionSelector.drainForBlock(forgeSlot)`; every producer passes its forge slot):
+  1. Read the published entries (lock-free; admission is never blocked by a selection) and acquire one
+     `BLOCK_BUILD` base (`MempoolBaseSource.acquireForBlock`, `GateMempoolBaseSource`): a canonical snapshot ticked to
+     the forge slot, with the forecast horizon based on the slot after the tip (the forged block's parent,
+     `ValidationEnv.forecastBasisSlot`). Both happen between the producer's boundary section and its store section,
+     with neither the lane nor the gate held (asserted, counted as lock-order violations). Because the producer has
+     already applied the boundary, the view is normally the canonical one; the producer-window adjustment of 1d
+     (`admissionSlot`) is an admission concern and is not needed for a forge slot.
+  2. Fold the entries in mempool order over a fresh block-local `OverlayLedgerView` with rule `LEDGER`, origin
+     `BLOCK_BUILD`, `previous` = the entry's `ValidatedTx` (never a `SYNC` one); the engine's invalidation rules
+     decide between re-application and full validation. A valid candidate's effects are applied before the next is
+     validated, so UTxO, certificate and governance chains are selected in order. An entry whose provenance is
+     phase-2-invalid is never selected.
+  3. Failures: a ledger-rule failure is not selected and is removed with its dependents through the deferred-safe
+     `removeInvalidated` after the fold (deferred to the pending rebuild while the published state lags, so a
+     transaction invalid only because it was just confirmed never cascades its dependents); a transient failure
+     (any `ENGINE` failure other than `Phase2InvalidTxNotSupported` and `DecodingFailure`: an unavailable read, a
+     busy or unhealthy engine) skips the candidate without removal, and every later failure of the same selection is
+     skipped without removal too.
+  4. The work is bounded: candidates beyond twice `maxBlockSize` bytes are not validated (the builder keeps a
+     prefix that fits the block, as before: `fitTransactions` then applies the size and ex-unit limits unchanged).
+  5. If the published canonical generation moved during the fold, the selection is discarded and redone on a new
+     base (at most 3 attempts, then nothing is selected). The producer checks again inside its store section, just
+     before storing (`BlockTransactionSelector.selectionCurrent()`, `BlockProducerHelper.requireCurrentSelection`):
+     a stale selection throws `StaleBlockSelectionException`, the section is marked unchanged, a signed builder's
+     pending nonce state is rolled back, and the next production attempt selects again.
+- **Builder guard.** `DevnetBlockBuilder.fitTransactions` refuses a selected transaction that claims
+  `isValid=false` (`UnfitBlockTransactionException`, so the producer invalidates it and its dependents instead of
+  failing every block), and `splitTransaction` throws on one; `invalid_txs` stays empty (decision 6).
+- **Counters** on `LedgerMempoolStatus` (health details, metrics): selections, redos, re-applied and fully
+  validated candidates, rejected and skipped candidates, last selection time.
+- **Dependency (d), the ticked treasury.** Not computed: the treasury of a new epoch depends on the rewards, which
+  the dry run does not compute exactly, so `TickedLedgerView.treasury` stays fail-closed (retryable). It only
+  matters for admission while the slot after the tip is in the next epoch and the producer has not applied the
+  boundary; block selection runs after the boundary section, on the canonical view. The devnet gate covers a
+  `currentTreasuryValue` admitted before the boundary block (never forged: `LEDGER.ConwayTreasuryValueMismatch` in
+  both the rebuild and the selection once the treasury moved) and one built after it (forged); the Haskell-follower
+  workload forges one after its first boundary.
+- **Devnet gate** (`JavaEngineDevnetGateTest`, tx-services; the shared `LedgerRulesDevnetMatrix`,
+  `DevnetGateNode`, `BlockRevalidator`, `GateWallet` and `GateTxFactory` are tx-services test fixtures, never
+  published). An in-process devnet producer (isolated temporary RocksDB and port, 100-slot epochs of 0.2 s,
+  500 ms blocks, governance action lifetime patched to 1 epoch), `engine: java` with the experimental flag,
+  transactions built with QuickTx against a local wallet so children spend pending parents, paid from the
+  devnet genesis funds:
+  - **A, one block:** with the producer stopped, stake register → delegate → vote delegation, DRep register →
+    delegate, proposal → vote, register → deregister (10 transactions, each admitted while its parents were
+    pending) plus three rejections (`DELEG.StakeKeyNotRegisteredDELEG`, `GOV.GovActionsDoNotExist`,
+    `DELEG.StakeKeyRegisteredDELEG`); all ten forged in one block, mempool empty afterwards.
+  - **B, across blocks:** a chain forged over three blocks, children admitted while parents were pending.
+  - **D, rollback:** a delegation and an independent payment pending, the registration's block rolled back (devnet
+    rollback API): the rebuild drops the delegation (`LEDGER.ConwayMempoolFailure`: its only input was the rolled-back
+    registration's change), keeps the payment, which is forged; the resubmitted chain is forged again.
+  - **C, epoch crossing** with chains pending (the producer stopped across the boundary): a vote on a proposal in
+    its last epoch is never forged (`GOV.VotingOnExpiredGovAction`, seen by the rebuild and by block selection); the
+    pending register → delegate chain is forged in the first block of the new epoch; the stale treasury
+    transaction is dropped, the fresh one forged; the proposal refunds (2,000 ADA) credited at the later boundary
+    are withdrawn in full (after a DRep vote delegation, which PV10 requires: `ConwayWdrlNotDelegatedToDRep`).
+  - **Independent re-validation:** every block with transactions (12–13 blocks, 423 transactions per run) is re-read
+    from the stored block bytes and validated in order by a separate java engine instance with rule `LEDGER`,
+    origin `SYNC`, full validation, against the canonical snapshot of the publication just before the block: every
+    transaction valid, ids equal to the applied block's, `invalid_txs` empty.
+  - Mempool status after the run: `READY`, 0 lock-order violations, 0 selection redos, every selected candidate
+    re-applied (the admission verdict was reusable), 2 candidates rejected by selection (the expired vote and the
+    stale treasury value), 1 removal deferred to a rebuild, 0 synchronous fallbacks. The gate itself passed in six
+    runs (three alone, one next to `:app:test`, two inside the parity test).
+  - Unit gates (`LedgerMempoolBlockSelectionTest`, 6): chains in order over the block-local overlay with rule
+    `LEDGER`, origin `BLOCK_BUILD`, `previous`, forge slot and `next(tip)`; a lagging mempool selects the
+    dependents of just-confirmed transactions and defers the removal; a transaction invalid at the forge slot
+    (TTL) is rejected and removed with its dependent; a canonical publication during the fold redoes the
+    selection, and `selectionCurrent` turns false after one; a transient failure skips without removal and taints
+    the rest; no base or `CATCHING_UP` selects nothing. `DevnetBlockProducerTest` gains the stale-selection discard
+    (nothing stored, the redone selection forged) and the `isValid=false` guard.
+- **Budget with block production running** (decision 3; 400 chained payments from two payers submitted while the
+  producer forges every 500 ms; JVM 25, Apple M4 Max; five runs): `engine: java` admission p50 0.23–0.40 ms,
+  p99 0.40–1.22 ms, max 0.6–1.7 ms (target p99 ≤ 20 ms), last block selection 19–42 ms, last rebuild 8–39 ms;
+  `engine: amaru` (three runs) p50 1.2–1.4 ms, p99 2.1–2.9 ms, max 2.5–138 ms (the maximum is a call waiting for
+  a busy instance), last selection 45–278 ms, last rebuild 1–331 ms.
+- **Haskell follower** (`test-haskell-sync` harness, `qa/harness/haskell-sync.sh jvm` with the new optional knobs
+  `YANO_EXTRA_OPTS`, `HS_GENESIS_PATCH`, `HS_WORKLOAD`, `HS_MIN_SLOT`, `HS_TIMEOUT`; defaults keep the standard
+  test): **PASS**, run `haskell-sync-jvm` of 2026-09-29 14:09–14:17
+  (logs: the scratchpad `p6b/qa/home/runs/haskell-sync-jvm/{yano.log,haskell.log,workload.log}` and
+  `p6b/qa/haskell-sync-run2.log`). Yano from the packaged jar with `-Dyano.validation.engine=java
+  -Dyano.validation.java-engine.experimental=true`, the pv10 devnet genesis patched to 600-slot epochs and a
+  1-epoch action lifetime (both nodes read the same copy), and `HaskellFollowerWorkloadTest` (tx-services,
+  enabled by `-Dyano.gate.remote-url`) submitting through the REST API: the ten-transaction chain back to back
+  (forged in blocks 169–170), a chain across blocks (171–172), a `currentTreasuryValue` transaction in epoch 1
+  (block 599; the treasury there is 0 on both sides), and the withdrawal of the 2,000 ADA proposal refunds in the
+  first block of epoch 3 (block 1753). The Haskell node (cardano-node from the main checkout's
+  `test-data-dir/haskell-node`) followed for 4 epochs, 2,497 blocks, with the tip hash matching at every
+  checkpoint and at the end (slot delta 0), no Haskell error, invalid or reject line, no Yano `ERROR` line. The
+  same run with `engine: amaru` also passes (ADR-057 "Phase C results").
+- **Other changes.** `RuntimeNode.getTxSubsystem()` and `getCanonicalStateGate()` (diagnostics and the gates);
+  the app forwards `yano.validation.java-engine.experimental` (`YanoPropertyKeys.Validation.JAVA_ENGINE_EXPERIMENTAL`,
+  still opt-in) so a packaged node can run the gate.
+- **For Phase 7/8.** Phase 7: shadow sync can reuse `BlockRevalidator`'s path (stored block bytes, pre-block
+  snapshot from a publication listener, rule `LEDGER`, origin `SYNC`); the Amaru divergence recorded in ADR-057
+  Phase C goes to the differential; native parity must cover the block-build path. Phase 8: remove the legacy
+  selector, `BlockBuildUtxoOverlay` and the legacy validator overload with the default flip; the ticked treasury
+  stays fail-closed unless the dry run computes rewards exactly.
+
 ### Phase 7 — Blueprint vectors, differential, shadow sync, native parity
 
 - Gates:
@@ -2010,9 +2208,11 @@ The final PR merges once S5's gates are green.
   pre-1.0 and changes often, it needs nightly Rust and a wasm C toolchain, it
   runs about 15–20× slower than native, and it can't validate pre-Conway
   history. It is more valuable as an oracle.
-- **Include PV9 (Conway bootstrap).** It is small, but Amaru, the oracle,
-  doesn't support it, and no live network is still at PV9. It can be added
-  later with its own gates.
+- **Include PV9 (Conway bootstrap).** Initially rejected: Amaru, the oracle,
+  doesn't support it, and no live network is still at PV9. **Adopted
+  2026-09-29** (Phase 5b) with its own gates, so that shadow sync can validate
+  every Conway-era transaction; the evidence is the Haskell source, one corpus
+  scenario (00203) and a PV9 mutation world.
 - **Full Byron→Conway block validation.** This is a separate decision. The
   transition, ticking and overlay here are its foundation.
 
@@ -2037,7 +2237,9 @@ The final PR merges once S5's gates are green.
 
 ## Decisions (accepted 2026-09-28)
 
-1. **Scope:** Conway **PV10+ only**. The PV9 bootstrap phase is out of scope.
+1. **Scope:** Conway **PV9+ (bootstrap included)**, decided 2026-09-29 by
+   Satya to allow validating all Conway-era transactions in Phase 7 shadow sync
+   (Phase 5b). Accepted 2026-09-28 as PV10+ only.
 2. **Ticked base view:** an in-memory dry run of the validation-visible boundary
    effects (§3), with its Phase 1 gate. Accepted.
 3. **Mempool budget.** Initial targets, measured in Phase 6 at the configured

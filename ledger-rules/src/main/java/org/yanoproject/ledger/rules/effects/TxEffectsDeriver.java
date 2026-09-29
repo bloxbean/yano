@@ -36,6 +36,7 @@ import com.bloxbean.cardano.client.transaction.spec.governance.actions.UpdateCom
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.TxIdentity;
 import org.yanoproject.ledger.rules.ValidationEnv;
+import org.yanoproject.ledger.rules.conway.PvRange;
 import org.yanoproject.ledger.rules.effects.LedgerChange.AccountRegistered;
 import org.yanoproject.ledger.rules.effects.LedgerChange.AccountUnregistered;
 import org.yanoproject.ledger.rules.effects.LedgerChange.CommitteeHotAuthorized;
@@ -248,10 +249,7 @@ public final class TxEffectsDeriver {
             case PoolRetirement c -> List.of(new PoolRetirementScheduled(PoolId.of(c.getPoolKeyHash()), c.getEpoch()));
             // ConwayRegDRep records ppDRepDeposit and the versioned expiry (GovCert.hs:210-232).
             case RegDRepCert c -> {
-                long dormant = state.dormantEpochs().require("dormant epochs");
-                long expiry = env.protocolMajor() == 9
-                        ? env.currentEpoch() + requireInt(pp.getDrepActivity(), "drepActivity")
-                        : drepExpiry(pp, env.currentEpoch(), dormant);
+                long expiry = drepExpiryVersioned(pp, env, state);
                 yield List.of(new DRepRegistered(CredentialKey.of(c.getDrepCredential()),
                         requireCoin(pp.getDrepDeposit(), "drepDeposit"), expiry));
             }
@@ -358,6 +356,18 @@ public final class TxEffectsDeriver {
             }
         }
         return changes;
+    }
+
+    /**
+     * {@code computeDRepExpiryVersioned} (GovCert.hs:282-292), the expiry of a new DRep: during the bootstrap phase
+     * ({@code hardforkConwayBootstrapPhase}, {@link PvRange#BOOTSTRAP}) {@code currentEpoch + drepActivity}, ignoring
+     * the dormant epochs; afterwards {@link #drepExpiry}. The version is {@link ValidationEnv#ledgerProtocolMajor}.
+     */
+    static long drepExpiryVersioned(ProtocolParams pp, ValidationEnv env, LedgerView state) {
+        if (PvRange.BOOTSTRAP.contains(env.ledgerProtocolMajor(pp))) {
+            return env.currentEpoch() + requireInt(pp.getDrepActivity(), "drepActivity");
+        }
+        return drepExpiry(pp, env.currentEpoch(), state.dormantEpochs().require("dormant epochs"));
     }
 
     /** computeDRepExpiry = currentEpoch + drepActivity - numDormantEpochs (GovCert.hs:294-306). */

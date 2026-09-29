@@ -108,4 +108,21 @@ public interface ScriptPhaseEvaluator {
         throw new UnsupportedOperationException(getClass().getSimpleName()
                 + " cannot judge Plutus script well-formedness");
     }
+
+    /**
+     * Whether the evaluator builds a PlutusV3 {@code TxInfo} as Haskell does during the Conway bootstrap phase
+     * (protocol version 9): {@code transTxCert} leaves out the deposit of {@code RegDepositTxCert} and the refund of
+     * {@code UnRegDepositTxCert} ({@code TxCertRegStaking cred Nothing}, {@code TxCertUnRegStaking cred Nothing})
+     * while {@code hardforkConwayBootstrapPhase} (Conway/TxInfo.hs:572-581; the certifying purpose too, :636-640).
+     *
+     * <p>The default is false, and the Java engine then refuses to run PlutusV3 scripts over such a context
+     * ({@code UtxosRule}, ADR-056 Phase 5b) rather than judge them with the wrong one. The Scalus evaluator translates
+     * it itself (Scalus 1.1.1's {@code LedgerToPlutusTranslation.getTxCertV3} always includes the deposit) and
+     * returns true. Plutus V1/V2 contexts never carry these deposits ({@code transTxCertV1V2}, :383-397).</p>
+     *
+     * @return true when bootstrap-phase certificate deposits are translated as Haskell translates them
+     */
+    default boolean translatesBootstrapPhaseCertificateDeposits() {
+        return false;
+    }
 }

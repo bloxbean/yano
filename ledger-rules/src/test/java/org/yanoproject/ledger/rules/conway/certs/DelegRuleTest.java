@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.conway.certs;
 
 import com.bloxbean.cardano.client.transaction.spec.cert.RegCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.RegDRepCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeDelegation;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeDeregistration;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakePoolId;
@@ -9,12 +10,14 @@ import com.bloxbean.cardano.client.transaction.spec.cert.StakeRegistration;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeVoteDelegCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeVoteRegDelegCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.UnregCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.UnregDRepCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.VoteDelegCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.VoteRegDelegCert;
 import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.rules.fixtures.conformance.Covers;
+import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
 
 import java.math.BigInteger;
@@ -149,6 +152,31 @@ class DelegRuleTest {
         var voteReg = balanced(spec(new VoteRegDelegCert(stakeCredential(TestKey.DEV_42),
                 DRep.scriptHash(TestKey.DEV_AA.keyHash()), ada(2))), ada(-2));
         assertThat(run(voteReg)).containsExactly("DELEG.DelegateeDRepNotRegisteredDELEG");
+    }
+
+    @Test
+    @Covers("DELEG.DelegateeDRepNotRegisteredDELEG")
+    void aDelegateeDRepNeedsNoRegistrationDuringTheBootstrapPhase() {
+        // unless (hardforkConwayBootstrapPhase pv) (Deleg.hs:220-226): not checked at protocol version 9.
+        var unknownDRep = spec(new VoteDelegCert(stakeCredential(TestKey.DEV_77),
+                DRep.addrKeyHash(TestKey.DEV_42.keyHash())), TestKey.DEV_77);
+        assertThat(run(unknownDRep, 9)).containsExactly("Valid");
+        assertThat(run(unknownDRep, 10)).containsExactly("DELEG.DelegateeDRepNotRegisteredDELEG");
+        var voteReg = balanced(spec(new VoteRegDelegCert(stakeCredential(TestKey.DEV_42),
+                DRep.scriptHash(TestKey.DEV_AA.keyHash()), ada(2))), ada(-2));
+        assertThat(run(voteReg, 9)).containsExactly("Valid");
+        // The pool is still checked.
+        var both = spec(new StakeVoteDelegCert(stakeCredential(TestKey.DEV_77), UNREGISTERED_POOL,
+                DRep.addrKeyHash(TestKey.DEV_42.keyHash())), TestKey.DEV_77);
+        assertThat(run(both, 9)).containsExactly("DELEG.DelegateeStakePoolNotRegisteredDELEG");
+        // A re-delegation from one DRep to another, then the old DRep's deregistration, in one PV 9 transaction: the
+        // stale reverse entry (preserveIncorrectDelegation, Deleg.hs:363-373) changes no verdict.
+        var redelegate = spec(List.of(new RegDRepCert(MutationWorld.credential(TestKey.DEV_BB), MutationWorld.DREP_DEPOSIT,
+                        null), new VoteDelegCert(stakeCredential(TestKey.DEV_77),
+                        DRep.addrKeyHash(TestKey.DEV_BB.keyHash())),
+                new UnregDRepCert(MutationWorld.credential(TestKey.DEV_77), MutationWorld.DREP_DEPOSIT)),
+                TestKey.DEV_77, TestKey.DEV_BB);
+        assertThat(run(balanced(redelegate, BigInteger.ZERO), 9)).containsExactly("Valid");
     }
 
     @Test

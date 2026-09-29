@@ -89,6 +89,10 @@ class ConformanceBaselineTest {
         if (result.constructorMatch()) {
             return true;
         }
+        // The protocol version 9 world (bases and mutants): Amaru refuses it by design (ADR-056 invariant 6).
+        if (result.testCase().env().protocolMajor() < 10) {
+            return !result.observation().valid() && Observation.isEraNotSupported(result.observation().first());
+        }
         String id = result.testCase().id();
         return Mutations.all().stream()
                 .filter(m -> m.caseId().equals(id) && m.amaruReports() != null)

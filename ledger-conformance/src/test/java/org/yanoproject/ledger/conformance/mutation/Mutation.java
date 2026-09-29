@@ -22,14 +22,21 @@ import java.util.function.Consumer;
  * @param amaruReports when Amaru is known to name this fault differently from Haskell (a recorded divergence,
  *                     ADR-056 "Phase 3a results"), the {@code RULE.Constructor} Amaru reports, or
  *                     {@link #AMARU_ACCEPTS} when Amaru accepts the mutant; null otherwise
- * @param protocolMajor the protocol major version of the world the mutant is built and validated in (10, or 11 for
- *                     the constructors that exist only from 11)
+ * @param protocolMajor the protocol major version of the world the mutant is built and validated in (10; 11 for
+ *                     the constructors that exist only from 11; 9, the bootstrap phase, for the bootstrap-only
+ *                     constructors and faults judged differently there)
  */
 public record Mutation(String id, String covers, List<String> haskellFailures, Base base, String description,
                        Consumer<TxSpec> edit, String amaruReports, int protocolMajor) {
 
     /** {@link #amaruReports()} for a mutant Amaru accepts although Haskell rejects it (a recorded divergence). */
     public static final String AMARU_ACCEPTS = "Valid";
+
+    /**
+     * {@link #amaruReports()} for a protocol-version-9 mutant: Amaru validates protocol version 10 and later only
+     * (ADR-056 invariant 6), so it cannot confirm the fault; the mutant's Haskell evidence is cited in its source.
+     */
+    public static final String AMARU_REFUSES_PV9 = "ENGINE.EraNotSupported";
 
     /** The valid base transactions. */
     public enum Base {
@@ -54,6 +61,11 @@ public record Mutation(String id, String covers, List<String> haskellFailures, B
         return new Mutation(id, covers, haskellFailures, base, description, edit, amaruReports, 11);
     }
 
+    /** @return this mutation in the protocol version 9 (bootstrap) world, which Amaru refuses */
+    public Mutation atProtocolVersion9() {
+        return new Mutation(id, covers, haskellFailures, base, description, edit, AMARU_REFUSES_PV9, 9);
+    }
+
     /** @return this mutation with a recorded Amaru divergence */
     public Mutation withAmaruReports(String constructor) {
         return new Mutation(id, covers, haskellFailures, base, description, edit, constructor, protocolMajor);
@@ -68,8 +80,8 @@ public record Mutation(String id, String covers, List<String> haskellFailures, B
         }
         Objects.requireNonNull(base, "base");
         Objects.requireNonNull(edit, "edit");
-        if (protocolMajor != 10 && protocolMajor != 11) {
-            throw new IllegalArgumentException(id + ": the mutation worlds are protocol versions 10 and 11");
+        if (protocolMajor < 9 || protocolMajor > 11) {
+            throw new IllegalArgumentException(id + ": the mutation worlds are protocol versions 9, 10 and 11");
         }
     }
 

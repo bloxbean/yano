@@ -16,7 +16,13 @@ import java.util.Objects;
  * <p>Phase 3a lists the {@code UTXO} and {@code UTXOS} families, Phase 3b {@code UTXOW}, Phase 4 {@code CERTS},
  * {@code DELEG}, {@code POOL} and {@code GOVCERT} with the two protocol-version-11 {@code LEDGER} withdrawal checks;
  * Phase 5 adds {@code GOV}, the other {@code LEDGER} predicates and {@code ConwayMempoolFailure} ({@code MEMPOOL}'s own
- * failure, a {@code ConwayLedgerPredFailure} constructor).
+ * failure, a {@code ConwayLedgerPredFailure} constructor); Phase 5b the two bootstrap-phase {@code GOV} constructors
+ * (protocol version 9, {@link PvRange#BOOTSTRAP}). Every protocol-version difference is either a constructor's range
+ * here or one named, single-purpose helper holding its own {@link PvRange} (for a difference that is not a whole check:
+ * {@code RawParamUpdate}'s non-zero rules, {@code TxEffectsDeriver.drepExpiryVersioned},
+ * {@code UtxosRule.CERTIFICATE_DEPOSITS_OMITTED}, {@code CertsRule.WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER}):
+ * {@code hardforkConwayBootstrapPhase} is {@link PvRange#BOOTSTRAP} ("only during bootstrap") or
+ * {@link PvRange#POST_BOOTSTRAP} ("{@code unless} bootstrap").
  * Wrapper constructors ({@code UtxosFailure}, {@code UtxoFailure}, …) are not listed: {@link LedgerFailure} names
  * the leaf with its rule.</p>
  */
@@ -124,7 +130,7 @@ public enum ConwayPredicate {
     CONWAY_TX_REF_SCRIPTS_SIZE_TOO_BIG(LedgerRuleName.LEDGER, "ConwayTxRefScriptsSizeTooBig", PvRange.ALWAYS,
             CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:365, 456-471 (validateRefScriptSize: txNonDistinctRefScriptsSize "
             + "over spending ∪ reference inputs ≤ ppMaxRefScriptSizePerTxG = 200 KiB, Conway/PParams.hs:981): runTest"),
-    CONWAY_WDRL_NOT_DELEGATED_TO_DREP(LedgerRuleName.LEDGER, "ConwayWdrlNotDelegatedToDRep", PvRange.from(10),
+    CONWAY_WDRL_NOT_DELEGATED_TO_DREP(LedgerRuleName.LEDGER, "ConwayWdrlNotDelegatedToDRep", PvRange.POST_BOOTSTRAP,
             CheckLabel.DYNAMIC, "Conway/Rules/Ledger.hs:379-381, 473-488 (validateWithdrawalsDelegated: key-hash "
             + "accounts without a DRep delegation, pre-certificate accounts; unless hardforkConwayBootstrapPhase)"),
     CONWAY_MEMPOOL_FAILURE(LedgerRuleName.LEDGER, "ConwayMempoolFailure", PvRange.ALWAYS, CheckLabel.DYNAMIC,
@@ -138,6 +144,10 @@ public enum ConwayPredicate {
             + "the missing accounts"),
 
     // ---------------------------------------------------------------- GOV (Conway/Rules/Gov.hs:462-613)
+    DISALLOWED_PROPOSAL_DURING_BOOTSTRAP(LedgerRuleName.GOV, "DisallowedProposalDuringBootstrap", PvRange.BOOTSTRAP,
+            CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:435-444 (checkBootstrapProposal: only isBootstrapAction, "
+            + ":633-639 — ParameterChange, HardForkInitiation, InfoAction — while hardforkConwayBootstrapPhase), "
+            + "483: runTest, the first check of processProposal"),
     UNELECTED_COMMITTEE_VOTERS(LedgerRuleName.GOV, "UnelectedCommitteeVoters", PvRange.from(11), CheckLabel.DYNAMIC,
             "Conway/Rules/Gov.hs:478-481 (hardforkConwayDisallowUnelectedCommitteeFromVoting, before the proposals), "
             + "652-665: failOnNonEmpty"),
@@ -145,11 +155,12 @@ public enum ConwayPredicate {
             "Conway/Rules/Gov.hs:488-499, 673-695 (preceedingHardFork; pvCanFollow): failOnJust"),
     MALFORMED_PROPOSAL(LedgerRuleName.GOV, "MalformedProposal", PvRange.ALWAYS, CheckLabel.DYNAMIC,
             "Conway/Rules/Gov.hs:393-399, 502 (actionWellFormed: ppuWellFormed pv, Conway/PParams.hs:935-963)"),
-    PROPOSAL_RETURN_ACCOUNT_DOES_NOT_EXIST(LedgerRuleName.GOV, "ProposalReturnAccountDoesNotExist", PvRange.from(10),
+    PROPOSAL_RETURN_ACCOUNT_DOES_NOT_EXIST(LedgerRuleName.GOV, "ProposalReturnAccountDoesNotExist",
+            PvRange.POST_BOOTSTRAP,
             CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:504-508 (unless hardforkConwayBootstrapPhase; post-CERTS "
             + "accounts, credential only): ?!"),
     TREASURY_WITHDRAWAL_RETURN_ACCOUNTS_DO_NOT_EXIST(LedgerRuleName.GOV, "TreasuryWithdrawalReturnAccountsDoNotExist",
-            PvRange.from(10), CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:509-520 (unless hardforkConwayBootstrapPhase; "
+            PvRange.POST_BOOTSTRAP, CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:509-520 (unless hardforkConwayBootstrapPhase; "
             + "post-CERTS accounts): failOnNonEmpty"),
     PROPOSAL_DEPOSIT_INCORRECT(LedgerRuleName.GOV, "ProposalDepositIncorrect", PvRange.ALWAYS, CheckLabel.DYNAMIC,
             "Conway/Rules/Gov.hs:522-530 (pProcDeposit == ppGovActionDeposit): ?!"),
@@ -172,6 +183,10 @@ public enum ConwayPredicate {
             "Conway/Rules/Gov.hs:591-604 (post-CERTS committee state, DReps and pools): failOnNonEmpty"),
     GOV_ACTIONS_DO_NOT_EXIST(LedgerRuleName.GOV, "GovActionsDoNotExist", PvRange.ALWAYS, CheckLabel.DYNAMIC,
             "Conway/Rules/Gov.hs:568-605 (known voters only; this transaction's proposals included): failOnNonEmpty"),
+    DISALLOWED_VOTES_DURING_BOOTSTRAP(LedgerRuleName.GOV, "DisallowedVotesDuringBootstrap", PvRange.BOOTSTRAP,
+            CheckLabel.DYNAMIC, "Conway/Rules/Gov.hs:378-391 (checkBootstrapVotes while hardforkConwayBootstrapPhase: "
+            + "DReps only on InfoAction, committee and stake pools only on isBootstrapAction), 606: runTest, after "
+            + "GovActionsDoNotExist"),
     VOTING_ON_EXPIRED_GOV_ACTION(LedgerRuleName.GOV, "VotingOnExpiredGovAction", PvRange.ALWAYS, CheckLabel.DYNAMIC,
             "Conway/Rules/Gov.hs:356-362, 607 (currentEpoch > gasExpiresAfter): runTest"),
     DISALLOWED_VOTERS(LedgerRuleName.GOV, "DisallowedVoters", PvRange.ALWAYS, CheckLabel.DYNAMIC,
@@ -197,7 +212,8 @@ public enum ConwayPredicate {
             CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:271 (UnReg), 283 (Deleg): failBecause"),
     STAKE_KEY_HAS_NON_ZERO_ACCOUNT_BALANCE_DELEG(LedgerRuleName.DELEG, "StakeKeyHasNonZeroAccountBalanceDELEG",
             PvRange.ALWAYS, CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:260-268: failOnJust"),
-    DELEGATEE_DREP_NOT_REGISTERED_DELEG(LedgerRuleName.DELEG, "DelegateeDRepNotRegisteredDELEG", PvRange.from(10),
+    DELEGATEE_DREP_NOT_REGISTERED_DELEG(LedgerRuleName.DELEG, "DelegateeDRepNotRegisteredDELEG",
+            PvRange.POST_BOOTSTRAP,
             CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:220-226 (skipped while hardforkConwayBootstrapPhase)"),
     DELEGATEE_STAKE_POOL_NOT_REGISTERED_DELEG(LedgerRuleName.DELEG, "DelegateeStakePoolNotRegisteredDELEG",
             PvRange.ALWAYS, CheckLabel.DYNAMIC, "Conway/Rules/Deleg.hs:216-219 (checkPoolRegistered)"),

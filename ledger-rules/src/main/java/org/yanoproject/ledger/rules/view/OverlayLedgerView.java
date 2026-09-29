@@ -66,12 +66,20 @@ import java.util.function.UnaryOperator;
  *       transaction does not name: a DRep deregistration clears vote delegations to that DRep
  *       held in older state (GovCert.hs:246-255), and a dormant-period bump shifts every older
  *       DRep expiry (Certs.hs:308-328).</li>
- *   <li><b>PV &ge; 10 assumption.</b> Haskell clears delegations through the DRep's reverse index
- *       ({@code drepDelegs}); the overlay clears every account whose forward delegation names the
- *       DRep. The two agree only from PV10: before it, re-delegation left stale reverse entries
- *       (Deleg.hs:363-373, {@code preserveIncorrectDelegation = pv < 10}) until the PV10 hard fork
- *       rebuilt the index (HardFork.hs:70-104). The overlay is therefore only valid for PV &ge; 10
- *       state, which is also the Java engine's scope (invariant 7).</li>
+ *   <li><b>DRep delegations at protocol version 9.</b> Haskell clears delegations through the DRep's
+ *       reverse index ({@code drepDelegs}); the overlay clears every account whose forward delegation
+ *       names the DRep. The two agree from PV10. During the bootstrap phase they can differ:
+ *       re-delegating to another DRep credential left a stale reverse entry
+ *       ({@code preserveIncorrectDelegation = pvMajor pv < 10}, Deleg.hs:288, 298, 348-372), and a
+ *       delegation to a DRep that was not registered (allowed while {@code hardforkConwayBootstrapPhase},
+ *       Deleg.hs:220-226) added none, so a PV9 deregistration can clear a delegation that has moved on
+ *       and keep one to the DRep itself. The overlay does not model this, deliberately: no transaction
+ *       rule reads a DRep delegation at protocol version 9 (the only reader,
+ *       {@code ConwayWdrlNotDelegatedToDRep}, is {@code PvRange.POST_BOOTSTRAP}, Ledger.hs:379-380;
+ *       {@code unDelegReDelegDRep} only maintains the reverse sets, which only a deregistration reads),
+ *       and an overlay never spans an epoch boundary, where the PV10 hard fork rebuilds the index from
+ *       the canonical state (HardFork.hs:70-104; the ticked view fails closed on a boundary that enacts
+ *       a hard fork). The divergence is therefore unobservable by any verdict (ADR-056 Phase 5b).</li>
  *   <li><b>VRF index.</b> {@link #poolByVrfKeyHash(String)} is maintained at every protocol version,
  *       with Haskell's {@code psVRFKeyHashes} bookkeeping (Pool.hs:265-270, 283-297), including its
  *       quirk that a second re-registration with a new VRF drops the previous future VRF even when

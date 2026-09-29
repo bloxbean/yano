@@ -21,6 +21,7 @@ import com.bloxbean.cardano.client.transaction.spec.cert.VoteRegDelegCert;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.LedgerRuleName;
+import org.yanoproject.ledger.rules.conway.PvRange;
 import org.yanoproject.ledger.rules.conway.RuleFrame;
 import org.yanoproject.ledger.rules.conway.TransitionContext;
 import org.yanoproject.ledger.rules.conway.failure.ConwayPredicate;
@@ -105,9 +106,16 @@ public final class CertsRule {
         CertState.advancePreCertificate(ctx);
     }
 
-    /** {@code hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule} (Conway/Era.hs:283-284): PV > 10. */
+    /**
+     * {@code hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule} (Conway/Era.hs:283-284, {@code pvMajor > 10}): the
+     * protocol versions at which the withdrawal checks and the pre-certificate step run in {@code LEDGER}, not in the
+     * {@code CERTS} base case.
+     */
+    public static final PvRange WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER = PvRange.from(11);
+
+    /** @return whether {@link #WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER} contains {@code protocolMajor} */
     public static boolean movesWithdrawalsToLedger(int protocolMajor) {
-        return protocolMajor > 10;
+        return WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER.contains(protocolMajor);
     }
 
     /**

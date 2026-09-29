@@ -1,10 +1,13 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import org.yanoproject.ledger.rules.conway.PvRange;
 import org.yanoproject.ledger.rules.view.model.ProposalState;
 
 import java.math.BigInteger;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.SortedMap;
@@ -156,6 +159,23 @@ public final class RawParamUpdate {
     }
 
     /**
+     * {@code ppuWellFormed}'s "not 0 when present" rules (Conway/PParams.hs:935-963), each with the protocol versions
+     * it applies at: coinsPerUTxOByte (17) is guarded by {@code hardforkConwayBootstrapPhase pv ||}
+     * (:949-950, so from 10), nOpt (8) by {@code pvMajor pv < 11 ||} (:952-953, so from 11).
+     */
+    private static final Map<Integer, PvRange> NON_ZERO = nonZeroRules();
+
+    private static Map<Integer, PvRange> nonZeroRules() {
+        Map<Integer, PvRange> rules = new LinkedHashMap<>();
+        for (int key : new int[]{2, 3, 4, 22, 23, 28, 29, 6, 30, 31}) {
+            rules.put(key, PvRange.ALWAYS);
+        }
+        rules.put(17, PvRange.POST_BOOTSTRAP);
+        rules.put(8, PvRange.from(11));
+        return Collections.unmodifiableMap(rules);
+    }
+
+    /**
      * Conway's {@code ppuWellFormed pv} (Conway/PParams.hs:935-963): maxBBSize (2), maxTxSize (3), maxBHSize (4),
      * maxValSize (22), collateralPercentage (23), committeeMaxTermLength (28), govActionLifetime (29), poolDeposit (6),
      * govActionDeposit (30) and dRepDeposit (31) are not 0 when present; coinsPerUTxOByte (17) not 0 outside the
@@ -165,15 +185,11 @@ public final class RawParamUpdate {
      */
     public SortedSet<Integer> malformedKeys(int protocolMajor) {
         SortedSet<Integer> bad = new TreeSet<>();
-        for (int key : new int[]{2, 3, 4, 22, 23, 28, 29, 6, 30, 31}) {
-            zero(key, bad);
-        }
-        if (protocolMajor != 9) {
-            zero(17, bad);
-        }
-        if (protocolMajor >= 11) {
-            zero(8, bad);
-        }
+        NON_ZERO.forEach((key, versions) -> {
+            if (versions.contains(protocolMajor)) {
+                zero(key, bad);
+            }
+        });
         if (isEmpty()) {
             bad.add(-1);
         }

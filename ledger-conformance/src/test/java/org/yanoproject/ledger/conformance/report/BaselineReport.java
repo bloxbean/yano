@@ -85,13 +85,14 @@ public final class BaselineReport {
         md.append("- **Mutants**: ").append(Mutations.all().size())
                 .append(" mutants (single faults, or Haskell's whole failure list where a fault always has several) of ")
                 .append(Mutation.Base.values().length).append(" valid base transactions in a preprod-like PV 10 world ")
-                .append("and a PV 11 copy for the constructors that exist only from 11 (bases valid in both), with a ")
+                .append("with a PV 11 copy for the constructors that exist only from 11 and a PV 9 (bootstrap) copy for ")
+                .append("the bootstrap-only constructors (bases valid in all three), with a ")
                 .append("registered stake account, pools, a DRep, committee members and governance state (standing ")
                 .append("proposals, a treasury); signed with Amaru's corpus test keys and three more, re-signed after ")
                 .append("every edit.\n");
         md.append("- **Constructors**: ").append(catalogue.all().size()).append(" Conway leaf predicate failures at ")
                 .append("cardano-ledger `").append(catalogue.cardanoLedger()).append("`, ")
-                .append(catalogue.inScope().size()).append(" reachable at PV 10–11 ")
+                .append(catalogue.inScope().size()).append(" reachable at PV 9–11 ")
                 .append("([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).\n");
         md.append("- **Verdict match**: accepted exactly when Haskell accepts. **Constructor match**: the verdict matches ")
                 .append("and the engine's *first* failure is the expected Haskell `RULE.Constructor` (a decoding failure ")

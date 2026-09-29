@@ -113,8 +113,15 @@ object ScalusPhaseTwo:
       false
     )
     try
-      val results = evaluator.evalPlutusScriptsWithContexts(tx, utxos)
-      val outcomes = results.map { case (redeemer, _, _) =>
+      // At protocol version 9 a PlutusV3 context omits (de)registration deposits, which Scalus's evaluator does not
+      // model: those transactions run over the translated contexts (BootstrapPhaseContexts).
+      val redeemers =
+        if BootstrapPhaseContexts.applies(tx, protocolVersion.major) then
+          BootstrapPhaseContexts.evaluate(tx, utxos,
+            SlotConfig(slotConfig.getZeroTime, slotConfig.getZeroSlot, slotConfig.getSlotLength),
+            MajorProtocolVersion(protocolVersion.major), ProtocolParamsBridge.costModels(params))
+        else evaluator.evalPlutusScriptsWithContexts(tx, utxos).map(_._1)
+      val outcomes = redeemers.map { redeemer =>
         new ScriptOutcome(purpose(redeemer.tag), redeemer.index, true, redeemer.exUnits.memory,
           redeemer.exUnits.steps, util.List.of(), null)
       }

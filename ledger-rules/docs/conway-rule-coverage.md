@@ -6,13 +6,13 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 
 - **Tests**: test methods annotated `@Covers("RULE.Constructor")` (ledger-conformance and ledger-rules test classes).
 - **Amaru scenarios**: scenarios of Amaru's corpus (tag `v10.11.20260925`) whose expected predicate maps to the constructor (`AmaruCorpusNames`).
-- **Java rule**: the class implementing the check in the Java engine (Phases 3–5).
-- **Status**: `test + scenario`, `test`, `scenario only` (no negative test yet), `gap` (neither), `out of scope` (cannot occur at protocol version 10 or 11).
+- **Java rule**: the class implementing the check in the Java engine (Phases 3–5b).
+- **Status**: `test + scenario`, `test`, `scenario only` (no negative test yet), `gap` (neither), `unreachable at pin` (cannot occur in Conway at the pinned revision).
 - Strict since the Phase 5 gate (`conformance.strict`, on by default): every in-scope constructor must have a `@Covers` test, or `:ledger-conformance:test` fails.
 
 ## Summary
 
-| Family | Constructors (PV 10–11) | test + scenario | test | scenario only | gap |
+| Family | Constructors (PV 9–11) | test + scenario | test | scenario only | gap |
 |---|---:|---:|---:|---:|---:|
 | MEMPOOL | 1 | 0 | 1 | 0 | 0 |
 | LEDGER | 5 | 3 | 2 | 0 | 0 |
@@ -20,124 +20,126 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 | DELEG | 8 | 6 | 2 | 0 | 0 |
 | POOL | 6 | 4 | 2 | 0 | 0 |
 | GOVCERT | 6 | 3 | 3 | 0 | 0 |
-| GOV | 17 | 11 | 6 | 0 | 0 |
+| GOV | 19 | 11 | 8 | 0 | 0 |
 | UTXOW | 18 | 9 | 9 | 0 | 0 |
 | UTXO | 20 | 17 | 3 | 0 | 0 |
 | UTXOS | 2 | 2 | 0 | 0 | 0 |
-| **Total** | **84** | **56** | **28** | **0** | **0** |
+| **Total** | **86** | **56** | **30** | **0** | **0** |
 
-88 constructors in the catalogue; 84 reachable at protocol version 10 or 11. Out of scope: `GOV.DisallowedProposalDuringBootstrap` (9 only), `GOV.DisallowedVotesDuringBootstrap` (9 only), `UTXO.OutsideForecast` (unreachable), `UTXO.OutputTooSmallUTxO` (unreachable).
+88 constructors in the catalogue; 86 reachable at protocol version 9 (the bootstrap phase), 10 or 11. Out of scope: `UTXO.OutsideForecast` (unreachable), `UTXO.OutputTooSmallUTxO` (unreachable).
 
 ## Protocol-version gates to test on both sides
 
 | Constructor | PV | Gate |
 |---|---|---|
-| `LEDGER.ConwayMempoolFailure` | 10+ | "All inputs are spent…": any PV. "Unelected committee…": PV ≤ 10 only |
-| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 10+ | PV ≥ 10 (not bootstrap) |
+| `LEDGER.ConwayMempoolFailure` | 9+ | "All inputs are spent…": any PV. "Unelected committee…": PV ≤ 10 only |
+| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 10+ | PV ≥ 10 (unless hardforkConwayBootstrapPhase) |
 | `LEDGER.ConwayWithdrawalsMissingAccounts` | 11+ | PV ≥ 11 |
 | `LEDGER.ConwayIncompleteWithdrawals` | 11+ | PV ≥ 11 |
-| `CERTS.WithdrawalsNotInRewardsCERTS` | 10 | PV ≤ 10 |
-| `DELEG.IncorrectDepositDELEG` | 10 | PV ≤ 10 (for PV ≥ 11 it is replaced by Deposit/RefundIncorrectDELEG) |
+| `CERTS.WithdrawalsNotInRewardsCERTS` | 9–10 | PV ≤ 10 |
+| `DELEG.IncorrectDepositDELEG` | 9–10 | PV ≤ 10 (for PV ≥ 11 it is replaced by Deposit/RefundIncorrectDELEG) |
 | `DELEG.DepositIncorrectDELEG` | 11+ | PV ≥ 11 |
 | `DELEG.RefundIncorrectDELEG` | 11+ | PV ≥ 11 |
-| `DELEG.DelegateeDRepNotRegisteredDELEG` | 10+ | PV ≥ 10 (skipped in bootstrap) |
+| `DELEG.DelegateeDRepNotRegisteredDELEG` | 10+ | PV ≥ 10 (unless hardforkConwayBootstrapPhase) |
 | `POOL.VRFKeyHashAlreadyRegistered` | 11+ | PV ≥ 11 |
 | `GOV.UnelectedCommitteeVoters` | 11+ | PV ≥ 11 |
-| `GOV.ProposalReturnAccountDoesNotExist` | 10+ | PV ≥ 10 |
-| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | PV ≥ 10 |
-| `UTXOW.PPViewHashesDontMatch` | 10 | PV ≤ 10 |
+| `GOV.DisallowedProposalDuringBootstrap` | 9 | PV = 9 (hardforkConwayBootstrapPhase) |
+| `GOV.ProposalReturnAccountDoesNotExist` | 10+ | PV ≥ 10 (unless hardforkConwayBootstrapPhase) |
+| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | PV ≥ 10 (unless hardforkConwayBootstrapPhase) |
+| `GOV.DisallowedVotesDuringBootstrap` | 9 | PV = 9 (hardforkConwayBootstrapPhase) |
+| `UTXOW.PPViewHashesDontMatch` | 9–10 | PV ≤ 10 |
 | `UTXOW.ScriptIntegrityHashMismatch` | 11+ | PV ≥ 11 |
-| `UTXO.BabbageNonDisjointRefInputs` | 10 | PV 9-10 only (`> eraProtVerHigh Babbage(8) && < 11`) |
+| `UTXO.BabbageNonDisjointRefInputs` | 9–10 | PV 9-10 only (`> eraProtVerHigh Babbage(8) && < 11`) |
 
 ## Matrix
 
 | Rule | Constructor | PV | Check | Java rule | Tests | Amaru scenarios | Status |
 |---|---|---|---|---|---|---|---|
-| LEDGER | `ConwayMempoolFailure` | 10+ | dynamic | `MempoolRule` | MempoolTransitionTest#anAllInputsSpentDuplicateReportsOnlyTheMempoolFailure | – | test |
-| LEDGER | `ConwayTreasuryValueMismatch` | 10+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aStatedTreasuryValueMustBeTheLedgersTreasury<br>MutationMatrixTest#treasuryValueMismatch | 00054 | test + scenario |
-| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 10+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#referenceScriptsFitThePerTransactionLimit<br>MutationMatrixTest#refScriptsTooBig | 00055, 00056, 00057 | test + scenario |
-| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#keyHashWithdrawalAccountsMustBeDelegatedToADRep<br>MutationMatrixTest#withdrawalNotDelegatedToDRep | 00058 | test + scenario |
+| LEDGER | `ConwayMempoolFailure` | 9+ | dynamic | `MempoolRule` | MempoolTransitionTest#anAllInputsSpentDuplicateReportsOnlyTheMempoolFailure | – | test |
+| LEDGER | `ConwayTreasuryValueMismatch` | 9+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aStatedTreasuryValueMustBeTheLedgersTreasury<br>MutationMatrixTest#treasuryValueMismatch | 00054 | test + scenario |
+| LEDGER | `ConwayTxRefScriptsSizeTooBig` | 9+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#referenceScriptsFitThePerTransactionLimit<br>MutationMatrixTest#refScriptsTooBig | 00055, 00056, 00057 | test + scenario |
+| LEDGER | `ConwayWdrlNotDelegatedToDRep` | 10+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#keyHashWithdrawalAccountsMustBeDelegatedToADRep<br>LedgerPreChecksTest#withdrawalsNeedNoDRepDelegationDuringTheBootstrapPhase<br>MutationMatrixTest#theBootstrapPhaseAcceptsWhatProtocolVersion10Rejects<br>MutationMatrixTest#withdrawalNotDelegatedToDRep | 00058 | test + scenario |
 | LEDGER | `ConwayWithdrawalsMissingAccounts` | 11+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aWithdrawalNeedsARegisteredAccountOnTheLedgersNetwork<br>MutationMatrixTest#withdrawalMissingAccountV11 | – | test |
 | LEDGER | `ConwayIncompleteWithdrawals` | 11+ | dynamic | `LedgerPreChecks` | LedgerPreChecksTest#aWithdrawalDrainsTheWholeBalance<br>MutationMatrixTest#withdrawalIncompleteV11 | – | test |
-| CERTS | `WithdrawalsNotInRewardsCERTS` | 10 | dynamic | `CertsRule` | CertsRuleTest#withdrawalsMustDrainRegisteredAccountsBeforeProtocolVersion11<br>MutationMatrixTest#withdrawalNotDraining | 00125, 00126 | test + scenario |
-| DELEG | `IncorrectDepositDELEG` | 10 | dynamic | `DelegRule` | DelegRuleTest#aDeregistrationMustStateTheRecordedDeposit<br>DelegRuleTest#aRegistrationMustStateTheKeyDeposit<br>MutationMatrixTest#deregistrationRefundIncorrect<br>MutationMatrixTest#registrationDepositIncorrect | 00072, 00273 | test + scenario |
+| CERTS | `WithdrawalsNotInRewardsCERTS` | 9–10 | dynamic | `CertsRule` | CertsRuleTest#withdrawalsMustDrainRegisteredAccountsBeforeProtocolVersion11<br>MutationMatrixTest#withdrawalNotDraining | 00125, 00126 | test + scenario |
+| DELEG | `IncorrectDepositDELEG` | 9–10 | dynamic | `DelegRule` | DelegRuleTest#aDeregistrationMustStateTheRecordedDeposit<br>DelegRuleTest#aRegistrationMustStateTheKeyDeposit<br>MutationMatrixTest#deregistrationRefundIncorrect<br>MutationMatrixTest#registrationDepositIncorrect | 00072, 00273 | test + scenario |
 | DELEG | `DepositIncorrectDELEG` | 11+ | dynamic | `DelegRule` | DelegRuleTest#aRegistrationMustStateTheKeyDeposit<br>MutationMatrixTest#registrationDepositIncorrectV11 | – | test |
 | DELEG | `RefundIncorrectDELEG` | 11+ | dynamic | `DelegRule` | DelegRuleTest#aDeregistrationMustStateTheRecordedDeposit<br>MutationMatrixTest#deregistrationRefundIncorrectV11 | – | test |
-| DELEG | `StakeKeyRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#aRegisteredCredentialCannotRegisterAgain<br>MutationMatrixTest#registrationOfARegisteredCredential | 00106, 00107, 00108, 00109, 00272 | test + scenario |
-| DELEG | `StakeKeyNotRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#anUnregisteredCredentialCannotDeregisterOrDelegate<br>MutationMatrixTest#deregistrationOfAnUnregisteredCredential | 00100, 00101, 00102, 00103 | test + scenario |
-| DELEG | `StakeKeyHasNonZeroAccountBalanceDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#aCredentialWithARewardBalanceCannotDeregister<br>MutationMatrixTest#deregistrationWithARewardBalance | 00104, 00105 | test + scenario |
-| DELEG | `DelegateeDRepNotRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#theDelegateeDRepMustBeRegistered<br>MutationMatrixTest#delegationToAnUnregisteredDRep | 00061, 00062, 00063, 00064 | test + scenario |
-| DELEG | `DelegateeStakePoolNotRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#theDelegateePoolMustBeRegistered<br>MutationMatrixTest#delegationToAnUnregisteredPool | 00065, 00066, 00067, 00068 | test + scenario |
-| POOL | `StakePoolNotRegisteredOnKeyPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#retirementOfAnUnregisteredPool<br>PoolRuleTest#onlyARegisteredPoolRetires | 00112, 00113 | test + scenario |
-| POOL | `StakePoolRetirementWrongEpochPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#retirementAtTheCurrentEpoch<br>PoolRuleTest#theRetirementEpochIsAfterTheCurrentEpochAndWithinEMax | 00114, 00115 | test + scenario |
-| POOL | `StakePoolCostTooLowPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#poolCostTooLow<br>PoolRuleTest#theCostIsAtLeastMinPoolCost | 00110, 00111 | test + scenario |
-| POOL | `WrongNetworkPOOL` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#poolRewardAccountOnAnotherNetwork<br>PoolRuleTest#theRewardAccountIsOnTheLedgersNetwork | 00271 | test + scenario |
-| POOL | `PoolMedataHashTooBig` | 10+ | dynamic | `PoolRule` | MutationMatrixTest#poolMetadataHashTooBig<br>PoolRuleTest#theMetadataHashIsAtMost32Bytes | – | test |
+| DELEG | `StakeKeyRegisteredDELEG` | 9+ | dynamic | `DelegRule` | DelegRuleTest#aRegisteredCredentialCannotRegisterAgain<br>MutationMatrixTest#registrationOfARegisteredCredential | 00106, 00107, 00108, 00109, 00272 | test + scenario |
+| DELEG | `StakeKeyNotRegisteredDELEG` | 9+ | dynamic | `DelegRule` | DelegRuleTest#anUnregisteredCredentialCannotDeregisterOrDelegate<br>MutationMatrixTest#deregistrationOfAnUnregisteredCredential | 00100, 00101, 00102, 00103 | test + scenario |
+| DELEG | `StakeKeyHasNonZeroAccountBalanceDELEG` | 9+ | dynamic | `DelegRule` | DelegRuleTest#aCredentialWithARewardBalanceCannotDeregister<br>MutationMatrixTest#deregistrationWithARewardBalance | 00104, 00105 | test + scenario |
+| DELEG | `DelegateeDRepNotRegisteredDELEG` | 10+ | dynamic | `DelegRule` | DelegRuleTest#aDelegateeDRepNeedsNoRegistrationDuringTheBootstrapPhase<br>DelegRuleTest#theDelegateeDRepMustBeRegistered<br>MutationMatrixTest#delegationToAnUnregisteredDRep<br>MutationMatrixTest#theBootstrapPhaseAcceptsWhatProtocolVersion10Rejects | 00061, 00062, 00063, 00064 | test + scenario |
+| DELEG | `DelegateeStakePoolNotRegisteredDELEG` | 9+ | dynamic | `DelegRule` | DelegRuleTest#theDelegateePoolMustBeRegistered<br>MutationMatrixTest#delegationToAnUnregisteredPool | 00065, 00066, 00067, 00068 | test + scenario |
+| POOL | `StakePoolNotRegisteredOnKeyPOOL` | 9+ | dynamic | `PoolRule` | MutationMatrixTest#retirementOfAnUnregisteredPool<br>PoolRuleTest#onlyARegisteredPoolRetires | 00112, 00113 | test + scenario |
+| POOL | `StakePoolRetirementWrongEpochPOOL` | 9+ | dynamic | `PoolRule` | MutationMatrixTest#retirementAtTheCurrentEpoch<br>PoolRuleTest#theRetirementEpochIsAfterTheCurrentEpochAndWithinEMax | 00114, 00115 | test + scenario |
+| POOL | `StakePoolCostTooLowPOOL` | 9+ | dynamic | `PoolRule` | MutationMatrixTest#poolCostTooLow<br>PoolRuleTest#theCostIsAtLeastMinPoolCost | 00110, 00111 | test + scenario |
+| POOL | `WrongNetworkPOOL` | 9+ | dynamic | `PoolRule` | MutationMatrixTest#poolRewardAccountOnAnotherNetwork<br>PoolRuleTest#theRewardAccountIsOnTheLedgersNetwork | 00271 | test + scenario |
+| POOL | `PoolMedataHashTooBig` | 9+ | dynamic | `PoolRule` | MutationMatrixTest#poolMetadataHashTooBig<br>PoolRuleTest#theMetadataHashIsAtMost32Bytes | – | test |
 | POOL | `VRFKeyHashAlreadyRegistered` | 11+ | dynamic | `PoolRule` | MutationMatrixTest#poolVrfKeyHashTakenV11<br>PoolRuleTest#fromProtocolVersion11AVrfKeyHashBelongsToOnePool | – | test |
-| GOVCERT | `ConwayDRepAlreadyRegistered` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#aRegisteredDRepCannotRegisterAgain<br>MutationMatrixTest#drepAlreadyRegistered | 00059, 00060 | test + scenario |
-| GOVCERT | `ConwayDRepIncorrectDeposit` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theDRepDepositIsPpDRepDeposit<br>MutationMatrixTest#drepDepositIncorrect | – | test |
-| GOVCERT | `ConwayDRepNotRegistered` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#onlyARegisteredDRepDeregistersOrUpdates<br>MutationMatrixTest#drepNotRegistered | – | test |
-| GOVCERT | `ConwayDRepIncorrectRefund` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theDRepRefundIsTheRecordedDeposit<br>MutationMatrixTest#drepRefundIncorrect | – | test |
-| GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#aResignedMemberCannotAuthorizeOrResignAgain<br>MutationMatrixTest#committeeMemberResigned | 00206, 00207, 00208, 00209, 00210, 00217 | test + scenario |
-| GOVCERT | `ConwayCommitteeIsUnknown` | 10+ | dynamic | `GovCertRule` | GovCertRuleTest#theColdCredentialIsAMemberOrAProposedMember<br>MutationMatrixTest#committeeMemberUnknown | 00201, 00204, 00205, 00220 | test + scenario |
+| GOVCERT | `ConwayDRepAlreadyRegistered` | 9+ | dynamic | `GovCertRule` | GovCertRuleTest#aRegisteredDRepCannotRegisterAgain<br>MutationMatrixTest#drepAlreadyRegistered | 00059, 00060 | test + scenario |
+| GOVCERT | `ConwayDRepIncorrectDeposit` | 9+ | dynamic | `GovCertRule` | GovCertRuleTest#theDRepDepositIsPpDRepDeposit<br>MutationMatrixTest#drepDepositIncorrect | – | test |
+| GOVCERT | `ConwayDRepNotRegistered` | 9+ | dynamic | `GovCertRule` | GovCertRuleTest#onlyARegisteredDRepDeregistersOrUpdates<br>MutationMatrixTest#drepNotRegistered | – | test |
+| GOVCERT | `ConwayDRepIncorrectRefund` | 9+ | dynamic | `GovCertRule` | GovCertRuleTest#theDRepRefundIsTheRecordedDeposit<br>MutationMatrixTest#drepRefundIncorrect | – | test |
+| GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 9+ | dynamic | `GovCertRule` | GovCertRuleTest#aResignedMemberCannotAuthorizeOrResignAgain<br>MutationMatrixTest#committeeMemberResigned | 00206, 00207, 00208, 00209, 00210, 00217 | test + scenario |
+| GOVCERT | `ConwayCommitteeIsUnknown` | 9+ | dynamic | `GovCertRule` | GovCertRuleTest#theColdCredentialIsAMemberOrAProposedMember<br>MutationMatrixTest#committeeMemberUnknown | 00201, 00204, 00205, 00220 | test + scenario |
 | GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | `GovRule` | GovRuleTest#unelectedCommitteeMembersDoNotVoteFromProtocolVersion11<br>MutationMatrixTest#unelectedCommitteeVoterV11 | – | test |
-| GOV | `DisallowedProposalDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `ProposalCantFollow` | 10+ | dynamic | `GovRule` | GovRuleTest#aHardForkMustFollowItsPredecessor<br>MutationMatrixTest#hardForkCantFollow | 00202, 00203 | test + scenario |
-| GOV | `MalformedProposal` | 10+ | dynamic | `GovRule` | GovRuleTest#parameterUpdatesMustBeWellFormed<br>MutationMatrixTest#malformedProposal | – | test |
-| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#theReturnAccountMustBeRegistered<br>MutationMatrixTest#proposalReturnAccountMissing | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | test + scenario |
-| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalAccountsMustBeRegistered<br>MutationMatrixTest#treasuryWithdrawalAccountMissing | 00117, 00118, 00119 | test + scenario |
-| GOV | `ProposalDepositIncorrect` | 10+ | dynamic | `GovRule` | GovRuleTest#theDepositIsTheGovActionDeposit<br>MutationMatrixTest#proposalDepositIncorrect | – | test |
-| GOV | `ProposalProcedureNetworkIdMismatch` | 10+ | dynamic | `GovRule` | GovRuleTest#theReturnAccountIsOnTheLedgersNetwork<br>MutationMatrixTest#proposalReturnAccountNetwork | 00282 | test + scenario |
-| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 10+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalAccountsAreOnTheLedgersNetwork<br>MutationMatrixTest#treasuryWithdrawalNetwork | – | test |
-| GOV | `InvalidGuardrailsScriptHash` | 10+ | dynamic | `GovRule` | GovRuleTest#thePolicyIsTheConstitutionsGuardrailScript<br>MutationMatrixTest#guardrailsScriptHash | 00191, 00192, 00193, 00194, 00195 | test + scenario |
-| GOV | `ZeroTreasuryWithdrawals` | 10+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalsMustWithdrawSomething<br>MutationMatrixTest#treasuryWithdrawalZero | 00130 | test + scenario |
-| GOV | `ConflictingCommitteeUpdate` | 10+ | dynamic | `GovRule` | GovRuleTest#aMemberCannotBeAddedAndRemoved<br>MutationMatrixTest#committeeUpdateConflict | – | test |
-| GOV | `ExpirationEpochTooSmall` | 10+ | dynamic | `GovRule` | GovRuleTest#newMembersExpireAfterTheCurrentEpoch<br>MutationMatrixTest#committeeExpirationTooSmall | – | test |
-| GOV | `InvalidPrevGovActionId` | 10+ | dynamic | `GovRule` | GovRuleTest#theParentIsTheEnactedRootOrAProposalOfTheSamePurpose<br>MutationMatrixTest#invalidPrevGovActionId | 00148, 00149, 00150 | test + scenario |
-| GOV | `VotersDoNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#votersMustExistAfterTheCertificates<br>MutationMatrixTest#voterDoesNotExist | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | test + scenario |
-| GOV | `GovActionsDoNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#votesMustBeOnProposalsInTheState<br>MutationMatrixTest#govActionDoesNotExist | 00221, 00222, 00223, 00224 | test + scenario |
-| GOV | `DisallowedVotesDuringBootstrap` | 9 only | dynamic | – | – | – | out of scope |
-| GOV | `VotingOnExpiredGovAction` | 10+ | dynamic | `GovRule` | GovRuleTest#votesAreNotForExpiredActions | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | test + scenario |
-| GOV | `DisallowedVoters` | 10+ | dynamic | `GovRule` | GovRuleTest#theVoterMatrix<br>MutationMatrixTest#disallowedVoter | 00172, 00173, 00174, 00175 | test + scenario |
-| UTXOW | `InvalidWitnessesUTXOW` | 10+ | static | `UtxowRule` | MutationMatrixTest#invalidWitness<br>UtxowRuleTest#aSignatureThatDoesNotVerifyIsInvalid<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#ofDuplicateBootstrapWitnessesTheLastIsKept | 00076, 00079 | test + scenario |
-| UTXOW | `MissingVKeyWitnessesUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#missingVKeyWitness<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#keyWitnessesNeededPerPurpose<br>UtxowRuleTest#theInputOwnerMustSign | 00084, 00085, 00086 | test + scenario |
-| UTXOW | `MissingScriptWitnessesUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#missingScriptWitness<br>UtxowRuleTest#aNeededScriptThatIsNotProvidedIsMissing | 00184, 00186, 00188, 00190, 00262 | test + scenario |
-| UTXOW | `ExtraneousScriptWitnessesUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#extraneousScriptWitness<br>UtxowRuleTest#aWitnessScriptNothingNeedsIsExtraneous<br>UtxowRuleTest#referenceScriptsProvideNeededScripts | 00259, 00260 | test + scenario |
-| UTXOW | `ScriptWitnessNotValidatingUTXOW` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#nativeScriptNotValidating<br>UtxowRuleTest#aNeededNativeScriptThatDoesNotHoldFails | – | test |
-| UTXOW | `MissingTxBodyMetadataHash` | 10+ | static | `UtxowRule` | MutationMatrixTest#missingMetadataHash<br>UtxowRuleTest#theAuxiliaryDataHashMustMatchTheAuxiliaryData | 00082 | test + scenario |
-| UTXOW | `MissingTxMetadata` | 10+ | static | `UtxowRule` | MutationMatrixTest#missingMetadata<br>UtxowRuleTest#theAuxiliaryDataHashMustMatchTheAuxiliaryData | 00083 | test + scenario |
-| UTXOW | `ConflictingMetadataHash` | 10+ | static | `UtxowRule` | MutationMatrixTest#conflictingMetadataHash<br>UtxowRuleTest#theAuxiliaryDataHashMustMatchTheAuxiliaryData | 00053 | test + scenario |
-| UTXOW | `InvalidMetadata` | 10+ | static | `UtxowRule` | MutationMatrixTest#invalidMetadata<br>UtxowRuleTest#malformedPlutusScriptsInTheAuxiliaryDataAreInvalidMetadata | – | test |
-| UTXOW | `MissingRedeemers` | 10+ | dynamic | `UtxowRule` | JavaEngineScriptPreparationTest#aPlutusSpendWithoutARedeemerIsNotAccepted<br>MutationMatrixTest#missingRedeemer<br>UtxowRuleTest#aNeededPlutusScriptWithoutARedeemerIsMissingOneAndCannotBeCollected | – | test |
-| UTXOW | `ExtraRedeemers` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#extraRedeemer<br>UtxowRuleTest#aRedeemerForNoNeededPlutusScriptIsExtra | – | test |
-| UTXOW | `MissingRequiredDatums` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#missingRequiredDatum<br>UtxowRuleTest#aDatumHashInputNeedsItsDatum | – | test |
-| UTXOW | `NotAllowedSupplementalDatums` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#notAllowedSupplementalDatum<br>UtxowRuleTest#supplementalDatumsMustBeNamedByAnOutputOrAReferenceInput | – | test |
-| UTXOW | `UnspendableUTxONoDatumHash` | 10+ | dynamic | `UtxowRule` | MutationMatrixTest#unspendableNoDatum<br>UtxowRuleTest#aPlutusV2InputWithoutADatumIsUnspendable | – | test |
-| UTXOW | `PPViewHashesDontMatch` | 10 | dynamic | `UtxowRule` | MutationMatrixTest#scriptIntegrityHash<br>UtxowRuleTest#datumsAloneNeedAnIntegrityHash<br>UtxowRuleTest#theScriptIntegrityHashConstructorDependsOnTheProtocolVersion | – | test |
+| GOV | `DisallowedProposalDuringBootstrap` | 9 | dynamic | `GovRule` | GovRuleTest#onlyBootstrapActionsMayBeProposedAtProtocolVersion9<br>MutationMatrixTest#bootstrapProposalV9<br>MutationMatrixTest#bootstrapTreasuryWithdrawalV9 | – | test |
+| GOV | `ProposalCantFollow` | 9+ | dynamic | `GovRule` | GovRuleTest#aHardForkMustFollowItsPredecessor<br>MutationMatrixTest#hardForkCantFollow | 00202, 00203 | test + scenario |
+| GOV | `MalformedProposal` | 9+ | dynamic | `GovRule` | GovRuleTest#coinsPerUTxOByteMayBeZeroDuringTheBootstrapPhase<br>GovRuleTest#parameterUpdatesMustBeWellFormed<br>MutationMatrixTest#malformedProposal<br>MutationMatrixTest#malformedProposalCoinsPerUTxOByte<br>MutationMatrixTest#theBootstrapPhaseAcceptsWhatProtocolVersion10Rejects | – | test |
+| GOV | `ProposalReturnAccountDoesNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#returnAccountsAreCheckedFromProtocolVersion10<br>GovRuleTest#theReturnAccountMustBeRegistered<br>MutationMatrixTest#proposalReturnAccountMissing<br>MutationMatrixTest#theBootstrapPhaseAcceptsWhatProtocolVersion10Rejects | 00092, 00093, 00094, 00095, 00096, 00097, 00098 | test + scenario |
+| GOV | `TreasuryWithdrawalReturnAccountsDoNotExist` | 10+ | dynamic | `GovRule` | GovRuleTest#returnAccountsAreCheckedFromProtocolVersion10<br>GovRuleTest#treasuryWithdrawalAccountsMustBeRegistered<br>MutationMatrixTest#treasuryWithdrawalAccountMissing | 00117, 00118, 00119 | test + scenario |
+| GOV | `ProposalDepositIncorrect` | 9+ | dynamic | `GovRule` | GovRuleTest#theDepositIsTheGovActionDeposit<br>MutationMatrixTest#proposalDepositIncorrect | – | test |
+| GOV | `ProposalProcedureNetworkIdMismatch` | 9+ | dynamic | `GovRule` | GovRuleTest#theReturnAccountIsOnTheLedgersNetwork<br>MutationMatrixTest#proposalReturnAccountNetwork | 00282 | test + scenario |
+| GOV | `TreasuryWithdrawalsNetworkIdMismatch` | 9+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalAccountsAreOnTheLedgersNetwork<br>MutationMatrixTest#treasuryWithdrawalNetwork | – | test |
+| GOV | `InvalidGuardrailsScriptHash` | 9+ | dynamic | `GovRule` | GovRuleTest#thePolicyIsTheConstitutionsGuardrailScript<br>MutationMatrixTest#guardrailsScriptHash | 00191, 00192, 00193, 00194, 00195 | test + scenario |
+| GOV | `ZeroTreasuryWithdrawals` | 9+ | dynamic | `GovRule` | GovRuleTest#treasuryWithdrawalsMustWithdrawSomething<br>MutationMatrixTest#treasuryWithdrawalZero | 00130 | test + scenario |
+| GOV | `ConflictingCommitteeUpdate` | 9+ | dynamic | `GovRule` | GovRuleTest#aMemberCannotBeAddedAndRemoved<br>MutationMatrixTest#committeeUpdateConflict | – | test |
+| GOV | `ExpirationEpochTooSmall` | 9+ | dynamic | `GovRule` | GovRuleTest#newMembersExpireAfterTheCurrentEpoch<br>MutationMatrixTest#committeeExpirationTooSmall | – | test |
+| GOV | `InvalidPrevGovActionId` | 9+ | dynamic | `GovRule` | GovRuleTest#theParentIsTheEnactedRootOrAProposalOfTheSamePurpose<br>MutationMatrixTest#invalidPrevGovActionId | 00148, 00149, 00150 | test + scenario |
+| GOV | `VotersDoNotExist` | 9+ | dynamic | `GovRule` | GovRuleTest#votersMustExistAfterTheCertificates<br>MutationMatrixTest#voterDoesNotExist | 00158, 00159, 00160, 00161, 00162, 00163, 00164, 00165, 00166, 00169, 00170, 00171 | test + scenario |
+| GOV | `GovActionsDoNotExist` | 9+ | dynamic | `GovRule` | GovRuleTest#votesMustBeOnProposalsInTheState<br>MutationMatrixTest#govActionDoesNotExist | 00221, 00222, 00223, 00224 | test + scenario |
+| GOV | `DisallowedVotesDuringBootstrap` | 9 | dynamic | `GovRule` | GovRuleTest#bootstrapVotersAtProtocolVersion9<br>MutationMatrixTest#bootstrapDRepVoteV9 | – | test |
+| GOV | `VotingOnExpiredGovAction` | 9+ | dynamic | `GovRule` | GovRuleTest#votesAreNotForExpiredActions | 00225, 00226, 00227, 00228, 00229, 00230, 00231, 00232, 00233, 00234, 00235, 00236, 00237, 00238, 00239, 00240, 00241 | test + scenario |
+| GOV | `DisallowedVoters` | 9+ | dynamic | `GovRule` | GovRuleTest#theVoterMatrix<br>MutationMatrixTest#disallowedVoter | 00172, 00173, 00174, 00175 | test + scenario |
+| UTXOW | `InvalidWitnessesUTXOW` | 9+ | static | `UtxowRule` | MutationMatrixTest#invalidWitness<br>UtxowRuleTest#aSignatureThatDoesNotVerifyIsInvalid<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#ofDuplicateBootstrapWitnessesTheLastIsKept | 00076, 00079 | test + scenario |
+| UTXOW | `MissingVKeyWitnessesUTXOW` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#missingVKeyWitness<br>UtxowRuleTest#bootstrapWitnessesAuthoriseByronInputs<br>UtxowRuleTest#keyWitnessesNeededPerPurpose<br>UtxowRuleTest#theInputOwnerMustSign | 00084, 00085, 00086 | test + scenario |
+| UTXOW | `MissingScriptWitnessesUTXOW` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#missingScriptWitness<br>UtxowRuleTest#aNeededScriptThatIsNotProvidedIsMissing | 00184, 00186, 00188, 00190, 00262 | test + scenario |
+| UTXOW | `ExtraneousScriptWitnessesUTXOW` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#extraneousScriptWitness<br>UtxowRuleTest#aWitnessScriptNothingNeedsIsExtraneous<br>UtxowRuleTest#referenceScriptsProvideNeededScripts | 00259, 00260 | test + scenario |
+| UTXOW | `ScriptWitnessNotValidatingUTXOW` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#nativeScriptNotValidating<br>UtxowRuleTest#aNeededNativeScriptThatDoesNotHoldFails | – | test |
+| UTXOW | `MissingTxBodyMetadataHash` | 9+ | static | `UtxowRule` | MutationMatrixTest#missingMetadataHash<br>UtxowRuleTest#theAuxiliaryDataHashMustMatchTheAuxiliaryData | 00082 | test + scenario |
+| UTXOW | `MissingTxMetadata` | 9+ | static | `UtxowRule` | MutationMatrixTest#missingMetadata<br>UtxowRuleTest#theAuxiliaryDataHashMustMatchTheAuxiliaryData | 00083 | test + scenario |
+| UTXOW | `ConflictingMetadataHash` | 9+ | static | `UtxowRule` | MutationMatrixTest#conflictingMetadataHash<br>UtxowRuleTest#theAuxiliaryDataHashMustMatchTheAuxiliaryData | 00053 | test + scenario |
+| UTXOW | `InvalidMetadata` | 9+ | static | `UtxowRule` | MutationMatrixTest#invalidMetadata<br>UtxowRuleTest#malformedPlutusScriptsInTheAuxiliaryDataAreInvalidMetadata | – | test |
+| UTXOW | `MissingRedeemers` | 9+ | dynamic | `UtxowRule` | JavaEngineScriptPreparationTest#aPlutusSpendWithoutARedeemerIsNotAccepted<br>MutationMatrixTest#missingRedeemer<br>UtxowRuleTest#aNeededPlutusScriptWithoutARedeemerIsMissingOneAndCannotBeCollected | – | test |
+| UTXOW | `ExtraRedeemers` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#extraRedeemer<br>UtxowRuleTest#aRedeemerForNoNeededPlutusScriptIsExtra | – | test |
+| UTXOW | `MissingRequiredDatums` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#missingRequiredDatum<br>UtxowRuleTest#aDatumHashInputNeedsItsDatum | – | test |
+| UTXOW | `NotAllowedSupplementalDatums` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#notAllowedSupplementalDatum<br>UtxowRuleTest#supplementalDatumsMustBeNamedByAnOutputOrAReferenceInput | – | test |
+| UTXOW | `UnspendableUTxONoDatumHash` | 9+ | dynamic | `UtxowRule` | MutationMatrixTest#unspendableNoDatum<br>UtxowRuleTest#aPlutusV2InputWithoutADatumIsUnspendable | – | test |
+| UTXOW | `PPViewHashesDontMatch` | 9–10 | dynamic | `UtxowRule` | MutationMatrixTest#scriptIntegrityHash<br>UtxowRuleTest#datumsAloneNeedAnIntegrityHash<br>UtxowRuleTest#theScriptIntegrityHashConstructorDependsOnTheProtocolVersion | – | test |
 | UTXOW | `ScriptIntegrityHashMismatch` | 11+ | dynamic | `UtxowRule` | MutationMatrixTest#scriptIntegrityHashV11<br>UtxowRuleTest#theScriptIntegrityHashConstructorDependsOnTheProtocolVersion | – | test |
-| UTXOW | `MalformedScriptWitnesses` | 10+ | static | `UtxowRule` | MutationMatrixTest#malformedScriptWitness<br>MutationMatrixTest#scriptTrailingBytes<br>MutationMatrixTest#scriptUnavailableBuiltin<br>UtxowRuleTest#malformedPlutusWitnessScripts | 00256, 00257, 00258 | test + scenario |
-| UTXOW | `MalformedReferenceScripts` | 10+ | static | `UtxowRule` | MutationMatrixTest#malformedReferenceScript<br>UtxowRuleTest#malformedReferenceScriptsOfOwnOutputs | 00151 | test + scenario |
-| UTXO | `BabbageNonDisjointRefInputs` | 10 | dynamic | `UtxoRule` | MutationMatrixTest#nonDisjointReferenceInputs<br>UtxoRuleTest#referenceInputsMustBeDisjointFromSpendingInputsBeforeProtocolVersion11 | 00048 | test + scenario |
-| UTXO | `OutsideValidityIntervalUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#expired<br>MutationMatrixTest#notYetValid<br>UtxoRuleTest#validityIntervalIsLowerInclusiveUpperExclusive | 00089, 00090, 00091 | test + scenario |
+| UTXOW | `MalformedScriptWitnesses` | 9+ | static | `UtxowRule` | MutationMatrixTest#malformedScriptWitness<br>MutationMatrixTest#scriptTrailingBytes<br>MutationMatrixTest#scriptUnavailableBuiltin<br>UtxowRuleTest#malformedPlutusWitnessScripts | 00256, 00257, 00258 | test + scenario |
+| UTXOW | `MalformedReferenceScripts` | 9+ | static | `UtxowRule` | MutationMatrixTest#malformedReferenceScript<br>UtxowRuleTest#malformedReferenceScriptsOfOwnOutputs | 00151 | test + scenario |
+| UTXO | `BabbageNonDisjointRefInputs` | 9–10 | dynamic | `UtxoRule` | MutationMatrixTest#nonDisjointReferenceInputs<br>UtxoRuleTest#referenceInputsMustBeDisjointFromSpendingInputsBeforeProtocolVersion11 | 00048 | test + scenario |
+| UTXO | `OutsideValidityIntervalUTxO` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#expired<br>MutationMatrixTest#notYetValid<br>UtxoRuleTest#validityIntervalIsLowerInclusiveUpperExclusive | 00089, 00090, 00091 | test + scenario |
 | UTXO | `OutsideForecast` | unreachable | dynamic | – | – | – | unreachable at pin |
-| UTXO | `InputSetEmptyUTxO` | 10+ | static | `UtxoRule` | MutationMatrixTest#emptyInputs<br>UtxoRuleTest#emptyInputSet | 00074 | test + scenario |
-| UTXO | `FeeTooSmallUTxO` | 10+ | dynamic | `UtxoRule` | MinFeeTest#referenceScriptsOfReferenceInputsAreCharged<br>MutationMatrixTest#feeTooSmall<br>UtxoRuleTest#feeOneLovelaceBelowTheMinimum | 00069, 00070, 00071 | test + scenario |
-| UTXO | `ScriptsNotPaidUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#scriptsNotPaid<br>UtxoRuleTest#collateralLockedByAScript | 00099 | test + scenario |
-| UTXO | `CollateralContainsNonADA` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#collateralContainsNonAda<br>UtxoRuleTest#collateralWithATokenAndNoReturn | – | test |
-| UTXO | `InsufficientCollateral` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#insufficientCollateral<br>UtxoRuleTest#collateralBelowThePercentageOfTheFee | 00075 | test + scenario |
-| UTXO | `IncorrectTotalCollateralField` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#incorrectTotalCollateral<br>UtxoRuleTest#declaredTotalCollateralDiffersFromTheBalance | 00073 | test + scenario |
-| UTXO | `NoCollateralInputs` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#noCollateral<br>UtxoRuleTest#redeemersWithoutCollateral | 00278 | test + scenario |
-| UTXO | `BadInputsUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#badInput<br>UtxoRuleTest#unknownSpendingCollateralAndReferenceInputs | 00050, 00051, 00052 | test + scenario |
-| UTXO | `ValueNotConservedUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#valueNotConserved<br>UtxoRuleTest#changeOneLovelaceTooLarge | 00120, 00121, 00122, 00123, 00124 | test + scenario |
-| UTXO | `BabbageOutputTooSmallUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#outputTooSmall<br>UtxoRuleTest#outputBelowItsMinimumUtxoValue | 00049, 00254 | test + scenario |
-| UTXO | `OutputTooBigUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#outputTooBig<br>UtxoRuleTest#outputValueSerialisesAboveMaxValSize | 00087, 00280 | test + scenario |
-| UTXO | `OutputBootAddrAttrsTooBig` | 10+ | static | `UtxoRule` | MutationMatrixTest#bootAddrAttrsTooBig<br>UtxoRuleTest#byronAddressWithOversizedAttributes | – | test |
-| UTXO | `WrongNetwork` | 10+ | static | `UtxoRule` | MutationMatrixTest#wrongNetworkOutput<br>UtxoRuleTest#outputToAMainnetAddress | 00128 | test + scenario |
-| UTXO | `WrongNetworkWithdrawal` | 10+ | static | `UtxoRule` | UtxoRuleTest#withdrawalFromAMainnetRewardAccount | 00129 | test + scenario |
-| UTXO | `WrongNetworkInTxBody` | 10+ | static | `UtxoRule` | MutationMatrixTest#wrongNetworkInTxBody<br>UtxoRuleTest#bodyNetworkIdForAnotherNetwork | 00127 | test + scenario |
-| UTXO | `MaxTxSizeUTxO` | 10+ | static | `UtxoRule` | MutationMatrixTest#maxTxSize<br>UtxoRuleTest#transactionAboveMaxTxSize | 00081, 00131 | test + scenario |
-| UTXO | `ExUnitsTooBigUTxO` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#exUnitsTooBig<br>UtxoRuleTest#redeemerAboveMaxTxExUnits | – | test |
-| UTXO | `TooManyCollateralInputs` | 10+ | dynamic | `UtxoRule` | MutationMatrixTest#tooManyCollateralInputs<br>UtxoRuleTest#moreCollateralInputsThanAllowed | 00116 | test + scenario |
+| UTXO | `InputSetEmptyUTxO` | 9+ | static | `UtxoRule` | MutationMatrixTest#emptyInputs<br>UtxoRuleTest#emptyInputSet | 00074 | test + scenario |
+| UTXO | `FeeTooSmallUTxO` | 9+ | dynamic | `UtxoRule` | MinFeeTest#referenceScriptsOfReferenceInputsAreCharged<br>MutationMatrixTest#feeTooSmall<br>UtxoRuleTest#feeOneLovelaceBelowTheMinimum | 00069, 00070, 00071 | test + scenario |
+| UTXO | `ScriptsNotPaidUTxO` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#scriptsNotPaid<br>UtxoRuleTest#collateralLockedByAScript | 00099 | test + scenario |
+| UTXO | `CollateralContainsNonADA` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#collateralContainsNonAda<br>UtxoRuleTest#collateralWithATokenAndNoReturn | – | test |
+| UTXO | `InsufficientCollateral` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#insufficientCollateral<br>UtxoRuleTest#collateralBelowThePercentageOfTheFee | 00075 | test + scenario |
+| UTXO | `IncorrectTotalCollateralField` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#incorrectTotalCollateral<br>UtxoRuleTest#declaredTotalCollateralDiffersFromTheBalance | 00073 | test + scenario |
+| UTXO | `NoCollateralInputs` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#noCollateral<br>UtxoRuleTest#redeemersWithoutCollateral | 00278 | test + scenario |
+| UTXO | `BadInputsUTxO` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#badInput<br>UtxoRuleTest#unknownSpendingCollateralAndReferenceInputs | 00050, 00051, 00052 | test + scenario |
+| UTXO | `ValueNotConservedUTxO` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#valueNotConserved<br>UtxoRuleTest#changeOneLovelaceTooLarge | 00120, 00121, 00122, 00123, 00124 | test + scenario |
+| UTXO | `BabbageOutputTooSmallUTxO` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#outputTooSmall<br>UtxoRuleTest#outputBelowItsMinimumUtxoValue | 00049, 00254 | test + scenario |
+| UTXO | `OutputTooBigUTxO` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#outputTooBig<br>UtxoRuleTest#outputValueSerialisesAboveMaxValSize | 00087, 00280 | test + scenario |
+| UTXO | `OutputBootAddrAttrsTooBig` | 9+ | static | `UtxoRule` | MutationMatrixTest#bootAddrAttrsTooBig<br>UtxoRuleTest#byronAddressWithOversizedAttributes | – | test |
+| UTXO | `WrongNetwork` | 9+ | static | `UtxoRule` | MutationMatrixTest#wrongNetworkOutput<br>UtxoRuleTest#outputToAMainnetAddress | 00128 | test + scenario |
+| UTXO | `WrongNetworkWithdrawal` | 9+ | static | `UtxoRule` | UtxoRuleTest#withdrawalFromAMainnetRewardAccount | 00129 | test + scenario |
+| UTXO | `WrongNetworkInTxBody` | 9+ | static | `UtxoRule` | MutationMatrixTest#wrongNetworkInTxBody<br>UtxoRuleTest#bodyNetworkIdForAnotherNetwork | 00127 | test + scenario |
+| UTXO | `MaxTxSizeUTxO` | 9+ | static | `UtxoRule` | MutationMatrixTest#maxTxSize<br>UtxoRuleTest#transactionAboveMaxTxSize | 00081, 00131 | test + scenario |
+| UTXO | `ExUnitsTooBigUTxO` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#exUnitsTooBig<br>UtxoRuleTest#redeemerAboveMaxTxExUnits | – | test |
+| UTXO | `TooManyCollateralInputs` | 9+ | dynamic | `UtxoRule` | MutationMatrixTest#tooManyCollateralInputs<br>UtxoRuleTest#moreCollateralInputsThanAllowed | 00116 | test + scenario |
 | UTXO | `OutputTooSmallUTxO` | unreachable | dynamic | – | – | – | unreachable at pin |
-| UTXOS | `CollectErrors` | 10+ | dynamic | `UtxosRule` | JavaEngineScriptPreparationTest#aPlutusSpendWithoutARedeemerIsNotAccepted<br>JavaEngineScriptPreparationTest#aValidityBoundPastTheForecastHorizonIsCollectErrors<br>UtxosRuleTest#collectErrorsAreReportedAndStopTheScripts | 00088 | test + scenario |
-| UTXOS | `ValidationTagMismatch` | 10+ | static (phase 2) | `UtxosRule` | MutationMatrixTest#passedUnexpectedly<br>MutationMatrixTest#scriptFails<br>UtxosRuleTest#aFailingScriptClaimedValid<br>UtxosRuleTest#passingScriptsClaimedInvalid | 00198, 00199, 00200 | test + scenario |
+| UTXOS | `CollectErrors` | 9+ | dynamic | `UtxosRule` | JavaEngineScriptPreparationTest#aPlutusSpendWithoutARedeemerIsNotAccepted<br>JavaEngineScriptPreparationTest#aValidityBoundPastTheForecastHorizonIsCollectErrors<br>UtxosRuleTest#collectErrorsAreReportedAndStopTheScripts | 00088 | test + scenario |
+| UTXOS | `ValidationTagMismatch` | 9+ | static (phase 2) | `UtxosRule` | MutationMatrixTest#passedUnexpectedly<br>MutationMatrixTest#scriptFails<br>UtxosRuleTest#aFailingScriptClaimedValid<br>UtxosRuleTest#passingScriptsClaimedInvalid | 00198, 00199, 00200 | test + scenario |

@@ -8,13 +8,13 @@ Generated 2026-09-29 by
 ./gradlew :ledger-conformance:conformanceReport -PwithAmaru=true -PamaruWasm=<amaru_validator.wasm> -PamaruScenariosDir=<amaru clone at v10.11.20260925>
 ```
 
-Amaru module: `amaru-validator-wasm` crate 0.1.1, sha256 `848aae7c46f9aa5e7e7346c50efb50d22561d78bb37e18930e8117784517b68b` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
+Amaru module: `amaru-validator-wasm` crate 0.1.1, sha256 `c43eeb3738cdce05caf3a897243485b4bca534a03272102cfab3579010c2c3e3` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
 
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
 - **Scenarios**: 276 Haskell-cross-checked Amaru scenarios (tag `v10.11.20260925`), rule `LEDGER`, origin `SYNC`, one `InMemoryLedgerView` per scenario.
-- **Mutants**: 85 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions in a preprod-like PV 10 world and a PV 11 copy for the constructors that exist only from 11 (bases valid in both), with a registered stake account, pools, a DRep, committee members and governance state (standing proposals, a treasury); signed with Amaru's corpus test keys and three more, re-signed after every edit.
-- **Constructors**: 88 Conway leaf predicate failures at cardano-ledger `f649f975 (cardano-ledger-conway 1.23.0.0)`, 84 reachable at PV 10–11 ([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).
+- **Mutants**: 89 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions in a preprod-like PV 10 world with a PV 11 copy for the constructors that exist only from 11 and a PV 9 (bootstrap) copy for the bootstrap-only constructors (bases valid in all three), with a registered stake account, pools, a DRep, committee members and governance state (standing proposals, a treasury); signed with Amaru's corpus test keys and three more, re-signed after every edit.
+- **Constructors**: 88 Conway leaf predicate failures at cardano-ledger `f649f975 (cardano-ledger-conway 1.23.0.0)`, 86 reachable at PV 9–11 ([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).
 - **Verdict match**: accepted exactly when Haskell accepts. **Constructor match**: the verdict matches and the engine's *first* failure is the expected Haskell `RULE.Constructor` (a decoding failure must be reported as one). **Constructor found**: the expected constructor is among the engine's failures in any position (the copied Java rules report every failure, in their own order).
 
 | Engine | What runs |
@@ -23,21 +23,21 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 | `scalus-legacy+supplementary` | ScalusBasedTransactionValidator with the supplementary CCL certificate and governance rules, behind TransactionValidationService's decode and UTxO-resolution pre-checks |
 | `scalus-engine` | ScalusLedgerValidationEngine over the LedgerView (engine API, step 1d) |
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
-| `java-engine` | JavaLedgerValidationEngine (ADR-056 Phases 3–5: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS) over the LedgerView, Scalus phase 2 |
-| `amaru` | AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057); module crate 0.1.1, sha256 848aae7c46f9aa5e7e7346c50efb50d22561d78bb37e18930e8117784517b68b |
+| `java-engine` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, Scalus phase 2 |
+| `amaru` | AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057); module crate 0.1.1, sha256 c43eeb3738cdce05caf3a897243485b4bca534a03272102cfab3579010c2c3e3 |
 
 ## Summary
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 38/85 | 4/4 | 33/84 | 2.03 |
-| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 51/85 | 4/4 | 47/84 | 0.35 |
-| `scalus-engine` | 193/276 | 187/276 | 187/276 | 54/85 | 4/4 | 49/84 | 0.32 |
-| `java-legacy` | 158/276 | 32/276 | 120/276 | 11/85 | 0/4 | 19/84 | 0.34 |
-| `java-engine` | 276/276 | 274/276 | 274/276 | 85/85 | 4/4 | 83/84 | 0.53 |
-| `amaru` | 276/276 | 275/276 | 275/276 | 78/85 | 4/4 | 77/84 | 2.14 |
+| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 38/89 | 6/6 | 33/86 | 2.08 |
+| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 51/89 | 6/6 | 47/86 | 0.37 |
+| `scalus-engine` | 193/276 | 187/276 | 187/276 | 54/89 | 6/6 | 49/86 | 0.36 |
+| `java-legacy` | 158/276 | 32/276 | 120/276 | 11/89 | 0/6 | 19/86 | 0.35 |
+| `java-engine` | 276/276 | 275/276 | 275/276 | 89/89 | 6/6 | 85/86 | 0.55 |
+| `amaru` | 276/276 | 275/276 | 275/276 | 79/89 | 4/6 | 77/86 | 2.16 |
 
-*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 83 of the 84 constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: `MempoolTransitionTest`).
+*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 85 of the 86 constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: `MempoolTransitionTest`).
 
 ## Scenarios per rule family
 
@@ -52,7 +52,7 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 | DELEG | 21 | 21 / 0 | 21 / 0 | 13 / 13 | 21 / 0 | 21 / 21 | 21 / 21 |
 | POOL | 7 | 7 / 0 | 7 / 0 | 7 / 7 | 7 / 0 | 7 / 7 | 7 / 7 |
 | GOVCERT | 12 | 4 / 0 | 9 / 3 | 4 / 2 | 12 / 0 | 12 / 12 | 12 / 12 |
-| GOV | 59 | 9 / 0 | 51 / 42 | 1 / 0 | 59 / 1 | 59 / 58 | 59 / 58 |
+| GOV | 59 | 9 / 0 | 51 / 42 | 1 / 0 | 59 / 1 | 59 / 59 | 59 / 58 |
 | UTXOW | 19 | 19 / 12 | 19 / 12 | 19 / 19 | 16 / 3 | 19 / 19 | 19 / 19 |
 | UTXO | 30 | 30 / 17 | 30 / 17 | 30 / 28 | 27 / 22 | 30 / 29 | 30 / 30 |
 | UTXOS | 4 | 4 / 3 | 4 / 3 | 4 / 3 | 4 / 0 | 4 / 4 | 4 / 4 |
@@ -63,6 +63,8 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 
 | Case | Expected | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-engine` | `amaru` |
 |---|---|---|---|---|---|---|---|
+| `base:simple-v9` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
+| `base:script-v9` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
 | `base:simple` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `base:script` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `base:simple-v11` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
@@ -152,8 +154,12 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 | `mutant:gov-action-does-not-exist` | GOV.GovActionsDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:disallowed-voter` | GOV.DisallowedVoters | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:unelected-committee-voter-v11` | GOV.UnelectedCommitteeVoters | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `GOV.VotersDoNotExist` |
+| `mutant:malformed-proposal-coins-per-byte` | GOV.MalformedProposal | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:bootstrap-proposal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
+| `mutant:bootstrap-treasury-withdrawal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `GOV.ProposalReturnAccountDoesNotExist` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
+| `mutant:bootstrap-drep-vote-v9` | GOV.DisallowedVotesDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
 
-Mutants (85):
+Mutants (89):
 
 - `fee-too-small` → `UTXO.FeeTooSmallUTxO`: fee one lovelace below the minimum for the final bytes (change +1 keeps the balance)
 - `bad-input` → `UTXO.BadInputsUTxO`: an extra spending input that is not in the UTxO set (the balance counts only known inputs)
@@ -240,6 +246,10 @@ Mutants (85):
 - `gov-action-does-not-exist` → `GOV.GovActionsDoNotExist`: dev-77's DRep votes on an action that is not in the proposals
 - `disallowed-voter` → `GOV.DisallowedVoters`: dev-77's pool votes on the standing parameter change, outside the stake-pool security group
 - `unelected-committee-voter-v11` → `GOV.UnelectedCommitteeVoters`: the hot key (dev-aa) of a committee member without a term votes (protocol version 11)
+- `malformed-proposal-coins-per-byte` → `GOV.MalformedProposal`: a parameter change setting coinsPerUTxOByte to 0 (not ppuWellFormed from protocol version 10; the protocol version 9 world accepts it, BOOTSTRAP_ACCEPTED)
+- `bootstrap-proposal-v9` → `GOV.DisallowedProposalDuringBootstrap`: a no-confidence proposal at protocol version 9 (Gov.hs:435-444, 483: only ParameterChange, HardForkInitiation and InfoAction, isBootstrapAction :633-639)
+- `bootstrap-treasury-withdrawal-v9` → `GOV.DisallowedProposalDuringBootstrap`: a treasury withdrawal to dev-aa, which has no account, returning its deposit to dev-aa, at protocol version 9: disallowed, and the account checks are skipped (unless hardforkConwayBootstrapPhase, Gov.hs:504-520), so it is the only failure
+- `bootstrap-drep-vote-v9` → `GOV.DisallowedVotesDuringBootstrap`: dev-77's DRep votes on the standing parameter change at protocol version 9 (Gov.hs:378-391, 606: DReps vote only on InfoAction during the bootstrap phase)
 
 ## Constructors demonstrated per engine
 
@@ -274,8 +284,9 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `GOVCERT.ConwayCommitteeHasPreviouslyResigned` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOVCERT.ConwayCommitteeIsUnknown` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.UnelectedCommitteeVoters` | 13 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
+| `GOV.DisallowedProposalDuringBootstrap` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `GOV.ProposalCantFollow` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
-| `GOV.MalformedProposal` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.MalformedProposal` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.ProposalReturnAccountDoesNotExist` | 10 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.ProposalDepositIncorrect` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
@@ -288,6 +299,7 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `GOV.InvalidPrevGovActionId` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.VotersDoNotExist` | 13 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.GovActionsDoNotExist` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.DisallowedVotesDuringBootstrap` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.DisallowedVoters` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `UTXOW.InvalidWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -330,7 +342,7 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `UTXO.TooManyCollateralInputs` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
 | `UTXOS.CollectErrors` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `UTXOS.ValidationTagMismatch` | 5 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| **Total** | | **33** | **47** | **49** | **19** | **83** | **77** |
+| **Total** | | **33** | **47** | **49** | **19** | **85** | **77** |
 
 No scenario or mutant expects (1): `LEDGER.ConwayMempoolFailure`.
 
@@ -382,11 +394,10 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 | `UTXO.BabbageNonDisjointRefInputs` | 1 | Pass |
 | `UTXOW.PPViewHashesDontMatch` | 1 | Pass |
 
-**`java-engine`** (2 mismatches)
+**`java-engine`** (1 mismatches)
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `ENGINE.EraNotSupported` | 1 | GOV.ProposalCantFollow |
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
 
 **`amaru`** (1 mismatches)
@@ -1076,11 +1087,10 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 
 </details>
 
-<details><summary><code>java-engine</code>: 2 of 276 without a constructor match</summary>
+<details><summary><code>java-engine</code>: 1 of 276 without a constructor match</summary>
 
 | Scenario | Expected | Reported first | Engine detail |
 |---|---|---|---|
-| 00203-fail-gov-hardfork-initiation-chains-two-majors | GOV.ProposalCantFollow | `ENGINE.EraNotSupported` | the java engine validates Conway at protocol versions 10–11, not 9 |
 | 00280-fail-output-to-a-byron-address-with-oversized-attributes | UTXO.OutputTooBigUTxO | `UTXO.OutputBootAddrAttrsTooBig` | output 0 82d818588983581c149ad4b736608c56aa72fba87b7f72343fed0f0b78b2fd39b5eff808a201586258605be51343581011594d82a1e32dfc2c5e0ab8be4a32aab4fbf3bcf9e17991a53c... |
 
 </details>

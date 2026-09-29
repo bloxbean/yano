@@ -28,9 +28,8 @@ public final class CoverageMatrix {
         TEST("test"),
         SCENARIO_ONLY("scenario only"),
         GAP("gap"),
-        /** Cannot occur at protocol version 10 or later at the pinned revision (no negative test is possible). */
-        UNREACHABLE("unreachable at pin"),
-        OUT_OF_SCOPE("out of scope");
+        /** Cannot occur in Conway at the pinned revision (no negative test is possible). */
+        UNREACHABLE("unreachable at pin");
 
         private final String label;
 
@@ -52,7 +51,8 @@ public final class CoverageMatrix {
 
         public Status status() {
             if (!entry.inScope()) {
-                return !entry.reachable() && entry.pvMin() >= 10 ? Status.UNREACHABLE : Status.OUT_OF_SCOPE;
+                // Every catalogue constructor is in scope at PV 9-11 unless it cannot occur in Conway at all.
+                return Status.UNREACHABLE;
             }
             if (!tests.isEmpty()) {
                 return scenarios.isEmpty() ? Status.TEST : Status.TEST_AND_SCENARIO;
@@ -164,14 +164,14 @@ public final class CoverageMatrix {
             md.append(" *Not configured when this file was generated.*");
         }
         md.append("\n");
-        md.append("- **Java rule**: the class implementing the check in the Java engine (Phases 3–5).\n");
+        md.append("- **Java rule**: the class implementing the check in the Java engine (Phases 3–5b).\n");
         md.append("- **Status**: `test + scenario`, `test`, `scenario only` (no negative test yet), `gap` ")
-                .append("(neither), `out of scope` (cannot occur at protocol version 10 or 11).\n");
+                .append("(neither), `unreachable at pin` (cannot occur in Conway at the pinned revision).\n");
         md.append("- Strict since the Phase 5 gate (`conformance.strict`, on by default): every in-scope constructor ")
                 .append("must have a `@Covers` test, or `:ledger-conformance:test` fails.\n\n");
 
         md.append("## Summary\n\n");
-        md.append("| Family | Constructors (PV 10–11) | test + scenario | test | scenario only | gap |\n");
+        md.append("| Family | Constructors (PV 9–11) | test + scenario | test | scenario only | gap |\n");
         md.append("|---|---:|---:|---:|---:|---:|\n");
         Map<String, List<Row>> byFamily = new LinkedHashMap<>();
         rows.forEach(r -> byFamily.computeIfAbsent(r.entry().family(), k -> new ArrayList<>()).add(r));
@@ -188,7 +188,7 @@ public final class CoverageMatrix {
                 .append(totals[2]).append("** | **").append(totals[3]).append("** | **").append(totals[4])
                 .append("** |\n\n");
         md.append(rows.size()).append(" constructors in the catalogue; ").append(inScope())
-                .append(" reachable at protocol version 10 or 11. Out of scope: ");
+                .append(" reachable at protocol version 9 (the bootstrap phase), 10 or 11. Out of scope: ");
         md.append(String.join(", ", rows.stream().filter(r -> !r.entry().inScope())
                 .map(r -> "`" + r.entry().qualifiedName() + "` (" + r.entry().pvRange() + ")").toList()));
         md.append(".\n\n");
@@ -228,7 +228,7 @@ public final class CoverageMatrix {
                 case TEST -> c[2]++;
                 case SCENARIO_ONLY -> c[3]++;
                 case GAP -> c[4]++;
-                case OUT_OF_SCOPE -> {
+                case UNREACHABLE -> {
                 }
             }
         }

@@ -32,8 +32,13 @@ import java.util.Optional;
  * <p>Deposit and refund mismatches are {@code IncorrectDepositDELEG} before protocol version 11 and
  * {@code DepositIncorrectDELEG} / {@code RefundIncorrectDELEG} from 11
  * ({@code hardforkConwayDELEGIncorrectDepositsAndRefunds}). A DRep delegatee must be registered from protocol
- * version 10 ({@code hardforkConwayBootstrapPhase}); the two predefined DReps always pass. Pools and DReps are those
- * of the running state, so a pool or DRep registered earlier in the same transaction counts.</p>
+ * version 10 ({@code hardforkConwayBootstrapPhase}: {@code DelegateeDRepNotRegisteredDELEG} is
+ * {@code PvRange.POST_BOOTSTRAP}); the two predefined DReps always pass. Pools and DReps are those of the running
+ * state, so a pool or DRep registered earlier in the same transaction counts.</p>
+ *
+ * <p>The other bootstrap-phase difference of {@code DELEG}, {@code preserveIncorrectDelegation} (Deleg.hs:288, 298,
+ * 348-372: before protocol version 10 a re-delegation to a DRep credential does not remove the old DRep's reverse
+ * entry), changes only the DRep reverse index, which no predicate reads; see {@code OverlayLedgerView}.</p>
  */
 final class DelegRule {
 

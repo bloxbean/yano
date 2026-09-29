@@ -107,6 +107,7 @@ public final class UtxowRule {
         TransitionContext ctx = frame.context();
         RawTransaction raw = ctx.raw();
         Scripts scripts = scripts(ctx);
+        ctx.plutusLanguagesUsed(scripts.languagesUsed());
         prepareScripts(frame, scripts);
 
         // :349 validateFailedBabbageScripts: needed, provided native scripts that do not validate

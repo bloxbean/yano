@@ -19,7 +19,7 @@ public record LedgerFailure(LedgerRuleName rule, String constructor, Phase phase
 
     /** Engine constructor: a {@code LedgerView} read was unavailable (invariant 2). */
     public static final String LEDGER_STATE_UNAVAILABLE = "LedgerStateUnavailable";
-    /** Engine constructor: not a Conway body, or a ticked protocol version below 10 (invariant 7). */
+    /** Engine constructor: not a Conway body, or a protocol version the engine does not validate (invariant 7). */
     public static final String ERA_NOT_SUPPORTED = "EraNotSupported";
     /** Engine constructor: Yano policy rejecting {@code isValid=false} submissions (§6). */
     public static final String PHASE2_INVALID_TX_NOT_SUPPORTED = "Phase2InvalidTxNotSupported";

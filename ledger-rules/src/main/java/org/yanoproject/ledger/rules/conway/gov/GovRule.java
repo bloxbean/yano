@@ -49,12 +49,15 @@ import java.util.function.Predicate;
  *       member (the committee before the transaction; it changes only at a boundary) has authorised in the post-CERTS
  *       committee state ({@code authorizedElectedHotCommitteeCredentials}, Governance.hs:581-591). Before 11 the
  *       {@code MEMPOOL} rule checks it ({@code MempoolRule}).</li>
- *   <li>Each proposal in body order ({@code processProposal}, :483-566; the PV-9 bootstrap check is out of scope):
+ *   <li>Each proposal in body order ({@code processProposal}, :483-566): at protocol version 9 only
+ *       ({@code hardforkConwayBootstrapPhase}) {@code DisallowedProposalDuringBootstrap} (not a
+ *       {@code ParameterChange}, {@code HardForkInitiation} or {@code InfoAction}, :435-444);
  *       {@code ProposalCantFollow} (hard forks: the version must follow the enacted root's — the current protocol
  *       version — or the in-flight parent's, {@code preceedingHardFork} :673-695); {@code MalformedProposal}
- *       ({@code ppuWellFormed}, {@link RawParamUpdate#malformedKeys(int)}); {@code ProposalReturnAccountDoesNotExist}
- *       and, for treasury withdrawals, {@code TreasuryWithdrawalReturnAccountsDoNotExist} (post-CERTS accounts, the
- *       credential only); {@code ProposalDepositIncorrect}; {@code ProposalProcedureNetworkIdMismatch}; then per action:
+ *       ({@code ppuWellFormed}, {@link RawParamUpdate#malformedKeys(int)}); from protocol version 10
+ *       {@code ProposalReturnAccountDoesNotExist} and, for treasury withdrawals,
+ *       {@code TreasuryWithdrawalReturnAccountsDoNotExist} (post-CERTS accounts, the credential only);
+ *       {@code ProposalDepositIncorrect}; {@code ProposalProcedureNetworkIdMismatch}; then per action:
  *       treasury withdrawals {@code TreasuryWithdrawalsNetworkIdMismatch}, {@code InvalidGuardrailsScriptHash},
  *       {@code ZeroTreasuryWithdrawals}; update committee {@code ConflictingCommitteeUpdate},
  *       {@code ExpirationEpochTooSmall}; parameter change {@code InvalidGuardrailsScriptHash}; last the lineage
@@ -64,12 +67,17 @@ import java.util.function.Predicate;
  *   <li>The votes, against the proposals after step 2 (so a vote on an earlier proposal of the same transaction is a
  *       vote on an existing action): {@code VotersDoNotExist} (post-CERTS state: committee hot credentials with a
  *       current authorisation, registered DReps, registered pools), {@code GovActionsDoNotExist} (only the votes of
- *       known voters), {@code VotingOnExpiredGovAction} ({@code currentEpoch > gasExpiresAfter}) and
+ *       known voters), at protocol version 9 only {@code DisallowedVotesDuringBootstrap} (DReps only on
+ *       {@code InfoAction}, committee and stake pools only on bootstrap actions, :378-391),
+ *       {@code VotingOnExpiredGovAction} ({@code currentEpoch > gasExpiresAfter}) and
  *       {@code DisallowedVoters} (committee: not on {@code NoConfidence} or {@code UpdateCommittee}; DReps: always
  *       allowed; stake pools: {@code NoConfidence}, {@code UpdateCommittee}, {@code HardForkInitiation},
  *       {@code InfoAction} and parameter changes that touch the security group,
  *       Governance/Internal.hs:350-497).</li>
  * </ol>
+ *
+ * <p>Protocol-version differences are the checks' {@link ConwayPredicate#pvRange()} ranges, applied by
+ * {@link TransitionContext#check}; the rule itself has no version branches.</p>
  *
  * <p>{@code GOV}'s own state change (proposals and votes into {@code Proposals}) is the effects deriver's; this rule
  * only validates. Unavailable reads fail closed ({@link LedgerStateUnavailableException}).</p>
@@ -126,6 +134,10 @@ public final class GovRule {
         TransitionContext ctx = gov.context();
         int network = CertState.network(ctx);
 
+        // :483 runTest $ checkBootstrapProposal (only while hardforkConwayBootstrapPhase: PvRange.BOOTSTRAP)
+        ctx.check(gov, ConwayPredicate.DISALLOWED_PROPOSAL_DURING_BOOTSTRAP, () -> isBootstrapAction(
+                proposal.actionTag()) ? null : "ProposalProcedure " + proposal.index() + " ("
+                + proposal.actionTypeName() + ")");
         // :488-499 ProposalCantFollow
         ctx.check(gov, ConwayPredicate.PROPOSAL_CANT_FOLLOW, () -> badHardFork(ctx, proposal, proposals));
         // :502 actionWellFormed
@@ -137,7 +149,8 @@ public final class GovRule {
             SortedSet<Integer> bad = update.malformedKeys(ctx.protocolMajor());
             return bad.isEmpty() ? null : "ParameterChange " + update + " (not well formed: " + bad + ")";
         });
-        // :504-520 unless bootstrap: return account and treasury withdrawal accounts registered (post-CERTS)
+        // :504-520 unless hardforkConwayBootstrapPhase (PvRange.POST_BOOTSTRAP): return account and treasury
+        // withdrawal accounts registered (post-CERTS)
         ctx.check(gov, ConwayPredicate.PROPOSAL_RETURN_ACCOUNT_DOES_NOT_EXIST,
                 () -> registered(afterCerts, proposal.returnAccount()) ? null : account(proposal.returnAccount()));
         if (proposal.actionTag() == RawProposal.TREASURY_WITHDRAWALS) {
@@ -307,6 +320,9 @@ public final class GovRule {
         // :605 failOnNonEmpty unknownGovActionIds GovActionsDoNotExist
         ctx.check(gov, ConwayPredicate.GOV_ACTIONS_DO_NOT_EXIST,
                 () -> unknownActions.isEmpty() ? null : unknownActions.toString());
+        // :606 checkBootstrapVotes (only while hardforkConwayBootstrapPhase: PvRange.BOOTSTRAP)
+        ctx.check(gov, ConwayPredicate.DISALLOWED_VOTES_DURING_BOOTSTRAP,
+                () -> disallowed(known, GovRule::bootstrapVoteAllowed));
         // :607 checkVotesAreNotForExpiredActions
         long epoch = ctx.env().currentEpoch();
         ctx.check(gov, ConwayPredicate.VOTING_ON_EXPIRED_GOV_ACTION, () -> disallowed(known,
@@ -324,6 +340,27 @@ public final class GovRule {
             }
         }
         return bad.isEmpty() ? null : bad.toString();
+    }
+
+    /**
+     * {@code checkBootstrapVotes} (:378-391), the bootstrap-phase voter rule: a DRep votes only on an
+     * {@code InfoAction}; the committee and stake pools only on a bootstrap action ({@link #isBootstrapAction}).
+     */
+    private static boolean bootstrapVoteAllowed(Map.Entry<RawVoter, Action> vote) {
+        int actionTag = vote.getValue().actionTag();
+        return switch (vote.getKey().tag()) {
+            case 2, 3 -> actionTag == RawProposal.INFO;
+            default -> isBootstrapAction(actionTag);
+        };
+    }
+
+    /**
+     * {@code isBootstrapAction} (:633-639): the actions allowed during the bootstrap phase ({@code ParameterChange},
+     * {@code HardForkInitiation}, {@code InfoAction}).
+     */
+    static boolean isBootstrapAction(int actionTag) {
+        return actionTag == RawProposal.PARAMETER_CHANGE || actionTag == RawProposal.HARD_FORK_INITIATION
+                || actionTag == RawProposal.INFO;
     }
 
     /** {@code checkVotersAreValid} (:364-376, Governance/Internal.hs:350-497). */

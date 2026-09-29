@@ -22,7 +22,7 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
- * The {@code java} engine ({@link JavaLedgerValidationEngine}, ADR-056 Phases 3-5) over the case's view: rule
+ * The {@code java} engine ({@link JavaLedgerValidationEngine}, ADR-056 Phases 3-5b) over the case's view: rule
  * {@code LEDGER}, origin {@code SYNC}, created through {@link JavaEngineFactory} with the experimental flag, and
  * with the Scalus {@code ScriptPhaseEvaluator} for Plutus.
  *
@@ -42,8 +42,8 @@ public final class JavaViewEngine implements ConformanceEngine {
 
     @Override
     public String description() {
-        return "JavaLedgerValidationEngine (ADR-056 Phases 3–5: every Conway rule family, LEDGER, GOV, CERTS, DELEG, "
-                + "POOL, GOVCERT, UTXOW, UTXO, UTXOS) over the LedgerView, Scalus phase 2";
+        return "JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, "
+                + "POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, Scalus phase 2";
     }
 
     @Override

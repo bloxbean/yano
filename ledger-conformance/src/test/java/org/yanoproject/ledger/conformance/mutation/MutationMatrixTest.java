@@ -83,8 +83,15 @@ class MutationMatrixTest {
                 assertSignatures(built, true);
             }
         }
-        REFERENCE.ifPresent(amaru -> Mutations.baseCases().forEach(c ->
-                assertThat(ConformanceRunner.run(amaru, c).observation().valid()).as("%s under amaru", c.id()).isTrue()));
+        // Amaru validates protocol version 10 and later only (ADR-056 invariant 6): it refuses the bootstrap world.
+        REFERENCE.ifPresent(amaru -> Mutations.baseCases().forEach(c -> {
+            Observation observation = ConformanceRunner.run(amaru, c).observation();
+            if (c.env().protocolMajor() < 10) {
+                assertThat(observation.label()).as("%s under amaru", c.id()).isEqualTo(Mutation.AMARU_REFUSES_PV9);
+            } else {
+                assertThat(observation.valid()).as("%s under amaru", c.id()).isTrue();
+            }
+        }));
         Mutations.baseCases().forEach(c -> assertThat(ConformanceRunner.run(JAVA, c).observation().label())
                 .as("%s under the java engine", c.id()).isEqualTo("Valid"));
     }
@@ -607,6 +614,63 @@ class MutationMatrixTest {
     @Covers("GOV.UnelectedCommitteeVoters")
     void unelectedCommitteeVoterV11() {
         check("unelected-committee-voter-v11");
+    }
+
+    @Test
+    @Covers("GOV.MalformedProposal")
+    void malformedProposalCoinsPerUTxOByte() {
+        check("malformed-proposal-coins-per-byte");
+    }
+
+    // ------------------------------------------------------------------ Phase 5b: the protocol version 9 world
+
+    @Test
+    @Covers("GOV.DisallowedProposalDuringBootstrap")
+    void bootstrapProposalV9() {
+        check("bootstrap-proposal-v9");
+    }
+
+    @Test
+    @Covers("GOV.DisallowedProposalDuringBootstrap")
+    void bootstrapTreasuryWithdrawalV9() {
+        check("bootstrap-treasury-withdrawal-v9");
+    }
+
+    @Test
+    @Covers("GOV.DisallowedVotesDuringBootstrap")
+    void bootstrapDRepVoteV9() {
+        check("bootstrap-drep-vote-v9");
+    }
+
+    /**
+     * The other side of each bootstrap gate: the edit of a protocol version 10 mutant (rejected there, which its own
+     * {@code @Covers} test and Amaru confirm) is valid in the protocol version 9 world under the Java engine. Amaru
+     * refuses protocol version 9, so the Haskell gate cited in {@link Mutations#BOOTSTRAP_ACCEPTED} is the evidence.
+     */
+    @Test
+    @Covers("LEDGER.ConwayWdrlNotDelegatedToDRep")
+    @Covers("DELEG.DelegateeDRepNotRegisteredDELEG")
+    @Covers("GOV.ProposalReturnAccountDoesNotExist")
+    @Covers("GOV.MalformedProposal")
+    void theBootstrapPhaseAcceptsWhatProtocolVersion10Rejects() {
+        assertThat(Mutations.BOOTSTRAP_ACCEPTED).hasSize(4);
+        for (Mutations.BootstrapAcceptance acceptance : Mutations.BOOTSTRAP_ACCEPTED) {
+            Mutation mutation = Mutations.find(acceptance.mutationId()).orElseThrow();
+            assertThat(mutation.protocolMajor()).as(acceptance.mutationId()).isEqualTo(10);
+            BuiltTx accepted = Mutations.buildBootstrapAccepted(acceptance);
+            assertThat(accepted.fee()).as("%s fee", acceptance.mutationId())
+                    .isEqualTo(accepted.minFee().add(feeAdjust(mutation)));
+            assertSignatures(accepted, true);
+            ConformanceCase testCase = Mutations.bootstrapAcceptedCase(acceptance);
+            assertThat(ConformanceRunner.run(JAVA, testCase).observation().label())
+                    .as("%s at protocol version 9 under the java engine (%s)", acceptance.mutationId(),
+                            acceptance.gate())
+                    .isEqualTo("Valid");
+            REFERENCE.ifPresent(amaru -> assertThat(ConformanceRunner.run(amaru, testCase).observation().label())
+                    .as("%s under amaru", testCase.id()).isEqualTo(Mutation.AMARU_REFUSES_PV9));
+            // The rejecting side, in the protocol version 10 world.
+            check(acceptance.mutationId());
+        }
     }
 
     private static BuiltTx check(String id) {

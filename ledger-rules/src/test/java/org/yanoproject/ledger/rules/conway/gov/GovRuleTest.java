@@ -566,6 +566,117 @@ class GovRuleTest {
                 "GOV.ProposalReturnAccountDoesNotExist");
     }
 
+    // ------------------------------------------------------------------------------------------------ PV 9 (bootstrap)
+
+    @Test
+    @Covers("GOV.DisallowedProposalDuringBootstrap")
+    void onlyBootstrapActionsMayBeProposedAtProtocolVersion9() {
+        // checkBootstrapProposal (Gov.hs:435-444): ParameterChange, HardForkInitiation and InfoAction only (:633-639).
+        assertThat(run(proposing(proposal(new InfoAction())), 9)).containsExactly("Valid");
+        assertThat(run(proposing(proposal(parameterChange(null, collateralPercent(140)))), 9))
+                .containsExactly("Valid");
+        assertThat(run(proposing(proposal(hardFork(null, 10, 0))), 9)).containsExactly("Valid");
+        List<GovAction> disallowed = List.of(
+                treasuryWithdrawals(withdrawal(TestKey.DEV_77, MutationWorld.NETWORK, ada(10))),
+                new NoConfidence(null),
+                updateCommittee(Set.of(MutationWorld.credential(TestKey.DEV_BB)),
+                        Map.of(MutationWorld.credential(TestKey.DEV_42), 50)),
+                new NewConstitution(null, Constitution.builder()
+                        .anchor(new Anchor("https://example.com/constitution.txt", new byte[32])).build()));
+        for (GovAction action : disallowed) {
+            assertThat(run(proposing(proposal(action)), 9)).as(action.getType().name())
+                    .containsExactly("GOV.DisallowedProposalDuringBootstrap");
+            // The other side of the gate: valid from protocol version 10.
+            assertThat(run(proposing(proposal(action)), 10)).as(action.getType().name()).containsExactly("Valid");
+        }
+        // The first check of processProposal (:483); the proposal's other checks still run, in order.
+        assertThat(run(proposing(proposal(new NoConfidence(null), TestKey.DEV_77, MutationWorld.NETWORK,
+                DEPOSIT.subtract(BigInteger.ONE))), 9))
+                .containsExactly("GOV.DisallowedProposalDuringBootstrap", "GOV.ProposalDepositIncorrect");
+        // Per proposal: only the disallowed one fails.
+        assertThat(run(proposing(proposal(new InfoAction()), proposal(new NoConfidence(null))), 9))
+                .containsExactly("GOV.DisallowedProposalDuringBootstrap");
+    }
+
+    @Test
+    @Covers("GOV.DisallowedVotesDuringBootstrap")
+    void bootstrapVotersAtProtocolVersion9() {
+        // checkBootstrapVotes (Gov.hs:378-391): DReps only on InfoAction; committee and pools only on bootstrap actions.
+        GovActionId withdrawals = new GovActionId("e6".repeat(32), 0);
+        GovActionId hardFork = new GovActionId("e6".repeat(32), 1);
+        GovActionId constitution = new GovActionId("e6".repeat(32), 2);
+        InMemoryLedgerView pv9 = standingActions(9, withdrawals, hardFork, constitution);
+        InMemoryLedgerView pv10 = standingActions(10, withdrawals, hardFork, constitution);
+
+        assertThat(run(voting(vote(drep(TestKey.DEV_77), MutationWorld.INFO_ACTION), TestKey.DEV_77), pv9, 9))
+                .containsExactly("Valid");
+        for (GovActionId denied : List.of(MutationWorld.PARAMETER_CHANGE_ACTION, hardFork, withdrawals)) {
+            TxSpec spec = voting(vote(drep(TestKey.DEV_77), denied), TestKey.DEV_77);
+            assertThat(run(spec, pv9, 9)).as(denied.toString())
+                    .containsExactly("GOV.DisallowedVotesDuringBootstrap");
+            assertThat(run(spec, pv10, 10)).as(denied.toString()).containsExactly("Valid");
+        }
+        for (GovActionId allowed : List.of(MutationWorld.INFO_ACTION, MutationWorld.PARAMETER_CHANGE_ACTION,
+                hardFork)) {
+            assertThat(run(voting(vote(committee(TestKey.DEV_42), allowed)), pv9, 9)).as(allowed.toString())
+                    .containsExactly("Valid");
+        }
+        TxSpec committeeOnWithdrawal = voting(vote(committee(TestKey.DEV_42), withdrawals));
+        assertThat(run(committeeOnWithdrawal, pv9, 9)).containsExactly("GOV.DisallowedVotesDuringBootstrap");
+        assertThat(run(committeeOnWithdrawal, pv10, 10)).containsExactly("Valid");
+        assertThat(run(voting(vote(pool(TestKey.DEV_77), hardFork), TestKey.DEV_77), pv9, 9)).containsExactly("Valid");
+        // After GovActionsDoNotExist, before DisallowedVoters (:605-608): a pool on NewConstitution breaks both.
+        TxSpec poolOnConstitution = voting(vote(pool(TestKey.DEV_77), constitution), TestKey.DEV_77);
+        assertThat(run(poolOnConstitution, pv9, 9))
+                .containsExactly("GOV.DisallowedVotesDuringBootstrap", "GOV.DisallowedVoters");
+        assertThat(run(poolOnConstitution, pv10, 10)).containsExactly("GOV.DisallowedVoters");
+        TxSpec withUnknown = voting(vote(vote(votes(), drep(TestKey.DEV_77), hardFork), drep(TestKey.DEV_77),
+                new GovActionId("e3".repeat(32), 0)), TestKey.DEV_77);
+        assertThat(run(withUnknown, pv9, 9))
+                .containsExactly("GOV.GovActionsDoNotExist", "GOV.DisallowedVotesDuringBootstrap");
+    }
+
+    private static InMemoryLedgerView standingActions(int protocolMajor, GovActionId withdrawals, GovActionId hardFork,
+                                                      GovActionId constitution) {
+        return world(protocolMajor)
+                .proposal(standing(withdrawals, GovActionType.TREASURY_WITHDRAWALS_ACTION,
+                        new TreasuryWithdrawalsAction(), null))
+                .proposal(standing(hardFork, GovActionType.HARD_FORK_INITIATION_ACTION,
+                        new HardForkInitiationAction(null, new ProtocolVersion(10, 0)), null))
+                .proposal(standing(constitution, GovActionType.NEW_CONSTITUTION, new NewConstitution(), null))
+                .build();
+    }
+
+    @Test
+    @Covers("GOV.ProposalReturnAccountDoesNotExist")
+    @Covers("GOV.TreasuryWithdrawalReturnAccountsDoNotExist")
+    void returnAccountsAreCheckedFromProtocolVersion10() {
+        // unless hardforkConwayBootstrapPhase (Gov.hs:504-520).
+        TxSpec unregisteredReturn = proposing(proposal(new InfoAction(), TestKey.DEV_AA, MutationWorld.NETWORK,
+                DEPOSIT));
+        assertThat(run(unregisteredReturn, 9)).containsExactly("Valid");
+        assertThat(run(unregisteredReturn, 10)).containsExactly("GOV.ProposalReturnAccountDoesNotExist");
+        // A treasury withdrawal is not a bootstrap action; at 9 the account checks are skipped.
+        TxSpec unregisteredWithdrawal = proposing(proposal(treasuryWithdrawals(withdrawal(TestKey.DEV_AA,
+                MutationWorld.NETWORK, ada(10))), TestKey.DEV_AA, MutationWorld.NETWORK, DEPOSIT));
+        assertThat(run(unregisteredWithdrawal, 9)).containsExactly("GOV.DisallowedProposalDuringBootstrap");
+        assertThat(run(unregisteredWithdrawal, 10)).containsExactly("GOV.ProposalReturnAccountDoesNotExist",
+                "GOV.TreasuryWithdrawalReturnAccountsDoNotExist");
+    }
+
+    @Test
+    @Covers("GOV.MalformedProposal")
+    void coinsPerUTxOByteMayBeZeroDuringTheBootstrapPhase() {
+        // ppuWellFormed: hardforkConwayBootstrapPhase pv || coinsPerUTxOByte /= 0 (Conway/PParams.hs:949-950).
+        TxSpec zeroCoinsPerByte = proposing(proposal(parameterChange(null, ProtocolParamUpdate.builder()
+                .adaPerUtxoByte(BigInteger.ZERO).build())));
+        assertThat(run(zeroCoinsPerByte, 9)).containsExactly("Valid");
+        assertThat(run(zeroCoinsPerByte, 10)).containsExactly("GOV.MalformedProposal");
+        // Only key 17 is relaxed.
+        assertThat(run(proposing(proposal(parameterChange(null, ProtocolParamUpdate.builder().adaPerUtxoByte(
+                BigInteger.ZERO).maxTxSize(0).build()))), 9)).containsExactly("GOV.MalformedProposal");
+    }
+
     @Test
     void govRunsOnlyForPhase2ValidTransactions() {
         // isValid = false: LEDGER skips the pre-checks, CERTS and GOV (Ledger.hs:363, 423).

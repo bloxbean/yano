@@ -43,9 +43,15 @@ class JavaEngineFactoryTest {
     }
 
     @Test
-    void refusesProtocolVersionsOutsideConwayTenAndEleven() {
+    void refusesProtocolVersionsOutsideConwayNineToEleven() {
         byte[] cbor = EngineTestSupport.build(MutationWorld.simpleSpec()).cbor();
-        for (int major : new int[]{9, 12}) {
+        for (int major : new int[]{9, 10, 11}) {
+            var outcome = new JavaLedgerValidationEngine(new StubEvaluator()).validate(new TxValidationRequest(cbor,
+                    MutationWorld.builder(EngineTestSupport.params(major)).build(), EngineTestSupport.env(major),
+                    TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null));
+            assertThat(EngineTestSupport.names(outcome)).as("PV %d", major).containsExactly("Valid");
+        }
+        for (int major : new int[]{8, 12}) {
             var outcome = new JavaLedgerValidationEngine(new StubEvaluator()).validate(new TxValidationRequest(cbor,
                     MutationWorld.builder(EngineTestSupport.params(major)).build(), EngineTestSupport.env(major),
                     TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null));

@@ -39,7 +39,7 @@ public final class EngineTestSupport {
      * A phase-2 evaluator with fixed answers that counts how often it ran scripts. Every Plutus script is well formed
      * except the ones whose {@code PlutusBinary} is in {@link #malformed}.
      */
-    public static final class StubEvaluator implements ScriptPhaseEvaluator {
+    public static class StubEvaluator implements ScriptPhaseEvaluator {
         public List<LedgerFailure> collect = List.of();
         public ScriptPhaseResult result = new ScriptPhaseResult.Passed(List.of());
         public final Set<String> malformed = new HashSet<>();

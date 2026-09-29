@@ -21,12 +21,13 @@ import java.util.Optional;
  * {@code adr/reports/adr-056-haskell-pinned-revisions.md} (section 3d-table, static/dynamic labels from 3e) at
  * cardano-ledger {@code f649f975}.
  *
- * <p>Wrapper constructors ({@code ConwayUtxowFailure}, {@code CertFailure}, …) are not listed. The catalogue
- * keeps the four constructors that cannot occur at protocol version 10 or 11
- * ({@code DisallowedProposalDuringBootstrap}, {@code DisallowedVotesDuringBootstrap}: PV 9 only;
- * {@code OutputTooSmallUTxO}: unreachable in Conway; {@code OutsideForecast}: unreachable at the pin, its check
- * cannot fail) with {@code reachable = false}, so the table stays complete; {@link #inScope()} leaves them
- * out.</p>
+ * <p>Wrapper constructors ({@code ConwayUtxowFailure}, {@code CertFailure}, …) are not listed. The scope is every
+ * Conway protocol version the Java engine validates, 9 (the bootstrap phase, since ADR-056 Phase 5b) to 11: the two
+ * bootstrap-only {@code GOV} constructors ({@code DisallowedProposalDuringBootstrap},
+ * {@code DisallowedVotesDuringBootstrap}) are PV 9 only, and the checks guarded by
+ * {@code unless hardforkConwayBootstrapPhase} start at 10. The catalogue keeps the two constructors that cannot occur
+ * in Conway at the pin ({@code OutputTooSmallUTxO}: superseded by Babbage's; {@code OutsideForecast}: its check cannot
+ * fail) with {@code reachable = false}, so the table stays complete; {@link #inScope()} leaves them out.</p>
  */
 public final class ConwayConstructorCatalogue {
 
@@ -42,7 +43,7 @@ public final class ConwayConstructorCatalogue {
      * @param fields      the constructor's fields, as in the pinned table
      * @param pvMin       the first protocol version it can occur at
      * @param pvMax       the last protocol version it can occur at, or null when still active
-     * @param reachable   false when it cannot occur at protocol version 10 or later
+     * @param reachable   false when it cannot occur in Conway at the pinned revision
      * @param phase       1, or 2 for {@code ValidationTagMismatch}
      * @param check       {@code static} (skipped on re-application) or {@code dynamic}
      * @param pvGate      the protocol-version gate as written in the table (empty when ungated)
@@ -56,15 +57,15 @@ public final class ConwayConstructorCatalogue {
             return rule.name() + "." + constructor;
         }
 
-        /** @return whether the constructor can occur at protocol version 10 or 11 */
+        /** @return whether the constructor can occur at protocol version 9, 10 or 11 */
         public boolean inScope() {
-            return reachable && pvMin <= 11 && (pvMax == null || pvMax >= 10);
+            return reachable && pvMin <= 11 && (pvMax == null || pvMax >= 9);
         }
 
-        /** @return the PV range, e.g. {@code 10–11}, {@code 10}, {@code 11+} */
+        /** @return the PV range, e.g. {@code 9–10}, {@code 9}, {@code 11+} */
         public String pvRange() {
             if (!reachable) {
-                return pvMin == 9 ? "9 only" : "unreachable";
+                return "unreachable";
             }
             if (pvMax == null) {
                 return pvMin + "+";
@@ -126,7 +127,7 @@ public final class ConwayConstructorCatalogue {
         return entries;
     }
 
-    /** @return the constructors reachable at protocol version 10 or 11 */
+    /** @return the constructors reachable at protocol version 9, 10 or 11 */
     public List<Entry> inScope() {
         return entries.stream().filter(Entry::inScope).toList();
     }

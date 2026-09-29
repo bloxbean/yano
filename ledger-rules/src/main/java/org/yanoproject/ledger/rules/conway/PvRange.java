@@ -9,8 +9,20 @@ package org.yanoproject.ledger.rules.conway;
  */
 public record PvRange(int min, int max) {
 
-    /** Every Conway protocol version. */
+    /** Every Conway protocol version, the bootstrap phase (9) included. */
     public static final PvRange ALWAYS = new PvRange(9, Integer.MAX_VALUE);
+
+    /**
+     * The Conway bootstrap phase: {@code hardforkConwayBootstrapPhase pv = pvMajor pv == 9} (Conway/Era.hs:257-258).
+     * A check that runs only during bootstrap.
+     */
+    public static final PvRange BOOTSTRAP = new PvRange(9, 9);
+
+    /**
+     * After the bootstrap phase: a check guarded by {@code unless (hardforkConwayBootstrapPhase pv)}
+     * (Conway/Era.hs:257-258), so it runs from protocol version 10.
+     */
+    public static final PvRange POST_BOOTSTRAP = new PvRange(10, Integer.MAX_VALUE);
 
     public PvRange {
         if (min > max) {
