@@ -357,8 +357,23 @@ yano:
     # When set, a JSON replay bundle (tx CBOR + every ledger-view read both engines made) is written
     # here for each disagreement.
     shadow-dump-dir: ""
-    # Shadow-validate synced PV10+ blocks (ADR-056 Phase 7). Accepted but not active yet.
+    # Shadow sync (ADR-056 Phase 7a), observe only: every transaction of every applied Conway block (PV 9+) is
+    # validated by shadow-sync-engines against the block's pre-block state (after its epoch boundary, before its
+    # own changes) plus a block-local overlay of the earlier transactions, rule LEDGER, origin SYNC. Transactions
+    # in the block's invalid_transactions must come out phase-2 invalid, all others valid; anything else is a
+    # disagreement (a false rejection) or an engine failure (no verdict). Results: the INFO summary, the
+    # yano_validation_shadow_sync_* metrics and the JSONL report. It never changes what the node applies; when
+    # validation falls behind, block application waits (sync slows to validation speed).
     shadow-sync: false
+    shadow-sync-engines: java       # java (no experimental flag needed: observe only) and/or amaru (-PwithAmaru)
+    shadow-sync-report: ""          # JSONL file: one line per disagreement, engine failure or block finding
+    shadow-sync-dump-dir: ""        # replay bundle (tx + every view read) per finding
+    shadow-sync-max-dumps: 1000
+    shadow-sync-max-in-flight: 8    # blocks (each holding one ledger snapshot) queued or validating at once
+    shadow-sync-threads: 0          # 0 = half the processors, 1 to 4
+    shadow-sync-max-wait-ms: 30000  # apply-thread wait for a free slot (holding the canonical write lock) before a
+                                    # block is skipped (and reported)
+    shadow-sync-summary-seconds: 60
     # A shadow task older than this (from the admission snapshot's capture) is cancelled and releases
     # its snapshot; it is not counted as a disagreement.
     snapshot-max-age-ms: 30000

@@ -11,9 +11,12 @@ import org.jboss.logging.Logger;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.runtime.validation.ShadowValidationRunner;
 import org.yanoproject.runtime.validation.ValidationEngines;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.ToDoubleFunction;
 
 /**
@@ -25,6 +28,13 @@ import java.util.function.ToDoubleFunction;
  *       without a snapshot, on a full queue, or cancelled at {@code snapshot-max-age-ms};</li>
  *   <li>{@code yano_validation_engine_healthy{engine}}: 1 while an engine can answer (the Amaru engine turns
  *       0 after {@code max-abandoned} stuck calls).</li>
+ *   <li>Shadow sync (ADR-056 Phase 7a), when on: {@code yano_validation_shadow_sync_txs_total{engine,pv,outcome}}
+ *       (outcome {@code validated|agreed|disagreed|engine_failure}, pv 9-15),
+ *       {@code yano_validation_shadow_sync_blocks_total{outcome}} ({@code validated|failed|empty|pre_conway}),
+ *       {@code yano_validation_shadow_sync_block_rule_violations_total{check}} ({@code ref_scripts|ex_units|body}),
+ *       {@code yano_validation_shadow_sync_backpressure_wait_ms_total}, the
+ *       {@code yano_validation_shadow_sync_in_flight} gauge and {@code yano_validation_shadow_sync_engine_healthy{engine}}
+ *       (reported only, never gating readiness).</li>
  * </ul>
  * Tags are bounded: configured engine names and the Haskell rule names.
  */
@@ -32,6 +42,8 @@ import java.util.function.ToDoubleFunction;
 public class ValidationEngineMetrics {
 
     private static final Logger log = Logger.getLogger(ValidationEngineMetrics.class);
+    /** The highest protocol major with shadow-sync counters registered up front (headroom past the current 11). */
+    private static final int LAST_EXPORTED_MAJOR = 15;
 
     @Inject
     MeterRegistry registry;
@@ -67,6 +79,10 @@ public class ValidationEngineMetrics {
                     .description("1 while the validation engine can answer, 0 once it failed closed for good")
                     .register(registry);
         }
+        ShadowSyncValidator sync = engines.shadowSync();
+        if (sync != null) {
+            registerShadowSync(engines, sync);
+        }
         ShadowValidationRunner runner = engines.shadowRunner();
         if (runner == null) {
             return;
@@ -90,6 +106,70 @@ public class ValidationEngineMetrics {
         dropped(runner, "unavailable", s -> s.droppedUnavailable());
         dropped(runner, "queue", s -> s.droppedQueueFull());
         dropped(runner, "expired", s -> s.expired());
+    }
+
+    private void registerShadowSync(ValidationEngines engines, ShadowSyncValidator sync) {
+        for (String engine : sync.status().engines()) {
+            Gauge.builder("yano.validation.shadow.sync.engine.healthy", engines,
+                            e -> e.status().shadowSyncHealth().getOrDefault(engine, false) ? 1 : 0)
+                    .tag("engine", engine)
+                    .description("1 while the shadow-sync engine can answer (never gates readiness)")
+                    .register(registry);
+        }
+        for (String engine : sync.status().engines()) {
+            for (int pv = ShadowSyncValidator.FIRST_CONWAY_MAJOR; pv <= LAST_EXPORTED_MAJOR; pv++) {
+                int major = pv;
+                syncTxs(sync, engine, major, "validated", c -> c.validated());
+                syncTxs(sync, engine, major, "agreed", c -> c.agreed());
+                syncTxs(sync, engine, major, "disagreed", c -> c.disagreed());
+                syncTxs(sync, engine, major, "engine_failure", c -> c.engineFailures());
+            }
+        }
+        syncBlocks(sync, "validated", s -> s.blocksValidated());
+        syncBlocks(sync, "failed", s -> s.blockFailures());
+        syncBlocks(sync, "empty", s -> s.blocksEmpty());
+        syncBlocks(sync, "pre_conway", s -> s.blocksSkippedPreConway());
+        blockRule(sync, "ref_scripts", st -> st.refScriptViolations());
+        blockRule(sync, "ex_units", st -> st.exUnitsViolations());
+        blockRule(sync, "body", st -> st.bodyViolations());
+        FunctionCounter.builder("yano.validation.shadow.sync.backpressure.wait.ms.total", sync,
+                        v -> v.status().report().backpressureWaitMillis())
+                .description("Time block application waited for shadow-sync validation")
+                .register(registry);
+        Gauge.builder("yano.validation.shadow.sync.in.flight", sync, v -> v.status().inFlight())
+                .description("Synced blocks queued or being validated by shadow sync")
+                .register(registry);
+    }
+
+    private void blockRule(ShadowSyncValidator sync, String check, ToDoubleFunction<ShadowSyncReport.Stats> value) {
+        FunctionCounter.builder("yano.validation.shadow.sync.block.rule.violations.total", sync,
+                        v -> value.applyAsDouble(v.status().report()))
+                .tag("check", check)
+                .description("Synced blocks failing a BBODY rule: ref_scripts (BodyRefScriptsSizeTooBig), ex_units "
+                        + "(TooManyExUnits), body (WrongBlockBodySizeBBODY / InvalidBodyHashBBODY)")
+                .register(registry);
+    }
+
+    private void syncTxs(ShadowSyncValidator sync, String engine, int pv, String outcome,
+                         ToDoubleFunction<ShadowSyncReport.Counts> value) {
+        FunctionCounter.builder("yano.validation.shadow.sync.txs.total", sync, v -> {
+                    Map<Integer, ShadowSyncReport.Counts> byPv = v.status().report().byEngine().get(engine);
+                    ShadowSyncReport.Counts counts = byPv != null ? byPv.get(pv) : null;
+                    return counts != null ? value.applyAsDouble(counts) : 0;
+                })
+                .tag("engine", engine)
+                .tag("pv", Integer.toString(pv))
+                .tag("outcome", outcome)
+                .description("Synced transactions validated by shadow sync, by engine, protocol version and outcome")
+                .register(registry);
+    }
+
+    private void syncBlocks(ShadowSyncValidator sync, String outcome, ToDoubleFunction<ShadowSyncReport.Stats> value) {
+        FunctionCounter.builder("yano.validation.shadow.sync.blocks.total", sync,
+                        v -> value.applyAsDouble(v.status().report()))
+                .tag("outcome", outcome)
+                .description("Synced blocks seen by shadow sync, by outcome")
+                .register(registry);
     }
 
     private void dropped(ShadowValidationRunner runner, String reason,

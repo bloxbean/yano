@@ -16,6 +16,8 @@ dependencies {
     testFixturesApi libs.cardano.client.quicktx
     testFixturesImplementation libs.jackson.databind
     testImplementation project(':testkit')
+    // ADR-056 Phase 7a: a real phase-2-invalid transaction (MutationWorld's always-failing script) through shadow sync.
+    testImplementation testFixtures(project(':ledger-rules'))
     // The Haskell-follower workload talks to a running node's Blockfrost-shaped REST API.
     testImplementation libs.cardano.client.backend.blockfrost
 }
@@ -31,7 +33,9 @@ tasks.named('test') {
         systemProperty 'yano.gate.devnet', 'true'
     }
     // The Haskell-follower workload (ADR-056 Phase 6b) runs only when pointed at a running node.
-    ['yano.gate.remote-url', 'yano.gate.workload-report', 'yano.gate.epoch-length', 'yano.gate.budget-txs'].each { key ->
+    // ADR-056 Phase 7a: ShadowBundleReplayTest replays the shadow bundles in this directory with the java engine.
+    ['yano.gate.remote-url', 'yano.gate.workload-report', 'yano.gate.epoch-length', 'yano.gate.budget-txs',
+     'yano.shadow.bundles'].each { key ->
         def value = System.getProperty(key)
         if (value != null) {
             systemProperty key, value

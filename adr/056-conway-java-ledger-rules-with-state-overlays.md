@@ -850,7 +850,9 @@ yano:
     engine: scalus            # scalus | java | amaru
     shadow-engines: []        # e.g. [java] or [java, amaru]
     shadow-dump-dir: ""       # when set, write a replayable bundle per disagreement
-    shadow-sync: false        # validate synced PV10+ blocks with the java engine (observe only)
+    shadow-sync: false        # validate every applied Conway (PV9+) block (observe only; Phase 7a)
+    shadow-sync-engines: java # engines shadow sync runs (java needs no experimental flag here)
+    shadow-sync-report: ""    # JSONL, one line per disagreement / engine failure / block finding
 ```
 
 - The admission verdict comes only from `engine`. Shadow engines never change
@@ -885,7 +887,7 @@ yano:
 | **Amaru scenarios** | Haskell-cross-checked JSON scenarios (initial state, tx, expected Haskell predicate) load into an in-memory `LedgerView`. The verdict and the constructor must match. | Vendored copy, pinned to the Amaru tag used by ADR-057, with Apache-2.0 NOTICE, under `ledger-rules/src/conformanceTest/resources/amaru/` |
 | **cardano-blueprint vectors** | Conway CBOR vectors generated from the Haskell Imp tests. Needs a `NewEpochState` decoder. Tick and epoch events are skipped, as in Amaru. | `conformanceTest`, pinned tarball with checksum |
 | **Amaru-wasm differential** | For every scenario, mutated transaction and shadow-dump bundle, the Java verdict equals the Amaru verdict. Divergences are triaged against Haskell and recorded. | ADR-057 Phase D |
-| **Shadow sync validation** | Every transaction of every synced PV10+ Conway block (preprod, preview, mainnet from the PV10 boundary) validates against the ticked pre-block state plus a block-local overlay. `invalidTransactions` must come out phase-2 invalid, all others valid. Catches false rejections and PV drift. It cannot catch false acceptances. | `yano.validation.shadow-sync=true` |
+| **Shadow sync validation** | Every transaction of every synced Conway block (PV9+ since Phase 5b; preprod, preview, mainnet from the Conway hard fork) validates against the pre-block state (captured after the block's epoch boundary, before its own changes; Phase 7a) plus a block-local overlay. `invalidTransactions` must come out phase-2 invalid, all others valid. Catches false rejections and PV drift. It cannot catch false acceptances. | `yano.validation.shadow-sync=true` |
 | **Mutation matrix** | From valid base transactions, at least one mutant per constructor is rejected with that constructor. | `conformanceTest` |
 | **Haskell differential** (optional) | Mutated invalid transactions submitted over n2c to a local devnet Haskell node (compatibility folder). Compare the `ApplyTxError` constructors. Never submit to a public network. | Manual / CI-optional |
 | **Native parity** | The conformance suite runs in the native test image. | Same pattern as the ADR-051 native gate |
@@ -2358,6 +2360,164 @@ same base-plus-delta model.
   - zero unrecorded Java-vs-Amaru divergences;
   - zero false rejections in shadow sync over preprod, preview and mainnet from
     the PV10 boundary to the tip.
+
+#### Phase 7a results: shadow-sync validation (2026-09-29)
+
+Goal (Satya): run every Conway-era transaction through the Java engine during sync and report whether it validates
+each one as the chain did. `yano.validation.shadow-sync=true` (off by default) now does that; the real-network runs
+(preprod, preview, then mainnet) are the Phase 7 gate and are run separately.
+
+- **Capture point.** A `BlockAppliedEvent` listener registered ahead of every other (priority `Integer.MIN_VALUE`,
+  `ShadowSyncValidator`). The event is delivered synchronously on the apply thread inside the block's canonical write
+  section: the follower's `BodyFetchManager.applyBlock` stores the block, runs the three epoch-boundary events (each
+  commits its RocksDB writes), then publishes `BlockAppliedEvent` (UTxO at order 100, account state and governance
+  at 110); a producer applies the boundary in its own section and publishes `BlockAppliedEvent` from its store
+  section. When the listener runs, the boundary before the block is committed and none of the block's own changes
+  are, which is Haskell's order (TICK, then BBODY/LEDGERS on the ticked state). The new
+  `CanonicalStateGate.captureInWriteSection(SHADOW_SYNC)` takes the RocksDB snapshot and the in-memory copies there:
+  - only the thread holding the write lock may call it (readers wait; a writer cannot deadlock on itself, it takes
+    no lock); `acquireSnapshot` still refuses inside a write section;
+  - the tip is the published one (the parent: its slot + 1 is the forecast basis, as `BlockRevalidator` used), the
+    ledger epoch is re-read after the boundary, so `TickedLedgerView.of(view, blockSlot)` is `CANONICAL`, and shadow
+    sync refuses (reports) anything else rather than dry-running;
+  - the snapshot is marked `publishedState() == false`: its state is not its generation's, so the per-generation
+    dry-run memo is bypassed; `SHADOW_SYNC` snapshots do not count against `max-live-snapshots` (shadow sync bounds
+    them) and cannot be acquired outside a write section.
+  - Evidence: `ShadowSyncPreBlockCaptureTest` (real RocksDB stores; a capture after a commit in the section sees it
+    and not the section's later commits, keeps them after the section publishes, the cap rule, three blocks through
+    `ShadowSyncValidator` with 0 live snapshots after); the devnet gate below validated a first-of-epoch block on
+    the follower (boundary and block in one section) and on the producer. Two mutations fail the gate: the listener
+    after the UTxO apply (priority 105) gives 16 (producer) / 20 (follower) disagreements, the first transaction of
+    each block whose inputs the block itself already spent (`UTXO.ValueNotConservedUTxO` first, as Haskell orders the
+    accumulated failures; later ones pass because the chain's effects advance the overlay); after every listener, 21 /
+    28, adding `DELEG.StakeKeyRegisteredDELEG` and `GOVCERT.ConwayDRepAlreadyRegistered`.
+  - Not reused: the scaffolded `upstream.validation.body-level` / `BodyValidationPipeline` runs before the write
+    section, before the boundary, and is fail-closed; shadow sync must observe only.
+  - **Ordering guard.** `ShadowSyncValidator.SUBSCRIPTION_PRIORITY` is `Integer.MIN_VALUE`, and
+    `ShadowSyncOrderingGuard` (tx-services test fixtures, over the new `PropagatingEventBus.subscribers(type)`) checks
+    a live node: the capture listener is first, and every other `BlockAppliedEvent` subscriber below the UTxO apply
+    (100) is on a reviewed allow-list (0 `ChronologySubsystem`: era start slot and the one-off Shelley-start UTxO
+    total; 1 `LoggingPlugin`; 50 `NonceEvolutionListener`: the epoch nonce). A new low-priority subscriber fails
+    `ValidationEngineBootstrapIntegrationTest` and the devnet gate until reviewed. The listeners run after the
+    capture in any case; the guard keeps "nothing ledger-changing before 100" true for the other Phase 1 readers.
+- **Transactions** come from the block's own bytes (`SyncBlock`, `CborSlice`): each transaction is reassembled as
+  `[body, witnesses, is_valid, aux | null]` from the original segment slices (as Haskell's segwit decoder), so
+  non-canonical encodings, ids, signatures and hashes are the chain's; `is_valid` is `false` exactly for the indexes
+  in `invalid_transactions`. The ids are cross-checked against the applied block (`ID_MISMATCH`).
+- **Expected outcomes** (`SyncBlockValidator`, rule `LEDGER`, origin `SYNC`, no `previous`: full validation with
+  Plutus; one block-local `OverlayLedgerView` per engine over the pre-block view):
+  - not in `invalid_transactions`: `Valid` with a phase-2-valid `ValidatedTx`;
+  - in `invalid_transactions`: `Valid` with a phase-2-*invalid* `ValidatedTx` (under `SYNC` the engines run
+    `UTXOS` for `IsValid False`: every phase-1 rule, then the scripts must fail; a passing script is
+    `UTXOS.ValidationTagMismatch`, a disagreement; the effects are collateral only);
+  - anything with a non-`ENGINE` failure, or the wrong phase-2 verdict: **disagreement** (the engine would have
+    rejected a chain-valid block); only `ENGINE` failures (state unavailable, decoding, unsupported era or context,
+    an engine that threw): **engine failure**.
+  - After a finding the chain's effects are still derived (`TxEffectsDeriver`, chain verdict) and applied, so later
+    transactions see a correct overlay; when even that fails the rest of the block's findings are engine failures
+    marked `overlayTainted`. It cannot catch false acceptances, and it compares verdicts only (the PV 9
+    forward-delegation divergence of Phase 5b is not observable here).
+- **Block rules** (`BBODY`, cardano-ledger `f649f975`), reported separately (`BLOCK_RULE` lines, own counters):
+  - `BodyRefScriptsSizeTooBig` (Conway/Rules/Bbody.hs:342-371): the sum of `txNonDistinctRefScriptsSize` (spending ∪
+    reference inputs) ≤ 1 MiB, against the pre-block UTxO at PV ≤ 10 and cumulatively from PV 11 (the outputs of
+    earlier transactions, `collOuts` for phase-2-invalid ones; spent entries are not removed);
+  - `TooManyExUnits` (Alonzo/Rules/Bbody.hs `validateExUnits`, after `LEDGERS`): the point-wise sum of every
+    transaction's redeemer budgets (`totExUnits`, folded over the whole sequence, so phase-2-invalid transactions
+    count) ≤ the pre-block `maxBlockExUnits`;
+  - `WrongBlockBodySizeBBODY`, `InvalidBodyHashBBODY` (Shelley `validateBlockBodySize` / `validateBlockBodyHash`,
+    the first checks of `alonzoBbodyTransition`): the sum of the four stored segments' lengths and
+    `blake2b_256(h(bodies) ‖ h(witnesses) ‖ h(aux) ‖ h(invalid))` (`hashAlonzoSegWits`) against the header's
+    `block_body_size` / `block_body_hash`. These are ledger (`BBODY`) checks, not consensus ones, and Yano's sync
+    path does not otherwise make them: header validation only compares the header's own fields.
+  - Out of scope: `HeaderProtVerTooHigh` (a header-version check, enforced by Haskell on mainnet only below PV 12)
+    and `incrBlocks` (block-count bookkeeping, canonical state rather than a verdict).
+- **Throughput and backpressure.** The apply thread only captures and queues; a pool of `shadow-sync-threads`
+  (default half the cores, 1 to 4) validates, blocks in parallel, each block's transactions in order. At most
+  `shadow-sync-max-in-flight` (default 8) blocks, each holding its snapshot, are queued or running; when all are
+  taken the apply thread waits (sync slows to validation speed) up to `shadow-sync-max-wait-ms` (default 30 s),
+  after which the block is skipped and reported. Workers never take the gate. Pre-Conway blocks, Byron blocks and
+  empty blocks are counted without a capture (Byron blocks as pre-Conway blocks; their events carry no transactions).
+  - **The wait holds the canonical write lock** (it happens inside the block's write section). Meanwhile every
+    snapshot acquisition waits: engine-API mempool admission and rebuilds, block selection, admission shadows and
+    other snapshot readers; the published tip does not move and chain sync buffers upstream. That is the point of
+    backpressure for block application, but it should not become an outage: 30 s (lowered from the first draft's
+    300 s) bounds what a stuck or pathologically slow engine can cost per block, after which it costs coverage (a
+    reported, skipped block) rather than availability. A healthy engine frees a slot within one block's validation
+    time (the fastest of 8 in-flight blocks), far below 30 s; Amaru calls are bounded by `amaru.timeout-ms`.
+- **Startup guard.** `RuntimeNode` starts shadow sync only when account state and the UTxO store are enabled and UTxO
+  apply is synchronous (`ShadowSyncPreconditions`); otherwise it logs a WARN with the reason and the node runs
+  without it (never a startup failure, never a block-by-block failure). Installing the same engines again is a
+  no-op; replacing them closes the previous validator (`ValidationEngines.attachShadowSync` is idempotent).
+- **Engines.** `shadow-sync-engines` (default `java`, optionally `amaru` in `-PwithAmaru` builds) get their own
+  instances; the java engine needs no `java-engine.experimental` for shadow sync (it only observes). Shadow sync
+  alone leaves admission and the mempool exactly as without engines (`ValidationEngines.affectsAdmission()` false:
+  `TxSubsystem` gets no engines). Their health is reported but **never gates readiness** (a failed-closed Amaru
+  shadow-sync engine only produces engine failures): `shadowSync.<engine>.healthy` and `shadowSyncUnhealthy` in the
+  `validation-engine` health data, and `yano_validation_shadow_sync_engine_healthy{engine}`;
+  `ValidationEngineSettings.uses()` (which selects the readiness-gating Amaru check) stays admission and admission
+  shadows only.
+- **Reporting.** Counters per engine and protocol version (validated, agreed, disagreed, engine failure), blocks
+  validated / first-of-epoch / failed / empty / pre-Conway, block-rule checks, backpressure waits; an INFO summary
+  every `shadow-sync-summary-seconds` (60) and at stop; `yano_validation_shadow_sync_{txs,blocks}_total`,
+  `…_block_rule_violations_total{check}`, `…_backpressure_wait_ms_total`, `…_in_flight`; `shadowSync.*` in the
+  `validation-engine` health data; the JSONL `shadow-sync-report` (a line per finding with slot, block, tx index and
+  hash, PV, engine, expected, actual and every failure, then a summary line at stop, built field by field so it needs
+  no reflection in a native image; closing the report can no longer keep the engines from closing);
+  `shadow-sync-dump-dir`: a `ShadowDumpBundle` per finding (the engine re-run over a recording of the same overlay,
+  only while the dumper still accepts one; at most `shadow-sync-max-dumps`, 1000), which now records
+  `forecastBasisSlot`. `ShadowBundleReplay` (tx-services) replays
+  bundles with the java engine: `ShadowBundleReplayTest` with `-Dyano.shadow.bundles=<dir>`, or its `main`.
+- **Tests.** `SyncBlockTest` (byte-exact reassembly with a non-canonical body, invalid flags, bare and enveloped
+  blocks), `SyncBlockValidatorTest` (overlay chaining, the phase-2-invalid expectations both ways, classification,
+  recovery through the chain's effects, tainting, a bundle that replays, the ref-script sum at PV 10 vs 11),
+  `ShadowSyncValidatorTest` (the apply thread waits when every slot is taken and resumes; skip after the maximum
+  wait; pre-Conway, Byron, empty and outside-a-section blocks are not captured; per engine/PV counters, JSONL,
+  bundles and the summary's fields; close releases queued states), `ShadowSyncPreBlockCaptureTest`,
+  `ShadowSyncPreconditionsTest`, `ValidationEngineBootstrapIntegrationTest` (shadow sync alone, reinstalling the same
+  engines, the ordering guard; not started without account state while the node starts), `ShadowBundleReplayTest`,
+  and `ShadowSyncPhase2InvalidTest` (tx-services, the real java engine with the Scalus evaluator on `MutationWorld`'s
+  always-failing PlutusV3 script: listed in `invalid_transactions` it agrees as phase-2 invalid; claiming valid it is
+  the `UTXOS.ValidationTagMismatch` disagreement). `SyncBlockTest` covers the body size and hash against a
+  Conway header, `SyncBlockValidatorTest` the ex-units sum (invalid transactions included, point-wise bound) and a
+  full dumper skipping the recording re-run.
+- **Devnet gate** `ShadowSyncDevnetGateTest` (tx-services, `-PledgerRulesGate=true`, about 70 s): the Phase 6 matrix
+  on a producer with shadow sync, and an in-process follower (`DevnetFollowerNode`: legacy admission, shadow sync,
+  pipelined n2n sync from genesis) through the one-block chains, the chain across blocks, the rollback, the epoch
+  crossing and 400 chained payments. Producer 423/423 and follower 426/426 to 438/438 transactions agreed over runs (PV 11;
+  the follower also validates blocks that are later rolled back, depending on the rollback's timing), 0 disagreements, 0 engine failures, 0 failed blocks, 0 id mismatches,
+  every block's ref-script sum, ex-units sum and body size and hash checked with 0 violations, one first-of-epoch
+  block each, 0 live snapshots after, the ordering guard on both nodes. Throughput there
+  (non-Plutus): about 0.3–0.7 ms per transaction on one thread, no backpressure wait. No phase-2-invalid
+  transaction exists on a Yano devnet (decision 6); that path is covered by the unit tests.
+- **Running on public networks** (fresh sync from genesis, isolated directory and ports; never two nodes on one
+  data directory):
+  ```
+  ./gradlew :app:yanoDistZip -PskipSigning=true     # builds app/build/yano.jar
+  RUN=$HOME/yano-shadow/preprod; mkdir -p $RUN; cd app
+  java -Xmx8g -Dquarkus.http.port=7171 -Dyano.server.port=13437 \
+    -Dyano.storage.path=$RUN/chainstate -Dyano.history.dir=$RUN/history \
+    -Dquarkus.log.file.enable=true -Dquarkus.log.file.path=$RUN/yano.log \
+    -Dyano.validation.shadow-sync=true \
+    -Dyano.validation.shadow-sync-report=$RUN/shadow-sync.jsonl \
+    -Dyano.validation.shadow-sync-dump-dir=$RUN/shadow-dumps \
+    -jar build/yano.jar > $RUN/stdout.log 2>&1 &     # preprod is the default profile
+  ```
+  (`quarkus.log.file.enable` is the Quarkus 3.25 name, `LogRuntimeConfig.FileConfig.enable`; the file handler is off
+  by default, so without it only stdout has the log.)
+  Preview: add `-Dquarkus.profile=preview` (own `RUN`, ports); mainnet `-Dquarkus.profile=mainnet`. Results:
+  `grep 'Shadow sync' $RUN/yano.log` (or `$RUN/stdout.log`), `grep 'shadow sync is not started' ...` for the startup
+  guard, `curl -s localhost:7171/q/metrics | grep shadow_sync`, the JSONL file, and
+  `./gradlew :tx-services:test --tests '*ShadowBundleReplayTest' -Dyano.shadow.bundles=$RUN/shadow-dumps`.
+  Account state, rewards and governance must stay enabled (the defaults).
+- **Review.** Two independent reviews. Round 2 checked the block-level checks against cardano-ledger f649f975:
+  body size and hash (`alonzoBbodyTransition` → `validateBlockBodySize`/`validateBlockBodyHash`, no PV gate,
+  `hashAlonzoSegWits` over the four original segment slices, compared with the header's `block_body_size` only) and
+  `TooManyExUnits` (`pointWiseExUnits (<=)` over every transaction's `totExUnits`). The ex-units sum reads each
+  transaction's redeemers as Haskell's `Redeemers` map holds them (`RawTransaction#redeemers`), so a duplicate
+  `(tag, index)` in the list form counts once. A report line names both body checks when both differ.
+- **Open.** Throughput on Plutus-heavy mainnet blocks is unmeasured (validation is serial per block; blocks are
+  parallel). A block validated before a rollback stays counted. Amaru as a shadow-sync engine shares its instance
+  pool size with admission (`amaru.pool-size`). `ShadowBundleReplay.main` from the uber-jar is not exercised by a test.
 
 #### Phase 7b results: cardano-blueprint conformance vectors (2026-09-29)
 

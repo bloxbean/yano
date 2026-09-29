@@ -78,9 +78,6 @@ final class ValidationEngineBootstrap {
                     + "; unset one of them (supplementary-rules-enabled is deprecated, ADR-056 §7)");
         }
         if (!settings.usesEngineApi()) {
-            if (settings.shadowSync()) {
-                log.warn("yano.validation.shadow-sync=true is accepted but not active yet (ADR-056 Phase 7)");
-            }
             return Optional.empty();
         }
         ClassLoader loader = Thread.currentThread().getContextClassLoader();

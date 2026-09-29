@@ -48,7 +48,7 @@ public final class DefaultTransactionServicesFactory {
                                                        TransactionBootstrapOptions options) {
         if (options == null || !options.enabled()) {
             if (enginesConfigured(context)) {
-                log.warn("yano.validation.engine / shadow-engines are set but transaction validation is disabled; "
+                log.warn("yano.validation.engine / shadow-engines / shadow-sync are set but transaction validation is disabled; "
                         + "no validation engine is created");
             }
             return Optional.empty();

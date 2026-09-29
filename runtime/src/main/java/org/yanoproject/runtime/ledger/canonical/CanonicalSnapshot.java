@@ -51,13 +51,31 @@ public final class CanonicalSnapshot implements Retainable, AutoCloseable {
     // results are kept; the snapshot is immutable, so they never go stale.
     private final ConcurrentHashMap<String, Lookup<?>> memo = new ConcurrentHashMap<>();
     private volatile String unavailableReason;
+    // False for a capture taken inside a write section (captureInWriteSection): its state is not the published
+    // generation's, so generation-scoped values are never shared with (or taken from) published snapshots.
+    private final boolean publishedState;
 
     CanonicalSnapshot(CanonicalStateGate gate, CanonicalTip tip, SnapshotPurpose purpose,
                       CanonicalSnapshotSource.Captured state) {
+        this(gate, tip, purpose, state, true);
+    }
+
+    CanonicalSnapshot(CanonicalStateGate gate, CanonicalTip tip, SnapshotPurpose purpose,
+                      CanonicalSnapshotSource.Captured state, boolean publishedState) {
         this.gate = Objects.requireNonNull(gate, "gate");
         this.tip = Objects.requireNonNull(tip, "tip");
         this.purpose = Objects.requireNonNull(purpose, "purpose");
         this.state = Objects.requireNonNull(state, "state");
+        this.publishedState = publishedState;
+    }
+
+    /**
+     * @return true when this snapshot holds the state of its published generation; false for a pre-block capture
+     *         taken inside a write section ({@link CanonicalStateGate#captureInWriteSection}), whose tip is the
+     *         published parent but whose state already includes the section's earlier commits (an epoch boundary)
+     */
+    public boolean publishedState() {
+        return publishedState;
     }
 
     /** @return the canonical generation this snapshot belongs to */
@@ -83,8 +101,14 @@ public final class CanonicalSnapshot implements Retainable, AutoCloseable {
         return gate.epochStartSlot(epoch);
     }
 
-    /** A value derived from this snapshot's state, shared with every snapshot of the same generation. */
+    /**
+     * A value derived from this snapshot's state, shared with every snapshot of the same generation. A pre-block
+     * capture ({@link #publishedState()} false) computes its own, never shared.
+     */
     <T> Lookup<T> generationMemoized(String key, CanonicalStateGate.Computation<T> compute) throws Exception {
+        if (!publishedState) {
+            return compute.compute();
+        }
         return gate.generationMemoized(generation(), key, compute);
     }
 
@@ -234,6 +258,6 @@ public final class CanonicalSnapshot implements Retainable, AutoCloseable {
     @Override
     public String toString() {
         return "CanonicalSnapshot[generation=" + generation() + ", slot=" + tip.slot() + ", purpose=" + purpose
-                + ", refCount=" + refCount.get() + "]";
+                + (publishedState ? "" : ", pre-block") + ", refCount=" + refCount.get() + "]";
     }
 }

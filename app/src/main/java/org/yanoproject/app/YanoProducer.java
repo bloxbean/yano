@@ -987,6 +987,14 @@ public class YanoProducer {
             YanoPropertyKeys.Validation.SHADOW_ENGINES,
             YanoPropertyKeys.Validation.SHADOW_DUMP_DIR,
             YanoPropertyKeys.Validation.SHADOW_SYNC,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_REPORT,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_DUMP_DIR,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_DUMPS,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_THREADS,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_WAIT_MS,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS,
             YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS,
             YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS,
             YanoPropertyKeys.Validation.AMARU_PHASE2,
@@ -1004,6 +1012,9 @@ public class YanoProducer {
         if (!globals.containsKey(YanoPropertyKeys.Validation.SHADOW_ENGINES)) {
             // A YAML list may only exist as indexed keys.
             forwardDynamicKeys(YanoPropertyKeys.Validation.SHADOW_ENGINES + "[", globals);
+        }
+        if (!globals.containsKey(YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES)) {
+            forwardDynamicKeys(YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES + "[", globals);
         }
     }
 

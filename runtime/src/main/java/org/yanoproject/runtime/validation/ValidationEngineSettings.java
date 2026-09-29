@@ -3,6 +3,7 @@ package org.yanoproject.runtime.validation;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncSettings;
 
 import java.nio.file.Path;
 import java.util.Collection;
@@ -17,14 +18,16 @@ import java.util.Objects;
  * @param shadowEngines     {@code yano.validation.shadow-engines}: engines run in the shadow of admission
  * @param shadowDumpDir     {@code yano.validation.shadow-dump-dir}: where disagreement bundles go, or
  *                          {@code null} for none
- * @param shadowSync        {@code yano.validation.shadow-sync}: validate synced blocks in the shadow. Accepted
- *                          but not wired yet: shadow sync is ADR-056 Phase 7; a WARN says so when set
+ * @param shadowSync        {@code yano.validation.shadow-sync}: validate every transaction of every applied Conway
+ *                          block against its pre-block state, observe only (ADR-056 Phase 7a)
  * @param snapshotMaxAgeMs  {@code yano.validation.snapshot-max-age-ms}: a shadow task older than this is
  *                          cancelled and releases its snapshot (default 30000)
  * @param maxLiveSnapshots  {@code yano.validation.max-live-snapshots} (default 4)
+ * @param shadowSyncSettings the {@code yano.validation.shadow-sync-*} settings (read only when shadow sync is on)
  */
 public record ValidationEngineSettings(String engine, List<String> shadowEngines, Path shadowDumpDir,
-                                       boolean shadowSync, long snapshotMaxAgeMs, int maxLiveSnapshots) {
+                                       boolean shadowSync, long snapshotMaxAgeMs, int maxLiveSnapshots,
+                                       ShadowSyncSettings shadowSyncSettings) {
 
     public static final String DEFAULT_ENGINE = LedgerValidationEngines.SCALUS;
     public static final long DEFAULT_SNAPSHOT_MAX_AGE_MS = 30_000;
@@ -41,6 +44,15 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
         if (maxLiveSnapshots <= 0) {
             throw new IllegalArgumentException(YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS + " must be > 0");
         }
+        if (shadowSyncSettings == null) {
+            shadowSyncSettings = ShadowSyncSettings.defaults();
+        }
+    }
+
+    /** Settings with the default shadow-sync settings. */
+    public ValidationEngineSettings(String engine, List<String> shadowEngines, Path shadowDumpDir, boolean shadowSync,
+                                    long snapshotMaxAgeMs, int maxLiveSnapshots) {
+        this(engine, shadowEngines, shadowDumpDir, shadowSync, snapshotMaxAgeMs, maxLiveSnapshots, null);
     }
 
     /** The defaults: {@code scalus}, no shadows, no dumps. */
@@ -62,19 +74,29 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
                 : LedgerValidationEngines.normalize(engine);
         List<String> shadows = LedgerValidationEngines.parseShadowEngines(shadowList(g), normalizedEngine);
         String dump = string(g.get(YanoPropertyKeys.Validation.SHADOW_DUMP_DIR));
+        boolean shadowSync = bool(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC));
         return new ValidationEngineSettings(normalizedEngine, shadows,
                 dump == null || dump.isBlank() ? null : Path.of(dump.trim()),
-                bool(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC)),
+                shadowSync,
                 number(g.get(YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS), DEFAULT_SNAPSHOT_MAX_AGE_MS),
                 (int) number(g.get(YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS),
-                        CanonicalStateGate.DEFAULT_MAX_LIVE_SNAPSHOTS));
+                        CanonicalStateGate.DEFAULT_MAX_LIVE_SNAPSHOTS),
+                shadowSync ? ShadowSyncSettings.fromGlobals(g) : ShadowSyncSettings.defaults());
     }
 
     /**
-     * @return true when validation engines are created (any engine but {@code scalus}, or any shadow engine);
-     *         false keeps the legacy {@code TransactionValidator} path with nothing else running
+     * @return true when validation engines are created (any engine but {@code scalus}, any shadow engine, or shadow
+     *         sync); false keeps the legacy {@code TransactionValidator} path with nothing else running
      */
     public boolean usesEngineApi() {
+        return affectsAdmission() || shadowSync;
+    }
+
+    /**
+     * @return true when the engines take part in admission: an engine-API admission engine, or shadow engines next
+     *         to admission. Shadow sync alone leaves the admission path (and the mempool) exactly as without engines.
+     */
+    public boolean affectsAdmission() {
         return !engine.equals(DEFAULT_ENGINE) || !shadowEngines.isEmpty();
     }
 

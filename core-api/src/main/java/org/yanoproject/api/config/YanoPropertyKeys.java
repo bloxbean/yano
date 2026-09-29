@@ -256,8 +256,27 @@ public final class YanoPropertyKeys {
         public static final String SHADOW_ENGINES = "yano.validation.shadow-engines";
         /** ADR-056 §7: directory for replay bundles of engine disagreements (default empty: no dumps). */
         public static final String SHADOW_DUMP_DIR = "yano.validation.shadow-dump-dir";
-        /** ADR-056 §7: validate synced PV10+ blocks with the shadow engines (Phase 7; not wired yet). */
+        /**
+         * ADR-056 §7, Phase 7a: validate every transaction of every applied Conway block (PV 9+) against its pre-block
+         * state, observe only (default false).
+         */
         public static final String SHADOW_SYNC = "yano.validation.shadow-sync";
+        /** ADR-056 Phase 7a: engines shadow sync runs, comma-separated (default {@code java}). */
+        public static final String SHADOW_SYNC_ENGINES = "yano.validation.shadow-sync-engines";
+        /** ADR-056 Phase 7a: JSONL file with one line per disagreement or engine failure (default empty: none). */
+        public static final String SHADOW_SYNC_REPORT = "yano.validation.shadow-sync-report";
+        /** ADR-056 Phase 7a: directory for replay bundles of shadow-sync findings (default empty: none). */
+        public static final String SHADOW_SYNC_DUMP_DIR = "yano.validation.shadow-sync-dump-dir";
+        /** ADR-056 Phase 7a: at most this many bundles are written (default 1000). */
+        public static final String SHADOW_SYNC_MAX_DUMPS = "yano.validation.shadow-sync-max-dumps";
+        /** ADR-056 Phase 7a: blocks (each holding one snapshot) validated or queued at once (default 8). */
+        public static final String SHADOW_SYNC_MAX_IN_FLIGHT = "yano.validation.shadow-sync-max-in-flight";
+        /** ADR-056 Phase 7a: validation threads (default half the processors, 1 to 4). */
+        public static final String SHADOW_SYNC_THREADS = "yano.validation.shadow-sync-threads";
+        /** ADR-056 Phase 7a: longest the apply thread waits for a free slot before skipping a block (default 30000). */
+        public static final String SHADOW_SYNC_MAX_WAIT_MS = "yano.validation.shadow-sync-max-wait-ms";
+        /** ADR-056 Phase 7a: seconds between INFO summaries (default 60; 0 disables). */
+        public static final String SHADOW_SYNC_SUMMARY_SECONDS = "yano.validation.shadow-sync-summary-seconds";
         /** ADR-056 §3: a shadow task older than this is cancelled and its snapshot released (default 30000). */
         public static final String SNAPSHOT_MAX_AGE_MS = "yano.validation.snapshot-max-age-ms";
         /** ADR-057 §2: who runs Plutus under {@code engine: amaru}, {@code scalus} (default) | {@code amaru}. */

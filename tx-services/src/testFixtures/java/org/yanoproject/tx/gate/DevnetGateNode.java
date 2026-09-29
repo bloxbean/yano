@@ -191,6 +191,16 @@ public final class DevnetGateNode implements AutoCloseable {
         return settings;
     }
 
+    /** @return the node's devnet test configuration (its genesis files, server port and runtime options) */
+    public YanoDevnetTestConfig config() {
+        return config;
+    }
+
+    /** @return the genesis timestamp (epoch millis) the producer resolved at startup */
+    public long genesisTimestamp() {
+        return ((RuntimeNode) node.chain()).getResolvedGenesisTimestamp();
+    }
+
     public Yano node() {
         return node;
     }

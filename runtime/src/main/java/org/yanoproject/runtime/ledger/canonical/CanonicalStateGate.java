@@ -17,6 +17,7 @@ import java.util.TreeMap;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.IntSupplier;
@@ -75,6 +76,8 @@ public final class CanonicalStateGate {
     private final Set<CanonicalSnapshot> liveSnapshots = ConcurrentHashMap.newKeySet();
     private final AtomicLong shadowRefusals = new AtomicLong();
     private final AtomicLong overCapAcquisitions = new AtomicLong();
+    // Live SHADOW_SYNC snapshots: bounded by shadow sync itself, so not counted against max-live-snapshots.
+    private final AtomicInteger uncappedLive = new AtomicInteger();
     // Derived values shared by every snapshot of one generation (ADR-056 step 1d, M5): snapshots of the same
     // generation hold the same state, so a boundary dry run computed for one serves them all.
     private final ConcurrentHashMap<String, GenerationValue> generationMemo = new ConcurrentHashMap<>();
@@ -462,8 +465,12 @@ public final class CanonicalStateGate {
         if (unavailable != null) {
             return Lookup.unavailable("canonical snapshot unavailable: " + unavailable);
         }
+        if (purpose == SnapshotPurpose.SHADOW_SYNC) {
+            return Lookup.unavailable("SHADOW_SYNC snapshots are captured inside the block's write section "
+                    + "(captureInWriteSection)");
+        }
         int cap = maxLiveSnapshots;
-        if (purpose == SnapshotPurpose.SHADOW && liveSnapshots.size() >= cap) {
+        if (purpose == SnapshotPurpose.SHADOW && cappedLive() >= cap) {
             shadowRefusals.incrementAndGet();
             return Lookup.unavailable("live canonical snapshot cap reached (" + cap + "); shadow request dropped");
         }
@@ -483,7 +490,7 @@ public final class CanonicalStateGate {
         } finally {
             lock.readLock().unlock();
         }
-        int live = liveSnapshots.size();
+        int live = cappedLive();
         if (live > cap) {
             overCapAcquisitions.incrementAndGet();
             log.warn("Live canonical snapshots ({}) exceed the cap ({}) for a {} acquisition", live, cap, purpose);
@@ -501,7 +508,7 @@ public final class CanonicalStateGate {
      * @return true when the shadow task may retain a snapshot
      */
     public boolean admitShadow() {
-        if (liveSnapshots.size() >= maxLiveSnapshots) {
+        if (cappedLive() >= maxLiveSnapshots) {
             shadowRefusals.incrementAndGet();
             return false;
         }
@@ -544,8 +551,69 @@ public final class CanonicalStateGate {
         return generationMemoComputations.get();
     }
 
+    /**
+     * Captures the state the calling writer has committed so far, from inside its own write section (ADR-056
+     * Phase 7a, shadow sync). The follower applies a block's epoch boundary and then the block itself in one write
+     * section, and publishes nothing in between; a hook at the start of the block's own application (the first
+     * {@code BlockAppliedEvent} listener, after the boundary events) captures exactly the pre-block state: the
+     * boundary applied, none of the block's changes.
+     *
+     * <ul>
+     *   <li>Only the thread holding the write lock may call it (no other writer can interleave; readers wait), so
+     *       no lock is taken and a writer cannot deadlock on itself.</li>
+     *   <li>The snapshot's tip is the <em>published</em> tip (the parent block: its slot is the forecast basis), with
+     *       its generation, but the ledger epoch is re-read now, so after a boundary it is the new epoch (and a
+     *       ticked view over it is the canonical one).</li>
+     *   <li>Its state is not the published generation's: it is marked {@link CanonicalSnapshot#publishedState()}
+     *       false, and generation-scoped values are never shared with published snapshots.</li>
+     *   <li>{@link SnapshotPurpose#SHADOW_SYNC} captures are never refused and do not count against
+     *       {@code max-live-snapshots} (the caller bounds them); other purposes count as usual.</li>
+     * </ul>
+     *
+     * @return the snapshot (the caller owns the first reference), or {@link Lookup.Unavailable}
+     */
+    public Lookup<CanonicalSnapshot> captureInWriteSection(SnapshotPurpose purpose) {
+        Objects.requireNonNull(purpose, "purpose");
+        if (!lock.isWriteLockedByCurrentThread()) {
+            return Lookup.unavailable("a pre-block capture is only possible inside the block's canonical write section");
+        }
+        CanonicalSnapshotSource source = snapshotSource;
+        if (source == null) {
+            return Lookup.unavailable("canonical snapshots are not available (no snapshot source installed)");
+        }
+        String unavailable = source.unavailableReason();
+        if (unavailable != null) {
+            return Lookup.unavailable("canonical snapshot unavailable: " + unavailable);
+        }
+        CanonicalTip published = withEpochs(tip);
+        CanonicalTip preBlock = new CanonicalTip(published.generation(), published.slot(), published.blockHash(),
+                published.tipSlotEpoch(), ledgerEpoch(published.tipSlotEpoch()));
+        CanonicalSnapshot snapshot;
+        try {
+            CanonicalSnapshotSource.Captured captured = source.capture(preBlock);
+            if (captured == null) {
+                return Lookup.unavailable("canonical snapshot source returned no state");
+            }
+            snapshot = new CanonicalSnapshot(this, preBlock, purpose, captured, false);
+        } catch (Exception e) {
+            String reason = e.getMessage() != null ? e.getMessage() : e.toString();
+            return Lookup.unavailable("canonical snapshot unavailable: " + reason);
+        }
+        if (purpose == SnapshotPurpose.SHADOW_SYNC) {
+            uncappedLive.incrementAndGet();
+        }
+        liveSnapshots.add(snapshot);
+        return Lookup.present(snapshot);
+    }
+
+    private int cappedLive() {
+        return Math.max(0, liveSnapshots.size() - uncappedLive.get());
+    }
+
     void onSnapshotFreed(CanonicalSnapshot snapshot) {
-        liveSnapshots.remove(snapshot);
+        if (liveSnapshots.remove(snapshot) && snapshot.purpose() == SnapshotPurpose.SHADOW_SYNC) {
+            uncappedLive.decrementAndGet();
+        }
     }
 
     /** @return snapshots with at least one live reference */

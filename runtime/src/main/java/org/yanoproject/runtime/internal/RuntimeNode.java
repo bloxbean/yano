@@ -162,6 +162,11 @@ import org.yanoproject.runtime.utxo.UtxoSubsystem;
 import org.yanoproject.runtime.utxo.UtxoStoreWriter;
 import org.yanoproject.runtime.validation.DefaultConsensusListener;
 import org.yanoproject.runtime.validation.ValidationEngines;
+import org.yanoproject.runtime.validation.shadowsync.PreBlockState;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncPreconditions;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncSettings;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.file.Files;
@@ -226,6 +231,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private volatile long resolvedGenesisTimestamp;
     private final ChronologySubsystem chronologySubsystem;
     private final TxSubsystem txSubsystem;
+    // ADR-056 §7: the configured validation engines (admission, shadows, shadow sync), or null.
+    private volatile ValidationEngines validationEngines;
     private final DevnetRuntime devnetRuntime;
     // Status tracking
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
@@ -2683,12 +2690,60 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      * snapshots of this node's state gate.
      */
     public void setValidationEngines(ValidationEngines engines) {
-        txSubsystem.setValidationEngines(engines, () -> CanonicalStateGate.of(chainState));
+        ValidationEngines previous = this.validationEngines;
+        if (previous != null && previous != engines) {
+            stopShadowSync(previous);
+        }
+        this.validationEngines = engines;
+        // Shadow sync alone (ADR-056 Phase 7a) leaves admission and the mempool exactly as without engines.
+        txSubsystem.setValidationEngines(engines != null && engines.affectsAdmission() ? engines : null,
+                () -> CanonicalStateGate.of(chainState));
+        if (engines != null && !engines.shadowSyncEngines().isEmpty()) {
+            startShadowSync(engines);
+        }
     }
 
-    /** @return the installed validation engines, or {@code null} when admission uses the legacy validator */
+    /**
+     * Starts shadow sync (ADR-056 Phase 7a): every applied Conway block is validated by the shadow-sync engines against
+     * its pre-block state, captured inside the block's write section.
+     */
+    private void startShadowSync(ValidationEngines engines) {
+        if (engines.shadowSync() != null) {
+            return; // already running for these engines
+        }
+        Optional<String> unmet = ShadowSyncPreconditions.unmetReason(
+                getDefaultAccountStateStore().map(DefaultAccountStateStore::isEnabled).orElse(false),
+                utxoSubsystem.store() instanceof DefaultUtxoStore store && store.isEnabled(),
+                utxoSubsystem.isApplyAsync());
+        if (unmet.isPresent()) {
+            log.warn("yano.validation.shadow-sync=true, but shadow sync is not started: {}. The node runs without it.",
+                    unmet.get());
+            return;
+        }
+        ShadowSyncSettings settings = engines.settings().shadowSyncSettings();
+        ShadowSyncValidator validator = new ShadowSyncValidator(settings, engines.shadowSyncEngines(),
+                engines.envFactory(), PreBlockState.ofGate(() -> CanonicalStateGate.of(chainState)),
+                hash -> chainState.getBlock(HexUtil.decodeHexString(hash)),
+                () -> CanonicalStateGate.of(chainState).isWriteHeldByCurrentThread(),
+                new ShadowSyncReport(settings.reportFile(), settings.dumpDir(), settings.maxDumps()));
+        engines.attachShadowSync(validator);
+        validator.attach(eventBus);
+    }
+
+    private void stopShadowSync(ValidationEngines engines) {
+        ShadowSyncValidator validator = engines.shadowSync();
+        if (validator != null) {
+            validator.close();
+        }
+        if (!engines.affectsAdmission()) {
+            // Not handed to the transaction subsystem, which closes the engines it holds.
+            engines.close();
+        }
+    }
+
+    /** @return the installed validation engines, or {@code null} when none are configured */
     public ValidationEngines getValidationEngines() {
-        return txSubsystem.validationEngines();
+        return validationEngines;
     }
 
     /** @return the transaction subsystem (mempool diagnostics and the ADR-056 Phase 6 gates) */
@@ -3936,6 +3991,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         cleanupFailure = attemptRuntimeCleanup(
                 cleanupFailure, "block producer", producerSubsystem::stop);
         cleanupFailure = closeNonceListenerSubscriptions(cleanupFailure);
+        cleanupFailure = attemptRuntimeCleanup(cleanupFailure, "shadow sync", () -> {
+            ValidationEngines engines = validationEngines;
+            if (engines != null) {
+                stopShadowSync(engines);
+            }
+        });
         cleanupFailure = attemptRuntimeCleanup(
                 cleanupFailure, "transaction subsystem", txSubsystem::close);
         cleanupFailure = attemptRuntimeCleanup(

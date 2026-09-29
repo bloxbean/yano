@@ -12,7 +12,12 @@ import org.yanoproject.ledger.rules.LedgerValidationEngineFactory;
 import org.yanoproject.ledger.rules.NetworkParameters;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
+import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.runtime.assembly.Yano;
+import org.yanoproject.runtime.events.PropagatingEventBus;
+import org.yanoproject.runtime.internal.RuntimeNode;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
+import org.yanoproject.tx.gate.ShadowSyncOrderingGuard;
 import org.yanoproject.runtime.assembly.YanoAssembly;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
 import org.yanoproject.runtime.tx.TransactionServices;
@@ -103,6 +108,49 @@ class ValidationEngineBootstrapIntegrationTest {
             var engines = services.get().validationEngines();
             assertThat(engines.admissionEngine().name()).isEqualTo("capture");
             assertThat(engines.shadowEngines()).singleElement().isInstanceOf(ScalusLedgerValidationEngine.class);
+        }
+    }
+
+    @Test
+    void shadowSyncAloneCreatesItsOwnJavaEngineAndLeavesAdmissionLegacy(@TempDir Path dir) {
+        AtomicReference<TransactionServices> services = new AtomicReference<>();
+        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
+                YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT, "3",
+                YanoPropertyKeys.AccountState.ENABLED, true), services)) {
+            var engines = services.get().validationEngines();
+            assertThat(engines).isNotNull();
+            assertThat(engines.affectsAdmission()).isFalse();
+            assertThat(engines.admissionEngine()).isNull();
+            assertThat(engines.shadowEngines()).isEmpty();
+            // java needs no experimental opt-in for shadow sync, which only observes.
+            assertThat(engines.shadowSyncEngines()).extracting(LedgerValidationEngine::name).containsExactly("java");
+            assertThat(engines.settings().shadowSyncSettings().maxInFlight()).isEqualTo(3);
+            assertThat(engines.shadowSync()).as("started by the runtime").isNotNull();
+            assertThat(node.validationEngines()).containsSame(engines);
+            assertThat(engines.status().shadowSyncHealth()).containsEntry("java", true);
+
+            // Installing the same engines again neither starts a second validator nor stops the running one.
+            var running = engines.shadowSync();
+            ((RuntimeNode) node.chain()).setValidationEngines(engines);
+            assertThat(engines.shadowSync()).isSameAs(running);
+            assertThat(running.status().inFlight()).isZero();
+
+            // Ordering guard: the capture listener runs first, and nothing else below the UTxO apply (100) runs.
+            PropagatingEventBus bus = (PropagatingEventBus) node.kernel().orElseThrow().context().eventBus();
+            ShadowSyncOrderingGuard.assertCaptureRunsFirst(bus.subscribers(BlockAppliedEvent.class));
+        }
+    }
+
+    @Test
+    void shadowSyncIsNotStartedWithoutAccountStateAndTheNodeStillStarts(@TempDir Path dir) {
+        AtomicReference<TransactionServices> services = new AtomicReference<>();
+        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_SYNC, "true"), services)) {
+            var engines = services.get().validationEngines();
+            assertThat(engines.shadowSyncEngines()).isNotEmpty();
+            assertThat(engines.shadowSync()).as("refused: the pre-block view needs account state").isNull();
+            PropagatingEventBus bus = (PropagatingEventBus) node.kernel().orElseThrow().context().eventBus();
+            assertThat(bus.subscribers(BlockAppliedEvent.class))
+                    .noneMatch(sub -> sub.priority() == ShadowSyncValidator.SUBSCRIPTION_PRIORITY);
         }
     }
 

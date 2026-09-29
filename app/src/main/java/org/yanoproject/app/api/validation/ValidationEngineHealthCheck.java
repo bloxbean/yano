@@ -8,6 +8,8 @@ import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
 import org.eclipse.microprofile.health.Readiness;
 import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.runtime.validation.ValidationEngines;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
 
 /**
  * Readiness of the validation engines (ADR-057 §2): it matters only when {@code amaru} is the admission or a
@@ -19,6 +21,10 @@ import org.yanoproject.runtime.validation.ValidationEngines;
  *   <li>Admission engine unhealthy: DOWN (every admission is rejected).</li>
  *   <li>Only a shadow engine unhealthy: UP with {@code shadowUnhealthy} set; admission is unaffected, and the
  *       {@code yano_validation_engine_healthy} metric alerts.</li>
+ *   <li>Shadow-sync engines (ADR-056 Phase 7a) never gate readiness: an unhealthy one (an Amaru engine that failed
+ *       closed) only makes shadow sync report engine failures. Their health is reported as data
+ *       ({@code shadowSync.<engine>.healthy}, {@code shadowSyncUnhealthy}) and in
+ *       {@code yano_validation_shadow_sync_engine_healthy}.</li>
  * </ul>
  */
 @Readiness
@@ -44,6 +50,20 @@ public class ValidationEngineHealthCheck implements HealthCheck {
         ValidationEngines.Status status = engines.status();
         builder.withData("engine", status.engine())
                 .withData("shadowEngines", String.join(",", status.shadowEngines()));
+        ShadowSyncValidator sync = engines.shadowSync();
+        if (sync != null) {
+            ShadowSyncValidator.Status syncStatus = sync.status();
+            ShadowSyncReport.Stats stats = syncStatus.report();
+            builder.withData("shadowSync.engines", String.join(",", syncStatus.engines()))
+                    .withData("shadowSync.blocksValidated", stats.blocksValidated())
+                    .withData("shadowSync.disagreements", stats.disagreedTotal())
+                    .withData("shadowSync.engineFailures", stats.engineFailuresTotal())
+                    .withData("shadowSync.blockFailures", stats.blockFailures())
+                    .withData("shadowSync.inFlight", syncStatus.inFlight());
+            status.shadowSyncHealth().forEach((name, healthy) ->
+                    builder.withData("shadowSync." + name + ".healthy", healthy));
+            builder.withData("shadowSyncUnhealthy", status.shadowSyncHealth().containsValue(false));
+        }
         if (!engines.uses(LedgerValidationEngines.AMARU)) {
             return builder.up().build();
         }

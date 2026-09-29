@@ -159,6 +159,7 @@ public record ShadowDumpBundle(String txHash, byte[] txCbor, TxValidationRequest
         e.put("slotZero", env.slotConfig().getZeroSlot());
         e.put("slotLength", env.slotConfig().getSlotLength());
         e.put("phase2EnvDigest", HexUtil.encodeHexString(env.phase2EnvDigest()));
+        e.put("forecastBasisSlot", env.forecastBasisSlot());
         root.set("admission", outcome(admission));
         root.set("shadow", outcome(shadow));
         ArrayNode readNodes = root.putArray("reads");
@@ -189,7 +190,9 @@ public record ShadowDumpBundle(String txHash, byte[] txCbor, TxValidationRequest
                 e.get("protocolMajor").asInt(), e.get("protocolMinor").asInt(),
                 NetworkId.valueOf(e.get("networkId").asText()),
                 new SlotConfig(e.get("slotLength").asInt(), e.get("slotZero").asLong(), e.get("slotZeroTime").asLong()),
-                HexUtil.decodeHexString(e.get("phase2EnvDigest").asText()));
+                HexUtil.decodeHexString(e.get("phase2EnvDigest").asText()),
+                // Written since ADR-056 Phase 7a; older bundles based the horizon on the slot.
+                e.path("forecastBasisSlot").asLong(e.get("slot").asLong()));
         List<RecordingLedgerView.Read> reads = new ArrayList<>();
         root.get("reads").forEach(r -> reads.add(ViewReadCodec.decode(r)));
         return new ShadowDumpBundle(root.get("txHash").asText(), HexUtil.decodeHexString(root.get("txCbor").asText()),
