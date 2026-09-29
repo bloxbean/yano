@@ -27,17 +27,39 @@ import java.util.Objects;
  * @param slotConfig      slot-to-time conversion for validity intervals and Plutus script contexts
  * @param phase2EnvDigest hash of what a phase-2 verdict depends on besides the resolved inputs
  *                        (§6); copied on the way in and out
+ * @param forecastBasisSlot the slot the hard-fork combinator's forecast horizon is computed from: {@code next(tip)}
+ *                        of the state the transaction is applied to (ADR-056 Phase 3a "Horizon basis", Phase 6
+ *                        dependency). The mempool passes the slot after the canonical tip, which differs from
+ *                        {@code currentSlot} in a producer's boundary window; block validation passes the slot after
+ *                        the previous block. The seven-argument constructor uses {@code currentSlot}.
  */
 public record ValidationEnv(long currentSlot, long currentEpoch, int protocolMajor, int protocolMinor,
-                            NetworkId networkId, SlotConfig slotConfig, byte[] phase2EnvDigest) {
+                            NetworkId networkId, SlotConfig slotConfig, byte[] phase2EnvDigest,
+                            long forecastBasisSlot) {
 
     public ValidationEnv {
         if (currentSlot < 0 || currentEpoch < 0) {
             throw new IllegalArgumentException("slot and epoch must be >= 0");
         }
+        if (forecastBasisSlot < 0) {
+            throw new IllegalArgumentException("forecastBasisSlot must be >= 0");
+        }
         Objects.requireNonNull(networkId, "networkId");
         Objects.requireNonNull(slotConfig, "slotConfig");
         phase2EnvDigest = Objects.requireNonNull(phase2EnvDigest, "phase2EnvDigest").clone();
+    }
+
+    /** An environment whose forecast horizon is based on {@code currentSlot}. */
+    public ValidationEnv(long currentSlot, long currentEpoch, int protocolMajor, int protocolMinor,
+                         NetworkId networkId, SlotConfig slotConfig, byte[] phase2EnvDigest) {
+        this(currentSlot, currentEpoch, protocolMajor, protocolMinor, networkId, slotConfig, phase2EnvDigest,
+                currentSlot);
+    }
+
+    /** @return this environment with the forecast horizon based on {@code slot} */
+    public ValidationEnv withForecastBasisSlot(long slot) {
+        return slot == forecastBasisSlot ? this : new ValidationEnv(currentSlot, currentEpoch, protocolMajor,
+                protocolMinor, networkId, slotConfig, phase2EnvDigest, slot);
     }
 
     @Override
@@ -54,19 +76,21 @@ public record ValidationEnv(long currentSlot, long currentEpoch, int protocolMaj
                 && protocolMinor == other.protocolMinor
                 && networkId == other.networkId
                 && slotConfig.equals(other.slotConfig)
-                && Arrays.equals(phase2EnvDigest, other.phase2EnvDigest);
+                && Arrays.equals(phase2EnvDigest, other.phase2EnvDigest)
+                && forecastBasisSlot == other.forecastBasisSlot;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(currentSlot, currentEpoch, protocolMajor, protocolMinor, networkId, slotConfig,
-                Arrays.hashCode(phase2EnvDigest));
+                Arrays.hashCode(phase2EnvDigest), forecastBasisSlot);
     }
 
     @Override
     public String toString() {
         return "ValidationEnv[slot=" + currentSlot + ", epoch=" + currentEpoch + ", pv=" + protocolMajor + "."
                 + protocolMinor + ", network=" + networkId + ", phase2EnvDigest="
-                + HexUtil.encodeHexString(phase2EnvDigest) + "]";
+                + HexUtil.encodeHexString(phase2EnvDigest)
+                + (forecastBasisSlot != currentSlot ? ", forecastBasisSlot=" + forecastBasisSlot : "") + "]";
     }
 }

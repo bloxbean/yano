@@ -16,9 +16,11 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.IntSupplier;
+import java.util.function.Consumer;
 import java.util.function.IntToLongFunction;
 import java.util.function.LongToIntFunction;
 import java.util.function.Supplier;
@@ -37,7 +39,10 @@ import java.util.function.Supplier;
  * then releases the write lock, then runs hooks registered with {@link #runAfterWriteRelease(Runnable)}.
  * A section that ended with an exception still publishes a new generation, because stores it wrote
  * before failing (or a compensating rollback inside it) may have changed state.
- * Mempool notifications use those hooks, so the mempool never runs while the gate is held.</p>
+ * Mempool notifications use those hooks, so the mempool never runs while the gate is held.
+ * {@link #addPublicationListener publication listeners} run after those hooks, once per published
+ * generation (ADR-056 §6: forward blocks, rollbacks and producer boundary sections all notify the
+ * mempool after the gate is released).</p>
  *
  * <h2>Readers</h2>
  * <p>{@link #acquireSnapshot(SnapshotPurpose)} takes the read lock, so it waits while a writer is
@@ -90,6 +95,7 @@ public final class CanonicalStateGate {
     private volatile IntSupplier completedBoundaryEpoch = () -> -1;
     private volatile CanonicalSnapshotSource snapshotSource;
     private volatile int maxLiveSnapshots = DEFAULT_MAX_LIVE_SNAPSHOTS;
+    private final List<Consumer<CanonicalTip>> publicationListeners = new CopyOnWriteArrayList<>();
 
     // Owned by the thread holding the write lock.
     private boolean sectionChanged;
@@ -274,9 +280,11 @@ public final class CanonicalStateGate {
         }
         List<Runnable> hooks = afterRelease;
         afterRelease = new ArrayList<>();
+        CanonicalTip published = null;
         try {
             if (sectionChanged) {
                 publishNextGeneration();
+                published = tip;
             }
         } finally {
             sectionChanged = false;
@@ -291,6 +299,62 @@ public final class CanonicalStateGate {
         for (Runnable hook : hooks) {
             runHook(hook);
         }
+        if (published != null) {
+            CanonicalTip publishedTip = published;
+            for (Consumer<CanonicalTip> listener : publicationListeners) {
+                runHook(() -> listener.accept(publishedTip));
+            }
+        }
+    }
+
+    /**
+     * Registers a listener called with the new tip after every write section that published a generation, once
+     * the gate is released and the section's {@link #runAfterWriteRelease} hooks ran. It runs on the writer's
+     * thread, so it must be short (the mempool only schedules its rebuild).
+     */
+    public void addPublicationListener(Consumer<CanonicalTip> listener) {
+        publicationListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    public void removePublicationListener(Consumer<CanonicalTip> listener) {
+        publicationListeners.remove(listener);
+    }
+
+    /**
+     * @return true when the calling thread holds the gate, as a writer or while capturing a snapshot (ADR-056 §6
+     *         lock order: the mempool lane is never taken while this is true)
+     */
+    public boolean isHeldByCurrentThread() {
+        return lock.isWriteLockedByCurrentThread() || lock.getReadHoldCount() > 0;
+    }
+
+    /**
+     * {@code tip} with its epochs filled in when the epoch calculator became available after the tip was published
+     * (its slot epoch was unknown then), exactly as snapshot acquisition computes them; the mempool's freshness
+     * mark uses it too, so the two marks agree for one generation. Outside the read lock the boundary reader may
+     * observe a writer mid-block; for the mempool that can only fail a freshness check (the rebuild restarts), never
+     * pass a stale one, because the generation is compared as well.
+     */
+    public CanonicalTip withEpochs(CanonicalTip tip) {
+        if (tip.tipSlotEpoch() >= 0 || tip.slot() < 0) {
+            return tip;
+        }
+        int slotEpoch = epochOf(tip.slot());
+        return new CanonicalTip(tip.generation(), tip.slot(), tip.blockHash(), slotEpoch, ledgerEpoch(slotEpoch));
+    }
+
+    /**
+     * The slot mempool admission validates at for {@code tip} (the slot after it, or the first slot of the ledger
+     * epoch in a producer's boundary window); pure, reads no state. See
+     * {@link TickedLedgerView#admissionSlot(CanonicalSnapshot)}.
+     */
+    public long admissionSlot(CanonicalTip tip) {
+        return TickedLedgerView.admissionSlot(tip, this::epochOf, this::epochStartSlot);
+    }
+
+    /** @return the epoch of {@link #admissionSlot(CanonicalTip)} (-1 when unknown) */
+    public int admissionEpoch(CanonicalTip tip) {
+        return epochOf(admissionSlot(tip));
     }
 
     private void publishNextGeneration() {
@@ -406,14 +470,7 @@ public final class CanonicalStateGate {
         CanonicalSnapshot snapshot;
         lock.readLock().lock();
         try {
-            CanonicalTip current = tip;
-            if (current.tipSlotEpoch() < 0 && current.slot() >= 0) {
-                // The epoch calculator may have become available after the tip was published. No writer
-                // is mid-block under the read lock, so the boundary marker is consistent with the tip.
-                int slotEpoch = epochOf(current.slot());
-                current = new CanonicalTip(current.generation(), current.slot(), current.blockHash(),
-                        slotEpoch, ledgerEpoch(slotEpoch));
-            }
+            CanonicalTip current = withEpochs(tip);
             CanonicalSnapshotSource.Captured captured = source.capture(current);
             if (captured == null) {
                 return Lookup.unavailable("canonical snapshot source returned no state");

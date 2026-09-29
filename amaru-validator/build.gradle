@@ -230,6 +230,10 @@ tasks.withType(Test).configureEach {
             .getOrElse(new File(wasmCrateDir, 'target/scenario-requests').absolutePath)
     systemProperty 'amaru.request.dumps.dir', dumps
     systemProperty 'amaru.scenario.latency', providers.gradleProperty('amaruLatency').getOrElse('false')
+    // ADR-056 decision 3 engine rebuild benchmark: -PmempoolBenchmark=true
+    if (project.hasProperty('mempoolBenchmark')) {
+        systemProperty 'yano.mempool.benchmark', 'true'
+    }
 }
 
 // Never published: an opt-in developer and oracle module (ADR-057 §3). The root build also lists it in

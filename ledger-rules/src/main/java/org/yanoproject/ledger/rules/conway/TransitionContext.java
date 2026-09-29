@@ -161,15 +161,14 @@ public final class TransitionContext {
      * to, whose horizon is based on {@code next(tip)} of that state (ouroboros-consensus
      * {@code HardFork/History/Summary.hs:370-404}).
      *
-     * <p>This is {@link ValidationEnv#currentSlot()}. For rule {@code MEMPOOL} (admission, mempool rebuilds) that is
-     * exactly {@code next(tip)}. For block validation the basis should be the slot after the <em>previous</em>
-     * block, while {@code currentSlot} is the block's own slot, which can only move the horizon later (more
-     * lenient). No block path uses the Java engine yet: Phase 6 (block building) and Phase 7 (shadow sync) must
-     * carry the tip explicitly before they do. The Amaru fixtures validate at their tip, so the conformance
-     * harness is exact.</p>
+     * <p>This is {@link ValidationEnv#forecastBasisSlot()}: {@code next(tip)} of the state validated against. The
+     * mempool (ADR-056 Phase 6a) passes the slot after the canonical tip explicitly, which differs from
+     * {@code currentSlot} in a producer's boundary window (decision 6b); environments that do not set it use
+     * {@code currentSlot}, exact for rule {@code MEMPOOL} and for the Amaru fixtures, which validate at their tip.
+     * Block building (Phase 6b) and shadow sync (Phase 7) must pass the slot after the previous block.</p>
      */
     public long forecastBasisSlot() {
-        return env.currentSlot();
+        return env.forecastBasisSlot();
     }
 
     /** @return the resolved inputs keyed as the body names them */

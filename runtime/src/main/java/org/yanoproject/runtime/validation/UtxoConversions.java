@@ -23,12 +23,12 @@ import java.util.Map;
  * {@link Utxo#scriptRef()} is CCL's reference-script CBOR ({@link TransactionOutputProjector}), so the
  * conversion keeps reference scripts exact; the inline datum bytes are carried over as they are.
  */
-final class UtxoConversions {
+public final class UtxoConversions {
 
     private UtxoConversions() {
     }
 
-    static UtxoEntry toEntry(Outpoint outpoint, Utxo utxo) {
+    public static UtxoEntry toEntry(Outpoint outpoint, Utxo utxo) {
         Map<String, List<Asset>> byPolicy = new LinkedHashMap<>();
         if (utxo.assets() != null) {
             for (AssetAmount asset : utxo.assets()) {
@@ -53,7 +53,7 @@ final class UtxoConversions {
         return new UtxoEntry(outpoint, output, inlineDatum);
     }
 
-    static Utxo toUtxo(UtxoEntry entry) {
+    public static Utxo toUtxo(UtxoEntry entry) {
         Utxo projected = TransactionOutputProjector.project(entry.outpoint().txHash(), entry.outpoint().index(),
                 entry.output());
         byte[] inline = entry.inlineDatumCbor();

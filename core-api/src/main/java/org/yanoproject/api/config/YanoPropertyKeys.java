@@ -241,6 +241,10 @@ public final class YanoPropertyKeys {
         public static final String SUPPLEMENTARY_RULES_ENABLED = "yano.validation.supplementary-rules-enabled";
         /** ADR-056: soft cap on live canonical ledger snapshots (default 4); only shadow requests are refused. */
         public static final String MAX_LIVE_SNAPSHOTS = "yano.validation.max-live-snapshots";
+        /** ADR-056 §6 step 6: discarded off-lane mempool rebuilds before the synchronous fallback (default 3). */
+        public static final String REBUILD_MAX_RESTARTS = "yano.validation.rebuild-max-restarts";
+        /** ADR-056 §6 step 7: synchronous rebuild attempts before the mempool enters CATCHING_UP (default 3). */
+        public static final String REBUILD_SYNC_ATTEMPTS = "yano.validation.rebuild-sync-attempts";
         /** ADR-056 §7: admission engine, {@code scalus} (default) | {@code java} | {@code amaru}. */
         public static final String ENGINE = "yano.validation.engine";
         /** ADR-056 §7: engines run in the shadow of admission, comma-separated (default none). */

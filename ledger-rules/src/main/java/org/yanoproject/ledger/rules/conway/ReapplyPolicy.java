@@ -2,18 +2,27 @@ package org.yanoproject.ledger.rules.conway;
 
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
+import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 
+import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.TxValidationRequest.Origin;
 import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
+import org.yanoproject.ledger.rules.view.model.Outpoints;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
+import java.util.TreeSet;
 
 /**
  * Decides between full validation and re-application (ADR-056 §6, "Re-application and invalidation").
@@ -117,5 +126,41 @@ public final class ReapplyPolicy {
             return null;
         }
         return Blake2bUtil.blake2bHash256(out.toByteArray());
+    }
+
+    /**
+     * {@link #resolvedInputsDigest(SortedSet, Map)} for engines that resolve by outpoint (the Scalus and Amaru
+     * adapters): {@code inputs} are every spending, reference and collateral input the body names, and
+     * {@code resolved} what the view answered for those present.
+     *
+     * @return the digest, or null when an output cannot be encoded
+     */
+    public static byte[] resolvedInputsDigest(Collection<Outpoint> inputs, Map<Outpoint, UtxoEntry> resolved) {
+        SortedSet<TxInRef> refs = new TreeSet<>();
+        Map<TxInRef, UtxoEntry> byRef = new HashMap<>();
+        for (Outpoint input : inputs) {
+            Outpoint key = Outpoints.normalize(input);
+            TxInRef ref = new TxInRef(key.txHash(), key.index());
+            refs.add(ref);
+            UtxoEntry entry = resolved.get(key);
+            if (entry != null) {
+                byRef.put(ref, entry);
+            }
+        }
+        return resolvedInputsDigest(refs, byRef);
+    }
+
+    /** @return the spending, reference and collateral inputs of {@code body}, normalized */
+    public static List<Outpoint> allInputs(TransactionBody body) {
+        List<Outpoint> inputs = new ArrayList<>();
+        for (List<TransactionInput> list : Arrays.asList(body.getInputs(), body.getReferenceInputs(),
+                body.getCollateral())) {
+            if (list != null) {
+                for (TransactionInput in : list) {
+                    inputs.add(Outpoints.of(in.getTransactionId(), in.getIndex()));
+                }
+            }
+        }
+        return inputs;
     }
 }

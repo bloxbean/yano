@@ -45,10 +45,11 @@ final class ValidationEngineBootstrap {
     private static final Logger log = LoggerFactory.getLogger(ValidationEngineBootstrap.class);
 
     /**
-     * One admission validates at a time (the mempool's mutation lane serialises admission), plus the shadow
-     * workers: {@code yano.validation.amaru.pool-size: 0} resolves to this.
+     * One admission validates at a time (the mempool's mutation lane serialises admission), one mempool rebuild
+     * worker folds off the lane next to it (ADR-056 §6), plus the shadow workers:
+     * {@code yano.validation.amaru.pool-size: 0} resolves to this.
      */
-    static final int VALIDATION_THREADS = 1 + ShadowValidationRunner.DEFAULT_THREADS;
+    static final int VALIDATION_THREADS = 2 + ShadowValidationRunner.DEFAULT_THREADS;
 
     private ValidationEngineBootstrap() {
     }

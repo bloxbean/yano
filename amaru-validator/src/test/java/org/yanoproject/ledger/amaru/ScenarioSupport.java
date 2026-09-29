@@ -35,7 +35,10 @@ final class ScenarioSupport {
     }
 
     static AmaruNetworkParameters network(AmaruScenario scenario) {
-        AmaruScenario.Network n = scenario.network();
+        return network(scenario.network());
+    }
+
+    static AmaruNetworkParameters network(AmaruScenario.Network n) {
         List<EraSummary> eras = n.eras().stream()
                 .map(e -> new EraSummary(bound(e.start()), e.end() == null ? null : bound(e.end()),
                         e.epochSizeSlots(), e.slotLengthMs(), e.eraTag()))

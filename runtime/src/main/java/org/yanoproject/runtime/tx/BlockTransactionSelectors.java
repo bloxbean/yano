@@ -7,6 +7,7 @@ import org.yanoproject.ledger.rules.ValidationResult;
 import org.yanoproject.runtime.blockproducer.BlockBuildUtxoOverlay;
 import org.yanoproject.runtime.blockproducer.TransactionValidationService;
 import org.yanoproject.runtime.chain.MemPool;
+import org.yanoproject.runtime.mempool.LedgerMempool;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import org.slf4j.Logger;
 
@@ -27,6 +28,16 @@ public final class BlockTransactionSelectors {
             Supplier<TransactionValidationService> validatorServiceSupplier,
             Supplier<UtxoState> utxoStateSupplier,
             Logger log) {
+        Objects.requireNonNull(memPool, "memPool");
+        return fromMemPool(() -> memPool, validatorServiceSupplier, utxoStateSupplier, log);
+    }
+
+    /** As {@link #fromMemPool(MemPool, Supplier, Supplier, Logger)}, for a mempool chosen after construction. */
+    public static BlockTransactionSelector fromMemPool(
+            Supplier<MemPool> memPool,
+            Supplier<TransactionValidationService> validatorServiceSupplier,
+            Supplier<UtxoState> utxoStateSupplier,
+            Logger log) {
         return new MempoolBlockTransactionSelector(
                 Objects.requireNonNull(memPool, "memPool"),
                 Objects.requireNonNull(validatorServiceSupplier, "validatorServiceSupplier"),
@@ -40,7 +51,7 @@ public final class BlockTransactionSelectors {
      * apply. One selection may be in flight at a time.
      */
     private static final class MempoolBlockTransactionSelector implements BlockTransactionSelector {
-        private final MemPool memPool;
+        private final Supplier<MemPool> memPools;
         private final Supplier<TransactionValidationService> validatorServiceSupplier;
         private final Supplier<UtxoState> utxoStateSupplier;
         private final Logger log;
@@ -48,19 +59,23 @@ public final class BlockTransactionSelectors {
         private volatile Set<String> selectedHashes = Set.of();
 
         private MempoolBlockTransactionSelector(
-                MemPool memPool,
+                Supplier<MemPool> memPools,
                 Supplier<TransactionValidationService> validatorServiceSupplier,
                 Supplier<UtxoState> utxoStateSupplier,
                 Logger log) {
-            this.memPool = memPool;
+            this.memPools = memPools;
             this.validatorServiceSupplier = validatorServiceSupplier;
             this.utxoStateSupplier = utxoStateSupplier;
             this.log = log;
         }
 
+        private MemPool memPool() {
+            return memPools.get();
+        }
+
         @Override
         public boolean hasPendingTransactions() {
-            return !memPool.isEmpty();
+            return !memPool().isEmpty();
         }
 
         @Override
@@ -98,18 +113,28 @@ public final class BlockTransactionSelectors {
 
         @Override
         public int invalidateSelectedTransaction(String txHash) {
-            return memPool.removeInvalidated(Set.of(txHash));
+            return memPool().removeInvalidated(Set.of(txHash));
         }
 
         @Override
         public void blockCandidatePublished() {
             Set<String> published = selectedHashes;
-            if (!published.isEmpty()) memPool.removeByTxHashes(published);
+            if (!published.isEmpty()) memPool().removeByTxHashes(published);
             blockSelectionCompleted();
         }
 
         private List<byte[]> selectMempool(TransactionValidationService validatorService,
                                            UtxoState utxoState) {
+            MemPool memPool = memPool();
+            if ((validatorService == null || utxoState == null) && memPool instanceof LedgerMempool ledger
+                    && (ledger.isStale() || ledger.status() != LedgerMempool.Status.READY)) {
+                // ADR-056 Phase 6a: without a selection validator, only a ledger-state mempool that is fresh for
+                // the canonical tip may be selected (its transactions were validated in order at that tip); a
+                // lagging one can still hold just-confirmed transactions. 6b replaces this with the block-build
+                // overlay.
+                log.debug("Skipping mempool selection: the ledger-state mempool lags the canonical tip");
+                return List.of();
+            }
             List<MemPoolTransaction> snapshot = memPool.snapshotTransactions(
                     Integer.MAX_VALUE, Long.MAX_VALUE);
             if (validatorService == null || utxoState == null) {

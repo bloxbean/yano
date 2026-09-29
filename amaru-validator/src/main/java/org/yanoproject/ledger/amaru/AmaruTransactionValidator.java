@@ -29,6 +29,7 @@ import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
+import org.yanoproject.ledger.rules.conway.ReapplyPolicy;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
@@ -299,6 +300,16 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         if (resolution.unavailable() != null) {
             return TxValidationOutcome.Invalid.of(LedgerFailure.ledgerStateUnavailable(resolution.unavailable()));
         }
+        // Re-application (ADR-056 §6): with a reusable previous verdict, Amaru runs in phase-one mode (its static
+        // checks cannot be skipped inside the module) and no phase-2 evaluation runs.
+        byte[] resolvedDigest = tx != null
+                ? ReapplyPolicy.resolvedInputsDigest(ReapplyPolicy.allInputs(tx.getBody()), resolvedInputs) : null;
+        ValidatedTx previous = request.previous();
+        boolean reapply = tx != null && ReapplyPolicy.decide(previous, TxIdentity.txId(txCbor), tx.isValid(),
+                paramsMajor, env, request.origin(), resolvedDigest).reapply();
+        if (reapply) {
+            mode = AmaruRequest.Mode.PHASE_ONE;
+        }
         AmaruRequest amaruRequest = new AmaruRequest(mode, txCbor, network(), protocolParameters, ledgerConstants,
                 resolution.dormantEpochs(), resolution.guardrail(), resolution.roots(), resolution.treasury(),
                 env.currentSlot(), 0, resolution.utxo(), resolution.accounts(), resolution.pools(),
@@ -326,7 +337,7 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         }
 
         boolean phase2Valid;
-        if (mode == AmaruRequest.Mode.FULL) {
+        if (mode == AmaruRequest.Mode.FULL || reapply) {
             phase2Valid = tx.isValid();
         } else {
             Phase2 phase2 = runPhase2(txCbor, tx, resolvedInputs, params, env);
@@ -348,9 +359,9 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
             return engine(AMARU_ENGINE_FAILURE, "Amaru accepted the transaction but its effects cannot be derived: "
                     + e.getMessage());
         }
-        ValidatedTx validated = new ValidatedTx(txCbor, txId, env.protocolMajor(), env.currentEpoch(),
-                env.phase2EnvDigest(), phase2Valid, request.origin());
-        return new TxValidationOutcome.Valid(effects, validated, false);
+        ValidatedTx validated = reapply ? previous : new ValidatedTx(txCbor, txId, paramsMajor, env.currentEpoch(),
+                env.phase2EnvDigest(), phase2Valid, request.origin(), resolvedDigest);
+        return new TxValidationOutcome.Valid(effects, validated, reapply);
     }
 
     // ----------------------------------------------------------------------------------- phase 2
@@ -374,8 +385,9 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         } else {
             ScriptPhaseResult result;
             try {
+                // The forecast horizon is based on next(tip) (ADR-056 Phase 6 dependency): the mempool sets it.
                 result = phase2Evaluator.evaluate(txCbor, tx, Map.copyOf(resolvedInputs), params, env.slotConfig(),
-                        env.currentSlot());
+                        env.forecastBasisSlot());
             } catch (LedgerStateUnavailableException e) {
                 throw e;
             } catch (RuntimeException e) {

@@ -24,6 +24,7 @@ import org.yanoproject.ledger.rules.effects.LedgerChange.StakeDelegated;
 import org.yanoproject.ledger.rules.effects.LedgerChange.VoteCast;
 import org.yanoproject.ledger.rules.effects.LedgerChange.VoteDelegated;
 import org.yanoproject.ledger.rules.effects.TxEffects;
+import org.yanoproject.ledger.rules.util.PersistentMap;
 import org.yanoproject.ledger.rules.view.model.AccountState;
 import org.yanoproject.ledger.rules.view.model.CommitteeMemberState;
 import org.yanoproject.ledger.rules.view.model.CredentialKey;
@@ -84,8 +85,14 @@ import java.util.function.UnaryOperator;
  *       earlier votes.</li>
  * </ul>
  *
- * <p>Reads cost O(layers) hash lookups. The view does not retain or release its base; the owner
- * manages the base's lifetime through {@link #base()} (see {@link Retainable}).</p>
+ * <p><b>Per-key index</b> (ADR-056 Phase 6a). Every layer node also carries a persistent (structure-sharing)
+ * index of the newest state per key below and including it, so a read costs one {@code O(log32 n)} lookup
+ * instead of one lookup per layer; {@link #apply} costs {@code O(changes · log32 n)} and {@link #truncateTo}
+ * reuses the index of the node it truncates to. The two lazy rules consult short per-event lists (DRep
+ * deregistrations, dormant-period bumps), which are rare.</p>
+ *
+ * <p>The view does not retain or release its base; the owner manages the base's lifetime through
+ * {@link #base()} (see {@link Retainable}).</p>
  */
 public final class OverlayLedgerView implements LedgerView {
 
@@ -114,7 +121,8 @@ public final class OverlayLedgerView implements LedgerView {
     public OverlayLedgerView apply(TxEffects effects) {
         Objects.requireNonNull(effects, "effects");
         Layer layer = new LayerBuilder(this, effects).build();
-        return new OverlayLedgerView(base, new Node(layer, top, layerCount() + 1));
+        int depth = layerCount() + 1;
+        return new OverlayLedgerView(base, new Node(layer, top, depth, index().with(layer, depth)));
     }
 
     /**
@@ -162,17 +170,19 @@ public final class OverlayLedgerView implements LedgerView {
 
     // ---------------------------------------------------------------- reads
 
+    private Index index() {
+        return top == null ? Index.EMPTY : top.index;
+    }
+
     @Override
     public Lookup<UtxoEntry> utxo(Outpoint outpoint) {
         Outpoint key = Outpoints.normalize(outpoint);
-        for (Node n = top; n != null; n = n.below) {
-            UtxoEntry produced = n.layer.produced.get(key);
-            if (produced != null) {
-                return Lookup.present(produced);
-            }
-            if (n.layer.consumed.contains(key)) {
-                return Lookup.absent();
-            }
+        Object v = index().utxo.get(key);
+        if (v instanceof UtxoEntry produced) {
+            return Lookup.present(produced);
+        }
+        if (v != null) {
+            return Lookup.absent();
         }
         return base.utxo(key);
     }
@@ -180,98 +190,60 @@ public final class OverlayLedgerView implements LedgerView {
     @Override
     public Lookup<AccountState> account(CredentialKey credential) {
         Objects.requireNonNull(credential, "credential");
-        // Allocated only when a newer layer deregistered a DRep (rare), not per read.
-        Set<CredentialKey> unregisteredAbove = Set.of();
-        for (Node n = top; n != null; n = n.below) {
-            Lookup<AccountState> v = n.layer.accounts.get(credential);
-            if (v != null) {
-                return clearDelegation(v, unregisteredAbove);
-            }
-            if (!n.layer.unregisteredDReps.isEmpty()) {
-                if (unregisteredAbove.isEmpty()) {
-                    unregisteredAbove = new HashSet<>();
-                }
-                unregisteredAbove.addAll(n.layer.unregisteredDReps);
-            }
-        }
-        return clearDelegation(base.account(credential), unregisteredAbove);
+        Index index = index();
+        Versioned<AccountState> v = index.accounts.get(credential);
+        Set<CredentialKey> unregisteredAbove = index.unregisteredAbove(v != null ? v.depth : 0);
+        return clearDelegation(v != null ? v.value : base.account(credential), unregisteredAbove);
     }
 
     @Override
     public Lookup<PoolState> pool(PoolId poolId) {
         Objects.requireNonNull(poolId, "poolId");
-        for (Node n = top; n != null; n = n.below) {
-            Lookup<PoolState> v = n.layer.pools.get(poolId);
-            if (v != null) {
-                return v;
-            }
-        }
-        return base.pool(poolId);
+        Lookup<PoolState> v = index().pools.get(poolId);
+        return v != null ? v : base.pool(poolId);
     }
 
     @Override
     public Lookup<PoolId> poolByVrfKeyHash(String vrfKeyHashHex) {
         String key = HexStrings.normalize(vrfKeyHashHex, "vrf key hash", HexStrings.HASH32);
-        for (Node n = top; n != null; n = n.below) {
-            Lookup<PoolId> v = n.layer.vrf.get(key);
-            if (v != null) {
-                return v;
-            }
-        }
-        return base.poolByVrfKeyHash(key);
+        Lookup<PoolId> v = index().vrf.get(key);
+        return v != null ? v : base.poolByVrfKeyHash(key);
     }
 
     @Override
     public Lookup<DRepState> drep(CredentialKey credential) {
         Objects.requireNonNull(credential, "credential");
-        // Allocated only when a newer layer ended a dormant period (rare), not per read.
-        List<DormantDRepExpiriesBumped> bumpsAbove = List.of();
-        for (Node n = top; n != null; n = n.below) {
-            Lookup<DRepState> v = n.layer.dreps.get(credential);
-            if (v != null) {
-                return applyBumps(v, bumpsAbove);
-            }
-            if (!n.layer.bumps.isEmpty()) {
-                if (bumpsAbove.isEmpty()) {
-                    bumpsAbove = new ArrayList<>();
-                }
-                bumpsAbove.addAll(0, n.layer.bumps);
-            }
-        }
-        return applyBumps(base.drep(credential), bumpsAbove);
+        Index index = index();
+        Versioned<DRepState> v = index.dreps.get(credential);
+        List<DormantDRepExpiriesBumped> bumpsAbove = index.bumpsAbove(v != null ? v.depth : 0);
+        return applyBumps(v != null ? v.value : base.drep(credential), bumpsAbove);
     }
 
     @Override
     public Lookup<CommitteeMemberState> committeeMemberByCold(CredentialKey cold) {
         Objects.requireNonNull(cold, "cold");
-        for (Node n = top; n != null; n = n.below) {
-            Lookup<CommitteeMemberState> v = n.layer.committee.get(cold);
-            if (v != null) {
-                return v;
-            }
-        }
-        return base.committeeMemberByCold(cold);
+        Lookup<CommitteeMemberState> v = index().committee.get(cold);
+        return v != null ? v : base.committeeMemberByCold(cold);
     }
 
     /**
      * {@inheritDoc}
      *
-     * <p>Cost: this scans every committee entry of every layer (O(total committee changes in the
-     * stack)), because a later layer can move a cold credential away from {@code hot}. Committee
-     * certificates are rare, so the scan is short in practice.</p>
+     * <p>Cost: this scans the committee index (every cold credential any layer changed), because a later layer
+     * can move a cold credential away from {@code hot}. Committee certificates are rare, so the scan is short in
+     * practice.</p>
      */
     @Override
     public Lookup<List<CommitteeMemberState>> committeeMembersByHot(CredentialKey hot) {
         Objects.requireNonNull(hot, "hot");
         Map<CredentialKey, CommitteeMemberState> newestByCold = new LinkedHashMap<>();
         Set<CredentialKey> overridden = new HashSet<>();
-        for (Node n = top; n != null; n = n.below) {
-            for (Map.Entry<CredentialKey, Lookup<CommitteeMemberState>> e : n.layer.committee.entrySet()) {
-                if (overridden.add(e.getKey()) && e.getValue() instanceof Lookup.Present<CommitteeMemberState> p) {
-                    newestByCold.put(e.getKey(), p.value());
-                }
+        index().committee.forEach((cold, v) -> {
+            overridden.add(cold);
+            if (v instanceof Lookup.Present<CommitteeMemberState> p) {
+                newestByCold.put(cold, p.value());
             }
-        }
+        });
         Lookup<List<CommitteeMemberState>> fromBase = base.committeeMembersByHot(hot);
         if (!(fromBase instanceof Lookup.Present<List<CommitteeMemberState>> present)) {
             return fromBase;
@@ -300,10 +272,7 @@ public final class OverlayLedgerView implements LedgerView {
      */
     @Override
     public Lookup<List<CommitteeMemberState>> committeeMembers() {
-        Map<CredentialKey, Lookup<CommitteeMemberState>> newestByCold = new LinkedHashMap<>();
-        for (Node n = top; n != null; n = n.below) {
-            n.layer.committee.forEach(newestByCold::putIfAbsent);
-        }
+        PersistentMap<CredentialKey, Lookup<CommitteeMemberState>> newestByCold = index().committee;
         Lookup<List<CommitteeMemberState>> fromBase = base.committeeMembers();
         if (newestByCold.isEmpty() || !(fromBase instanceof Lookup.Present<List<CommitteeMemberState>> present)) {
             return fromBase;
@@ -331,54 +300,41 @@ public final class OverlayLedgerView implements LedgerView {
     @Override
     public Lookup<List<ProposalState>> activeProposals() {
         Lookup<List<ProposalState>> fromBase = base.activeProposals();
-        if (top == null || !(fromBase instanceof Lookup.Present<List<ProposalState>> present)) {
+        Cons<ProposalState> order = index().proposalOrder;
+        if (order == null || !(fromBase instanceof Lookup.Present<List<ProposalState>> present)) {
             return fromBase;
         }
-        List<List<ProposalState>> layersNewestFirst = new ArrayList<>();
-        for (Node n = top; n != null; n = n.below) {
-            if (!n.layer.proposalOrder.isEmpty()) {
-                layersNewestFirst.add(n.layer.proposalOrder);
-            }
-        }
-        if (layersNewestFirst.isEmpty()) {
-            return fromBase;
+        List<ProposalState> newestFirst = new ArrayList<>();
+        for (Cons<ProposalState> c = order; c != null; c = c.tail) {
+            newestFirst.add(c.head);
         }
         Map<GovActionId, ProposalState> merged = new LinkedHashMap<>();
         for (ProposalState p : present.value()) {
             merged.put(p.id(), p);
         }
-        for (List<ProposalState> layer : layersNewestFirst.reversed()) {
-            for (ProposalState p : layer) {
-                merged.put(p.id(), p);
-            }
+        for (ProposalState p : newestFirst.reversed()) {
+            merged.put(p.id(), p);
         }
         return Lookup.present(List.copyOf(merged.values()));
     }
 
     @Override
     public Lookup<Set<CredentialKey>> committeeCandidates() {
-        Set<CredentialKey> added = new HashSet<>();
-        for (Node n = top; n != null; n = n.below) {
-            added.addAll(n.layer.candidates);
-        }
+        PersistentMap<CredentialKey, Boolean> added = index().candidates;
         Lookup<Set<CredentialKey>> fromBase = base.committeeCandidates();
         if (added.isEmpty() || !(fromBase instanceof Lookup.Present<Set<CredentialKey>> present)) {
             return fromBase;
         }
-        added.addAll(present.value());
-        return Lookup.present(Set.copyOf(added));
+        Set<CredentialKey> union = new HashSet<>(added.keys());
+        union.addAll(present.value());
+        return Lookup.present(Set.copyOf(union));
     }
 
     @Override
     public Lookup<ProposalState> proposal(GovActionId id) {
         Objects.requireNonNull(id, "id");
-        for (Node n = top; n != null; n = n.below) {
-            ProposalState p = n.layer.proposals.get(id);
-            if (p != null) {
-                return Lookup.present(p);
-            }
-        }
-        return base.proposal(id);
+        ProposalState p = index().proposals.get(id);
+        return p != null ? Lookup.present(p) : base.proposal(id);
     }
 
     @Override
@@ -393,12 +349,8 @@ public final class OverlayLedgerView implements LedgerView {
 
     @Override
     public Lookup<Long> dormantEpochs() {
-        for (Node n = top; n != null; n = n.below) {
-            if (n.layer.dormantEpochs != null) {
-                return Lookup.present(n.layer.dormantEpochs);
-            }
-        }
-        return base.dormantEpochs();
+        Long dormant = index().dormantEpochs;
+        return dormant != null ? Lookup.present(dormant) : base.dormantEpochs();
     }
 
     @Override
@@ -439,7 +391,118 @@ public final class OverlayLedgerView implements LedgerView {
 
     // ---------------------------------------------------------------- structure
 
-    private record Node(Layer layer, Node below, int size) {
+    private record Node(Layer layer, Node below, int size, Index index) {
+    }
+
+    /** An immutable singly linked list, newest first. */
+    private record Cons<T>(T head, Cons<T> tail) {
+    }
+
+    /** A per-key state and the depth (layer count) of the layer that wrote it. */
+    private record Versioned<T>(Lookup<T> value, int depth) {
+    }
+
+    private record UnregisteredEvent(int depth, Set<CredentialKey> dreps) {
+    }
+
+    private record BumpEvent(int depth, List<DormantDRepExpiriesBumped> bumps) {
+    }
+
+    /** Marks an outpoint a layer consumed in {@link Index#utxo}. */
+    private static final Object CONSUMED = new Object();
+
+    /**
+     * The newest per-key state of every layer up to and including one node, persistent and shared with the nodes
+     * below. Immutable.
+     */
+    private record Index(PersistentMap<Outpoint, Object> utxo,
+                         PersistentMap<CredentialKey, Versioned<AccountState>> accounts,
+                         PersistentMap<PoolId, Lookup<PoolState>> pools,
+                         PersistentMap<String, Lookup<PoolId>> vrf,
+                         PersistentMap<CredentialKey, Versioned<DRepState>> dreps,
+                         PersistentMap<CredentialKey, Lookup<CommitteeMemberState>> committee,
+                         PersistentMap<GovActionId, ProposalState> proposals,
+                         Cons<ProposalState> proposalOrder,
+                         PersistentMap<CredentialKey, Boolean> candidates,
+                         Long dormantEpochs,
+                         Cons<UnregisteredEvent> unregistered,
+                         Cons<BumpEvent> bumps) {
+
+        static final Index EMPTY = new Index(PersistentMap.empty(), PersistentMap.empty(), PersistentMap.empty(),
+                PersistentMap.empty(), PersistentMap.empty(), PersistentMap.empty(), PersistentMap.empty(), null,
+                PersistentMap.empty(), null, null, null);
+
+        /** @return this index with {@code layer} (at {@code depth}) on top */
+        Index with(Layer layer, int depth) {
+            PersistentMap<Outpoint, Object> u = utxo;
+            // Produced wins over consumed within one layer, as the layer read does.
+            for (Outpoint o : layer.consumed) {
+                u = u.plus(o, CONSUMED);
+            }
+            for (Map.Entry<Outpoint, UtxoEntry> e : layer.produced.entrySet()) {
+                u = u.plus(e.getKey(), e.getValue());
+            }
+            PersistentMap<CredentialKey, Versioned<AccountState>> a = accounts;
+            for (Map.Entry<CredentialKey, Lookup<AccountState>> e : layer.accounts.entrySet()) {
+                a = a.plus(e.getKey(), new Versioned<>(e.getValue(), depth));
+            }
+            PersistentMap<PoolId, Lookup<PoolState>> p = pools;
+            for (Map.Entry<PoolId, Lookup<PoolState>> e : layer.pools.entrySet()) {
+                p = p.plus(e.getKey(), e.getValue());
+            }
+            PersistentMap<String, Lookup<PoolId>> v = vrf;
+            for (Map.Entry<String, Lookup<PoolId>> e : layer.vrf.entrySet()) {
+                v = v.plus(e.getKey(), e.getValue());
+            }
+            PersistentMap<CredentialKey, Versioned<DRepState>> d = dreps;
+            for (Map.Entry<CredentialKey, Lookup<DRepState>> e : layer.dreps.entrySet()) {
+                d = d.plus(e.getKey(), new Versioned<>(e.getValue(), depth));
+            }
+            PersistentMap<CredentialKey, Lookup<CommitteeMemberState>> c = committee;
+            for (Map.Entry<CredentialKey, Lookup<CommitteeMemberState>> e : layer.committee.entrySet()) {
+                c = c.plus(e.getKey(), e.getValue());
+            }
+            PersistentMap<GovActionId, ProposalState> pr = proposals;
+            Cons<ProposalState> order = proposalOrder;
+            for (ProposalState proposal : layer.proposalOrder) {
+                pr = pr.plus(proposal.id(), proposal);
+                order = new Cons<>(proposal, order);
+            }
+            PersistentMap<CredentialKey, Boolean> cand = candidates;
+            for (CredentialKey k : layer.candidates) {
+                cand = cand.plus(k, Boolean.TRUE);
+            }
+            Cons<UnregisteredEvent> unreg = layer.unregisteredDReps.isEmpty() ? unregistered
+                    : new Cons<>(new UnregisteredEvent(depth, layer.unregisteredDReps), unregistered);
+            Cons<BumpEvent> bump = layer.bumps.isEmpty() ? bumps
+                    : new Cons<>(new BumpEvent(depth, layer.bumps), bumps);
+            return new Index(u, a, p, v, d, c, pr, order, cand,
+                    layer.dormantEpochs != null ? layer.dormantEpochs : dormantEpochs, unreg, bump);
+        }
+
+        /** @return the DReps deregistered in layers above {@code depth} */
+        Set<CredentialKey> unregisteredAbove(int depth) {
+            Set<CredentialKey> result = Set.of();
+            for (Cons<UnregisteredEvent> c = unregistered; c != null && c.head.depth > depth; c = c.tail) {
+                if (result.isEmpty()) {
+                    result = new HashSet<>();
+                }
+                result.addAll(c.head.dreps);
+            }
+            return result;
+        }
+
+        /** @return the dormant-period bumps of layers above {@code depth}, oldest first */
+        List<DormantDRepExpiriesBumped> bumpsAbove(int depth) {
+            List<DormantDRepExpiriesBumped> result = List.of();
+            for (Cons<BumpEvent> c = bumps; c != null && c.head.depth > depth; c = c.tail) {
+                if (result.isEmpty()) {
+                    result = new ArrayList<>();
+                }
+                result.addAll(0, c.head.bumps);
+            }
+            return result;
+        }
     }
 
     /** One transaction's materialised effects. Immutable after construction. */

@@ -4362,6 +4362,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
         TxDiffusionStats txDiffusionStats = txSubsystem.txDiffusionStats();
         var mempoolStats = txSubsystem.mempoolStats();
+        var mempoolLedger = txSubsystem.ledgerMempoolStatus();
         RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
         RuntimeMaintenanceGate.Degradation maintenanceDegradation = maintenanceGate.degradation();
 
@@ -4509,6 +4510,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .mempoolAdmissionHoldNanos(mempoolStats.totalAdmissionHoldNanos())
                 .mempoolValidationNanos(mempoolStats.totalValidationNanos())
                 .mempoolSlowValidations(mempoolStats.slowValidations())
+                .mempoolLedgerState(mempoolLedger != null ? mempoolLedger.state() : null)
+                .mempoolCatchingUp(mempoolLedger != null && mempoolLedger.catchingUp())
+                .mempoolCanonicalLagGenerations(mempoolLedger != null
+                        ? Math.max(0, mempoolLedger.canonicalGeneration() - mempoolLedger.baseGeneration()) : 0L)
                 .mempoolAccepting(txSubsystem.isAccepting())
                 .mempoolValidationAvailable(txSubsystem.transactionValidationService() != null)
                 .mempoolEvaluationAvailable(txSubsystem.isTransactionEvaluationAvailable())

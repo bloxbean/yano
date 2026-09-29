@@ -85,7 +85,7 @@ class ValidationEngineBootstrapIntegrationTest {
             EngineContext context = CapturingFactory.CONTEXT.get();
             assertThat(context.config(YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS)).contains("750");
             assertThat(context.scriptPhaseEvaluator()).isInstanceOf(ScalusScriptPhaseEvaluator.class);
-            assertThat(context.validationThreads()).isEqualTo(3);
+            assertThat(context.validationThreads()).isEqualTo(4);
             NetworkParameters network = context.network().get();
             assertThat(network.networkMagic()).isEqualTo(42);
             assertThat(network.firstNonByronSlot()).isZero();

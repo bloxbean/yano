@@ -42,6 +42,11 @@ import org.yanoproject.runtime.ledger.canonical.CanonicalSnapshotSource;
 import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.ledger.canonical.SnapshotPurpose;
 import org.yanoproject.runtime.ledger.canonical.TickedLedgerView;
+import org.yanoproject.ledger.rules.view.OverlayLedgerView;
+import org.yanoproject.runtime.chain.MempoolAdmissionException;
+import org.yanoproject.runtime.kernel.SubsystemHealth;
+import org.yanoproject.runtime.mempool.CanonicalMark;
+import org.yanoproject.runtime.mempool.LedgerMempool;
 import org.yanoproject.runtime.tx.TxSubsystem;
 
 import java.math.BigInteger;
@@ -50,10 +55,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
@@ -62,8 +69,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * ADR-056 step 1d: mempool admission through the validation-engine API, end to end through
- * {@link TxSubsystem} (the validation event, the default listener, the mempool lane), with fake engines.
+ * ADR-056 step 1d and Phase 6a: mempool admission through the validation-engine API, end to end through
+ * {@link TxSubsystem} (the validation event, the default listener, the ledger-state mempool and its lane), with fake
+ * engines. With an admission engine the mempool is a {@code LedgerMempool}: its published state retains one
+ * canonical snapshot (the "published baseline"), freed when the subsystem closes.
  */
 class EngineAdmissionTest {
 
@@ -85,7 +94,7 @@ class EngineAdmissionTest {
     }
 
     @Test
-    void admissionRunsTheEngineOnATickedSnapshotAndReleasesIt() {
+    void admissionRunsTheEngineOnATickedSnapshotThatThePublishedStateRetains() {
         CanonicalStateGate gate = gate(true);
         RecordingEngine engine = new RecordingEngine("amaru", Verdict.ACCEPT);
         TxSubsystem subsystem = subsystem(gate, engines(engine, List.of(), null));
@@ -93,17 +102,23 @@ class EngineAdmissionTest {
 
         String hash = subsystem.submitTransaction(tx(canonicalInput, 1_000_000), null);
 
+        assertThat(subsystem.ledgerMempool()).isNotNull();
         assertThat(subsystem.containsTransaction(hash)).isTrue();
         TxValidationRequest request = engine.requests.getFirst();
         assertThat(request.rule()).isEqualTo(TxValidationRequest.Rule.MEMPOOL);
         assertThat(request.origin()).isEqualTo(TxValidationRequest.Origin.LOCAL);
         assertThat(request.previous()).isNull();
         assertThat(request.env().currentSlot()).isEqualTo(TIP_SLOT + 1);
+        assertThat(request.env().forecastBasisSlot()).isEqualTo(TIP_SLOT + 1);
         // The canonical read went to the snapshot (no UTxO store in this capture: fail closed, never absent).
         assertThat(engine.utxoReads.getFirst().isUnavailable()).isTrue();
+        assertThat(gate.liveSnapshotCount()).as("the published state's base").isEqualTo(1);
+        assertThat(released.get()).isZero();
+        assertThat(subsystem.health().details()).containsEntry("validationEngine", "amaru")
+                .containsEntry("mempoolLedgerState", "READY");
+        subsystem.close();
         assertThat(gate.liveSnapshotCount()).isZero();
         assertThat(released.get()).isEqualTo(1);
-        assertThat(subsystem.health().details()).containsEntry("validationEngine", "amaru");
     }
 
     @Test
@@ -131,8 +146,8 @@ class EngineAdmissionTest {
                 "txsubmission"))
                 .isInstanceOf(TransactionValidationException.class)
                 .hasMessageContaining("UTXO.BadInputsUTxO");
-        assertThat(gate.liveSnapshotCount()).isZero();
-        assertThat(released.get()).isEqualTo(1);
+        assertThat(gate.liveSnapshotCount()).as("only the published base").isEqualTo(1);
+        assertThat(released.get()).isZero();
     }
 
     @Test
@@ -170,14 +185,17 @@ class EngineAdmissionTest {
         String hash = subsystem.submitTransaction(tx(new Outpoint("aa".repeat(32), 0), 1_000_000), null);
 
         ShadowValidationRunner runner = engines.shadowRunner();
-        awaitTrue(() -> runner.stats().compared() == 2 && gate.liveSnapshotCount() == 0);
-        // The shadow retained the admission's own snapshot: one capture, freed once, after both finished.
-        assertThat(released.get()).isEqualTo(1);
+        // compared() is counted before the verdict counters, so wait for those (the published state keeps the
+        // snapshot live, so the live count no longer marks the end of the jobs).
+        awaitTrue(() -> runner.stats().agreements() == 1 && runner.stats().disagreementTotal() == 1);
+        // The shadows retained the admission's own base (the published state's snapshot): one capture, not freed
+        // while published.
+        assertThat(released.get()).isZero();
         assertThat(runner.stats().agreements()).isEqualTo(1);
         assertThat(runner.disagreements("amaru", "UTXO")).isEqualTo(1);
         assertThat(runner.disagreements("agree", "UTXO")).isZero();
-        assertThat(gate.liveSnapshotCount()).isZero();
-        // The shadow saw the input the admission view resolved (pinned), and the same slot.
+        assertThat(gate.liveSnapshotCount()).isEqualTo(1);
+        // The shadow saw the admission's frozen overlay and the same environment.
         assertThat(shadow.requests.getFirst().env()).isEqualTo(admission.requests.getFirst().env());
         awaitTrue(() -> runner.stats().dumpsWritten() == 1);
         Path file;
@@ -204,7 +222,7 @@ class EngineAdmissionTest {
         assertThat(engines.shadowRunner().stats().droppedCap()).isEqualTo(1);
         assertThat(gate.shadowRefusals()).isEqualTo(1);
         assertThat(shadow.requests).isEmpty();
-        assertThat(gate.liveSnapshotCount()).isZero();
+        assertThat(gate.liveSnapshotCount()).as("the published base fills the cap of 1").isEqualTo(1);
     }
 
     @Test
@@ -216,6 +234,7 @@ class EngineAdmissionTest {
         subsystem.start();
         assertThat(subsystem.transactionValidationService().engineAdmission()).isNull();
         assertThat(subsystem.validationEngines()).isNull();
+        assertThat(subsystem.ledgerMempool()).as("the legacy default keeps DefaultMemPool").isNull();
     }
 
 
@@ -234,7 +253,9 @@ class EngineAdmissionTest {
         // Canonical (unticked) view: the UTxO read reaches the capture, it is not refused as "behind".
         assertThat(((Lookup.Unavailable<UtxoEntry>) engine.utxoReads.getFirst()).reason())
                 .contains("UTxO store is disabled");
-        assertThat(gate.liveSnapshotCount()).isZero();
+        // The forecast horizon stays based on next(tip), not on the moved validation slot.
+        assertThat(env.forecastBasisSlot()).isEqualTo(2 * EPOCH / 3 + 1);
+        assertThat(gate.liveSnapshotCount()).isEqualTo(1);
     }
 
     @Test
@@ -244,8 +265,10 @@ class EngineAdmissionTest {
         TxSubsystem subsystem = subsystem(gate, engines(engine, List.of(), null));
         AtomicInteger contexts = new AtomicInteger();
         eventBus.subscribe(TransactionValidateEvent.class, ctx -> {
-            AdmissionContext context = AdmissionContext.current();
-            if (context != null && context.view().mode() == TickedLedgerView.Mode.TICKED) {
+            LedgerAdmissionScope scope = LedgerAdmissionScope.current(ctx.event().txHash());
+            if (scope != null && scope.view() instanceof OverlayLedgerView overlay
+                    && overlay.base() instanceof TickedLedgerView ticked
+                    && ticked.mode() == TickedLedgerView.Mode.TICKED) {
                 contexts.incrementAndGet();
             }
         }, SubscriptionOptions.builder().build());
@@ -255,7 +278,7 @@ class EngineAdmissionTest {
         assertThat(contexts.get()).isEqualTo(1);
         assertThat(engine.requests.getFirst().env().currentSlot()).isEqualTo(EPOCH);
         assertThat(engine.requests.getFirst().env().currentEpoch()).isEqualTo(1);
-        assertThat(gate.liveSnapshotCount()).isZero();
+        assertThat(gate.liveSnapshotCount()).isEqualTo(1);
     }
 
     @Test
@@ -272,9 +295,10 @@ class EngineAdmissionTest {
         String hash = subsystem.submitTransaction(tx(new Outpoint("aa".repeat(32), 0), 1_000_000), null);
 
         assertThat(subsystem.containsTransaction(hash)).as("the legacy verdict admits").isTrue();
+        assertThat(subsystem.ledgerMempool()).as("shadows next to the legacy validator keep DefaultMemPool").isNull();
         assertThat(legacyCalls.get()).isEqualTo(1);
         ShadowValidationRunner runner = engines.shadowRunner();
-        awaitTrue(() -> runner.stats().compared() == 1 && gate.liveSnapshotCount() == 0);
+        awaitTrue(() -> runner.stats().disagreementTotal() == 1 && gate.liveSnapshotCount() == 0);
         assertThat(runner.disagreements("amaru", "UTXO")).isEqualTo(1);
         assertThat(subsystem.health().details()).containsEntry("validationEngine", ValidationEngines.LEGACY);
     }
@@ -320,6 +344,85 @@ class EngineAdmissionTest {
         }
     }
 
+    @Test
+    void whileCatchingUpAdmissionIsRetryableAndBlockSelectionSkipsTheMempool() throws Exception {
+        CanonicalStateGate gate = gate(true);
+        RecordingEngine engine = new RecordingEngine("amaru", Verdict.ACCEPT);
+        TxSubsystem subsystem = subsystem(gate, engines(engine, List.of(), null));
+        String first = subsystem.submitTransaction(tx(new Outpoint("aa".repeat(32), 0), 1_000_000), null);
+        assertThat(subsystem.hasPendingTransactions()).isTrue();
+        LedgerMempool ledger = subsystem.ledgerMempool();
+        AtomicBoolean fastSync = new AtomicBoolean(true);
+        ledger.setObserver(new LedgerMempool.RebuildObserver() {
+            @Override
+            public void foldStarted(CanonicalMark target, int transactions, boolean synchronous) {
+                if (fastSync.get()) {
+                    // Blocks arrive faster than a fold, from the writer's own thread (never under the lane).
+                    CompletableFuture.runAsync(() -> gate.runWrite(() -> { })).join();
+                }
+            }
+        });
+
+        assertThat(ledger.rebuildNow()).isFalse();
+
+        assertThat(ledger.status()).isEqualTo(LedgerMempool.Status.CATCHING_UP);
+        assertThat(subsystem.hasPendingTransactions()).as("block selection skips the mempool").isFalse();
+        assertThat(subsystem.drainForBlock()).isEmpty();
+        assertThat(subsystem.admitting()).isFalse();
+        assertThatThrownBy(() -> subsystem.submitTransaction(tx(new Outpoint("aa".repeat(32), 1), 1_000_000), null))
+                .isInstanceOfSatisfying(MempoolAdmissionException.class, e -> assertThat(e.retryable()).isTrue());
+        SubsystemHealth health = subsystem.health();
+        assertThat(health.status()).isEqualTo(SubsystemHealth.Status.DEGRADED);
+        assertThat(health.details()).containsEntry("mempoolLedgerState", "CATCHING_UP");
+        assertThat(subsystem.ledgerMempoolStatus().lockOrderViolations()).isZero();
+
+        fastSync.set(false);
+        awaitTrue(() -> ledger.rebuildNow() && ledger.status() == LedgerMempool.Status.READY);
+        assertThat(subsystem.containsTransaction(first)).isTrue();
+        assertThat(subsystem.hasPendingTransactions()).isTrue();
+        assertThat(subsystem.admitting()).isTrue();
+        assertThat(subsystem.health().status()).isEqualTo(SubsystemHealth.Status.UP);
+    }
+
+    @Test
+    void aCanonicalPublicationRebuildsThePublishedState() throws Exception {
+        CanonicalStateGate gate = gate(true);
+        RecordingEngine engine = new RecordingEngine("amaru", Verdict.ACCEPT);
+        TxSubsystem subsystem = subsystem(gate, engines(engine, List.of(), null));
+        String hash = subsystem.submitTransaction(tx(new Outpoint("aa".repeat(32), 0), 1_000_000), null);
+        long before = subsystem.ledgerMempoolStatus().baseGeneration();
+
+        gate.runWrite(() -> { });   // a forward block: the gate notifies the mempool after release
+
+        awaitTrue(() -> subsystem.ledgerMempoolStatus().baseGeneration() == gate.generation()
+                && !subsystem.ledgerMempoolStatus().lagging());
+        assertThat(subsystem.ledgerMempoolStatus().baseGeneration()).isGreaterThan(before);
+        assertThat(subsystem.containsTransaction(hash)).isTrue();
+        assertThat(engine.requests).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(gate.liveSnapshotCount()).isEqualTo(1);
+    }
+
+    @Test
+    void anEngineWithoutTheLegacyValidatorStillValidatesAndSelectsOnlyAFreshMempool() {
+        // The Scalus validator can fail to initialise while an engine is configured
+        // (DefaultTransactionServicesFactory): no validation service, no default listener, no selection validator.
+        CanonicalStateGate gate = gate(true);
+        RecordingEngine engine = new RecordingEngine("amaru", Verdict.ACCEPT);
+        TxSubsystem subsystem = new TxSubsystem(eventBus, scheduler, RuntimeOptions.defaults(),
+                EngineAdmissionTest::emptyUtxoState, LoggerFactory.getLogger(getClass()));
+        subsystems.add(subsystem);
+        subsystem.setValidationEngines(engines(engine, List.of(), null), () -> gate);
+        subsystem.start();
+        assertThat(subsystem.transactionValidationService()).isNull();
+
+        String hash = subsystem.submitTransaction(tx(new Outpoint("aa".repeat(32), 0), 1_000_000), null);
+
+        assertThat(subsystem.containsTransaction(hash)).isTrue();
+        assertThat(engine.requests).as("the mempool validated with the engine itself").hasSize(1);
+        assertThat(subsystem.drainForBlock()).as("fresh: validated at the tip").hasSize(1);
+        subsystem.blockSelectionCompleted();
+    }
+
     // ------------------------------------------------------------------ fixtures
 
     enum Verdict { ACCEPT, REJECT }
@@ -357,9 +460,22 @@ class EngineAdmissionTest {
                         LedgerFailure.Phase.PHASE_1, "fake"));
             }
             byte[] txCbor = request.txCbor();
-            return new TxValidationOutcome.Valid(new TxEffects(TxIdentity.txIdHex(txCbor), true, List.of(),
-                    List.of(), List.of()), new ValidatedTx(txCbor, TxIdentity.txId(txCbor), 10, 1, new byte[32], true,
-                    request.origin()), false);
+            String txId = TxIdentity.txIdHex(txCbor);
+            List<Outpoint> consumed = new ArrayList<>();
+            List<UtxoEntry> produced = new ArrayList<>();
+            try {
+                Transaction tx = Transaction.deserialize(txCbor);
+                tx.getBody().getInputs().forEach(in -> consumed.add(new Outpoint(in.getTransactionId(),
+                        in.getIndex())));
+                for (int i = 0; i < tx.getBody().getOutputs().size(); i++) {
+                    produced.add(new UtxoEntry(new Outpoint(txId, i), tx.getBody().getOutputs().get(i), null));
+                }
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+            return new TxValidationOutcome.Valid(new TxEffects(txId, true, consumed, produced, List.of()),
+                    new ValidatedTx(txCbor, TxIdentity.txId(txCbor), 10, 1, new byte[32], true, request.origin()),
+                    false);
         }
     }
 

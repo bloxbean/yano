@@ -20,6 +20,7 @@ import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
+import org.yanoproject.ledger.rules.conway.ReapplyPolicy;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
@@ -59,7 +60,12 @@ import java.util.Map;
  *
  * <p>The legacy {@link ScalusBasedTransactionValidator} is untouched and stays the default admission path;
  * this adapter is used only when {@code yano.validation.engine} or {@code shadow-engines} select the engine
- * API. It never re-applies: {@code previous} is ignored and every request is a full validation.</p>
+ * API.</p>
+ *
+ * <p><b>Re-application</b> (ADR-056 §6, Phase 6a): the adapter records the resolved-inputs digest in its
+ * {@code ValidatedTx}, and when {@link ReapplyPolicy} allows re-applying {@code previous} it runs Scalus's
+ * dynamic rules only ({@code YanoCardanoMutator.reapply}: no signature, metadata, well-formedness, network or size
+ * checks, and no Plutus execution).</p>
  */
 public final class ScalusLedgerValidationEngine implements LedgerValidationEngine {
 
@@ -138,9 +144,16 @@ public final class ScalusLedgerValidationEngine implements LedgerValidationEngin
         resolve(view, body.getReferenceInputs(), resolved);
         resolve(view, body.getCollateral(), resolved);
 
+        int major = params.getProtocolMajorVer() != null ? params.getProtocolMajorVer() : env.protocolMajor();
+        byte[] txId = TxIdentity.txId(txCbor);
+        byte[] resolvedDigest = ReapplyPolicy.resolvedInputsDigest(ReapplyPolicy.allInputs(body), resolved);
+        ValidatedTx previous = request.previous();
+        boolean reapply = ReapplyPolicy.decide(previous, txId, tx.isValid(), major, env, request.origin(),
+                resolvedDigest).reapply();
+
         LedgerFailure scalusFailure = LedgerBridge.validateAgainstView(txCbor, params, resolved.values(),
                 env.currentSlot(), scalusSlotConfig(env.slotConfig()), env.networkId() == NetworkId.MAINNET ? 1 : 0,
-                new LedgerViewStateProvider(view));
+                new LedgerViewStateProvider(view), reapply);
         if (scalusFailure != null) {
             failures.add(scalusFailure);
         }
@@ -161,9 +174,9 @@ public final class ScalusLedgerValidationEngine implements LedgerValidationEngin
             return engine(ENGINE_FAILURE,
                     "Scalus accepted the transaction but its effects cannot be derived: " + e.getMessage());
         }
-        ValidatedTx validated = new ValidatedTx(txCbor, TxIdentity.txId(txCbor), env.protocolMajor(),
-                env.currentEpoch(), env.phase2EnvDigest(), phase2Valid, request.origin());
-        return new TxValidationOutcome.Valid(effects, validated, false);
+        ValidatedTx validated = reapply ? previous : new ValidatedTx(txCbor, txId, major, env.currentEpoch(),
+                env.phase2EnvDigest(), phase2Valid, request.origin(), resolvedDigest);
+        return new TxValidationOutcome.Valid(effects, validated, reapply);
     }
 
     private static void resolve(LedgerView view, List<TransactionInput> inputs, Map<Outpoint, UtxoEntry> resolved) {

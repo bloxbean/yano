@@ -36,6 +36,11 @@ test {
     if (scenarios) {
         systemProperty 'amaru.scenarios.dir', scenarios
     }
+    // ADR-056 decision 3 engine rebuild benchmark: -PmempoolBenchmark=true
+    if (project.hasProperty('mempoolBenchmark')) {
+        systemProperty 'yano.mempool.benchmark', 'true'
+        maxHeapSize = '4g'
+    }
 }
 
 // Java factory in src/main/java/ references Scala types from src/main/scala/.

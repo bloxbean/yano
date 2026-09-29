@@ -1727,8 +1727,15 @@ The final PR merges once S5's gates are green.
   boundaries, per-transaction `ValidatedTx` provenance with the shared
   invalidation rules, the phase-2-invalid rejection policy, and the
   block-production overlay.
-- Remove `BlockBuildUtxoOverlay` and the legacy validator overload.
+- Remove `BlockBuildUtxoOverlay` and the legacy validator overload. *(Moved to
+  Phase 8, see "Phase 6a results": the overlays apply whenever an engine-API
+  admission engine is configured; the legacy default `engine: scalus` keeps
+  today's path, `BlockBuildUtxoOverlay` and the overload until the default
+  flips.)*
 - Migrate the mempool and selector tests.
+- Delivered in two steps: **6a** the mempool ledger-state overlay machinery,
+  **6b** the block-production overlay, the devnet and Haskell-follower gates
+  and ADR-057 Phase C.
 - Gates:
   - **pending-mempool hard fork:** transactions sit in the mempool across a
     protocol-major change and across a cost-model parameter change. Every
@@ -1779,6 +1786,157 @@ The final PR merges once S5's gates are green.
   - rollback while chains are pending;
   - the Haskell follower stays in lock-step (`test-haskell-sync`);
   - admission p99 and rebuild time within the budget (decision 3 below).
+
+#### Phase 6a results: mempool ledger-state overlays (2026-09-29)
+
+- **Scope.** The overlays run whenever an engine-API admission engine is configured (`yano.validation.engine` other
+  than `scalus`: `java` behind `java-engine.experimental`, `amaru`, and the Scalus engine adapter if it is ever
+  selected for admission; today the name `scalus` means the legacy path). `TxSubsystem.setValidationEngines` then
+  installs a `LedgerMempool` instead of `DefaultMemPool`. **Deviation:** the legacy default (`engine: scalus`, with
+  or without shadow engines) keeps `DefaultMemPool`, the legacy `TransactionValidator`, `BlockBuildUtxoOverlay` and
+  the legacy overload unchanged; their removal moves to **Phase 8**, when the default flips. Block selection keeps
+  the legacy selector in 6a (6b replaces it).
+- **Components.** `org.yanoproject.runtime.mempool`: `LedgerMempool` (implements `MemPool`), the immutable
+  `MempoolLedgerState` (ordered `MempoolEntry` list with `ValidatedTx` provenance and origin, `MempoolIndexes` —
+  produced/spent/reference-script indexes and dependency edges as persistent maps —, the `OverlayLedgerView` with
+  one layer per transaction, the retained `MempoolBase`, `mempoolGeneration`, lineage and mutation log),
+  `MempoolBase` (a reference-counted canonical base: the `TickedLedgerView` at the admission slot, its
+  `CanonicalMark` = (generation `Gs`, target epoch `Es`) and the forecast basis), `MempoolBaseSource` /
+  `GateMempoolBaseSource` (one `REBUILD` snapshot per base; the boundary dry run is computed there, before the
+  lane), `LedgerMempoolStatus`; `runtime.validation.LedgerAdmissionScope` (hands the published overlay to the
+  validation listener). `MempoolUtxoOverlayView` is deleted. ledger-rules: `util.PersistentMap` (a HAMT),
+  `OverlayLedgerView`'s per-key index, `ValidationEnv.forecastBasisSlot`. The gate gained publication listeners,
+  `admissionSlot(tip)`/`admissionEpoch(tip)` and `isHeldByCurrentThread()`.
+- **State machine.** `READY` ⇄ `CATCHING_UP`. Every mutation (admission, removal, eviction, clear, TTL, a
+  rebuild's swap) runs under the fair lane, builds a new state and swaps the volatile published reference; queries
+  read it lock-free. A rebuild cycle is: up to `rebuild-max-restarts` (3) off-lane attempts → up to
+  `rebuild-sync-attempts` (3) synchronous attempts → `CATCHING_UP`; the first publication returns to `READY`.
+  While `CATCHING_UP`: admission returns the retryable `MempoolAdmissionResult.Status.CATCHING_UP`
+  (`MempoolAdmissionException.retryable()`, REST 503 with `Retry-After`), `hasPendingTransactions`/`drainForBlock`
+  skip the mempool, announced peer transactions are not requested (`TxCatalog.admitting()`, the tx-submission
+  handler), the subsystem health is `DEGRADED` with `mempoolLedgerState=CATCHING_UP`, and the node metrics export
+  `yano.node.mempool.catching.up` and `yano.node.mempool.canonical.lag.generations`; retries follow every canonical
+  publication and a 1 s timer.
+- **Lock order.** Bases are acquired only while the lane is not held (initial publication, every attempt's step 1,
+  the synchronous attempt before it takes the lane); the lane is never taken while the gate is held; freshness
+  under the lane is `MempoolBaseSource.current()`, a volatile read of the published tip; canonical writers notify
+  the mempool through gate publication listeners after release, which only schedule the worker. Both directions
+  are asserted and counted (`lockOrderViolations`, 0 in every gate).
+- **Admission** (under the lane): duplicate, conflict and capacity checks on the published indexes; the
+  validation event runs with a `LedgerAdmissionScope` (published overlay, retained base, the base's environment
+  with `forecastBasisSlot = next(tip)`); the default listener (`EngineAdmission`) runs rule `MEMPOOL` and records
+  the outcome; the mempool appends the `ValidatedTx` and the effects layer and swaps. Plugins see UTxOs through the
+  same overlay. Shadow engines get the (immutable) overlay and retain the base. There is no per-admission snapshot
+  any more; the published state retains one.
+- **Removal, eviction, clear, TTL**: synchronous truncate-and-reapply (overlay `truncateTo` the first removed
+  layer, indexes minus the suffix, suffix re-validated in order with `previous`; failures drop, so certificate and
+  governance dependents cascade). **Deviations:** confirmation removal (`removeByTxHashes`,
+  `removeConflictingInputs`) and the rollback `revalidate` only schedule the rebuild — removing a confirmed
+  transaction against the old base would cascade its now-canonical dependents; a block-selection
+  `removeInvalidated` while the published state lags is deferred to the pending rebuild for the same reason.
+- **Rebuild** exactly per §6 steps 1–8 (single worker, coalesced triggers; step 4 = append-only descent from the
+  mutation log first, then the canonical freshness check as the last action before the swap; discards release
+  their base; the swap retires the old base only when every admission and frozen view released it). **Triggers:**
+  gate publications (forward blocks, rollbacks, producer boundary sections — replacing `onCanonicalRollbackApplied`
+  on this path), the block-applied/rollback events (coalesced), and any admission that sees a stale mark (which
+  also covers a target-epoch change). With no canonical state an empty mempool publishes the unavailable base
+  (admission fails closed, `LedgerStateUnavailable`); a non-empty one discards and eventually enters
+  `CATCHING_UP` rather than drop transactions it cannot re-validate.
+- **Re-application and invalidation**: every re-validation passes the entry's `ValidatedTx`; `ReapplyPolicy`
+  decides (protocol major, `phase2EnvDigest`, resolved-inputs digest, origin; a `SYNC` verdict is never passed for
+  admission). All three engines record the resolved-inputs digest (`ReapplyPolicy.resolvedInputsDigest` over
+  outpoints for the adapters) and re-apply: the java engine skips its static checks and Plutus; the **Scalus
+  adapter** runs `YanoCardanoMutator.reapply` (Scalus's validators minus the `lblStatic` ones — signatures,
+  metadata, script well-formedness, empty inputs, bootstrap attributes, the three network checks, size — and the
+  mutators minus `PlutusScriptsTransactionMutator`); the **Amaru adapter** runs the module in phase-one mode and
+  no phase-2 evaluation (the module's static checks cannot be skipped from outside).
+- **Phase-2-invalid policy** is enforced on this path by the engines (`isValid=true` with a failing script →
+  `UTXOS.ValidationTagMismatch`; `isValid=false` → `ENGINE.Phase2InvalidTxNotSupported`), verified from `LOCAL` and
+  `PEER`.
+- **Phase 5 dependencies.** (a) committee records keep expired, unreplaced members (only `UpdateCommittee`
+  enactment removes them); (b) `expiresAfterEpoch = proposedIn + govActionLifetime` (`GovernanceBlockProcessor`);
+  (c) mempool proposals and votes resolve through the effects overlay (gate test below); (d) the treasury across a
+  boundary between the tip and the admission slot still fails closed in the ticked view (retryable once the
+  boundary block lands) — carried to 6b/7. The forecast basis is `next(tip)` (`ValidationEnv.forecastBasisSlot`,
+  also passed to Amaru's phase-2 evaluator), not the producer-window slot.
+- **Budget** (decision 3; `LedgerMempoolBudgetTest`, java engine, 10,000 signed non-Plutus payments, JVM 25,
+  after a warm-up round; `-PmempoolBenchmark=true`):
+
+  | Operation | Target | Measured | O(layers) overlay (before the index) |
+  |---|---|---|---|
+  | Admission p99 (to 10,000 txs) | ≤ 20 ms | 0.19 ms (p50 0.14, max 5.8) | 0.49 ms |
+  | Truncate-and-reapply, 1,000 suffix | ≤ 50 ms | 18.9 ms | 599 ms |
+  | Truncate-and-reapply, 9,998 suffix | ≤ 500 ms | 170 ms | 3,064 ms |
+  | Off-lane rebuild, re-application only, 10,000 | ≤ 2 s | 160 ms | 2,960 ms |
+  | Rebuild with full validation (PV change), 9,998 | none | 1.37 s | 3.1 s |
+
+  Engine part of the off-lane rebuild for the adapters (`RebuildBenchmark` in the ledger-rules test fixtures;
+  `ScalusEngineReapplyTest` / `AmaruEngineReapplyTest` with `-PmempoolBenchmark=true`; 10,000 non-Plutus payments;
+  the mempool's own bookkeeping adds about 20 ms):
+
+  | Engine | Full validation | Re-application | Target (re-application rebuild) |
+  |---|---|---|---|
+  | `scalus` adapter | 862 ms | 184 ms | ≤ 2 s: met |
+  | `amaru` (wasm, `phase2: scalus`) | 8.27 s | 8.04 s | ≤ 2 s: **not met** |
+
+  **Recorded reason (decision 3):** Amaru's cost is the module call itself (`required_keys` plus `validate`, about
+  0.8 ms per transaction in Chicory), and phase-one mode only saves Plutus, so a re-application rebuild costs about
+  the same as full validation; the 2 s target holds for Amaru up to roughly 2,400 mempool transactions. Above that a
+  rebuild can take several seconds and, on a fast devnet with a large mempool, lead to `CATCHING_UP` (the accepted
+  fallback, never a stale publication). Amaru stays the optional oracle (ADR-057); the default and `java` meet the
+  target.
+
+  The O(layers) overlay misses three targets, so `OverlayLedgerView` now carries a persistent per-key index per
+  layer node (reads `O(log32 n)`, `apply` `O(changes · log32 n)`, `truncateTo` reuses the node's index); the lazy
+  DRep-deregistration and dormant-bump rules read short per-event lists. The 25 overlay tests pass unchanged.
+- **Gates** (all green): `LedgerMempoolTest` (18, java engine over `MutationWorld` states, the rebuild worker held
+  so a queued follow-up cannot mask a race): certificate effects of earlier mempool transactions; proposal → vote
+  and its cascade; removal without rebuild (A evicted → B dropped, A's registration invisible to the next
+  admission, suffix re-applied); TTL and clear; rebuild drops confirmed, re-applies dependents; publication race
+  (block, rollback, epoch crossing during the fold, with the mempool unchanged and with appends; a block during
+  append reconciliation) → candidate discarded, never published for the stale mark; append-only interleaving
+  publishes with the appends re-validated on the new base; removal/TTL/clear and append+removal during a rebuild →
+  restart, nothing resurrected, B dropped; multi-generation lag (three publications in one fold) consistent, a
+  provisional admission dropped by the next rebuild; pending-mempool hard fork (same parameters re-apply; PV 10→11
+  and a cost-model change re-validate in full with Plutus, the failing script transaction dropped); synchronous
+  fallback holds the lane only after acquiring its base (asserted in the fold), `CATCHING_UP` → `READY`; a lane
+  request with the gate held is a counted violation; frozen view across two swaps, no leaked bases;
+  phase-2-invalid from `LOCAL` and `PEER`; no canonical state keeps the transactions. `LedgerMempoolCanonicalGateTest`
+  (real gate over one RocksDB): the ownership gate (a canonical UTxO outside the rebuild's read set admitted from
+  the published state's retained snapshot; a frozen view keeps its generation across two swaps; the live-snapshot
+  count returns to the published baseline, 0 after close) and the synchronous fallback with real canonical writes
+  from the writer's thread while the lane is held (no violation, `CATCHING_UP`, `READY`). `EngineAdmissionTest`
+  (TxSubsystem end to end) gains `CATCHING_UP` (retryable submit, selection skipped, `DEGRADED`, `admitting()`
+  false) and a gate publication rebuilding the published state. Mutation checks: disabling the freshness check fails
+  5 gates, disabling the descent check fails 2. `PersistentMapTest` (randomised against `HashMap`, collisions).
+- **Block selection (6a).** Selection keeps the legacy validator over a block-local UTxO overlay; confirmed
+  transactions still in a lagging published state fail it and are not selected. When no selection validator exists
+  (the Scalus validator can fail to initialise while an engine is configured, `DefaultTransactionServicesFactory`),
+  `BlockTransactionSelectors` never selects from a `LedgerMempool` that lags the canonical tip or is `CATCHING_UP`
+  (a fresh one was validated in order at the tip); 6b replaces this with the block-build overlay.
+- **Review fixes (Fable, 2026-09-29).** A block-selection invalidation re-checks freshness under the lane before
+  truncating; a rebuild marks its base transferred before any callback, and observer failures are logged; `close()`
+  waits for a running rebuild at most 10 s, and every swap re-checks the closed flag under the lane, so nothing is
+  published or leaked after close; the freshness mark and snapshot acquisition share one epoch computation
+  (`CanonicalStateGate.withEpochs`). `LedgerMempoolStressTest` (4 admitters, the real worker, a publisher of blocks,
+  rollbacks and epoch crossings, an evictor with evict/TTL/clear/invalidation, and a checker; 3 s, about 16,000
+  admissions, 480 published rebuilds, several `CATCHING_UP` round trips) keeps every published state consistent,
+  with no lock-order violation and no leaked base.
+- **Plugins and clients.** A plugin validation listener on this path can only add rejections: the verdict and the
+  effects come from the admission engine (recorded in the scope; the mempool validates itself if no listener ran
+  it), so a plugin cannot admit what the engine rejects or change the effects. While `CATCHING_UP`, n2n tx-id
+  announcements are skipped (planned as ignored, not requested, never stalled; the peer re-announces later), local
+  REST submission returns 503 with `Retry-After: 5`, and n2c local submission gets the retryable rejection.
+- **Other deviations.** With an engine-API admission engine the mempool validates even when the deprecated
+  `default-validator-enabled=false` removed the default listener (it cannot append without effects). Switching the
+  mempool implementation at assembly drops what the legacy mempool held (it is empty then). `ValidatedTx` keeps its
+  own copy of the transaction bytes, so the mempool stores each body twice. The Amaru validation pool grows by one
+  thread (the rebuild worker folds next to admission). `rebuild-max-restarts` and `rebuild-sync-attempts` are read
+  from the runtime globals.
+- **For 6b.** The block-production overlay (`selectMempool` on its own `BLOCK_BUILD` snapshot, rule `LEDGER`,
+  `previous` from the entries, forecast basis = slot after the previous block, discard on a generation change);
+  the devnet end-to-end chains in one block and in the mempool, the epoch crossing with chains pending (including
+  the ticked treasury, dependency (d)), rollback with chains pending, the Haskell follower; ADR-057 Phase C.
 
 ### Phase 7 — Blueprint vectors, differential, shadow sync, native parity
 

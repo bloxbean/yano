@@ -37,6 +37,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.function.IntToLongFunction;
+import java.util.function.LongToIntFunction;
 
 /**
  * The ledger state at a target slot (ADR-056 §3, invariant 6): the canonical state of one
@@ -177,12 +179,17 @@ public final class TickedLedgerView implements LedgerView, AutoCloseable {
      * @return the admission slot for {@code snapshot}
      */
     public static long admissionSlot(CanonicalSnapshot snapshot) {
-        long tipSlot = snapshot.tip().slot();
+        return admissionSlot(snapshot.tip(), snapshot::epochOfSlot, snapshot::epochStartSlot);
+    }
+
+    /** {@link #admissionSlot(CanonicalSnapshot)} from a published tip and the gate's epoch functions. */
+    static long admissionSlot(CanonicalTip tip, LongToIntFunction epochOfSlot, IntToLongFunction epochStartSlot) {
+        long tipSlot = tip.slot();
         long target = tipSlot >= 0 ? tipSlot + 1 : 0;
-        int ledgerEpoch = snapshot.tip().ledgerEpoch();
-        int targetEpoch = snapshot.epochOfSlot(target);
+        int ledgerEpoch = tip.ledgerEpoch();
+        int targetEpoch = epochOfSlot.applyAsInt(target);
         if (ledgerEpoch >= 0 && targetEpoch >= 0 && targetEpoch == ledgerEpoch - 1) {
-            long start = snapshot.epochStartSlot(ledgerEpoch);
+            long start = epochStartSlot.applyAsLong(ledgerEpoch);
             if (start >= 0) {
                 return Math.max(target, start);
             }

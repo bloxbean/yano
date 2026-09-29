@@ -152,6 +152,23 @@ object LedgerBridge:
       networkId: Int,
       ledgerStateProvider: LedgerStateProvider
   ): LedgerFailure =
+    validateAgainstView(txCbor, protocolParams, utxos, currentSlot, slotConfig, networkId, ledgerStateProvider,
+      false)
+
+  /**
+   * As above; with `reapply` the static checks and Plutus execution are skipped (ADR-056 §6,
+   * [[YanoCardanoMutator.reapply]]).
+   */
+  def validateAgainstView(
+      txCbor: Array[Byte],
+      protocolParams: CclProtocolParams,
+      utxos: util.Collection[UtxoEntry],
+      currentSlot: Long,
+      slotConfig: SlotConfig,
+      networkId: Int,
+      ledgerStateProvider: LedgerStateProvider,
+      reapply: Boolean
+  ): LedgerFailure =
     val scalusParams = ProtocolParamsBridge.toScalusProtocolParams(protocolParams)
     val protocolVersion = ProtocolParamsBridge.extractProtocolVersion(protocolParams)
     val scalusTx =
@@ -170,6 +187,9 @@ object LedgerBridge:
       scala.collection.immutable.Map.empty,
       Coin.zero
     )
-    YanoCardanoMutator.transit(context, state, scalusTx) match
+    val result =
+      if reapply then YanoCardanoMutator.reapply(context, state, scalusTx)
+      else YanoCardanoMutator.transit(context, state, scalusTx)
+    result match
       case Right(_) => null
       case Left(error) => ScalusFailureMapping.toLedgerFailure(error, protocolVersion.major)

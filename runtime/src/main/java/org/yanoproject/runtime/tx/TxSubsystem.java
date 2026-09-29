@@ -33,6 +33,9 @@ import org.yanoproject.runtime.chain.MempoolAdmissionLimits;
 import org.yanoproject.runtime.chain.MempoolAdmissionResult;
 import org.yanoproject.runtime.chain.MempoolStats;
 import org.yanoproject.runtime.kernel.Subsystem;
+import org.yanoproject.runtime.mempool.GateMempoolBaseSource;
+import org.yanoproject.runtime.mempool.LedgerMempool;
+import org.yanoproject.runtime.mempool.LedgerMempoolStatus;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.p2p.tx.diffusion.DefaultTxDiffusion;
 import org.yanoproject.p2p.tx.diffusion.TxCatalog;
@@ -48,15 +51,19 @@ import org.yanoproject.runtime.validation.EngineAdmission;
 import org.yanoproject.runtime.validation.ValidationEngines;
 import org.slf4j.Logger;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -82,7 +89,12 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     private final RuntimeOptions runtimeOptions;
     private final Supplier<UtxoState> utxoStateSupplier;
     private final Logger log;
-    private final MemPool memPool = new DefaultMemPool();
+    private final DefaultMemPool legacyMemPool = new DefaultMemPool();
+    // ADR-056 Phase 6a: with an engine-API admission engine the mempool is a LedgerMempool (ledger-state
+    // overlays); the legacy default keeps DefaultMemPool. Chosen by setValidationEngines, before transactions arrive.
+    private volatile MemPool memPool = legacyMemPool;
+    private volatile LedgerMempool ledgerMempool;
+    private ExecutorService ledgerRebuildExecutor;
     private final BlockTransactionSelector blockTransactionSelector;
     private final ReentrantReadWriteLock admissionGate = new ReentrantReadWriteLock(true);
 
@@ -123,7 +135,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         this.utxoStateSupplier = Objects.requireNonNull(utxoStateSupplier, "utxoStateSupplier");
         this.log = Objects.requireNonNull(log, "log");
         this.blockTransactionSelector = BlockTransactionSelectors.fromMemPool(
-                memPool,
+                () -> memPool,
                 this::transactionValidationService,
                 this.utxoStateSupplier,
                 this.log);
@@ -262,6 +274,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         validatorListenerSubscriptions = List.of();
         validatorListenerRegistered = false;
         mempoolEvictionPolicy = null;
+        closeLedgerMempool();
         ValidationEngines engines = validationEngines;
         if (engines != null) {
             engines.close();
@@ -313,14 +326,92 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         if (service != null) {
             service.setEngineAdmission(engineAdmission);
         }
+        installMempool(engines != null && !engines.legacyAdmission() ? engines : null);
         if (previous != null && previous != engines) {
             previous.close();
         }
         if (engines != null) {
-            log.info("Mempool admission uses validation engine '{}' (shadow engines: {})",
+            log.info("Mempool admission uses validation engine '{}' (shadow engines: {}){}",
                     engines.admissionEngineName(),
-                    engines.shadowEngines().stream().map(e -> e.name()).toList());
+                    engines.shadowEngines().stream().map(e -> e.name()).toList(),
+                    ledgerMempool != null ? " over ledger-state overlays (ADR-056 Phase 6a)" : "");
         }
+    }
+
+    /**
+     * Selects the mempool implementation: a {@link LedgerMempool} for an engine-API admission engine, otherwise the
+     * legacy {@link DefaultMemPool}. Switching drops what the previous mempool held (it happens at assembly, before
+     * transactions arrive).
+     */
+    private void installMempool(ValidationEngines engines) {
+        closeLedgerMempool();
+        if (engines == null) {
+            memPool = legacyMemPool;
+        } else {
+            ledgerRebuildExecutor = Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "yano-mempool-rebuild");
+                thread.setDaemon(true);
+                return thread;
+            });
+            LedgerMempool.Settings defaults = LedgerMempool.Settings.defaults();
+            Map<String, Object> globals = runtimeOptions.globals();
+            LedgerMempool.Settings settings = new LedgerMempool.Settings(
+                    Math.max(0, resolveInt(globals, YanoPropertyKeys.Validation.REBUILD_MAX_RESTARTS,
+                            defaults.maxRestarts())),
+                    Math.max(1, resolveInt(globals, YanoPropertyKeys.Validation.REBUILD_SYNC_ATTEMPTS,
+                            defaults.syncAttempts())),
+                    defaults.catchingUpRetryMs());
+            LedgerMempool ledger = new LedgerMempool(engines.admissionEngine(), engines.envFactory(),
+                    new GateMempoolBaseSource(canonicalStateGate), ledgerRebuildExecutor, scheduler, settings);
+            ledgerMempool = ledger;
+            memPool = ledger;
+            ledger.start();
+        }
+        if (legacyMemPool != memPool && !legacyMemPool.isEmpty()) {
+            log.warn("Dropping {} legacy mempool transactions: the mempool switched to ledger-state overlays",
+                    legacyMemPool.size());
+            legacyMemPool.clear();
+        }
+        if (mempoolEvictionPolicy != null) {
+            mempoolEvictionPolicy = new DefaultMempoolEvictionPolicy(memPool,
+                    TimeUnit.SECONDS.toMillis(mempoolTtlSeconds), mempoolMaxTxs, mempoolMaxBytes);
+        }
+    }
+
+    private void closeLedgerMempool() {
+        LedgerMempool ledger = ledgerMempool;
+        ledgerMempool = null;
+        if (ledger != null) {
+            ledger.close();
+        }
+        ExecutorService executor = ledgerRebuildExecutor;
+        ledgerRebuildExecutor = null;
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+    }
+
+    /** @return the ledger-state mempool, or {@code null} on the legacy path */
+    public LedgerMempool ledgerMempool() {
+        return ledgerMempool;
+    }
+
+    /** @return the ledger-state mempool's health, or {@code null} on the legacy path */
+    public LedgerMempoolStatus ledgerMempoolStatus() {
+        LedgerMempool ledger = ledgerMempool;
+        return ledger != null ? ledger.ledgerStatus() : null;
+    }
+
+    /** @return false while the ledger-state mempool is catching up (peer transactions are not requested) */
+    @Override
+    public boolean admitting() {
+        LedgerMempool ledger = ledgerMempool;
+        return accepting && (ledger == null || ledger.status() == LedgerMempool.Status.READY);
+    }
+
+    private boolean catchingUp() {
+        LedgerMempool ledger = ledgerMempool;
+        return ledger != null && ledger.status() == LedgerMempool.Status.CATCHING_UP;
     }
 
     /** @return the installed validation engines, or {@code null} on the legacy path */
@@ -408,6 +499,12 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         try {
             ensureAccepting();
             String eventOrigin = normalizeOrigin(origin);
+            LedgerMempool ledger = ledgerMempool;
+            if (ledger != null) {
+                // ADR-056 §6: admission reads only the published mempool state's own snapshot (no per-admission
+                // snapshot, never the gate); the validation event's default listener validates in its scope.
+                return admitLedger(ledger, txCbor, eventOrigin);
+            }
             EngineAdmission engines = engineAdmission;
             if (engines == null) {
                 UtxoState canonicalState = utxoStateSupplier.get();
@@ -446,21 +543,40 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         var admission = memPool.tryAdmit(
                 txCbor,
                 canonicalResolver,
-                (admissionBytes, txHash, resolver) -> {
-                    var validateEvent = new TransactionValidateEvent(
-                            admissionBytes, txHash, eventOrigin, resolver);
-                    eventBus.publish(validateEvent,
-                            EventMetadata.builder().origin(eventOrigin).build(),
-                            PublishOptions.builder().build());
-                    return validateEvent.rejections();
-                },
-                new MempoolAdmissionLimits(
-                        mempoolMaxTxs, mempoolMaxBytes, mempoolMaxUtxoIndexEntries),
-                memPoolTransaction -> eventBus.publish(
-                        new MemPoolTransactionReceivedEvent(memPoolTransaction),
-                        EventMetadata.builder().origin(eventOrigin).build(),
-                        PublishOptions.builder().build()));
+                validationCallback(eventOrigin),
+                admissionLimits(),
+                acceptedListener(eventOrigin));
+        return admissionResult(admission);
+    }
 
+    private String admitLedger(LedgerMempool ledger, byte[] txCbor, String eventOrigin) {
+        return admissionResult(ledger.tryAdmit(txCbor, EngineAdmission.origin(eventOrigin),
+                validationCallback(eventOrigin), admissionLimits(), acceptedListener(eventOrigin)));
+    }
+
+    private MemPool.AdmissionValidator validationCallback(String eventOrigin) {
+        return (admissionBytes, txHash, resolver) -> {
+            var validateEvent = new TransactionValidateEvent(
+                    admissionBytes, txHash, eventOrigin, resolver);
+            eventBus.publish(validateEvent,
+                    EventMetadata.builder().origin(eventOrigin).build(),
+                    PublishOptions.builder().build());
+            return validateEvent.rejections();
+        };
+    }
+
+    private MempoolAdmissionLimits admissionLimits() {
+        return new MempoolAdmissionLimits(mempoolMaxTxs, mempoolMaxBytes, mempoolMaxUtxoIndexEntries);
+    }
+
+    private Consumer<MemPoolTransaction> acceptedListener(String eventOrigin) {
+        return memPoolTransaction -> eventBus.publish(
+                new MemPoolTransactionReceivedEvent(memPoolTransaction),
+                EventMetadata.builder().origin(eventOrigin).build(),
+                PublishOptions.builder().build());
+    }
+
+    private String admissionResult(MempoolAdmissionResult admission) {
         if (admission.status() == MempoolAdmissionResult.Status.LEDGER_REJECTED) {
             throw new TransactionValidationException(admission.rejections());
         }
@@ -531,6 +647,11 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
             public MemPoolTransaction getTransaction(String txHash) {
                 return memPool.getTransaction(txHash);
             }
+
+            @Override
+            public boolean admitting() {
+                return TxSubsystem.this.admitting();
+            }
         };
     }
 
@@ -548,11 +669,15 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     @Override
     public boolean hasPendingTransactions() {
-        return blockTransactionSelector.hasPendingTransactions();
+        // ADR-056 §6 step 7: block selection skips the mempool while it is catching up.
+        return !catchingUp() && blockTransactionSelector.hasPendingTransactions();
     }
 
     @Override
     public List<byte[]> drainForBlock() {
+        if (catchingUp()) {
+            return List.of();
+        }
         return blockTransactionSelector.drainForBlock();
     }
 
@@ -595,7 +720,30 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     @Override
     public synchronized SubsystemHealth health() {
         var mempoolStats = memPool.stats();
-        return new SubsystemHealth(name(), SubsystemHealth.Status.UP, null, Map.ofEntries(
+        LedgerMempoolStatus ledger = ledgerMempoolStatus();
+        Map<String, Object> details = new LinkedHashMap<>(baseHealthDetails(mempoolStats));
+        if (ledger != null) {
+            details.put("mempoolLedgerState", ledger.state());
+            details.put("mempoolGeneration", ledger.mempoolGeneration());
+            details.put("mempoolBaseGeneration", ledger.baseGeneration());
+            details.put("mempoolCanonicalGeneration", ledger.canonicalGeneration());
+            details.put("mempoolLagging", ledger.lagging());
+            details.put("mempoolRebuildsPublished", ledger.rebuildsPublished());
+            details.put("mempoolRebuildsDiscarded", ledger.rebuildsDiscarded());
+            details.put("mempoolRebuildSyncFallbacks", ledger.synchronousFallbacks());
+            details.put("mempoolCatchingUpEntered", ledger.catchingUpEntered());
+            details.put("mempoolCatchingUpRejections", ledger.catchingUpRejections());
+            details.put("mempoolLastRebuildMillis", ledger.lastRebuildMillis());
+            details.put("mempoolLockOrderViolations", ledger.lockOrderViolations());
+        }
+        boolean degraded = ledger != null && ledger.catchingUp();
+        return new SubsystemHealth(name(), degraded ? SubsystemHealth.Status.DEGRADED : SubsystemHealth.Status.UP,
+                degraded ? "mempool is catching up with the canonical chain; admission is paused (retryable)" : null,
+                Map.copyOf(details));
+    }
+
+    private Map<String, Object> baseHealthDetails(MempoolStats mempoolStats) {
+        return Map.ofEntries(
                 Map.entry("mempoolSize", memPool.size()),
                 Map.entry("mempoolBytes", memPool.byteSize()),
                 Map.entry("mempoolMaxTxs", mempoolMaxTxs),
@@ -630,7 +778,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
                 Map.entry("validationEngine", validationEngines != null
                         ? validationEngines.admissionEngineName() : ValidationEngines.LEGACY),
                 Map.entry("validationEngineHealthy", validationEngines == null
-                        || validationEngines.admissionHealthy())));
+                        || validationEngines.admissionHealthy()));
     }
 
     private void resolveTxConfig() {
@@ -725,6 +873,13 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     private void onCanonicalBlockApplied(BlockAppliedEvent event) {
         try {
+            LedgerMempool ledger = ledgerMempool;
+            if (ledger != null) {
+                // ADR-056 §6: confirmation is reconciled by the rebuild against the new canonical tip (triggered
+                // by the gate's publication; requested here too, coalesced), never by removals against the old base.
+                ledger.requestRebuild("block applied");
+                return;
+            }
             MempoolEvictionPolicy policy = mempoolEvictionPolicy;
             if (policy != null) policy.onBlockApplied(event);
         } catch (Throwable e) {
@@ -740,6 +895,13 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     private void onCanonicalRollbackApplied() {
         try {
+            LedgerMempool ledger = ledgerMempool;
+            if (ledger != null) {
+                // ADR-056 §6: replaces the UTxO-only revalidation; the rollback's canonical publication also
+                // notifies the mempool after the gate is released.
+                ledger.requestRebuild("rollback applied");
+                return;
+            }
             UtxoState state = utxoStateSupplier.get();
             memPool.revalidate(outpoint -> state != null
                     ? state.getUtxo(outpoint).orElse(null) : null);

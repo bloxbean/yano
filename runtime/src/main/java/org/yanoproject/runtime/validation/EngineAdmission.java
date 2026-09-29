@@ -18,6 +18,7 @@ import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
 import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.Lookup;
 import org.yanoproject.ledger.rules.view.RecordingLedgerView;
+import org.yanoproject.ledger.rules.view.Retainable;
 import org.yanoproject.ledger.rules.view.model.Outpoints;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 import org.yanoproject.runtime.ledger.canonical.CanonicalLedgerView;
@@ -35,23 +36,25 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
- * Mempool admission through the {@code LedgerValidationEngine} API (ADR-056 step 1d), used when
+ * Mempool admission through the {@code LedgerValidationEngine} API (ADR-056 §6/§7), used when
  * {@code yano.validation.engine} is not {@code scalus} or shadow engines are configured.
  *
+ * <h2>Admission engine (ADR-056 Phase 6a)</h2>
  * <ol>
- *   <li>The {@link AdmissionContext} of this admission (opened by the transaction subsystem before the mempool
- *       lane) supplies one {@code ADMISSION} snapshot ticked to the slot after the tip.</li>
- *   <li>A {@link MempoolUtxoOverlayView} over it answers UTxO reads through the mempool's admission resolver
- *       (chained mempool outputs) and everything else from the ticked view.</li>
+ *   <li>The mempool ({@code LedgerMempool}) opens a {@link LedgerAdmissionScope} under its mutation lane: the
+ *       published state's {@code OverlayLedgerView} (one layer per mempool transaction, certificate and governance
+ *       effects included) over the canonical base ticked to the admission slot, and the environment of that
+ *       base.</li>
  *   <li>The admission engine runs rule {@code MEMPOOL} with origin {@code LOCAL} (REST, n2c) or {@code PEER}
- *       (n2n tx-submission and diffusion), {@code previous = null}.</li>
+ *       (n2n tx-submission and diffusion), {@code previous = null}, and the outcome is recorded in the scope so the
+ *       mempool can append the {@code ValidatedTx} and its effects layer.</li>
  *   <li>Its {@link TxValidationOutcome} maps to the legacy {@link ValidationResult}, so the REST, n2n and n2c
  *       rejection paths are unchanged.</li>
- *   <li>Shadow engines get a frozen copy (the transaction's inputs pinned, a view holding its own snapshot
- *       reference) and run asynchronously; they never affect the verdict.</li>
+ *   <li>Shadow engines get the same overlay (immutable, so it is already frozen) and retain the canonical base for
+ *       their duration; they run asynchronously and never affect the verdict.</li>
  * </ol>
- * Without a context (a validation event raised outside {@code TxSubsystem.admitTransaction}), the admission
- * acquires its own snapshot here.
+ * <p>Without a scope (a validation event raised outside the mempool), the admission acquires its own snapshot
+ * ({@link AdmissionContext}) and reads UTxOs through the event's resolver when it has one.</p>
  */
 @Slf4j
 public final class EngineAdmission {
@@ -72,6 +75,10 @@ public final class EngineAdmission {
      * @param resolver the mempool admission resolver from the validation event, or {@code null}
      */
     public ValidationResult validate(byte[] txCbor, String txHash, String origin, Function<Outpoint, Utxo> resolver) {
+        LedgerAdmissionScope scope = LedgerAdmissionScope.current(txHash);
+        if (scope != null) {
+            return validate(txCbor, txHash, scope).toValidationResult();
+        }
         AdmissionContext context = AdmissionContext.current();
         AdmissionContext own = null;
         if (context == null) {
@@ -87,6 +94,65 @@ public final class EngineAdmission {
         }
     }
 
+    /** Admission against the published mempool state (ADR-056 §6); records the outcome in the scope. */
+    TxValidationOutcome validate(byte[] txCbor, String txHash, LedgerAdmissionScope scope) {
+        TxValidationOutcome outcome;
+        if (scope.env() == null) {
+            outcome = TxValidationOutcome.Invalid.of(LedgerFailure.ledgerStateUnavailable(scope.envFailure()));
+            scope.record(outcome);
+            return outcome;
+        }
+        ShadowValidationRunner shadows = engines.shadowRunner();
+        LedgerView view = scope.view();
+        RecordingLedgerView recording = shadows != null && shadows.dumpsEnabled() ? new RecordingLedgerView(view) : null;
+        TxValidationRequest request = new TxValidationRequest(txCbor, recording != null ? recording : view,
+                scope.env(), TxValidationRequest.Rule.MEMPOOL, scope.origin(), null);
+        outcome = runAdmissionEngine(request, txHash);
+        scope.record(outcome);
+        if (shadows != null) {
+            submitScopedShadow(shadows, txCbor, txHash, scope, RecordedOutcome.of(engines.admissionEngine().name(),
+                    outcome), recording);
+        }
+        return outcome;
+    }
+
+    private TxValidationOutcome runAdmissionEngine(TxValidationRequest request, String txHash) {
+        try {
+            return engines.admissionEngine().validate(request);
+        } catch (RuntimeException e) {
+            // The SPI forbids throwing; fail closed if an engine does anyway.
+            log.warn("Validation engine {} threw on tx {}", engines.admissionEngine().name(), txHash, e);
+            return TxValidationOutcome.Invalid.of(new LedgerFailure(
+                    LedgerRuleName.ENGINE, "EngineFailure", LedgerFailure.Phase.PHASE_1,
+                    e.toString()));
+        }
+    }
+
+    /**
+     * The shadow of a scoped admission: the admission's overlay is immutable, so it is the frozen view; the job
+     * retains the canonical base (released when the job finishes, is dropped or is cancelled).
+     */
+    private void submitScopedShadow(ShadowValidationRunner shadows, byte[] txCbor, String txHash,
+                                    LedgerAdmissionScope scope, RecordedOutcome admission,
+                                    RecordingLedgerView recording) {
+        CanonicalStateGate g = gate.get();
+        if (g != null && !g.admitShadow()) {
+            shadows.recordCapRefusal();
+            return;
+        }
+        Retainable base;
+        try {
+            base = scope.base().retain();
+        } catch (IllegalStateException e) {
+            shadows.recordSnapshotUnavailable();
+            return;
+        }
+        TxValidationRequest request = new TxValidationRequest(txCbor, scope.view(), scope.env(),
+                TxValidationRequest.Rule.MEMPOOL, scope.origin(), null);
+        shadows.submit(new ShadowValidationRunner.ShadowJob(txHash != null ? txHash : "unknown", request,
+                base::release, scope.baseAgeMillis(), admission, recording != null ? recording.reads() : List.of()));
+    }
+
     TxValidationOutcome validate(byte[] txCbor, String txHash, String origin, Function<Outpoint, Utxo> resolver,
                                  AdmissionContext context) {
         if (context.unavailableReason() != null) {
@@ -94,8 +160,7 @@ public final class EngineAdmission {
                     "no canonical snapshot for admission: " + context.unavailableReason()));
         }
         TickedLedgerView base = context.view();
-        Function<Outpoint, Utxo> utxoResolver = resolver != null ? resolver : context.canonicalResolver();
-        LedgerView view = new MempoolUtxoOverlayView(base, utxoResolver, context.canonicalResolver());
+        LedgerView view = resolver != null ? new LegacyInputsView(base, resolver) : base;
         ValidationEnv env;
         try {
             env = engines.envFactory().create(context.targetSlot(), view);
@@ -110,16 +175,7 @@ public final class EngineAdmission {
         TxValidationRequest.Origin requestOrigin = origin(origin);
         TxValidationRequest request = new TxValidationRequest(txCbor, recording != null ? recording : view, env,
                 TxValidationRequest.Rule.MEMPOOL, requestOrigin, null);
-        TxValidationOutcome outcome;
-        try {
-            outcome = engines.admissionEngine().validate(request);
-        } catch (RuntimeException e) {
-            // The SPI forbids throwing; fail closed if an engine does anyway.
-            log.warn("Validation engine {} threw on tx {}", engines.admissionEngine().name(), txHash, e);
-            outcome = TxValidationOutcome.Invalid.of(new LedgerFailure(
-                    LedgerRuleName.ENGINE, "EngineFailure", LedgerFailure.Phase.PHASE_1,
-                    e.toString()));
-        }
+        TxValidationOutcome outcome = runAdmissionEngine(request, txHash);
         if (shadows != null) {
             submitShadow(shadows, txCbor, txHash, view, base, env, requestOrigin,
                     RecordedOutcome.of(engines.admissionEngine().name(), outcome), recording, false);
@@ -199,7 +255,10 @@ public final class EngineAdmission {
         }
     }
 
-    /** UTxO reads as the legacy validator saw them: the mempool resolver, with the snapshot's exact entries. */
+    /**
+     * UTxO reads through a resolver (the legacy validator's mempool resolver, or a validation event's), with the
+     * snapshot's exact entries.
+     */
     private static final class LegacyInputsView extends ForwardingLedgerView {
         private final Function<Outpoint, Utxo> resolver;
 
