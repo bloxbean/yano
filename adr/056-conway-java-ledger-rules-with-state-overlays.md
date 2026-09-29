@@ -92,12 +92,24 @@ with the decisions recorded at the end of this ADR.
    - **Mempool:** a new transaction sees every transaction admitted before it.
    - **Block production:** a candidate sees every transaction selected before
      it in the same block.
-4. **Phase-2 stays with Scalus.** Plutus execution during validation goes
-   through a `ScriptPhaseEvaluator` SPI backed by Scalus. ExUnits evaluation
+4. **Phase 2 behind an SPI.** Plutus execution during validation goes
+   through a `ScriptPhaseEvaluator` SPI, first backed by Scalus. Since Phase 7c
+   julc is the Java engine's default phase 2 (`java-julc`) and Scalus stays
+   selectable (`java-scalus`). Known deviation until the julc release: julc
+   0.1.0-pre17 lacks the secp256k1 fix (julc PR #219), so `java-julc` rejects
+   the preprod `031e36a7…` case (script `9dd6dd04…`) that the chain accepts
+   ("Phase 7c results: phase 2 evaluator: Julc"). ExUnits evaluation
    (`TransactionEvaluator`, `/utils/txs/evaluate`) is unchanged.
 5. **Choosable engine, safe rollout.**
    - `yano.validation.engine` selects the admission engine: `scalus` (the
-     default until the gates pass), `java`, or `amaru` (ADR-057, optional).
+     default until the gates pass), `java-julc` or `java-scalus` (the Java
+     rules with julc or Scalus phase 2, Phase 7c), or `amaru` (ADR-057,
+     optional). Until Phase 7c the Java engine's only id was `java` (Scalus
+     phase 2); results this ADR records for `java` before Phase 7c come from
+     that engine, which is `java-scalus` now, and its factory
+     `JavaEngineFactory` is split into `JavaJulcEngineFactory` and
+     `JavaScalusEngineFactory`. The id `java` no longer exists: startup fails
+     with "Unknown validation engine 'java'" and lists the ids.
    - `yano.validation.shadow-engines` runs other engines on immutable snapshots
      and records disagreements without affecting admission.
 6. **Oracle-driven completeness.** Completeness is measured, not claimed. The
@@ -605,10 +617,35 @@ public interface ScriptPhaseEvaluator {
 - **Scalus implementation.** `scalus-bridge` runs the Scalus CEK machine for
   each redeemer, with the declared ExUnits as budget. It returns pass/fail per
   script with logs.
-- **julc later.** `julc-vm-java` can follow once it passes the public Plutus
-  conformance suite (out of scope).
+- **julc** (Phase 7c). `script-evaluators` `JulcScriptPhaseEvaluator`: Yano's own
+  script contexts on julc's CEK machine: engine `java-julc`, the Java engine
+  wherever one is defaulted; `java-scalus` keeps Scalus and can run next to it.
+  The engine-neutral part of the contract is `ledger-rules`
+  `phase2.ScriptCollection`.
 - **Unchanged.** `TransactionEvaluator` and
   `yano.block-producer.script-evaluator` are not affected.
+
+**Scalus 1.1.1 deviations from Haskell, and how the bridge handles them** (Phase 7c). Haskell means cardano-ledger
+`f649f975` and plutus 1.65.0.0. Each workaround is isolated in `scalus-bridge` and has a canary in
+`ScalusWorkaroundsTest` that fails once Scalus follows Haskell. The governance and withdrawal contexts are also
+compared, in `ScalusContextDifferentialTest`, with script-evaluators' `ConwayTxInfoTranslator`.
+
+| Deviation | Haskell | Scalus 1.1.1 | Bridge |
+|---|---|---|---|
+| `Word64` coins and quantities, and tag-102 `Constr` alternatives ≥ 2^63; metadatum integers | `decodeWord64` (Mary/Value.hs:287-295, Data.hs:298-307); `decodeInteger` (Metadata.hs:161-164) | decoded as `Long`: "OverLong" | `WideIntegers`: narrow, then restore. Refused: slots, rationals, witness datums |
+| `serialiseData` of `Constr` ≥ 2^63 | `encodeWord64` (Data.hs:147-160) | `writeLong(constr.toLong)` | `BridgeVM` |
+| `equalsData` on `Map`s | derived `Eq`: order- and duplicate-sensitive (Data.hs:42-48, Builtins.hs:1835-1841) | `Data.Map.equals` is set equality | `BridgeVM` |
+| `verifyEcdsaSecp256k1Signature` with r or s = 0 | `False` (Secp256k1.hs:48-57, `parse_compact`) | throws | `BridgeVM` |
+| V3 `Constitution` | `Constr 0 [Maybe ScriptHash]` (V3/Contexts.hs:266-273) | `Option[ScriptHash]` | `V3Governance` |
+| V3 `txInfoVotes`, `Voting` purposes | ledger `Ord Voter`/`GovActionId` (`transMap`, Conway/TxInfo.hs:697-699) | sorted by `toString` (index 10 before 9) | `V3Governance` |
+| `TreasuryWithdrawals`, `UpdateCommittee` added/removed | ledger `Ord Credential`, script first (Credential.hs:98-101) | key first, or hash-set order | `V3Governance` |
+| Quorum and `ParameterChange` rationals | reduced (Plutus/TxInfo.hs:118-119, ToPlutusData.hs:77-79) | unreduced, as decoded | `V3Governance` |
+| Withdrawal order: redeemer index, `txInfoWdrl`, `Rewarding` purposes | ledger order, script first; V1/V2 `txInfoWdrl` key first (V1/Credential.hs:30-37) | hash only | `WithdrawalOrder` |
+| V1/V2 binaries with trailing bytes | remainder ignored (SerialisedScript.hs:261-264) | rejected | `PlutusBinaries`, over the shared `PlutusScriptDecoder.leadingItem` |
+| `UpdateCommittee` removals with set tag 258 | allowed (Decoder.hs:1081-1085) | rejected | `ScalusTransactions` retry |
+| PV 9 V3 `reg`/`unreg` deposits | `Nothing` (Conway/TxInfo.hs:572-581) | always the deposit | `BootstrapPhaseContexts` |
+| Plutus Core version of a script run before it is available (1.1.0 in V1/V2 before PV 11) | phase-2 failure at run time (Eval.hs:113-122) | not checked | the evaluators' shared preparation, `ScriptCollection.plutusCoreVersionFailures` (`ledger-rules` `phase2`): `Failed` before any script runs, so for every engine that uses the evaluator (`java`, `java-julc`, `amaru` with `phase2: scalus`) |
+| `OutputTooBigUTxO` value size of a map with more than 23 entries | `serialize (pvMajor pv) v` (Alonzo/Rules/Utxo.hs:428): `encodeMap` is indefinite-length above 23 entries (cardano-ledger-binary Encoder.hs:432-443), one byte less than a definite head from 256 entries | `Cbor.encode(value)`, definite-length heads | `YanoOutputValueSizeValidator` replaces `OutputsHaveTooBigValueStorageSizeValidator`, sizing with the java engine's `LedgerValue.serializedSize` |
 
 ### 6. Runtime integration
 
@@ -847,11 +884,12 @@ block-local and ticked state.
 ```yaml
 yano:
   validation:
-    engine: scalus            # scalus | java | amaru
-    shadow-engines: []        # e.g. [java] or [java, amaru]
+    engine: scalus            # scalus | java-julc | java-scalus | amaru
+    shadow-engines: []        # e.g. [java-julc] or [java-julc, amaru]
     shadow-dump-dir: ""       # when set, write a replayable bundle per disagreement
     shadow-sync: false        # validate every applied Conway (PV9+) block (observe only; Phase 7a)
-    shadow-sync-engines: java # engines shadow sync runs (java needs no experimental flag here)
+    shadow-sync-engines: java-julc # engines shadow sync runs (no experimental flag needed here);
+                              # java-julc,java-scalus runs both phase-2 evaluators side by side (Phase 7c)
     shadow-sync-report: ""    # JSONL, one line per disagreement / engine failure / block finding
 ```
 
@@ -890,7 +928,7 @@ yano:
 | **Shadow sync validation** | Every transaction of every synced Conway block (PV9+ since Phase 5b; preprod, preview, mainnet from the Conway hard fork) validates against the pre-block state (captured after the block's epoch boundary, before its own changes; Phase 7a) plus a block-local overlay. `invalidTransactions` must come out phase-2 invalid, all others valid. Catches false rejections and PV drift. It cannot catch false acceptances. | `yano.validation.shadow-sync=true` |
 | **Mutation matrix** | From valid base transactions, at least one mutant per constructor is rejected with that constructor. | `conformanceTest` |
 | **Haskell differential** (optional) | Mutated invalid transactions submitted over n2c to a local devnet Haskell node (compatibility folder). Compare the `ApplyTxError` constructors. Never submit to a public network. | Manual / CI-optional |
-| **Native parity** | The conformance suite runs in the native test image. | Same pattern as the ADR-051 native gate |
+| **Native parity** | The conformance suite runs in the native test image. *Implemented in Phase 7c as a JVM-vs-native differential through the shipped binary (every rule family, each Plutus language, shadow engines and shadow sync); see "Phase 7c results" for why.* | Same pattern as the ADR-051 native gate; `qa/harness/ledger-rules-native-parity.sh` |
 
 A Gradle source set `conformanceTest` and a task `:ledger-rules:conformanceTest`
 run everything except shadow sync and the Haskell differential.
@@ -1054,7 +1092,9 @@ The final PR merges once S5's gates are green.
 - **Native image (Phase 7/ADR-057 Phase E).** The engine factories are
   `META-INF/services` entries; native builds must register them (GraalVM's
   service-loader support covers classpath services; the Amaru AOT classes are
-  Phase E).
+  Phase E). *Phase 7c: they were not registered, and in a Quarkus native image
+  the service loader could not construct them; each module now registers its
+  factory (see "Phase 7c results").*
 
 ### Phase 2 — Conformance harness first
 
@@ -1792,7 +1832,7 @@ helper per behaviour; no rule has a `pv == 9` branch.
   old DRep's deregistration in one PV 9 transaction), `LedgerPreChecksTest` (withdrawal delegation at 9 vs 10),
   `UtxosRuleTest` (with an evaluator that does not translate: PlutusV3 fails closed at PV 9, runs at 10 or with a
   translating evaluator; a PlutusV2 certifying script with a tag 7 certificate, tag 0 and script-free transactions
-  pass), `TxEffectsDeriverTest`, `JavaEngineFactoryTest` (9–11 valid; 8 and 12 refused), `BootstrapPhaseContextsTest`
+  pass), `TxEffectsDeriverTest`, `JavaEngineFactoryTest` (now `JavaEngineFactoriesTest`; 9–11 valid; 8 and 12 refused), `BootstrapPhaseContextsTest`
   (scalus-bridge, above). Refactor readiness: `CertsRule.WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER` (`PvRange.from(11)`)
   replaces `protocolMajor > 10`, and `ValidationEnv.ledgerProtocolMajor(params)` is the one "parameters' version, else
   the environment's" helper.
@@ -2448,7 +2488,8 @@ each one as the chain did. `yano.validation.shadow-sync=true` (off by default) n
   apply is synchronous (`ShadowSyncPreconditions`); otherwise it logs a WARN with the reason and the node runs
   without it (never a startup failure, never a block-by-block failure). Installing the same engines again is a
   no-op; replacing them closes the previous validator (`ValidationEngines.attachShadowSync` is idempotent).
-- **Engines.** `shadow-sync-engines` (default `java`, optionally `amaru` in `-PwithAmaru` builds) get their own
+- **Engines.** `shadow-sync-engines` (default `java-julc` since Phase 7c, before it `java`; optionally `amaru` in
+  `-PwithAmaru` builds) get their own
   instances; the java engine needs no `java-engine.experimental` for shadow sync (it only observes). Shadow sync
   alone leaves admission and the mempool exactly as without engines (`ValidationEngines.affectsAdmission()` false:
   `TxSubsystem` gets no engines). Their health is reported but **never gates readiness** (a failed-closed Amaru
@@ -2719,9 +2760,796 @@ each one as the chain did. `yano.validation.shadow-sync=true` (off by default) n
     `ProtocolParamsEncoder` encodes an empty raw cost-model map as an empty map was checked by reading the code; no
     test covers it.
 
+#### Phase 7c results: native parity (2026-09-29)
+
+Requirement (Satya): the native image must have the JVM's features, because the Yano wallet targets the native
+build. Nothing is disabled in native; dropping a feature there needs his sign-off. The oracle for this phase is
+"native verdict and constructor == JVM verdict and constructor on the same input"; correctness against Haskell stays
+with the conformance suite on the JVM (Phases 2-7b).
+
+**Gaps found and fixed.**
+
+1. **No engine could be loaded in the native image.** The first native run (`engine: java`, admission shadow
+   `scalus`, shadow sync) logged `ServiceConfigurationError: ... Provider
+   org.yanoproject.ledger.rules.conway.JavaEngineFactory not found`. The service files were in the image, but the
+   provider classes had no reflection registration. Quarkus does not register `META-INF/services` providers for
+   reflective construction, and it turns GraalVM's own service-loader support off (`-H:-UseServiceLoaderFeature` in
+   the build log). It hit every
+   engine-API configuration (a non-`scalus` engine, any shadow engine, shadow sync), not the default path.
+   - Fix: a `reflect-config.json` entry with `allDeclaredConstructors` for each factory, in the module that ships
+     it: `ledger-rules` (`JavaEngineFactory`, and later `JavaJulcEngineFactory`; new
+     `META-INF/native-image/org.yanoproject/yano-ledger-rules/`),
+     `scalus-bridge` (`ScalusEngineFactory`) and `amaru-validator` (`AmaruEngineFactory`). Each module's
+     `resource-config.json` also names its service file, as `archive-store-ducklake` does.
+   - Guard: `ValidationEngineNativeMetadataTest` (app) reads every
+     `META-INF/services/org.yanoproject.ledger.rules.LedgerValidationEngineFactory` on the classpath and fails when
+     a listed provider has no constructor registration. A mutation check (the `ledger-rules` entry removed) fails
+     it.
+2. **The discovery failure failed open.** `LedgerValidationEngines.discover` wraps the `ServiceConfigurationError`
+   in an `IllegalStateException`. `YanoAssembly.installTransactionServices` lets only
+   `ValidationEngineConfigurationException` stop startup and logs anything else as a WARN
+   (`Transaction validation/evaluation not initialized`). The native node therefore came up READY, with the
+   `validation-engine` health check UP, forging blocks and admitting transactions **without any validation**, not
+   even the legacy validator. That contradicts §7 and ADR-057 §2 ("no silent fallback"). It applies to the JVM too,
+   for any provider that cannot be loaded (for example a broken plugin jar).
+   - Fix: `ValidationEngineBootstrap.create` rethrows a discovery failure as `ValidationEngineConfigurationException`,
+     so the node stops with the message.
+   - Test: `ValidationEngineBootstrapIntegrationTest.anUnloadableEngineProviderStopsStartup` (a context class
+     loader with a service file naming a missing class).
+3. **The default path failed open the same way** (found in review). With `engine: scalus` (the default),
+   `DefaultTransactionServicesFactory` logged an ERROR when the Scalus validator could not be built, and carried on.
+   `TxSubsystem` then registered no validator listener, so admission rejected nothing. The health check still
+   reported `scalus (legacy)` UP.
+   - Fix: while transaction validation is enabled (`yano.block-producer.tx-evaluation`, default `true`), a validator
+     that cannot be built stops startup with `ValidationEngineConfigurationException`
+     (`DefaultTransactionServicesFactory.requireValidator`).
+   - Unchanged, and deliberate: with `tx-evaluation=false` the factory is never called, and a node without a UTxO
+     store installs no validator (`TxSubsystem.setTransactionEvaluator`). The earlier "no protocol-parameter source"
+     and genesis-resolution exits are unchanged too; each logs a WARN and creates no services.
+   - Test: `DefaultTransactionServicesFactoryIntegrationTest.aValidatorThatCannotBeBuiltStopsStartup`.
+4. **`ENGINE.LedgerStateUnavailable` came back as HTTP 400** (on the JVM too). `LedgerMempool` mapped every
+   `Invalid` outcome to `LEDGER_REJECTED`, which REST reports as 400 "validation failed", so a wallet treated a
+   retryable condition as a rejection. An example is the admission window across the Conway bootstrap boundary
+   (decision 6a).
+   - Fix: when every engine failure is `ENGINE.LedgerStateUnavailable` and no listener rejected for another
+     reason, the mempool returns the existing retryable `CATCHING_UP`. REST answers 503 with `Retry-After`, and
+     the n2c path follows unchanged.
+   - The legacy admission (`DefaultMemPool`, the Scalus validator) never produces this failure. The engine branch of
+     `TxSubsystem.submit` without a `LedgerMempool` cannot be reached: an engine-API admission engine always
+     installs one.
+   - Test: `LedgerMempoolTest.anUnavailableLedgerStateIsRetryableNotARejection`. The parity workload now retries
+     only on 503.
+
+Nothing else was needed by this workload's paths. The rule sets are plain code (Phase 5c units are classes composed in code; no manifest or
+resource is read at runtime). `ProtocolParams` already had an `allDeclared*` entry in the app's
+`reflect-config.json`, so the shadow bundles' `valueToTree` works. The shadow-sync JSONL is built field by field
+(Phase 7a). Scalus, BouncyCastle/Ed25519, `PersistentMap` and the Amaru AOT classes needed no new metadata.
+
+**Choice of the native gate.** The §8 row says "the conformance suite runs in the native test image, same pattern as
+the ADR-051 native gate". The implementation is a JVM-vs-native differential through the running node:
+`NativeParityWorkloadTest` (tx-services) run by `qa/harness/ledger-rules-native-parity.sh`. The harness is built on
+`qa/harness/common.sh` (`start_yano`, ports, PID tracking), and it is registered as release-QA test
+`ledger-rules-native` in the opt-in category `ledger-rules`. The workload and the Phase 6b Haskell-follower workload
+share the new `RemoteYanoNode` test fixture: REST reads and raw submission against a packaged node.
+
+- ADR-051's native gate starts the release-parity native binary and submits real transactions; no test image
+  exists. The repository has no `@QuarkusIntegrationTest` and no GraalVM native-build-tools `nativeTest`.
+- The Amaru scenarios, the blueprint vectors and the mutation matrix load their initial state into an in-memory
+  `LedgerView` from test fixtures. A running node validates against its own chain state, so the corpus cannot be
+  submitted to it.
+- Compiling `ledger-conformance` into a separate native JUnit image would exercise a different image from the one
+  shipped: no Quarkus build steps and different reachability metadata. It could pass while the node fails, as the
+  engine-discovery gap shows.
+- Between the JVM and the native image the rule bytecode is the same. What differs is reachability metadata
+  (reflection, resources, service providers, JNI), class initialisation and substitutions. The gate therefore has
+  to make every metadata-sensitive path run in the shipped binary:
+  - engine discovery and creation;
+  - failure construction in each rule family;
+  - Scalus phase 2 for each Plutus language;
+  - Ed25519 witnesses;
+  - Jackson `ProtocolParams` in dumps;
+  - shadow sync end to end;
+  - the Amaru module.
+
+  The harness does exactly that, and compares everything observable with the JVM.
+
+**What the harness does.** For each configuration and protocol version it starts a JVM devnet producer, then a native
+one, with the same genesis and settings (2 s blocks, 100-slot epochs of 0.2 s slots, 1,000 ADA action deposit, PV 9
+and 10 from the `pv10` genesis set, PV 11 from the default one). It runs the same workload against each. Every
+transaction is built offline from the genesis funds, so for the same genesis the transactions are byte-identical
+between the two runs. The workload writes one observation line per step, and the harness diffs the two files:
+
+- payments, and three payments chained while pending;
+- one phase-1 failure per family:
+  - `MEMPOOL`: all inputs spent, and a double spend of a pending input;
+  - `UTXO`: `BadInputsUTxO`, `ValueNotConservedUTxO`, `FeeTooSmallUTxO`, `OutsideValidityIntervalUTxO`,
+    `WrongNetwork`, `BabbageOutputTooSmallUTxO`;
+  - `UTXOW`: `MissingVKeyWitnessesUTXOW`, and `InvalidWitnessesUTXOW` (a body changed after signing);
+  - `DELEG`: `StakeKeyNotRegisteredDELEG`, `StakeKeyRegisteredDELEG`;
+  - `GOVCERT`: `ConwayDRepAlreadyRegistered`;
+  - `GOV`: `GovActionsDoNotExist`;
+  - `LEDGER`: `ConwayIncompleteWithdrawals` (PV 10+; `CERTS.WithdrawalsNotInRewardsCERTS` at PV 9),
+    `ConwayTreasuryValueMismatch`;
+  - `POOL`: `StakePoolNotRegisteredOnKeyPOOL`;
+- a stake register → delegate → DRep register → vote delegation → proposal → DRep vote chain, admitted while the
+  parents are pending;
+- Plutus: an always-succeeding PlutusV1 (datum hash), V2 (inline datum), V3 and a V2 reference-script spend, all
+  evaluated by the node (Scalus phase 2), and an always-failing V3 script
+  (`UTXOS.ValidationTagMismatch ... FailedUnexpectedly`). The V3 spend also goes through the node's evaluate
+  endpoint, and the response is compared. In the `java` configuration that endpoint uses the Julc evaluator
+  (`yano.block-producer.script-evaluator=julc`, Julc 0.1.0-pre17 with its VM provider loaded through
+  `ServiceLoader`); in the default configuration it uses Scalus;
+- a devnet rollback that removes a pending child's parent: the mempool rebuild drops the child, and the independent
+  transaction is forged;
+- after an epoch boundary: a payment, a correct `currentTreasuryValue` and a zero withdrawal (ticked views).
+
+The harness also compares, and checks:
+
+- the admission-shadow disagreement counters and the number of dump bundles (`scalus` as a shadow of `java`, `java`
+  as a shadow of `amaru`);
+- shadow sync on the producer and on a follower of the same kind (pipelined n2n sync from the producer): the
+  per-engine and per-PV counters, zero findings in the JSONL, the block-rule counters, and the summary line written
+  at stop;
+- engine health metrics;
+- a clean SIGTERM shutdown (exit 143, the shadow-sync summary at stop, JSONL summary line);
+- no native-image failure in any log (`NATIVE_IMAGE_ERRORS` in `qa/harness/common.sh`, shared with the
+  epoch-crossing, Haskell-sync and past-time-travel harnesses: missing reflection, resource or JNI registration,
+  `NoClassDefFoundError`, `ClassNotFoundException`, `ServiceConfigurationError`, an unsupported feature, or a Jackson
+  `InvalidDefinitionException`). The final runs used an earlier, broader pattern that also matched
+  "not initialized". Since gap 3, an uninitialized validator stops startup instead;
+- that the bundles the native node wrote replay on the JVM (`ShadowBundleReplayTest`), including the `ProtocolParams`
+  JSON.
+
+The workload resubmits after the next block what the node says to retry (503). That covers a catching-up
+mempool and, since gap 4, an unavailable ledger state. When either happens depends only on timing. The results
+below were produced before gap 4 was fixed, when the workload also retried a 400 carrying
+`LedgerStateUnavailable`. The verdicts are the same either way.
+
+The observations mask only what depends on timing, not on the engine: the current slot in a validity-interval
+message, the ticked treasury, and the hashes of the treasury and pool-retirement transactions (their contents follow
+the current epoch). The legacy path (`engine: scalus`) cannot see pending certificates, so for it the workload
+confirms each certificate before its child (`-Dyano.parity.chain-certificates=false`).
+
+**Results** (Oracle GraalVM 25.3.4.1 for JDK 25.0.4.1, G1, `-march=compatibility`, macOS arm64). Source state per
+build column:
+
+- **default**: `507b00927` plus this phase's gaps 1 and 2 and the harness, in a clean detached worktree. Native
+  `1a77b50d…`, jar `7bd997b4…`.
+- **`-PwithAmaru`**: the same source with `-PwithAmaru=true -PamaruWasm=<c43eeb37… module>`. Native `44e16faa…`,
+  jar `c852b235…`.
+- **snapshot**: see below the table.
+
+None of the three includes gaps 3 and 4, which came out of review. Neither changes a verdict of this workload: the
+validator is built in every run, and the retryable answer replaced a 400 that the workload already retried.
+**The gate must be re-run on the merge candidate** (`qa/release-qa.sh --only ledger-rules-native`, plus the
+`-PwithAmaru` and `java-scalus` configurations by hand) before this phase counts as passed there.
+
+| Build | Configuration | PV | Verdicts, accepted / rejected | JVM vs native | Admission-shadow disagreements (bundles replayed on the JVM) | Shadow sync (every engine, producer and follower) |
+|---|---|---|---|---|---|---|
+| default | `java` (+ Julc evaluate endpoint) | 9, 10, 11 | 22 / 18 | identical | `scalus`: `GOV` 1 and `LEDGER` 1 at PV 9/10, `LEDGER` 2 at PV 11 (2, 2, 3 bundles) | 21 of 21 agreed, 0 findings, 0 block-rule violations |
+| default | `scalus` (default path) | 9, 10, 11 | 24 / 16 | identical | none configured | off |
+| `-PwithAmaru` | `amaru` | 10, 11 | 22 / 18 | identical | `java`: 1 (`ENGINE`, the Phase C divergence) | `amaru` and `java`: 21 of 21 agreed each, 0 findings |
+| `-PwithAmaru` | `java` | 10, 11 | 22 / 18 | identical | as above | 21 of 21 agreed, 0 findings |
+| snapshot | `julc` (then `engine: java` with `java-engine.phase2-evaluator=julc`; see below) | 9, 10, 11 | 22 / 18 | identical | `scalus`: as for `java` (2, 2, 3 bundles) | `java` and `java-julc`: 21 of 21 agreed each, 0 findings |
+| snapshot | `java` | 9, 10, 11 | 22 / 18 | identical | as above | 21 of 21 agreed, 0 findings |
+
+"snapshot": the Julc phase-2 evaluator (`JavaJulcEngineFactory`, `org.yanoproject.ledger.scripteval.phase2`) was
+still uncommitted during this phase. These rows were built from the shared worktree's state at 20:57 (`38fefe296`
+plus every uncommitted change there, including this phase's; native `a09f77f9…`, jar `8e60dbe8…`) and ran from 21:01
+to 21:13. `JavaJulcEngineFactory` needed the same constructor registration as the other factories (it is in
+`yano-ledger-rules/reflect-config.json`). The julc CEK machine (`JulcMachine`, which constructs `JavaVmProvider`
+directly) needed nothing else. The always-failing V3 script fails with julc's message in both images.
+
+The table uses the engine ids of the time: `java` was the Java rules with Scalus phase 2 (today `java-scalus`), and
+the `julc` row's admission leg selected julc through `yano.validation.java-engine.phase2-evaluator=julc`, a key the
+snapshot still had. Review removed that key, and the Phase 7c decision then made julc the Java engine's default phase
+2 under the id `java-julc`, with `java-scalus` for Scalus and no `java` id. The harness's configurations are now
+`java-julc` (admission shadow `scalus`, shadow sync `java-julc,java-scalus`), `java-scalus`, `scalus` and `amaru`
+(admission shadow and shadow sync `java-julc`). **Every Java row must be re-run** under these ids, on the merge
+candidate, before it counts.
+
+- Every row passed: the observation files are identical, both nodes exit 143 on SIGTERM with the summary line in the
+  JSONL, no log has a native-image failure, and every bundle the native node wrote replays on the JVM.
+- The follower counts match the producer's, except in one JVM run, where the follower validated 37 transactions in
+  15 blocks: it also validated blocks that the rollback later removed (Phase 7a).
+- The legacy path's 16 rejections are one fewer each for the vote on a missing action and the wrong
+  `currentTreasuryValue`. It admits both, because it has no `GOV` rules and no treasury check unless
+  `supplementary-rules-enabled`. The workload records these as the two problems, identically on the JVM and in
+  native.
+- The `amaru` row shows the Phase C divergence (a delegation from an unregistered credential:
+  `ENGINE.AmaruEngineFailure` against `DELEG.StakeKeyNotRegisteredDELEG`), and it shows it the same way on the JVM
+  and in native.
+- Runs: `default` from 20:36 to 20:48, `-PwithAmaru` from 20:48 to 20:56 on 2026-09-29. Logs are in the session
+  scratchpad (`native7c/f5`).
+
+Commands:
+
+```
+qa/release-qa.sh --only ledger-rules-native        # builds the jar and the native binary, then the default matrix
+# or by hand, with any build:
+./gradlew :app:yanoNativeDistZip -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
+./gradlew :app:yanoDistZip -PskipSigning=true
+JAR=app/build/yano.jar NATIVE=<unzipped>/yano qa/harness/ledger-rules-native-parity.sh            # "java julc scalus" "11 10 9"
+# Amaru artifacts (both builds with -PwithAmaru=true -PamaruWasm=<module>):
+JAR=… NATIVE=… qa/harness/ledger-rules-native-parity.sh "amaru java" "11 10"
+# SP=<dir> puts the runs elsewhere; HTTP_A/N2N_A/HTTP_B/N2N_B move the ports (the runs above used 7271/13537/7272/13538)
+```
+
+**Not verified here.**
+
+- The full corpus in native: the 276 Amaru scenarios, the blueprint vectors and the mutation matrix run on the JVM
+  only (see the gate choice above). The native gate covers every rule family and each Plutus language once. It does
+  not cover every constructor.
+- Real networks in native: preprod, preview and mainnet shadow sync, and the Haskell-follower gate (Phase 6b), ran
+  on the JVM only.
+- Native throughput and latency were not measured; only function was.
+- Linux and amd64 native images were not built; only macOS arm64 was.
+- In two earlier JVM runs of this phase (not the final runs above, where every follower reached the producer's
+  tip), a JVM follower stopped following after the producer's devnet rollback. It applied one block after the
+  `REAL_REORG` rollback, then nothing for 80 s. No native follower stalled. This is chain sync, not validation. The
+  harness logs a WARNING for it and still checks the follower's shadow-sync findings (0), but it does not fail the
+  gate. It matches the known follower-sync wedge from the pre17 regression run (a follower stops applying blocks
+  after a rollback), which is tracked there, not in this phase.
+
+#### Phase 7c results: public-network shadow sync (2026-09-29)
+
+Two JVM nodes synced from genesis with `yano.validation.shadow-sync=true`: preprod (`~/yano-shadow/preprod`) and
+preview (`~/yano-shadow/preview`). The findings below were triaged against the chain history (Koios `account_updates`,
+`drep_updates`, `tx_info`, `tx_cbor`), the recorded reads in the `shadow-dumps/` bundles, and cardano-ledger
+`f649f975`.
+
+**Findings**
+
+- **`DELEG.StakeKeyRegisteredDELEG` and `GOVCERT.ConwayDRepAlreadyRegistered`: Yano's canonical ledger state was wrong
+  (not the rule, not the shadow-sync view).**
+  - Reports at triage time (the nodes were still syncing):
+    - preprod: 170 `StakeKeyRegisteredDELEG` reports over 5 keys:
+      - `5064b671…`: 158 at PV 9, 4 at PV 10;
+      - `94dfe104…`: 1 at PV 9, 3 at PV 10;
+      - `acab7e49…`: 2 at PV 10;
+      - `6bc0fb7b…` and `c3892366…`: 1 each at PV 10;
+      - plus 1 `ConwayDRepAlreadyRegistered` for DRep `739701e4…`.
+    - preview: 195 reports over 54 keys:
+      - `5064b671…`: 112 at PV 9;
+      - `267a02cf…`: 27 at PV 9;
+      - `22cf2817…` and `5da571c9…`: 3 each at PV 9;
+      - 50 keys with 1 report each at PV 10.
+    - Every report has `overlayTainted: false`. Its dump records the credential as `present` in the pre-block state
+      (the account with a 2 ADA deposit, the DRep with a 500 ADA deposit).
+  - Cause: all 170 + 195 stake reports were checked against the chain's certificate order. In each one, the
+    credential's last deregistration before the report is in the same block as the registration it cancels. The
+    credential was **registered and then deregistered in one block**, with no registration between that block and
+    the report. The DRep report has the same shape.
+    - In one transaction: preprod `a13523c8…` (block 2620906) holds `[StakeRegistration, UnRegCert(2 ADA)]`, and the
+      reported registration `00586b27…` follows in block 2620909. Preview `85384095…` (block 3086527) holds
+      `[RegCert(2 ADA), UnRegCert(2 ADA)]` at PV 10, followed by the reported `996ef51d…`. All the other preview keys
+      follow the same pattern.
+    - In two transactions of one block: preprod block 3105726, where tx 2 `5841d782…` registers and delegates and
+      tx 3 `6d583a34…` deregisters, followed by the reported `dbaa50a1…`.
+    - DRep: preprod block 2659850, where tx 1 `54825923…` (`ConwayRegDRep`) is followed by tx 2 `fec4cefc…`
+      (`ConwayUnRegDRep`), then the reported `478e03ed…` in block 2659855.
+    - The keys that recur are wallet test cycles of the form register, deregister, register-and-deregister in one
+      transaction, register again. Each cycle leaves one phantom registration.
+  - `DefaultAccountStateStore.applyBlock` applies a block through one uncommitted `WriteBatch`. `deregisterStake` and
+    `UnregDrepCert` read the account or DRep with `db.get()`, which does not see the batch. Because the registration
+    earlier in the same block was invisible to them, they skipped the delete. The account (or DRep, plus its
+    governance `DRepStateRecord`, which was never tombstoned) stayed registered. Its deposit was counted in
+    `total_dep` and never refunded. This does not depend on the era: pre-Conway `StakeRegistration`/`StakeDeregistration`
+    in one block take the same path. The pool certificates already read through a per-block `BatchStateOverlay`.
+  - The Java rules match Haskell, so they are unchanged.
+    - `ConwayRegCert` always fails on a registered credential, with no protocol-version or bootstrap gate
+      (`Conway/Rules/Deleg.hs:212-214` `checkStakeKeyNotRegistered`, `:233-239`). The Shelley-form `RegTxCert` is
+      `ConwayRegCert c SNothing` (`Conway/TxCert.hs:150`), so there is no idempotent re-registration in either form.
+    - `ConwayRegDRep` fails with `ConwayDRepAlreadyRegistered` (`Conway/Rules/GovCert.hs:210-212`).
+    - `CERTS` folds a transaction's certificates in order (`Conway/Rules/Certs.hs:242-245`), and `LEDGERS` threads
+      the state from transaction to transaction. On the chain's state, therefore, the reported registrations were
+      of unregistered credentials.
+    - The per-PV manifests and fingerprints are unchanged.
+  - Fix (ledger-state). `applyBlock`'s per-block `BatchStateOverlay`, now called `blockStateOverlay`, previously
+    held only the pool lifecycle keys. Every other value that a later certificate, withdrawal or vote of the block
+    reads back now goes through it too. Both stores use the same two helpers on `BatchStateOverlay`: `readThrough`
+    (the overlay's value, else the committed one) and `putThrough` (journal the value read, write, record in the
+    overlay). In the account store each key is read once per write (`putStateWithDelta`/`deleteStateWithDelta`
+    overloads take `prev`). The governance store re-reads a record's bytes for the journal, one extra point read per
+    DRep or committee certificate and per DRep vote.
+    - Stake accounts: `registerStake`, `deregisterStake` and `processWithdrawal`.
+    - DRep registrations: `RegDrepCert` and `UnregDrepCert`. `UpdateDrepCert` no longer rewrites the unchanged
+      registration entry (it was a no-op write with a journal entry).
+    - MIR: the per-credential `PREFIX_MIR_REWARD` and `reward_rest` accumulators, and the pot-transfer totals. Two MIR
+      certificates for one credential, or two pot transfers, in one block no longer lose the first.
+    - Governance records. `GovernanceStateStore` has overlay-aware overloads of `getDRepState`/`storeDRepState` and
+      `getCommitteeMember`/`storeCommitteeMember`, used for DRep registration, retirement and update, votes, committee
+      hot-key authorisation and resignation. Before, an authorisation followed by a resignation in one block left a
+      not-yet-enrolled member's placeholder un-resigned with a live hot key, although Haskell accepts both
+      certificates (`GovCert.hs:197-208`). For an enrolled member, the resignation was written over the committed hot
+      key instead of the block's.
+    - DRep retirement is an explicit flag. With the overlay, a same-block retirement followed by a re-registration
+      stored `registeredAtSlot == previousDeregistrationSlot`. Every reader then treated the live DRep as retired,
+      because it tested `registeredAtSlot > previousDeregistrationSlot`:
+      - the DRep distribution dropped its delegated stake;
+      - the dormant flush and `getRegisteredDRepIds` skipped it;
+      - votes did not refresh it, and `UpdateDRep` was ignored.
+      Slots cannot order two certificates in one block. Haskell deletes the DRep and then inserts it, so it is simply
+      live. `DRepStateRecord.deregistered` (CBOR key 10) is set by `processDRepDeregistration` and cleared by a
+      registration, and all five readers use it, and so does the REST view (`AccountStateReadStore.DRepInfo`
+      carries the flag, and `GovernanceResource.isRegistered` returns `!deregistered`). A record written before the
+      flag existed derives it from the slots as before. `DRepDistributionCalculator.resolveDRepKey` drops a
+      delegation only when its slot is before the DRep's last retirement (`<`, was `<=`). The exact
+      (slot, transaction, certificate) cleanup at the retirement already removes older delegations. The old check
+      also dropped a delegation made in the same block after a retirement and re-registration.
+    - Committee resignation of a future member with no record now stores a resigned placeholder
+      (`CommitteeMemberRecord.noHotKey(0).asResigned()`). Haskell inserts `CommitteeMemberResigned`
+      (`GovCert.hs:208`). Before, the resignation was dropped, and a later `AuthCommitteeHot` passed where Haskell
+      fails `ConwayCommitteeHasPreviouslyResigned`.
+    - Committee-state pruning (closes #156). At every Conway boundary, after the enactments, Haskell keeps the
+      committee state (hot keys, resignations) of the committee's members only (`updateCommitteeState`,
+      `Epoch.hs:343`, `:419-423`, a `Map.intersection` with the members). Yano kept pre-enrollment placeholders
+      forever, so a potential future member whose proposal expired and who was enrolled later came back with a
+      stale hot key or resignation. The resignation then excluded it from tallies, and `GovCertChecks` failed
+      `ConwayCommitteeHasPreviouslyResigned` where Haskell accepts.
+      - `CommitteeStatePruning` (ledger-state) holds the rule. In Yano a member is a governance committee record with
+        a term: the genesis and UpdateCommittee enactments always write the term epoch, and removals and
+        NoConfidence delete the record. A record with term 0 is the placeholder that a non-member's authorisation
+        or resignation creates.
+      - At the start of governance Phase 2, over the committed Phase 1 result, the boundary deletes every
+        placeholder record. It also deletes the certificate-path hot-key (0x30) and resignation (0x31) entries of
+        every cold credential that is not a member. Each delete is journalled in the Phase 2 boundary delta, which a
+        rollback of the boundary undoes.
+      - `EpochBoundaryPreview` applies the same rule to its post-enactment committee and reports the pruned
+        credentials (`GovernanceEffects.prunedCommitteeColds`). The ticked view (`TickedLedgerView`, through
+        `CanonicalLedgerView.CommitteeRecords.certificatePathDropped`) then ignores their pre-boundary
+        certificate-path entries.
+    - `EnactmentProcessor.enactedMemberRecord`, shared by the enactment and `EpochBoundaryPreview`, keeps
+      `resigned` and updates only the term. Before, a resigned member re-elected by `UpdateCommittee` came back
+      un-resigned with its stale hot key. Haskell keeps a member's entry while the member stays in the committee.
+    - Votes run per transaction, before its certificates (`GovernanceBlockProcessor.processVotes`), instead of after
+      all the certificates of the block. Haskell refreshes the voting DReps' expiry before the transaction's
+      certificates: in `CERTS` at PV 9 (`Certs.hs:240`) and in `LEDGER` from PV 10 (`Ledger.hs:383-395`). With the old
+      order, a DRep registered and voting in one transaction at PV 9 got `currentEpoch + drepActivity − numDormant`
+      instead of the registration's `currentEpoch + drepActivity` (`GovCert.hs:286-292`). From PV 10 the two orders
+      agree. A vote now also sees a DRep registered or retired earlier in the block, and cannot overwrite a same-block
+      retirement.
+    - Rollback: the journal records the overlay's value as the previous value, and rollback undoes a block's
+      operations in reverse, so it restores the pre-block bytes. The overlay is local to one `applyBlock` call, so no
+      reader on another thread sees it.
+    - Compatibility: on a chain without these same-block patterns, every decision and value is identical to before
+      the fix, but the stored bytes are not.
+      - DRep records written after the upgrade carry CBOR key 10.
+      - The order of the delta journal entries changes, although the result of a rollback is the same.
+    - A Conway genesis committee member with a term ≤ 0 is now a configuration error (`ConwayGenesisBootstrap`).
+      Haskell would keep such an already-expired member, but the "term > 0 = member" rule would prune it. On-chain
+      terms are always ≥ 1 (`Gov.hs:555-556`).
+  - Tests: `SameBlockStateTest` (ledger-state, real RocksDB), 20 tests, plus:
+    - `EnactmentProcessorTest`: a re-elected resigned member stays resigned;
+    - `GovernanceStateStoreTest`: a record without key 10 derives the flag from its slots;
+    - `GovernanceResourceTest` (app): a DRep retired and re-registered in one block is active; a retired one is
+      inactive;
+    - `CommitteeStatePruningBoundaryTest` (runtime, `TickingTestNode`, real boundaries):
+      - the non-members' placeholders and certificate-path entries are pruned, and the ticked view equals the real
+        boundary (`TickingGate`);
+      - a resigned future member whose proposal expired is enrolled later without the resignation;
+      - a member removed by an enacted UpdateCommittee loses its certificate-path hot key (a legacy entry without a
+        record), in the ticked view too;
+      - a rollback of the boundary restores the pruned state.
+    - `ConwayGenesisBootstrapTest`: a genesis member with term 0 is rejected.
+    - Five replay the real transactions above. `src/test/resources/shadow-sync/same-block-registration-txs.txt` holds
+      the full transaction CBOR from Koios `tx_cbor`, fetched 2026-09-29; only the transaction body is used. They
+      cover:
+      - the same-transaction cases on preprod (PV 9, Shelley-form registration) and preview (PV 10, Conway
+        `RegCert`/`UnRegCert`);
+      - the two-transaction case, with its delegations;
+      - the DRep case, with its retirement record and re-registration;
+      - `total_dep`, and a rollback over all of them that restores the column byte for byte.
+    - Eleven are synthetic:
+      - a withdrawal then a deregistration in one transaction;
+      - registration → deregistration → registration in one block (one deposit);
+      - DRep registration → update → retirement;
+      - DRep retirement → re-registration: `previousDeregistrationSlot` is read from the overlay, and the DRep is
+        not `deregistered`. A vote in a later block refreshes it, and a delegation to it, in a later block or later in
+        the same block, counts in the DRep distribution;
+      - a vote by a DRep retired, or registered, earlier in the block (with 3 dormant epochs: the vote's expiry
+        `currentEpoch + drepActivity − 3`, `Certs.hs:278-292`);
+      - a vote in the DRep's registering transaction at PV 9 with 3 dormant epochs;
+      - committee authorisation → resignation, for a future member and for an enrolled one;
+      - a future member's resignation without a prior record, kept by the enrollment;
+      - two MIR certificates and two pot transfers in one block;
+      - a rollback of a committed account that is written three times in one block.
+    - Mutation checks, each fix reverted in turn:
+      - all fixes (HEAD): 13 of 16 fail;
+      - stake overlay: 5 fail;
+      - DRep governance overlay: 3 fail;
+      - vote overlay: 2 fail;
+      - committee overlay: 2 fail;
+      - MIR overlay: 1 fails;
+      - votes after the certificates: the PV 9 vote test fails;
+      - rollback undone in forward order: both rollback tests fail;
+      - the flag ignored (readers back on the slots): the 3 re-registration tests fail;
+      - legacy records not derived from the slots: the codec test fails;
+      - a resignation without a record dropped: the future-member test fails;
+      - `enactedMemberRecord` dropping `resigned`: the two re-election tests fail;
+      - REST `isRegistered` back on the slots: the same-block REST test fails;
+      - `resolveDRepKey` back on `<=`: the same-block delegation test fails; without the check:
+        `delegationBeforeReRegistration_filteredByTimingGuard` fails;
+      - no boundary pruning: the 3 pruning tests fail;
+      - pruning without the 0x30/0x31 journal: the rollback test fails;
+      - pruning only credentials that have a record: the removed-member test fails;
+      - no genesis term check, or the error swallowed by the bootstrap: the genesis test fails;
+      - the preview not pruning, or the ticked view keeping the certificate-path entries: the equivalence test
+        fails.
+  - Impact on a chainstate synced before the fix. The pattern exists in every era since Shelley, so this holds for
+    every network, mainnet included.
+    - Deposits. `total_dep` is inflated by one key deposit per phantom stake registration and one DRep deposit per
+      phantom DRep, and it stays inflated. It feeds the AdaPot `deposits` field and every `getTotalDeposited()` read
+      (`EpochBoundaryProcessor.java:691, 871`).
+    - Treasury. Several credits reach any credential that has a `PREFIX_ACCT` entry, so a phantom receives them:
+      - proposal-deposit refunds (`DefaultAccountStateStore.storeRewardRest`, `:2139-2141`);
+      - enacted treasury withdrawals (`:2435-2441`);
+      - MIR credits (`:2329`).
+      Haskell keeps these in the treasury (`Conway/Rules/Epoch.hs:184-190` unclaimed refunds, `:223-236`
+      withdrawals to unregistered accounts, `:350`). The credential's next registration then rewrites the account
+      with reward 0 (`registerStake`), so that ADA disappears from Yano's accounting. The four preprod epochs whose
+      treasury and reserves matched Koios (162, 163, 165, 170) do not rule this out elsewhere.
+    - DReps and ratification. A phantom DRep is never marked retired.
+      - At PV 9, the bootstrap phase allows delegating to an unregistered DRep (`Conway/Rules/Deleg.hs:225-226`).
+        Stake delegated to a phantom DRep therefore counts in Yano's ratification, where Haskell ignores a DRep that
+        is not registered (`Ratify.hs:265`).
+      - From PV 10 it is visible only in the deposits pot and to the `getAllDRepStates` readers
+        (`DRepDistributionCalculator:134`, `GovernanceEpochProcessor:757, 960, 1077`,
+        `DefaultAccountStateReadStore:207`).
+    - Member stake rewards and the stake distribution are not affected. `deregisterStake` deletes the pool and DRep
+      delegations unconditionally, and never returns early on the missed account. Reward forfeiture is decided from
+      the registration and deregistration events, which were written correctly.
+    - Pool reward accounts. `EpochRewardCalculator.creditReward` credits any credential with a `PREFIX_ACCT` entry
+      (`:1755`). So a phantom that is a pool's reward account received the operator rewards that Haskell does not
+      pay to an unregistered reward account. After the fix it no longer does, which moves toward Haskell.
+    - Remedy: a full resync from genesis for every pre-fix chainstate, mainnet included. A snapshot from before the
+      first phantom is effectively genesis, because the pattern occurs from Shelley on. The first boundary on an
+      upgraded chainstate that is not resynced also prunes every committee placeholder accumulated before the
+      upgrade (#156). The resync covers this too.
+    - Detection without a resync. No repair tool was built.
+      - Current phantoms: a credential is a phantom when its `PREFIX_ACCT` entry exists but its latest stake event is
+        a deregistration. The events were written unconditionally, so they are correct. The latest one is a
+        `seekForPrev` to the end of the credential's range in `PREFIX_STAKE_EVENT_BY_CREDENTIAL` (key = prefix, type,
+        hash, slot (8 bytes BE), tx (2), cert (2); `credentialStakeEventKey`). A slot-only comparison of
+        `acctLastDeregCoordKey` against `acctRegSlotKey` is not enough, because a same-block deregistration followed
+        by a legitimate re-registration has equal slots.
+      - Past phantoms: most cycles end registered legitimately (`5064b671…`), while `total_dep` still carries the
+        phantom deposits. Recompute Σ `PREFIX_ACCT` deposits + Σ `PREFIX_DREP_REG` deposits + Σ pool deposits and
+        compare it with `total_dep`.
+      - DReps have no per-credential event log, so a current phantom DRep can be found only by comparing the
+        `PREFIX_DREP_REG` entries with the chain's DRep history (for example Koios `drep_updates`).
+    - Not changed here: Yano never removes a retiring DRep's votes, whereas Haskell's GOV rule removes the votes of
+      every DRep that the transaction retires from every proposal (`Gov.hs:613-629`, `cleanupProposalVotes`).
+
+- **Phase-2 and decoding findings: 228 chain-valid transactions, none a Java-rule bug.** At triage time, preprod
+  had 174 `UTXOS.ValidationTagMismatch` (13 script hashes, PV 9 and 10), 15 `ENGINE.CoinOutOfEvaluatorRange`,
+  5 `ENGINE.JavaEngineFailure` "Expected Long but got OverLong", 6 `UTXOS.CollectErrors [NoRedeemer reward[i]]` and
+  2 `UTXOW.MalformedReferenceScripts`. Preview had 21 `ValidationTagMismatch`, 1 `ENGINE.DecodingFailure` and 1
+  `JavaEngineFailure` (set tag). Method: every bundle was rewritten with the chain's exact bytes for each recorded
+  UTxO read (the output and its inline datum, sliced from the producing transaction's Koios `tx_cbor`), then replayed
+  through the java engine. After the fixes below, **227 of the 228 replay as valid**. The remaining one, preview
+  `1c09afd8…`, has no recorded reads because it failed before reading; it now decodes. Aiken 1.1.23
+  (`aiken tx simulate`, and `aiken uplc eval` on Scalus's applied programs) was the independent evaluator.
+  - **Same-block inline datums (133 of the `ValidationTagMismatch`s: every preprod PV 9 one, the preview PV 10
+    ones).** All are PlutusV2 spends of an output produced earlier in the same block. `TxEffectsDeriver` built that
+    output's `UtxoEntry` without the inline datum's bytes, so the Scalus bridge re-encoded CCL's `PlutusData`.
+    CCL's default CBOR is canonical and sorts map keys, shorter first. A Plutus `Map` is an ordered list, and
+    Haskell keeps the datum's bytes (`BinaryData`, Plutus/Data.hs:220-239), so the script saw a different `Data`.
+    Example: preprod `4cad6278…` spends `1fc4d810…#0` (same block 2634522), whose datum keys `endDate, price,
+    startDate` became `price, endDate, startDate`.
+    - Evidence: Scalus passes with the chain's UTxO bytes and fails with the re-encoded ones. Aiken passes both
+      scripts at the declared budget.
+    - Two producers of unconfirmed outputs re-encoded the datum:
+      - `TxEffectsDeriver`, which builds the engines' overlays: shadow sync, the ledger mempool's chains
+        (`engine: java`/`amaru`) and the block-production overlay;
+      - `TransactionOutputProjector`, which builds the `Utxo`s of the default mempool (`DefaultMemPool.project`,
+        `TxProjection`) and of the block-build overlay (`BlockBuildUtxoOverlay`). These reach every admission engine
+        and the legacy validator through `EngineAdmission`/`UtxoConversions.toEntry`, as a non-null
+        `inlineDatumCbor`.
+
+      So any Plutus transaction that spends an unconfirmed output with a non-canonical datum map was falsely
+      rejected, in shadow sync, admission and block selection (found by review).
+    - Fix, from the original bytes: `RawOutput` now keeps the inline datum's bytes (`inlineDatum()`, read by the
+      strict decoder that already validated them).
+      - `TxEffectsDeriver` takes each produced output's and the collateral return's datum bytes from
+        `RawTransaction.parse(txCbor, tx)`.
+      - `TransactionOutputProjector.projectOutputs(txHash, txBytes, tx)` does the same for the three runtime
+        projections, and falls back to CCL's re-encoding only when the strict parse rejects the bytes.
+      - The canonical UTxO store already kept them, from yaci's raw output (`DefaultUtxoStore`).
+    - Other fields: a reference script is kept as its raw bytes; the address is re-encoded from its own bytes; value
+      order does not matter to Scalus or to Haskell, whose `MultiAsset` is a `Map`. No other `serializeToBytes()` of
+      a datum feeds a ledger view (runtime, ledger-state and tx-services were searched).
+    - Consequence in shadow sync: `TxEffectsDeriver` now parses the transaction strictly, so a `TxDecodingException`
+      in `SyncBlockValidator.chainEffects` (`:314-323`) returns no effects and taints the rest of the block, where it
+      used to derive them from CCL's decoding.
+  - **Integers in `[2^63, 2^64)` (22 transactions; `WideIntegers`, scalus-bridge).** Haskell reads these as
+    `Word64`:
+    - output coins and quantities (`decodeMaryValue`, Mary/Value.hs:287-295; preprod quantities of 1.5·10^19);
+    - other body `Coin`s (the blueprint vector's treasury withdrawal);
+    - tag-102 `Constr` alternatives (`decodeConstrExtended`, plutus-core Data.hs:298-307; `2edd684f…` has
+      `Constr (2^64-1) []` in two output datums);
+    - metadatum integers (`decodeInteger`, Metadata.hs:161-164; `c0c3e628…` has a CIP-25 price of 10^19).
+
+    Scalus 1.1.1 reads them as a signed `Long`: `MultiAsset`/`Coin` in its `Transaction`, `DataApi`'s tag-102
+    decoder, `Metadatum`. A script sees them as `Integer`s.
+    - The bridge overwrites each such integer in place with a placeholder of the same 9-byte head. Placeholders are
+      at least 2^62, above every other integer of the transaction and its resolved outputs, and preserve order.
+      The bridge decodes the result, keeps the original body bytes (so the id is unchanged), and restores the true
+      value in every script argument: `I` for ledger integers, the alternative for `Constr`s. Metadata never
+      reaches a context, so it is only narrowed.
+    - Refused, with the explicit `ENGINE.IntegerOutOfEvaluatorRange` (renamed from `CoinOutOfEvaluatorRange`,
+      replacing `SignedLongRange`):
+      - a wide validity slot (a script sees a POSIX time);
+      - a wide part of a rational (`#6.30`), which a script sees reduced (found by review);
+      - a wide negative body integer;
+      - a wide `Constr` in a witness datum (its hash is computed from its bytes).
+    - Blueprint vector `pass-enact-withdrawals-exceeding-maxbound-word64-…` now passes, as in Haskell: 310 passed
+      (was 309), 2472 of 2487 transactions matched, no `RECORDED` evaluator limit. `BlueprintVectorGateTest` pins
+      are updated.
+  - **Scalus machine: three builtins (`BridgeVM`, the bridge's CEK machine, which is Scalus's with three builtins
+    replaced).**
+    - `serialiseData` of `Constr (2^64-1)`. Scalus writes `constr.toLong`, giving `d866822080`. Haskell writes
+      `encodeWord64`, giving `d866821bffffffffffffffff80` (Data.hs:147-160). The bridge encodes such a `Data` itself,
+      and uses Scalus's encoder for everything else. `2edd684f…` passes, matching Aiken's budget.
+    - `verifyEcdsaSecp256k1Signature` with a zero component (61 preprod PV 10 spends of script `9dd6dd04…` with an
+      all-zero signature).
+      - Plutus 1.65.0.0 `PlutusCore/Crypto/Secp256k1.hs:48-57` fails for a key that
+        `rawDeserialiseVerKeyDSIGN` rejects (not 33 bytes, or not a valid point). It fails for a signature that
+        `rawDeserialiseSigDSIGN` rejects (not 64 bytes, or `secp256k1_ecdsa_signature_parse_compact` reporting
+        `r` or `s` ≥ the group order, cardano-crypto-class `EcdsaSecp256k1.hs` `rawDeserialiseSigDSIGN`). It also
+        fails for a message hash that is not 32 bytes.
+      - Otherwise the result is `verifyDSIGN`'s. That is `False` for `r = 0` or `s = 0` (parsed, then rejected by
+        `secp256k1_ecdsa_verify`), for a high-`s` or a wrong signature, and `True` only for a valid one.
+      - Scalus requires `0 < r, s < n` and throws. The bridge returns `False` for a zero component after the key
+        and message checks, and delegates every other input.
+    - `equalsData`. Scalus's is `==`, and `Data.Map.equals` compares pairs as sets (order- and
+      duplicate-insensitive). Haskell compares them as lists (derived `Eq`, Data.hs:42-48, Builtins.hs:1835-1841),
+      so `equalsData` of two maps that differ only in order is `False` on chain and `True` in Scalus: a potential
+      false acceptance. No finding depended on it. The bridge compares structurally and in order, with Scalus's
+      costing (review).
+  - **Scalus translation and decoding (`ContextEvaluation`).** Scripts now always run in the bridge's loop, which
+    mirrors Scalus's validate mode. A failure names its redeemer, so `[-1]` becomes `spend[0]`, and the script hash
+    is in the message.
+    - `V3Governance`: the governance fields of a V3 context.
+      - Constitution. plutus-ledger-api's `newtype Constitution` is `Constr 0 [Maybe ScriptHash]`
+        (V3/Contexts.hs:266-273, :692; Conway/TxInfo.hs:682-693). Scalus's `type Constitution = Option[ScriptHash]`
+        drops the constructor. Preview PV 11 `89d3a627…` proposes a new constitution next to PlutusV3 spends, and it
+        passes at Aiken's budgets.
+      - Found by review, same class as the withdrawal order, in fields the guardrail and vote scripts read. Haskell
+        builds these with `transMap`/`Set.toList` over the ledger's maps and sets, in the ledger's `Ord`, and
+        reduces rationals (Conway/TxInfo.hs:671-681, :697-699; Plutus/TxInfo.hs:118-119; ToPlutusData.hs:77-79).
+        Scalus instead:
+        - sorts `txInfoVotes` by `toString`, so action index 10 comes before 9;
+        - looks a `Voting` redeemer's voter up in that `toString` order (`getScriptPurposeV3`), so a script voting
+          as a DRep could see another voter as its purpose;
+        - puts key credentials first in `TreasuryWithdrawals` and in the committee members `UpdateCommittee` adds;
+        - lists the removed members in hash-set order;
+        - keeps the quorum and the `ParameterChange` rationals unreduced (`6/2000`).
+      - `V3Governance` rewrites all of these. `ScalusContextDifferentialTest` compares the bridge's contexts, as
+        encoded `Data`, with script-evaluators' `ConwayTxInfoTranslator`, over the mutation world. It covers key and
+        script voters, action ids 9, 10 and another transaction's, a mixed treasury withdrawal, a committee update
+        removing six members and adding three, an unreduced quorum and parameters, and a new constitution. It
+        passes, and fails on every one of these items without the fix.
+    - `WithdrawalOrder`. Haskell orders withdrawals by network, then `ScriptHashObj` before `KeyHashObj`
+      (Credential.hs:98-101, Address.hs:183-190). Scalus orders by hash only (RewardAccount.scala:24-30). With a
+      key and a script withdrawal, a `Rewarding` redeemer named the wrong one: 6 preprod PV 10
+      `NoRedeemer reward[i]`s. Fix: the redeemers are renumbered to Scalus's order, and the contexts are put back
+      in Haskell's order, which depends on the language:
+      - `txInfoRedeemers` follows the ledger's `(tag, index)` order (Babbage/TxInfo.hs:222-226), so script
+        credentials come first;
+      - V3 `txInfoWdrl` is the ledger map (`transMap`, Conway/TxInfo.hs:549-551, :697-699), so script credentials
+        come first;
+      - V1/V2 `txInfoWdrl` is rebuilt as a `Map PV1.StakingCredential` (`transWithdrawals`, Alonzo/Plutus/TxInfo.hs:
+        301-309), whose derived `Ord` puts `PubKeyCredential` first (PlutusLedgerApi/V1/Credential.hs:30-37).
+
+      The Julc agent's context builder found that V1/V2 case: the first version sorted every language script-first.
+      `aPlutusV2ScriptSeesKeyWithdrawalsFirst` runs a PlutusV2 script that checks the order.
+    - `PlutusBinaries`. For PlutusV1/V2, `deserialiseScript` ignores the bytes after the CBOR-wrapped program
+      (SerialisedScript.hs:261-264), and the Plutus Core version is checked only when a script runs (Eval.hs:113-122).
+      Scalus reads the whole binary as one item, so the reference scripts of preprod `aee75c1c…` and `c3cc23d4…` were
+      reported `UTXOW.MalformedReferenceScripts`. V1/V2 binaries are now read from their leading item, for the
+      well-formedness check and for evaluation.
+    - Set tag. Scalus's `UpdateCommittee` decoder reads the removals as a plain array (GovAction.scala:199-203).
+      Haskell allows the set tag (Decoder.hs:1081-1085). `ScalusTransactions` retries with the body's set tags
+      dropped, keeping the original body bytes. This also fixes preview PV 11 `2c3657d0…` and Amaru scenario 00031
+      under the `scalus` engine, now valid as in Haskell (`ScalusEngineCorpusFixesTest`).
+  - **CCL decoding (`CclTransactions`, ledger-rules).** Preview `1c09afd8…` registers a pool whose owners and relays
+    are indefinite-length arrays. Haskell decodes both (`decodeSet`, Decoder.hs:952-962, :1081-1085;
+    `decodeStrictSeq`, :1156-1157; StakePool.hs:574-590). cbor-java keeps the `break` marker as the last item, which
+    CCL's `PoolRegistration.deserialize` casts to a byte string. Every structural CCL decode on the validation path now
+    retries on a copy with every item definite-length (`DefiniteLengthCbor.normalizeTransaction`, moved from
+    scalus-bridge to ledger-rules; Scalus keeps the body-only `normalizeBody`). Those decodes are:
+    - the java engine and shadow sync's block decoder;
+    - `DefaultMemPool.project`, `TxProjection.of`, `EngineAdmission.pinInputs`, `TransactionValidationService` and
+      `BlockBuildUtxoOverlay`;
+    - `ScalusLedgerValidationEngine`.
+
+    Before, a transaction the java engine accepted was rejected by the mempool projection. The id and hashes still
+    come from the original bytes.
+  - Each Scalus workaround has a canary in `ScalusWorkaroundsTest` that asserts Scalus's current behaviour and fails
+    once upstream follows Haskell. The deviations are summarised in the table under §5. The upstream issue draft
+    lists twelve items with reproductions, including the run-time Plutus Core version check that Scalus lacks.
+  - Tests. The real transactions are vendored:
+    - `PublicNetworkPhase2Test` (scalus-bridge): 11 corrected bundles, one per cause, shared with the Julc
+      evaluator's tests as `PublicNetworkTransactions.PHASE2_CASES` (ledger-rules test fixtures);
+    - `ProducedInlineDatumTest` (ledger-rules) and `DefaultMemPoolTest`/`BlockBuildUtxoOverlayTest` (runtime): preprod
+      `1fc4d810…` from Koios, shared as `PublicNetworkTransactions` (ledger-rules test fixtures);
+    - `CclTransactionsTest` (ledger-rules) and `DefaultMemPoolTest`: preview `1c09afd8…`;
+    - `WideIntegersTest` and `ScalusWorkaroundsTest`.
+  - Suites:
+    - `:scalus-bridge:test` with the Amaru corpus: 125 tests, 1 skipped;
+    - `:ledger-rules:test`: 370 tests, 2 skipped;
+    - `:ledger-conformance:test` with the corpus: 132 tests, 0 failures. The Phase 3/4/5 gates and the mutation matrix are
+      unchanged, and the blueprint gate is re-pinned as above;
+    - `:runtime:test` (mempool, block producer, validation, shadow sync): 327 tests, 1 skipped;
+    - `:tx-services:test` (shadow sync, bundle replay, engine bootstrap, admission): 16 tests, 2 skipped.
+  - Open:
+    - Amaru's `UtxoOutputEncoder` and `TransactionOutputProjector` keep the canonical fallback for an output
+      without datum bytes. It is reached only by an entry built from a CCL output alone (test fixtures), or when the
+      strict parse rejects a transaction's bytes.
+    - `CollectErrors` order: Java reports `BadTranslation` once per language after the loop over the needed
+      scripts, while Haskell reports it per script, interleaved with the other collect errors
+      (Alonzo/Plutus/Evaluate.hs:130-175). The verdict is the same, and this predates PR #155.
+    - Shadow bundles recorded before this fix hold re-encoded datums for same-block outputs, so they do not replay
+      as the chain's state.
+
+- **`UTXO.OutputTooBigUTxO`: the java engine and the Scalus engine measured a value's size with definite-length
+  maps.** Preprod `96ae78f7…` (block 4990228, slot 129586448, PV 11) was reported `(5001, 5000, output 1 …)`, and the
+  chain accepted it. Output 1's value has six policies, one of them (`588a22e1…`) with 324 assets.
+  - Haskell: `validateOutputTooBigUTxO` measures `BSL.length (serialize (pvMajor protVer) v)` (Alonzo/Rules/Utxo.hs:
+    412-431, :428), the ledger's own encoding of the value, not the transaction's bytes. `EncCBOR MaryValue`
+    (Mary/Value.hs:342-349) writes `[coin, multiAsset]`, and both maps go through `encodeMap` (cardano-ledger-binary
+    Encoder.hs:397-408). From encoding version 2 `encodeMap` is `variableMapLenEncoding` (:432-443,
+    `lengthThreshold = 23`): definite-length up to 23 entries, indefinite-length (`bf … ff`) above. Heads and
+    integers are minimal, so the encoding is canonical except for these map lengths. From 256 entries it is one byte
+    smaller than a definite-length encoding (whose `b9 NNNN` head is 3 bytes); up to 255 entries the sizes are equal.
+  - This value is 5001 bytes in the transaction (a definite `b9 0144` head), 5001 as a definite-length encoding and
+    5000 as Haskell measures it, exactly `maxValSize`.
+  - Fix: `LedgerValue.serializedSize` (ledger-rules `tx`) frames each map as `encodeMap` does (`mapHeadSize`). The
+    helper is outside the unit digests, so the manifests are unchanged; the fix holds at every Conway protocol
+    version.
+  - Scalus 1.1.1 has the same fault: `OutputsHaveTooBigValueStorageSizeValidator` measures `Cbor.encode(value)`,
+    with definite-length heads, and rejected the transaction with 5001. `YanoOutputValueSizeValidator` (scalus-bridge)
+    replaces it in `YanoCardanoMutator` and sizes with `LedgerValue.serializedSize` (row in the §5 table). Amaru
+    counts as Haskell does (`inherent_value.rs`) and accepts the transaction.
+  - Size-rule audit, against `f649f975`. The other size rules use the original bytes in Haskell, and so does Yano:
+    - `BabbageOutputTooSmallUTxO`: `sizedSize` of the decoded `Sized` output (Babbage/Rules/Utxo.hs:303-323,
+      `babbageMinUTxOValue` Babbage/TxOut.hs:665-689; outputs and collateral return, Conway/TxBody.hs:127-128) —
+      `RawOutput.size()`, the output's slice.
+    - `MaxTxSizeUTxO`: `sizeAlonzoTxF` over `toCBORForSizeComputation` with the memoized body, witnesses and
+      auxiliary data (Alonzo/Tx.hs:324-331, :432-443) — `RawTransaction.size()`, and `YanoTransactionSizeValidator`
+      for Scalus.
+    - `ConwayTxRefScriptsSizeTooBig` and the reference-script fee: `originalBytesSize` of each reference script
+      (`txNonDistinctRefScriptsSize`, Conway/UTxO.hs:166-170) — `MinFee.scriptOriginalSize` over the stored script
+      bytes.
+
+    The copied CCL `OutputValidationRule` (the `JavaLegacyEngine` conformance baseline only) still measures with CCL's
+    definite-length encoding; it is left as the baseline.
+  - Tests. The dump is vendored unchanged (its transaction and both UTxOs are byte-identical to Koios `tx_cbor`) as
+    `PublicNetworkTransactions.PREPROD_INDEFINITE_ASSET_MAP_OUTPUT`:
+    - `UtxoRuleTest` (ledger-rules), `ScalusOutputValueSizeTest` (scalus-bridge) and `AmaruOutputValueSizeTest`
+      (amaru-validator): valid at `maxValSize` 5000, `OutputTooBigUTxO` at 4999;
+    - `LedgerValueTest`: 23, 24, 255 and 256 entries in the asset map and in the policy map, against CCL's
+      definite-length encoding (equal, equal, equal, one byte less), and a 5000/5001 boundary;
+    - `ScalusWorkaroundsTest`: a canary on Scalus's definite-length size, and the real value's 5000 and 5001.
+
+#### Phase 7c results: phase 2 evaluator: Julc (2026-09-29)
+
+Goal (Satya): a second phase-2 evaluator, as an alternative if Scalus blocks us and as an independent cross-check of
+the shadow-sync findings. Julc is upgraded to `0.1.0-pre17` (group `org.julclang`, packages `org.julclang.*`,
+`507b00927`).
+
+- **Evaluator.** `script-evaluators` `phase2.JulcScriptPhaseEvaluator`. It uses julc only for the CEK machine
+  (`JavaVmProvider`, one per language, protocol version and cost model, configured once, so it is thread-safe), the
+  cost models and the script decoder. The contexts come from `ConwayTxInfoTranslator`, which builds V1, V2 and V3
+  contexts from the original bytes (`RawTransaction`) as Conway/TxInfo.hs does. Integers are `BigInteger` throughout,
+  so Word64 values need no special case. A PlutusV3 script must return `()` (`InvalidReturnValue`). The budget is the
+  declared ExUnits. The PV 9 V3 context leaves out the `reg_cert`/`unreg_cert` deposits.
+- **Shared contract.** The engine-neutral part of `ScalusScriptPhaseEvaluator` moved unchanged to `ledger-rules`
+  `phase2.ScriptCollection`, which `ScalusScriptPhaseEvaluator` now delegates to (its tests moved to
+  `ScriptCollectionTest`), and the shared `NeededScript` replaces `NeededPlutusScript`: `CollectErrors` accumulation and
+  order, the Conway `TxInfo` translation checks (the V1/V2
+  guard, V1 inline datums with reference scripts accepted, Byron addresses, V3 disjointness from PV 11,
+  `TimeTranslationPastHorizon`), malformed-script failures, cost models, budgets and the bootstrap predicate. Julc
+  reuses UTXOW's `WitnessNeeds.scriptsNeeded` and `UtxowSubject.scriptsProvided` (new overloads that take a UTxO
+  lookup), and reads everything else from the engine's `RawTransaction` (redeemer data slices, vote values, the
+  proposals' parameter-update slice, quorum and constitution script, outputs' inline datums), which the engine hands
+  down (`ScriptPhaseEvaluator.evaluate/collect(RawTransaction, …)`, `TxEffectsDeriver.derive(RawTransaction, …)`,
+  also in shadow sync) instead of a second parse.
+- **Plutus Core version, once for both evaluators.** `deserialiseScript` does not check the program's Plutus Core
+  version; `mkTermToEvaluate` does when the script runs (plutus-ledger-api Common/Eval.hs:113-122,
+  `plcVersionsAvailableIn`, Versions.hs:341-357: 1.0.0 for V1/V2 and also 1.1.0 from PV 11; both for V3), and the
+  ledger reports its `EvaluationError` as a script failure (`evaluatePlutusWithContext` → `Fails`, so
+  `ValidationTagMismatch FailedUnexpectedly` for `isValid = True`). It is part of the evaluator contract: after the
+  `CollectErrors` and before running any script, both evaluators check every needed Plutus script with
+  `ScriptCollection.plutusCoreVersionFailures` (over `PlutusScriptDecoder.programVersion`) and return
+  `ScriptPhaseResult.Failed` if one is not available. So every engine gets it, including `amaru` with
+  `phase2: scalus`, and the rules have no hook for it. Julc's `isWellFormed` now only decodes (it had also applied
+  julc's version check, a false `MalformedReferenceScripts` for preprod `aee75c1c…`, whose output carries a V2
+  reference script of version 1.1.0 at PV 10). V1/V2 scripts decode from their leading CBOR item
+  (`PlutusScriptDecoder.leadingItem`, bytes after it allowed, SerialisedScript.hs:261-264). Interpreter-specific context workarounds stay with each evaluator. The Scalus bridge's (withdrawal order, the
+  V3 `Constitution` wrapper, V1/V2 trailing bytes, Word64 placeholders) are needed there because of Scalus's own
+  translation. Julc's translator follows Haskell directly and needs none of them. One exception: `WithdrawalOrder` also
+  reorders the V1/V2 `txInfoWdrl` with script credentials first, but Haskell builds it as a
+  `Map PV1.StakingCredential Integer` (Alonzo/Plutus/TxInfo.hs `transWithdrawals`), so plutus-ledger-api's derived
+  `Ord` puts `PubKeyCredential` first there. Only V3's `txInfoWdrl` and the redeemer indices follow the ledger's
+  `AccountAddress` order.
+- **Configuration (decision: julc is the Java engine's default phase 2).** Two engine ids, no new key:
+  `java-julc` is the Java rules with julc phase 2 (`JavaJulcEngineFactory`, `EngineContext#julcScriptPhaseEvaluator`)
+  and is the Java engine wherever one is defaulted (`shadow-sync-engines` defaults to it); `java-scalus` is the same
+  rules with Scalus phase 2 (`JavaScalusEngineFactory`, `EngineContext#scriptPhaseEvaluator`), for users who need it.
+  The former id `java` (Scalus phase 2) is removed without an alias: a configuration that still names it stops startup
+  with `Unknown validation engine 'java'`, which lists the available ids. Both ids need
+  `yano.validation.java-engine.experimental=true` for admission until Phase 8; shadow sync answers it.
+  `shadow-sync-engines: java-julc,java-scalus` gives every Conway transaction both verdicts. Counters, health
+  (`shadowSync.java-julc.healthy`), report lines and bundles (`<tx>-java-julc.json`) carry the engine id.
+  `ShadowBundleReplay` replays bundles with `java-julc`, `--scalus` with `java-scalus`. The default admission path
+  (`engine: scalus`, the legacy validator), the evaluate endpoint and ExUnits estimation are unchanged.
+- **Known deviation until the julc release.** The released julc 0.1.0-pre17 lacks the `verifyEcdsaSecp256k1Signature`
+  fix (julc PR #219, below). Until the catalog moves to a julc release with it, `java-julc` rejects the preprod
+  transactions of script `9dd6dd04…` that call the builtin with r or s = 0 (for example `031e36a7…`), which the chain
+  accepts; `java-scalus` accepts them (`BridgeVM`). `JulcPublicNetworkTest.zeroSignatureComponentIsTheKnownJulcDeviation`
+  pins it and fails once the fix is in.
+- **Why not julc's `JulcTransactionEvaluator`.** It estimates ExUnits (budget `maxTxExUnits`), and its context
+  builder (`CclTxConverter`, `V1V2ScriptContextBuilder`) differs from Haskell:
+  - the tx id and witness-datum hashes are taken from CCL re-serialisations;
+  - `JulcAssocMap.insert` prepends, so the datum, redeemer, withdrawal and vote maps and values come out in reverse
+    encounter order, not key order;
+  - signatories are unsorted and not deduplicated;
+  - withdrawals are ordered by bech32 string, voters by `toString`;
+  - V1 withdrawals and datums are encoded as maps instead of lists of pairs;
+  - every governance action becomes `InfoAction`;
+  - PV 9 deposits are always present;
+  - a validity bound of 0 counts as absent;
+  - reference scripts of resolved inputs are not resolved;
+  - a V3 script's return value is not checked, and a missing V1/V2 datum becomes `Constr 0 []`.
+  Yano's ExUnits estimation (`JulcTxEvaluator`, script anchors) inherits these.
+- **Baseline** (`ledger-conformance/docs/baseline-2026-09.md`, rows `java-julc` and `java-scalus`; the conformance
+  gates, mutation matrices and blueprint gate now run `java-julc`): 276/276 verdicts, 275/276 constructors, 94/94
+  mutants for both, identical case by case (the one miss is scenario 00280, a Byron-address fault shared by both).
+  **Blueprint vectors** (`BlueprintVectorScalusTest`): every one of the 2487 transactions gets the same verdict and
+  first failure under `java-scalus` as under the gate's `java-julc` run, with the pinned tallies (PV 9 115/115, PV 10
+  195 passed and 10 requiring an epoch), including the Word64 treasury-withdrawal vector.
+- **Shadow-sync dump replay** (309 preprod and 198 preview bundles, snapshot of 2026-09-29):
+  - 344 `StakeKeyRegisteredDELEG` and 1 `ConwayDRepAlreadyRegistered`: identical under Scalus and Julc (the
+    ledger-state bug above); the 1 preview `DecodingFailure` bundle recorded no reads and cannot be replayed;
+  - 15 `CoinOutOfEvaluatorRange` and 2 `JavaEngineFailure` (Word64 quantities above 2^63): VALID under Julc, as on
+    chain;
+  - 144 `ValidationTagMismatch FailedUnexpectedly`: Julc fails the same 144, so neither the machine nor the context
+    builder is the common cause:
+    - 133 spend an output created earlier in the same block whose recorded read has no original inline-datum bytes.
+      CCL's re-encoding orders the datum's map keys canonically (length first); the chain's order differs (checked
+      with the node's `/txs/{hash}/utxos`). With the chain's bytes patched into the bundles (the node's API, and Koios `tx_cbor`
+      for one spent output), all 133 are VALID under both evaluators. The cause is the overlay's
+      `UtxoEntry.inlineDatumCbor` for same-block outputs, which the scalus-bridge triage fixes at the source
+      (`RawOutput#inlineDatum()`).
+    - 11 (preprod, PV 10, script `9dd6dd04…`) call `verifyEcdsaSecp256k1Signature` with r or s equal to 0.
+      libsecp256k1's `parse_compact` accepts 0 and verification returns `False` (cardano-crypto-class
+      `rawDeserialiseSigDSIGN`, plutus `Secp256k1.hs`). Julc (`CryptoBuiltins`: r, s in [1, n-1]) and Scalus both
+      fail the builtin: a machine bug in both. The scalus-bridge fixes Scalus's (`BridgeVM`); julc's is fixed upstream
+      (PR #219). With that julc build (`0.1.0-pre18-yano-secp`, not yet in the catalog) and the chain's datum bytes,
+      **Julc agrees with the chain on all 144**.
+      `JulcPublicNetworkTest.zeroSignatureComponentIsTheKnownJulcDeviation` fails once the catalog moves to a fixed
+      julc; then the case joins the others.
+- **Tests.**
+  - `script-evaluators`: `JulcScriptPhaseEvaluatorTest` (mutation world: V3 pass and fail, budgets, `NoRedeemer`,
+    horizon, well-formedness), `ConwayTxInfoTranslatorTest` (PV 9/10 `reg_cert`, V1 lists vs V2 maps, values, fee and
+    mint per language, validity interval, `ChangedParameters`), `JulcPublicNetworkTest` (the 11 shared chain-valid
+    bundles, `PublicNetworkTransactions.PHASE2_CASES` in the ledger-rules test fixtures: 10 valid, the secp256k1
+    deviation, the V2 1.1.0 reference script, Word64 quantities carried exactly).
+  - `ScriptCollectionTest` (the version matrix, `plutusCoreVersionFailures`); the version check per evaluator:
+    `JulcScriptPhaseEvaluatorTest`, `ScalusWorkaroundsTest` (with a canary for Scalus's missing check) and
+    `AmaruScalusPhaseTwoTest` (`amaru` with `phase2: scalus`); `JavaEngineFactoriesTest` (`java-julc`, `java-scalus`,
+    the experimental flag, the removed `java`).
+  - `ShadowSyncBothEvaluatorsTest` (tx-services: `java-julc,java-scalus` through `ValidationEngines` and
+    `SyncBlockValidator`); `ValidationEngineBootstrapIntegrationTest` (startup refuses `java` and names the ids).
+  - `BlueprintVectorScalusTest`.
+- **Open.** A validity bound at or above 2^63 is checked for the horizon through CCL's `long` (shared with Scalus).
+  Julc is about as fast as Scalus on the corpus (0.89 ms vs 0.85 ms per scenario, one pass).
+
 ### Phase 8 — Switch the default, clean up
 
-- Set `engine: java`. Keep `scalus` selectable, and as a default shadow engine
+- Set `engine: java-julc`. Keep `scalus` selectable, and as a default shadow engine
   for one release.
 - Remove the deprecated keys and profile overrides. Migrate or delete the
   Scalus-specific tests that no longer apply (`ScalusBasedTransactionValidatorTest`,
@@ -2737,11 +3565,11 @@ each one as the chain did. `yano.validation.shadow-sync=true` (off by default) n
 - The Amaru scenarios, blueprint vectors, mutation matrix, shadow sync and
   native parity gates all pass.
 - Dependent chains in the mempool and in one block, and across an epoch
-  boundary, validate identically under `java` and `amaru`, and under `scalus`
+  boundary, validate identically under `java-julc` and `amaru`, and under `scalus`
   for the state it models. A Haskell follower accepts every Yano-produced block
   in the Phase 6 matrix.
-- With `engine: java`, the submit path calls Scalus only for phase-2 script
-  execution.
+- With `engine: java-julc`, the submit path does not call Scalus (julc runs
+  phase 2); with `engine: java-scalus`, only for phase-2 script execution.
 - Canonical ledger-state, reward, AdaPot and ratification outputs are
   unchanged. The existing verification suites stay green.
 
@@ -2823,8 +3651,8 @@ each one as the chain did. `yano.validation.shadow-sync=true` (off by default) n
 
    | Operation | Target |
    |---|---|
-   | Admission latency, `engine: java`, transaction without Plutus | p99 ≤ 20 ms |
-   | Admission latency, `engine: java`, transaction with Plutus | p99 ≤ 20 ms plus script evaluation time |
+   | Admission latency, `engine: java-julc`, transaction without Plutus | p99 ≤ 20 ms |
+   | Admission latency, `engine: java-julc`, transaction with Plutus | p99 ≤ 20 ms plus script evaluation time |
    | Synchronous truncate-and-reapply on removal (lane held) | ≤ 50 ms for a 1,000-transaction suffix; ≤ 500 ms for 10,000 |
    | Off-lane rebuild with re-application only | ≤ 2 s for 10,000 transactions |
    | Off-lane rebuild that needs full validation (hard fork or cost-model change) | No latency target; `CATCHING_UP` is the accepted fallback |

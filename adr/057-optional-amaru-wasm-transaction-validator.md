@@ -298,7 +298,7 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
 ```yaml
 yano:
   validation:
-    engine: amaru              # or keep scalus/java and list amaru under shadow-engines
+    engine: amaru              # or keep scalus/java-julc/java-scalus and list amaru under shadow-engines
     amaru:
       phase2: scalus           # scalus (default) | amaru
       pool-size: 0             # 0 = validation threads + 2
@@ -636,7 +636,7 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 - Run the ADR-056 Phase 6 devnet matrix with `engine: amaru`: dependent chains
   in the mempool and in one block, an epoch crossing with chains pending, and
   rollback while chains are pending.
-- Gate: the same verdicts and effects as `engine: java`, and the Haskell
+- Gate: the same verdicts and effects as `engine: java-julc` (`java` before ADR-056 Phase 7c), and the Haskell
   follower stays in lock-step.
 
 #### Phase C results (2026-09-29)
@@ -644,7 +644,7 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 - **Matrix.** `AmaruDevnetParityTest` (amaru-validator, `-PwithAmaru=true`, module rebuilt with
   `scripts/build-wasm.sh`, sha256 `c43eeb37…`, passed as `-PamaruWasm=<absolute path>`) runs the ADR-056 Phase 6
   devnet matrix (`LedgerRulesDevnetMatrix`, see ADR-056 "Phase 6b results") twice on fresh in-process devnets:
-  `engine: amaru` (`phase2: scalus`, pool size 2), then `engine: java`; both runs need
+  `engine: amaru` (`phase2: scalus`, pool size 2), then `engine: java` (today `java-julc`); both runs need
   `-PledgerRulesGate=true` (CI: the `amaru-wasm.yml` conformance job). Block selection uses the admission engine
   (rule `LEDGER`, origin `BLOCK_BUILD`), so under `engine: amaru` both admission and forging go through the module.
 - **Same verdicts and effects.** The two runs' observation lists (53 lines: every admission verdict with its
@@ -693,6 +693,35 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 - Benchmark per-transaction latency (target: p50 ≤ 2 ms, p99 ≤ 10 ms on the
   scenario corpus, JVM, warm), plus startup and memory per instance.
 - Write the developer guide (build, select, shadow, upgrade runbook).
+
+#### Phase E results: native image (2026-09-29, ADR-056 Phase 7c)
+
+§3 promises native support, and the acceptance criteria require "the native image works". It does:
+
+- **Build.** `./gradlew :app:yanoNativeDistZip -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false
+  -PskipSigning=true -PwithAmaru=true -PamaruWasm=<module>` from `507b00927` plus the Phase 7c changes (module `c43eeb37…`, the Phase C build; native binary `44e16faa…`). Oracle GraalVM
+  25.3.4.1, G1, macOS arm64. The image-build report shows 7.48 MiB of code in `org.yanoproject.ledger.amaru.generated`,
+  the build-time AOT classes. The runtime compiler is not on the classpath (Phase B), so nothing compiles wasm at run
+  time.
+- **One fix was needed**, shared with the other engines: `AmaruEngineFactory` had no reflection registration, so
+  the native `ServiceLoader` could not construct it. `amaru-validator`'s `META-INF/native-image` now has a
+  `reflect-config.json` for it, and its `resource-config.json` names the service file next to the `.meta` resource.
+  In the same step, a provider that cannot be loaded stops startup instead of leaving the node without validation
+  (ADR-056 "Phase 7c results", gap 2).
+- **Verified in native**, against the JVM build of the same sources, by `JAR=… NATIVE=… qa/harness/ledger-rules-native-parity.sh "amaru java" "11 10"`
+  (engine ids of the time: `java` was the Java rules with Scalus phase 2; since ADR-056 Phase 7c the harness's
+  `amaru` configuration uses `java-julc` as admission shadow and in shadow sync, and must be re-run):
+  - `engine: amaru` admission (`phase2: scalus`) and block selection;
+  - `java` as an admission shadow, with dumps;
+  - shadow sync with `java,amaru` on the producer and on a follower;
+  - the Amaru instance pool (WASI host, `.meta` resource, AOT machine);
+  - health and metrics;
+  - a clean shutdown.
+
+  Every verdict and Amaru failure message was identical between JVM and native, at PV 10 and PV 11
+  (40 observations per run: 22 accepted, 18 rejected; `amaru` and `java` shadow sync 21 of 21 agreed each on the producer and the follower). This includes the Phase C divergence, which is identical in both. Amaru validates Conway from PV 10 only, so PV 9 is not run.
+- **Not done in Phase E yet:** the latency benchmark on the scenario corpus, startup and per-instance memory
+  figures, and the developer guide.
 
 ## Acceptance criteria
 
@@ -756,7 +785,7 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 
 ## Rollback plan
 
-Set `yano.validation.engine` to `java` or `scalus` and remove `amaru` from
+Set `yano.validation.engine` to `java-julc`, `java-scalus` or `scalus` and remove `amaru` from
 `shadow-engines`. Nothing else depends on the module. Removing
 `amaru-validator-wasm/`, the `amaru-validator` module and `amaru-wasm.yml`
 reverts this ADR completely. No persisted state is involved.
