@@ -263,16 +263,17 @@ public class EnactmentProcessor {
     }
 
     /**
-     * The record an UpdateCommittee addition stores: an existing hot-key authorization is kept
-     * (with the new term), otherwise a record without hot key.
+     * The record an UpdateCommittee addition stores: the existing hot-key authorization or resignation
+     * is kept with the new term (Haskell keeps a member's committee state entry while it stays in the
+     * committee, Conway/Rules/Epoch.hs:419-423), otherwise a record without hot key.
      *
      * @param existing the member's record in committed state before this enactment, or {@code null}
      */
     public static CommitteeMemberRecord enactedMemberRecord(CommitteeMemberRecord existing, int expiryEpoch) {
-        if (existing != null && existing.hasHotKey()) {
-            return new CommitteeMemberRecord(existing.hotCredType(), existing.hotHash(), expiryEpoch, false);
+        if (existing == null) {
+            return CommitteeMemberRecord.noHotKey(expiryEpoch);
         }
-        return CommitteeMemberRecord.noHotKey(expiryEpoch);
+        return new CommitteeMemberRecord(existing.hotCredType(), existing.hotHash(), expiryEpoch, existing.resigned());
     }
 
     /**

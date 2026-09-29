@@ -125,19 +125,13 @@ public class DRepDistributionCalculator {
         OrderedStakeLookup orderedStake = stakeBalanceView != null
                 ? new OrderedStakeLookup(stakeBalanceView) : null;
 
-        // Pre-compute DRep states for delegation validation.
-        // Per Amaru (governance.rs lines 94-117): include DRep if registeredAt > previousDeregistration.
-        // This excludes deregistered DReps (previousDeregistration > registeredAt) but includes:
-        //   - Never-deregistered DReps (previousDeregistration = null)
-        //   - Re-registered DReps (registeredAt > previousDeregistration)
-        //   - Expired DReps (expiry is separate from deregistration)
+        // Pre-compute DRep states for delegation validation: every DRep that is not retired, including
+        // re-registered and expired ones (expiry is separate from deregistration).
         Map<CredentialKey, DRepStateRecord> allDRepStates = governanceStore.getAllDRepStates();
         Map<CredentialKey, DRepStateRecord> activeDReps = new HashMap<>();
         for (var entry : allDRepStates.entrySet()) {
             DRepStateRecord rec = entry.getValue();
-            Long prevDeregSlot = rec.previousDeregistrationSlot();
-            // Include if never deregistered OR registered after last deregistration
-            if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
+            if (!rec.deregistered()) {
                 activeDReps.put(entry.getKey(), rec);
             }
         }
@@ -351,12 +345,13 @@ public class DRepDistributionCalculator {
 
     /**
      * Resolve a DRep delegation target to a distribution key.
-     * Returns null if the DRep is not currently registered, or if the delegation predates
-     * the DRep's previous deregistration.
+     * Returns null if the DRep is not currently registered, or if the delegation's slot is before
+     * the DRep's previous deregistration's slot.
      * <p>
      * The main correctness mechanism is the PV10 reverse-index rebuild + unconditional
-     * cleanup on DRep deregistration. The {@code delegSlot <= prevDeregSlot} check is a
-     * defensive safety guard for Yano's tombstone-based DRep state representation.
+     * cleanup on DRep deregistration. The {@code delegSlot < prevDeregSlot} check is a
+     * defensive safety guard for Yano's tombstone-based DRep state representation; a delegation
+     * in the deregistration's own slot may follow a same-block re-registration.
      */
     private DRepDistKey resolveDRepKey(int drepType, String drepHash,
                                        Map<CredentialKey, DRepStateRecord> activeDReps,
@@ -370,12 +365,13 @@ public class DRepDistributionCalculator {
                     yield null;
                 }
 
-                // Defensive safety guard: delegation valid only if made AFTER the DRep's
-                // previous deregistration. This is a per-delegator check that compensates
-                // for Yano's tombstone state model. Normal correctness comes from the PV10
-                // reverse-index rebuild + cleanup on DRep deregistration.
+                // Defensive safety guard: a delegation from a slot before the DRep's previous
+                // deregistration is stale. A delegation in the deregistration's own slot may follow
+                // a same-block re-registration, so it is left to the exact (slot, tx, cert) cleanup
+                // on deregistration (clearDRepDelegationsForDeregisteredDRep). Normal correctness
+                // comes from that cleanup and the PV10 reverse-index rebuild.
                 Long prevDeregSlot = drepState.previousDeregistrationSlot();
-                if (prevDeregSlot != null && delegSlot <= prevDeregSlot) {
+                if (prevDeregSlot != null && delegSlot < prevDeregSlot) {
                     yield null;
                 }
 

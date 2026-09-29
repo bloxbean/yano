@@ -47,7 +47,8 @@ public interface AccountStateReadStore {
             boolean active,
             long registeredAtSlot,
             int protocolVersionAtRegistration,
-            Long previousDeregistrationSlot
+            Long previousDeregistrationSlot,
+            boolean deregistered
     ) {}
 
     default Optional<EpochStake> getEpochStake(int epoch, int credType, String credentialHash) {

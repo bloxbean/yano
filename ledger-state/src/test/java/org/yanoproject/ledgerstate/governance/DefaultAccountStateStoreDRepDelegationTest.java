@@ -153,7 +153,7 @@ class DefaultAccountStateStoreDRepDelegationTest {
     private void registerDRep(int drepType, String drepHash, int epoch, long slot) throws Exception {
         var state = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                epoch, null, epoch + 20, true, slot, 10, null);
+                epoch, null, epoch + 20, true, slot, 10, null, false);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(drepType, drepHash, state, batch, new ArrayList<>());
             commit(batch);

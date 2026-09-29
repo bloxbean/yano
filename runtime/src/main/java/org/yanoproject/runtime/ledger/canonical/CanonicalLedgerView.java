@@ -363,6 +363,14 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
         Optional<CommitteeMemberRecord> member(int credType, String coldHash) throws Exception;
 
         Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> all() throws Exception;
+
+        /**
+         * @return true when the cold credential's certificate-path hot key and resignation are dropped
+         *         (the boundary's committee-state pruning, {@code CommitteeStatePruning})
+         */
+        default boolean certificatePathDropped(GovernanceStateStore.CredentialKey cold) {
+            return false;
+        }
     }
 
     /** The stored committee, or the Conway genesis committee overlaid by stored records before the bootstrap. */
@@ -476,6 +484,9 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
         if (record.isPresent()) {
             return Lookup.present(toMember(cold, record.get()));
         }
+        if (records.certificatePathDropped(new GovernanceStateStore.CredentialKey(type, cold.hashHex()))) {
+            return Lookup.absent();
+        }
         if (ledger.committeeResigned(type, cold.hashHex())) {
             return Lookup.present(new CommitteeMemberState(cold, null, true, null));
         }
@@ -548,11 +559,17 @@ public final class CanonicalLedgerView implements LedgerView, AutoCloseable {
             byCold.put(sortKey(cold), toMember(cold, entry.getValue()));
         }
         for (GovernanceStateStore.CredentialKey resigned : ledger.committeeResignations()) {
+            if (records.certificatePathDropped(resigned)) {
+                continue;
+            }
             CredentialKey cold = credential(resigned.credType(), resigned.hash());
             byCold.putIfAbsent(sortKey(cold), new CommitteeMemberState(cold, null, true, null));
         }
         for (Map.Entry<GovernanceStateStore.CredentialKey, LedgerStateSnapshotReader.CommitteeHotAuthorization>
                 entry : ledger.committeeHotKeys().entrySet()) {
+            if (records.certificatePathDropped(entry.getKey())) {
+                continue;
+            }
             CredentialKey cold = credential(entry.getKey().credType(), entry.getKey().hash());
             CredentialKey hot = credential(entry.getValue().hotCredType(), entry.getValue().hotHash());
             byCold.putIfAbsent(sortKey(cold), new CommitteeMemberState(cold, hot, false, null));

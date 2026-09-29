@@ -95,7 +95,7 @@ class DRepDistributionCalculatorTest {
     private void registerDRep(int drepType, String drepHash, int epoch, long slot) throws Exception {
         var state = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                epoch, null, epoch + 20, true, slot, 10, null);
+                epoch, null, epoch + 20, true, slot, 10, null, false);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(drepType, drepHash, state, batch, new ArrayList<>());
             commit(batch);
@@ -234,7 +234,7 @@ class DRepDistributionCalculatorTest {
         // DRep with previousDeregistrationSlot AFTER registration → deregistered
         var deregState = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                200, null, 220, false, 84974395L, 10, 85000000L); // prevDeregSlot > regSlot
+                200, null, 220, false, 84974395L, 10, 85000000L, true); // prevDeregSlot > regSlot
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_B, deregState, batch, new ArrayList<>());
             commit(batch);
@@ -275,7 +275,7 @@ class DRepDistributionCalculatorTest {
         registerDRep(0, DREP_A, 200, 84974395L);
         var deregisteredDRep = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                200, null, 220, false, 84974395L, 10, 85000010L);
+                200, null, 220, false, 84974395L, 10, 85000010L, true);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_B, deregisteredDRep, batch, new ArrayList<>());
             commit(batch);
@@ -430,7 +430,7 @@ class DRepDistributionCalculatorTest {
         // Register DRep A, then deregister it (simulated by storing with prevDeregSlot > registeredAtSlot)
         var deregisteredState = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 136000000L, 10, 150000000L); // prevDeregSlot=150M > registeredAt=136M
+                507, null, 527, true, 136000000L, 10, 150000000L, true); // prevDeregSlot=150M > registeredAt=136M
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_A, deregisteredState, batch, new ArrayList<>());
             commit(batch);
@@ -464,7 +464,7 @@ class DRepDistributionCalculatorTest {
         // DRep A: deregistered (prevDeregSlot > registeredAtSlot)
         var deregisteredA = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 136000000L, 10, 150000000L);
+                507, null, 527, true, 136000000L, 10, 150000000L, true);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_A, deregisteredA, batch, new ArrayList<>());
             commit(batch);
@@ -509,7 +509,7 @@ class DRepDistributionCalculatorTest {
         // DRep X: deregistered at slot 200, re-registered at slot 300
         var reRegisteredState = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 300L, 10, 200L); // registeredAt=300, prevDeregSlot=200
+                507, null, 527, true, 300L, 10, 200L, false); // registeredAt=300, prevDeregSlot=200
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_A, reRegisteredState, batch, new ArrayList<>());
             commit(batch);
@@ -526,7 +526,7 @@ class DRepDistributionCalculatorTest {
 
         var dist = calculator.calculate(540, utxoBalances, Map.of());
 
-        // Timing guard: delegSlot=100 <= prevDeregSlot=200 → filtered
+        // Timing guard: delegSlot=100 < prevDeregSlot=200 → filtered
         var key = new DRepDistributionCalculator.DRepDistKey(0, DREP_A);
         assertThat(dist.getOrDefault(key, BigInteger.ZERO)).isEqualTo(BigInteger.ZERO);
     }
@@ -543,7 +543,7 @@ class DRepDistributionCalculatorTest {
         // DRep X: deregistered (tombstone)
         var deregisteredX = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 136000000L, 10, 150000000L);
+                507, null, 527, true, 136000000L, 10, 150000000L, true);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_A, deregisteredX, batch, new ArrayList<>());
             commit(batch);

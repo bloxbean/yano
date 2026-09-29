@@ -385,6 +385,11 @@ public final class TickedLedgerView implements LedgerView, AutoCloseable {
             public Map<GovernanceStateStore.CredentialKey, CommitteeMemberRecord> all() {
                 return members;
             }
+
+            @Override
+            public boolean certificatePathDropped(GovernanceStateStore.CredentialKey cold) {
+                return effects.prunedCommitteeColds().contains(cold);
+            }
         };
     }
 

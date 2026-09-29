@@ -162,6 +162,9 @@ public final class EpochBoundaryPreview {
      * @param treasuryDelta       Phase 1 treasury delta: minus enacted withdrawals, plus unclaimed
      *                            withdrawals and unclaimed refunds
      * @param unclaimedToTreasury withdrawals and refunds whose reward account is not registered
+     * @param prunedCommitteeColds cold credentials whose committee state (record, certificate-path hot key
+     *                            and resignation) the boundary drops ({@link CommitteeStatePruning}); already
+     *                            absent from {@code committeeMembers}
      */
     public record GovernanceEffects(List<GovActionId> enacted, Set<GovActionId> removedProposals,
                                     Map<GovActionType, GovActionId> newRoots,
@@ -170,7 +173,8 @@ public final class EpochBoundaryPreview {
                                     Optional<ConstitutionRecord> constitution,
                                     List<ProtocolParamUpdate> enactedParamUpdates, boolean hardFork,
                                     Map<RewardRestKey, BigInteger> rewardRestWrites,
-                                    BigInteger treasuryDelta, BigInteger unclaimedToTreasury) {
+                                    BigInteger treasuryDelta, BigInteger unclaimedToTreasury,
+                                    Set<CredentialKey> prunedCommitteeColds) {
     }
 
     /** Key of a reward_rest entry. */
@@ -451,7 +455,7 @@ public final class EpochBoundaryPreview {
         return new GovernanceEffects(List.of(), Set.of(), Map.of(),
                 Collections.unmodifiableMap(new LinkedHashMap<>(governance.committeeMembers())),
                 governance.committeeThreshold(), governance.committeePresent(), governance.constitution(),
-                List.of(), false, Map.of(), BigInteger.ZERO, BigInteger.ZERO);
+                List.of(), false, Map.of(), BigInteger.ZERO, BigInteger.ZERO, Set.of());
     }
 
     private static GovernanceEffects previewEnactmentPhase(LedgerStateSnapshotReader ledger,
@@ -546,6 +550,12 @@ public final class EpochBoundaryPreview {
             }
         }
 
+        // Committee state of non-members (the real boundary prunes it at the start of Phase 2, over the
+        // committed Phase 1 result).
+        Set<CredentialKey> prunedCommittee = CommitteeStatePruning.coldsToPrune(committee,
+                CommitteeStatePruning.certificatePathColds(ledger));
+        prunedCommittee.forEach(committee::remove);
+
         RewardRestWriter writer = new RewardRestWriter(ledger, newEpoch);
         BigInteger unclaimed = BigInteger.ZERO;
 
@@ -580,7 +590,8 @@ public final class EpochBoundaryPreview {
         return new GovernanceEffects(List.copyOf(enacted), Collections.unmodifiableSet(removed),
                 Collections.unmodifiableMap(roots), Collections.unmodifiableMap(committee), threshold,
                 committeePresent, constitution, List.copyOf(paramUpdates), hardFork,
-                Collections.unmodifiableMap(writer.writes), treasuryDelta, unclaimed);
+                Collections.unmodifiableMap(writer.writes), treasuryDelta, unclaimed,
+                Collections.unmodifiableSet(prunedCommittee));
     }
 
     private static CredentialKey normalize(CredentialKey key) {

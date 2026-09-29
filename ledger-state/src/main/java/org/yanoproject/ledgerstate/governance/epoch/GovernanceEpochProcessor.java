@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
 import org.yanoproject.ledgerstate.EpochParamTracker;
 import org.yanoproject.ledgerstate.governance.ratification.ProtocolParamGroupClassifier;
 import org.yanoproject.ledgerstate.governance.GovernanceCborCodec.CommitteeThreshold;
+import org.yanoproject.ledgerstate.CommitteeStatePruning;
 import org.yanoproject.ledgerstate.governance.GovernanceStateStore;
 import org.yanoproject.ledgerstate.governance.GovernanceStateStore.CredentialKey;
 import org.yanoproject.ledgerstate.governance.epoch.DRepDistributionCalculator.DRepDistKey;
@@ -270,6 +271,11 @@ public class GovernanceEpochProcessor {
                 new ArrayList<>();
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
+            // Committee state of non-members, over the committee Phase 1 enacted (Epoch.hs:343). The deletes
+            // are in this batch, so ratification below still reads the placeholders from db; they cannot
+            // count because VoteTallyCalculator and RatificationEngine only take members whose
+            // expiryEpoch >= currentEpoch, and a placeholder's term is 0.
+            CommitteeStatePruning.prune(db, cfState, governanceStore, batch, deltaOps);
             GovernanceEpochResult result = processRatificationPhase(previousEpoch, newEpoch,
                     enactment, batch, deltaOps, utxoBalances, spendableRewardRest, ratificationWriters);
             // Include AdaPot treasury adjustment atomically in Phase 2 batch
@@ -999,8 +1005,7 @@ public class GovernanceEpochProcessor {
                 DRepStateRecord state = entry.getValue();
                 // Skip deregistered tombstone records; flush applies to currently registered DReps.
                 // (Haskell removes deregistered DReps from vsDReps; Yano keeps tombstones.)
-                Long prevDeregSlot = state.previousDeregistrationSlot();
-                if (prevDeregSlot != null && state.registeredAtSlot() <= prevDeregSlot) {
+                if (state.deregistered()) {
                     continue;
                 }
                 int newExpiry = applyDormantFlushNonRevivalGuard(state.expiryEpoch(), numDormant, newEpoch);
@@ -1069,8 +1074,7 @@ public class GovernanceEpochProcessor {
 
     /**
      * Get the set of currently registered DRep IDs (format: "drepType:drepHash").
-     * Uses the tombstone rule: include if previousDeregistrationSlot == null
-     * OR registeredAtSlot > previousDeregistrationSlot.
+     * Excludes retired DReps (tombstone records, {@code deregistered}).
      * Used by EpochBoundaryProcessor for the PV10 hardfork reverse-index rebuild.
      */
     public Set<String> getRegisteredDRepIds() throws RocksDBException {
@@ -1078,8 +1082,7 @@ public class GovernanceEpochProcessor {
         Set<String> registered = new java.util.HashSet<>();
         for (var entry : allDRepStates.entrySet()) {
             var rec = entry.getValue();
-            Long prevDeregSlot = rec.previousDeregistrationSlot();
-            if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
+            if (!rec.deregistered()) {
                 registered.add(entry.getKey().credType() + ":" + entry.getKey().hash());
             }
         }

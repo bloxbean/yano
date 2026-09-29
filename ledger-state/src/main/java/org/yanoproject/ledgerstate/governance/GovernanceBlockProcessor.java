@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yaci.core.model.certs.*;
 import com.bloxbean.cardano.yaci.core.model.governance.*;
 import com.bloxbean.cardano.yaci.core.model.governance.actions.*;
 import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.ledgerstate.DefaultAccountStateStore.BatchStateOverlay;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore.DeltaOp;
 import org.yanoproject.ledgerstate.governance.model.CommitteeMemberRecord;
 import org.yanoproject.ledgerstate.governance.model.DRepStateRecord;
@@ -54,9 +55,9 @@ public class GovernanceBlockProcessor {
     }
 
     /**
-     * Process a block for governance-relevant data: proposals, votes, donations.
-     * DRep certs and committee certs are handled separately via processDRep* and processCommittee* methods,
-     * called from DefaultAccountStateStore.processCertificate() for dual-write.
+     * Process a block for governance-relevant data: proposals and donations.
+     * Votes are handled per transaction via {@link #processVotes}, and DRep and committee certs via the
+     * processDRep* and processCommittee* methods, all called from DefaultAccountStateStore.applyBlock().
      */
     public void processBlock(Block block, long slot, int currentEpoch,
                              WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
@@ -78,10 +79,7 @@ public class GovernanceBlockProcessor {
             // 1. Process proposal submissions
             processProposals(tx, slot, currentEpoch, batch, deltaOps);
 
-            // 2. Process votes + track DRep interactions (single pass)
-            processVotesAndTrackInteractions(tx, currentEpoch, batch, deltaOps);
-
-            // 3. Accumulate donations
+            // 2. Accumulate donations
             BigInteger donation = tx.getDonation();
             if (donation != null && donation.signum() > 0) {
                 blockDonations = blockDonations.add(donation);
@@ -155,8 +153,14 @@ public class GovernanceBlockProcessor {
 
     // ===== Vote Processing + DRep Interaction Tracking (single pass) =====
 
-    private void processVotesAndTrackInteractions(TransactionBody tx, int currentEpoch,
-                                                  WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+    /**
+     * Store a valid transaction's votes and refresh its voting DReps' expiry. Called before the
+     * transaction's certificates, as Haskell refreshes the expiry (Conway/Rules/Certs.hs:240 at PV 9,
+     * Ledger.hs:390 from PV 10), with {@code overlay} holding the block's earlier DRep writes.
+     */
+    public void processVotes(TransactionBody tx, int currentEpoch,
+                             WriteBatch batch, List<DeltaOp> deltaOps,
+                             BatchStateOverlay overlay) throws RocksDBException {
         VotingProcedures vp = tx.getVotingProcedures();
         if (vp == null || vp.getVoting() == null) return;
 
@@ -196,13 +200,13 @@ public class GovernanceBlockProcessor {
 
                 if (!updatedDReps.contains(drepKey)) {
                     updatedDReps.add(drepKey);
-                    Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, voter.getHash());
+                    Optional<DRepStateRecord> existing =
+                            governanceStore.getDRepState(credType, voter.getHash(), overlay);
                     if (existing.isPresent()) {
                         DRepStateRecord rec = existing.get();
                         // Tombstone guard: skip deregistered DReps.
                         // Haskell deletes them from vsDReps; Yano keeps tombstone records.
-                        Long prevDeregSlot = rec.previousDeregistrationSlot();
-                        if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
+                        if (!rec.deregistered()) {
                             // Refresh expiry on vote — V9 and V10+ both use computeDRepExpiry.
                             // Yano defers the Haskell per-tx dormant flush to epoch boundaries,
                             // so we subtract numDormant here. At buildActiveDRepKeys time,
@@ -215,7 +219,8 @@ public class GovernanceBlockProcessor {
                             DRepStateRecord updated = rec
                                     .withLastInteraction(currentEpoch)
                                     .withExpiry(newExpiry, true);
-                            governanceStore.storeDRepState(credType, voter.getHash(), updated, batch, deltaOps);
+                            governanceStore.storeDRepState(credType, voter.getHash(), updated, batch, deltaOps,
+                                    overlay);
                         }
                     }
                 }
@@ -230,7 +235,8 @@ public class GovernanceBlockProcessor {
      * Called alongside the existing PREFIX_DREP_REG write in DefaultAccountStateStore.
      */
     public void processDRepRegistration(RegDrepCert cert, long slot, int currentEpoch,
-                                        WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                        WriteBatch batch, List<DeltaOp> deltaOps,
+                                        BatchStateOverlay overlay) throws RocksDBException {
         int credType = credTypeFromCert(cert.getDrepCredential());
         String hash = cert.getDrepCredential().getHash();
         BigInteger deposit = cert.getCoin() != null ? cert.getCoin() : BigInteger.ZERO;
@@ -243,7 +249,7 @@ public class GovernanceBlockProcessor {
         int initialExpiry = currentEpoch + drepActivity - numDormant;
 
         // Check for previous deregistration (needed for v9 bonus bug)
-        Optional<DRepStateRecord> prevState = governanceStore.getDRepState(credType, hash);
+        Optional<DRepStateRecord> prevState = governanceStore.getDRepState(credType, hash, overlay);
         Long previousDeregSlot = null;
         if (prevState.isPresent()) {
             // Re-registration: the previous state's registered slot serves as the deregistration reference
@@ -268,10 +274,11 @@ public class GovernanceBlockProcessor {
                 true,
                 slot,
                 protocolVersion,
-                previousDeregSlot
+                previousDeregSlot,
+                false
         );
 
-        governanceStore.storeDRepState(credType, hash, record, batch, deltaOps);
+        governanceStore.storeDRepState(credType, hash, record, batch, deltaOps, overlay);
         log.debug("DRep registered: credType={} hash={} epoch={} protocolVer={} initialExpiry={}",
                 credType, hash.substring(0, Math.min(8, hash.length())), currentEpoch, protocolVersion, initialExpiry);
     }
@@ -281,14 +288,16 @@ public class GovernanceBlockProcessor {
      * then remove the governance DRep state.
      */
     public void processDRepDeregistration(UnregDrepCert cert, long slot,
-                                          WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                          WriteBatch batch, List<DeltaOp> deltaOps,
+                                          BatchStateOverlay overlay) throws RocksDBException {
         int credType = credTypeFromCert(cert.getDrepCredential());
         String hash = cert.getDrepCredential().getHash();
 
         // Store the deregistration slot in case of future re-registration (v9 bug)
         // We store a minimal record with the deregistration slot so that if re-registered,
-        // we can track previousDeregistrationSlot
-        Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, hash);
+        // we can track previousDeregistrationSlot. Read through the block overlay: the registration
+        // may be earlier in this block (preprod DRep 739701e4…, ADR-056 Phase 7c).
+        Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, hash, overlay);
         if (existing.isPresent()) {
             // Update the record to mark deregistration slot before removing
             DRepStateRecord deregRecord = new DRepStateRecord(
@@ -301,10 +310,11 @@ public class GovernanceBlockProcessor {
                     false, // no longer active
                     existing.get().registeredAtSlot(),
                     existing.get().protocolVersionAtRegistration(),
-                    slot // THIS deregistration becomes the previous deregistration for any future re-reg
+                    slot, // THIS deregistration becomes the previous deregistration for any future re-reg
+                    true
             );
             // Keep the record (don't delete) so re-registration can read previousDeregistrationSlot
-            governanceStore.storeDRepState(credType, hash, deregRecord, batch, deltaOps);
+            governanceStore.storeDRepState(credType, hash, deregRecord, batch, deltaOps, overlay);
         }
     }
 
@@ -313,16 +323,16 @@ public class GovernanceBlockProcessor {
      * Haskell GovCert.hs refreshes expiry on ConwayUpdateDRep in all Conway versions.
      */
     public void processDRepUpdate(UpdateDrepCert cert, int currentEpoch,
-                                  WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                  WriteBatch batch, List<DeltaOp> deltaOps,
+                                  BatchStateOverlay overlay) throws RocksDBException {
         int credType = credTypeFromCert(cert.getDrepCredential());
         String hash = cert.getDrepCredential().getHash();
 
-        Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, hash);
+        Optional<DRepStateRecord> existing = governanceStore.getDRepState(credType, hash, overlay);
         if (existing.isPresent()) {
             DRepStateRecord rec = existing.get();
             // Tombstone guard: skip deregistered DReps
-            Long prevDeregSlot = rec.previousDeregistrationSlot();
-            if (prevDeregSlot != null && rec.registeredAtSlot() <= prevDeregSlot) {
+            if (rec.deregistered()) {
                 return;
             }
 
@@ -346,7 +356,7 @@ public class GovernanceBlockProcessor {
                     .withAnchor(anchorUrl, anchorHash)
                     .withLastInteraction(currentEpoch)
                     .withExpiry(newExpiry, true);
-            governanceStore.storeDRepState(credType, hash, updated, batch, deltaOps);
+            governanceStore.storeDRepState(credType, hash, updated, batch, deltaOps, overlay);
         }
     }
 
@@ -359,22 +369,23 @@ public class GovernanceBlockProcessor {
      * We always store the hot key so it's available when the member is later enrolled.
      */
     public void processCommitteeHotKeyAuth(AuthCommitteeHotCert cert,
-                                           WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                           WriteBatch batch, List<DeltaOp> deltaOps,
+                                           BatchStateOverlay overlay) throws RocksDBException {
         int coldCt = credTypeFromCert(cert.getCommitteeColdCredential());
         String coldHash = cert.getCommitteeColdCredential().getHash();
         int hotCt = credTypeFromCert(cert.getCommitteeHotCredential());
         String hotHash = cert.getCommitteeHotCredential().getHash();
 
-        Optional<CommitteeMemberRecord> existing = governanceStore.getCommitteeMember(coldCt, coldHash);
+        Optional<CommitteeMemberRecord> existing = governanceStore.getCommitteeMember(coldCt, coldHash, overlay);
         if (existing.isPresent()) {
             CommitteeMemberRecord updated = existing.get().withHotKey(hotCt, hotHash);
-            governanceStore.storeCommitteeMember(coldCt, coldHash, updated, batch, deltaOps);
+            governanceStore.storeCommitteeMember(coldCt, coldHash, updated, batch, deltaOps, overlay);
         } else {
             // Member not yet in committee — store placeholder with hot key so it's available
             // when UpdateCommittee enactment later adds this member.
             // expiryEpoch=0 ensures this placeholder is never counted as active.
             CommitteeMemberRecord placeholder = new CommitteeMemberRecord(hotCt, hotHash, 0, false);
-            governanceStore.storeCommitteeMember(coldCt, coldHash, placeholder, batch, deltaOps);
+            governanceStore.storeCommitteeMember(coldCt, coldHash, placeholder, batch, deltaOps, overlay);
             log.debug("Committee hot key auth stored for future member {}:{}",
                     coldCt, coldHash.substring(0, Math.min(8, coldHash.length())));
         }
@@ -384,14 +395,17 @@ public class GovernanceBlockProcessor {
      * Process committee resignation.
      */
     public void processCommitteeResignation(ResignCommitteeColdCert cert,
-                                            WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                            WriteBatch batch, List<DeltaOp> deltaOps,
+                                            BatchStateOverlay overlay) throws RocksDBException {
         int coldCt = credTypeFromCert(cert.getCommitteeColdCredential());
         String coldHash = cert.getCommitteeColdCredential().getHash();
 
-        Optional<CommitteeMemberRecord> existing = governanceStore.getCommitteeMember(coldCt, coldHash);
-        if (existing.isPresent()) {
-            governanceStore.storeCommitteeMember(coldCt, coldHash, existing.get().asResigned(), batch, deltaOps);
-        }
+        // A potential future member may resign before enrollment (GovCert.hs:197-208); the resignation
+        // is stored like a hot-key placeholder (expiryEpoch 0) and kept by the enactment.
+        CommitteeMemberRecord resigned = governanceStore.getCommitteeMember(coldCt, coldHash, overlay)
+                .map(CommitteeMemberRecord::asResigned)
+                .orElseGet(() -> CommitteeMemberRecord.noHotKey(0).asResigned());
+        governanceStore.storeCommitteeMember(coldCt, coldHash, resigned, batch, deltaOps, overlay);
     }
 
     // ===== Utility =====
