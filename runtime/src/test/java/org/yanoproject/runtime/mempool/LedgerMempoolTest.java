@@ -14,21 +14,26 @@ import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedures;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.InfoAction;
 import com.bloxbean.cardano.client.util.HexUtil;
+import com.bloxbean.cardano.yaci.events.api.VetoableEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
+import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseResult;
+import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
 import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.Lookup;
 import org.yanoproject.ledger.rules.view.model.AccountState;
 import org.yanoproject.ledger.rules.view.model.CredentialKey;
+import org.yanoproject.runtime.chain.MempoolAdmissionLimits;
 import org.yanoproject.runtime.chain.MempoolAdmissionResult;
+import org.yanoproject.runtime.validation.ValidationEnvFactory;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -676,6 +681,36 @@ class LedgerMempoolTest {
         MempoolAdmissionResult flagged = admit(mempool, build(claimedInvalid, world), origin);
         assertThat(flagged.status()).isEqualTo(MempoolAdmissionResult.Status.LEDGER_REJECTED);
         assertThat(flagged.rejections()).anyMatch(r -> r.reason().contains("ENGINE.Phase2InvalidTxNotSupported"));
+        assertThat(mempool.isEmpty()).isTrue();
+    }
+
+    // ------------------------------------------------------------------ unavailable ledger state
+
+    /**
+     * ADR-056 Phase 7c: an admission that fails only with {@code ENGINE.LedgerStateUnavailable} (here the validation
+     * environment cannot be built, as across the Conway bootstrap boundary) is not a verdict: the submitter gets the
+     * retryable {@code CATCHING_UP} (REST 503), not {@code LEDGER_REJECTED} (REST 400). A real rejection stays one.
+     */
+    @Test
+    void anUnavailableLedgerStateIsRetryableNotARejection() {
+        ValidationEnvFactory unavailable = (slot, view) -> {
+            throw new LedgerStateUnavailableException("test: governance enactments at the boundary are unknown");
+        };
+        mempool.close();
+        mempool = new LedgerMempool(new JavaLedgerValidationEngine(evaluator), unavailable, chain, worker, null,
+                LedgerMempool.Settings.defaults());
+        mempool.start();
+
+        MempoolAdmissionResult retry = admit(mempool, pay(10));
+        assertThat(retry.status()).isEqualTo(MempoolAdmissionResult.Status.CATCHING_UP);
+        assertThat(retry.retryable()).isTrue();
+        assertThat(mempool.isEmpty()).isTrue();
+        assertThat(mempool.ledgerStatus().catchingUpRejections()).isEqualTo(1);
+
+        MempoolAdmissionResult rejected = mempool.tryAdmit(pay(11), TxValidationRequest.Origin.LOCAL,
+                (bytes, txHash, resolver) -> List.of(new VetoableEvent.Rejection("Plugin", "refused")),
+                MempoolAdmissionLimits.unbounded(), null);
+        assertThat(rejected.status()).isEqualTo(MempoolAdmissionResult.Status.LEDGER_REJECTED);
         assertThat(mempool.isEmpty()).isTrue();
     }
 

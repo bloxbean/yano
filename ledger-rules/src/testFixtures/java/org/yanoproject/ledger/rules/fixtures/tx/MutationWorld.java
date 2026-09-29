@@ -31,6 +31,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.cert.PoolRegistration;
+import com.bloxbean.cardano.client.transaction.spec.cert.RegCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeCredential;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionType;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.InfoAction;
@@ -43,6 +44,8 @@ import com.bloxbean.cardano.client.spec.Script;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.ValidationEnv;
+import org.yanoproject.ledger.rules.conway.tx.CborSlice;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
 import org.yanoproject.ledger.rules.view.model.AccountState;
@@ -138,6 +141,15 @@ public final class MutationWorld {
     public static final PlutusV2Script ALWAYS_SUCCEEDS_V2 = PlutusV2Script.builder()
             .type("PlutusScriptV2")
             .cborHex("4746010000222499")
+            .build();
+
+    /**
+     * {@link #ALWAYS_SUCCEEDS_V2} with program version 1.1.0: well formed (decoding does not check the version), but
+     * PlutusV2 runs Plutus Core 1.1.0 from protocol version 11 only ({@code plcVersionsAvailableIn}).
+     */
+    public static final PlutusV2Script PLUTUS_CORE_110_V2 = PlutusV2Script.builder()
+            .type("PlutusScriptV2")
+            .cborHex("4746010100222499")
             .build();
 
     /** A PlutusV3 "script" whose bytes are not a flat-encoded program: not well formed. */
@@ -463,6 +475,47 @@ public final class MutationWorld {
         spec.plutusScripts.add(ALWAYS_SUCCEEDS);
         spec.redeemers.add(spendRedeemer(100_000));
         return spec;
+    }
+
+    /**
+     * @return the simple base registering the stake credential of {@link #PLUTUS_CORE_110_V2} ({@code reg_cert}),
+     *         authorised by that script (certifying purpose, redeemer {@code cert[0]})
+     */
+    public static TxSpec plutusCore110Spec() {
+        TxSpec spec = simpleSpec();
+        try {
+            spec.certs.add(new RegCert(StakeCredential.fromScriptHash(PLUTUS_CORE_110_V2.getScriptHash()), KEY_DEPOSIT));
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        spec.plutusV2Scripts.add(PLUTUS_CORE_110_V2);
+        spec.redeemers.add(Redeemer.builder().tag(RedeemerTag.Cert).index(BigInteger.ZERO)
+                .data(ConstrPlutusData.of(0))
+                .exUnits(ExUnits.builder().mem(BigInteger.valueOf(100_000)).steps(BigInteger.valueOf(50_000_000))
+                        .build())
+                .build());
+        spec.collateral.add(collateralInput(0));
+        spec.changeAdjust = KEY_DEPOSIT.negate();
+        return spec;
+    }
+
+    /**
+     * @return {@code tx} with {@code entryHex} (a CBOR key and value) appended to its witness-set map, for encodings
+     *         Haskell's decoder treats differently from CCL's
+     */
+    public static byte[] withWitnessEntry(byte[] tx, String entryHex) {
+        CborSlice witnesses = RawTransaction.parse(tx, null).witnessSet();
+        int header = tx[witnesses.start()] & 0xff;
+        if (header < 0xa0 || header > 0xb6) {
+            throw new IllegalArgumentException("not a small witness-set map: " + Integer.toHexString(header));
+        }
+        byte[] entry = HexUtil.decodeHexString(entryHex);
+        byte[] out = new byte[tx.length + entry.length];
+        System.arraycopy(tx, 0, out, 0, witnesses.end());
+        out[witnesses.start()] = (byte) (header + 1);
+        System.arraycopy(entry, 0, out, witnesses.end(), entry.length);
+        System.arraycopy(tx, witnesses.end(), out, witnesses.end() + entry.length, tx.length - witnesses.end());
+        return out;
     }
 
     /** The script base's spending redeemer (index 1) with {@code mem} memory units and 50M steps. */

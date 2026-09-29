@@ -45,7 +45,7 @@ public final class ValidationEngines implements AutoCloseable {
                          Map<String, Boolean> shadowSyncHealth) {
     }
 
-    /** Engine-context key the shadow-sync engines are created with ({@code java} is observe-only there). */
+    /** Engine-context key the shadow-sync engines are created with (the Java engines are observe-only there). */
     static final String JAVA_EXPERIMENTAL = "yano.validation.java-engine.experimental";
 
     private final ValidationEngineSettings settings;
@@ -244,7 +244,7 @@ public final class ValidationEngines implements AutoCloseable {
         shadowSyncEngines.forEach(ValidationEngines::closeQuietly);
     }
 
-    /** The node's context with the java engine's experimental opt-in answered (shadow sync only observes). */
+    /** The node's context with the Java engines' experimental opt-in answered (shadow sync only observes). */
     private record ObserveOnlyContext(EngineContext delegate) implements EngineContext {
         @Override
         public Optional<String> config(String key) {
@@ -274,6 +274,11 @@ public final class ValidationEngines implements AutoCloseable {
         @Override
         public ScriptPhaseEvaluator scriptPhaseEvaluator() {
             return delegate.scriptPhaseEvaluator();
+        }
+
+        @Override
+        public ScriptPhaseEvaluator julcScriptPhaseEvaluator() {
+            return delegate.julcScriptPhaseEvaluator();
         }
 
         @Override

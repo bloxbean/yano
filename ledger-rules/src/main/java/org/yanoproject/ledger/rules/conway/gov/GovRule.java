@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.SortedMap;
 
 /**
  * Conway {@code GOV} ({@code conwayGovTransition}, Conway/Rules/Gov.hs:446-613), run by {@code LEDGER} when
@@ -74,7 +75,7 @@ public final class GovRule {
             gov.run(ConwayScopes.GOV_PROPOSAL, new ProposalSubject(subject, proposal,
                     new GovActionId(proposalTxId, proposal.index())));
         }
-        Map<RawVoter, List<GovActionId>> votes = ctx.raw().votes();
+        Map<RawVoter, SortedMap<GovActionId, Integer>> votes = ctx.raw().votes();
         if (!votes.isEmpty()) {
             gov.run(ConwayScopes.GOV_VOTES, votes(subject, votes));
         }
@@ -82,7 +83,7 @@ public final class GovRule {
     }
 
     /** Sorts the votes (:568-603): unknown voters, unknown actions of known voters, and the known votes. */
-    private static VotesSubject votes(GovSubject gov, Map<RawVoter, List<GovActionId>> votes) {
+    private static VotesSubject votes(GovSubject gov, Map<RawVoter, SortedMap<GovActionId, Integer>> votes) {
         List<RawVoter> unknownVoters = new ArrayList<>();
         List<GovActionId> unknownActions = new ArrayList<>();
         List<Map.Entry<RawVoter, GovAction>> known = new ArrayList<>();
@@ -91,7 +92,7 @@ public final class GovRule {
                 unknownVoters.add(voter);
                 return;
             }
-            for (GovActionId id : ids) {
+            for (GovActionId id : ids.keySet()) {
                 Optional<GovAction> action = gov.proposals().lookup(id);
                 if (action.isPresent()) {
                     known.add(Map.entry(voter, action.get()));

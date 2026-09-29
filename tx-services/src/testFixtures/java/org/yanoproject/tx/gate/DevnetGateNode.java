@@ -25,6 +25,7 @@ import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.Lookup;
 import org.yanoproject.ledger.rules.view.model.AccountState;
 import org.yanoproject.ledger.rules.view.model.CredentialKey;
+import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 import org.yanoproject.runtime.assembly.Yano;
 import org.yanoproject.runtime.blockproducer.TransactionValidationException;
 import org.yanoproject.runtime.kernel.NodeKernel;
@@ -39,7 +40,6 @@ import org.yanoproject.runtime.internal.RuntimeNode;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
 import org.yanoproject.runtime.tx.TxSubsystem;
 import org.yanoproject.runtime.validation.ValidationEngines;
-import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 import org.yanoproject.testkit.devnet.YanoDevnetTestConfig;
 import org.yanoproject.tx.DefaultTransactionServicesFactory;
 
@@ -58,8 +58,9 @@ import java.util.function.Function;
 
 /**
  * An in-process devnet block producer for the ADR-056 Phase 6b gates, with an engine-API admission engine
- * ({@code java} behind the experimental flag, or {@code amaru}): isolated temporary storage and a free port, short
- * epochs, and the governance parameters patched so a proposal expires within the test (lifetime 1 epoch).
+ * ({@code java-julc} or {@code java-scalus} behind the experimental flag, or {@code amaru}): isolated temporary storage
+ * and a free port, short epochs, and the governance parameters patched so a proposal expires within the test (lifetime
+ * 1 epoch).
  */
 public final class DevnetGateNode implements AutoCloseable {
 
@@ -129,7 +130,7 @@ public final class DevnetGateNode implements AutoCloseable {
         this.eventBus = kernel.context().eventBus();
         ValidationEngines engines = node.validationEngines().orElseThrow();
         List<LedgerValidationEngine> independent = new ArrayList<>();
-        independent.add(new JavaLedgerValidationEngine(new ScalusScriptPhaseEvaluator()));
+        independent.add(new JavaLedgerValidationEngine(new JulcScriptPhaseEvaluator()));
         if (!JavaLedgerValidationEngine.NAME.equals(engines.admissionEngineName())) {
             independent.add(engines.admissionEngine());
         }

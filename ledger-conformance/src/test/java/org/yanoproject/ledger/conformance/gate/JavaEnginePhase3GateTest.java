@@ -17,7 +17,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The ADR-056 Phase 3 gate: the Java engine ({@code java-engine}) against the Amaru scenarios of the families it
+ * The ADR-056 Phase 3 gate: the Java engine ({@code java-julc}) against the Amaru scenarios of the families it
  * implements.
  *
  * <p><b>Gate set.</b> Every scenario whose expected constructor is in the {@code UTXOW}, {@code UTXO} or

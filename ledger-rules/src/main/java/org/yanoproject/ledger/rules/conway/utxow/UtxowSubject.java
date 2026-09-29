@@ -26,6 +26,7 @@ import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -83,30 +84,50 @@ public final class UtxowSubject {
     public static UtxowSubject of(TransitionContext ctx) {
         Objects.requireNonNull(ctx, "ctx");
         RawTransaction raw = ctx.raw();
-        SortedMap<String, RawScript> provided = new TreeMap<>();
+        SortedMap<String, RawScript> references = referenceScripts(raw, ctx::utxo);
+        SortedMap<String, RawScript> provided = scriptsProvided(raw, references);
         SortedSet<String> witnessed = new TreeSet<>();
-        for (RawScript script : raw.witnessScripts()) {
-            String hash = script.hashHex();
-            witnessed.add(hash);
-            provided.put(hash, script);
-        }
-        // getReferenceScripts utxo (referenceInputs ∪ inputs), left-biased union over the witness scripts
-        SortedSet<TxInRef> providing = new TreeSet<>(raw.inputSet());
-        providing.addAll(raw.referenceSet());
-        SortedSet<String> referenced = new TreeSet<>();
-        for (TxInRef in : providing) {
-            Optional<UtxoEntry> entry = ctx.utxo(in);
-            if (entry.isPresent() && entry.get().output().getScriptRef() != null) {
-                RawScript script = referenceScript(in, entry.get().output());
-                String hash = script.hashHex();
-                referenced.add(hash);
-                provided.put(hash, script);
-            }
-        }
+        raw.witnessScripts().forEach(script -> witnessed.add(script.hashHex()));
+        SortedSet<String> referenced = new TreeSet<>(references.keySet());
         List<NeededScript> needed = WitnessNeeds.scriptsNeeded(ctx);
         SortedSet<String> neededHashes = needed.stream().map(NeededScript::hash)
                 .collect(Collectors.toCollection(TreeSet::new));
         return new UtxowSubject(ctx, provided, witnessed, referenced, needed, neededHashes);
+    }
+
+    /**
+     * {@code getBabbageScriptsProvided} (Babbage/UTxO.hs:140-150) outside a transition (a phase-2 evaluator, ADR-056
+     * Phase 7c): the witness scripts and the reference scripts of the spending and reference inputs, by hash.
+     *
+     * @param utxo the resolved output of an input, empty when it is not in the UTxO
+     */
+    public static SortedMap<String, RawScript> scriptsProvided(RawTransaction raw,
+                                                               Function<TxInRef, Optional<UtxoEntry>> utxo) {
+        return scriptsProvided(raw, referenceScripts(raw, utxo));
+    }
+
+    private static SortedMap<String, RawScript> scriptsProvided(RawTransaction raw,
+                                                                SortedMap<String, RawScript> references) {
+        SortedMap<String, RawScript> provided = new TreeMap<>();
+        raw.witnessScripts().forEach(script -> provided.put(script.hashHex(), script));
+        provided.putAll(references);
+        return provided;
+    }
+
+    /** {@code getReferenceScripts utxo (referenceInputs ∪ inputs)}, by hash. */
+    private static SortedMap<String, RawScript> referenceScripts(RawTransaction raw,
+                                                                 Function<TxInRef, Optional<UtxoEntry>> utxo) {
+        SortedSet<TxInRef> providing = new TreeSet<>(raw.inputSet());
+        providing.addAll(raw.referenceSet());
+        SortedMap<String, RawScript> references = new TreeMap<>();
+        for (TxInRef in : providing) {
+            Optional<UtxoEntry> entry = utxo.apply(in);
+            if (entry.isPresent() && entry.get().output().getScriptRef() != null) {
+                RawScript script = referenceScript(in, entry.get().output());
+                references.put(script.hashHex(), script);
+            }
+        }
+        return references;
     }
 
     private static RawScript referenceScript(TxInRef in, TransactionOutput output) {
@@ -234,12 +255,11 @@ public final class UtxowSubject {
             neededList.forEach(n -> neededKeys.putIfAbsent(n.key(), n));
             Set<Long> present = new HashSet<>();
             for (RawRedeemer r : raw.redeemers()) {
-                present.add(((long) r.tag() << 32) | r.index());
+                present.add(r.key());
             }
             List<String> extra = new ArrayList<>();
             for (RawRedeemer r : raw.redeemers()) {
-                long key = ((long) r.tag() << 32) | r.index();
-                if (!neededKeys.containsKey(key)) {
+                if (!neededKeys.containsKey(r.key())) {
                     extra.add(WitnessNeeds.purposeName(r.tag()) + " (AsIx " + r.index() + ")");
                 }
             }

@@ -54,14 +54,7 @@ public final class UtxoConversions {
     }
 
     public static Utxo toUtxo(UtxoEntry entry) {
-        Utxo projected = TransactionOutputProjector.project(entry.outpoint().txHash(), entry.outpoint().index(),
-                entry.output());
-        byte[] inline = entry.inlineDatumCbor();
-        if (inline == null) {
-            return projected;
-        }
-        return new Utxo(projected.outpoint(), projected.address(), projected.lovelace(), projected.assets(),
-                projected.datumHash(), inline, projected.scriptRef(), projected.referenceScriptHash(),
-                projected.collateralReturn(), projected.slot(), projected.blockNumber(), projected.blockHash());
+        return TransactionOutputProjector.project(entry.outpoint().txHash(), entry.outpoint().index(),
+                entry.output(), entry.inlineDatumCbor());
     }
 }

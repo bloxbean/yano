@@ -15,6 +15,7 @@ import org.yanoproject.ledger.rules.SlotConfigSupplier;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.phase2.ForecastHorizon;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
+import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 import org.yanoproject.ledger.rules.util.Phase2EnvDigest;
 import org.yanoproject.runtime.blockproducer.GenesisConfig;
 import org.yanoproject.runtime.genesis.ShelleyGenesisData;
@@ -38,7 +39,8 @@ import java.util.function.Supplier;
  * {@link ValidationEngineSettings#usesEngineApi()}: engines are discovered with {@code ServiceLoader}
  * ({@code scalus} from scalus-bridge, {@code amaru} from the optional amaru-validator module), and each gets an
  * {@link EngineContext} with the node's configuration, genesis-derived network facts, slot timing and the
- * Scalus {@link ScriptPhaseEvaluator}.
+ * phase-2 evaluators: julc (engine {@code java-julc}) and Scalus (engines {@code java-scalus} and {@code amaru} with
+ * {@code phase2: scalus}; ADR-056 Phase 7c).
  */
 final class ValidationEngineBootstrap {
 
@@ -81,13 +83,22 @@ final class ValidationEngineBootstrap {
             return Optional.empty();
         }
         ClassLoader loader = Thread.currentThread().getContextClassLoader();
-        LedgerValidationEngines registry = LedgerValidationEngines.discover(
-                loader != null ? loader : ValidationEngineBootstrap.class.getClassLoader());
+        LedgerValidationEngines registry;
+        try {
+            registry = LedgerValidationEngines.discover(
+                    loader != null ? loader : ValidationEngineBootstrap.class.getClassLoader());
+        } catch (RuntimeException e) {
+            // A listed engine provider that cannot be loaded (a native image without its reflection
+            // registration, a broken plugin jar) stops the node: running on without any validation would be a
+            // silent fallback (ADR-056 §7, ADR-057 §2).
+            throw new ValidationEngineConfigurationException(e.getMessage(), e);
+        }
         Supplier<NetworkParameters> network = memoized(network(genesis, epochSlotCalc, slotConfig, protocolMagic,
                 networkId));
         ForecastHorizon horizon = ForecastHorizon.of(() -> network.get().stabilityWindow(), epochSlotCalc);
+        // Both phase-2 evaluators share the forecast horizon: julc for java-julc, Scalus for java-scalus and amaru.
         EngineContext context = new Context(globals, network, protocolParams, slotConfig, currentSlot,
-                new ScalusScriptPhaseEvaluator(horizon));
+                new ScalusScriptPhaseEvaluator(horizon), new JulcScriptPhaseEvaluator(horizon));
         return Optional.of(ValidationEngines.create(settings, registry, context,
                 envFactory(epochSlotCalc, slotConfig, networkId)));
     }
@@ -141,8 +152,14 @@ final class ValidationEngineBootstrap {
     /** The {@link EngineContext} handed to engine factories. */
     private record Context(Map<String, Object> globals, Supplier<NetworkParameters> network,
                            EpochProtocolParamsSupplier protocolParams, SlotConfigSupplier slotConfig,
-                           LongSupplier currentSlot, ScriptPhaseEvaluator scriptPhaseEvaluator)
+                           LongSupplier currentSlot, ScriptPhaseEvaluator scriptPhaseEvaluator,
+                           ScriptPhaseEvaluator julcEvaluator)
             implements EngineContext {
+
+        @Override
+        public ScriptPhaseEvaluator julcScriptPhaseEvaluator() {
+            return julcEvaluator;
+        }
 
         @Override
         public Optional<String> config(String key) {

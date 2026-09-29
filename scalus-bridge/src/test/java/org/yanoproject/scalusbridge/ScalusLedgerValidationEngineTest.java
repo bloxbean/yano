@@ -28,6 +28,9 @@ import org.yanoproject.ledger.rules.TxValidationRequest.Origin;
 import org.yanoproject.ledger.rules.TxValidationRequest.Rule;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.ValidationError;
+import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
+import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
+import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
 import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
 import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.OverlayLedgerView;
@@ -156,6 +159,23 @@ class ScalusLedgerValidationEngineTest {
                 base().build(), env(), Rule.MEMPOOL, Origin.LOCAL, null));
 
         assertThat(first(outcome).qualifiedName()).isEqualTo("ENGINE." + ScalusLedgerValidationEngine.DECODING_FAILURE);
+    }
+
+    /**
+     * Scalus decodes a witness set with key 8; Haskell's decoder does not ({@code AlonzoTxWits}: keys 0-7), and neither
+     * does {@code RawTransaction}, which the effects are derived from: a decoding failure, not an engine failure.
+     */
+    @Test
+    void aTransactionHaskellCannotDecodeIsADecodingFailure() {
+        InMemoryLedgerView world = MutationWorld.view();
+        TxSpec spec = MutationWorld.simpleSpec();
+        spec.feeAdjust = BigInteger.valueOf(10_000); // for the entry's two bytes
+        byte[] tx = MutationWorld.withWitnessEntry(ConwayTxBuilder.build(spec, world).cbor(), "0801");
+        TxValidationOutcome outcome = engine.validate(new TxValidationRequest(tx, world, MutationWorld.env(),
+                Rule.MEMPOOL, Origin.LOCAL, null));
+
+        assertThat(first(outcome).qualifiedName()).isEqualTo("ENGINE." + ScalusLedgerValidationEngine.DECODING_FAILURE);
+        assertThat(first(outcome).detail()).contains("Scalus accepted").contains("unknown witness set key 8");
     }
 
     // ------------------------------------------------------------------ fixtures

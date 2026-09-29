@@ -1,14 +1,10 @@
 package org.yanoproject.tx.gate;
 
 import com.bloxbean.cardano.client.account.Account;
-import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.api.model.Amount;
-import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.api.model.Utxo;
-import com.bloxbean.cardano.client.backend.blockfrost.service.BFBackendService;
 import com.bloxbean.cardano.client.common.model.Networks;
-import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.client.function.TxSigner;
 import com.bloxbean.cardano.client.function.helper.SignerProviders;
 import com.bloxbean.cardano.client.quicktx.Tx;
@@ -19,21 +15,13 @@ import com.bloxbean.cardano.client.transaction.spec.governance.Voter;
 import com.bloxbean.cardano.client.transaction.spec.governance.VoterType;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.InfoAction;
-import com.bloxbean.cardano.client.util.HexUtil;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.io.PrintStream;
 import java.math.BigInteger;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -43,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-056 Phase 6b Haskell-follower workload: submits the Phase 6 dependent chains to a running Yano devnet node
- * (the release-QA {@code haskell-sync} run, started with the java engine) over its REST API, so the Haskell
+ * (the release-QA {@code haskell-sync} run, started with the java-julc engine) over its REST API, so the Haskell
  * follower has to validate blocks that carry them. Runs only with {@code -Dyano.gate.remote-url=http://host:port}.
  *
  * <p>Expected genesis (the harness patches the pv10 devnet copy): epoch length 600 slots of 0.2 s, governance
@@ -56,22 +44,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HaskellFollowerWorkloadTest {
 
     private static final Anchor ANCHOR = new Anchor("https://example.com/proposal.json", new byte[32]);
-    private static final ObjectMapper JSON = new ObjectMapper();
     private static final long EPOCH_LENGTH = Long.getLong("yano.gate.epoch-length", 600);
 
-    private final String base = System.getProperty("yano.gate.remote-url").replaceAll("/+$", "");
-    private final BFBackendService backend = new BFBackendService(base + "/api/v1/", "gate");
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    private final RemoteYanoNode node = new RemoteYanoNode(System.getProperty("yano.gate.remote-url"));
     private final List<String> log = new ArrayList<>();
     private final PrintStream out = System.out;
 
     private final Account payer = account(LedgerRulesDevnetMatrix.DEVNET_MNEMONIC, 0);
     private final GateWallet wallet = new GateWallet(Set.of(payer.baseAddress()));
-    private final GateTxFactory factory = new GateTxFactory(this::protocolParams);
+    private final GateTxFactory factory = new GateTxFactory(node::protocolParams);
 
     @Test
     void submitTheDependentChainsToAFollowedDevnet() throws Exception {
-        Utxo genesis = genesisUtxo(payer.baseAddress());
+        Utxo genesis = node.genesisUtxo(payer.baseAddress());
         wallet.add(genesis);
         Account staker = account(LedgerRulesDevnetMatrix.DEVNET_MNEMONIC, 101);
         Account drep = account(LedgerRulesDevnetMatrix.DEVNET_MNEMONIC, 102);
@@ -124,7 +109,7 @@ class HaskellFollowerWorkloadTest {
         await("epoch " + nextEpoch, 600_000, () -> epochOf(tipSlot()) >= nextEpoch);
         Thread.sleep(3_000);
         long epoch = epochOf(tipSlot());
-        BigInteger treasury = treasury(epoch);
+        BigInteger treasury = node.treasury(epoch);
         String treasuryTx = submitWith("C.treasury-value", new Tx().payToAddress(payer.baseAddress(), Amount.ada(2))
                 .from(payer.baseAddress()), signer(), treasury);
         awaitConfirmed(List.of(treasuryTx), 60_000);
@@ -132,8 +117,8 @@ class HaskellFollowerWorkloadTest {
 
         // The proposals expire after proposalEpoch + 1 and are refunded at the boundary into proposalEpoch + 3.
         String returnStake = returnAccount.stakeAddress();
-        await("proposal refund", 900_000, () -> withdrawable(returnStake).signum() > 0);
-        BigInteger refund = withdrawable(returnStake);
+        await("proposal refund", 900_000, () -> node.withdrawable(returnStake).signum() > 0);
+        BigInteger refund = node.withdrawable(returnStake);
         String withdrawal = submit("C.withdraw-refund", new Tx().withdraw(returnStake, refund)
                 .from(payer.baseAddress()), signer(stake(returnAccount)));
         awaitConfirmed(List.of(withdrawal), 60_000);
@@ -143,7 +128,7 @@ class HaskellFollowerWorkloadTest {
         if (report != null && !report.isBlank()) {
             Files.write(Path.of(report), log);
         }
-        assertThat(withdrawable(returnStake)).isZero();
+        assertThat(node.withdrawable(returnStake)).isZero();
     }
 
     // ------------------------------------------------------------------ transactions
@@ -158,7 +143,7 @@ class HaskellFollowerWorkloadTest {
     }
 
     private String submitBuilt(String label, GateTxFactory.Built built) throws Exception {
-        Result<String> result = backend.getTransactionService().submitTransaction(built.cbor());
+        Result<String> result = node.backend().getTransactionService().submitTransaction(built.cbor());
         if (!result.isSuccessful()) {
             note(label + " REJECTED " + result.getResponse());
             throw new AssertionError(label + " rejected: " + result.getResponse());
@@ -194,39 +179,8 @@ class HaskellFollowerWorkloadTest {
 
     // ------------------------------------------------------------------ node queries
 
-    private ProtocolParams protocolParams() {
-        try {
-            Result<ProtocolParams> result = backend.getEpochService().getProtocolParameters();
-            if (!result.isSuccessful()) {
-                throw new IllegalStateException("protocol parameters: " + result.getResponse());
-            }
-            return result.getValue();
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    private Utxo genesisUtxo(String address) throws Exception {
-        String txHash = HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(new Address(address).getBytes()));
-        JsonNode utxo = get("/api/v1/utxos/" + txHash + "/0");
-        BigInteger lovelace = null;
-        for (JsonNode amount : utxo.path("amount")) {
-            if ("lovelace".equals(amount.path("unit").asText())) {
-                lovelace = new BigInteger(amount.path("quantity").asText());
-            }
-        }
-        if (lovelace == null) {
-            throw new IllegalStateException("no genesis UTxO for " + address + ": " + utxo);
-        }
-        return new Utxo(txHash, 0, address, List.of(Amount.lovelace(lovelace)), null, null, null);
-    }
-
     private long tipSlot() {
-        try {
-            return get("/api/v1/node/tip").path("slot").asLong();
-        } catch (Exception e) {
-            return -1;
-        }
+        return node.tipSlot();
     }
 
     private long epochOf(long slot) {
@@ -234,41 +188,12 @@ class HaskellFollowerWorkloadTest {
     }
 
     private long slotOf(String txHash) throws Exception {
-        return get("/api/v1/txs/" + txHash + "/status").path("slot").asLong(-1);
-    }
-
-    private boolean confirmed(String txHash) {
-        try {
-            return "in_block".equals(get("/api/v1/txs/" + txHash + "/status").path("status").asText());
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private BigInteger treasury(long epoch) throws Exception {
-        return new BigInteger(get("/api/v1/epochs/" + epoch + "/adapot").path("treasury").asText());
-    }
-
-    private BigInteger withdrawable(String stakeAddress) {
-        try {
-            return new BigInteger(get("/api/v1/accounts/" + stakeAddress).path("withdrawable_amount").asText("0"));
-        } catch (Exception e) {
-            return BigInteger.ZERO;
-        }
-    }
-
-    private JsonNode get(String path) throws Exception {
-        HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(base + path)).GET().build(),
-                HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 200) {
-            throw new IllegalStateException(path + " -> " + response.statusCode() + " " + response.body());
-        }
-        return JSON.readTree(response.body());
+        return node.txSlot(txHash);
     }
 
     private void awaitConfirmed(List<String> txHashes, long timeoutMillis) throws InterruptedException {
         await("confirmation of " + txHashes.size() + " transactions", timeoutMillis,
-                () -> txHashes.stream().allMatch(this::confirmed));
+                () -> txHashes.stream().allMatch(node::confirmed));
     }
 
     private void await(String what, long timeoutMillis, BooleanSupplier condition) throws InterruptedException {

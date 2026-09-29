@@ -1,7 +1,8 @@
 package org.yanoproject.ledger.rules;
 
 /**
- * A selectable admission engine (ADR-056 §2, §7): {@code scalus}, {@code java} or {@code amaru}.
+ * A selectable admission engine (ADR-056 §2, §7): {@code scalus}, {@code java-julc}, {@code java-scalus} or
+ * {@code amaru}.
  *
  * <p>This is the new engine SPI. {@link TransactionValidator} stays unchanged as the legacy
  * adapter over canonical state until Phase 6 removes it.</p>

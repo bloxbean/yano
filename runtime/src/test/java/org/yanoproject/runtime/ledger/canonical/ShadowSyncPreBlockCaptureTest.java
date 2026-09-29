@@ -123,7 +123,7 @@ class ShadowSyncPreBlockCaptureTest {
         LedgerValidationEngine engine = new LedgerValidationEngine() {
             @Override
             public String name() {
-                return "java";
+                return "java-julc";
             }
 
             @Override
@@ -137,7 +137,7 @@ class ShadowSyncPreBlockCaptureTest {
                                 TxValidationRequest.Origin.SYNC), false);
             }
         };
-        ShadowSyncSettings settings = new ShadowSyncSettings(List.of("java"), null, null, 0, 2, 1, 10_000, 0);
+        ShadowSyncSettings settings = new ShadowSyncSettings(List.of("java-julc"), null, null, 0, 2, 1, 10_000, 0);
         CanonicalStateGate gate = stores.gate;
         try (ShadowSyncValidator validator = new ShadowSyncValidator(settings, List.of(engine),
                 (slot, view) -> new ValidationEnv(slot, 0, 10, 0, NetworkId.TESTNET, new SlotConfig(1000, 0, 0),
@@ -157,7 +157,7 @@ class ShadowSyncPreBlockCaptureTest {
             assertThat(validator.awaitIdle(10, TimeUnit.SECONDS)).isTrue();
             ShadowSyncReport.Stats stats = validator.status().report();
             assertThat(stats.blocksValidated()).isEqualTo(3);
-            assertThat(stats.agreed("java")).isEqualTo(3);
+            assertThat(stats.agreed("java-julc")).isEqualTo(3);
         }
         assertThat(seen).containsExactlyInAnyOrder(20L, 30L, 40L);
         assertThat(stores.gate.liveSnapshotCount()).isZero();

@@ -100,25 +100,46 @@ public record LedgerValue(BigInteger coin, Map<String, Map<String, BigInteger>> 
     /**
      * The length of Haskell's serialisation of this value ({@code serialize pv v}, used by
      * {@code validateOutputTooBigUTxO}, Alonzo/Rules/Utxo.hs:412-428): the coin alone when there are no
-     * assets, otherwise {@code [coin, {policy => {name => quantity}}]}, with definite lengths and the shortest
-     * heads, as {@code MaryValue}'s encoder writes it. It is independent of how the value was encoded in the
-     * transaction.
+     * assets, otherwise {@code [coin, {policy => {name => quantity}}]} ({@code EncCBOR MaryValue},
+     * Mary/Value.hs:342-349), with the shortest heads. It is independent of how the value was encoded in the
+     * transaction. Both maps are written by {@code encodeMap} (cardano-ledger-binary Encoder.hs:397-408), which
+     * is definite-length up to 23 entries and indefinite-length above ({@link #mapHeadSize(int)}).
      */
     public int serializedSize() {
         int size = integerSize(coin);
         if (assets.isEmpty()) {
             return size;
         }
-        size += 1 + headSize(assets.size());
+        size += 1 + mapHeadSize(assets.size());
         for (Map.Entry<String, Map<String, BigInteger>> policy : assets.entrySet()) {
             int policyBytes = policy.getKey().length() / 2;
-            size += headSize(policyBytes) + policyBytes + headSize(policy.getValue().size());
+            size += headSize(policyBytes) + policyBytes + mapHeadSize(policy.getValue().size());
             for (Map.Entry<String, BigInteger> asset : policy.getValue().entrySet()) {
                 int nameBytes = asset.getKey().length() / 2;
                 size += headSize(nameBytes) + nameBytes + integerSize(asset.getValue());
             }
         }
         return size;
+    }
+
+    /**
+     * The framing bytes of a map as {@code encodeMap} writes it from encoding version 2
+     * ({@code variableMapLenEncoding}, cardano-ledger-binary Encoder.hs:432-443): a one-byte definite head for at
+     * most {@code lengthThreshold = 23} entries, otherwise the indefinite-length head and the break byte. A
+     * definite head would take 3 bytes from 256 entries.
+     *
+     * <p>Note for readers: this is deliberately <em>not</em> canonical (RFC 8949 deterministic) CBOR, and not the
+     * size of the value's bytes in the transaction. The ledger re-encodes the value with its own encoder, which
+     * switches to indefinite-length maps above 23 entries ("will result in less bytes on the wire",
+     * Encoder.hs:440-441), so a policy with 256 or more assets measures one byte less than a definite-length
+     * encoding. Preprod tx
+     * {@code 96ae78f724a27b0d76c3d6a861857af3a644de971fe0c7fcbefe4e45811e5687} (a 324-asset policy) has a value
+     * of exactly {@code maxValSize} = 5000 bytes this way and 5001 with definite lengths; the chain accepted it.
+     * Amaru counts the same way ({@code inherent_value.rs},
+     * {@code large_maps_with_indefinite_length_headers_are_valid_with_the_cardano_node_encoding}).</p>
+     */
+    private static int mapHeadSize(int entries) {
+        return entries <= 23 ? 1 : 2;
     }
 
     /** @return the encoded size of a CBOR integer (major type 0 or 1) */

@@ -731,8 +731,8 @@ class GovRuleTest {
                 new co.nstant.in.cbor.model.Map()));
         assertThatThrownBy(() -> RawTransaction.parse(noVotes, built.tx())).isInstanceOf(TxDecodingException.class)
                 .hasMessageContaining("didn't have any");
-        assertThat(RawTransaction.parse(built.cbor(), built.tx()).votes().values())
-                .containsExactly(List.of(MutationWorld.INFO_ACTION));
+        assertThat(RawTransaction.parse(built.cbor(), built.tx()).votes().values()).singleElement()
+                .isEqualTo(Map.of(MutationWorld.INFO_ACTION, 1));
     }
 
     private static byte[] editVotes(byte[] cbor, Consumer<co.nstant.in.cbor.model.Map> edit) throws Exception {

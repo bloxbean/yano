@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ADR-056 Phase 7a gate: shadow sync on a devnet.
  *
  * <ul>
- *   <li>A producer ({@link DevnetGateNode}, admission engine {@code java}) runs the Phase 6 matrix
+ *   <li>A producer ({@link DevnetGateNode}, admission engine {@code java-julc}) runs the Phase 6 matrix
  *       ({@link LedgerRulesDevnetMatrix}: dependent chains in one block and across blocks, a rollback, an epoch
  *       crossing with chains pending, 400 chained payments while forging), with shadow sync on: its blocks are
  *       captured in the producer's store section, after its boundary section.</li>
@@ -51,7 +51,7 @@ class ShadowSyncDevnetGateTest {
                 YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
                 YanoPropertyKeys.Validation.SHADOW_SYNC_REPORT, producerReport.toString(),
                 YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS, "10");
-        try (DevnetGateNode producer = DevnetGateNode.start(new DevnetGateNode.Settings("java", 500, 100,
+        try (DevnetGateNode producer = DevnetGateNode.start(new DevnetGateNode.Settings("java-julc", 500, 100,
                 producerOptions));
              DevnetFollowerNode follower = DevnetFollowerNode.start(producer, Map.of(
                      YanoPropertyKeys.Validation.ENGINE, "scalus",
@@ -80,9 +80,9 @@ class ShadowSyncDevnetGateTest {
             log.info("GATE shadow-sync follower | {}", ShadowSyncReport.summary(f));
             log.info("GATE shadow-sync throughput | follower {} txs in {} blocks, validation {} ms "
                             + "({} ms/tx), backpressure waits {} ({} ms), run {} s",
-                    f.validated("java"), f.blocksValidated(), f.validationMillis(),
-                    f.validated("java") == 0 ? 0 : String.format("%.2f", f.validationMillis()
-                            / (double) f.validated("java")), f.backpressureWaits(), f.backpressureWaitMillis(),
+                    f.validated("java-julc"), f.blocksValidated(), f.validationMillis(),
+                    f.validated("java-julc") == 0 ? 0 : String.format("%.2f", f.validationMillis()
+                            / (double) f.validated("java-julc")), f.backpressureWaits(), f.backpressureWaitMillis(),
                     String.format("%.1f", seconds));
 
             int pv = producer.protocolParams().getProtocolMajorVer();
@@ -91,15 +91,15 @@ class ShadowSyncDevnetGateTest {
                 assertThat(stats.bodyViolations()).isZero();
                 assertThat(stats.exUnitsChecks()).isEqualTo(stats.blocksValidated());
                 assertThat(stats.exUnitsViolations()).isZero();
-                assertThat(stats.validated("java")).isGreaterThan(400);
-                assertThat(stats.agreed("java")).isEqualTo(stats.validated("java"));
+                assertThat(stats.validated("java-julc")).isGreaterThan(400);
+                assertThat(stats.agreed("java-julc")).isEqualTo(stats.validated("java-julc"));
                 assertThat(stats.disagreedTotal()).isZero();
                 assertThat(stats.engineFailuresTotal()).isZero();
                 assertThat(stats.blockFailures()).isZero();
                 assertThat(stats.idMismatches()).isZero();
                 assertThat(stats.refScriptViolations()).isZero();
                 assertThat(stats.refScriptChecks()).isEqualTo(stats.blocksValidated());
-                assertThat(stats.byEngine().get("java")).containsOnlyKeys(pv);
+                assertThat(stats.byEngine().get("java-julc")).containsOnlyKeys(pv);
             }
             assertThat(followerSync.status().outsideWriteSection()).isZero();
             for (var node : List.of(producer.node(), follower.node())) {

@@ -17,16 +17,22 @@ import java.util.Objects;
  * @param value   the value
  * @param collateralReturn true for the collateral return output
  * @param datumHash        the output's datum hash (legacy element 2, or {@code datum_option [0, hash]}), or null
+ * @param inlineDatum      the output's inline datum exactly as encoded (the contents of the {@code #6.24} byte string
+ *                         of {@code datum_option [1, …]}), or null. Haskell keeps an inline datum as these bytes
+ *                         ({@code BinaryData}, cardano-ledger-core Plutus/Data.hs:220-239), and a script sees the
+ *                         {@code Data} decoded from them, map entries in their order; a re-encoding (CCL's canonical
+ *                         CBOR sorts map keys) can change that {@code Data}.
  * @param scriptRef        the output's reference script (map form, key 3), or null
  */
 public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue value, boolean collateralReturn,
-                        byte[] datumHash, RawScript scriptRef) {
+                        byte[] datumHash, byte[] inlineDatum, RawScript scriptRef) {
 
     public RawOutput {
         Objects.requireNonNull(slice, "slice");
         address = Objects.requireNonNull(address, "address").clone();
         Objects.requireNonNull(value, "value");
         datumHash = datumHash != null ? datumHash.clone() : null;
+        inlineDatum = inlineDatum != null ? inlineDatum.clone() : null;
     }
 
     @Override
@@ -37,6 +43,11 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
     @Override
     public byte[] datumHash() {
         return datumHash != null ? datumHash.clone() : null;
+    }
+
+    @Override
+    public byte[] inlineDatum() {
+        return inlineDatum != null ? inlineDatum.clone() : null;
     }
 
     /** @return true when the output carries a reference script */
@@ -56,6 +67,7 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
         byte[] address = null;
         LedgerValue value = null;
         byte[] datumHash = null;
+        byte[] inlineDatum = null;
         RawScript scriptRef = null;
         if (item.peekMajor() == 4) {
             // Legacy form (Babbage/TxOut.hs:553-576): exactly [address, value] or [address, value, datum_hash].
@@ -92,7 +104,9 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
                 } else if (key == 1) {
                     value = readValue(item);
                 } else if (key == 2) {
-                    datumHash = readDatumOption(item, index);
+                    byte[][] datum = readDatumOption(item, index);
+                    datumHash = datum[0];
+                    inlineDatum = datum[1];
                 } else {
                     scriptRef = readScriptRef(item);
                 }
@@ -102,21 +116,22 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
             throw new TxDecodingException("output " + index + " has no address or no value");
         }
         AddressBytes.validate(address);
-        return new RawOutput(index, slice, address, value, collateralReturn, datumHash, scriptRef);
+        return new RawOutput(index, slice, address, value, collateralReturn, datumHash, inlineDatum, scriptRef);
     }
 
     /**
      * {@code datum_option = [0, hash32] / [1, #6.24(bytes .cbor plutus_data)]}.
      *
-     * @return the datum hash, or null for an inline datum
+     * @return {datum hash, inline datum bytes}: one of them is null
      */
-    private static byte[] readDatumOption(CborReader reader, int index) {
+    private static byte[][] readDatumOption(CborReader reader, int index) {
         long length = reader.readArrayHeader();
         if (length != 2 && length != CborReader.INDEFINITE) {
             throw new TxDecodingException("output " + index + ": a datum option is a two-element array");
         }
         long kind = reader.readUnsignedLong();
         byte[] hash = null;
+        byte[] inline = null;
         if (kind == 0) {
             hash = reader.readDefiniteBytes();
             if (hash.length != 32) {
@@ -128,14 +143,15 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
             }
             // decodeNestedCborBytes (a definite byte string), then makeBinaryData: the bytes must be one
             // well-formed Plutus Data (cardano-ledger-core Plutus/Data.hs:220-239).
-            PlutusData.validate(reader.readDefiniteBytes());
+            inline = reader.readDefiniteBytes();
+            PlutusData.validate(inline);
         } else {
             throw new TxDecodingException("output " + index + ": unknown datum option " + kind);
         }
         if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
             throw new TxDecodingException("output " + index + ": a datum option is a two-element array");
         }
-        return hash;
+        return new byte[][]{hash, inline};
     }
 
     /** {@code script_ref = #6.24(bytes .cbor script)}. */

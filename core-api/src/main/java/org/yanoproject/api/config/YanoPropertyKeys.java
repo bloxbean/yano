@@ -245,10 +245,15 @@ public final class YanoPropertyKeys {
         public static final String REBUILD_MAX_RESTARTS = "yano.validation.rebuild-max-restarts";
         /** ADR-056 §6 step 7: synchronous rebuild attempts before the mempool enters CATCHING_UP (default 3). */
         public static final String REBUILD_SYNC_ATTEMPTS = "yano.validation.rebuild-sync-attempts";
-        /** ADR-056 §7: admission engine, {@code scalus} (default) | {@code java} | {@code amaru}. */
+        /**
+         * ADR-056 §7: admission engine, {@code scalus} (default) | {@code java-julc} | {@code java-scalus} |
+         * {@code amaru}. The Java rules run Plutus on julc ({@code java-julc}) or Scalus ({@code java-scalus}), ADR-056
+         * Phase 7c.
+         */
         public static final String ENGINE = "yano.validation.engine";
         /**
-         * ADR-056 §7: opt-in for {@code engine: java} until the default flips (Phase 8); startup fails without it.
+         * ADR-056 §7: opt-in for {@code java-julc} and {@code java-scalus} until the default flips (Phase 8); startup
+         * fails without it.
          * Set only on test and gate nodes (the Phase 6b Haskell-follower run).
          */
         public static final String JAVA_ENGINE_EXPERIMENTAL = "yano.validation.java-engine.experimental";
@@ -261,7 +266,10 @@ public final class YanoPropertyKeys {
          * state, observe only (default false).
          */
         public static final String SHADOW_SYNC = "yano.validation.shadow-sync";
-        /** ADR-056 Phase 7a: engines shadow sync runs, comma-separated (default {@code java}). */
+        /**
+         * ADR-056 Phase 7a: engines shadow sync runs, comma-separated (default {@code java-julc});
+         * {@code java-julc,java-scalus} runs both phase-2 evaluators side by side (Phase 7c).
+         */
         public static final String SHADOW_SYNC_ENGINES = "yano.validation.shadow-sync-engines";
         /** ADR-056 Phase 7a: JSONL file with one line per disagreement or engine failure (default empty: none). */
         public static final String SHADOW_SYNC_REPORT = "yano.validation.shadow-sync-report";

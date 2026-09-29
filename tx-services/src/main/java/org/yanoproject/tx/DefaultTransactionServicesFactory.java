@@ -119,18 +119,12 @@ public final class DefaultTransactionServicesFactory {
             return Optional.empty();
         }
 
-        TransactionValidator validator = null;
-        try {
-            validator = ScalusTransactionFactory.createValidator(protocolParamsSupplier,
-                    new YaciScriptSupplier(context.utxoState()), slotConfigSupplier, networkId,
-                    ledgerStateProvider, currentSlotSupplier, epochSlotCalc::slotToEpoch,
-                    requireLedgerStateProviderForValidation, supplementaryRulesEnabled);
-            log.info("Transaction validator created (networkId={}, protocolParams={}, supplementaryRules={})",
-                    networkId, protocolParamsSource, supplementaryRulesEnabled);
-        } catch (Exception e) {
-            log.error("Failed to initialize transaction validator (Scalus). "
-                    + "Transactions will NOT be validated on submission! Error: {}", e.getMessage(), e);
-        }
+        TransactionValidator validator = requireValidator(() -> ScalusTransactionFactory.createValidator(
+                protocolParamsSupplier, new YaciScriptSupplier(context.utxoState()), slotConfigSupplier, networkId,
+                ledgerStateProvider, currentSlotSupplier, epochSlotCalc::slotToEpoch,
+                requireLedgerStateProviderForValidation, supplementaryRulesEnabled));
+        log.info("Transaction validator created (networkId={}, protocolParams={}, supplementaryRules={})",
+                networkId, protocolParamsSource, supplementaryRulesEnabled);
 
         TransactionEvaluator transactionEvaluator = null;
         try {
@@ -164,6 +158,19 @@ public final class DefaultTransactionServicesFactory {
         }
 
         return Optional.of(new TransactionServices(validator, transactionEvaluator, engines));
+    }
+
+    /**
+     * Creates the admission validator. Validation is enabled here, so a validator that cannot be built stops startup
+     * (ADR-056 §7): without it the node would admit every transaction unvalidated.
+     */
+    static TransactionValidator requireValidator(Supplier<TransactionValidator> factory) {
+        try {
+            return factory.get();
+        } catch (RuntimeException e) {
+            throw new ValidationEngineConfigurationException("Transaction validation is enabled but the Scalus "
+                    + "validator cannot be created: " + e.getMessage(), e);
+        }
     }
 
     private static boolean enginesConfigured(TransactionBootstrapContext context) {

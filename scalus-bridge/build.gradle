@@ -25,6 +25,11 @@ dependencies {
     // Amaru's JSON scenarios as ledger views (ADR-056 Phase 2 loader): real Plutus transactions for the
     // Scalus ScriptPhaseEvaluator tests. They skip unless AMARU_SCENARIOS_DIR / -PamaruScenariosDir is set.
     testImplementation testFixtures(project(':ledger-rules'))
+    // ADR-056 Phase 7c: the Scalus contexts are compared with script-evaluators' ConwayTxInfoTranslator.
+    testImplementation project(':script-evaluators')
+    testImplementation(libs.julc.vm.java) {
+        exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
+    }
     testRuntimeOnly libs.junit.jupiter.engine
     testRuntimeOnly libs.junit.platform.launcher
 }

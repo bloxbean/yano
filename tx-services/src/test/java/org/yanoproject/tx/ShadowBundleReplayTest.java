@@ -39,7 +39,7 @@ class ShadowBundleReplayTest {
         LedgerValidationEngine engine = new LedgerValidationEngine() {
             @Override
             public String name() {
-                return "java";
+                return "java-julc";
             }
 
             @Override
@@ -58,7 +58,7 @@ class ShadowBundleReplayTest {
                 TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null));
         Path file = new ShadowDumpBundle("cd".repeat(32), tx, TxValidationRequest.Rule.LEDGER,
                 TxValidationRequest.Origin.SYNC, env, new RecordedOutcome("chain", true, List.of()),
-                RecordedOutcome.of("java", outcome), recording.reads()).write(dir);
+                RecordedOutcome.of("java-julc", outcome), recording.reads()).write(dir);
 
         ShadowBundleReplay.Result result = ShadowBundleReplay.replay(file, engine);
 
@@ -70,13 +70,13 @@ class ShadowBundleReplayTest {
     }
 
     /**
-     * Replays real bundles with the java engine: {@code ./gradlew :tx-services:test --tests '*ShadowBundleReplayTest'
-     * -Dyano.shadow.bundles=/path/to/dump-dir}. Logs each verdict; fails when a finding no longer reproduces.
+     * Replays real bundles with the java-julc engine:
+     * {@code ./gradlew :tx-services:test --tests '*ShadowBundleReplayTest' -Dyano.shadow.bundles=/path/to/dump-dir}. Logs each verdict; fails when a finding no longer reproduces.
      */
     @Test
     @EnabledIfSystemProperty(named = "yano.shadow.bundles", matches = ".+")
-    void replaysTheGivenBundlesWithTheJavaEngine() {
-        LedgerValidationEngine engine = ShadowBundleReplay.javaEngine();
+    void replaysTheGivenBundlesWithTheJavaJulcEngine() {
+        LedgerValidationEngine engine = ShadowBundleReplay.javaJulcEngine();
         List<Path> bundles = ShadowBundleReplay.bundles(Path.of(System.getProperty("yano.shadow.bundles")));
         assertThat(bundles).isNotEmpty();
         for (Path bundle : bundles) {

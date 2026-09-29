@@ -16,7 +16,7 @@ import java.util.Set;
  * Shadow-sync settings (ADR-056 §7, Phase 7a), read from the runtime globals.
  *
  * @param engines          {@code yano.validation.shadow-sync-engines}: engines that validate every applied Conway
- *                         block (default {@code java})
+ *                         block (default {@code java-julc})
  * @param reportFile       {@code yano.validation.shadow-sync-report}: JSONL file, one line per disagreement or engine
  *                         failure, or {@code null} for none
  * @param dumpDir          {@code yano.validation.shadow-sync-dump-dir}: replay bundles, or {@code null} for none
@@ -34,7 +34,7 @@ import java.util.Set;
 public record ShadowSyncSettings(List<String> engines, Path reportFile, Path dumpDir, int maxDumps, int maxInFlight,
                                  int threads, long maxWaitMs, long summarySeconds) {
 
-    public static final List<String> DEFAULT_ENGINES = List.of(LedgerValidationEngines.JAVA);
+    public static final List<String> DEFAULT_ENGINES = List.of(LedgerValidationEngines.JAVA_JULC);
     public static final int DEFAULT_MAX_DUMPS = 1000;
     public static final int DEFAULT_MAX_IN_FLIGHT = 8;
     public static final long DEFAULT_MAX_WAIT_MS = 30_000;
@@ -68,7 +68,7 @@ public record ShadowSyncSettings(List<String> engines, Path reportFile, Path dum
         return Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
     }
 
-    /** The defaults: the java engine, no report file, no dumps. */
+    /** The defaults: the java-julc engine, no report file, no dumps. */
     public static ShadowSyncSettings defaults() {
         return new ShadowSyncSettings(DEFAULT_ENGINES, null, null, DEFAULT_MAX_DUMPS, DEFAULT_MAX_IN_FLIGHT,
                 defaultThreads(), DEFAULT_MAX_WAIT_MS, DEFAULT_SUMMARY_SECONDS);

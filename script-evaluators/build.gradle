@@ -12,6 +12,9 @@ dependencies {
     implementation(libs.julc.vm.java) {
         exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
     }
+
+    // ADR-056 Phase 7c: the julc ScriptPhaseEvaluator's tests build Conway transactions over the mutation world
+    testImplementation testFixtures(project(':ledger-rules'))
 }
 
 publishing {
@@ -19,7 +22,7 @@ publishing {
         mavenJava(MavenPublication) {
             pom {
                 name = 'Yano Script Evaluators'
-                description = 'Yano Script Evaluators - Aiken and julc Plutus script evaluators for ExUnits computation'
+                description = 'Yano Script Evaluators - Aiken and julc Plutus script evaluators for ExUnits computation, and the julc phase-2 ScriptPhaseEvaluator'
             }
         }
     }

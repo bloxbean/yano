@@ -420,6 +420,13 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                     slowValidations++;
                 }
             }
+            if (ledgerStateUnavailable(outcome, rejections)) {
+                // Not a verdict: the state the engine needs is not readable yet (for example the admission window
+                // across the Conway bootstrap boundary, decision 6a). The submitter retries, as while catching up.
+                catchingUpRejections.incrementAndGet();
+                return result(MempoolAdmissionResult.Status.CATCHING_UP, txHash,
+                        "ledger state unavailable for validation; retry later");
+            }
             if (rejections != null && !rejections.isEmpty()) {
                 ledgerRejections++;
                 return new MempoolAdmissionResult(MempoolAdmissionResult.Status.LEDGER_REJECTED, txHash, null,
@@ -474,6 +481,19 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
             case Lookup.Absent<UtxoEntry> a -> null;
             case Lookup.Unavailable<UtxoEntry> u -> throw new LedgerStateUnavailableException(u.reason());
         };
+    }
+
+    /**
+     * Whether the admission failed only because ledger state was unavailable: every engine failure is
+     * {@code ENGINE.LedgerStateUnavailable} and no listener rejected for another reason.
+     */
+    private static boolean ledgerStateUnavailable(TxValidationOutcome outcome,
+                                                  List<VetoableEvent.Rejection> rejections) {
+        return outcome instanceof TxValidationOutcome.Invalid invalid
+                && invalid.failures().stream().allMatch(f -> f.rule() == LedgerRuleName.ENGINE
+                        && LedgerFailure.LEDGER_STATE_UNAVAILABLE.equals(f.constructor()))
+                && (rejections == null || rejections.stream()
+                        .allMatch(r -> LedgerFailure.LEDGER_STATE_UNAVAILABLE.equals(r.source())));
     }
 
     private static List<VetoableEvent.Rejection> rejections(TxValidationOutcome.Invalid invalid) {

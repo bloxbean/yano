@@ -12,6 +12,7 @@ import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.ValidationResult;
+import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.shadow.LegacyVerdicts;
 import org.yanoproject.ledger.rules.shadow.ShadowDumpBundle.RecordedOutcome;
 import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
@@ -301,7 +302,7 @@ public final class EngineAdmission {
         Map<Outpoint, Lookup<UtxoEntry>> pinned = new LinkedHashMap<>();
         TransactionBody body;
         try {
-            body = Transaction.deserialize(txCbor).getBody();
+            body = CclTransactions.deserialize(txCbor).getBody();
         } catch (Exception e) {
             return pinned; // the engines report the decoding failure themselves
         }

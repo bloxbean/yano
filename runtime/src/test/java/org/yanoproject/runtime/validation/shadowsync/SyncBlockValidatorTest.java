@@ -64,7 +64,7 @@ class SyncBlockValidatorTest {
     @Test
     void eachTransactionSeesTheEffectsOfTheEarlierOnesInTheBlock() {
         List<String> seen = new CopyOnWriteArrayList<>();
-        LedgerValidationEngine chained = engine("java", request -> {
+        LedgerValidationEngine chained = engine("java-julc", request -> {
             int index = indexOf(request.txCbor());
             if (index > 0) {
                 Lookup<?> parent = request.view().utxo(new Outpoint(id(index - 1), 0));
@@ -89,7 +89,7 @@ class SyncBlockValidatorTest {
         SyncBlock block = block(3, Set.of(1));
         assertThat(isValidFlag(block.txs().get(1))).isFalse();
 
-        BlockResult agreed = validator.validate(block, base(10), env(10), List.of(agreeing("java")), null);
+        BlockResult agreed = validator.validate(block, base(10), env(10), List.of(agreeing("java-julc")), null);
         assertThat(agreed.engines().getFirst().txs().get(1)).satisfies(tx -> {
             assertThat(tx.expected()).isEqualTo(Expected.PHASE2_INVALID);
             assertThat(tx.kind()).isEqualTo(Kind.AGREED);
@@ -97,7 +97,7 @@ class SyncBlockValidatorTest {
         });
 
         // The engine's scripts passed where the chain's failed: the engine would have rejected the block.
-        LedgerValidationEngine tagMismatch = engine("java", request -> isValidFlag(request.txCbor())
+        LedgerValidationEngine tagMismatch = engine("java-julc", request -> isValidFlag(request.txCbor())
                 ? valid(request.txCbor(), true) : invalid(LedgerRuleName.UTXOS, "ValidationTagMismatch"));
         BlockResult mismatch = validator.validate(block, base(10), env(10), List.of(tagMismatch), null);
         assertThat(mismatch.engines().getFirst().txs().get(1)).satisfies(tx -> {
@@ -106,7 +106,7 @@ class SyncBlockValidatorTest {
         });
 
         // A phase-2-valid verdict for a transaction the chain marked invalid is a disagreement too.
-        LedgerValidationEngine ignoresFlag = engine("java", request -> valid(request.txCbor(), true));
+        LedgerValidationEngine ignoresFlag = engine("java-julc", request -> valid(request.txCbor(), true));
         assertThat(validator.validate(block, base(10), env(10), List.of(ignoresFlag), null).engines().getFirst()
                 .txs().get(1).kind()).isEqualTo(Kind.DISAGREED);
     }
@@ -132,7 +132,7 @@ class SyncBlockValidatorTest {
     @Test
     void aFindingWhoseEffectsCannotBeRecoveredTaintsTheRestOfTheBlock() {
         // Placeholder transactions do not decode, so the chain's effects of a rejected one cannot be derived.
-        LedgerValidationEngine rejectsSecond = engine("java", request -> indexOf(request.txCbor()) == 1
+        LedgerValidationEngine rejectsSecond = engine("java-julc", request -> indexOf(request.txCbor()) == 1
                 ? invalid(LedgerRuleName.UTXO, "FeeTooSmallUTxO") : request.view().utxo(
                         new Outpoint(id(1), 0)).isPresent() || indexOf(request.txCbor()) == 0
                         ? valid(request.txCbor(), true) : invalid(LedgerRuleName.UTXO, "BadInputsUTxO"));
@@ -156,7 +156,7 @@ class SyncBlockValidatorTest {
         LedgerView base = InMemoryLedgerView.builder().protocolParams(params(10))
                 .utxo(funding, 0, ShadowSyncTestSupport.output(5_000_000)).build();
         List<String> secondSaw = new ArrayList<>();
-        LedgerValidationEngine engine = engine("java", request -> {
+        LedgerValidationEngine engine = engine("java-julc", request -> {
             if (TxIdentity.txIdHex(request.txCbor()).equals(firstId)) {
                 return invalid(LedgerRuleName.UTXO, "FeeTooSmallUTxO");
             }
@@ -174,7 +174,7 @@ class SyncBlockValidatorTest {
 
     @Test
     void aFindingWritesAReplayBundleThatReproducesIt() {
-        LedgerValidationEngine readsAndRejects = engine("java", request -> {
+        LedgerValidationEngine readsAndRejects = engine("java-julc", request -> {
             request.view().protocolParams();
             request.view().utxo(new Outpoint("bb".repeat(32), 0));
             return invalid(LedgerRuleName.UTXO, "BadInputsUTxO");
@@ -207,7 +207,7 @@ class SyncBlockValidatorTest {
     @Test
     void aFullDumperSkipsTheRecordingRerun() {
         List<Integer> calls = new ArrayList<>();
-        LedgerValidationEngine rejecting = engine("java", request -> {
+        LedgerValidationEngine rejecting = engine("java-julc", request -> {
             calls.add(1);
             return invalid(LedgerRuleName.UTXO, "BadInputsUTxO");
         });

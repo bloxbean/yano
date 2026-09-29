@@ -4,8 +4,8 @@ import org.junit.jupiter.api.Assertions.{assertEquals, assertSame, assertTrue}
 import org.junit.jupiter.api.Test
 import scalus.cardano.address.{Address, Network, StakeAddress, StakePayload}
 import scalus.cardano.ledger.*
-import scalus.cardano.ledger.rules.{CardanoMutator, Context, STS, State, TransactionSizeValidator,
-  ValueNotConservedUTxOValidator}
+import scalus.cardano.ledger.rules.{CardanoMutator, Context, OutputsHaveTooBigValueStorageSizeValidator, STS, State,
+  TransactionSizeValidator, ValueNotConservedUTxOValidator}
 
 class YanoValueNotConservedUTxOValidatorTest:
   private val poolDeposit = 500_000_000L
@@ -25,10 +25,13 @@ class YanoValueNotConservedUTxOValidatorTest:
     assertEquals(1, defaultValidators.count(_ eq TransactionSizeValidator))
     assertEquals(0, actualValidators.count(_ eq TransactionSizeValidator))
     assertEquals(1, actualValidators.count(_ eq YanoTransactionSizeValidator))
+    assertEquals(1, defaultValidators.count(_ eq OutputsHaveTooBigValueStorageSizeValidator))
+    assertEquals(0, actualValidators.count(_ eq OutputsHaveTooBigValueStorageSizeValidator))
+    assertEquals(1, actualValidators.count(_ eq YanoOutputValueSizeValidator))
 
-    assertEquals(Set(ValueNotConservedUTxOValidator, TransactionSizeValidator),
-      defaultValidators.toSet.diff(actualValidators.toSet))
-    assertEquals(Set(YanoValueNotConservedUTxOValidator, YanoTransactionSizeValidator),
+    assertEquals(Set(ValueNotConservedUTxOValidator, TransactionSizeValidator,
+      OutputsHaveTooBigValueStorageSizeValidator), defaultValidators.toSet.diff(actualValidators.toSet))
+    assertEquals(Set(YanoValueNotConservedUTxOValidator, YanoTransactionSizeValidator, YanoOutputValueSizeValidator),
       actualValidators.toSet.diff(defaultValidators.toSet))
     assertEquals(defaultValidators.size, actualValidators.size)
     assertEquals(defaultValidators.toSeq.map(_.name).sorted, YanoCardanoMutator.validators.map(_.name))

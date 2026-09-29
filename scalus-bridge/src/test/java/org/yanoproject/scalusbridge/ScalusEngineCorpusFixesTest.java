@@ -23,7 +23,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>00040: a transaction exactly at {@code maxTxSize} is valid (Haskell sizes it without {@code is_valid};
  *       {@link YanoTransactionSizeValidator});</li>
  *   <li>00059/00060: Scalus's {@code DRepException} is {@code GOVCERT.ConwayDRepAlreadyRegistered};</li>
- *   <li>00031: a transaction Scalus cannot decode is {@code ENGINE.DecodingFailure}, not an engine crash.</li>
+ *   <li>00031: an {@code UpdateCommittee} proposal whose removed members carry a set tag, which Scalus's decoder
+ *       rejects, decodes without it ({@code ScalusTransactions}, ADR-056 Phase 7c) and is valid, as in Haskell;
+ *       bytes that do not decode at all are {@code ENGINE.DecodingFailure}, not an engine crash.</li>
  * </ul>
  */
 class ScalusEngineCorpusFixesTest {
@@ -43,12 +45,19 @@ class ScalusEngineCorpusFixesTest {
     }
 
     @Test
-    void undecodableTransactionIsADecodingFailure() {
-        LedgerFailure failure = firstFailure(validate(scenario("00031")));
+    void aSetTaggedUpdateCommitteeProposalDecodesAndUndecodableBytesAreADecodingFailure() {
+        AmaruScenario scenario = scenario("00031");
+        assertThat(validate(scenario).isValid()).isTrue();
+        // [1, 2, 3, 4] is no transaction.
+        LedgerFailure failure = firstFailure(validate(scenario, new byte[]{(byte) 0x84, 1, 2, 3, 4}));
         assertThat(failure.qualifiedName()).isEqualTo("ENGINE." + ScalusLedgerValidationEngine.DECODING_FAILURE);
     }
 
     private static TxValidationOutcome validate(AmaruScenario scenario) {
+        return validate(scenario, scenario.txCbor());
+    }
+
+    private static TxValidationOutcome validate(AmaruScenario scenario, byte[] txCbor) {
         SlotConfig slotConfig = scenario.env().slotConfig();
         AmaruScenario.EraSummary era = scenario.network().eras().getLast();
         SlotConfigSupplier geometry = new SlotConfigSupplier() {
@@ -62,7 +71,7 @@ class ScalusEngineCorpusFixesTest {
                 return new EpochSlotCalc(era.epochSizeSlots(), era.epochSizeSlots(), 0);
             }
         };
-        return new ScalusLedgerValidationEngine(geometry).validate(new TxValidationRequest(scenario.txCbor(),
+        return new ScalusLedgerValidationEngine(geometry).validate(new TxValidationRequest(txCbor,
                 scenario.view(), scenario.env(), TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC,
                 null));
     }

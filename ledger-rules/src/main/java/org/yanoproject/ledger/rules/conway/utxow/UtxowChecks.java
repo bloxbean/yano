@@ -86,8 +86,8 @@ public final class UtxowChecks {
                         + "phase-2 evaluator")) : List.of();
             }
             if (needsPlutus) {
-                List<LedgerFailure> prepared = ctx.evaluator().collect(ctx.raw().txCbor(), ctx.tx(),
-                        ctx.resolvedInputs(), ctx.params(), ctx.env().slotConfig(), ctx.forecastBasisSlot());
+                List<LedgerFailure> prepared = ctx.evaluator().collect(ctx.raw(), ctx.resolvedInputs(), ctx.params(),
+                        ctx.env().slotConfig(), ctx.forecastBasisSlot());
                 ctx.collectFailures(prepared.stream().filter(f -> f.rule() != LedgerRuleName.UTXOW).toList());
             }
             return List.of();

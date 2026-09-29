@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.conway.utxo;
 
 import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.address.Credential;
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.Networks;
 import com.bloxbean.cardano.client.plutus.spec.ExUnits;
 import com.bloxbean.cardano.client.spec.NetworkId;
@@ -14,11 +15,14 @@ import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.conway.EngineTestSupport;
 import org.yanoproject.ledger.rules.conway.EngineTestSupport.StubEvaluator;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
+import org.yanoproject.ledger.rules.fixtures.PublicNetworkTransactions;
 import org.yanoproject.ledger.rules.fixtures.conformance.Covers;
 import org.yanoproject.ledger.rules.fixtures.tx.BuiltTx;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
+import org.yanoproject.ledger.rules.shadow.ShadowDumpBundle;
+import org.yanoproject.ledger.rules.view.Lookup;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -231,6 +235,38 @@ class UtxoRuleTest {
         TxSpec spec = MutationWorld.simpleSpec();
         spec.inputs.add(MutationWorld.MANY_ASSETS_INPUT);
         assertThat(run(spec)).containsExactly("UTXO.OutputTooBigUTxO");
+    }
+
+    /**
+     * Preprod {@code 96ae78f7…} (shadow sync, PV 11), accepted by the chain. Output 1's value is 5001 bytes in the
+     * transaction, where the map of one policy's 324 assets has a 3-byte definite-length head. Haskell measures its
+     * own encoding, whose maps above 23 entries are indefinite-length (2 bytes of framing): 5000, exactly
+     * {@code maxValSize}. With {@code maxValSize} one less, the output is too big by Haskell's size.
+     */
+    @Test
+    void outputValueSizeIsHaskellsEncodingNotTheTransactionBytes() {
+        ShadowDumpBundle atLimit = PublicNetworkTransactions.bundle(
+                PublicNetworkTransactions.PREPROD_INDEFINITE_ASSET_MAP_OUTPUT);
+        assertThat(protocolParams(atLimit).getMaxValSize()).isEqualTo("5000");
+        assertThat(EngineTestSupport.names(replay(atLimit))).containsExactly("Valid");
+
+        ShadowDumpBundle belowLimit = PublicNetworkTransactions.bundle(
+                PublicNetworkTransactions.PREPROD_INDEFINITE_ASSET_MAP_OUTPUT);
+        protocolParams(belowLimit).setMaxValSize("4999");
+        TxValidationOutcome tooBig = replay(belowLimit);
+        assertThat(EngineTestSupport.names(tooBig)).containsExactly("UTXO.OutputTooBigUTxO");
+        assertThat(((TxValidationOutcome.Invalid) tooBig).failures().getFirst().detail())
+                .startsWith("(5000, 4999, output 1 ");
+    }
+
+    private static TxValidationOutcome replay(ShadowDumpBundle bundle) {
+        return EngineTestSupport.validate(new StubEvaluator(), bundle.txCbor(), bundle.replayView(), bundle.env(),
+                null);
+    }
+
+    /** @return the bundle's recorded parameters, the instance its replay view answers with */
+    private static ProtocolParams protocolParams(ShadowDumpBundle bundle) {
+        return ((Lookup.Present<ProtocolParams>) bundle.replayView().protocolParams()).value();
     }
 
     @Test

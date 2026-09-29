@@ -26,6 +26,8 @@ dependencies {
     testImplementation project(':ledger-rules')
     testImplementation testFixtures(project(':ledger-rules'))
     testImplementation project(':scalus-bridge')
+    // ADR-056 Phase 7c: the julc phase-2 evaluator of the java engine
+    testImplementation project(':script-evaluators')
     testImplementation libs.jackson.databind
     testImplementation libs.cardano.client.address
     if (withAmaru) {

@@ -19,7 +19,6 @@ import org.yanoproject.ledger.rules.fixtures.blueprint.BlueprintVector;
 import org.yanoproject.ledger.rules.fixtures.blueprint.BlueprintVectorLoader;
 import org.yanoproject.ledger.rules.fixtures.blueprint.NewEpochStateDecoder;
 
-import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -50,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BlueprintVectorGateTest {
 
-    /** A vector with a coin above 2^63-1: the evaluator's recorded limit. */
+    /** A vector with a coin above 2^63-1 (an evaluator limit until ADR-056 Phase 7c; it passes now). */
     static final String MAXBOUND_WORD64 =
             "conway/pass-enact-withdrawals-exceeding-maxbound-word64-submitted-in-a-single-proposal/0";
 
@@ -79,12 +78,6 @@ class BlueprintVectorGateTest {
                         + "the vector for another reason, most likely because its harness keeps the partial effects of a "
                         + "failing transaction (its failures file notes this for fail-utxos-failing-native-script-govpolicy): "
                         + "tx 6, which fails, spends the same input as tx 7."));
-        m.put(MAXBOUND_WORD64, new Recorded("evaluator limit",
-                "tx 9 (a treasury-withdrawal proposal under a guardrail script; one withdrawal is above 2^63-1) is "
-                        + "valid in Haskell, which decodes Coin as a Word64 (Coin.hs:108-112, CDDL coin = uint). Scalus, "
-                        + "the phase-2 evaluator, decodes coins as a signed long, so the evaluator fails closed with "
-                        + "ENGINE.CoinOutOfEvaluatorRange before handing the transaction to Scalus; every phase-1 check "
-                        + "passes. No real network can hold such a coin (the supply is below 2^56 lovelace)."));
         return m;
     }
 
@@ -98,10 +91,10 @@ class BlueprintVectorGateTest {
             "mary PV 9", List.of(2, 3, 2, 0, 0, 0),
             "alonzo PV 9", List.of(98, 299, 98, 0, 0, 0),
             "babbage PV 9", List.of(3, 10, 3, 0, 0, 0),
-            "conway PV 10", List.of(205, 2157, 194, 1, 10, 0));
+            "conway PV 10", List.of(205, 2157, 195, 0, 10, 0));
 
     /** Transactions whose verdict matches Haskell's, over all vectors. */
-    static final int TRANSACTIONS_MATCHED = 2471;
+    static final int TRANSACTIONS_MATCHED = 2472;
 
     /**
      * For every vector that does not pass, the indexes of all its transactions whose verdict differs from Haskell's
@@ -116,7 +109,6 @@ class BlueprintVectorGateTest {
             Map.entry("conway/pass-deleg-delegate-retire-and-re-register-pool/0", List.of(6)),
             Map.entry("conway/pass-deleg-deregistering-returns-the-deposit/0", List.of(6)),
             Map.entry("conway/pass-enact-cc-re-election/0", List.of(25)),
-            Map.entry(MAXBOUND_WORD64, List.of(9)),
             Map.entry("conway/pass-utxos-alwayssucceeds-plutus-govpolicy-validates/0", List.of(12, 15)),
             Map.entry("conway/pass-utxos-updating-costmodels-and-setting-the-govpolicy-afterwards-succeeds/0",
                     List.of(12, 22, 25)),
@@ -231,10 +223,12 @@ class BlueprintVectorGateTest {
                 assertThat(r.status()).as(r.vector().id()).isEqualTo(Status.PASSED);
             }
             if (r.vector().id().equals(MAXBOUND_WORD64)) {
-                // Every phase-1 check passes: the only failure is the evaluator's explicit limit.
-                assertThat(r.firstMismatch().index()).isEqualTo(9);
-                assertThat(r.firstMismatch().observation().failures()).singleElement().satisfies(f -> assertThat(
-                        f.qualifiedName()).isEqualTo("ENGINE." + ScalusScriptPhaseEvaluator.COIN_OUT_OF_EVALUATOR_RANGE));
+                // ADR-056 Phase 7c: tx 9's treasury withdrawal above 2^63-1 (a Word64 Coin in Haskell) reaches the
+                // guardrail script's context exactly (julc reads integers as BigIntegers; java-scalus through the Scalus
+                // bridge's WideIntegers, BlueprintVectorScalusTest), so the vector passes, as in
+                // Haskell; before, the evaluator failed closed with ENGINE.CoinOutOfEvaluatorRange.
+                assertThat(r.status()).as(r.vector().id()).isEqualTo(Status.PASSED);
+                assertThat(r.transactions()).allMatch(BlueprintVectorRunner.TxResult::matches);
             }
         }
     }

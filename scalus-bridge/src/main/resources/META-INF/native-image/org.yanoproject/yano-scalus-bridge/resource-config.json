@@ -12,6 +12,9 @@
       },
       {
         "pattern": "supranational/blst/Mac/aarch64/libblst\\.dylib"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/org.yanoproject.ledger.rules.LedgerValidationEngineFactory\\E"
       }
     ]
   }

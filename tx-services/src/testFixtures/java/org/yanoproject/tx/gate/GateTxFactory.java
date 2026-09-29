@@ -58,6 +58,11 @@ public final class GateTxFactory {
         this.params = params;
     }
 
+    /** Wraps a transaction built elsewhere (for example a script spend) so it can be committed to {@code wallet}. */
+    public Built wrap(GateWallet wallet, Transaction transaction) {
+        return new Built(transaction, wallet);
+    }
+
     public Built build(GateWallet wallet, Tx tx, TxSigner signer) {
         return build(wallet, tx, signer, null);
     }

@@ -14,8 +14,8 @@ import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
 import org.yanoproject.ledger.rules.conway.tx.RawRedeemer;
+import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
-import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.conway.utxo.MinFee;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
@@ -223,7 +223,7 @@ public final class SyncBlockValidator {
         Objects.requireNonNull(block, "block");
         Objects.requireNonNull(base, "base");
         Objects.requireNonNull(env, "env");
-        List<Transaction> decoded = decodeAll(block);
+        List<RawTransaction> decoded = decodeAll(block);
         List<EngineResult> results = new ArrayList<>();
         for (LedgerValidationEngine engine : engines) {
             results.add(validateWith(engine, block, decoded, base, env, dumper));
@@ -232,7 +232,7 @@ public final class SyncBlockValidator {
                 exUnits(block, decoded, base), block.body());
     }
 
-    private EngineResult validateWith(LedgerValidationEngine engine, SyncBlock block, List<Transaction> decoded,
+    private EngineResult validateWith(LedgerValidationEngine engine, SyncBlock block, List<RawTransaction> decoded,
                                       LedgerView base, ValidationEnv env, Dumper dumper) {
         OverlayLedgerView overlay = OverlayLedgerView.over(base);
         boolean tainted = false;
@@ -254,7 +254,7 @@ public final class SyncBlockValidator {
             // Advance the overlay by what the chain applied.
             TxEffects effects = outcome instanceof TxValidationOutcome.Valid valid && kind == Kind.AGREED
                     ? valid.effects()
-                    : chainEffects(tx, decoded.get(i), id, overlay, env, expected == Expected.VALID);
+                    : chainEffects(decoded.get(i), overlay, env, expected == Expected.VALID);
             if (effects == null) {
                 tainted = true;
                 continue;
@@ -311,13 +311,12 @@ public final class SyncBlockValidator {
         return failures;
     }
 
-    private TxEffects chainEffects(byte[] txCbor, Transaction tx, String id, LedgerView overlay, ValidationEnv env,
-                                   boolean phase2Valid) {
+    private TxEffects chainEffects(RawTransaction tx, LedgerView overlay, ValidationEnv env, boolean phase2Valid) {
         if (tx == null) {
             return null;
         }
         try {
-            return deriver.derive(txCbor, tx, id, overlay, env, phase2Valid);
+            return deriver.derive(tx, overlay, env, phase2Valid);
         } catch (RuntimeException e) {
             return null;
         }
@@ -341,12 +340,13 @@ public final class SyncBlockValidator {
         }
     }
 
-    private static List<Transaction> decodeAll(SyncBlock block) {
-        List<Transaction> decoded = new ArrayList<>(block.size());
+    /** Each transaction read once from its bytes, for the chain's effects and the block checks; null when it does not. */
+    private static List<RawTransaction> decodeAll(SyncBlock block) {
+        List<RawTransaction> decoded = new ArrayList<>(block.size());
         for (byte[] tx : block.txs()) {
-            Transaction t;
+            RawTransaction t;
             try {
-                t = Transaction.deserialize(tx);
+                t = RawTransaction.parse(tx, CclTransactions.deserialize(tx));
             } catch (Exception e) {
                 t = null;
             }
@@ -356,12 +356,12 @@ public final class SyncBlockValidator {
     }
 
     /** {@code totalRefScriptSizeInBlock} (Bbody.hs:357-371) against {@code base}, the pre-block UTxO. */
-    RefScriptCheck refScripts(SyncBlock block, List<Transaction> decoded, LedgerView base, int protocolMajor) {
+    RefScriptCheck refScripts(SyncBlock block, List<RawTransaction> decoded, LedgerView base, int protocolMajor) {
         boolean cumulative = protocolMajor >= 11;
         Map<Outpoint, TransactionOutput> produced = new HashMap<>();
         long total = 0;
         for (int i = 0; i < block.size(); i++) {
-            Transaction tx = decoded.get(i);
+            Transaction tx = decoded.get(i) != null ? decoded.get(i).decoded() : null;
             if (tx == null || tx.getBody() == null) {
                 return new RefScriptCheck(total, maxRefScriptSizePerBlock,
                         "transaction " + block.txIds().get(i) + " does not decode");
@@ -404,25 +404,18 @@ public final class SyncBlockValidator {
     }
 
     /** {@code validateExUnits} (Alonzo/Rules/Bbody.hs) against the pre-block {@code maxBlockExUnits}. */
-    static ExUnitsCheck exUnits(SyncBlock block, List<Transaction> decoded, LedgerView base) {
+    static ExUnitsCheck exUnits(SyncBlock block, List<RawTransaction> decoded, LedgerView base) {
         BigInteger mem = BigInteger.ZERO;
         BigInteger steps = BigInteger.ZERO;
         for (int i = 0; i < block.size(); i++) {
-            Transaction tx = decoded.get(i);
+            RawTransaction tx = decoded.get(i);
             if (tx == null) {
                 return new ExUnitsCheck(mem, steps, null, null,
                         "transaction " + block.txIds().get(i) + " does not decode");
             }
             // totExUnits sums the Redeemers map (Alonzo/Tx.hs:464): read as Haskell holds it, so a duplicate
             // (tag, index) counts once, as RawTransaction#redeemers resolves it.
-            List<RawRedeemer> redeemers;
-            try {
-                redeemers = RawTransaction.parse(block.txs().get(i), tx).redeemers();
-            } catch (TxDecodingException e) {
-                return new ExUnitsCheck(mem, steps, null, null,
-                        "transaction " + block.txIds().get(i) + " does not decode: " + e.getMessage());
-            }
-            for (RawRedeemer redeemer : redeemers) {
+            for (RawRedeemer redeemer : tx.redeemers()) {
                 mem = mem.add(redeemer.mem());
                 steps = steps.add(redeemer.steps());
             }

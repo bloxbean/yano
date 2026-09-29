@@ -15,8 +15,10 @@ import java.util
  * source has them.
  *
  * The CCL output is re-encoded and decoded with Scalus's own decoder. The reference script is CCL's
- * on-chain script CBOR, so it is exact; the inline datum comes from [[UtxoEntry.inlineDatumCbor]] when
- * present (Plutus sees a datum as `Data`, so a re-encoding would only matter for its bytes).
+ * on-chain script CBOR, so it is exact; the inline datum comes from [[UtxoEntry.inlineDatumCbor]], which every
+ * ledger view supplies (the canonical UTxO store, and `TxEffectsDeriver` for outputs produced in the same block or
+ * mempool chain). Without it the datum is CCL's canonical re-encoding, which sorts a map's keys (shorter first), and
+ * a script sees a different `Data` (ADR-056 Phase 7c).
  */
 object UtxoEntryBridge:
 
@@ -32,10 +34,17 @@ object UtxoEntryBridge:
   def input(outpoint: Outpoint): TransactionInput =
     TransactionInput(TransactionHash.fromHex(outpoint.txHash()), outpoint.index())
 
-  def output(entry: UtxoEntry): TransactionOutput =
-    val bytes = CborSerializationUtil.serialize(entry.output().serialize())
-    val decoded = Cbor.decode(bytes).to[TransactionOutput].value
-    val inlineDatum = entry.inlineDatumCbor()
+  def output(entry: UtxoEntry): TransactionOutput = output(outputBytes(entry), entry.inlineDatumCbor())
+
+  /** @return the entry's output as CBOR (CCL's encoding) */
+  def outputBytes(entry: UtxoEntry): Array[Byte] = CborSerializationUtil.serialize(entry.output().serialize())
+
+  /**
+   * @param outputCbor  an output's CBOR ([[outputBytes]], possibly narrowed by [[WideIntegers]])
+   * @param inlineDatum the inline datum's original bytes, or null to keep the output's own
+   */
+  def output(outputCbor: Array[Byte], inlineDatum: Array[Byte]): TransactionOutput =
+    val decoded = Cbor.decode(outputCbor).to[TransactionOutput].value
     if inlineDatum == null then decoded
     else
       decoded match

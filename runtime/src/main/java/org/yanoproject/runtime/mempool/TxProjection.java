@@ -6,6 +6,7 @@ import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import org.yanoproject.api.util.AddressKeyUtil;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
+import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.view.model.Outpoints;
 import org.yanoproject.runtime.chain.TransactionOutputProjector;
 
@@ -41,7 +42,7 @@ public record TxProjection(String txHash, Set<Outpoint> regularInputs, Set<Outpo
      */
     public static TxProjection of(byte[] txBytes) throws Exception {
         String txHash = TransactionUtil.getTxHash(txBytes).toLowerCase(Locale.ROOT);
-        Transaction transaction = Transaction.deserialize(txBytes);
+        Transaction transaction = CclTransactions.deserialize(txBytes);
         if (transaction.getBody() == null) {
             throw new IllegalArgumentException("transaction body is null");
         }
@@ -50,11 +51,8 @@ public record TxProjection(String txHash, Set<Outpoint> regularInputs, Set<Outpo
         all.addAll(inputs(transaction.getBody().getReferenceInputs()));
         all.addAll(inputs(transaction.getBody().getCollateral()));
         Map<Outpoint, Utxo> outputs = new LinkedHashMap<>();
-        if (transaction.getBody().getOutputs() != null) {
-            for (int index = 0; index < transaction.getBody().getOutputs().size(); index++) {
-                outputs.put(new Outpoint(txHash, index), TransactionOutputProjector.project(txHash, index,
-                        transaction.getBody().getOutputs().get(index)));
-            }
+        for (Utxo output : TransactionOutputProjector.projectOutputs(txHash, txBytes, transaction)) {
+            outputs.put(output.outpoint(), output);
         }
         Map<String, SubjectKey> subjects = new HashMap<>();
         outputs.values().forEach(output -> subjects.computeIfAbsent(output.address(), address ->

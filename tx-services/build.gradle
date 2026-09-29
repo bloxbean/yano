@@ -12,14 +12,16 @@ dependencies {
     // chains built with QuickTx, independent re-validation of every produced block). Shared with amaru-validator.
     testFixturesApi project(':testkit')
     testFixturesApi project(':scalus-bridge')
+    // The independent re-validation runs the default java-julc engine (ADR-056 Phase 7c).
+    testFixturesImplementation project(':script-evaluators')
     testFixturesApi libs.junit.jupiter.api
     testFixturesApi libs.cardano.client.quicktx
     testFixturesImplementation libs.jackson.databind
+    // RemoteYanoNode: the gate workloads that run against a packaged node use its Blockfrost-shaped REST API.
+    testFixturesApi libs.cardano.client.backend.blockfrost
     testImplementation project(':testkit')
     // ADR-056 Phase 7a: a real phase-2-invalid transaction (MutationWorld's always-failing script) through shadow sync.
     testImplementation testFixtures(project(':ledger-rules'))
-    // The Haskell-follower workload talks to a running node's Blockfrost-shaped REST API.
-    testImplementation libs.cardano.client.backend.blockfrost
 }
 
 // The test fixtures are a build-time aid for Yano's own gate tests, not a published API.
@@ -33,9 +35,11 @@ tasks.named('test') {
         systemProperty 'yano.gate.devnet', 'true'
     }
     // The Haskell-follower workload (ADR-056 Phase 6b) runs only when pointed at a running node.
-    // ADR-056 Phase 7a: ShadowBundleReplayTest replays the shadow bundles in this directory with the java engine.
+    // ADR-056 Phase 7a: ShadowBundleReplayTest replays the shadow bundles in this directory with the java-julc engine.
+    // ADR-056 Phase 7c: NativeParityWorkloadTest (qa/harness/ledger-rules-native-parity.sh) against a running node.
     ['yano.gate.remote-url', 'yano.gate.workload-report', 'yano.gate.epoch-length', 'yano.gate.budget-txs',
-     'yano.shadow.bundles'].each { key ->
+     'yano.shadow.bundles', 'yano.parity.remote-url', 'yano.parity.report', 'yano.parity.epoch-length',
+     'yano.parity.chain-certificates'].each { key ->
         def value = System.getProperty(key)
         if (value != null) {
             systemProperty key, value

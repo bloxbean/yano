@@ -1,11 +1,13 @@
 package org.yanoproject.tx;
 
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
 import org.yanoproject.ledger.rules.shadow.ShadowDumpBundle;
 import org.yanoproject.ledger.rules.shadow.ShadowDumpBundle.RecordedOutcome;
 import org.yanoproject.ledger.rules.shadow.Verdict;
+import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
 import java.io.IOException;
@@ -21,9 +23,10 @@ import java.util.stream.Stream;
  * Replays shadow replay bundles ({@link ShadowDumpBundle}, written by admission shadows and by shadow sync, ADR-056
  * §7 and Phase 7a) through an engine, against exactly the ledger-view reads the bundle recorded.
  *
- * <p>Command line (the java engine, Plutus by Scalus):</p>
+ * <p>Command line (the {@code java-julc} engine; {@code --scalus} replays with the {@code java-scalus} engine, ADR-056
+ * Phase 7c):</p>
  * <pre>
- * java -cp app/build/yano.jar org.yanoproject.tx.ShadowBundleReplay &lt;bundle.json | directory&gt;...
+ * java -cp app/build/yano.jar org.yanoproject.tx.ShadowBundleReplay [--scalus] &lt;bundle.json | directory&gt;...
  * </pre>
  * Prints one line per bundle: the recorded verdicts (the chain's or admission's, and the engine's) and the replayed
  * one. Exit code 0 when every replay reproduces the recorded engine verdict, 1 otherwise, 2 on a usage error. In a
@@ -86,19 +89,26 @@ public final class ShadowBundleReplay {
         }
     }
 
-    /** @return the java engine with the Scalus phase-2 evaluator, as shadow sync runs it */
-    public static LedgerValidationEngine javaEngine() {
-        return new JavaLedgerValidationEngine(new ScalusScriptPhaseEvaluator());
+    /** @return the {@code java-julc} engine, as shadow sync runs it by default */
+    public static LedgerValidationEngine javaJulcEngine() {
+        return new JavaLedgerValidationEngine(LedgerValidationEngines.JAVA_JULC, new JulcScriptPhaseEvaluator());
+    }
+
+    /** @return the {@code java-scalus} engine: the java rules with the Scalus phase-2 evaluator (ADR-056 Phase 7c) */
+    public static LedgerValidationEngine javaScalusEngine() {
+        return new JavaLedgerValidationEngine(LedgerValidationEngines.JAVA_SCALUS, new ScalusScriptPhaseEvaluator());
     }
 
     public static void main(String[] args) {
-        if (args.length == 0) {
-            System.err.println("usage: ShadowBundleReplay <bundle.json | directory>...");
+        List<String> paths = new ArrayList<>(List.of(args));
+        boolean scalus = paths.remove("--scalus");
+        if (paths.isEmpty()) {
+            System.err.println("usage: ShadowBundleReplay [--scalus] <bundle.json | directory>...");
             System.exit(2);
         }
-        LedgerValidationEngine engine = javaEngine();
+        LedgerValidationEngine engine = scalus ? javaScalusEngine() : javaJulcEngine();
         List<Result> results = new ArrayList<>();
-        for (String arg : args) {
+        for (String arg : paths) {
             for (Path bundle : bundles(Path.of(arg))) {
                 Result result = replay(bundle, engine);
                 results.add(result);

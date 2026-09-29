@@ -24,7 +24,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The ADR-056 Phase 5 gate: the Java engine ({@code java-engine}, every rule family) against <em>all</em> 276 Amaru
+ * The ADR-056 Phase 5 gate: the Java engine ({@code java-julc}, every rule family) against <em>all</em> 276 Amaru
  * scenarios. Each must match (verdict and constructor: the first failure, any constructor of Haskell's list where
  * Haskell reports several, or a constructor Amaru's checker reports under the same corpus name), or be a recorded
  * divergence with the engine reporting what Haskell reports.

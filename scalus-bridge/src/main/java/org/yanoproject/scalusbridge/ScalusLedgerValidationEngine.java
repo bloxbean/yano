@@ -22,6 +22,8 @@ import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.ReapplyPolicy;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
+import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
+import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
 import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
@@ -123,7 +125,7 @@ public final class ScalusLedgerValidationEngine implements LedgerValidationEngin
 
         Transaction tx;
         try {
-            tx = Transaction.deserialize(txCbor);
+            tx = CclTransactions.deserialize(txCbor);
         } catch (Exception e) {
             return engine(DECODING_FAILURE, "the transaction does not decode: " + e.getMessage());
         }
@@ -170,6 +172,9 @@ public final class ScalusLedgerValidationEngine implements LedgerValidationEngin
         TxEffects effects;
         try {
             effects = effectsDeriver.derive(txCbor, tx, TxIdentity.txIdHex(txCbor), view, env, phase2Valid);
+        } catch (TxDecodingException e) {
+            return engine(DECODING_FAILURE, "Scalus accepted the transaction but Haskell's decoder rejects it: "
+                    + e.getMessage());
         } catch (IllegalArgumentException | IllegalStateException e) {
             return engine(ENGINE_FAILURE,
                     "Scalus accepted the transaction but its effects cannot be derived: " + e.getMessage());

@@ -58,8 +58,8 @@ class ValidationEngineSettingsTest {
                 List.of("amaru"))).usesEngineApi()).isTrue();
         assertThat(ValidationEngineSettings.fromGlobals(Map.of(
                 YanoPropertyKeys.Validation.SHADOW_ENGINES + "[0]", "amaru",
-                YanoPropertyKeys.Validation.SHADOW_ENGINES + "[1]", "java")).shadowEngines())
-                .containsExactly("amaru", "java");
+                YanoPropertyKeys.Validation.SHADOW_ENGINES + "[1]", "java-julc")).shadowEngines())
+                .containsExactly("amaru", "java-julc");
     }
 
     @Test

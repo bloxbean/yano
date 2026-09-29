@@ -6,6 +6,7 @@ import org.yanoproject.ledger.rules.conway.TransitionContext;
 import org.yanoproject.ledger.rules.conway.tx.AddressBytes;
 import org.yanoproject.ledger.rules.conway.tx.RawCertificate;
 import org.yanoproject.ledger.rules.conway.tx.RawProposal;
+import org.yanoproject.ledger.rules.conway.tx.RawRedeemer;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.RawVoter;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
@@ -18,6 +19,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.function.Function;
 
 /**
  * What a Conway transaction needs to be authorised: the scripts ({@code getConwayScriptsNeeded},
@@ -27,7 +29,7 @@ import java.util.TreeSet;
  * it (:148), and the certificate witnesses depend on the certificate alone ({@code getVKeyWitnessConwayTxCert},
  * {@code getScriptWitnessConwayTxCert}, Conway/TxCert.hs:763-804). The UTxO is the state before the transaction.</p>
  */
-final class WitnessNeeds {
+public final class WitnessNeeds {
 
     /** Redeemer tags ({@code ConwayPlutusPurpose} constructor order). */
     static final int SPEND = 0;
@@ -45,11 +47,11 @@ final class WitnessNeeds {
      * @param item  the purpose's item, rendered ({@code AsItem})
      * @param hash  the script hash, hex
      */
-    record NeededScript(int tag, long index, String item, String hash) {
+    public record NeededScript(int tag, long index, String item, String hash) {
 
         /** @return the redeemer key {@code (tag, index)}, packed as the redeemer map keys it */
         long key() {
-            return ((long) tag << 32) | index;
+            return RawRedeemer.key(tag, index);
         }
 
         String purpose() {
@@ -83,7 +85,15 @@ final class WitnessNeeds {
      * {@code catMaybes}).
      */
     static List<NeededScript> scriptsNeeded(TransitionContext ctx) {
-        RawTransaction raw = ctx.raw();
+        return scriptsNeeded(ctx.raw(), ctx::utxo);
+    }
+
+    /**
+     * As {@link #scriptsNeeded(TransitionContext)}, outside a transition (a phase-2 evaluator, ADR-056 Phase 7c).
+     *
+     * @param utxo the resolved output of an input, empty when it is not in the UTxO
+     */
+    public static List<NeededScript> scriptsNeeded(RawTransaction raw, Function<TxInRef, Optional<UtxoEntry>> utxo) {
         List<NeededScript> needed = new ArrayList<>();
 
         // getSpendingScriptsNeeded: the spending inputs (a Set TxIn) found in the UTxO whose payment credential is a
@@ -91,7 +101,7 @@ final class WitnessNeeds {
         int index = 0;
         for (TxInRef in : raw.inputSet()) {
             int ix = index++;
-            ctx.utxo(in).flatMap(WitnessNeeds::paymentScriptHash)
+            utxo.apply(in).flatMap(WitnessNeeds::paymentScriptHash)
                     .ifPresent(hash -> needed.add(new NeededScript(SPEND, ix, in.toString(), hash)));
         }
 

@@ -1,8 +1,6 @@
 package org.yanoproject.ledger.rules.util;
 
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
@@ -17,44 +15,15 @@ import java.util.TreeSet;
  * {@link org.yanoproject.ledger.rules.view.model.ProposalState#paramUpdateKeys()}.</p>
  *
  * <pre>
- * transaction          = [body, witnesses, is_valid, auxiliary_data]
- * body                 = { … 20: proposal_procedures … }
- * proposal_procedures  = nonempty_oset&lt;proposal_procedure&gt;       ; optionally tagged 258
- * proposal_procedure   = [deposit, reward_account, gov_action, anchor]
- * gov_action           = [0, gov_action_id / null, protocol_param_update, policy_hash / null] / …
+ * gov_action = [0, gov_action_id / null, protocol_param_update, policy_hash / null] / …
  * </pre>
+ *
+ * <p>A transaction's proposals carry the same keys ({@code RawProposal#paramUpdate()}).</p>
  */
 public final class ProposalParamUpdateKeys {
 
-    private static final int PROPOSAL_PROCEDURES = 20;
-    private static final int SET_TAG = 258;
 
     private ProposalParamUpdateKeys() {
-    }
-
-    /**
-     * @param txCbor a transaction, {@code [body, witnesses, is_valid, auxiliary_data]}
-     * @return one entry per proposal procedure, in body order: the parameter-update keys of a
-     *         {@code ParameterChange}, or {@code null} for other actions; empty when the body has no
-     *         proposals
-     * @throws IllegalArgumentException when the bytes are not well-formed
-     */
-    public static List<Set<Integer>> fromTransaction(byte[] txCbor) {
-        Objects.requireNonNull(txCbor, "txCbor");
-        Reader r = new Reader(txCbor, 0);
-        long txItems = r.containerHead(4);
-        if (txItems == 0) {
-            throw new IllegalArgumentException("empty transaction array");
-        }
-        long entries = r.containerHead(5);
-        for (long i = 0; entries < 0 ? !r.atBreak() : i < entries; i++) {
-            long key = r.uint();
-            if (key == PROPOSAL_PROCEDURES) {
-                return procedures(r);
-            }
-            r.skip();
-        }
-        return List.of();
     }
 
     /**
@@ -65,23 +34,6 @@ public final class ProposalParamUpdateKeys {
     public static Set<Integer> fromGovAction(byte[] govActionCbor) {
         Objects.requireNonNull(govActionCbor, "govActionCbor");
         return govAction(new Reader(govActionCbor, 0));
-    }
-
-    private static List<Set<Integer>> procedures(Reader r) {
-        r.optionalTag(SET_TAG);
-        long count = r.containerHead(4);
-        List<Set<Integer>> result = new ArrayList<>();
-        for (long i = 0; count < 0 ? !r.atBreak() : i < count; i++) {
-            long fields = r.containerHead(4);
-            if (fields != 4) {
-                throw new IllegalArgumentException("proposal_procedure must have 4 fields");
-            }
-            r.skip(); // deposit
-            r.skip(); // reward account
-            result.add(govAction(r));
-            r.skip(); // anchor
-        }
-        return Collections.unmodifiableList(result);
     }
 
     private static Set<Integer> govAction(Reader r) {
@@ -132,15 +84,6 @@ public final class ProposalParamUpdateKeys {
 
         void skip() {
             offset = CborItems.skip(data, offset);
-        }
-
-        void optionalTag(long tag) {
-            if (offset < data.length && (data[offset] & 0xff) >>> 5 == 6) {
-                long actual = argument();
-                if (actual != tag) {
-                    throw new IllegalArgumentException("unexpected tag " + actual);
-                }
-            }
         }
 
         /** @return the length of an array (4) or map (5) head, or -1 when indefinite */

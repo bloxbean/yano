@@ -16,10 +16,12 @@ import java.util.Objects;
  *
  * <p>Byte-exactness. {@link TransactionOutput#getScriptRef()} holds the reference script exactly as
  * it appeared on chain (the {@code script} CBOR inside the tag-24 wrapper). The inline datum,
- * however, is a decoded {@code PlutusData} that CCL re-encodes on serialisation, which need not
- * reproduce the on-chain bytes. {@link #inlineDatumCbor()} therefore carries the inline datum
- * exactly as stored when the source knows it; {@code null} means "not available" (for example an
- * output produced by a transaction being validated), not "no inline datum".</p>
+ * however, is a decoded {@code PlutusData} that CCL re-encodes on serialisation as canonical CBOR,
+ * which sorts a map's keys, so a script would see a different {@code Data} (ADR-056 Phase 7c).
+ * {@link #inlineDatumCbor()} therefore carries the inline datum exactly as encoded. Every ledger-view
+ * producer supplies it: the canonical UTxO store, {@code TxEffectsDeriver} for outputs of the same
+ * block or mempool chain (from {@code RawOutput#inlineDatum()}). {@code null} means "not available"
+ * (an entry built from a CCL output alone, as test fixtures do), not "no inline datum".</p>
  *
  * @param outpoint        the output reference; its tx hash is lowercase hex
  * @param output          the output

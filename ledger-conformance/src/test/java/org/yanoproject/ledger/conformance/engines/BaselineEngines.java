@@ -38,12 +38,13 @@ public final class BaselineEngines {
     }
 
     /**
-     * @return scalus-legacy, scalus-legacy+supplementary, scalus-engine, java-legacy, java-engine and, when built,
-     *         amaru
+     * @return scalus-legacy, scalus-legacy+supplementary, scalus-engine, java-legacy, java-julc (julc phase 2),
+     *         java-scalus (ADR-056 Phase 7c) and, when built, amaru
      */
     public static List<ConformanceEngine> all() {
         List<ConformanceEngine> engines = new ArrayList<>(List.of(new ScalusLegacyEngine(false),
-                new ScalusLegacyEngine(true), new ScalusViewEngine(), new JavaLegacyEngine(), new JavaViewEngine()));
+                new ScalusLegacyEngine(true), new ScalusViewEngine(), new JavaLegacyEngine(), new JavaViewEngine(),
+                JavaViewEngine.scalus()));
         amaru().ifPresent(engines::add);
         return engines;
     }

@@ -11,11 +11,23 @@ import java.util.Objects;
  * @param index the index within its purpose
  * @param mem   declared memory units
  * @param steps declared CPU steps
+ * @param data  the redeemer data's original encoding in the transaction bytes
  */
-public record RawRedeemer(int tag, long index, BigInteger mem, BigInteger steps) {
+public record RawRedeemer(int tag, long index, BigInteger mem, BigInteger steps, CborSlice data) {
 
     public RawRedeemer {
         Objects.requireNonNull(mem, "mem");
         Objects.requireNonNull(steps, "steps");
+        Objects.requireNonNull(data, "data");
+    }
+
+    /** @return the redeemer key, {@link #key(int, long)} */
+    public long key() {
+        return key(tag, index);
+    }
+
+    /** @return the redeemer key {@code (tag, index)} packed in one long, ordered as Haskell's redeemer map */
+    public static long key(int tag, long index) {
+        return ((long) tag << 32) | index;
     }
 }

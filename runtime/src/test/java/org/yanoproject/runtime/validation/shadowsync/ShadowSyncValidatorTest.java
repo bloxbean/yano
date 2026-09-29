@@ -89,7 +89,7 @@ class ShadowSyncValidatorTest {
     void whenEverySlotIsTakenTheApplyThreadWaitsUntilABlockFinishes() throws Exception {
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger entered = new AtomicInteger();
-        LedgerValidationEngine held = engine("java", request -> {
+        LedgerValidationEngine held = engine("java-julc", request -> {
             entered.incrementAndGet();
             try {
                 release.await();
@@ -116,7 +116,7 @@ class ShadowSyncValidatorTest {
 
             ShadowSyncReport.Stats stats = validator.status().report();
             assertThat(stats.blocksValidated()).isEqualTo(3);
-            assertThat(stats.agreed("java")).isEqualTo(3);
+            assertThat(stats.agreed("java-julc")).isEqualTo(3);
             assertThat(stats.backpressureWaits()).isEqualTo(1);
             assertThat(stats.backpressureWaitMillis()).isGreaterThanOrEqualTo(250);
             assertThat(source.captured.get()).isEqualTo(3);
@@ -131,7 +131,7 @@ class ShadowSyncValidatorTest {
     @Timeout(30)
     void aBlockThatFindsNoSlotWithinTheMaximumWaitIsSkippedAndReported() throws Exception {
         CountDownLatch release = new CountDownLatch(1);
-        LedgerValidationEngine held = engine("java", request -> {
+        LedgerValidationEngine held = engine("java-julc", request -> {
             try {
                 release.await();
             } catch (InterruptedException e) {
@@ -166,7 +166,7 @@ class ShadowSyncValidatorTest {
     void blocksBeforeConwayEmptyBlocksAndBlocksOutsideAWriteSectionAreNotCaptured() {
         CountingSource source = new CountingSource(10);
         AtomicBoolean inSection = new AtomicBoolean(true);
-        try (ShadowSyncValidator validator = validator(settings(2, 1, 1000), List.of(agreeing("java")), source,
+        try (ShadowSyncValidator validator = validator(settings(2, 1, 1000), List.of(agreeing("java-julc")), source,
                 inSection::get, new ShadowSyncReport(null, null, 0))) {
             validator.onBlockApplied(new BlockAppliedEvent(Era.Babbage, 1, 1, "aa".repeat(32), block(2)));
             validator.onBlockApplied(new BlockAppliedEvent(Era.Byron, 2, 2, "bb".repeat(32), null));
@@ -187,7 +187,7 @@ class ShadowSyncValidatorTest {
     @Test
     void aPreConwayProtocolVersionIsSkippedAfterTheCapture() throws Exception {
         CountingSource source = new CountingSource(8);
-        try (ShadowSyncValidator validator = validator(settings(2, 1, 1000), List.of(agreeing("java")), source,
+        try (ShadowSyncValidator validator = validator(settings(2, 1, 1000), List.of(agreeing("java-julc")), source,
                 () -> true, new ShadowSyncReport(null, null, 0))) {
             validator.onBlockApplied(event(1, 2));
             assertThat(validator.awaitIdle(10, TimeUnit.SECONDS)).isTrue();
@@ -199,7 +199,7 @@ class ShadowSyncValidatorTest {
 
     @Test
     void aDisagreementIsCountedPerEngineAndVersionAndWrittenToTheReportWithABundle() throws Exception {
-        LedgerValidationEngine rejectsSecond = engine("java", request -> indexOf(request.txCbor()) == 1
+        LedgerValidationEngine rejectsSecond = engine("java-julc", request -> indexOf(request.txCbor()) == 1
                 ? invalid(LedgerRuleName.UTXO, "FeeTooSmallUTxO") : valid(request.txCbor(), true));
         LedgerValidationEngine unavailable = engine("amaru", request ->
                 invalid(LedgerRuleName.ENGINE, "LedgerStateUnavailable"));
@@ -212,7 +212,7 @@ class ShadowSyncValidatorTest {
             assertThat(validator.awaitIdle(10, TimeUnit.SECONDS)).isTrue();
 
             ShadowSyncReport.Stats stats = validator.status().report();
-            assertThat(stats.byEngine().get("java")).isEqualTo(Map.of(11, new ShadowSyncReport.Counts(2, 1, 1, 0)));
+            assertThat(stats.byEngine().get("java-julc")).isEqualTo(Map.of(11, new ShadowSyncReport.Counts(2, 1, 1, 0)));
             assertThat(stats.byEngine().get("amaru")).isEqualTo(Map.of(11, new ShadowSyncReport.Counts(2, 0, 0, 2)));
             assertThat(stats.disagreedTotal()).isEqualTo(1);
             assertThat(stats.dumpsWritten()).isEqualTo(3);
@@ -220,7 +220,7 @@ class ShadowSyncValidatorTest {
         List<JsonNode> lines = lines(report);
         JsonNode disagreement = lines.stream().filter(l -> "DISAGREED".equals(l.path("kind").asText())).findFirst()
                 .orElseThrow();
-        assertThat(disagreement.get("engine").asText()).isEqualTo("java");
+        assertThat(disagreement.get("engine").asText()).isEqualTo("java-julc");
         assertThat(disagreement.get("slot").asLong()).isEqualTo(7);
         assertThat(disagreement.get("txIndex").asInt()).isEqualTo(1);
         assertThat(disagreement.get("txHash").asText()).isEqualTo(
@@ -234,7 +234,7 @@ class ShadowSyncValidatorTest {
         assertThat(summary.get("type").asText()).isEqualTo("summary");
         // Built field by field (no bean introspection, native-image safe).
         assertThat(summary.at("/stats/blocksValidated").asLong()).isEqualTo(1);
-        assertThat(summary.at("/stats/byEngine/java/11/disagreed").asLong()).isEqualTo(1);
+        assertThat(summary.at("/stats/byEngine/java-julc/11/disagreed").asLong()).isEqualTo(1);
         assertThat(summary.at("/stats/byEngine/amaru/11/engineFailures").asLong()).isEqualTo(2);
         assertThat(summary.at("/stats/dumpsWritten").asLong()).isEqualTo(3);
     }
@@ -242,7 +242,7 @@ class ShadowSyncValidatorTest {
     @Test
     void closingReleasesTheStatesOfQueuedBlocks() throws Exception {
         CountDownLatch release = new CountDownLatch(1);
-        LedgerValidationEngine held = engine("java", request -> {
+        LedgerValidationEngine held = engine("java-julc", request -> {
             try {
                 release.await();
             } catch (InterruptedException e) {
@@ -267,7 +267,7 @@ class ShadowSyncValidatorTest {
     // ------------------------------------------------------------------ helpers
 
     static ShadowSyncSettings settings(int maxInFlight, int threads, long maxWaitMs) {
-        return new ShadowSyncSettings(List.of("java"), null, null, 10, maxInFlight, threads, maxWaitMs, 0);
+        return new ShadowSyncSettings(List.of("java-julc"), null, null, 10, maxInFlight, threads, maxWaitMs, 0);
     }
 
     private static ShadowSyncValidator validator(ShadowSyncSettings settings, List<LedgerValidationEngine> engines,

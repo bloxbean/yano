@@ -49,10 +49,10 @@ class LedgerValidationEnginesTest {
     void javaWithoutItsFactoryIsNamed() {
         LedgerValidationEngines engines = LedgerValidationEngines.of(List.of(new FakeFactory()));
 
-        assertThatThrownBy(() -> engines.factory("java"))
+        assertThatThrownBy(() -> engines.factory("java-julc"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("'java' is not on the classpath")
-                .hasMessageContaining("JavaEngineFactory");
+                .hasMessageContaining("'java-julc' is not on the classpath")
+                .hasMessageContaining("JavaJulcEngineFactory");
     }
 
     @Test
@@ -96,8 +96,8 @@ class LedgerValidationEnginesTest {
     void shadowEngineListsParse() {
         assertThat(LedgerValidationEngines.parseShadowEngines(null, "scalus")).isEmpty();
         assertThat(LedgerValidationEngines.parseShadowEngines("", "scalus")).isEmpty();
-        assertThat(LedgerValidationEngines.parseShadowEngines("[amaru, Java, amaru]", "scalus"))
-                .containsExactly("amaru", "java");
+        assertThat(LedgerValidationEngines.parseShadowEngines("[amaru, Java-Julc, amaru]", "scalus"))
+                .containsExactly("amaru", "java-julc");
         assertThat(LedgerValidationEngines.parseShadowEngines("'amaru'", "scalus")).containsExactly("amaru");
         assertThatThrownBy(() -> LedgerValidationEngines.parseShadowEngines("scalus,amaru", "Scalus"))
                 .hasMessageContaining("must differ from yano.validation.engine");

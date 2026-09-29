@@ -38,6 +38,8 @@ import org.yanoproject.ledger.rules.TxIdentity;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.ruleset.ConwayPolicies;
 import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
+import org.yanoproject.ledger.rules.conway.tx.RawParamUpdate;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.effects.LedgerChange.AccountRegistered;
 import org.yanoproject.ledger.rules.effects.LedgerChange.AccountUnregistered;
 import org.yanoproject.ledger.rules.effects.LedgerChange.CommitteeHotAuthorized;
@@ -55,7 +57,6 @@ import org.yanoproject.ledger.rules.effects.LedgerChange.RewardWithdrawn;
 import org.yanoproject.ledger.rules.effects.LedgerChange.StakeDelegated;
 import org.yanoproject.ledger.rules.effects.LedgerChange.VoteCast;
 import org.yanoproject.ledger.rules.effects.LedgerChange.VoteDelegated;
-import org.yanoproject.ledger.rules.util.ProposalParamUpdateKeys;
 import org.yanoproject.ledger.rules.util.RewardAddresses;
 import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
 import org.yanoproject.ledger.rules.view.LedgerView;
@@ -104,33 +105,54 @@ import java.util.Set;
 public final class TxEffectsDeriver {
 
     /**
-     * @param txCbor      the transaction bytes, used for the id when {@code txId} is null and for the
-     *                    parameter-update keys of submitted proposals ({@code null} leaves them unknown)
-     * @param tx          the decoded transaction
-     * @param txId        the transaction id (lowercase hex), or {@code null} to compute it
+     * @param raw         the transaction read from its original bytes (its id, the produced outputs' inline datum
+     *                    bytes and the proposals' parameter-update keys come from them)
      * @param preState    the state the transaction was validated against; its
      *                    {@link LedgerView#protocolParams()} supplies the epoch-effective parameters
      * @param env         the validation environment (current epoch, protocol version)
      * @param phase2Valid the phase-2 verdict
      * @return the transaction's effects
      */
+    public TxEffects derive(RawTransaction raw, LedgerView preState, ValidationEnv env, boolean phase2Valid) {
+        Objects.requireNonNull(raw, "raw");
+        return derive(raw, Objects.requireNonNull(raw.decoded(), "decoded transaction"), raw.txIdHex(), preState, env,
+                phase2Valid);
+    }
+
+    /**
+     * As {@link #derive(RawTransaction, LedgerView, ValidationEnv, boolean)} for a caller without the parsed
+     * transaction.
+     *
+     * @param txCbor the transaction bytes, or {@code null}: then the id must be given, and the produced outputs' inline
+     *               datum bytes ({@link UtxoEntry#inlineDatumCbor()}) and the parameter-update keys stay unknown
+     * @param tx     the decoded transaction
+     * @param txId   the transaction id (lowercase hex), or {@code null} to compute it
+     */
     public TxEffects derive(byte[] txCbor, Transaction tx, String txId, LedgerView preState, ValidationEnv env,
                             boolean phase2Valid) {
         Objects.requireNonNull(tx, "tx");
+        String id = txId != null ? txId : TxIdentity.txIdHex(Objects.requireNonNull(txCbor, "txCbor"));
+        return derive(txCbor != null ? RawTransaction.parse(txCbor, tx) : null, tx, id, preState, env, phase2Valid);
+    }
+
+    private TxEffects derive(RawTransaction raw, Transaction tx, String id, LedgerView preState, ValidationEnv env,
+                             boolean phase2Valid) {
         Objects.requireNonNull(preState, "preState");
         Objects.requireNonNull(env, "env");
-        String id = txId != null ? txId : TxIdentity.txIdHex(Objects.requireNonNull(txCbor, "txCbor"));
         TransactionBody body = Objects.requireNonNull(tx.getBody(), "tx body");
 
+        // A produced output keeps its inline datum's original bytes (RawOutput#inlineDatum), as the canonical UTxO
+        // store does: a later transaction's scripts see the Data decoded from them, not CCL's canonical re-encoding.
         if (!phase2Valid) {
-            return collateralOnly(id, body);
+            return collateralOnly(id, body, raw);
         }
 
         List<Outpoint> consumed = inputs(body.getInputs());
         List<UtxoEntry> produced = new ArrayList<>();
         List<TransactionOutput> outputs = nullToEmpty(body.getOutputs());
         for (int i = 0; i < outputs.size(); i++) {
-            produced.add(new UtxoEntry(Outpoints.of(id, i), outputs.get(i)));
+            produced.add(new UtxoEntry(Outpoints.of(id, i), outputs.get(i),
+                    raw != null ? raw.outputs().get(i).inlineDatum() : null));
         }
 
         ProtocolParams pp = protocolParams(preState);
@@ -140,7 +162,7 @@ public final class TxEffectsDeriver {
             fold = fold.step(certificateChanges(fold.current(), cert, pp, env));
         }
         List<LedgerChange> changes = new ArrayList<>(fold.changes());
-        changes.addAll(proposalChanges(txCbor, id, body, pp, env));
+        changes.addAll(proposalChanges(raw, id, body, pp, env));
         changes.addAll(voteChanges(body));
         return new TxEffects(id, true, consumed, produced, changes);
     }
@@ -157,12 +179,13 @@ public final class TxEffectsDeriver {
      * {@code isValid=false}: consume the collateral inputs and produce the collateral return at
      * index {@code length outputs} (Babbage/Collateral.hs:52-60, Babbage/Rules/Utxo.hs:474-487).
      */
-    private static TxEffects collateralOnly(String id, TransactionBody body) {
+    private static TxEffects collateralOnly(String id, TransactionBody body, RawTransaction raw) {
         List<Outpoint> consumed = inputs(body.getCollateral());
         List<UtxoEntry> produced = new ArrayList<>();
         if (body.getCollateralReturn() != null) {
             int index = Math.min(nullToEmpty(body.getOutputs()).size(), 0xFFFF);
-            produced.add(new UtxoEntry(Outpoints.of(id, index), body.getCollateralReturn()));
+            produced.add(new UtxoEntry(Outpoints.of(id, index), body.getCollateralReturn(),
+                    raw != null ? raw.collateralReturn().inlineDatum() : null));
         }
         return new TxEffects(id, false, consumed, produced, List.of());
     }
@@ -297,40 +320,30 @@ public final class TxEffectsDeriver {
      * Proposal ids are (txId, index in proposal_procedures) and expire after
      * {@code currentEpoch + govActionLifetime} (Gov.hs:483-486, 561-563; mkGovActionState :409-417).
      */
-    private static List<LedgerChange> proposalChanges(byte[] txCbor, String txId, TransactionBody body,
+    private static List<LedgerChange> proposalChanges(RawTransaction raw, String txId, TransactionBody body,
                                                       ProtocolParams pp, ValidationEnv env) {
         List<ProposalProcedure> procedures = nullToEmpty(body.getProposalProcedures());
         if (procedures.isEmpty()) {
             return List.of();
         }
         long lifetime = requireInt(pp.getGovActionLifetime(), "govActionLifetime");
-        List<Set<Integer>> paramKeys = paramUpdateKeys(txCbor, procedures.size());
+        if (raw != null && raw.proposals().size() != procedures.size()) {
+            throw new IllegalArgumentException("transaction bytes carry " + raw.proposals().size() + " proposals, the "
+                    + "decoded transaction " + procedures.size());
+        }
         List<LedgerChange> changes = new ArrayList<>();
         for (int i = 0; i < procedures.size(); i++) {
             ProposalProcedure p = procedures.get(i);
             GovAction action = Objects.requireNonNull(p.getGovAction(), "govAction");
+            // The protocol_param_update keys from the original bytes (CCL's decoded update lacks the Conway keys); null
+            // for another action, or without the bytes.
+            RawParamUpdate update = raw != null ? raw.proposals().get(i).paramUpdate() : null;
             changes.add(new ProposalSubmitted(new ProposalState(new GovActionId(txId, i), action.getType(), action,
                     prevActionId(action), env.currentEpoch(), env.currentEpoch() + lifetime,
                     Objects.requireNonNull(p.getDeposit(), "proposal deposit"), p.getRewardAccount(),
-                    paramKeys != null ? paramKeys.get(i) : null)));
+                    update != null ? update.keys() : null)));
         }
         return changes;
-    }
-
-    /**
-     * The {@code protocol_param_update} keys of each proposal, from the original transaction bytes (CCL's
-     * decoded update lacks the Conway keys); null when the bytes are not available.
-     */
-    private static List<Set<Integer>> paramUpdateKeys(byte[] txCbor, int proposals) {
-        if (txCbor == null) {
-            return null;
-        }
-        List<Set<Integer>> keys = ProposalParamUpdateKeys.fromTransaction(txCbor);
-        if (keys.size() != proposals) {
-            throw new IllegalArgumentException("transaction bytes carry " + keys.size() + " proposals, the decoded "
-                    + "transaction " + proposals);
-        }
-        return keys;
     }
 
     private static GovActionId prevActionId(GovAction action) {

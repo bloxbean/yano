@@ -16,6 +16,7 @@ import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.view.RecordingLedgerView;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -139,6 +140,15 @@ public record ShadowDumpBundle(String txHash, byte[] txCbor, TxValidationRequest
             return fromJson(ViewReadCodec.MAPPER.readTree(file.toFile()));
         } catch (IOException e) {
             throw new UncheckedIOException("cannot read shadow dump " + file, e);
+        }
+    }
+
+    /** Reads a bundle written by {@link #write(Path)} from a stream (a test resource). */
+    public static ShadowDumpBundle read(InputStream in) {
+        try {
+            return fromJson(ViewReadCodec.MAPPER.readTree(in));
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read shadow dump", e);
         }
     }
 

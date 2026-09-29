@@ -75,7 +75,7 @@ class MutationWorldMatrixTest {
             ConformanceEngine engine = c.rule() == TxValidationRequest.Rule.MEMPOOL ? JAVA_MEMPOOL : JAVA_LEDGER;
             List<String> failures = names(ConformanceRunner.run(engine, testCase).observation());
             if (!failures.equals(c.expected())) {
-                misses.add(c.id() + " (" + c.source() + "): Haskell " + label(c.expected()) + ", java-engine "
+                misses.add(c.id() + " (" + c.source() + "): Haskell " + label(c.expected()) + ", java-julc "
                         + label(failures));
             }
             if (c.expected().isEmpty()) {
@@ -87,7 +87,7 @@ class MutationWorldMatrixTest {
         }
         System.out.printf("Mutation world matrix, protocol version %d: %d cases (%d valid), %d misses, %d Amaru "
                 + "disagreements%n", world, cases.size(), valid, misses.size(), amaruMisses.size());
-        misses.forEach(m -> System.out.println("  java-engine: " + m));
+        misses.forEach(m -> System.out.println("  java-julc: " + m));
         amaruMisses.forEach(m -> System.out.println("  amaru: " + m));
         assertThat(misses).as("protocol version %d: mutants the java engine judges other than Haskell", world)
                 .isEmpty();

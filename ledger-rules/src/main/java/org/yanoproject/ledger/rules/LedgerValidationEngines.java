@@ -20,10 +20,18 @@ public final class LedgerValidationEngines {
 
     /** The default admission engine ({@code yano.validation.engine}). */
     public static final String SCALUS = "scalus";
-    /** The Java Conway engine of ADR-056 Phases 3–5. */
-    public static final String JAVA = "java";
+    /**
+     * The Java Conway engine of ADR-056 Phases 3–5 with the julc phase-2 evaluator (Phase 7c): the Java engine wherever
+     * one is defaulted.
+     */
+    public static final String JAVA_JULC = "java-julc";
     /** The optional Amaru WebAssembly engine (ADR-057). */
     public static final String AMARU = "amaru";
+    /**
+     * The Java Conway engine with the Scalus phase-2 evaluator instead of julc (ADR-056 Phase 7c), for users who need
+     * it; shadow sync can run both side by side ({@code shadow-sync-engines: java-julc,java-scalus}).
+     */
+    public static final String JAVA_SCALUS = "java-scalus";
 
     private final Map<String, LedgerValidationEngineFactory> factories;
 
@@ -84,9 +92,11 @@ public final class LedgerValidationEngines {
 
     private String unavailableMessage(String key) {
         return switch (key) {
-            case JAVA -> "Validation engine 'java' is not on the classpath: its factory (ledger-rules, "
-                    + "JavaEngineFactory) was not found. Use yano.validation.engine=scalus (the default), or amaru in "
-                    + "a build with -PwithAmaru=true.";
+            case JAVA_JULC -> "Validation engine 'java-julc' is not on the classpath: its factory (ledger-rules, "
+                    + "JavaJulcEngineFactory) was not found. Use yano.validation.engine=scalus (the default), or amaru "
+                    + "in a build with -PwithAmaru=true.";
+            case JAVA_SCALUS -> "Validation engine 'java-scalus' is not on the classpath: its factory (ledger-rules, "
+                    + "JavaScalusEngineFactory) was not found.";
             case AMARU -> "Validation engine 'amaru' is configured but the amaru-validator module is not on the "
                     + "classpath. Build Yano with -PwithAmaru=true (ADR-057), or set "
                     + "yano.validation.engine=scalus and remove amaru from yano.validation.shadow-engines.";
@@ -138,6 +148,7 @@ public final class LedgerValidationEngines {
     /** @return true when {@code name} is one of the known engine names, available or not */
     public static boolean isKnownName(String name) {
         String key = normalize(name);
-        return Objects.equals(key, SCALUS) || Objects.equals(key, JAVA) || Objects.equals(key, AMARU);
+        return Objects.equals(key, SCALUS) || Objects.equals(key, JAVA_JULC) || Objects.equals(key, JAVA_SCALUS)
+                || Objects.equals(key, AMARU);
     }
 }

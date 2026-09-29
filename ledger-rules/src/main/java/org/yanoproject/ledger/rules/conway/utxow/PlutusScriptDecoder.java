@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.conway.utxow;
 
 import org.yanoproject.ledger.rules.conway.tx.PlutusData;
 import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
+import org.yanoproject.ledger.rules.util.CborItems;
 
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -78,6 +79,32 @@ public final class PlutusScriptDecoder {
     /** @return true when the script deserialises */
     public static boolean isWellFormed(int language, byte[] script, int protocolMajor) {
         return check(language, script, protocolMajor).isEmpty();
+    }
+
+    /**
+     * The {@code PlutusBinary} as a PlutusV1/V2 script runs: its leading CBOR item. Bytes after it are allowed for
+     * PlutusV1/V2 ({@code deserialiseScript}: {@code RemainderError} only from PlutusV3,
+     * {@code PlutusLedgerApi/Common/SerialisedScript.hs:261-264}) and ignored when the script is decoded to run.
+     *
+     * @return the leading CBOR item, or {@code script} itself when nothing follows it
+     */
+    public static byte[] leadingItem(byte[] script) {
+        int end = CborItems.skip(script, 0);
+        return end == script.length ? script : Arrays.copyOf(script, end);
+    }
+
+    /**
+     * The program's Plutus Core version, from the flat program's header (three naturals).
+     *
+     * @return {@code [major, minor, patch]}, or empty when the binary does not hold a flat program header
+     */
+    public static Optional<List<BigInteger>> programVersion(byte[] script) {
+        try {
+            Bits in = new Bits(new Cbor(script, 0, script.length).bytes());
+            return Optional.of(List.of(in.natural(), in.natural(), in.natural()));
+        } catch (Malformed | IndexOutOfBoundsException e) {
+            return Optional.empty();
+        }
     }
 
     // ------------------------------------------------------------------ CBOR envelope

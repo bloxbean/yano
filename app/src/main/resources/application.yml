@@ -335,12 +335,17 @@ yano:
         seconds: 30
   validation:
     # Transaction validation engines (ADR-056 §7, ADR-057).
-    # Admission engine: scalus (default) | java | amaru.
-    #   scalus - Scalus Conway rules. With no shadow engines this is the legacy validator, unchanged.
-    #   java   - the Java Conway rules (ADR-056 Phases 3-5): startup fails unless
-    #            yano.validation.java-engine.experimental=true, which only tests, the conformance harness and
-    #            the Phase 6b Haskell-follower gate set, until the default flips (Phase 8).
-    #   amaru  - Amaru's rules as WebAssembly; needs a build with -PwithAmaru=true, otherwise startup fails.
+    # Admission engine: scalus (default) | java-julc | java-scalus | amaru.
+    #   scalus      - Scalus Conway rules. With no shadow engines this is the legacy validator, unchanged.
+    #   java-julc   - the Java Conway rules (ADR-056 Phases 3-5) with Plutus on julc (Phase 7c), the Java engine
+    #                 wherever one is defaulted. Startup fails unless yano.validation.java-engine.experimental=true,
+    #                 which only tests, the conformance harness and the Phase 6b Haskell-follower gate set, until the
+    #                 default flips (Phase 8).
+    #   java-scalus - the same Java rules with Plutus on Scalus, same opt-in. Its own engine id, so it can run next to
+    #                 java-julc: shadow-sync-engines: java-julc,java-scalus gives every Conway transaction both
+    #                 verdicts, and metrics, health and report lines name the engine.
+    #   amaru       - Amaru's rules as WebAssembly; needs a build with -PwithAmaru=true, otherwise startup fails.
+    # The former id "java" is gone: startup fails and names the valid ids.
     # Any engine other than scalus validates admission against one canonical snapshot ticked to the slot
     # after the tip (or, right after a producer applied the next boundary, the first slot of that epoch).
     # Block production then validates the mempool's candidates with the same engine, rule LEDGER, over a
@@ -365,7 +370,8 @@ yano:
     # yano_validation_shadow_sync_* metrics and the JSONL report. It never changes what the node applies; when
     # validation falls behind, block application waits (sync slows to validation speed).
     shadow-sync: false
-    shadow-sync-engines: java       # java (no experimental flag needed: observe only) and/or amaru (-PwithAmaru)
+    shadow-sync-engines: java-julc  # java-julc and/or java-scalus (no experimental flag needed: observe only;
+                                    # java-julc,java-scalus runs both phase-2 evaluators) and/or amaru (-PwithAmaru)
     shadow-sync-report: ""          # JSONL file: one line per disagreement, engine failure or block finding
     shadow-sync-dump-dir: ""        # replay bundle (tx + every view read) per finding
     shadow-sync-max-dumps: 1000

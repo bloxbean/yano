@@ -3,9 +3,11 @@ package org.yanoproject.ledger.rules.conway;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 
+import org.yanoproject.ledger.rules.EngineContext;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidatedTx;
@@ -14,6 +16,7 @@ import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSet;
 import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
+import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
@@ -23,13 +26,15 @@ import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
- * The {@code java} engine (ADR-056 §4, §7): Yano's own Conway rules, {@link ConwayLedgerTransition}, over the
- * request's {@link LedgerView}, with Plutus scripts run by the node's {@link ScriptPhaseEvaluator}.
+ * The Java engine (ADR-056 §4, §7; ids {@code java-julc} and {@code java-scalus}): Yano's own Conway rules,
+ * {@link ConwayLedgerTransition}, over the request's {@link LedgerView}, with Plutus scripts run by a
+ * {@link ScriptPhaseEvaluator}.
  *
  * <ul>
  *   <li><b>Scope</b>: Conway at protocol major version 9 (the bootstrap phase), 10 or 11 (invariant 7): the versions
@@ -47,12 +52,22 @@ import java.util.Optional;
  * </ul>
  *
  * <p>Phase 3 implements {@code UTXOW}, {@code UTXO} and {@code UTXOS}, Phase 4 {@code CERTS} with {@code DELEG},
- * {@code POOL} and {@code GOVCERT}, Phase 5 {@code GOV} and the {@code LEDGER} predicates; the engine is opt-in
- * ({@link JavaEngineFactory}). Thread-safe and stateless.</p>
+ * {@code POOL} and {@code GOVCERT}, Phase 5 {@code GOV} and the {@code LEDGER} predicates. Two engine ids create it
+ * (Phase 7c): {@code java-julc} with the julc phase-2 evaluator ({@link JavaJulcEngineFactory}, the default Java engine)
+ * and {@code java-scalus} with Scalus ({@link JavaScalusEngineFactory}). Thread-safe and stateless.</p>
+ *
+ * <p>Every Conway rule family is implemented and the ADR-056 Phase 5 gate passed (the Amaru scenarios, the complete
+ * coverage matrix, the mutation matrix). The engine is still not the default admission engine; Phase 8 makes it
+ * selectable without the flag. Until then both factories create it, as admission or shadow engine, only when
+ * {@value #EXPERIMENTAL_KEY}{@code =true} is set explicitly (tests and the conformance harness set it); otherwise the
+ * node stops at startup.</p>
  */
 public final class JavaLedgerValidationEngine implements LedgerValidationEngine {
 
-    public static final String NAME = "java";
+    /** The engine id of the default construction: {@code java-julc}. */
+    public static final String NAME = LedgerValidationEngines.JAVA_JULC;
+    /** Opt-in for the engine until Phase 8; never set it on a node that admits transactions. */
+    public static final String EXPERIMENTAL_KEY = "yano.validation.java-engine.experimental";
     /** Engine constructor: the bytes do not decode as a Conway transaction. */
     public static final String DECODING_FAILURE = "DecodingFailure";
     /** Engine constructor: the engine failed without a ledger verdict. */
@@ -63,6 +78,7 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
      */
     public static final PvRange SUPPORTED = ConwayRuleSets.SUPPORTED;
 
+    private final String name;
     private final ScriptPhaseEvaluator evaluator;
     private final ConwayLedgerConstants constants;
     private final ConwayLedgerTransition transition;
@@ -78,6 +94,20 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
 
     public JavaLedgerValidationEngine(ScriptPhaseEvaluator evaluator, ConwayLedgerConstants constants,
                                       ConwayLedgerTransition transition) {
+        this(NAME, evaluator, constants, transition);
+    }
+
+    /**
+     * @param name the engine id its verdicts, counters, health and reports carry: {@code java-julc} (julc phase 2) or
+     *             {@code java-scalus} (Scalus phase 2), ADR-056 Phase 7c
+     */
+    public JavaLedgerValidationEngine(String name, ScriptPhaseEvaluator evaluator) {
+        this(name, evaluator, ConwayLedgerConstants.HASKELL, ConwayLedgerTransition.standard());
+    }
+
+    private JavaLedgerValidationEngine(String name, ScriptPhaseEvaluator evaluator, ConwayLedgerConstants constants,
+                                       ConwayLedgerTransition transition) {
+        this.name = Objects.requireNonNull(name, "name");
         this.evaluator = evaluator;
         this.constants = Objects.requireNonNull(constants, "constants");
         this.transition = Objects.requireNonNull(transition, "transition");
@@ -85,12 +115,31 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
 
     /** @return this engine with other hardcoded constants (conformance fixtures that move them) */
     public JavaLedgerValidationEngine withConstants(ConwayLedgerConstants other) {
-        return new JavaLedgerValidationEngine(evaluator, other, transition);
+        return new JavaLedgerValidationEngine(name, evaluator, other, transition);
+    }
+
+    /** @return the phase-2 evaluator, or null (for the factories' tests) */
+    ScriptPhaseEvaluator evaluator() {
+        return evaluator;
+    }
+
+    /** Stops engine creation unless {@value #EXPERIMENTAL_KEY}{@code =true}. */
+    static void requireExperimental(EngineContext context, String engine) {
+        boolean experimental = context.config(EXPERIMENTAL_KEY)
+                .map(v -> v.trim().toLowerCase(Locale.ROOT))
+                .filter("true"::equals)
+                .isPresent();
+        if (!experimental) {
+            throw new IllegalStateException("Validation engine '" + engine + "' is experimental: the Java Conway "
+                    + "rules are complete (ADR-056 Phases 3-5) but have not yet run behind the runtime overlays, shadow "
+                    + "sync and the native-image gate (Phases 6-7). Set " + EXPERIMENTAL_KEY + "=true to use it, or keep "
+                    + "yano.validation.engine=scalus (the default), or amaru in a build with -PwithAmaru=true.");
+        }
     }
 
     @Override
     public String name() {
-        return NAME;
+        return name;
     }
 
     @Override
@@ -122,7 +171,7 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
 
         Transaction tx;
         try {
-            tx = Transaction.deserialize(txCbor);
+            tx = CclTransactions.deserialize(txCbor);
         } catch (Exception e) {
             return engine(DECODING_FAILURE, "the transaction does not decode: " + e.getMessage());
         }
@@ -147,7 +196,7 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
         }
         TxEffects effects;
         try {
-            effects = effectsDeriver.derive(txCbor, tx, raw.txIdHex(), view, env, phase2Valid);
+            effects = effectsDeriver.derive(raw, view, env, phase2Valid);
         } catch (IllegalArgumentException | IllegalStateException e) {
             return engine(ENGINE_FAILURE, "the rules accepted the transaction but its effects cannot be derived: "
                     + e.getMessage());

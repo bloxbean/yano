@@ -130,11 +130,14 @@ public final class RawProposal {
     private final int actionTag;
     private final GovActionId prevActionId;
     private final RawParamUpdate paramUpdate;
+    private final CborSlice paramUpdateSlice;
     private final ProtVer protocolVersion;
     private final List<Withdrawal> withdrawals;
     private final byte[] policyHash;
     private final SortedSet<RawCredential> committeeRemovals;
     private final SortedMap<RawCredential, BigInteger> committeeAdditions;
+    private final BigInteger[] quorum;
+    private final byte[] constitutionScript;
 
     private RawProposal(Builder b) {
         this.index = b.index;
@@ -143,11 +146,14 @@ public final class RawProposal {
         this.actionTag = b.actionTag;
         this.prevActionId = b.prevActionId;
         this.paramUpdate = b.paramUpdate;
+        this.paramUpdateSlice = b.paramUpdateSlice;
         this.protocolVersion = b.protocolVersion;
         this.withdrawals = List.copyOf(b.withdrawals);
         this.policyHash = b.policyHash != null ? b.policyHash.clone() : null;
         this.committeeRemovals = Collections.unmodifiableSortedSet(new TreeSet<>(b.committeeRemovals));
         this.committeeAdditions = Collections.unmodifiableSortedMap(new TreeMap<>(b.committeeAdditions));
+        this.quorum = b.quorum;
+        this.constitutionScript = b.constitutionScript;
     }
 
     /** @return the position in the proposal list ({@code GovActionIx}) */
@@ -185,6 +191,14 @@ public final class RawProposal {
         return paramUpdate;
     }
 
+    /**
+     * @return where a {@code ParameterChange}'s {@code protocol_param_update} is encoded in the transaction bytes, else
+     *         null (a script context translates the update from it: {@code ToPlutusData PParamsUpdate})
+     */
+    public CborSlice paramUpdateSlice() {
+        return paramUpdateSlice;
+    }
+
     /** @return the proposed protocol version of a {@code HardForkInitiation}, else null */
     public ProtVer protocolVersion() {
         return protocolVersion;
@@ -208,6 +222,16 @@ public final class RawProposal {
     /** @return the members an {@code UpdateCommittee} adds with their expiry epochs, in {@code Map} order; else empty */
     public SortedMap<RawCredential, BigInteger> committeeAdditions() {
         return committeeAdditions;
+    }
+
+    /** @return an {@code UpdateCommittee}'s quorum, the reduced {@code [numerator, denominator]}; else null */
+    public BigInteger[] quorum() {
+        return quorum != null ? quorum.clone() : null;
+    }
+
+    /** @return a {@code NewConstitution}'s guardrails script hash, or null (none, or another action) */
+    public byte[] constitutionScript() {
+        return constitutionScript != null ? constitutionScript.clone() : null;
     }
 
     /** Reads a proposal procedure at the reader's position. */
@@ -238,7 +262,9 @@ public final class RawProposal {
         switch (b.actionTag) {
             case PARAMETER_CHANGE -> {
                 b.prevActionId = govActionIdOrNull(reader);
+                int start = reader.position();
                 b.paramUpdate = RawParamUpdate.read(reader);
+                b.paramUpdateSlice = new CborSlice(start, reader.position());
                 b.policyHash = scriptHashOrNull(reader, "guardrails policy hash");
             }
             case HARD_FORK_INITIATION -> {
@@ -254,11 +280,11 @@ public final class RawProposal {
                 b.prevActionId = govActionIdOrNull(reader);
                 committeeRemovals(reader, b.committeeRemovals);
                 committeeAdditions(reader, b.committeeAdditions);
-                BoundedFields.unitInterval(reader, "committee quorum");
+                b.quorum = BoundedFields.boundedRational(reader, "committee quorum", true);
             }
             case NEW_CONSTITUTION -> {
                 b.prevActionId = govActionIdOrNull(reader);
-                constitution(reader);
+                b.constitutionScript = constitution(reader);
             }
             default -> {
                 // InfoAction: [6]
@@ -378,17 +404,18 @@ public final class RawProposal {
         }
     }
 
-    /** {@code constitution = [anchor, script_hash / null]}. */
-    private static void constitution(CborReader reader) {
+    /** {@code constitution = [anchor, script_hash / null]}: @return the script hash, or null */
+    private static byte[] constitution(CborReader reader) {
         long length = reader.readArrayHeader();
         if (length != 2 && length != CborReader.INDEFINITE) {
             throw new TxDecodingException("a constitution has 2 elements");
         }
         BoundedFields.anchor(reader, "constitution");
-        scriptHashOrNull(reader, "constitution guardrails script hash");
+        byte[] script = scriptHashOrNull(reader, "constitution guardrails script hash");
         if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
             throw new TxDecodingException("a constitution has 2 elements");
         }
+        return script;
     }
 
     /** @return Haskell's {@code showGovActionType} */
@@ -422,5 +449,8 @@ public final class RawProposal {
         private byte[] policyHash;
         private final SortedSet<RawCredential> committeeRemovals = new TreeSet<>();
         private final SortedMap<RawCredential, BigInteger> committeeAdditions = new TreeMap<>();
+        private CborSlice paramUpdateSlice;
+        private BigInteger[] quorum;
+        private byte[] constitutionScript;
     }
 }

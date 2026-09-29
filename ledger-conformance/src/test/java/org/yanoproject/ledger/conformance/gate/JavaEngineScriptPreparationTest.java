@@ -18,8 +18,9 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The Java engine with the real Scalus evaluator on {@code UTXOS.CollectErrors} cases the mutation matrix cannot
- * hold as single faults (Haskell reports {@code UTXOW} failures with them).
+ * Engine {@code java-scalus} (the Java rules with the real Scalus evaluator) on {@code UTXOS.CollectErrors} cases the
+ * mutation matrix cannot hold as single faults (Haskell reports {@code UTXOW} failures with them). Engine
+ * {@code java-julc} has the same cases in {@code JulcScriptPhaseEvaluatorTest}.
  */
 class JavaEngineScriptPreparationTest {
 
@@ -72,7 +73,7 @@ class JavaEngineScriptPreparationTest {
 
     private static TxValidationOutcome validate(TxSpec spec) {
         byte[] cbor = ConwayTxBuilder.build(spec, MutationWorld.view()).cbor();
-        return JavaViewEngine.create(EVALUATOR).validate(new TxValidationRequest(cbor, MutationWorld.view(),
+        return JavaViewEngine.createScalus(EVALUATOR).validate(new TxValidationRequest(cbor, MutationWorld.view(),
                 MutationWorld.env(), TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null));
     }
 }

@@ -47,7 +47,7 @@ dependencies {
     // A devnet admission through the real runtime wiring (yano.validation.engine=amaru).
     testImplementation project(':tx-services')
     testImplementation project(':testkit')
-    // ADR-057 Phase C: the ADR-056 Phase 6 devnet matrix, run with engine: amaru and compared with engine: java.
+    // ADR-057 Phase C: the ADR-056 Phase 6 devnet matrix, run with engine: amaru and compared with engine: java-julc.
     testImplementation testFixtures(project(':tx-services'))
 }
 

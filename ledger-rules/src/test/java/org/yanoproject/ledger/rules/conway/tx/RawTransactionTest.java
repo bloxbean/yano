@@ -11,6 +11,7 @@ import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
 
 import java.math.BigInteger;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -74,15 +75,19 @@ class RawTransactionTest {
         assertThat(raw.fee()).isEqualTo(BigInteger.valueOf(200_000));
         assertThat(raw.ttl()).isNull();
         assertThat(raw.validityStart()).isNull();
-        assertThat(raw.redeemers()).containsExactly(new RawRedeemer(0, 0, BigInteger.valueOf(1000),
-                BigInteger.valueOf(100_000)));
+        assertThat(raw.redeemers()).singleElement().satisfies(r -> assertThat(List.of(r.tag(), r.index(), r.mem(),
+                r.steps())).containsExactly(0, 0L, BigInteger.valueOf(1000), BigInteger.valueOf(100_000)));
     }
 
     @Test
     void listFormRedeemersKeepTheLastDuplicateAsHaskellsMapFromList() {
         String witnesses = "a105" + "82" + "8400000082" + "0101" + "8400000082" + "0202";
         RawTransaction raw = RawTransaction.parse(HexUtil.decodeHexString("84" + BODY + witnesses + "f5f6"), null);
-        assertThat(raw.redeemers()).containsExactly(new RawRedeemer(0, 0, BigInteger.TWO, BigInteger.TWO));
+        assertThat(raw.redeemers()).singleElement().satisfies(r -> {
+            assertThat(List.of(r.tag(), r.index(), r.mem(), r.steps())).containsExactly(0, 0L, BigInteger.TWO,
+                    BigInteger.TWO);
+            assertThat(HexUtil.encodeHexString(r.data().copy(raw.txCbor()))).isEqualTo("00");
+        });
     }
 
     @Test
@@ -90,7 +95,11 @@ class RawTransactionTest {
         // decodeMapRedeemers reverses its accumulator before Map.fromList (Alonzo/TxWits.hs:571-577)
         String witnesses = "a105" + "a2" + "8200008200" + "820101" + "8200008200" + "820202";
         RawTransaction raw = RawTransaction.parse(HexUtil.decodeHexString("84" + BODY + witnesses + "f5f6"), null);
-        assertThat(raw.redeemers()).containsExactly(new RawRedeemer(0, 0, BigInteger.TWO, BigInteger.TWO));
+        assertThat(raw.redeemers()).singleElement().satisfies(r -> {
+            assertThat(List.of(r.tag(), r.index(), r.mem(), r.steps())).containsExactly(0, 0L, BigInteger.TWO,
+                    BigInteger.TWO);
+            assertThat(HexUtil.encodeHexString(r.data().copy(raw.txCbor()))).isEqualTo("00");
+        });
     }
 
     @Test

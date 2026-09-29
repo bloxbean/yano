@@ -31,6 +31,7 @@ import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.ReapplyPolicy;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
+import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
@@ -355,6 +356,9 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         TxEffects effects;
         try {
             effects = effectsDeriver.derive(txCbor, tx, TxIdentity.txIdHex(txCbor), view, env, phase2Valid);
+        } catch (TxDecodingException e) {
+            return engine(DECODING_FAILURE, "Amaru accepted the transaction but Haskell's decoder rejects it: "
+                    + e.getMessage());
         } catch (IllegalArgumentException | IllegalStateException e) {
             return engine(AMARU_ENGINE_FAILURE, "Amaru accepted the transaction but its effects cannot be derived: "
                     + e.getMessage());

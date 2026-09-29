@@ -9,6 +9,7 @@ import org.yanoproject.runtime.config.InMemoryDevnetGenesis;
 import org.yanoproject.runtime.genesis.ShelleyGenesisParser;
 import org.yanoproject.runtime.tx.TransactionServices;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
+import org.yanoproject.runtime.validation.ValidationEngineConfigurationException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import scalus.cardano.ledger.SlotConfig;
@@ -21,10 +22,27 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultTransactionServicesFactoryIntegrationTest {
+
+    /**
+     * ADR-056 Phase 7c: with transaction validation enabled, a validator that cannot be built stops startup instead
+     * of leaving the node admitting every transaction unvalidated (runtime assembly lets this exception through).
+     */
+    @Test
+    void aValidatorThatCannotBeBuiltStopsStartup() {
+        IllegalStateException cause = new IllegalStateException("no validator in this image");
+        ValidationEngineConfigurationException e = assertThrows(ValidationEngineConfigurationException.class,
+                () -> DefaultTransactionServicesFactory.requireValidator(() -> {
+                    throw cause;
+                }));
+        assertSame(cause, e.getCause());
+        assertTrue(e.getMessage().contains("no validator in this image"));
+    }
 
     @Test
     void assemblyWithRealBootstrapperInstallsScriptEvaluatorFromStaticProtocolParams(@TempDir Path tempDir) {

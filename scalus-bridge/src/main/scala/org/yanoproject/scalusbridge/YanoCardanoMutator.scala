@@ -5,7 +5,8 @@ import scalus.cardano.ledger.rules.*
 
 /**
  * Runs Scalus's standard rule set with Yano's corrections swapped in: the pool-deposit correction
- * ([[YanoValueNotConservedUTxOValidator]]) and Haskell's transaction size ([[YanoTransactionSizeValidator]]).
+ * ([[YanoValueNotConservedUTxOValidator]]), Haskell's transaction size ([[YanoTransactionSizeValidator]]) and
+ * Haskell's output value size ([[YanoOutputValueSizeValidator]]).
  */
 object YanoCardanoMutator extends STS.Mutator:
   override final type Error = TransactionException
@@ -13,7 +14,8 @@ object YanoCardanoMutator extends STS.Mutator:
   /** Scalus default validators and the Yano validator that replaces each. */
   private[scalusbridge] lazy val replacements: Map[STS.Validator, STS.Validator] = Map(
     ValueNotConservedUTxOValidator -> YanoValueNotConservedUTxOValidator,
-    TransactionSizeValidator -> YanoTransactionSizeValidator
+    TransactionSizeValidator -> YanoTransactionSizeValidator,
+    OutputsHaveTooBigValueStorageSizeValidator -> YanoOutputValueSizeValidator
   )
 
   private[scalusbridge] lazy val validators: Iterable[STS.Validator] =

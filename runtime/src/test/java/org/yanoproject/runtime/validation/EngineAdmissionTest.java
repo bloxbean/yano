@@ -167,9 +167,9 @@ class EngineAdmissionTest {
         RecordingEngine engine = new RecordingEngine("amaru", Verdict.ACCEPT);
         TxSubsystem subsystem = subsystem(gate(false), engines(engine, List.of(), null));
 
+        // Not admitted, and not a verdict either: the submitter is told to retry (REST 503), ADR-056 Phase 7c.
         assertThatThrownBy(() -> subsystem.submitTransaction(tx(new Outpoint("aa".repeat(32), 0), 1_000_000), null))
-                .isInstanceOf(TransactionValidationException.class)
-                .hasMessageContaining(LedgerFailure.LEDGER_STATE_UNAVAILABLE);
+                .isInstanceOfSatisfying(MempoolAdmissionException.class, e -> assertThat(e.retryable()).isTrue());
         assertThat(engine.requests).isEmpty();
     }
 

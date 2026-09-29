@@ -20,25 +20,29 @@ import java.util.function.Supplier;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class JavaEngineFactoryTest {
+class JavaEngineFactoriesTest {
 
     @Test
     void isDiscoveredAndRefusedWithoutTheExperimentalFlag() {
         LedgerValidationEngines engines = LedgerValidationEngines.discover(getClass().getClassLoader());
-        assertThat(engines.available()).contains("java");
-        assertThatThrownBy(() -> engines.factory("java").create(context(Map.of())))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("'java' is experimental")
-                .hasMessageContaining(JavaEngineFactory.EXPERIMENTAL_KEY);
-        assertThatThrownBy(() -> engines.factory("java").create(context(Map.of(JavaEngineFactory.EXPERIMENTAL_KEY,
-                "yes")))).isInstanceOf(IllegalStateException.class);
+        assertThat(engines.available()).contains("java-julc", "java-scalus").doesNotContain("java");
+        for (String engine : new String[]{"java-julc", "java-scalus"}) {
+            assertThatThrownBy(() -> engines.factory(engine).create(context(Map.of())))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("'" + engine + "' is experimental")
+                    .hasMessageContaining(JavaLedgerValidationEngine.EXPERIMENTAL_KEY);
+            assertThatThrownBy(() -> engines.factory(engine).create(context(Map.of(
+                    JavaLedgerValidationEngine.EXPERIMENTAL_KEY, "yes")))).isInstanceOf(IllegalStateException.class);
+        }
+        assertThatThrownBy(() -> engines.factory("java")).hasMessageContaining("Unknown validation engine 'java'")
+                .hasMessageContaining("java-julc").hasMessageContaining("java-scalus");
     }
 
     @Test
     void createsTheEngineWithTheFlag() {
-        LedgerValidationEngine engine = new JavaEngineFactory().create(
-                context(Map.of(JavaEngineFactory.EXPERIMENTAL_KEY, " TRUE ")));
-        assertThat(engine.name()).isEqualTo("java");
+        LedgerValidationEngine engine = new JavaJulcEngineFactory().create(
+                context(Map.of(JavaLedgerValidationEngine.EXPERIMENTAL_KEY, " TRUE ")));
+        assertThat(engine.name()).isEqualTo("java-julc");
         assertThat(engine).isInstanceOf(JavaLedgerValidationEngine.class);
     }
 
@@ -59,6 +63,30 @@ class JavaEngineFactoryTest {
         }
     }
 
+    /**
+     * ADR-056 Phase 7c: engine {@code java-julc} runs Plutus on the julc evaluator and stops startup without it; engine
+     * {@code java-scalus} runs the same rules on the node's Scalus evaluator.
+     */
+    @Test
+    void javaJulcUsesTheJulcEvaluatorAndJavaScalusTheScalusOne() {
+        StubEvaluator scalus = new StubEvaluator();
+        StubEvaluator julc = new StubEvaluator();
+        Map<String, String> flag = Map.of(JavaLedgerValidationEngine.EXPERIMENTAL_KEY, "true");
+        LedgerValidationEngines engines = LedgerValidationEngines.discover(getClass().getClassLoader());
+
+        var javaJulc = (JavaLedgerValidationEngine) engines.factory("java-julc").create(context(flag, scalus, julc));
+        assertThat(javaJulc.name()).isEqualTo("java-julc");
+        assertThat(javaJulc.evaluator()).isSameAs(julc);
+        assertThatThrownBy(() -> engines.factory("java-julc").create(context(flag, scalus, null)))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("julc phase-2 evaluator");
+
+        var javaScalus = (JavaLedgerValidationEngine) engines.factory("java-scalus").create(context(flag, scalus,
+                julc));
+        assertThat(javaScalus.name()).isEqualTo("java-scalus");
+        assertThat(javaScalus.evaluator()).isSameAs(scalus);
+        assertThat(javaScalus.withConstants(ConwayLedgerConstants.HASKELL).name()).isEqualTo("java-scalus");
+    }
+
     @Test
     void undecodableBytesAreADecodingFailure() {
         var outcome = EngineTestSupport.validate(new StubEvaluator(), new byte[]{(byte) 0x84, 0x01});
@@ -66,6 +94,11 @@ class JavaEngineFactoryTest {
     }
 
     private static EngineContext context(Map<String, String> config) {
+        return context(config, null, new StubEvaluator());
+    }
+
+    private static EngineContext context(Map<String, String> config, ScriptPhaseEvaluator scalus,
+                                         ScriptPhaseEvaluator julc) {
         return new EngineContext() {
             @Override
             public Optional<String> config(String key) {
@@ -94,7 +127,12 @@ class JavaEngineFactoryTest {
 
             @Override
             public ScriptPhaseEvaluator scriptPhaseEvaluator() {
-                return new StubEvaluator();
+                return scalus;
+            }
+
+            @Override
+            public ScriptPhaseEvaluator julcScriptPhaseEvaluator() {
+                return julc;
             }
 
             @Override

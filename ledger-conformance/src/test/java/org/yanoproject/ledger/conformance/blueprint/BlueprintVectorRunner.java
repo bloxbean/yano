@@ -18,7 +18,7 @@ import org.yanoproject.ledger.rules.fixtures.blueprint.BlueprintVector;
 import org.yanoproject.ledger.rules.fixtures.blueprint.NewEpochStateDecoder;
 import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.OverlayLedgerView;
-import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
+import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +31,7 @@ import java.util.Objects;
  * <p>The initial {@code NewEpochState} becomes an {@code InMemoryLedgerView} ({@link NewEpochStateDecoder}); each
  * transaction event is validated under rule {@code LEDGER}, origin {@code SYNC}, at the event's slot and its epoch
  * under the vector's fixed epoch size, at the protocol version of the state's parameters, with the vector's network
- * id and system start and the Scalus phase-2 evaluator without a forecast horizon (the Imp tests' epoch info is
+ * id and system start and the julc phase-2 evaluator without a forecast horizon (the Imp tests' epoch info is
  * fixed, so {@code TimeTranslationPastHorizon} cannot happen there). The engine's verdict is compared with the
  * vector's: the vectors record only whether Haskell applied the transaction, not the failure.</p>
  *
@@ -152,12 +152,19 @@ public final class BlueprintVectorRunner {
         }
     }
 
-    private final JavaLedgerValidationEngine engine = JavaViewEngine.create(new ScalusScriptPhaseEvaluator());
+    private final JavaLedgerValidationEngine engine;
     private final TxEffectsDeriver deriver = new TxEffectsDeriver();
     private final NewEpochStateDecoder decoder;
 
+    /** The runner with engine {@code java-julc} (the gate's). */
     public BlueprintVectorRunner(NewEpochStateDecoder decoder) {
+        this(decoder, JavaViewEngine.create(new JulcScriptPhaseEvaluator()));
+    }
+
+    /** The runner with another engine (ADR-056 Phase 7c: {@code java-scalus}). */
+    public BlueprintVectorRunner(NewEpochStateDecoder decoder, JavaLedgerValidationEngine engine) {
         this.decoder = Objects.requireNonNull(decoder, "decoder");
+        this.engine = Objects.requireNonNull(engine, "engine");
     }
 
     /**

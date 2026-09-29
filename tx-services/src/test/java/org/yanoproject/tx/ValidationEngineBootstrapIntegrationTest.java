@@ -25,6 +25,9 @@ import org.yanoproject.runtime.validation.ValidationEngineConfigurationException
 import org.yanoproject.scalusbridge.ScalusLedgerValidationEngine;
 import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
@@ -122,12 +125,13 @@ class ValidationEngineBootstrapIntegrationTest {
             assertThat(engines.affectsAdmission()).isFalse();
             assertThat(engines.admissionEngine()).isNull();
             assertThat(engines.shadowEngines()).isEmpty();
-            // java needs no experimental opt-in for shadow sync, which only observes.
-            assertThat(engines.shadowSyncEngines()).extracting(LedgerValidationEngine::name).containsExactly("java");
+            // java-julc, the default, needs no experimental opt-in for shadow sync, which only observes.
+            assertThat(engines.shadowSyncEngines()).extracting(LedgerValidationEngine::name)
+                    .containsExactly("java-julc");
             assertThat(engines.settings().shadowSyncSettings().maxInFlight()).isEqualTo(3);
             assertThat(engines.shadowSync()).as("started by the runtime").isNotNull();
             assertThat(node.validationEngines()).containsSame(engines);
-            assertThat(engines.status().shadowSyncHealth()).containsEntry("java", true);
+            assertThat(engines.status().shadowSyncHealth()).containsEntry("java-julc", true);
 
             // Installing the same engines again neither starts a second validator nor stops the running one.
             var running = engines.shadowSync();
@@ -163,11 +167,23 @@ class ValidationEngineBootstrapIntegrationTest {
     }
 
     @Test
-    void javaEngineStopsStartup(@TempDir Path dir) {
+    void javaEnginesStopStartupWithoutTheExperimentalFlag(@TempDir Path dir) {
+        for (String engine : new String[]{"java-julc", "java-scalus"}) {
+            assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, engine),
+                    new AtomicReference<>()))
+                    .isInstanceOf(ValidationEngineConfigurationException.class)
+                    .hasMessageContaining("'" + engine + "' is experimental");
+        }
+    }
+
+    /** The engine id {@code java} is gone (ADR-056 Phase 7c): startup names the two Java engine ids. */
+    @Test
+    void thePlainJavaEngineIdStopsStartupNamingItsReplacements(@TempDir Path dir) {
         assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "java"),
                 new AtomicReference<>()))
                 .isInstanceOf(ValidationEngineConfigurationException.class)
-                .hasMessageContaining("'java' is experimental");
+                .hasMessageContaining("Unknown validation engine 'java'")
+                .hasMessageContaining("java-julc").hasMessageContaining("java-scalus");
     }
 
     @Test
@@ -180,6 +196,31 @@ class ValidationEngineBootstrapIntegrationTest {
                 new AtomicReference<>()))
                 .isInstanceOf(ValidationEngineConfigurationException.class)
                 .hasMessageContaining("-PwithAmaru=true");
+    }
+
+    /**
+     * ADR-056 Phase 7c: a listed engine provider that cannot be loaded (what a native image without the provider's
+     * reflection registration reports) stops startup; before, the node ran on with no transaction validation.
+     */
+    @Test
+    void anUnloadableEngineProviderStopsStartup(@TempDir Path dir) throws Exception {
+        Path services = dir.resolve("broken/META-INF/services");
+        Files.createDirectories(services);
+        Files.writeString(services.resolve(LedgerValidationEngineFactory.class.getName()),
+                "org.yanoproject.tx.MissingEngineFactory\n");
+        Thread thread = Thread.currentThread();
+        ClassLoader previous = thread.getContextClassLoader();
+        try (URLClassLoader broken = new URLClassLoader(new URL[]{dir.resolve("broken").toUri().toURL()},
+                previous)) {
+            thread.setContextClassLoader(broken);
+            assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_ENGINES, "capture"),
+                    new AtomicReference<>()))
+                    .isInstanceOf(ValidationEngineConfigurationException.class)
+                    .hasMessageContaining("Cannot load a validation engine")
+                    .hasMessageContaining("org.yanoproject.tx.MissingEngineFactory");
+        } finally {
+            thread.setContextClassLoader(previous);
+        }
     }
 
     private static Yano build(Path dir, Map<String, Object> validation,

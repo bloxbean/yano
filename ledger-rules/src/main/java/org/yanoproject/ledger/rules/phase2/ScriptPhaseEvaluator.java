@@ -6,6 +6,7 @@ import com.bloxbean.cardano.client.transaction.spec.Transaction;
 
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
 import java.util.List;
@@ -67,6 +68,15 @@ public interface ScriptPhaseEvaluator {
     }
 
     /**
+     * As {@link #evaluate(byte[], Transaction, Map, ProtocolParams, SlotConfig, long)}, for a transaction the engine has
+     * already read ({@link RawTransaction}), so that an evaluator reading the same structure need not parse it again.
+     */
+    default ScriptPhaseResult evaluate(RawTransaction raw, Map<Outpoint, UtxoEntry> resolvedInputs,
+                                       ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
+        return evaluate(raw.txCbor(), raw.decoded(), resolvedInputs, params, slotConfig, validationSlot);
+    }
+
+    /**
      * Only the preparation step: the {@code UTXOS.CollectErrors} of {@link ScriptPhaseResult.Rejected}, without
      * running any script. The Java engine calls it when the transaction needs a Plutus script it provides, and
      * ignores any {@code UTXOW} failure in the result (its {@code UTXOW} judges malformed scripts itself).
@@ -86,6 +96,12 @@ public interface ScriptPhaseEvaluator {
             case ScriptPhaseResult.Passed passed -> List.of();
             case ScriptPhaseResult.Failed failed -> List.of();
         };
+    }
+
+    /** As {@link #collect(byte[], Transaction, Map, ProtocolParams, SlotConfig, long)}, for a transaction already read. */
+    default List<LedgerFailure> collect(RawTransaction raw, Map<Outpoint, UtxoEntry> resolvedInputs,
+                                        ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
+        return collect(raw.txCbor(), raw.decoded(), resolvedInputs, params, slotConfig, validationSlot);
     }
 
     /**

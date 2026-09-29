@@ -7,12 +7,12 @@ import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
 import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
+import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 import org.yanoproject.runtime.validation.shadowsync.SyncBlock;
 import org.yanoproject.runtime.validation.shadowsync.SyncBlockValidator;
 import org.yanoproject.runtime.validation.shadowsync.SyncBlockValidator.Expected;
 import org.yanoproject.runtime.validation.shadowsync.SyncBlockValidator.Kind;
 import org.yanoproject.runtime.validation.shadowsync.SyncBlockValidator.TxResult;
-import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
 import java.util.List;
 import java.util.Set;
@@ -22,12 +22,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * ADR-056 Phase 7a with the real engine: a transaction whose Plutus script fails, listed in the block's
  * {@code invalid_transactions} ({@code is_valid = false}), must come out phase-2 invalid under origin {@code SYNC}
- * (the java engine, Plutus run by Scalus); the same transaction claiming {@code is_valid = true} is the engine's
+ * (the default {@code java-julc} engine); the same transaction claiming {@code is_valid = true} is the engine's
  * {@code UTXOS.ValidationTagMismatch}, which shadow sync reports as a disagreement. Collateral effects only.
  */
 class ShadowSyncPhase2InvalidTest {
 
-    private final LedgerValidationEngine java = new JavaLedgerValidationEngine(new ScalusScriptPhaseEvaluator());
+    private final LedgerValidationEngine java = new JavaLedgerValidationEngine(new JulcScriptPhaseEvaluator());
 
     @Test
     void aFailingScriptListedAsInvalidComesOutPhase2Invalid() {

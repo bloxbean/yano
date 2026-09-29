@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       rejected with the covered constructor, or, for a fault Haskell reports with several constructors
  *       ({@link Mutation#haskellFailures()}), only with constructors of that list; where Amaru names the fault
  *       differently from Haskell ({@link Mutation#amaruReports()}, a recorded divergence), with that name;</li>
- *   <li>the Java engine ({@code java-engine}) accepts the bases and rejects every mutant (every family since Phase 5)
+ *   <li>the Java engine ({@code java-julc}) accepts the bases and rejects every mutant (every family since Phase 5)
  *       with exactly Haskell's failure list, or the single covered constructor.</li>
  * </ul>
  *

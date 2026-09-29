@@ -18,7 +18,7 @@ import java.util.TreeMap;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The ADR-056 Phase 4 gate: the Java engine ({@code java-engine}) against every Amaru scenario of the families
+ * The ADR-056 Phase 4 gate: the Java engine ({@code java-julc}) against every Amaru scenario of the families
  * implemented so far — {@code CERTS}, {@code DELEG}, {@code POOL}, {@code GOVCERT} (Phase 4) and {@code UTXOW},
  * {@code UTXO}, {@code UTXOS} (Phase 3) — and every scenario expected to pass.
  *

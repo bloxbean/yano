@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -132,7 +133,7 @@ public final class RawTransaction {
     private final List<byte[]> datumHashes;
     private final List<RawCertificate> certificates;
     private final List<RawVoter> voters;
-    private final Map<RawVoter, List<GovActionId>> votes;
+    private final Map<RawVoter, SortedMap<GovActionId, Integer>> votes;
     private final List<RawProposal> proposals;
     private final List<byte[]> requiredSigners;
     private final byte[] auxDataHash;
@@ -357,9 +358,9 @@ public final class RawTransaction {
     }
 
     /**
-     * @return the redeemers as Haskell's {@code Redeemers} map holds them: keyed by (tag, index), sorted; for the
-     *         list form a later duplicate replaces an earlier one ({@code Map.fromList}), for the map form the
-     *         first occurrence is kept (Alonzo/TxWits.hs:567-580)
+     * @return the redeemers as Haskell's {@code Redeemers} map holds them: keyed by (tag, index), sorted; in both the
+     *         list and the map form a later duplicate replaces an earlier one ({@code Map.fromList}; the map form
+     *         reverses its accumulator first, Alonzo/TxWits.hs:567-580)
      */
     public List<RawRedeemer> redeemers() {
         return redeemers;
@@ -401,10 +402,11 @@ public final class RawTransaction {
     }
 
     /**
-     * @return the governance actions each voter votes on (body key 19), voters in Haskell's {@code Ord Voter} order and
-     *         each voter's actions in {@code Ord GovActionId} order (transaction id bytes, then index)
+     * @return each voter's votes (body key 19): the actions voted on, with the vote (0 no, 1 yes, 2 abstain); voters
+     *         in Haskell's {@code Ord Voter} order and each voter's actions in {@code Ord GovActionId} order (transaction
+     *         id bytes, then index)
      */
-    public Map<RawVoter, List<GovActionId>> votes() {
+    public Map<RawVoter, SortedMap<GovActionId, Integer>> votes() {
         return votes;
     }
 
@@ -465,7 +467,7 @@ public final class RawTransaction {
         private final List<byte[]> datumHashes = new ArrayList<>();
         private final List<RawCertificate> certificates = new ArrayList<>();
         private final List<RawVoter> voters = new ArrayList<>();
-        private final Map<RawVoter, List<GovActionId>> votes = new TreeMap<>();
+        private final Map<RawVoter, SortedMap<GovActionId, Integer>> votes = new TreeMap<>();
         private final List<RawProposal> proposals = new ArrayList<>();
         private final List<byte[]> requiredSigners = new ArrayList<>();
         private byte[] auxDataHash;
@@ -634,10 +636,10 @@ public final class RawTransaction {
                     // without duplicate action ids (Procedures.hs:408-416), the vote 0–2 (decodeEnumBounded), the
                     // anchor with its bounds.
                     long actions = v.readMapHeader();
-                    TreeSet<GovActionId> ids = new TreeSet<>(GOV_ACTION_ID_ORDER);
+                    TreeMap<GovActionId, Integer> ids = new TreeMap<>(GOV_ACTION_ID_ORDER);
                     for (long j = 0; v.hasNext(actions, j); j++) {
                         GovActionId id = govActionId(v);
-                        if (!ids.add(id)) {
+                        if (ids.containsKey(id)) {
                             throw new TxDecodingException("duplicate governance action id " + id + " for " + voter);
                         }
                         long fields = v.readArrayHeader();
@@ -648,6 +650,7 @@ public final class RawTransaction {
                         if (vote > 2) {
                             throw new TxDecodingException("unknown vote " + vote);
                         }
+                        ids.put(id, (int) vote);
                         BoundedFields.anchorOrNull(v, "vote");
                         if (fields == CborReader.INDEFINITE && v.hasNext(fields, 2)) {
                             throw new TxDecodingException("a voting procedure has 2 elements");
@@ -657,7 +660,7 @@ public final class RawTransaction {
                         throw new TxDecodingException("VotingProcedures require votes, but Voter: " + voter
                                 + " didn't have any");
                     }
-                    votes.put(voter, List.copyOf(ids));
+                    votes.put(voter, Collections.unmodifiableSortedMap(ids));
                 }
                 nonEmpty(seen.isEmpty(), "VotingProcedures");
                 voters.addAll(seen);
@@ -942,8 +945,9 @@ public final class RawTransaction {
                     if (valueLength != 2 && valueLength != CborReader.INDEFINITE) {
                         throw new TxDecodingException("a redeemer value is [data, ex_units]");
                     }
-                    PlutusData.validate(reader.copy(reader.readItem())); // data: plutus-core's decodeData
-                    RawRedeemer redeemer = readExUnits(reader, tag, index);
+                    CborSlice data = reader.readItem();
+                    PlutusData.validate(reader.copy(data)); // data: plutus-core's decodeData
+                    RawRedeemer redeemer = readExUnits(reader, tag, index, data);
                     if (valueLength == CborReader.INDEFINITE && reader.hasNext(valueLength, 2)) {
                         throw new TxDecodingException("a redeemer value is [data, ex_units]");
                     }
@@ -959,8 +963,9 @@ public final class RawTransaction {
                     }
                     long tag = reader.readUnsignedLong();
                     long index = reader.readUnsignedLong();
-                    PlutusData.validate(reader.copy(reader.readItem())); // data: plutus-core's decodeData
-                    RawRedeemer redeemer = readExUnits(reader, tag, index);
+                    CborSlice data = reader.readItem();
+                    PlutusData.validate(reader.copy(data)); // data: plutus-core's decodeData
+                    RawRedeemer redeemer = readExUnits(reader, tag, index, data);
                     if (length == CborReader.INDEFINITE && reader.hasNext(length, 4)) {
                         throw new TxDecodingException("a redeemer is [tag, index, data, ex_units]");
                     }
@@ -981,17 +986,17 @@ public final class RawTransaction {
             if (index > 0xFFFF_FFFFL) {
                 throw new TxDecodingException("redeemer index " + index + " exceeds Word32");
             }
-            return (tag << 32) | index;
+            return RawRedeemer.key((int) tag, index);
         }
 
-        private static RawRedeemer readExUnits(CborReader reader, long tag, long index) {
+        private static RawRedeemer readExUnits(CborReader reader, long tag, long index, CborSlice data) {
             long length = reader.readArrayHeader();
             BigInteger mem = reader.readUnsigned();
             BigInteger steps = reader.readUnsigned();
             if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
                 throw new TxDecodingException("ex_units is [mem, steps]");
             }
-            return new RawRedeemer((int) tag, index, mem, steps);
+            return new RawRedeemer((int) tag, index, mem, steps, data);
         }
     }
 }

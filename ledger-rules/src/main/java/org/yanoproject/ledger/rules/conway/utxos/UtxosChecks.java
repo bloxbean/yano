@@ -106,8 +106,8 @@ public final class UtxosChecks {
                     return List.of(new LedgerFailure(LedgerRuleName.ENGINE, UtxosRule.PHASE_TWO_CONTEXT_UNSUPPORTED,
                             LedgerFailure.Phase.PHASE_1, unsupported));
                 }
-                result = evaluator.evaluate(raw.txCbor(), ctx.tx(), ctx.resolvedInputs(), ctx.params(),
-                        ctx.env().slotConfig(), ctx.forecastBasisSlot());
+                result = evaluator.evaluate(raw, ctx.resolvedInputs(), ctx.params(), ctx.env().slotConfig(),
+                        ctx.forecastBasisSlot());
             }
             return switch (result) {
                 case ScriptPhaseResult.Passed passed -> claimedValid ? List.of()
