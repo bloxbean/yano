@@ -2874,9 +2874,10 @@ between the two runs. The workload writes one observation line per step, and the
 - a stake register → delegate → DRep register → vote delegation → proposal → DRep vote chain, admitted while the
   parents are pending;
 - Plutus: an always-succeeding PlutusV1 (datum hash), V2 (inline datum), V3 and a V2 reference-script spend, all
-  evaluated by the node (Scalus phase 2), and an always-failing V3 script
-  (`UTXOS.ValidationTagMismatch ... FailedUnexpectedly`). The V3 spend also goes through the node's evaluate
-  endpoint, and the response is compared. In the `java` configuration that endpoint uses the Julc evaluator
+  evaluated by the node (phase 2 of the leg's engine: Julc for `java-julc`, Scalus otherwise), and an
+  always-failing V3 script (`UTXOS.ValidationTagMismatch ... FailedUnexpectedly`). The V3 spend also goes through
+  the node's evaluate endpoint, and the response is compared. In the `java-julc` leg that endpoint uses the Julc
+  evaluator
   (`yano.block-producer.script-evaluator=julc`, Julc 0.1.0-pre17 with its VM provider loaded through
   `ServiceLoader`); in the default configuration it uses Scalus;
 - a devnet rollback that removes a pending child's parent: the mempool rebuild drops the child, and the independent
@@ -2885,8 +2886,8 @@ between the two runs. The workload writes one observation line per step, and the
 
 The harness also compares, and checks:
 
-- the admission-shadow disagreement counters and the number of dump bundles (`scalus` as a shadow of `java`, `java`
-  as a shadow of `amaru`);
+- the admission-shadow disagreement counters and the number of dump bundles (`scalus` as a shadow of `java-julc` and
+  `java-scalus`, `java-julc` as a shadow of `amaru`);
 - shadow sync on the producer and on a follower of the same kind (pipelined n2n sync from the producer): the
   per-engine and per-PV counters, zero findings in the JSONL, the block-rule counters, and the summary line written
   at stop;
@@ -2895,72 +2896,57 @@ The harness also compares, and checks:
 - no native-image failure in any log (`NATIVE_IMAGE_ERRORS` in `qa/harness/common.sh`, shared with the
   epoch-crossing, Haskell-sync and past-time-travel harnesses: missing reflection, resource or JNI registration,
   `NoClassDefFoundError`, `ClassNotFoundException`, `ServiceConfigurationError`, an unsupported feature, or a Jackson
-  `InvalidDefinitionException`). The final runs used an earlier, broader pattern that also matched
-  "not initialized". Since gap 3, an uninitialized validator stops startup instead;
+  `InvalidDefinitionException`). Since gap 3, an uninitialized validator stops startup instead of logging;
 - that the bundles the native node wrote replay on the JVM (`ShadowBundleReplayTest`), including the `ProtocolParams`
   JSON.
 
 The workload resubmits after the next block what the node says to retry (503). That covers a catching-up
-mempool and, since gap 4, an unavailable ledger state. When either happens depends only on timing. The results
-below were produced before gap 4 was fixed, when the workload also retried a 400 carrying
-`LedgerStateUnavailable`. The verdicts are the same either way.
+mempool and, since gap 4, an unavailable ledger state. When either happens depends only on timing.
 
 The observations mask only what depends on timing, not on the engine: the current slot in a validity-interval
 message, the ticked treasury, and the hashes of the treasury and pool-retirement transactions (their contents follow
 the current epoch). The legacy path (`engine: scalus`) cannot see pending certificates, so for it the workload
 confirms each certificate before its child (`-Dyano.parity.chain-certificates=false`).
 
-**Results** (Oracle GraalVM 25.3.4.1 for JDK 25.0.4.1, G1, `-march=compatibility`, macOS arm64). Source state per
-build column:
+**Results on the merge candidate** (2026-09-29).
 
-- **default**: `507b00927` plus this phase's gaps 1 and 2 and the harness, in a clean detached worktree. Native
-  `1a77b50d…`, jar `7bd997b4…`.
-- **`-PwithAmaru`**: the same source with `-PwithAmaru=true -PamaruWasm=<c43eeb37… module>`. Native `44e16faa…`,
-  jar `c852b235…`.
-- **snapshot**: see below the table.
+- **Source.** Commit `b02ba6fe1`, a clean detached worktree with no local changes. It includes gaps 1 to 4, the
+  `java-julc`/`java-scalus` engine ids, the Plutus-version check in the evaluators, the datum-bytes, value-size and
+  CCL-retry fixes, and the ledger-state same-block fix.
+- **Toolchain.** Oracle GraalVM 25.3.4.1 for JDK 25.0.4.1, G1, `-march=compatibility`, macOS arm64. Julc is the
+  released 0.1.0-pre17 from the version catalog, with no override.
+- **Default build.** Native `824d1212…`, jar `d043fee4…`.
+- **`-PwithAmaru=true` build.** Built with `-PamaruWasm=<module c43eeb37…>`. Native `9482c3f8…`, jar `f29e2b7d…`.
+- **Runs.** Every leg ran sequentially: the default matrix from 23:16 to 23:34, the `amaru` leg from 23:34 to 23:38.
+  Ports were 7291/13591 (producer) and 7292/13592 (follower).
 
-None of the three includes gaps 3 and 4, which came out of review. Neither changes a verdict of this workload: the
-validator is built in every run, and the retryable answer replaced a 400 that the workload already retried.
-**The gate must be re-run on the merge candidate** (`qa/release-qa.sh --only ledger-rules-native`, plus the
-`-PwithAmaru` and `java-scalus` configurations by hand) before this phase counts as passed there.
-
-| Build | Configuration | PV | Verdicts, accepted / rejected | JVM vs native | Admission-shadow disagreements (bundles replayed on the JVM) | Shadow sync (every engine, producer and follower) |
+| Build | Leg | PV | Verdicts, accepted / rejected (each PV, JVM and native) | JVM vs native | Admission-shadow disagreements (bundles; all replay on the JVM) | Shadow sync, producer and follower |
 |---|---|---|---|---|---|---|
-| default | `java` (+ Julc evaluate endpoint) | 9, 10, 11 | 22 / 18 | identical | `scalus`: `GOV` 1 and `LEDGER` 1 at PV 9/10, `LEDGER` 2 at PV 11 (2, 2, 3 bundles) | 21 of 21 agreed, 0 findings, 0 block-rule violations |
+| default | `java-julc` (evaluate endpoint on Julc) | 9, 10, 11 | 22 / 18 | identical | `scalus`: `GOV` 1, `LEDGER` 1 at PV 9 and 10; `GOV` 1, `LEDGER` 2 at PV 11 (2, 2, 3 bundles) | `java-julc` and `java-scalus`: 21 of 21 agreed each, 0 findings |
+| default | `java-scalus` | 9, 10, 11 | 22 / 18 | identical | `scalus`: as for `java-julc` (2, 2, 3 bundles) | `java-scalus`: 21 of 21 agreed, 0 findings |
 | default | `scalus` (default path) | 9, 10, 11 | 24 / 16 | identical | none configured | off |
-| `-PwithAmaru` | `amaru` | 10, 11 | 22 / 18 | identical | `java`: 1 (`ENGINE`, the Phase C divergence) | `amaru` and `java`: 21 of 21 agreed each, 0 findings |
-| `-PwithAmaru` | `java` | 10, 11 | 22 / 18 | identical | as above | 21 of 21 agreed, 0 findings |
-| snapshot | `julc` (then `engine: java` with `java-engine.phase2-evaluator=julc`; see below) | 9, 10, 11 | 22 / 18 | identical | `scalus`: as for `java` (2, 2, 3 bundles) | `java` and `java-julc`: 21 of 21 agreed each, 0 findings |
-| snapshot | `java` | 9, 10, 11 | 22 / 18 | identical | as above | 21 of 21 agreed, 0 findings |
+| `-PwithAmaru` | `amaru` | 10, 11 | 22 / 18 | identical | `java-julc`: `ENGINE` 1, the Phase C divergence (1 bundle each) | `amaru` and `java-julc`: 21 of 21 agreed each, 0 findings |
 
-"snapshot": the Julc phase-2 evaluator (`JavaJulcEngineFactory`, `org.yanoproject.ledger.scripteval.phase2`) was
-still uncommitted during this phase. These rows were built from the shared worktree's state at 20:57 (`38fefe296`
-plus every uncommitted change there, including this phase's; native `a09f77f9…`, jar `8e60dbe8…`) and ran from 21:01
-to 21:13. `JavaJulcEngineFactory` needed the same constructor registration as the other factories (it is in
-`yano-ledger-rules/reflect-config.json`). The julc CEK machine (`JulcMachine`, which constructs `JavaVmProvider`
-directly) needed nothing else. The always-failing V3 script fails with julc's message in both images.
-
-The table uses the engine ids of the time: `java` was the Java rules with Scalus phase 2 (today `java-scalus`), and
-the `julc` row's admission leg selected julc through `yano.validation.java-engine.phase2-evaluator=julc`, a key the
-snapshot still had. Review removed that key, and the Phase 7c decision then made julc the Java engine's default phase
-2 under the id `java-julc`, with `java-scalus` for Scalus and no `java` id. The harness's configurations are now
-`java-julc` (admission shadow `scalus`, shadow sync `java-julc,java-scalus`), `java-scalus`, `scalus` and `amaru`
-(admission shadow and shadow sync `java-julc`). **Every Java row must be re-run** under these ids, on the merge
-candidate, before it counts.
-
-- Every row passed: the observation files are identical, both nodes exit 143 on SIGTERM with the summary line in the
-  JSONL, no log has a native-image failure, and every bundle the native node wrote replays on the JVM.
-- The follower counts match the producer's, except in one JVM run, where the follower validated 37 transactions in
-  15 blocks: it also validated blocks that the rollback later removed (Phase 7a).
-- The legacy path's 16 rejections are one fewer each for the vote on a missing action and the wrong
-  `currentTreasuryValue`. It admits both, because it has no `GOV` rules and no treasury check unless
-  `supplementary-rules-enabled`. The workload records these as the two problems, identically on the JVM and in
-  native.
-- The `amaru` row shows the Phase C divergence (a delegation from an unregistered credential:
-  `ENGINE.AmaruEngineFailure` against `DELEG.StakeKeyNotRegisteredDELEG`), and it shows it the same way on the JVM
-  and in native.
-- Runs: `default` from 20:36 to 20:48, `-PwithAmaru` from 20:48 to 20:56 on 2026-09-29. Logs are in the session
-  scratchpad (`native7c/f5`).
+- **Every leg passed** (harness `VERDICT: PASS` for both runs):
+  - the 40 observation lines are identical between the JVM and native runs;
+  - producer and follower exit 143 on SIGTERM, with the shadow-sync summary line in the JSONL;
+  - no log matches `NATIVE_IMAGE_ERRORS`;
+  - the block-rule, block-failure and id-mismatch counters are 0;
+  - every follower reached the producer's tip.
+- **PV 9 for `amaru`** is skipped by design: Amaru validates Conway from PV 10.
+- **Native gaps.** None found on the merge candidate. Gaps 1 to 4 above were the only ones.
+- **Follower counts.** They match the producer's, except in three JVM runs (`java-julc` PV 10 and 11, `java-scalus`
+  PV 9). There the follower validated 37 transactions, because it also validated blocks that the rollback later
+  removed (Phase 7a). These counts are not compared.
+- **Legacy path.** Its 16 rejections are one fewer each for the vote on a missing action and the wrong
+  `currentTreasuryValue`: it has no `GOV` rules and no treasury check unless `supplementary-rules-enabled`. The
+  workload records these as its two problems, identically on the JVM and in native.
+- **`amaru` leg.** It shows the Phase C divergence the same way on the JVM and in native: a delegation from an
+  unregistered credential gives `ENGINE.AmaruEngineFailure` against `DELEG.StakeKeyNotRegisteredDELEG`.
+- **Logs.** In the session scratchpad (`native-final/runs`, `native-final/logs`).
+- **Earlier runs.** The same workload passed on earlier states too, on the old `java` id with the `julc` key of the
+  time: `507b00927` with gaps 1 and 2, and the uncommitted Julc snapshot. Those runs were superseded by the run
+  above.
 
 Commands:
 
@@ -2969,10 +2955,10 @@ qa/release-qa.sh --only ledger-rules-native        # builds the jar and the nati
 # or by hand, with any build:
 ./gradlew :app:yanoNativeDistZip -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
 ./gradlew :app:yanoDistZip -PskipSigning=true
-JAR=app/build/yano.jar NATIVE=<unzipped>/yano qa/harness/ledger-rules-native-parity.sh            # "java julc scalus" "11 10 9"
+JAR=app/build/yano.jar NATIVE=<unzipped>/yano qa/harness/ledger-rules-native-parity.sh   # "java-julc java-scalus scalus" "11 10 9"
 # Amaru artifacts (both builds with -PwithAmaru=true -PamaruWasm=<module>):
-JAR=… NATIVE=… qa/harness/ledger-rules-native-parity.sh "amaru java" "11 10"
-# SP=<dir> puts the runs elsewhere; HTTP_A/N2N_A/HTTP_B/N2N_B move the ports (the runs above used 7271/13537/7272/13538)
+JAR=… NATIVE=… qa/harness/ledger-rules-native-parity.sh amaru "11 10"
+# SP=<dir> puts the runs elsewhere; HTTP_A/N2N_A/HTTP_B/N2N_B move the ports (the runs above used 7291/13591/7292/13592)
 ```
 
 **Not verified here.**
@@ -3168,8 +3154,8 @@ preview (`~/yano-shadow/preview`). The findings below were triaged against the c
       - a resignation without a record dropped: the future-member test fails;
       - `enactedMemberRecord` dropping `resigned`: the two re-election tests fail;
       - REST `isRegistered` back on the slots: the same-block REST test fails;
-      - `resolveDRepKey` back on `<=`: the same-block delegation test fails; without the check:
-        `delegationBeforeReRegistration_filteredByTimingGuard` fails;
+      - `resolveDRepKey` back on `<=`: the same-block delegation test fails. (The check itself was removed later,
+        with its test; see the DRep distribution finding below.)
       - no boundary pruning: the 3 pruning tests fail;
       - pruning without the 0x30/0x31 journal: the rollback test fails;
       - pruning only credentials that have a record: the removed-member test fails;
@@ -3220,6 +3206,89 @@ preview (`~/yano-shadow/preview`). The findings below were triaged against the c
         `PREFIX_DREP_REG` entries with the chain's DRep history (for example Koios `drep_updates`).
     - Not changed here: Yano never removes a retiring DRep's votes, whereas Haskell's GOV rule removes the votes of
       every DRep that the transaction retires from every proposal (`Gov.hs:613-629`, `cleanupProposalVotes`).
+
+- **DRep distribution: a PV 9 delegation made before its DRep registered was cleared when that DRep retired.** A
+  Koios comparison of the preview node found `drep1ygdsvk24…` (`1b065955…`) missing from Yano's DRep distribution.
+  Koios gives it 519.649682 ADA from its only delegator, `stake_test1urx7qr0l…` (`cde00dff…`).
+  - Chain (preview, PV 9, epoch 734). Tx `99e03aae…` (block 2619755) holds `[VoteDeleg → A, RegDRep A]`, where A is
+    `drep1ytx7qr0l…` (the same hash as the delegator). Tx `0c9775f6…` (block 2619757) holds
+    `[VoteDeleg → drep1ygdsvk24…, UnRegDRep A]`.
+  - Haskell. `ConwayUnRegDRep` clears every account in the retiring DRep's `drepDelegs`, whatever that account's
+    current target (`GovCert.hs:246-254`). The set grows by `Map.adjust` (`Deleg.hs:363-365` at PV 9,
+    `Conway/State/VState.hs:137-142` from PV 10). That is a no-op for an unregistered DRep, which the bootstrap
+    allows as a target (`Deleg.hs:225-226`), and `ConwayRegDRep` starts the set empty (`GovCert.hs:229`). A's set
+    was therefore empty, and the retirement cleared nothing.
+    - PV 9 keeps a stale member after a redelegation from one credential DRep to another (#4772). A retirement
+      therefore does clear a delegator that has moved on, provided it joined while the DRep was registered. The PV 10
+      `HARDFORK` rebuild (`HardFork.hs:82-105`) ends this. Yano already reproduces it, and it is unchanged.
+  - Cause: `delegateToDRep` added the `PREFIX_DREP_DELEG_REVERSE` entry for any credential DRep, registered or not.
+    - Not batch visibility: the delegations are in earlier blocks, so `c30b27297` does not fix it.
+    - Not the (slot, transaction, certificate) guard in `clearDelegationIfNotAfter`. It never fires, because a
+      forward delegation read at a retirement is always earlier than it.
+  - Fix: the reverse entry is written only if the target's `PREFIX_DREP_REG` entry exists, read through the block
+    overlay. The fix adds no writes, so the rollback journal is unchanged.
+  - Scope: only PV 9 delegations to an unregistered credential DRep. From PV 10, `DELEG` rejects them
+    (`Deleg.hs:225-226`), so the check always passes. Every change moves toward Haskell:
+    - Such a delegator keeps its delegation when that DRep later retires. The new DRep's distribution includes the
+      delegator's stake. So do the DRep tallies, whose denominator counts the stake of active non-voting DReps.
+    - `activeDRepKeys` is built from the distribution's keys (`GovernanceEpochProcessor.buildActiveDRepKeys`). A DRep
+      whose only stake was wrongly cleared was missing from it, and now appears while unexpired.
+    - SPO default votes are unchanged, because only AlwaysAbstain and AlwaysNoConfidence targets matter
+      (`VoteTallyCalculator:166`).
+    - Rewards, deposits and AdaPots have no direct input from DRep delegations. They could change only through a
+      changed ratification outcome.
+  - Tests. Each of the following fails without the fix:
+    - `SameBlockStateTest`: a replay of the real preview transactions above, with the delegator's registration
+      `769eddf5…` and B's registration `a5ac5309…` (CBOR from Koios `tx_cbor`, fetched 2026-09-29), plus a rollback
+      that restores the column byte for byte;
+    - `DefaultAccountStateStoreDRepDelegationTest`: the redelegation and the retirement in one transaction, in one
+      block and in two blocks, and a retirement that keeps the delegator's (dangling) delegation.
+  - Two related fixes in the same area (review of the fix above):
+    - The PV 10 rebuild ran one boundary late. Haskell runs `HARDFORK` at the boundary that enacts PV 10, after
+      enactment and before `setFreshDRepPulsingState` (`Epoch.hs:367-372`). Yano gated the rebuild on the new
+      epoch's protocol version before governance (`EpochBoundaryProcessor` step 4c), when the tracker still held the
+      carried-forward PV 9; the hard fork's version is applied to the new epoch in governance Phase 1. The preprod
+      resync logged the rebuild at the boundary into epoch 182, and preprod's first PV 10 epoch is 181 (Koios
+      `epoch_params`). During that first PV 10 epoch, a retirement of a DRep with stale PV 9 members over-cleared,
+      and a PV 9 delegation to a DRep that was never registered survived the fork (`HardFork.hs:97-98`), so it
+      counted once that DRep registered.
+      - Fix: `GovernanceEpochProcessor` runs the rebuild (`rebuildDRepDelegReverseIndexIfNeeded`, now through a
+        `HardForkDRepDelegationRebuilder` hook) inside the Phase 1 batch, after enactment, when the new epoch is at
+        PV 10, so the Phase 2 DRep distribution already sees it. The rebuild writes only the entries that differ and
+        journals each one (and its marker) in the Phase 1 boundary delta, so a rollback of the boundary restores the
+        PV 9 sets and the removed delegations, and the replayed boundary rebuilds again. Before, it committed its own
+        unjournalled batch. The DRep records are scanned only when the rebuild runs (marker absent).
+      - Boundary journal (`DefaultAccountStateStore.commitBoundaryDelta`, used by MIR, spendable reward_rest and both
+        governance phases): entries are appended after the phase's committed ones at that slot, never over them, so
+        a phase re-run by crash recovery (governance Phase 1 after a crash before Phase 2) keeps its first run's
+        journal; and a journal larger than 4 MiB is split over consecutive sequences in the same batch (mainnet's
+        fork boundary can remove many stale entries and dangling delegations). Rollback already undoes a phase's
+        sequences from the highest down. Tests: `BoundaryDeltaV1ChunkTest` (append; split and exact rollback; both
+        fail with the old single sequence-0 write).
+      - The ticked view is unaffected: `TickedLedgerView` answers nothing across a boundary that enacts a
+        HardForkInitiation (`pendingHardForkMakesTheWholeTickedViewUnavailable`).
+      - Test: `DRepDelegationHardForkBoundaryTest` (runtime, `TickingTestNode`, real boundaries; the setup has a
+        stale PV 9 member and a dangling delegation): at the boundary that enacts PV 10 both are removed, and the
+        DRep registering in the first PV 10 epoch gets no distribution at the next boundary; a rollback of the
+        boundary restores the reverse-index and forward-delegation ranges byte for byte, and the replayed boundary
+        rebuilds again; a crash between the Phase 1 and Phase 2 commits keeps the Phase 1 journal through recovery,
+        and the rollback is still exact. With the rebuild gated on the pre-enactment version (the old timing) the
+        first two fail (the distribution assertion alone also fails); with the rebuild's ops not journalled, both
+        rollback tests fail.
+    - `DRepDistributionCalculator.resolveDRepKey` no longer drops a delegation older than its DRep's last
+      retirement. Haskell counts every delegation to a registered DRep (`DRepPulser.hs:236-241`); the delegations a
+      retirement clears are already gone from the account state, so the check could only drop what Haskell counts: a
+      PV 9 delegation made before its DRep registered, after the DRep retires and registers again.
+      `previousDeregistrationSlot` stays in the record (REST, CBOR).
+      - Test: `DRepDistributionCalculatorTest.pv9DelegationBeforeRegistration_countedAfterRetirementAndReRegistration`
+        replaces `delegationBeforeReRegistration_filteredByTimingGuard`, which asserted the non-Haskell drop; it fails
+        with the check restored.
+    - Preprod and preview: no instance of either pattern (Koios `drep_updates`, `drep_delegators`,
+      `account_updates` and the baseline nodes, 2026-09-30). The DReps retired in the first PV 10 epoch (3 on
+      preprod, 2 on preview) were all unregistered at the fork, so they had no PV 9 members; no DRep registering in
+      that epoch had a delegator from before the fork; and no current delegation is older than its registered
+      DRep's last retirement.
+  - A chainstate synced before these fixes needs a full resync.
 
 - **Phase-2 and decoding findings: 228 chain-valid transactions, none a Java-rule bug.** At triage time, preprod
   had 174 `UTXOS.ValidationTagMismatch` (13 script hashes, PV 9 and 10), 15 `ENGINE.CoinOutOfEvaluatorRange`,
@@ -3488,8 +3557,26 @@ the shadow-sync findings. Julc is upgraded to `0.1.0-pre17` (group `org.julclang
 - **Known deviation until the julc release.** The released julc 0.1.0-pre17 lacks the `verifyEcdsaSecp256k1Signature`
   fix (julc PR #219, below). Until the catalog moves to a julc release with it, `java-julc` rejects the preprod
   transactions of script `9dd6dd04…` that call the builtin with r or s = 0 (for example `031e36a7…`), which the chain
-  accepts; `java-scalus` accepts them (`BridgeVM`). `JulcPublicNetworkTest.zeroSignatureComponentIsTheKnownJulcDeviation`
-  pins it and fails once the fix is in.
+  accepts; `java-scalus` accepts them (`BridgeVM`). `JulcPublicNetworkTest.knownJulcDeviationsStillFail` pins it and
+  fails once the fix is in.
+- **Preview resync (2026-09-30), two more julc bugs.** A fresh preview resync (`b02ba6fe1` with the local julc
+  `0.1.0-pre18-yano-local`, julc PRs #219 and #221; shadow sync `java-julc,java-scalus`): preprod 3.1M Conway
+  transactions and preview 1.24M agree under `java-scalus`; on preview `java-julc` disagrees on 363. Both causes are in
+  julc, not in Yano's translator: the 138 script contexts are identical to the Scalus bridge's (compared with the
+  `ScalusContextDifferentialTest` method on the real transactions), and Yano's own `PlutusScriptDecoder` accepts the
+  225 scripts.
+  - 225 `UTXOW.MalformedScriptWitnesses` (PV 10, 12 PlutusV3 scripts, e.g. `4f8c8e22…` in `b0e24e31…`): the script
+    holds a 2048-bit integer constant. julc's `FlatReader.decodeVli7` refuses more than 128 vli7 groups (896 bits).
+    plutus-core decodes any size (`dInteger = zagZig <$> dUnsigned`, unbounded for `Integer`: plutus-core/flat
+    Decoder/Strict.hs:111-112, 240-249).
+  - 138 `UTXOS.ValidationTagMismatch FailedUnexpectedly` (125 at PV 10, script `0298c2c0…`, e.g. `aec876ad…`; 13 at
+    PV 9, script `b39623ec…`, e.g. `511fb350…`): PlutusV2 withdrawal scripts that check `verifyEd25519Signature` over
+    `serialiseData` of a redeemer holding integers above 2^512. julc's `DataSerializer` writes such a bignum
+    (tag 2/3) as one byte string; plutus-core chunks it into 64-byte pieces (`encodeInteger` with `encodeBs`,
+    PlutusCore/Data.hs:180-190), so the message differs and the signature fails.
+  - With both fixed in a scratch julc build, all 363 dump bundles replay VALID under `java-julc`. The three
+    transactions are `PHASE2_CASES` (the dumps unchanged; transaction and UTxOs byte-identical to Koios `tx_cbor`),
+    valid under Scalus, and pinned as known julc deviations in `JulcPublicNetworkTest` until julc has the fixes.
 - **Why not julc's `JulcTransactionEvaluator`.** It estimates ExUnits (budget `maxTxExUnits`), and its context
   builder (`CclTxConverter`, `V1V2ScriptContextBuilder`) differs from Haskell:
   - the tx id and witness-datum hashes are taken from CCL re-serialisations;
@@ -3529,14 +3616,14 @@ the shadow-sync findings. Julc is upgraded to `0.1.0-pre17` (group `org.julclang
       fail the builtin: a machine bug in both. The scalus-bridge fixes Scalus's (`BridgeVM`); julc's is fixed upstream
       (PR #219). With that julc build (`0.1.0-pre18-yano-secp`, not yet in the catalog) and the chain's datum bytes,
       **Julc agrees with the chain on all 144**.
-      `JulcPublicNetworkTest.zeroSignatureComponentIsTheKnownJulcDeviation` fails once the catalog moves to a fixed
-      julc; then the case joins the others.
+      `JulcPublicNetworkTest.knownJulcDeviationsStillFail` fails once the catalog moves to a fixed julc; then the case
+      joins the others.
 - **Tests.**
   - `script-evaluators`: `JulcScriptPhaseEvaluatorTest` (mutation world: V3 pass and fail, budgets, `NoRedeemer`,
     horizon, well-formedness), `ConwayTxInfoTranslatorTest` (PV 9/10 `reg_cert`, V1 lists vs V2 maps, values, fee and
-    mint per language, validity interval, `ChangedParameters`), `JulcPublicNetworkTest` (the 11 shared chain-valid
-    bundles, `PublicNetworkTransactions.PHASE2_CASES` in the ledger-rules test fixtures: 10 valid, the secp256k1
-    deviation, the V2 1.1.0 reference script, Word64 quantities carried exactly).
+    mint per language, validity interval, `ChangedParameters`), `JulcPublicNetworkTest` (the 14 shared chain-valid
+    bundles, `PublicNetworkTransactions.PHASE2_CASES` in the ledger-rules test fixtures: 10 valid, the four known
+    julc deviations, the V2 1.1.0 reference script, Word64 quantities carried exactly).
   - `ScriptCollectionTest` (the version matrix, `plutusCoreVersionFailures`); the version check per evaluator:
     `JulcScriptPhaseEvaluatorTest`, `ScalusWorkaroundsTest` (with a canary for Scalus's missing check) and
     `AmaruScalusPhaseTwoTest` (`amaru` with `phase2: scalus`); `JavaEngineFactoriesTest` (`java-julc`, `java-scalus`,

@@ -699,7 +699,8 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 §3 promises native support, and the acceptance criteria require "the native image works". It does:
 
 - **Build.** `./gradlew :app:yanoNativeDistZip -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false
-  -PskipSigning=true -PwithAmaru=true -PamaruWasm=<module>` from `507b00927` plus the Phase 7c changes (module `c43eeb37…`, the Phase C build; native binary `44e16faa…`). Oracle GraalVM
+  -PskipSigning=true -PwithAmaru=true -PamaruWasm=<module>` from the merge candidate `b02ba6fe1` (module
+  `c43eeb37…`, the Phase C build; native binary `9482c3f8…`, jar `f29e2b7d…`). Oracle GraalVM
   25.3.4.1, G1, macOS arm64. The image-build report shows 7.48 MiB of code in `org.yanoproject.ledger.amaru.generated`,
   the build-time AOT classes. The runtime compiler is not on the classpath (Phase B), so nothing compiles wasm at run
   time.
@@ -708,18 +709,19 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   `reflect-config.json` for it, and its `resource-config.json` names the service file next to the `.meta` resource.
   In the same step, a provider that cannot be loaded stops startup instead of leaving the node without validation
   (ADR-056 "Phase 7c results", gap 2).
-- **Verified in native**, against the JVM build of the same sources, by `JAR=… NATIVE=… qa/harness/ledger-rules-native-parity.sh "amaru java" "11 10"`
-  (engine ids of the time: `java` was the Java rules with Scalus phase 2; since ADR-056 Phase 7c the harness's
-  `amaru` configuration uses `java-julc` as admission shadow and in shadow sync, and must be re-run):
+- **Verified in native**, against the JVM build of the same sources, by `JAR=… NATIVE=…
+  qa/harness/ledger-rules-native-parity.sh amaru "11 10"`:
   - `engine: amaru` admission (`phase2: scalus`) and block selection;
-  - `java` as an admission shadow, with dumps;
-  - shadow sync with `java,amaru` on the producer and on a follower;
+  - `java-julc` as an admission shadow, with dumps;
+  - shadow sync with `java-julc,amaru` on the producer and on a follower;
   - the Amaru instance pool (WASI host, `.meta` resource, AOT machine);
   - health and metrics;
   - a clean shutdown.
 
   Every verdict and Amaru failure message was identical between JVM and native, at PV 10 and PV 11
-  (40 observations per run: 22 accepted, 18 rejected; `amaru` and `java` shadow sync 21 of 21 agreed each on the producer and the follower). This includes the Phase C divergence, which is identical in both. Amaru validates Conway from PV 10 only, so PV 9 is not run.
+  (40 observations per run: 22 accepted, 18 rejected; `amaru` and `java-julc` shadow sync 21 of 21 agreed each on
+  the producer and the follower). This includes the Phase C divergence (`ENGINE` 1 against the `java-julc`
+  shadow), which is identical in both. Amaru validates Conway from PV 10 only, so PV 9 is not run.
 - **Not done in Phase E yet:** the latency benchmark on the scenario corpus, startup and per-instance memory
   figures, and the developer guide.
 
