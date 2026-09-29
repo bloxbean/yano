@@ -130,11 +130,12 @@ public final class CoverageMatrix {
                 .filter(p -> p.qualifiedName().equals(e.qualifiedName()))
                 .findFirst()
                 .map(p -> switch (p.rule()) {
+                    case UTXOW -> "`UtxowRule`";
                     case UTXO -> "`UtxoRule`";
                     case UTXOS -> "`UtxosRule`";
                     default -> "`" + p.rule().name() + "`";
                 })
-                .orElse("TBD (P3b–5)");
+                .orElse("TBD (P4–5)");
     }
 
     /** @return the matrix as the {@code conway-rule-coverage.md} document */

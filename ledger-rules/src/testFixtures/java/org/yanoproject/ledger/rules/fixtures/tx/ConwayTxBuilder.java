@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.fixtures.tx;
 
 import co.nstant.in.cbor.model.Array;
 import co.nstant.in.cbor.model.ByteString;
+import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.Map;
 import co.nstant.in.cbor.model.SimpleValue;
 import co.nstant.in.cbor.model.UnsignedInteger;
@@ -16,7 +17,6 @@ import com.bloxbean.cardano.client.plutus.spec.CostModel;
 import com.bloxbean.cardano.client.plutus.spec.ExUnits;
 import com.bloxbean.cardano.client.plutus.spec.Language;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
-import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.spec.AuxiliaryData;
 import com.bloxbean.cardano.client.transaction.spec.MultiAsset;
@@ -26,6 +26,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.client.transaction.spec.Value;
+import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.view.LedgerView;
@@ -33,6 +34,7 @@ import org.yanoproject.ledger.rules.view.Lookup;
 import org.yanoproject.ledger.rules.view.model.Outpoints;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
+import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -50,8 +52,11 @@ import java.util.List;
  *       {@code ⌈priceMem · mem + priceSteps · steps⌉} (Haskell {@code getMinFeeTxUtxo}; no reference scripts), plus
  *       {@link TxSpec#feeAdjust}. The size depends on the fee's encoding, so the fee is iterated to a fixed
  *       point.</li>
- *   <li><b>Hashes</b>: the auxiliary-data hash of the attached metadata and the script-data hash of the redeemers
- *       with the PlutusV3 language view of the view's cost model.</li>
+ *   <li><b>Hashes</b>: the auxiliary-data hash of the attached auxiliary data, and the script integrity hash as
+ *       Haskell's {@code mkScriptIntegrity} computes it from the final witness set bytes: the redeemers (or
+ *       {@code a0}), the datums, and the language views (CCL's encoding) of the languages of the Plutus witness
+ *       scripts (in this world every provided script is needed); none without redeemers, datums and Plutus
+ *       scripts.</li>
  *   <li><b>Witnesses</b>: every signer signs the body exactly as it is encoded in the final bytes (after the edits
  *       CCL's serialiser would undo, such as a removed auxiliary-data hash), so a mutant is signed again after its
  *       edit and its signatures stay valid.</li>
@@ -108,8 +113,12 @@ public final class ConwayTxBuilder {
 
             AuxiliaryData auxData = null;
             byte[] auxDataHash = null;
-            if (spec.metadata != null) {
-                auxData = AuxiliaryData.builder().metadata(spec.metadata).build();
+            if (spec.metadata != null || !spec.auxPlutusScripts.isEmpty()) {
+                AuxiliaryData.AuxiliaryDataBuilder aux = AuxiliaryData.builder().metadata(spec.metadata);
+                if (!spec.auxPlutusScripts.isEmpty()) {
+                    aux.plutusV3Scripts(new ArrayList<>(spec.auxPlutusScripts));
+                }
+                auxData = aux.build();
                 auxDataHash = spec.auxDataHash == TxSpec.AuxDataHash.WRONG
                         ? AuxiliaryData.builder().metadata(new CBORMetadata().put(BigInteger.ONE, "other")).build()
                                 .getAuxiliaryDataHash()
@@ -142,6 +151,9 @@ public final class ConwayTxBuilder {
             if (!spec.proposals.isEmpty()) {
                 body.proposalProcedures(new ArrayList<>(spec.proposals));
             }
+            if (spec.votingProcedures != null) {
+                body.votingProcedures(spec.votingProcedures);
+            }
             if (spec.donation != null) {
                 body.donation(spec.donation);
             }
@@ -151,14 +163,18 @@ public final class ConwayTxBuilder {
             if (!spec.collateral.isEmpty()) {
                 body.collateral(new ArrayList<>(spec.collateral));
             }
-            if (!spec.redeemers.isEmpty()) {
-                body.scriptDataHash(ScriptDataHashGenerator.generate(Era.Conway, spec.redeemers, List.of(),
-                        plutusV3CostModel(params)));
+            if (!spec.requiredSigners.isEmpty()) {
+                body.requiredSigners(spec.requiredSigners.stream().map(HexUtil::decodeHexString).toList());
             }
-
             TransactionWitnessSet witnesses = new TransactionWitnessSet();
             if (!spec.plutusScripts.isEmpty()) {
                 witnesses.setPlutusV3Scripts(new ArrayList<>(spec.plutusScripts));
+            }
+            if (!spec.plutusV2Scripts.isEmpty()) {
+                witnesses.setPlutusV2Scripts(new ArrayList<>(spec.plutusV2Scripts));
+            }
+            if (!spec.datums.isEmpty()) {
+                witnesses.setPlutusDataList(new ArrayList<>(spec.datums));
             }
             if (!spec.redeemers.isEmpty()) {
                 witnesses.setRedeemers(new ArrayList<>(spec.redeemers));
@@ -174,6 +190,13 @@ public final class ConwayTxBuilder {
                     .auxiliaryData(auxData)
                     .isValid(spec.isValid)
                     .build();
+            byte[] integrity = scriptIntegrityHash(unsigned.serialize(), spec, params);
+            if (integrity != null) {
+                if (spec.corruptScriptDataHash) {
+                    integrity[0] ^= 0x01;
+                }
+                unsigned.getBody().setScriptDataHash(integrity);
+            }
             byte[] cbor = sign(unsigned.serialize(), spec);
             // Haskell sizes a transaction without its is_valid flag (Alonzo toCBORForSizeComputation): one byte less.
             long size = cbor.length - 1L;
@@ -215,14 +238,60 @@ public final class ConwayTxBuilder {
         if (!spec.signers.isEmpty()) {
             ((Map) tx.getDataItems().get(1)).put(WITNESS_VKEYS, vkeyWitnesses);
         }
+        if (!spec.bootstrapSigners.isEmpty()) {
+            Array bootstrap = new Array();
+            for (int i = 0; i < spec.bootstrapSigners.size(); i++) {
+                TestKey key = spec.bootstrapSigners.get(i);
+                byte[] signature = signingProvider.sign(bodyHash, key.secretKey().getBytes());
+                if (i == spec.corruptBootstrapSignature) {
+                    signature[signature.length - 1] ^= 0x01;
+                }
+                Array witness = new Array();
+                witness.add(new ByteString(key.verificationKey()));
+                witness.add(new ByteString(signature));
+                witness.add(new ByteString(MutationWorld.BOOTSTRAP_CHAIN_CODE));
+                witness.add(new ByteString(MutationWorld.BOOTSTRAP_ATTRIBUTES));
+                bootstrap.add(witness);
+            }
+            ((Map) tx.getDataItems().get(1)).put(new UnsignedInteger(2), bootstrap);
+        }
         return CborSerializationUtil.serialize(tx);
     }
 
-    private static CostMdls plutusV3CostModel(ProtocolParams params) {
-        List<Long> values = params.getCostModelsRaw().get("PlutusV3");
+    /**
+     * Haskell {@code mkScriptIntegrity} over the witness set as serialised: the redeemers' bytes (or {@code a0}),
+     * the datums' bytes, and the language views of the Plutus witness scripts' languages.
+     *
+     * @return the hash, or null when there are no redeemers, datums or Plutus scripts
+     */
+    private static byte[] scriptIntegrityHash(byte[] unsignedCbor, TxSpec spec, ProtocolParams params)
+            throws Exception {
         CostMdls costMdls = new CostMdls();
-        costMdls.add(new CostModel(Language.PLUTUS_V3, values.stream().mapToLong(Long::longValue).toArray()));
-        return costMdls;
+        if (!spec.plutusV2Scripts.isEmpty()) {
+            costMdls.add(costModel(params, "PlutusV2", Language.PLUTUS_V2));
+        }
+        if (!spec.plutusScripts.isEmpty()) {
+            costMdls.add(costModel(params, "PlutusV3", Language.PLUTUS_V3));
+        }
+        if (spec.redeemers.isEmpty() && spec.datums.isEmpty() && costMdls.isEmpty()) {
+            return null;
+        }
+        Array tx = (Array) CborSerializationUtil.deserialize(unsignedCbor);
+        Map witnessSet = (Map) tx.getDataItems().get(1);
+        DataItem redeemers = witnessSet.get(new UnsignedInteger(5));
+        DataItem datums = witnessSet.get(new UnsignedInteger(4));
+        ByteArrayOutputStream preimage = new ByteArrayOutputStream();
+        preimage.writeBytes(redeemers != null ? CborSerializationUtil.serialize(redeemers) : new byte[]{(byte) 0xa0});
+        if (datums != null) {
+            preimage.writeBytes(CborSerializationUtil.serialize(datums));
+        }
+        preimage.writeBytes(costMdls.getLanguageViewEncoding());
+        return Blake2bUtil.blake2bHash256(preimage.toByteArray());
+    }
+
+    private static CostModel costModel(ProtocolParams params, String name, Language language) {
+        List<Long> values = params.getCostModelsRaw().get(name);
+        return new CostModel(language, values.stream().mapToLong(Long::longValue).toArray());
     }
 
     /** Haskell {@code txscriptfee}: {@code ⌈priceMem · mem + priceSteps · steps⌉}. */

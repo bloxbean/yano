@@ -2,6 +2,7 @@ package org.yanoproject.ledger.conformance;
 
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.engines.BaselineEngines;
+import org.yanoproject.ledger.conformance.mutation.Mutation;
 import org.yanoproject.ledger.conformance.mutation.Mutations;
 import org.yanoproject.ledger.conformance.report.BaselineReport;
 import org.yanoproject.ledger.conformance.report.BaselineReport.EngineRun;
@@ -81,8 +82,8 @@ class ConformanceBaselineTest {
     }
 
     /**
-     * A mutant Amaru judges as Haskell does, or one whose fault Amaru names differently from Haskell and for which
-     * that divergence is recorded ({@code Mutation#amaruReports()}).
+     * A mutant Amaru judges as Haskell does, or one whose fault Amaru names differently from Haskell (or accepts) and
+     * for which that divergence is recorded ({@code Mutation#amaruReports()}).
      */
     private static boolean matchesOrRecordedAmaruDivergence(CaseResult result) {
         if (result.constructorMatch()) {
@@ -91,7 +92,8 @@ class ConformanceBaselineTest {
         String id = result.testCase().id();
         return Mutations.all().stream()
                 .filter(m -> m.caseId().equals(id) && m.amaruReports() != null)
-                .anyMatch(m -> !result.observation().valid()
+                .anyMatch(m -> Mutation.AMARU_ACCEPTS.equals(m.amaruReports()) ? result.observation().valid()
+                        : !result.observation().valid()
                         && m.amaruReports().equals(result.observation().first().qualifiedName()));
     }
 

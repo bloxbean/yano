@@ -20,10 +20,14 @@ import java.util.function.Consumer;
  * @param description  what the edit does
  * @param edit         the edit, applied to a copy of the base spec before it is rebuilt and signed again
  * @param amaruReports when Amaru is known to name this fault differently from Haskell (a recorded divergence,
- *                     ADR-056 "Phase 3a results"), the {@code RULE.Constructor} Amaru reports; null otherwise
+ *                     ADR-056 "Phase 3a results"), the {@code RULE.Constructor} Amaru reports, or
+ *                     {@link #AMARU_ACCEPTS} when Amaru accepts the mutant; null otherwise
  */
 public record Mutation(String id, String covers, List<String> haskellFailures, Base base, String description,
                        Consumer<TxSpec> edit, String amaruReports) {
+
+    /** {@link #amaruReports()} for a mutant Amaru accepts although Haskell rejects it (a recorded divergence). */
+    public static final String AMARU_ACCEPTS = "Valid";
 
     /** The valid base transactions. */
     public enum Base {

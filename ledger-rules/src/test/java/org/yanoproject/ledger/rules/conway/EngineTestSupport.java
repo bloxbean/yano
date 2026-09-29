@@ -3,6 +3,7 @@ package org.yanoproject.ledger.rules.conway;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.LedgerFailure;
@@ -19,8 +20,10 @@ import org.yanoproject.ledger.rules.phase2.ScriptPhaseResult;
 import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Shared set-up for the Java engine's rule tests: transactions from the mutation world's builder, validated with
@@ -32,12 +35,21 @@ public final class EngineTestSupport {
     private EngineTestSupport() {
     }
 
-    /** A phase-2 evaluator with fixed answers that counts how often it ran scripts. */
+    /**
+     * A phase-2 evaluator with fixed answers that counts how often it ran scripts. Every Plutus script is well formed
+     * except the ones whose {@code PlutusBinary} is in {@link #malformed}.
+     */
     public static final class StubEvaluator implements ScriptPhaseEvaluator {
         public List<LedgerFailure> collect = List.of();
         public ScriptPhaseResult result = new ScriptPhaseResult.Passed(List.of());
+        public final Set<String> malformed = new HashSet<>();
         public int evaluations;
         public int collections;
+
+        @Override
+        public boolean isWellFormed(int language, byte[] script, int protocolMajor) {
+            return !malformed.contains(HexUtil.encodeHexString(script));
+        }
 
         @Override
         public ScriptPhaseResult evaluate(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,

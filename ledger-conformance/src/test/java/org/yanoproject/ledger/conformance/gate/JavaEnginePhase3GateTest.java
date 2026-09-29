@@ -17,15 +17,16 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The ADR-056 Phase 3a gate: the Java engine ({@code java-engine}) against the Amaru scenarios it can already
- * judge.
+ * The ADR-056 Phase 3 gate: the Java engine ({@code java-engine}) against the Amaru scenarios of the families it
+ * implements.
  *
- * <p><b>Gate set.</b> Every scenario whose expected constructor is in the {@code UTXO} or {@code UTXOS} family,
- * and every scenario expected to pass. The engine runs {@code UTXOW} (script preparation only), {@code UTXO} and
- * {@code UTXOS}; the other families record nothing yet, so a valid transaction passes exactly when these rules
- * accept it, which makes every {@code Pass} scenario a false-rejection check of the {@code UTXO} and
- * {@code UTXOS} rules (value conservation with deposits, refunds, proposals, donations and withdrawals; fees with
- * reference scripts; collateral; phase 2). Scenarios of the other families are left to Phases 3b–5.</p>
+ * <p><b>Gate set.</b> Every scenario whose expected constructor is in the {@code UTXOW}, {@code UTXO} or
+ * {@code UTXOS} family, and every scenario expected to pass. The other families ({@code LEDGER} pre-checks,
+ * {@code CERTS}, {@code GOV}) record nothing yet, so a valid transaction passes exactly when these rules accept it,
+ * which makes every {@code Pass} scenario a false-rejection check of the three families (witnesses, signatures,
+ * native scripts, script and redeemer exactness, datums, script integrity, metadata; value conservation with
+ * deposits, refunds, proposals, donations and withdrawals; fees with reference scripts; collateral; phase 2).
+ * Scenarios of the other families are left to Phases 4–5.</p>
  *
  * <p>Scenario 00088 (Amaru: {@code OutsideForecast}) is expected as {@code UTXOS.CollectErrors}: Amaru's Haskell
  * checker names {@code CollectErrors [BadTranslation TimeTranslationPastHorizon]} so, and Haskell's own
@@ -36,14 +37,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with several), or the scenario is a recorded Haskell-vs-Amaru divergence and the engine reports Haskell's
  * constructor.</p>
  */
-class JavaEnginePhase3aGateTest {
+class JavaEnginePhase3GateTest {
 
     /** Families of the expected constructor that the gate covers (plus {@code PASS}). */
-    private static final Set<String> GATE_FAMILIES = Set.of("PASS", "UTXO", "UTXOS");
+    private static final Set<String> GATE_FAMILIES = Set.of("PASS", "UTXO", "UTXOW", "UTXOS");
 
     /**
      * Recorded divergences: Amaru's corpus expects one constructor, Haskell (cardano-ledger {@code f649f975})
-     * reports another. Haskell wins (ADR-056 invariant 1); see ADR-056 "Phase 3a results".
+     * reports another. Haskell wins (ADR-056 invariant 1); see ADR-056 "Phase 3a results" and "Phase 3b results".
      */
     static final Map<String, Divergence> DIVERGENCES = Map.of(
             "00280-fail-output-to-a-byron-address-with-oversized-attributes",
@@ -56,7 +57,7 @@ class JavaEnginePhase3aGateTest {
     }
 
     @Test
-    void utxoAndUtxosScenariosMatchHaskell() {
+    void utxoUtxowAndUtxosScenariosMatchHaskell() {
         List<ConformanceCase> all = ScenarioCases.cases().orElse(List.of());
         Assumptions.assumeFalse(all.isEmpty(), "the Amaru scenarios are not configured (-PamaruScenariosDir)");
         assertThat(all).hasSize(AmaruScenarioLoader.EXPECTED_SCENARIOS);
@@ -92,10 +93,10 @@ class JavaEnginePhase3aGateTest {
                         + result.observation().label() + " " + result.observation().failures());
             }
         }
-        System.out.printf("Phase 3a gate: %d scenarios (%d pass, %d UTXO/UTXOS), %d match Amaru and Haskell, "
+        System.out.printf("Phase 3 gate: %d scenarios (%d pass, %d UTXOW/UTXO/UTXOS), %d match Amaru and Haskell, "
                 + "%d match Haskell where Amaru diverges%n", gate, passScenarios, gate - passScenarios, matched,
                 divergent);
-        assertThat(misses).as("Phase 3a gate misses").isEmpty();
+        assertThat(misses).as("Phase 3 gate misses").isEmpty();
         assertThat(divergent).isEqualTo(DIVERGENCES.size());
     }
 }

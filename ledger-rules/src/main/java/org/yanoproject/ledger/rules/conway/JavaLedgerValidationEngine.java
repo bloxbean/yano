@@ -41,8 +41,8 @@ import java.util.Objects;
  *   <li><b>Effects</b> come from {@link TxEffectsDeriver} for the verdict (invariant 4).</li>
  * </ul>
  *
- * <p>Phase 3a implements {@code UTXO} and {@code UTXOS}; {@code UTXOW}, {@code CERTS}, {@code GOV} and the
- * {@code LEDGER} pre-checks follow in Phases 3b–5, so the engine is not selectable for production admission
+ * <p>Phase 3 implements {@code UTXOW}, {@code UTXO} and {@code UTXOS}; {@code CERTS}, {@code GOV} and the
+ * {@code LEDGER} pre-checks follow in Phases 4–5, so the engine is not selectable for production admission
  * yet ({@link JavaEngineFactory}). Thread-safe and stateless.</p>
  */
 public final class JavaLedgerValidationEngine implements LedgerValidationEngine {
@@ -60,7 +60,10 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
     private final ConwayLedgerTransition transition;
     private final TxEffectsDeriver effectsDeriver = new TxEffectsDeriver();
 
-    /** @param evaluator the phase-2 evaluator, or null (transactions with redeemers then fail closed) */
+    /**
+     * @param evaluator the phase-2 evaluator, or null (transactions that need or carry a Plutus script then fail
+     *                  closed)
+     */
     public JavaLedgerValidationEngine(ScriptPhaseEvaluator evaluator) {
         this(evaluator, ConwayLedgerConstants.HASKELL, ConwayLedgerTransition.standard());
     }

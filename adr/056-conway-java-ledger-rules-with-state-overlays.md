@@ -1235,7 +1235,7 @@ The final PR merges once S5's gates are green.
   trivially, so `isValid = false` without scripts is `PassedUnexpectedly`);
   `isValid = false` transactions get collateral-only effects and, except from
   `SYNC`, `ENGINE.Phase2InvalidTxNotSupported`.
-- **Gate** (`JavaEnginePhase3aGateTest`): the 148 scenarios expected to pass
+- **Gate** (`JavaEnginePhase3aGateTest`, now `JavaEnginePhase3GateTest`): the 148 scenarios expected to pass
   or to fail in `UTXO`/`UTXOS` (114 + 34): 147 match Amaru's expectation
   (verdict and first constructor, or a constructor of Haskell's list), 1
   (00280) matches Haskell where Amaru diverges (below). The mutation matrix grows to 28
@@ -1300,6 +1300,119 @@ The final PR merges once S5's gates are green.
   `ledger-conformance` to `ledger-rules`' test fixtures
   (`org.yanoproject.ledger.rules.fixtures.tx`) so the rule unit tests use
   them; mutants can record an Amaru divergence (`Mutation.amaruReports`).
+
+#### Phase 3b results: UTXOW (2026-09-29)
+
+- **`UTXOW`** (`conway.utxow.UtxowRule`): all 18 constructors, as `babbageUtxowTransition`
+  (Babbage/Rules/Utxow.hs:328-391) runs them, each `runTest` / `runTestOnSignal` one predicate whose
+  `sequenceA_` failures accumulate in order: `ScriptWitnessNotValidatingUTXOW` (dynamic in Conway);
+  `ExtraneousScriptWitnessesUTXOW`, `MissingScriptWitnessesUTXOW`; `UnspendableUTxONoDatumHash`,
+  `MissingRequiredDatums`, `NotAllowedSupplementalDatums`; `ExtraRedeemers`, `MissingRedeemers`;
+  `InvalidWitnessesUTXOW` (static); `MissingVKeyWitnessesUTXOW`; the metadata checks (static); the
+  malformed-script checks (static); then the integrity check, `PPViewHashesDontMatch` below protocol version 11
+  and `ScriptIntegrityHashMismatch` (with the expected preimage) from 11. Then `UTXO` as before.
+  - *Scripts.* `scriptsProvided` = witness scripts ∪ reference scripts of the spending and reference inputs
+    (`getBabbageScriptsProvided`, reference wins in the union); `scriptsNeeded` = `getConwayScriptsNeeded`
+    (Conway/UTxO.hs:62-106): spending inputs (Set order) with a script payment credential, withdrawals (Map
+    order: network, script before key, hash) with a script credential, every certificate by position (no Alonzo
+    dedup) with `getScriptWitnessConwayTxCert` (tag 0, registration without deposit, needs none), minted policies,
+    voters (Ord `Voter`: committee, DRep, pool; script before key) with a script credential, and the guardrails
+    policy of parameter-change and treasury-withdrawal proposals. Indices count every element. Native scripts
+    are decoded from their original bytes and evaluated with `evalTimelock` (vkey witnesses only, validity
+    interval with absent bounds failing).
+  - *Key witnesses.* `getConwayWitsVKeyNeeded` (:174-199): certificate authors (pool id for pool certificates,
+    none for tag 0), payment keys (or bootstrap roots) of spending ∪ collateral inputs, pool owners, key
+    withdrawals, required signers, key voters. **Conway ignores the certificate state here**
+    (`getWitsVKeyNeeded _ = …`, :148): the catalogue note and the pinned table said "uses the pre-CERTS
+    certState", corrected. Provided = vkey witness hashes ∪ `bootstrapWitKeyHash` (blake2b-224 of SHA3-256 of
+    `83 00 82 00 58 40 ‖ vkey ‖ chain code ‖ attributes`).
+  - *Signatures* over the transaction id with libsodium's `crypto_sign_ed25519_verify_detached` rules
+    (`utxow.Ed25519`: canonical `S`, no small-order `R` or key, canonical key, then the cofactorless check of
+    CCL's provider, which compares the recomputed `R` bytewise). Failures list vkey witnesses (Set order: key hash,
+    then signature hash) then bootstrap witnesses (Set order: key hash).
+  - *Datums.* Required hashes from spending inputs locked by a provided Plutus script with a datum hash; no datum
+    under a PlutusV1/V2 script is `UnspendableUTxONoDatumHash` (V3 exempt, CIP-69); supplemental = datum hashes
+    of all outputs (with the collateral return) and of the reference inputs' outputs.
+  - *Redeemers.* `extSymmetricDifference` of the redeemer keys and the purposes of needed scripts provided as
+    Plutus: extras in redeemer-map order, missing in `scriptsNeeded` order. A needed Plutus script without a
+    redeemer is `[UTXOW.MissingRedeemers, UTXOS.CollectErrors [NoRedeemer]]` (`HaskellFailureLists`).
+  - *Script integrity* (`utxow.ScriptIntegrity`): absent without redeemers, datums and used languages; else
+    blake2b-256 of the redeemers' original bytes (or `a0`, the memoised empty `Redeemers` at protocol version 9),
+    the datums' original bytes (if any) and `encodeLangViews` of `plutusLanguagesUsed` (the languages of the
+    needed, provided Plutus scripts): a definite map sorted shortlex by tag; PlutusV2/V3 tag `01`/`02`, value the
+    definite list; PlutusV1 tag `41 00` and value a byte string holding the indefinite list (Alonzo's quirk); a
+    missing cost model is `null`. Cost models come **only** from the view's raw lists (`costModelsRaw`, the
+    ledger's parameter order): the named map's key order is not the ledger's, so a view without raw lists (or
+    with a language only in the named map) is `ENGINE.LedgerStateUnavailable`. The `LedgerView.protocolParams()`
+    Javadoc states the contract, and the node's views now carry the raw lists (`ProtocolParamsMapper.fromSnapshot`
+    copied only the named map; fixed, with `ProtocolParamsMapperTest` and `TickedLedgerViewEquivalenceTest`). Checked byte-for-byte against a hand-computed vector and against
+    CCL's independent encoder.
+  - *Metadata.* `hashTxAuxData` over the original bytes. At the pin `InvalidMetadata` is only
+    `validateAlonzoTxAuxData`, the well-formedness of the auxiliary data's Plutus scripts: the 64-byte metadatum
+    limits are decoding failures (`decodeMetadatum`, Metadata.hs:151-185), so the decoder enforces them.
+  - *Malformed scripts.* Owned by `UTXOW` now: the Plutus witness scripts and the reference scripts of the outputs
+    and collateral return (and, for `InvalidMetadata`, the auxiliary data's) are judged by
+    **`utxow.PlutusScriptDecoder`**, a Java reimplementation of plutus-ledger-api 1.65.0.0 `deserialiseScript`
+    (the version cardano-node 11.1.2 is built with; pinned in the revisions report): a definite CBOR byte string
+    (bytes after it are a `RemainderError` for PlutusV3 only), then the flat program (version, terms without
+    recursion, filler, no trailing bytes), `constr`/`case` only from program version 1.1.0, builtins per
+    `builtinsAvailableIn` (language × protocol version), from protocol version 11 constant types of at most 32
+    nodes and `constr` of at most 1024 fields, and constants decoded by type (kinds checked; BLS values do not
+    flat-decode; `Data` with plutus-core's CBOR rules; `Value` canonical). The program's Plutus Core version is
+    **not** a phase-1 check: `plcVersionsAvailableIn` is enforced when the script runs (`mkTermToEvaluate`,
+    Eval.hs:118-122), so a 1.1.0 program as PlutusV1 at protocol version 10 is well formed in Haskell too (the
+    review's example; verified in the plutus source). A script the Java decoder accepts must also decode with the
+    phase-2 evaluator (new SPI method `ScriptPhaseEvaluator.isWellFormed`; Scalus uses `PlutusScript.isWellFormed`;
+    an evaluator that cannot tell leaves the Java verdict). The Scalus evaluator's `collect` no longer reports the
+    malformed checks (its `evaluate` still refuses to run a malformed script), and the engine ignores `UTXOW`
+    failures from `collect`. `collect` is called only when the transaction needs a Plutus script it provides
+    (Haskell's context collection is otherwise `Right []`); without an evaluator such a transaction fails closed.
+    The decoder agrees with Scalus on all 48 Plutus scripts of the Amaru corpus and accepts three real Aiken
+    PlutusV3 validators.
+- **Decoding** (`RawTransaction`, all `ENGINE.DecodingFailure`): vkey and bootstrap witnesses, witness scripts
+  (native scripts decoded; Plutus lists non-empty and without two scripts of one hash, `scriptDecoderV9`), datum
+  hashes, certificates, voters (no duplicate), proposals, required signers, the output datum option and reference
+  script, and the auxiliary data (`AlonzoTxAuxData`: map, two-field array or tag 259 with keys 0–4 and no
+  duplicate; `Map Word64 Metadatum` without duplicate labels; metadatum integers of 64 bits, strings of at most 64
+  bytes, text valid UTF-8 per chunk). **Fix:** a bootstrap witness's chain code had to be 32 bytes; Haskell checks
+  that only from protocol version 12 (Keys/Bootstrap.hs:72-78). Certificates and proposal procedures are `OSet`s,
+  whose decoder rejects two equal elements (`decodeSetLikeEnforceNoDuplicates`, at every version): duplicates are
+  compared by a canonical re-encoding (`tx.CborCanonical`: definite lengths, shortest heads, joined strings,
+  sorted maps and sets, including a pool registration's owners and an update-committee action's removals, and
+  reduced tag-30 rationals), so a re-encoded copy is a duplicate too.
+- **Bootstrap witnesses** are a `Set` ordered by key hash only; `Set.fromList` keeps the last of equal ones, so
+  only the last witness for a key is verified (was the first).
+- **Tests.** `UtxowRuleTest` (one `@Covers` test per constructor with Haskell's whole list, witness needs per
+  purpose, bootstrap witnesses, reference scripts, the integrity PV gate at 10 and 11, several faults in order,
+  REAPPLY skipping the static checks), `ScriptIntegrityTest`, `Ed25519Test`, `WitnessDecodingTest`, and the
+  Scalus evaluator's `isWellFormed`. The mutation world gained a PlutusV2 cost model and script, datum-hash,
+  native-script, timelock, malformed-script and Byron UTxOs; the builder gained PlutusV2 scripts, datums,
+  auxiliary-data Plutus scripts, bootstrap witnesses, required signers, votes, and computes the integrity hash as
+  `mkScriptIntegrity` from the final witness bytes. Eleven new mutants (39 in all) cover every `UTXOW`
+  constructor the protocol-version-10 world can express, plus two decoder mutants (41 in all): a PlutusV3 script
+  with a byte after its CBOR byte string, and one using `expModInteger` before protocol version 11. Amaru confirms
+  each single fault except the trailing-byte one, which Amaru accepts (a recorded divergence: Haskell's
+  `RemainderError`); the Java engine reports exactly Haskell's list on all 41. `ScriptIntegrityHashMismatch`
+  (PV11 only) is unit-tested. `PlutusScriptDecoderTest` covers each decoder rule.
+- **Gate** (`JavaEnginePhase3GateTest`): the 167 scenarios expected to pass or to fail in `UTXOW`/`UTXO`/`UTXOS`
+  (114 + 19 + 30 + 4): 166 match Amaru and Haskell, 1 (00280) matches Haskell where Amaru diverges. Every one of
+  the 19 `UTXOW` scenarios reports exactly the expected constructor and nothing else. Coverage: all 18 `UTXOW`
+  rows covered (9 test + scenario, 9 test). Baseline row: `java-engine` 180/276 verdicts, 171/276 constructors,
+  41/41 mutants, 114/114 pass scenarios, about 0.5 ms per scenario.
+- **Findings.**
+  - Amaru's Haskell checker accepts an expected predicate anywhere in Haskell's list
+    (`ValidatePhaseOne/Run.hs:263-270`), not only first; the `RuleFrame` note is corrected. `LEDGER` lists
+    `UTXOW`'s failures before `CERTS`' (`small-steps` prepends each sub-rule's list), so scenarios 00102/00103
+    (script credential deregistered then delegated, no script witness) are
+    `[UTXOW.MissingScriptWitnessesUTXOW, DELEG.StakeKeyNotRegisteredDELEG]` in Haskell; recorded in
+    `HaskellFailureLists` for Phase 4.
+  - CCL writes auxiliary data with metadata and only PlutusV3 scripts in the Shelley form, dropping the scripts
+    (`AuxiliaryData.getAuxiliaryData`); the fixtures avoid that combination.
+- **Deferred.** PV11 mutants need a PV11 mutation world. Because a script must also decode with Scalus, a
+  PV11 script Scalus 1.1.1 cannot decode (for example batch-6 builtins or `Value`/array constants, if Scalus lacks
+  them) would be rejected although Haskell accepts it; revisit before protocol version 11. Precondition: the view's
+  raw cost models are Haskell's `costModelsValid`. `AmaruCorpusNames` has no entry for the nine `UTXOW` names the
+  corpus does not use (they must be added together with `amaru_scenarios.rs`).
 
 ### Phase 4 — CERTS, DELEG, POOL, GOVCERT
 

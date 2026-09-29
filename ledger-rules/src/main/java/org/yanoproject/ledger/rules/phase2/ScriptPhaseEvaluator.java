@@ -24,7 +24,9 @@ import java.util.Map;
  * script (ADR-057 {@code amaru-validator-wasm/INTERFACE.md}, "Modes"):</p>
  * <ul>
  *   <li>{@code UTXOW.MalformedScriptWitnesses} and {@code UTXOW.MalformedReferenceScripts}: a Plutus
- *       script witness or reference script that does not deserialise;</li>
+ *       script witness or reference script that does not deserialise ({@link #evaluate} only: the Java
+ *       engine's {@code UTXOW} makes these checks itself (its own decoder, then {@link #isWellFormed}), so
+ *       {@link #collect} leaves them out);</li>
  *   <li>{@code UTXOS.CollectErrors} with {@code NoCostModel}: a script language without a cost model
  *       in {@code params};</li>
  *   <li>{@code UTXOS.CollectErrors} with {@code BadTranslation}: a {@code TxInfo} translation failure,
@@ -65,8 +67,9 @@ public interface ScriptPhaseEvaluator {
     }
 
     /**
-     * Only the preparation step: the phase-one failures of {@link ScriptPhaseResult.Rejected} (malformed scripts,
-     * {@code UTXOS.CollectErrors}), without running any script.
+     * Only the preparation step: the {@code UTXOS.CollectErrors} of {@link ScriptPhaseResult.Rejected}, without
+     * running any script. The Java engine calls it when the transaction needs a Plutus script it provides, and
+     * ignores any {@code UTXOW} failure in the result (its {@code UTXOW} judges malformed scripts itself).
      *
      * <p>Haskell collects the script contexts ({@code ?!: CollectErrors}, unlabelled, so also on re-application
      * and after other failures) separately from running the scripts ({@code when2Phase $ whenFailureFree},
@@ -83,5 +86,26 @@ public interface ScriptPhaseEvaluator {
             case ScriptPhaseResult.Passed passed -> List.of();
             case ScriptPhaseResult.Failed failed -> List.of();
         };
+    }
+
+    /**
+     * Haskell {@code isValidPlutusScript} ({@code Alonzo/Scripts.hs:276-277}, plutus-ledger-api
+     * {@code deserialiseScript}): whether a Plutus script decodes as a program of its language at the protocol
+     * version. The Java engine's {@code UTXOW} judges this with its own decoder
+     * ({@code conway.utxow.PlutusScriptDecoder}, ADR-056 Phase 3b) and additionally requires a script it accepts to
+     * decode with the evaluator, so that no script reaches the evaluator that it cannot decode.
+     *
+     * <p>The default cannot judge and throws {@link UnsupportedOperationException}; the engine then relies on its own
+     * decoder alone.</p>
+     *
+     * @param language      1 PlutusV1, 2 PlutusV2, 3 PlutusV3
+     * @param script        the script's {@code PlutusBinary} (the contents of its CBOR byte string)
+     * @param protocolMajor the protocol major version
+     * @return true when the script is well formed
+     * @throws UnsupportedOperationException when the evaluator has no Plutus decoder
+     */
+    default boolean isWellFormed(int language, byte[] script, int protocolMajor) {
+        throw new UnsupportedOperationException(getClass().getSimpleName()
+                + " cannot judge Plutus script well-formedness");
     }
 }

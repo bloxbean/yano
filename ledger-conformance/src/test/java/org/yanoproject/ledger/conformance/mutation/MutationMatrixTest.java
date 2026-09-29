@@ -39,8 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       ({@link Mutation#haskellFailures()}), only with constructors of that list; where Amaru names the fault
  *       differently from Haskell ({@link Mutation#amaruReports()}, a recorded divergence), with that name;</li>
  *   <li>the Java engine ({@code java-engine}) accepts the bases and rejects every mutant of the families it
- *       implements (Phase 3a: {@code UTXO}, {@code UTXOS}) with exactly Haskell's failure list, or the single
- *       covered constructor.</li>
+ *       implements (Phase 3: {@code UTXOW}, {@code UTXO}, {@code UTXOS}) with exactly Haskell's failure list, or
+ *       the single covered constructor.</li>
  * </ul>
  *
  * <p>How the other engines judge the mutants is the baseline ({@code ConformanceBaselineTest}), not a gate.</p>
@@ -49,8 +49,8 @@ class MutationMatrixTest {
 
     private static final Optional<ConformanceEngine> REFERENCE = BaselineEngines.amaru();
     private static final ConformanceEngine JAVA = new JavaViewEngine();
-    /** The rule families the Java engine implements so far (ADR-056 Phase 3a). */
-    private static final Set<String> JAVA_FAMILIES = Set.of("UTXO", "UTXOS");
+    /** The rule families the Java engine implements so far (ADR-056 Phase 3). */
+    private static final Set<String> JAVA_FAMILIES = Set.of("UTXO", "UTXOW", "UTXOS");
 
     @Test
     void testKeysAreAmarusCorpusCredentials() {
@@ -259,6 +259,84 @@ class MutationMatrixTest {
         assertThat(check("passed-unexpectedly").tx().isValid()).isFalse();
     }
 
+    @Test
+    @Covers("UTXOW.MissingScriptWitnessesUTXOW")
+    void missingScriptWitness() {
+        check("missing-script-witness");
+    }
+
+    @Test
+    @Covers("UTXOW.ScriptWitnessNotValidatingUTXOW")
+    void nativeScriptNotValidating() {
+        check("native-script-not-validating");
+    }
+
+    @Test
+    @Covers("UTXOW.UnspendableUTxONoDatumHash")
+    void unspendableNoDatum() {
+        check("unspendable-no-datum");
+    }
+
+    @Test
+    @Covers("UTXOW.MissingRequiredDatums")
+    void missingRequiredDatum() {
+        check("missing-required-datum");
+    }
+
+    @Test
+    @Covers("UTXOW.NotAllowedSupplementalDatums")
+    void notAllowedSupplementalDatum() {
+        assertThat(check("not-allowed-supplemental-datum").tx().getBody().getScriptDataHash()).isNotNull();
+    }
+
+    @Test
+    @Covers("UTXOW.ExtraRedeemers")
+    void extraRedeemer() {
+        check("extra-redeemer");
+    }
+
+    @Test
+    @Covers("UTXOW.MissingRedeemers")
+    void missingRedeemer() {
+        check("missing-redeemer");
+    }
+
+    @Test
+    @Covers("UTXOW.PPViewHashesDontMatch")
+    void scriptIntegrityHash() {
+        check("script-integrity-hash");
+    }
+
+    @Test
+    @Covers("UTXOW.MalformedScriptWitnesses")
+    void malformedScriptWitness() {
+        check("malformed-script-witness");
+    }
+
+    @Test
+    @Covers("UTXOW.MalformedScriptWitnesses")
+    void scriptTrailingBytes() {
+        check("script-trailing-bytes");
+    }
+
+    @Test
+    @Covers("UTXOW.MalformedScriptWitnesses")
+    void scriptUnavailableBuiltin() {
+        check("script-unavailable-builtin");
+    }
+
+    @Test
+    @Covers("UTXOW.MalformedReferenceScripts")
+    void malformedReferenceScript() {
+        check("malformed-reference-script");
+    }
+
+    @Test
+    @Covers("UTXOW.InvalidMetadata")
+    void invalidMetadata() {
+        assertThat(check("invalid-metadata").tx().getAuxiliaryData()).isNotNull();
+    }
+
     /** Builds a mutant, checks it is well formed, and has the reference engine confirm the single fault. */
     private static BuiltTx check(String id) {
         Mutation mutation = Mutations.find(id).orElseThrow();
@@ -271,6 +349,11 @@ class MutationMatrixTest {
         ConformanceCase testCase = Mutations.mutantCase(mutation);
         REFERENCE.ifPresent(amaru -> {
             Observation observation = ConformanceRunner.run(amaru, testCase).observation();
+            if (Mutation.AMARU_ACCEPTS.equals(mutation.amaruReports())) {
+                assertThat(observation.valid()).as("%s under amaru (recorded divergence: Amaru accepts)", id)
+                        .isTrue();
+                return;
+            }
             assertThat(observation.valid()).as("%s under amaru", id).isFalse();
             List<String> failures = observation.failures().stream().map(Observation.Failure::qualifiedName).toList();
             Set<String> allowed = mutation.amaruReports() != null ? Set.of(mutation.amaruReports())

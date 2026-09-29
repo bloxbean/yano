@@ -6,8 +6,8 @@ import java.util.Map;
 /**
  * Scenarios whose fault Haskell reports with more than one constructor, and Haskell's failure list for them in its
  * order. Amaru's corpus names one expected predicate per scenario (Amaru stops at its first failure, in its own
- * order); where Haskell necessarily reports others with it, an engine that follows Haskell's order must not count
- * as a mismatch.
+ * order, and its Haskell checker only requires the predicate to be among Haskell's failures); where Haskell
+ * necessarily reports others with it, an engine that follows Haskell's order must not count as a mismatch.
  *
  * <p>The order is that of Haskell's {@code LEDGER} failure list, which {@code small-steps} builds by prepending
  * each predicate's failures reversed and each sub-rule's list one failure at a time
@@ -45,10 +45,31 @@ public final class HaskellFailureLists {
     public static final List<String> NEGATIVE_COLLATERAL_AND_UNBALANCED =
             List.of("UTXO.ValueNotConservedUTxO", "UTXO.InsufficientCollateral");
 
+    /**
+     * A needed Plutus script without a redeemer: {@code UTXOW.MissingRedeemers} ({@code hasExactSetOfRedeemers})
+     * and {@code UTXOS.CollectErrors [NoRedeemer]} (the script context collection, Alonzo/Plutus/Evaluate.hs:151-155);
+     * {@code UTXOW} lists before {@code UTXOS} rooted at {@code LEDGER}.
+     */
+    public static final List<String> MISSING_REDEEMER = List.of("UTXOW.MissingRedeemers", "UTXOS.CollectErrors");
+
+    /**
+     * Scenarios 00102 and 00103: a script credential is deregistered and then delegated, with no script witness.
+     * {@code CERTS} reports the delegation of an unregistered credential ({@code StakeKeyNotRegisteredDELEG}, the
+     * corpus's {@code StakeCredentialInvalidPoolDelegation}), and {@code UTXOW}, which runs whatever {@code CERTS}
+     * found, reports the credential's script as missing: both certificates need it
+     * ({@code getScriptWitnessConwayTxCert}). {@code LEDGER} runs {@code CERTS} before {@code UTXOW}, so its list
+     * holds {@code UTXOW}'s failure first ({@code small-steps} prepends each sub-rule's failures). Amaru's Haskell
+     * checker accepts an expected predicate anywhere in the list ({@code ValidatePhaseOne/Run.hs:263-270}).
+     */
+    public static final List<String> SCRIPT_DELEGATION_AFTER_DEREGISTRATION =
+            List.of("UTXOW.MissingScriptWitnessesUTXOW", "DELEG.StakeKeyNotRegisteredDELEG");
+
     private static final Map<String, List<String>> SCENARIOS = Map.of(
             "00278-fail-transaction-with-redeemers-but-no-collateral-inputs", NO_COLLATERAL,
             "00050-fail-unknown-spent-input", UNKNOWN_SPENT_INPUT,
-            "00124-fail-plutus-spend-collateral-return-exceeds-collateral-input", NEGATIVE_COLLATERAL_AND_UNBALANCED);
+            "00124-fail-plutus-spend-collateral-return-exceeds-collateral-input", NEGATIVE_COLLATERAL_AND_UNBALANCED,
+            "00102-fail-script-credential-delegation-after-deregistration", SCRIPT_DELEGATION_AFTER_DEREGISTRATION,
+            "00103-fail-script-credential-delegation-after-conway-unreg", SCRIPT_DELEGATION_AFTER_DEREGISTRATION);
 
     private HaskellFailureLists() {
     }

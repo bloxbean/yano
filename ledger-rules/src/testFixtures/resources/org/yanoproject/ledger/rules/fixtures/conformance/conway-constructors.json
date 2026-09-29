@@ -626,7 +626,7 @@
       "phase": 1,
       "check": "dynamic",
       "pvGate": "",
-      "notes": "Dynamic. Shelley/Rules/Utxow.hs:412. Uses the pre-CERTS certState"
+      "notes": "Dynamic. Shelley/Rules/Utxow.hs:412. Conway's getWitsVKeyNeeded ignores the certState (Conway/UTxO.hs:148, 174-199)"
     },
     {
       "rule": "UTXOW",
@@ -717,7 +717,7 @@
       "phase": 1,
       "check": "static",
       "pvGate": "",
-      "notes": "Static. `validateTxAuxData … pv`"
+      "notes": "Static. `validateAlonzoTxAuxData … pv`: Plutus scripts in the auxiliary data well formed (the 64-byte metadatum limits are decoding failures at the pin)"
     },
     {
       "rule": "UTXOW",

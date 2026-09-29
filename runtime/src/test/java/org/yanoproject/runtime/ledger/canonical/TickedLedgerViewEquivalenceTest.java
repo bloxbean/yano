@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.ledger.canonical;
 
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.yaci.core.model.Credential;
 import com.bloxbean.cardano.yaci.core.model.PoolParams;
 import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
@@ -140,6 +141,10 @@ class TickedLedgerViewEquivalenceTest {
         assertThat(ticked.protocolParams().minFeeA()).isEqualTo(99);
         assertThat(ticked.protocolParams().minFeeB()).isEqualTo(155_000);
         assertThat(ticked.protocolParams().costModels()).isNotEmpty();
+        // the raw lists the Java rules hash into the script integrity hash (LedgerView#protocolParams contract)
+        assertThat(ticked.protocolParams().costModelsRaw()).isNotEmpty();
+        assertThat(((ProtocolParams) ticked.cclParams()).getCostModelsRaw())
+                .isEqualTo(ticked.protocolParams().costModelsRaw());
         assertThat(ticked.candidates()).isEmpty();
         assertThat(ticked.activeProposals()).hasSize(2);
         assertThat(ticked.proposals().get(A.view().toString())).isEqualTo("absent");

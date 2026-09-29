@@ -11,7 +11,7 @@ Generated 2026-09-29 by
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
 - **Scenarios**: 276 Haskell-cross-checked Amaru scenarios (tag `v10.11.20260925`), rule `LEDGER`, origin `SYNC`, one `InMemoryLedgerView` per scenario.
-- **Mutants**: 28 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions (preprod-like PV 10 world, signed with Amaru's corpus test keys, re-signed after every edit).
+- **Mutants**: 41 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions (preprod-like PV 10 world, signed with Amaru's corpus test keys, re-signed after every edit).
 - **Constructors**: 88 Conway leaf predicate failures at cardano-ledger `f649f975 (cardano-ledger-conway 1.23.0.0)`, 84 reachable at PV 10–11 ([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).
 - **Verdict match**: accepted exactly when Haskell accepts. **Constructor match**: the verdict matches and the engine's *first* failure is the expected Haskell `RULE.Constructor` (a decoding failure must be reported as one). **Constructor found**: the expected constructor is among the engine's failures in any position (the copied Java rules report every failure, in their own order).
 
@@ -21,21 +21,21 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 | `scalus-legacy+supplementary` | ScalusBasedTransactionValidator with the supplementary CCL certificate and governance rules, behind TransactionValidationService's decode and UTxO-resolution pre-checks |
 | `scalus-engine` | ScalusLedgerValidationEngine over the LedgerView (engine API, step 1d) |
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
-| `java-engine` | JavaLedgerValidationEngine (ADR-056 Phase 3a: UTXO, UTXOS) over the LedgerView, Scalus phase 2 |
+| `java-engine` | JavaLedgerValidationEngine (ADR-056 Phase 3: UTXOW, UTXO, UTXOS) over the LedgerView, Scalus phase 2 |
 | `amaru` | AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057) |
 
 ## Summary
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 26/28 | 2/2 | 25/84 | 2.17 |
-| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 26/28 | 2/2 | 34/84 | 0.41 |
-| `scalus-engine` | 193/276 | 185/276 | 185/276 | 26/28 | 2/2 | 37/84 | 0.41 |
-| `java-legacy` | 158/276 | 32/276 | 117/276 | 11/28 | 0/2 | 19/84 | 0.40 |
-| `java-engine` | 165/276 | 154/276 | 154/276 | 22/28 | 2/2 | 24/84 | 0.30 |
-| `amaru` | 276/276 | 275/276 | 275/276 | 26/28 | 2/2 | 57/84 | 2.85 |
+| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 36/41 | 2/2 | 31/84 | 2.03 |
+| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 36/41 | 2/2 | 40/84 | 0.36 |
+| `scalus-engine` | 193/276 | 187/276 | 187/276 | 39/41 | 2/2 | 45/84 | 0.34 |
+| `java-legacy` | 158/276 | 32/276 | 119/276 | 11/41 | 0/2 | 19/84 | 0.38 |
+| `java-engine` | 180/276 | 171/276 | 171/276 | 41/41 | 2/2 | 39/84 | 0.51 |
+| `amaru` | 276/276 | 275/276 | 275/276 | 38/41 | 2/2 | 65/84 | 2.82 |
 
-*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 59 of the 84 constructors; the rest need Phase 3–5 mutants.
+*Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 67 of the 84 constructors; the rest need Phase 4–5 mutants or are covered by unit tests only.
 
 ## Scenarios per rule family
 
@@ -47,11 +47,11 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 | DECODING | 3 | 3 / 3 | 3 / 3 | 3 / 3 | 2 / 0 | 3 / 3 | 3 / 3 |
 | LEDGER | 5 | 4 / 0 | 4 / 0 | 0 / 0 | 2 / 0 | 0 / 0 | 5 / 5 |
 | CERTS | 2 | 2 / 0 | 2 / 0 | 2 / 2 | 2 / 0 | 1 / 0 | 2 / 2 |
-| DELEG | 21 | 21 / 0 | 21 / 0 | 13 / 11 | 21 / 0 | 6 / 0 | 21 / 21 |
+| DELEG | 21 | 21 / 0 | 21 / 0 | 13 / 13 | 21 / 0 | 6 / 2 | 21 / 21 |
 | POOL | 7 | 7 / 0 | 7 / 0 | 7 / 7 | 7 / 0 | 2 / 0 | 7 / 7 |
 | GOVCERT | 12 | 4 / 0 | 9 / 3 | 4 / 2 | 12 / 0 | 0 / 0 | 12 / 12 |
 | GOV | 59 | 9 / 0 | 51 / 42 | 1 / 0 | 59 / 1 | 1 / 0 | 59 / 58 |
-| UTXOW | 19 | 19 / 12 | 19 / 12 | 19 / 19 | 16 / 3 | 4 / 4 | 19 / 19 |
+| UTXOW | 19 | 19 / 12 | 19 / 12 | 19 / 19 | 16 / 3 | 19 / 19 | 19 / 19 |
 | UTXO | 30 | 30 / 17 | 30 / 17 | 30 / 28 | 27 / 22 | 30 / 29 | 30 / 30 |
 | UTXOS | 4 | 4 / 3 | 4 / 3 | 4 / 3 | 4 / 0 | 4 / 4 | 4 / 4 |
 
@@ -69,16 +69,16 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 | `mutant:output-too-small` | UTXO.BabbageOutputTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `mutant:wrong-network-output` | UTXO.WrongNetwork | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `mutant:expired` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:missing-vkey-witness` | UTXOW.MissingVKeyWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
-| `mutant:invalid-witness` | UTXOW.InvalidWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:missing-vkey-witness` | UTXOW.MissingVKeyWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:invalid-witness` | UTXOW.InvalidWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:max-tx-size` | UTXO.MaxTxSizeUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `mutant:no-collateral` | UTXO.NoCollateralInputs (Haskell: UTXO.NoCollateralInputs, UTXO.InsufficientCollateral) | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:too-many-collateral` | UTXO.TooManyCollateralInputs | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:wrong-network-in-body` | UTXO.WrongNetworkInTxBody | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:extraneous-script-witness` | UTXOW.ExtraneousScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
-| `mutant:conflicting-metadata-hash` | UTXOW.ConflictingMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
-| `mutant:missing-metadata-hash` | UTXOW.MissingTxBodyMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
-| `mutant:missing-metadata` | UTXOW.MissingTxMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | `Valid` | ✓ |
+| `mutant:extraneous-script-witness` | UTXOW.ExtraneousScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:conflicting-metadata-hash` | UTXOW.ConflictingMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-metadata-hash` | UTXOW.MissingTxBodyMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-metadata` | UTXOW.MissingTxMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:empty-inputs` | UTXO.InputSetEmptyUTxO (Haskell: UTXO.ValueNotConservedUTxO, UTXO.InputSetEmptyUTxO) | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | ✓ | ✓ | ✓ |
 | `mutant:not-yet-valid` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `mutant:scripts-not-paid` | UTXO.ScriptsNotPaidUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
@@ -91,8 +91,21 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 | `mutant:non-disjoint-reference-inputs` | UTXO.BabbageNonDisjointRefInputs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `mutant:script-fails` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 | `mutant:passed-unexpectedly` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-script-witness` | UTXOW.MissingScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:native-script-not-validating` | UTXOW.ScriptWitnessNotValidatingUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unspendable-no-datum` | UTXOW.UnspendableUTxONoDatumHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-required-datum` | UTXOW.MissingRequiredDatums | `UTXOW.UnspendableUTxONoDatumHash` | `UTXOW.UnspendableUTxONoDatumHash` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:not-allowed-supplemental-datum` | UTXOW.NotAllowedSupplementalDatums | `UTXOW.UnspendableUTxONoDatumHash` | `UTXOW.UnspendableUTxONoDatumHash` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:extra-redeemer` | UTXOW.ExtraRedeemers | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-redeemer` | UTXOW.MissingRedeemers (Haskell: UTXOW.MissingRedeemers, UTXOS.CollectErrors) | `UTXOW.ExtraRedeemers` | `UTXOW.ExtraRedeemers` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:script-integrity-hash` | UTXOW.PPViewHashesDontMatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:malformed-script-witness` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:script-trailing-bytes` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | `Valid` |
+| `mutant:script-unavailable-builtin` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:malformed-reference-script` | UTXOW.MalformedReferenceScripts | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:invalid-metadata` | UTXOW.InvalidMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 
-Mutants (28):
+Mutants (41):
 
 - `fee-too-small` → `UTXO.FeeTooSmallUTxO`: fee one lovelace below the minimum for the final bytes (change +1 keeps the balance)
 - `bad-input` → `UTXO.BadInputsUTxO`: an extra spending input that is not in the UTxO set (the balance counts only known inputs)
@@ -122,6 +135,19 @@ Mutants (28):
 - `non-disjoint-reference-inputs` → `UTXO.BabbageNonDisjointRefInputs`: the spent input is also a reference input (protocol version 10)
 - `script-fails` → `UTXOS.ValidationTagMismatch`: spends from the always-fails script instead, with is_valid = true
 - `passed-unexpectedly` → `UTXOS.ValidationTagMismatch`: is_valid = false although the always-succeeds script passes
+- `missing-script-witness` → `UTXOW.MissingScriptWitnessesUTXOW`: also spends the native-script-locked UTxO without providing its script
+- `native-script-not-validating` → `UTXOW.ScriptWitnessNotValidatingUTXOW`: also spends the UTxO locked by a native script valid from slot SLOT + 5000, with no validity start
+- `unspendable-no-datum` → `UTXOW.UnspendableUTxONoDatumHash`: spends a PlutusV2-locked UTxO that has no datum (CIP-69 exempts PlutusV3 only)
+- `missing-required-datum` → `UTXOW.MissingRequiredDatums`: spends the PlutusV3-locked UTxO with a datum hash without providing the datum
+- `not-allowed-supplemental-datum` → `UTXOW.NotAllowedSupplementalDatums`: a witness datum that no input needs and no output or reference input names (integrity hash included)
+- `extra-redeemer` → `UTXOW.ExtraRedeemers`: an additional minting redeemer although nothing is minted (fee paid)
+- `missing-redeemer` → `UTXOW.MissingRedeemers`: the script transaction without its redeemer (not a single fault: the script context collection also reports NoRedeemer)
+- `script-integrity-hash` → `UTXOW.PPViewHashesDontMatch`: one bit of the body's script integrity hash flipped (protocol version 10)
+- `malformed-script-witness` → `UTXOW.MalformedScriptWitnesses`: spends the UTxO locked by a PlutusV3 script whose bytes are not a program, with that script
+- `script-trailing-bytes` → `UTXOW.MalformedScriptWitnesses`: spends the UTxO of a PlutusV3 script whose CBOR byte string is followed by one more byte (deserialiseScript's RemainderError), with that script
+- `script-unavailable-builtin` → `UTXOW.MalformedScriptWitnesses`: spends the UTxO of a PlutusV3 script using expModInteger, available only from protocol version 11 (builtinsAvailableIn), with that script
+- `malformed-reference-script` → `UTXOW.MalformedReferenceScripts`: the payment output carries a PlutusV3 reference script whose bytes are not a program
+- `invalid-metadata` → `UTXOW.InvalidMetadata`: auxiliary data (hash included) carrying a PlutusV3 script whose bytes are not a program
 
 ## Constructors demonstrated per engine
 
@@ -157,15 +183,23 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `GOV.GovActionsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
 | `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
 | `GOV.DisallowedVoters` | 4 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
-| `UTXOW.InvalidWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.MissingVKeyWitnessesUTXOW` | 4 | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `UTXOW.MissingScriptWitnessesUTXOW` | 5 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `UTXOW.ExtraneousScriptWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `UTXOW.MissingTxBodyMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `UTXOW.MissingTxMetadata` | 2 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `UTXOW.ConflictingMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `UTXOW.MalformedScriptWitnesses` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| `UTXOW.MalformedReferenceScripts` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.InvalidWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXOW.MissingVKeyWitnessesUTXOW` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXOW.MissingScriptWitnessesUTXOW` | 8 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ExtraneousScriptWitnessesUTXOW` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ScriptWitnessNotValidatingUTXOW` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingTxBodyMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingTxMetadata` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ConflictingMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.InvalidMetadata` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingRedeemers` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ExtraRedeemers` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingRequiredDatums` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.NotAllowedSupplementalDatums` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.UnspendableUTxONoDatumHash` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.PPViewHashesDontMatch` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MalformedScriptWitnesses` | 6 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MalformedReferenceScripts` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
 | `UTXO.BabbageNonDisjointRefInputs` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXO.OutsideValidityIntervalUTxO` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXO.InputSetEmptyUTxO` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
@@ -186,11 +220,11 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `UTXO.MaxTxSizeUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXO.ExUnitsTooBigUTxO` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
 | `UTXO.TooManyCollateralInputs` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| `UTXOS.CollectErrors` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `UTXOS.CollectErrors` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `UTXOS.ValidationTagMismatch` | 5 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| **Total** | | **25** | **34** | **37** | **19** | **24** | **57** |
+| **Total** | | **31** | **40** | **45** | **19** | **39** | **65** |
 
-No scenario or mutant expects (25): `LEDGER.ConwayMempoolFailure`, `LEDGER.ConwayWithdrawalsMissingAccounts`, `LEDGER.ConwayIncompleteWithdrawals`, `DELEG.DepositIncorrectDELEG`, `DELEG.RefundIncorrectDELEG`, `POOL.PoolMedataHashTooBig`, `POOL.VRFKeyHashAlreadyRegistered`, `GOVCERT.ConwayDRepIncorrectDeposit`, `GOVCERT.ConwayDRepNotRegistered`, `GOVCERT.ConwayDRepIncorrectRefund`, `GOV.UnelectedCommitteeVoters`, `GOV.MalformedProposal`, `GOV.ProposalDepositIncorrect`, `GOV.TreasuryWithdrawalsNetworkIdMismatch`, `GOV.ConflictingCommitteeUpdate`, `GOV.ExpirationEpochTooSmall`, `UTXOW.ScriptWitnessNotValidatingUTXOW`, `UTXOW.InvalidMetadata`, `UTXOW.MissingRedeemers`, `UTXOW.ExtraRedeemers`, `UTXOW.MissingRequiredDatums`, `UTXOW.NotAllowedSupplementalDatums`, `UTXOW.UnspendableUTxONoDatumHash`, `UTXOW.PPViewHashesDontMatch`, `UTXOW.ScriptIntegrityHashMismatch`.
+No scenario or mutant expects (17): `LEDGER.ConwayMempoolFailure`, `LEDGER.ConwayWithdrawalsMissingAccounts`, `LEDGER.ConwayIncompleteWithdrawals`, `DELEG.DepositIncorrectDELEG`, `DELEG.RefundIncorrectDELEG`, `POOL.PoolMedataHashTooBig`, `POOL.VRFKeyHashAlreadyRegistered`, `GOVCERT.ConwayDRepIncorrectDeposit`, `GOVCERT.ConwayDRepNotRegistered`, `GOVCERT.ConwayDRepIncorrectRefund`, `GOV.UnelectedCommitteeVoters`, `GOV.MalformedProposal`, `GOV.ProposalDepositIncorrect`, `GOV.TreasuryWithdrawalsNetworkIdMismatch`, `GOV.ConflictingCommitteeUpdate`, `GOV.ExpirationEpochTooSmall`, `UTXOW.ScriptIntegrityHashMismatch`.
 
 ## Main causes of constructor mismatches
 
@@ -200,7 +234,7 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG, … (32 kinds) |
+| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG, … (33 kinds) |
 | `Valid` | 59 | GOV.DisallowedVoters, GOV.GovActionsDoNotExist, GOV.InvalidGuardrailsScriptHash, GOV.ProposalProcedureNetworkIdMismatch, … (11 kinds) |
 | `UNMAPPED.IllegalArgument` | 3 | Pass, UTXOW.InvalidWitnessesUTXOW, UTXOW.MissingVKeyWitnessesUTXOW |
 | `UNMAPPED.StakePool` | 3 | POOL.StakePoolNotRegisteredOnKeyPOOL, POOL.WrongNetworkPOOL |
@@ -211,7 +245,7 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG, … (32 kinds) |
+| `ENGINE.DecodingFailure` | 106 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG, … (33 kinds) |
 | `Valid` | 12 | GOV.InvalidGuardrailsScriptHash, GOV.VotersDoNotExist, GOVCERT.ConwayCommitteeHasPreviouslyResigned, LEDGER.ConwayTreasuryValueMismatch |
 | `GOVCERT.ConwayCommitteeIsUnknown` | 4 | GOVCERT.ConwayCommitteeHasPreviouslyResigned, Pass |
 | `UNMAPPED.IllegalArgument` | 3 | Pass, UTXOW.InvalidWitnessesUTXOW, UTXOW.MissingVKeyWitnessesUTXOW |
@@ -220,13 +254,12 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 | `UNMAPPED.StakeCertificates` | 2 | DELEG.IncorrectDepositDELEG, DELEG.StakeKeyRegisteredDELEG |
 | `DELEG.DelegateeStakePoolNotRegisteredDELEG` | 2 | Pass |
 
-**`scalus-engine`** (91 mismatches)
+**`scalus-engine`** (89 mismatches)
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
 | `Valid` | 79 | DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, GOV.DisallowedVoters, GOV.GovActionsDoNotExist, … (18 kinds) |
 | `ENGINE.DecodingFailure` | 8 | GOV.ProposalReturnAccountDoesNotExist, GOVCERT.ConwayCommitteeIsUnknown, Pass, UTXO.InputSetEmptyUTxO |
-| `UTXOW.MissingScriptWitnessesUTXOW` | 2 | DELEG.StakeKeyNotRegisteredDELEG |
 | `UTXOS.ValidationTagMismatch` | 1 | UTXOS.CollectErrors |
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
 
@@ -234,19 +267,19 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `UTXOW.InvalidWitnessesUTXOW` | 230 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG, … (41 kinds) |
+| `UTXOW.InvalidWitnessesUTXOW` | 230 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.IncorrectDepositDELEG, … (42 kinds) |
 | `Valid` | 10 | DecodingFailure, LEDGER.ConwayTxRefScriptsSizeTooBig, UTXO.BadInputsUTxO, UTXO.FeeTooSmallUTxO, … (7 kinds) |
 | `UTXO.FeeTooSmallUTxO` | 1 | Pass |
 | `GOV.ZeroTreasuryWithdrawals` | 1 | Pass |
 | `UTXO.BabbageNonDisjointRefInputs` | 1 | Pass |
 | `UTXOW.PPViewHashesDontMatch` | 1 | Pass |
 
-**`java-engine`** (122 mismatches)
+**`java-engine`** (105 mismatches)
 
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
-| `Valid` | 111 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.StakeKeyHasNonZeroAccountBalanceDELEG, … (32 kinds) |
-| `ENGINE.JavaEngineFailure` | 7 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.StakeKeyNotRegisteredDELEG, POOL.StakePoolNotRegisteredOnKeyPOOL |
+| `Valid` | 96 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.DelegateeDRepNotRegisteredDELEG, DELEG.DelegateeStakePoolNotRegisteredDELEG, DELEG.StakeKeyHasNonZeroAccountBalanceDELEG, … (25 kinds) |
+| `ENGINE.JavaEngineFailure` | 5 | CERTS.WithdrawalsNotInRewardsCERTS, DELEG.StakeKeyNotRegisteredDELEG, POOL.StakePoolNotRegisteredOnKeyPOOL |
 | `UTXO.ValueNotConservedUTxO` | 2 | DELEG.IncorrectDepositDELEG |
 | `ENGINE.EraNotSupported` | 1 | GOV.ProposalCantFollow |
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
@@ -339,8 +372,8 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00098-fail-information-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
 | 00100-fail-delegation-after-deregistration-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00101-fail-delegation-after-conway-unreg-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
-| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
-| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
+| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG (Haskell: UTXOW.MissingScriptWitnessesUTXOW, DELEG.StakeKeyNotRegisteredDELEG) | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
+| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG (Haskell: UTXOW.MissingScriptWitnessesUTXOW, DELEG.StakeKeyNotRegisteredDELEG) | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00104-fail-deregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00105-fail-conway-unregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00106-fail-reg-cert-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
@@ -515,8 +548,8 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00096-fail-update-committee-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Array for deserializing an Iterable instance but got Tag: Other(258) (input position 141) |
 | 00100-fail-delegation-after-deregistration-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00101-fail-delegation-after-conway-unreg-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
-| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
-| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
+| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG (Haskell: UTXOW.MissingScriptWitnessesUTXOW, DELEG.StakeKeyNotRegisteredDELEG) | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
+| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG (Haskell: UTXOW.MissingScriptWitnessesUTXOW, DELEG.StakeKeyNotRegisteredDELEG) | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00104-fail-deregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00105-fail-conway-unregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `ENGINE.DecodingFailure` | ValidationFailure: Validation error: Expected Array or Map for TransactionOutput (input position 45) |
 | 00106-fail-reg-cert-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Map-Header but got Start of unbounded Map (input position 1) |
@@ -591,7 +624,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 
 </details>
 
-<details><summary><code>scalus-engine</code>: 91 of 276 without a constructor match</summary>
+<details><summary><code>scalus-engine</code>: 89 of 276 without a constructor match</summary>
 
 | Scenario | Expected | Reported first | Engine detail |
 |---|---|---|---|
@@ -618,8 +651,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00096-fail-update-committee-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `ENGINE.DecodingFailure` | Scalus cannot decode the transaction: Expected Array for deserializing an Iterable instance but got Tag: Other(258) (input position 141) |
 | 00097-fail-new-constitution-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
 | 00098-fail-information-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
-| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG | `UTXOW.MissingScriptWitnessesUTXOW` | MissingOrExtraScriptHashesException: Missing or extra script hashes for transactionId "3f268940a9bd69615c75649144b55bca94aa41e8a1b31a2b4dfd7e05e36c3d3e", mis... |
-| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG | `UTXOW.MissingScriptWitnessesUTXOW` | MissingOrExtraScriptHashesException: Missing or extra script hashes for transactionId "0c24df83110529dc2e397c63bc124448ebf3ae08e3dc2cfba544c1547ad96f4c", mis... |
 | 00117-fail-treasury-withdrawal-with-a-missing-target-reward-account | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
 | 00118-fail-treasury-withdrawal-with-multiple-missing-target-reward-accounts | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
 | 00119-fail-treasury-withdrawal-with-multiple-target-reward-accounts-where-one-is-missing | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` |  |
@@ -773,8 +804,8 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00098-fail-information-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00100-fail-delegation-after-deregistration-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00101-fail-delegation-after-conway-unreg-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
-| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
-| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
+| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG (Haskell: UTXOW.MissingScriptWitnessesUTXOW, DELEG.StakeKeyNotRegisteredDELEG) | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
+| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG (Haskell: UTXOW.MissingScriptWitnessesUTXOW, DELEG.StakeKeyNotRegisteredDELEG) | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00104-fail-deregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00105-fail-conway-unregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
 | 00106-fail-reg-cert-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `UTXOW.InvalidWitnessesUTXOW` | WitnessValidation: Invalid Ed25519 signature for VKey 93c191b1094746961f6f00fba27f3d8eff6a66490baf806d4e179fd8 |
@@ -940,11 +971,10 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 
 </details>
 
-<details><summary><code>java-engine</code>: 122 of 276 without a constructor match</summary>
+<details><summary><code>java-engine</code>: 105 of 276 without a constructor match</summary>
 
 | Scenario | Expected | Reported first | Engine detail |
 |---|---|---|---|
-| 00053-fail-auxiliary-data-hash-mismatch | UTXOW.ConflictingMetadataHash | `Valid` |  |
 | 00054-fail-current-treasury-value-disagrees-with-ledger-treasury | LEDGER.ConwayTreasuryValueMismatch | `Valid` |  |
 | 00055-fail-single-reference-script-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
 | 00056-fail-summed-reference-scripts-over-per-tx-limit | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` |  |
@@ -961,13 +991,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00067-fail-stake-reg-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
 | 00068-fail-stake-vote-reg-delegation-to-unregistered-pool | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` |  |
 | 00072-fail-stake-registration-cert-with-incorrect-deposit | DELEG.IncorrectDepositDELEG | `UTXO.ValueNotConservedUTxO` | Mismatch {mismatchSupplied = Coin 5000000, mismatchExpected = Coin 6000000} |
-| 00076-fail-invalid-vkey-signature | UTXOW.InvalidWitnessesUTXOW | `Valid` |  |
-| 00079-fail-bootstrap-witness-with-mismatched-signature | UTXOW.InvalidWitnessesUTXOW | `Valid` |  |
-| 00082-fail-auxiliary-data-without-body-hash | UTXOW.MissingTxBodyMetadataHash | `Valid` |  |
-| 00083-fail-body-hash-without-auxiliary-data | UTXOW.MissingTxMetadata | `Valid` |  |
-| 00084-fail-vkey-locked-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `Valid` |  |
-| 00085-fail-required-signers-entry-without-matching-witness | UTXOW.MissingVKeyWitnessesUTXOW | `Valid` |  |
-| 00086-fail-byron-input-with-empty-witness-set | UTXOW.MissingVKeyWitnessesUTXOW | `Valid` |  |
 | 00092-fail-parameter-change-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
 | 00093-fail-hard-fork-initiation-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
 | 00094-fail-treasury-withdrawals-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
@@ -977,8 +1000,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00098-fail-information-proposal-with-an-unregistered-return-account | GOV.ProposalReturnAccountDoesNotExist | `Valid` |  |
 | 00100-fail-delegation-after-deregistration-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account key:93c191b1094746961f6f00fba27f3d8eff6a66490b... |
 | 00101-fail-delegation-after-conway-unreg-in-same-tx | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account key:93c191b1094746961f6f00fba27f3d8eff6a66490b... |
-| 00102-fail-script-credential-delegation-after-deregistration | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account script:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb... |
-| 00103-fail-script-credential-delegation-after-conway-unreg | DELEG.StakeKeyNotRegisteredDELEG | `ENGINE.JavaEngineFailure` | the rules accepted the transaction but its effects cannot be derived: Expected ledger state is absent: account script:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb... |
 | 00104-fail-deregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `Valid` |  |
 | 00105-fail-conway-unregister-a-credential-with-non-zero-reward-balance | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `Valid` |  |
 | 00106-fail-reg-cert-on-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `Valid` |  |
@@ -1016,10 +1037,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00173-fail-vote-cast-by-a-stake-pool-on-a-new-constitution | GOV.DisallowedVoters | `Valid` |  |
 | 00174-fail-vote-cast-by-a-stake-pool-on-a-treasury-withdrawal | GOV.DisallowedVoters | `Valid` |  |
 | 00175-fail-vote-cast-by-a-stake-pool-on-a-parameter-change-outside-the-security-group | GOV.DisallowedVoters | `Valid` |  |
-| 00184-fail-drep-unregistration-of-a-script-hash-drep-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
-| 00186-fail-drep-update-of-a-script-hash-drep-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
-| 00188-fail-vote-delegation-from-a-script-hash-stake-credential-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
-| 00190-fail-committee-hot-key-authorization-by-a-script-hash-cold-credential-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
 | 00191-fail-parameter-change-proposal-with-a-policy-the-constitution-has-no-script-for | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
 | 00192-fail-parameter-change-proposal-omitting-the-constitutions-guardrails-script | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
 | 00193-fail-parameter-change-proposal-naming-a-script-other-than-the-constitutions | GOV.InvalidGuardrailsScriptHash | `Valid` |  |
@@ -1058,9 +1075,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00239-fail-abstention-cast-by-a-registered-stake-pool-on-an-expired-governance-action | GOV.VotingOnExpiredGovAction | `Valid` |  |
 | 00240-fail-one-voter-balloting-on-a-live-governance-action-and-an-expired-one | GOV.VotingOnExpiredGovAction | `Valid` |  |
 | 00241-fail-expired-governance-action-balloted-on-by-the-second-of-two-voters | GOV.VotingOnExpiredGovAction | `Valid` |  |
-| 00259-fail-plutus-v2-script-supplied-as-both-a-witness-and-a-reference-script | UTXOW.ExtraneousScriptWitnessesUTXOW | `Valid` |  |
-| 00260-fail-plutus-v2-script-supplied-as-both-a-witness-and-a-spent-input-reference-script | UTXOW.ExtraneousScriptWitnessesUTXOW | `Valid` |  |
-| 00262-fail-committee-resignation-by-a-script-hash-cold-credential-missing-the-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `Valid` |  |
 | 00271-fail-pool-registration-with-a-mainnet-reward-account | POOL.WrongNetworkPOOL | `Valid` |  |
 | 00272-fail-old-style-stake-registration-of-an-already-registered-credential | DELEG.StakeKeyRegisteredDELEG | `Valid` |  |
 | 00273-fail-stake-registration-with-a-zero-deposit | DELEG.IncorrectDepositDELEG | `UTXO.ValueNotConservedUTxO` | Mismatch {mismatchSupplied = Coin 5000000, mismatchExpected = Coin 7000000} |

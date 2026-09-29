@@ -40,7 +40,9 @@ import java.util.TreeSet;
  *
  * <p>Before any script runs it reports, as phase-1 {@link ScriptPhaseResult.Rejected} failures, the checks
  * Haskell makes while preparing script contexts, which Amaru's {@code phase_one} mode does not (ADR-057
- * Phase B deviation 9). Checked against cardano-ledger {@code f649f975}:</p>
+ * Phase B deviation 9). Checked against cardano-ledger {@code f649f975}. The Java engine's {@code UTXOW} owns the
+ * two malformed-script checks (ADR-056 Phase 3b): it asks {@link #isWellFormed} per script, and {@link #collect}
+ * reports only the {@code CollectErrors}; {@link #evaluate} still refuses to run a malformed script.</p>
  * <ol>
  *   <li>{@code UTXOW.MalformedScriptWitnesses}: Plutus witness scripts that are not well-formed at the
  *       protocol version (Babbage/Rules/Utxow.hs:264-273, {@code isValidScript}).</li>
@@ -104,7 +106,7 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
     @Override
     public ScriptPhaseResult evaluate(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
                                       ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
-        Preparation preparation = prepare(txCbor, tx, resolvedInputs, params, slotConfig, validationSlot);
+        Preparation preparation = prepare(txCbor, tx, resolvedInputs, params, slotConfig, validationSlot, true);
         if (!preparation.failures().isEmpty()) {
             return new ScriptPhaseResult.Rejected(preparation.failures());
         }
@@ -118,11 +120,21 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
                 : new ScriptPhaseResult.Failed(evaluation.scripts());
     }
 
-    /** The checks {@link #evaluate} makes before running any script, without running one. */
+    /**
+     * The {@code CollectErrors} {@link #evaluate} finds before running any script, without running one. The
+     * malformed-script checks are left out: the Java engine's {@code UTXOW} makes them itself
+     * ({@link #isWellFormed}, ADR-056 Phase 3b).
+     */
     @Override
     public List<LedgerFailure> collect(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
                                        ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
-        return prepare(txCbor, tx, resolvedInputs, params, slotConfig, validationSlot).failures();
+        return prepare(txCbor, tx, resolvedInputs, params, slotConfig, validationSlot, false).failures();
+    }
+
+    /** Haskell {@code isValidPlutusScript}, with Scalus's Plutus decoder ({@code PlutusScript.isWellFormed}). */
+    @Override
+    public boolean isWellFormed(int language, byte[] script, int protocolMajor) {
+        return ScalusPhaseTwo.isWellFormed(language, script, protocolMajor);
     }
 
     /** What the preparation found: failures (malformed scripts, or CollectErrors), and the scripts to run. */
@@ -130,7 +142,8 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
     }
 
     private Preparation prepare(byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs,
-                                ProtocolParams params, SlotConfig slotConfig, long validationSlot) {
+                                ProtocolParams params, SlotConfig slotConfig, long validationSlot,
+                                boolean checkWellFormed) {
         Objects.requireNonNull(txCbor, "txCbor");
         Objects.requireNonNull(tx, "tx");
         Objects.requireNonNull(resolvedInputs, "resolvedInputs");
@@ -140,12 +153,14 @@ public final class ScalusScriptPhaseEvaluator implements ScriptPhaseEvaluator {
         int minor = requireVersion(params.getProtocolMinorVer(), "protocol minor version");
 
         List<LedgerFailure> malformed = new ArrayList<>();
-        List<String> witnesses = ScalusPhaseTwo.malformedWitnessScripts(txCbor, major, minor);
+        List<String> witnesses = checkWellFormed ? ScalusPhaseTwo.malformedWitnessScripts(txCbor, major, minor)
+                : List.of();
         if (!witnesses.isEmpty()) {
             malformed.add(new LedgerFailure(LedgerRuleName.UTXOW, "MalformedScriptWitnesses",
                     LedgerFailure.Phase.PHASE_1, String.join(", ", witnesses)));
         }
-        List<String> references = ScalusPhaseTwo.malformedOutputReferenceScripts(txCbor, major, minor);
+        List<String> references = checkWellFormed
+                ? ScalusPhaseTwo.malformedOutputReferenceScripts(txCbor, major, minor) : List.of();
         if (!references.isEmpty()) {
             malformed.add(new LedgerFailure(LedgerRuleName.UTXOW, "MalformedReferenceScripts",
                     LedgerFailure.Phase.PHASE_1, String.join(", ", references)));

@@ -203,4 +203,56 @@ class RawTransactionTest {
         BuiltTx built = EngineTestSupport.build(spec);
         assertThat(RawTransaction.parse(built.cbor(), built.tx()).inputs()).isEmpty();
     }
+
+    /**
+     * Witness-set rules at protocol versions 9–11: Plutus script lists are non-empty and hold no two scripts of the
+     * same hash ({@code scriptDecoderV9}); a bootstrap witness's chain code has any length before version 12.
+     */
+    @Test
+    void readsWitnessesAsConwayDecodesThem() {
+        String tx = "84" + BODY;
+        assertDecodingFailure(tx + "a10780" + "f5f6", "Empty list of scripts");
+        assertDecodingFailure(tx + "a107824401020304" + "4401020304" + "f5f6", "duplicate PlutusV3");
+        String bootstrap = "a1028184" + "5820" + "01".repeat(32) + "5840" + "02".repeat(64) + "5821" + "03".repeat(33)
+                + "41a0";
+        RawTransaction raw = RawTransaction.parse(HexUtil.decodeHexString(tx + bootstrap + "f5f6"), null);
+        assertThat(raw.bootstrapWitnesses()).singleElement()
+                .satisfies(w -> assertThat(w.chainCode()).hasSize(33));
+        RawTransaction scripts = RawTransaction.parse(HexUtil.decodeHexString(tx + "a2" + "0781" + "4401020304"
+                + "01818200581c" + "11".repeat(28) + "f5f6"), null);
+        assertThat(scripts.witnessScripts()).extracting(RawScript::language)
+                .containsExactly(RawScript.NATIVE, RawScript.PLUTUS_V3);
+    }
+
+    /**
+     * Certificates and proposal procedures are {@code OSet}s: {@code decodeOSet} rejects two equal elements
+     * ({@code decodeSetLikeEnforceNoDuplicates}), equal as decoded values, so a different encoding of the same
+     * certificate is a duplicate too.
+     */
+    @Test
+    void duplicateCertificatesAndProposalsDoNotDecode() {
+        String cred = "8200581c" + "11".repeat(28);
+        String reg = "8200" + cred;
+        String regIndefinite = "9f00" + cred + "ff";
+        String other = "8201" + cred;
+        String tail = "a0f5f6";
+        assertThat(RawTransaction.parse(HexUtil.decodeHexString("84" + body("0482" + reg + other) + tail), null)
+                .certificates()).hasSize(2);
+        assertDecodingFailure("84" + body("0482" + reg + reg) + tail, "duplicate certificate");
+        assertDecodingFailure("84" + body("04d9010282" + reg + regIndefinite) + tail, "duplicate certificate");
+
+        // pool registrations whose owner sets differ only in order are equal
+        String pool = "8a03581c" + "22".repeat(28) + "5820" + "33".repeat(32) + "0000d81e820105"
+                + "581de0" + "44".repeat(28);
+        String owners1 = "82581c" + "55".repeat(28) + "581c" + "66".repeat(28);
+        String owners2 = "82581c" + "66".repeat(28) + "581c" + "55".repeat(28);
+        String poolTail = "80f6";
+        assertDecodingFailure("84" + body("0482" + pool + owners1 + poolTail + pool + owners2 + poolTail) + tail,
+                "duplicate certificate");
+
+        String proposal = "841a000f4240581de0" + "44".repeat(28) + "8106" + "826568747470735820" + "00".repeat(32);
+        assertThat(RawTransaction.parse(HexUtil.decodeHexString("84" + body("1481" + proposal) + tail), null)
+                .proposals()).hasSize(1);
+        assertDecodingFailure("84" + body("1482" + proposal + proposal) + tail, "duplicate proposal");
+    }
 }

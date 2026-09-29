@@ -145,6 +145,15 @@ public interface LedgerView {
     /** @return the treasury at the start of the view's epoch (never Absent) */
     Lookup<BigInteger> treasury();
 
-    /** @return the epoch-effective protocol parameters (never Absent) */
+    /**
+     * The epoch-effective protocol parameters (never Absent).
+     *
+     * <p><b>Cost models.</b> {@link ProtocolParams#getCostModelsRaw()} must hold each language's cost model as the
+     * ledger stores it ({@code costModelsValid}): the parameter list in the ledger's canonical order, keyed
+     * {@code PlutusV1}/{@code PlutusV2}/{@code PlutusV3}, with no entry for a language that has no cost model. The
+     * Java rules hash these lists into the script integrity hash's language views; the named
+     * {@code costModels} map is not used for that, and a view whose parameters carry cost models only in the named
+     * form makes such a transaction {@code ENGINE.LedgerStateUnavailable}.</p>
+     */
     Lookup<ProtocolParams> protocolParams();
 }

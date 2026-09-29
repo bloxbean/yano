@@ -91,13 +91,16 @@ class ValueBalanceTest {
 
     @Test
     void aStakeRegistrationBalancesWithItsDeposit() {
+        // A Conway registration with a deposit must be signed by the credential (getVKeyWitnessConwayTxCert).
         TxSpec paid = MutationWorld.simpleSpec();
         paid.certs.add(new RegCert(StakeCredential.fromKeyHash(OTHER_KEY), KEY_DEPOSIT));
+        paid.signers.add(TestKey.DEV_AA);
         paid.changeAdjust = KEY_DEPOSIT.negate();
         assertThat(run(paid)).containsExactly("Valid");
 
         TxSpec unpaid = MutationWorld.simpleSpec();
         unpaid.certs.add(new RegCert(StakeCredential.fromKeyHash(OTHER_KEY), KEY_DEPOSIT));
+        unpaid.signers.add(TestKey.DEV_AA);
         assertThat(run(unpaid)).containsExactly("UTXO.ValueNotConservedUTxO");
     }
 }

@@ -72,7 +72,6 @@ public final class RawTransaction {
     private static final int TX_ID_LENGTH = 32;
     private static final int VKEY_LENGTH = 32;
     private static final int SIGNATURE_LENGTH = 64;
-    private static final int CHAIN_CODE_LENGTH = 32;
 
     /** A withdrawal: the reward account bytes and the amount. */
     public record Withdrawal(byte[] rewardAccount, BigInteger amount) {
@@ -120,6 +119,17 @@ public final class RawTransaction {
     private final BigInteger donation;
     private final int proposalCount;
     private final List<RawRedeemer> redeemers;
+    private final List<VKeyWitness> vkeyWitnesses;
+    private final List<BootstrapWitness> bootstrapWitnesses;
+    private final List<RawScript> witnessScripts;
+    private final List<byte[]> datumHashes;
+    private final List<RawCertificate> certificates;
+    private final List<RawVoter> voters;
+    private final List<RawProposal> proposals;
+    private final List<byte[]> requiredSigners;
+    private final byte[] auxDataHash;
+    private final byte[] scriptDataHash;
+    private final RawAuxData auxDataContent;
     private final Transaction decoded;
 
     private RawTransaction(Builder b) {
@@ -147,6 +157,17 @@ public final class RawTransaction {
         this.donation = b.donation;
         this.proposalCount = b.proposalCount;
         this.redeemers = List.copyOf(b.redeemers);
+        this.vkeyWitnesses = List.copyOf(b.vkeyWitnesses);
+        this.bootstrapWitnesses = List.copyOf(b.bootstrapWitnesses);
+        this.witnessScripts = List.copyOf(b.witnessScripts);
+        this.datumHashes = List.copyOf(b.datumHashes);
+        this.certificates = List.copyOf(b.certificates);
+        this.voters = List.copyOf(b.voters);
+        this.proposals = List.copyOf(b.proposals);
+        this.requiredSigners = List.copyOf(b.requiredSigners);
+        this.auxDataHash = b.auxDataHash;
+        this.scriptDataHash = b.scriptDataHash;
+        this.auxDataContent = b.auxDataContent;
         this.decoded = b.decoded;
     }
 
@@ -340,6 +361,61 @@ public final class RawTransaction {
         return !redeemers.isEmpty();
     }
 
+    /** @return the vkey witnesses (witness set key 0), in encoded order */
+    public List<VKeyWitness> vkeyWitnesses() {
+        return vkeyWitnesses;
+    }
+
+    /** @return the bootstrap witnesses (witness set key 2), in encoded order */
+    public List<BootstrapWitness> bootstrapWitnesses() {
+        return bootstrapWitnesses;
+    }
+
+    /** @return the witness scripts: native (key 1), then Plutus V1, V2, V3 (keys 3, 6, 7), in encoded order */
+    public List<RawScript> witnessScripts() {
+        return witnessScripts;
+    }
+
+    /** @return the hashes of the witness set's datums (key 4), blake2b-256 of each datum's original bytes */
+    public List<byte[]> datumHashes() {
+        return datumHashes.stream().map(byte[]::clone).toList();
+    }
+
+    /** @return the certificates (body key 4), in order */
+    public List<RawCertificate> certificates() {
+        return certificates;
+    }
+
+    /** @return the voters of the voting procedures (body key 19), in Haskell's {@code Ord Voter} order */
+    public List<RawVoter> voters() {
+        return voters;
+    }
+
+    /** @return the proposal procedures (body key 20), in order */
+    public List<RawProposal> proposals() {
+        return proposals;
+    }
+
+    /** @return the required signers (body key 14), in encoded order */
+    public List<byte[]> requiredSigners() {
+        return requiredSigners.stream().map(byte[]::clone).toList();
+    }
+
+    /** @return the body's auxiliary-data hash (key 7), or null */
+    public byte[] auxDataHash() {
+        return auxDataHash != null ? auxDataHash.clone() : null;
+    }
+
+    /** @return the body's script integrity hash (key 11), or null */
+    public byte[] scriptDataHash() {
+        return scriptDataHash != null ? scriptDataHash.clone() : null;
+    }
+
+    /** @return the decoded auxiliary data, or null when the transaction has none */
+    public RawAuxData auxDataContent() {
+        return auxDataContent;
+    }
+
     /** Parser state. */
     private static final class Builder {
         private final byte[] txCbor;
@@ -366,6 +442,17 @@ public final class RawTransaction {
         private BigInteger donation = BigInteger.ZERO;
         private int proposalCount;
         private final List<RawRedeemer> redeemers = new ArrayList<>();
+        private final List<VKeyWitness> vkeyWitnesses = new ArrayList<>();
+        private final List<BootstrapWitness> bootstrapWitnesses = new ArrayList<>();
+        private final List<RawScript> witnessScripts = new ArrayList<>();
+        private final List<byte[]> datumHashes = new ArrayList<>();
+        private final List<RawCertificate> certificates = new ArrayList<>();
+        private final List<RawVoter> voters = new ArrayList<>();
+        private final List<RawProposal> proposals = new ArrayList<>();
+        private final List<byte[]> requiredSigners = new ArrayList<>();
+        private byte[] auxDataHash;
+        private byte[] scriptDataHash;
+        private RawAuxData auxDataContent;
 
         Builder(byte[] txCbor, Transaction decoded) {
             this.txCbor = txCbor;
@@ -398,6 +485,9 @@ public final class RawTransaction {
             }
             readBody();
             readWitnessSet();
+            if (auxData != null) {
+                auxDataContent = RawAuxData.decode(auxData.copy(txCbor));
+            }
         }
 
         /**
@@ -464,10 +554,10 @@ public final class RawTransaction {
                 networkId = (int) network;
             }
             if (optional(BODY_AUX_DATA_HASH)) {
-                hash(field(BODY_AUX_DATA_HASH).readBytes(), 32, "auxiliary data hash");
+                auxDataHash = hash(field(BODY_AUX_DATA_HASH).readBytes(), 32, "auxiliary data hash");
             }
             if (optional(BODY_SCRIPT_DATA_HASH)) {
-                hash(field(BODY_SCRIPT_DATA_HASH).readBytes(), 32, "script integrity hash");
+                scriptDataHash = hash(field(BODY_SCRIPT_DATA_HASH).readBytes(), 32, "script integrity hash");
             }
             if (optional(BODY_REQUIRED_SIGNERS)) {
                 CborReader r = field(BODY_REQUIRED_SIGNERS);
@@ -480,6 +570,7 @@ public final class RawTransaction {
                     if (!seen.add(HexUtil.encodeHexString(signer))) {
                         throw new TxDecodingException("duplicate required signer");
                     }
+                    requiredSigners.add(signer);
                 }
                 nonEmpty(n == 0, "Required Signer Hashes");
             }
@@ -495,31 +586,88 @@ public final class RawTransaction {
                 throw new TxDecodingException("TxBody: 'Treasury Donation' must be non-zero when supplied");
             }
             if (optional(BODY_CERTS)) {
-                nonEmpty(countSet(BODY_CERTS) == 0, "Certificates");
+                // An OSet: decodeOSet rejects two equal certificates (decodeSetLikeEnforceNoDuplicates).
+                CborReader c = field(BODY_CERTS);
+                c.skipTag(SET_TAG);
+                long count = c.readArrayHeader();
+                Set<String> seen = new HashSet<>();
+                for (int i = 0; c.hasNext(count, i); i++) {
+                    int start = c.position();
+                    RawCertificate cert = RawCertificate.read(c, i);
+                    if (!seen.add(key(new CborSlice(start, c.position()), cert.tag() == 3 ? 7 : -1, -1))) {
+                        throw new TxDecodingException("duplicate certificate " + i);
+                    }
+                    certificates.add(cert);
+                }
+                nonEmpty(certificates.isEmpty(), "Certificates");
             }
             if (optional(BODY_VOTING_PROCEDURES)) {
+                // voting_procedures = {+ voter => {+ gov_action_id => voting_procedure}}; decodeMap rejects
+                // duplicate voters from version 9.
                 CborReader v = field(BODY_VOTING_PROCEDURES);
-                long voters = v.readMapHeader();
-                nonEmpty(voters == 0 || (voters == CborReader.INDEFINITE && !v.hasNext(voters, 0)),
-                        "VotingProcedures");
+                long count = v.readMapHeader();
+                TreeSet<RawVoter> seen = new TreeSet<>();
+                for (long i = 0; v.hasNext(count, i); i++) {
+                    RawVoter voter = RawVoter.read(v);
+                    if (!seen.add(voter)) {
+                        throw new TxDecodingException("duplicate voter " + voter);
+                    }
+                    v.skip();
+                }
+                nonEmpty(seen.isEmpty(), "VotingProcedures");
+                voters.addAll(seen);
             }
             if (optional(BODY_PROPOSAL_PROCEDURES)) {
-                proposalCount = countSet(BODY_PROPOSAL_PROCEDURES);
+                // An OSet too: two equal proposal procedures do not decode.
+                CborReader p = field(BODY_PROPOSAL_PROCEDURES);
+                p.skipTag(SET_TAG);
+                long count = p.readArrayHeader();
+                Set<String> seen = new HashSet<>();
+                for (int i = 0; p.hasNext(count, i); i++) {
+                    int start = p.position();
+                    RawProposal proposal = RawProposal.read(p, i);
+                    // [deposit, account, gov_action, anchor]; an update-committee action [4, prev, set, map, q]
+                    // holds a set at position 2
+                    if (!seen.add(key(new CborSlice(start, p.position()), -1, proposal.actionTag() == 4 ? 2 : -1))) {
+                        throw new TxDecodingException("duplicate proposal procedure " + i);
+                    }
+                    proposals.add(proposal);
+                }
+                proposalCount = proposals.size();
                 nonEmpty(proposalCount == 0, "ProposalProcedures");
             }
         }
 
-        /** @return the number of elements of a (possibly tag-258) set or list field */
-        private int countSet(int key) {
-            CborReader p = field(key);
-            p.skipTag(SET_TAG);
-            long count = p.readArrayHeader();
-            int n = 0;
-            while (p.hasNext(count, n)) {
-                p.skip();
-                n++;
+        /**
+         * The equality key of a decoded certificate or proposal ({@link CborCanonical}): its canonical encoding,
+         * with an untagged set sorted too — at position {@code setAt} of the item (a pool registration's owners), or
+         * at position {@code actionSetAt} of the proposal's governance action (an update committee's removals).
+         */
+        private String key(CborSlice slice, int setAt, int actionSetAt) {
+            if (setAt < 0 && actionSetAt < 0) {
+                return HexUtil.encodeHexString(CborCanonical.of(txCbor, slice));
             }
-            return n;
+            StringBuilder key = new StringBuilder();
+            CborReader r = new CborReader(txCbor, slice);
+            long n = r.readArrayHeader();
+            for (int i = 0; r.hasNext(n, i); i++) {
+                CborSlice element = r.readItem();
+                if (i == setAt) {
+                    key.append(HexUtil.encodeHexString(CborCanonical.set(txCbor, element)));
+                } else if (i == 2 && actionSetAt >= 0) {
+                    CborReader a = new CborReader(txCbor, element);
+                    long m = a.readArrayHeader();
+                    for (int j = 0; a.hasNext(m, j); j++) {
+                        CborSlice part = a.readItem();
+                        key.append(HexUtil.encodeHexString(j == actionSetAt ? CborCanonical.set(txCbor, part)
+                                : CborCanonical.of(txCbor, part))).append(',');
+                    }
+                } else {
+                    key.append(HexUtil.encodeHexString(CborCanonical.of(txCbor, element)));
+                }
+                key.append('|');
+            }
+            return key.toString();
         }
 
         private static void nonEmpty(boolean empty, String field) {
@@ -612,18 +760,39 @@ public final class RawTransaction {
                 }
             }
             if (witnessFields.containsKey(WITNESS_VKEYS)) {
-                forEachWitness(WITNESS_VKEYS, w -> {
-                    checkLength(w.readBytes(), VKEY_LENGTH, "vkey");
-                    checkLength(w.readBytes(), SIGNATURE_LENGTH, "vkey witness signature");
-                });
+                forEachWitness(WITNESS_VKEYS, w -> vkeyWitnesses.add(new VKeyWitness(
+                        checkLength(w.readBytes(), VKEY_LENGTH, "vkey"),
+                        checkLength(w.readBytes(), SIGNATURE_LENGTH, "vkey witness signature"))));
             }
             if (witnessFields.containsKey(WITNESS_BOOTSTRAP)) {
-                forEachWitness(WITNESS_BOOTSTRAP, w -> {
-                    checkLength(w.readBytes(), VKEY_LENGTH, "bootstrap witness vkey");
-                    checkLength(w.readBytes(), SIGNATURE_LENGTH, "bootstrap witness signature");
-                    checkLength(w.readBytes(), CHAIN_CODE_LENGTH, "bootstrap witness chain code");
-                    w.readBytes();
-                });
+                // The chain code is checked to be 32 bytes only from protocol version 12 (Keys/Bootstrap.hs:72-78).
+                forEachWitness(WITNESS_BOOTSTRAP, w -> bootstrapWitnesses.add(new BootstrapWitness(
+                        checkLength(w.readBytes(), VKEY_LENGTH, "bootstrap witness vkey"),
+                        checkLength(w.readBytes(), SIGNATURE_LENGTH, "bootstrap witness signature"),
+                        w.readBytes(),
+                        w.readBytes())));
+            }
+            if (witnessFields.containsKey(WITNESS_NATIVE_SCRIPTS)) {
+                // nativeScriptsDecoder at version 9: a non-empty list (duplicates collapse in Map.fromList).
+                CborReader list = new CborReader(txCbor, witnessFields.get(WITNESS_NATIVE_SCRIPTS));
+                list.skipTag(SET_TAG);
+                long count = list.readArrayHeader();
+                for (long i = 0; list.hasNext(count, i); i++) {
+                    RawScript script = new RawScript(RawScript.NATIVE, list.copy(list.readItem()));
+                    script.timelock();
+                    witnessScripts.add(script);
+                }
+            }
+            readPlutusScripts(WITNESS_PLUTUS_V1, RawScript.PLUTUS_V1);
+            readPlutusScripts(WITNESS_PLUTUS_V2, RawScript.PLUTUS_V2);
+            readPlutusScripts(WITNESS_PLUTUS_V3, RawScript.PLUTUS_V3);
+            if (witnessFields.containsKey(WITNESS_DATUMS)) {
+                CborReader list = new CborReader(txCbor, witnessFields.get(WITNESS_DATUMS));
+                list.skipTag(SET_TAG);
+                long count = list.readArrayHeader();
+                for (long i = 0; list.hasNext(count, i); i++) {
+                    datumHashes.add(Hashes.blake2b256(list.copy(list.readItem())));
+                }
             }
             if (witnessFields.containsKey(WITNESS_REDEEMERS)) {
                 readRedeemers(new CborReader(txCbor, witnessFields.get(WITNESS_REDEEMERS)));
@@ -631,13 +800,39 @@ public final class RawTransaction {
         }
 
         /**
+         * {@code scriptDecoderV9} (Alonzo/TxWits.hs:741-751): a list or tag-258 set of Plutus binaries, not empty,
+         * with no two scripts of the same hash ({@code decodeMapLikeEnforceNoDuplicates}).
+         */
+        private void readPlutusScripts(int key, int language) {
+            if (!witnessFields.containsKey(key)) {
+                return;
+            }
+            CborReader list = new CborReader(txCbor, witnessFields.get(key));
+            list.skipTag(SET_TAG);
+            long count = list.readArrayHeader();
+            Set<String> seen = new HashSet<>();
+            int n = 0;
+            for (; list.hasNext(count, n); n++) {
+                RawScript script = new RawScript(language, list.readBytes());
+                if (!seen.add(script.hashHex())) {
+                    throw new TxDecodingException("duplicate PlutusV" + language + " script " + script.hashHex());
+                }
+                witnessScripts.add(script);
+            }
+            if (n == 0) {
+                throw new TxDecodingException("Empty list of scripts is not allowed");
+            }
+        }
+
+        /**
          * Haskell decodes VKeys and signatures at their fixed sizes; any other length is a decoding failure
          * ({@code VKey}/{@code SignedDSIGN} {@code DecCBOR}; Amaru scenarios 00077, 00078, 00080).
          */
-        private static void checkLength(byte[] value, int expected, String what) {
+        private static byte[] checkLength(byte[] value, int expected, String what) {
             if (value.length != expected) {
                 throw new TxDecodingException(what + " of " + value.length + " bytes, expected " + expected);
             }
+            return value;
         }
 
         private void forEachWitness(int key, Consumer<CborReader> body) {

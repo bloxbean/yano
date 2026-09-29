@@ -3,8 +3,13 @@ package org.yanoproject.ledger.conformance.mutation;
 import com.bloxbean.cardano.client.common.model.Networks;
 import com.bloxbean.cardano.client.metadata.cbor.CBORMetadata;
 import com.bloxbean.cardano.client.metadata.cbor.CBORMetadataList;
+import com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData;
+import com.bloxbean.cardano.client.plutus.spec.ExUnits;
+import com.bloxbean.cardano.client.plutus.spec.Redeemer;
+import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
 
 import org.yanoproject.ledger.conformance.runner.ConformanceCase;
@@ -31,8 +36,8 @@ import static org.yanoproject.ledger.conformance.mutation.Mutation.Base.SIMPLE;
 
 /**
  * The mutation matrix: the base transactions and their single-fault mutants (ADR-056 §8). Phase 2 covers the
- * UTXO and UTXOW basics, Phase 3a every UTXO and UTXOS constructor a transaction edit can produce; Phases 3b–5 add
- * the rest.
+ * UTXO and UTXOW basics, Phase 3a every UTXO and UTXOS constructor a transaction edit can produce, Phase 3b every
+ * UTXOW constructor the protocol version 10 world can produce; Phases 4–5 add the rest.
  */
 public final class Mutations {
 
@@ -148,7 +153,70 @@ public final class Mutations {
                     }),
             new Mutation("passed-unexpectedly", "UTXOS.ValidationTagMismatch", List.of(), SCRIPT,
                     "is_valid = false although the always-succeeds script passes",
-                    s -> s.isValid = false));
+                    s -> s.isValid = false),
+            // ---- Phase 3b: UTXOW
+            new Mutation("missing-script-witness", "UTXOW.MissingScriptWitnessesUTXOW", List.of(), SIMPLE,
+                    "also spends the native-script-locked UTxO without providing its script",
+                    s -> s.inputs.add(MutationWorld.NATIVE_INPUT)),
+            new Mutation("native-script-not-validating", "UTXOW.ScriptWitnessNotValidatingUTXOW", List.of(), SIMPLE,
+                    "also spends the UTxO locked by a native script valid from slot SLOT + 5000, with no validity "
+                            + "start",
+                    s -> {
+                        s.inputs.add(MutationWorld.TIMELOCK_INPUT);
+                        s.nativeScripts.add(MutationWorld.TIMELOCK_SCRIPT);
+                    }),
+            new Mutation("unspendable-no-datum", "UTXOW.UnspendableUTxONoDatumHash", List.of(), SCRIPT,
+                    "spends a PlutusV2-locked UTxO that has no datum (CIP-69 exempts PlutusV3 only)",
+                    s -> {
+                        s.inputs.set(1, MutationWorld.V2_SCRIPT_INPUT);
+                        s.plutusScripts.clear();
+                        s.plutusV2Scripts.add(MutationWorld.ALWAYS_SUCCEEDS_V2);
+                    }),
+            new Mutation("missing-required-datum", "UTXOW.MissingRequiredDatums", List.of(), SCRIPT,
+                    "spends the PlutusV3-locked UTxO with a datum hash without providing the datum",
+                    s -> s.inputs.set(1, MutationWorld.DATUM_SCRIPT_INPUT)),
+            new Mutation("not-allowed-supplemental-datum", "UTXOW.NotAllowedSupplementalDatums", List.of(), SIMPLE,
+                    "a witness datum that no input needs and no output or reference input names (integrity hash "
+                            + "included)",
+                    s -> s.datums.add(MutationWorld.DATUM)),
+            new Mutation("extra-redeemer", "UTXOW.ExtraRedeemers", List.of(), SCRIPT,
+                    "an additional minting redeemer although nothing is minted (fee paid)",
+                    s -> s.redeemers.add(mintRedeemer())),
+            new Mutation("missing-redeemer", "UTXOW.MissingRedeemers", HaskellFailureLists.MISSING_REDEEMER, SCRIPT,
+                    "the script transaction without its redeemer (not a single fault: the script context collection "
+                            + "also reports NoRedeemer)",
+                    s -> s.redeemers.clear()),
+            new Mutation("script-integrity-hash", "UTXOW.PPViewHashesDontMatch", List.of(), SCRIPT,
+                    "one bit of the body's script integrity hash flipped (protocol version 10)",
+                    s -> s.corruptScriptDataHash = true),
+            new Mutation("malformed-script-witness", "UTXOW.MalformedScriptWitnesses", List.of(), SCRIPT,
+                    "spends the UTxO locked by a PlutusV3 script whose bytes are not a program, with that script",
+                    s -> {
+                        s.inputs.set(1, MutationWorld.MALFORMED_SCRIPT_INPUT);
+                        s.plutusScripts.set(0, MutationWorld.MALFORMED_SCRIPT);
+                    }),
+            new Mutation("script-trailing-bytes", "UTXOW.MalformedScriptWitnesses", List.of(), SCRIPT,
+                    "spends the UTxO of a PlutusV3 script whose CBOR byte string is followed by one more byte "
+                            + "(deserialiseScript's RemainderError), with that script",
+                    s -> {
+                        s.inputs.set(1, MutationWorld.TRAILING_BYTES_SCRIPT_INPUT);
+                        s.plutusScripts.set(0, MutationWorld.TRAILING_BYTES_SCRIPT);
+                    },
+                    Mutation.AMARU_ACCEPTS),
+            new Mutation("script-unavailable-builtin", "UTXOW.MalformedScriptWitnesses", List.of(), SCRIPT,
+                    "spends the UTxO of a PlutusV3 script using expModInteger, available only from protocol "
+                            + "version 11 (builtinsAvailableIn), with that script",
+                    s -> {
+                        s.inputs.set(1, MutationWorld.UNAVAILABLE_BUILTIN_SCRIPT_INPUT);
+                        s.plutusScripts.set(0, MutationWorld.UNAVAILABLE_BUILTIN_SCRIPT);
+                    }),
+            new Mutation("malformed-reference-script", "UTXOW.MalformedReferenceScripts", List.of(), SIMPLE,
+                    "the payment output carries a PlutusV3 reference script whose bytes are not a program",
+                    s -> s.outputs.set(0, withScriptRef(MutationWorld.output(
+                            TestKey.DEV_AA.enterpriseAddress(MutationWorld.NETWORK), PAYMENT)))),
+            new Mutation("invalid-metadata", "UTXOW.InvalidMetadata", List.of(), SIMPLE,
+                    "auxiliary data (hash included) carrying a PlutusV3 script whose bytes are not a program",
+                    s -> s.auxPlutusScripts.add(MutationWorld.MALFORMED_SCRIPT)));
 
     private Mutations() {
     }
@@ -211,6 +279,24 @@ public final class Mutations {
         char[] id = new char[64];
         Arrays.fill(id, '9');
         return new TransactionInput(new String(id), 0);
+    }
+
+    private static Redeemer mintRedeemer() {
+        return Redeemer.builder()
+                .tag(RedeemerTag.Mint)
+                .index(BigInteger.ZERO)
+                .data(ConstrPlutusData.of(0))
+                .exUnits(ExUnits.builder().mem(BigInteger.valueOf(1_000)).steps(BigInteger.valueOf(1_000_000)).build())
+                .build();
+    }
+
+    private static TransactionOutput withScriptRef(TransactionOutput output) {
+        try {
+            output.setScriptRef(MutationWorld.MALFORMED_SCRIPT.scriptRefBytes());
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        return output;
     }
 
     private static CBORMetadata smallMetadata() {

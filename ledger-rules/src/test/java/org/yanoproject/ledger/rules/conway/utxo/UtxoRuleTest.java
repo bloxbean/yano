@@ -171,11 +171,11 @@ class UtxoRuleTest {
         assertThat(run(spending)).containsExactly("UTXO.BadInputsUTxO");
 
         TxSpec reference = MutationWorld.simpleSpec();
-        reference.referenceInputs.add(phantom('a'));
+        reference.referenceInputs.add(phantom('0'));
         assertThat(run(reference)).containsExactly("UTXO.BadInputsUTxO");
 
         TxSpec collateral = MutationWorld.scriptSpec();
-        collateral.collateral.add(phantom('b'));
+        collateral.collateral.add(phantom('c'));
         assertThat(run(collateral)).containsExactly("UTXO.BadInputsUTxO");
     }
 

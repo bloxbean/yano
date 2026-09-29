@@ -4,6 +4,8 @@ import org.yanoproject.ledger.rules.util.CborItems;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A forward-only reader over encoded CBOR (RFC 8949) that decodes just the heads, integers and byte strings the
@@ -22,6 +24,7 @@ public final class CborReader {
     private static final int MAJOR_UNSIGNED = 0;
     private static final int MAJOR_NEGATIVE = 1;
     private static final int MAJOR_BYTES = 2;
+    private static final int MAJOR_TEXT = 3;
     private static final int MAJOR_ARRAY = 4;
     private static final int MAJOR_MAP = 5;
     private static final int MAJOR_TAG = 6;
@@ -166,6 +169,29 @@ public final class CborReader {
         return definiteBytes(initial);
     }
 
+    /**
+     * @return a text string's chunks as UTF-8 bytes: one chunk for a definite string, every chunk of an indefinite
+     *         one (each a definite text string, RFC 8949 §3.2.3)
+     */
+    public List<byte[]> readTextChunks() {
+        int initial = next();
+        expectMajor(initial, MAJOR_TEXT, "text string");
+        if ((initial & 0x1f) != 31) {
+            return List.of(definiteBytes(initial));
+        }
+        List<byte[]> chunks = new ArrayList<>();
+        while (peek() != 0xff) {
+            int chunk = next();
+            if (chunk >>> 5 != MAJOR_TEXT || (chunk & 0x1f) == 31) {
+                throw new TxDecodingException("an indefinite text string chunk must be a definite text string at "
+                        + (pos - 1));
+            }
+            chunks.add(definiteBytes(chunk));
+        }
+        pos++;
+        return chunks;
+    }
+
     private byte[] definiteBytes(int initial) {
         long length = argument(initial & 0x1f);
         if (length > end - pos) {
@@ -208,6 +234,11 @@ public final class CborReader {
         }
         pos = stop;
         return new CborSlice(start, stop);
+    }
+
+    /** @return a copy of the bytes of {@code slice}, a range of this reader's input */
+    public byte[] copy(CborSlice slice) {
+        return slice.copy(data);
     }
 
     /** Skips the next data item. */

@@ -14,6 +14,8 @@ import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.conway.tx.RawScript;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenarioLoader;
 import org.yanoproject.api.util.EpochSlotCalc;
@@ -94,6 +96,32 @@ class ScalusScriptPhaseEvaluatorTest {
         assertThat(result).isInstanceOf(ScriptPhaseResult.Rejected.class);
         assertThat(((ScriptPhaseResult.Rejected) result).failures()).extracting(LedgerFailure::qualifiedName)
                 .containsExactly("UTXOW.MalformedReferenceScripts");
+    }
+
+    /**
+     * The Java engine's {@code UTXOW} judges well-formedness itself (ADR-056 Phase 3b): {@code collect} leaves the
+     * malformed-script failures out, and {@code isWellFormed} gives the judgement per script.
+     */
+    @Test
+    void collectLeavesMalformedScriptsToTheEngineWhichAsksIsWellFormed() throws Exception {
+        AmaruScenario scenario = scenario("00256");
+        Transaction tx = Transaction.deserialize(scenario.txCbor());
+        Map<Outpoint, UtxoEntry> resolved = new LinkedHashMap<>();
+        for (TransactionInput input : allInputs(tx)) {
+            Outpoint outpoint = Outpoints.normalize(new Outpoint(input.getTransactionId(), input.getIndex()));
+            scenario.view().utxo(outpoint).orElseThrowUnavailable().ifPresent(e -> resolved.put(outpoint, e));
+        }
+        List<LedgerFailure> collected = evaluator.collect(scenario.txCbor(), tx, resolved, scenario.protocolParams(),
+                scenario.env().slotConfig(), -1);
+        assertThat(collected).noneMatch(f -> f.qualifiedName().startsWith("UTXOW."));
+
+        RawScript malformed = RawTransaction.parse(scenario.txCbor(), tx).witnessScripts().stream()
+                .filter(RawScript::isPlutus).findFirst().orElseThrow();
+        assertThat(evaluator.isWellFormed(malformed.language(), malformed.bytes(), 10)).isFalse();
+        // (program 1.1.0 (lam ctx (con unit ()))) is a well-formed PlutusV3 program
+        byte[] alwaysSucceeds = HexUtil.decodeHexString("450101002499");
+        assertThat(evaluator.isWellFormed(3, alwaysSucceeds, 10)).isTrue();
+        assertThat(evaluator.isWellFormed(3, HexUtil.decodeHexString("01020304"), 10)).isFalse();
     }
 
     @Test

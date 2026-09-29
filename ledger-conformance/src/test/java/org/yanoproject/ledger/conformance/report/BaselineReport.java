@@ -118,7 +118,7 @@ public final class BaselineReport {
                 .append("scenario or mutant that expects them (where Haskell always reports a fault with several ")
                 .append("constructors, any of them counts). The scenarios and mutants can demonstrate ")
                 .append(demonstrable().size()).append(" of the ").append(catalogue.inScope().size())
-                .append(" constructors; the rest need Phase 3–5 mutants.\n\n");
+                .append(" constructors; the rest need Phase 4–5 mutants or are covered by unit tests only.\n\n");
     }
 
     private void families(StringBuilder md) {

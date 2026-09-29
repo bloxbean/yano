@@ -14,6 +14,11 @@ import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.client.crypto.Base58;
 import com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.ExUnits;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.metadata.cbor.CBORMetadata;
+import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
+import com.bloxbean.cardano.client.plutus.spec.PlutusData;
+import com.bloxbean.cardano.client.plutus.spec.PlutusV2Script;
 import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
@@ -23,6 +28,10 @@ import com.bloxbean.cardano.client.transaction.spec.MultiAsset;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Value;
+import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
+import com.bloxbean.cardano.client.transaction.spec.script.RequireTimeAfter;
+import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
+import com.bloxbean.cardano.client.spec.Script;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.ValidationEnv;
@@ -30,6 +39,7 @@ import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
 
 import java.math.BigDecimal;
+import java.security.MessageDigest;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,11 +62,21 @@ import java.util.zip.CRC32;
  *   <li>{@link #SMALL_COLLATERAL_INPUT}: 0.2 ADA at {@code dev-42}'s address;</li>
  *   <li>{@link #MANY_ASSETS_INPUT}: 10 ADA and {@value #MANY_ASSETS} tokens with 32-byte names at {@code dev-42}'s
  *       address (enough to exceed {@code maxValSize} when they move to one output);</li>
- *   <li>{@link #FAIL_SCRIPT_INPUT}: 10 ADA at the enterprise address of {@link #ALWAYS_FAILS}.</li>
+ *   <li>{@link #FAIL_SCRIPT_INPUT}: 10 ADA at the enterprise address of {@link #ALWAYS_FAILS};</li>
+ *   <li>{@link #V2_SCRIPT_INPUT}: 10 ADA at the address of {@link #ALWAYS_SUCCEEDS_V2}, without a datum;</li>
+ *   <li>{@link #DATUM_SCRIPT_INPUT}: 10 ADA at the always-succeeds (PlutusV3) address with the datum hash of
+ *       {@link #DATUM} (the integer 42);</li>
+ *   <li>{@link #NATIVE_INPUT}: 10 ADA at the address of {@link #NATIVE_SCRIPT} ({@code dev-42} signs);</li>
+ *   <li>{@link #TIMELOCK_INPUT}: 10 ADA at the address of {@link #TIMELOCK_SCRIPT} (valid from slot
+ *       {@code SLOT + 5000} only);</li>
+ *   <li>{@link #MALFORMED_SCRIPT_INPUT}: 10 ADA at the address of {@link #MALFORMED_SCRIPT};</li>
+ *   <li>{@link #TRAILING_BYTES_SCRIPT_INPUT} and {@link #UNAVAILABLE_BUILTIN_SCRIPT_INPUT}: 10 ADA each at the
+ *       addresses of {@link #TRAILING_BYTES_SCRIPT} and {@link #UNAVAILABLE_BUILTIN_SCRIPT};</li>
+ *   <li>{@link #BYRON_INPUT}: 10 ADA at {@code dev-42}'s bootstrap address.</li>
  * </ul>
  *
  * <p>The protocol parameters are preprod's Conway values (the same numbers as Amaru's
- * {@code preprod-conway-v10} parameters) with CCL's PlutusV3 cost model.</p>
+ * {@code preprod-conway-v10} parameters) with CCL's PlutusV2 and PlutusV3 cost models.</p>
  */
 public final class MutationWorld {
 
@@ -75,6 +95,37 @@ public final class MutationWorld {
             .cborHex("454401010061")
             .build();
 
+    /** An always-succeeding PlutusV2 script: Amaru's corpus script {@code 52c6af0c…}. */
+    public static final PlutusV2Script ALWAYS_SUCCEEDS_V2 = PlutusV2Script.builder()
+            .type("PlutusScriptV2")
+            .cborHex("4746010000222499")
+            .build();
+
+    /** A PlutusV3 "script" whose bytes are not a flat-encoded program: not well formed. */
+    public static final PlutusV3Script MALFORMED_SCRIPT = PlutusV3Script.builder()
+            .type("PlutusScriptV3")
+            .cborHex("4401020304")
+            .build();
+
+    /** The always-succeeds PlutusV3 program followed by one more byte: a PlutusV3 {@code RemainderError}. */
+    public static final PlutusV3Script TRAILING_BYTES_SCRIPT = PlutusV3Script.builder()
+            .type("PlutusScriptV3")
+            .cborHex("4745010100249900")
+            .build();
+
+    /** {@code (program 1.0.0 (lam x (builtin expModInteger)))}: builtin 87 is PlutusV3's only from version 11. */
+    public static final PlutusV3Script UNAVAILABLE_BUILTIN_SCRIPT = PlutusV3Script.builder()
+            .type("PlutusScriptV3")
+            .cborHex("464501000027af")
+            .build();
+
+    /** A native script satisfied by {@code dev-42}'s signature. */
+    public static final NativeScript NATIVE_SCRIPT = new ScriptPubkey(TestKey.DEV_42.keyHash());
+    /** A native script valid only from slot {@code SLOT + 5000}. */
+    public static final NativeScript TIMELOCK_SCRIPT = new RequireTimeAfter(SLOT + 5_000);
+    /** The datum locking {@link #DATUM_SCRIPT_INPUT}: the integer 42 (hash {@code 9e1199a9…}). */
+    public static final PlutusData DATUM = BigIntPlutusData.of(42);
+
     public static final TransactionInput KEY_INPUT = input('1', 0);
     public static final TransactionInput SCRIPT_INPUT = input('2', 0);
     public static final TransactionInput SCRIPT_COLLATERAL_INPUT = input('4', 0);
@@ -82,6 +133,19 @@ public final class MutationWorld {
     public static final TransactionInput SMALL_COLLATERAL_INPUT = input('6', 0);
     public static final TransactionInput MANY_ASSETS_INPUT = input('7', 0);
     public static final TransactionInput FAIL_SCRIPT_INPUT = input('8', 0);
+    public static final TransactionInput V2_SCRIPT_INPUT = input('a', 0);
+    public static final TransactionInput DATUM_SCRIPT_INPUT = input('b', 0);
+    public static final TransactionInput NATIVE_INPUT = input('d', 0);
+    public static final TransactionInput TIMELOCK_INPUT = input('e', 0);
+    public static final TransactionInput MALFORMED_SCRIPT_INPUT = input('f', 0);
+    public static final TransactionInput BYRON_INPUT = input('1', 1);
+    public static final TransactionInput TRAILING_BYTES_SCRIPT_INPUT = input('9', 1);
+    public static final TransactionInput UNAVAILABLE_BUILTIN_SCRIPT_INPUT = input('9', 2);
+
+    /** The chain code of the world's bootstrap addresses (32 zero bytes). */
+    public static final byte[] BOOTSTRAP_CHAIN_CODE = new byte[32];
+    /** The attributes of the world's bootstrap addresses: {@code {2: bytes(cbor 1)}}, a testnet network magic. */
+    public static final byte[] BOOTSTRAP_ATTRIBUTES = HexUtil.decodeHexString("a1024101");
 
     /** The payment the base transactions make. */
     public static final BigInteger PAYMENT = BigInteger.valueOf(10_000_000);
@@ -121,6 +185,25 @@ public final class MutationWorld {
         return AddressProvider.getEntAddress(ALWAYS_FAILS, NETWORK).toBech32();
     }
 
+    /** @return small metadata: label 674, one short text */
+    public static CBORMetadata smallMetadata() {
+        return new CBORMetadata().put(BigInteger.valueOf(674), "ADR-056 mutation matrix");
+    }
+
+    /** @return the enterprise address of a script */
+    public static String address(Script script) {
+        return AddressProvider.getEntAddress(script, NETWORK).toBech32();
+    }
+
+    /** @return blake2b-256 of a datum's CCL encoding */
+    public static byte[] datumHash(PlutusData datum) {
+        try {
+            return Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(datum.serialize()));
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** @return the base state */
     public static InMemoryLedgerView view() {
         return builder(protocolParams()).build();
@@ -149,6 +232,17 @@ public final class MutationWorld {
         many.getValue().setMultiAssets(new ArrayList<>(List.of(assets(MANY_ASSETS, 32))));
         utxo(view, MANY_ASSETS_INPUT, many);
         utxo(view, FAIL_SCRIPT_INPUT, output(failingScriptAddress(), SCRIPT_INPUT_LOVELACE));
+        utxo(view, V2_SCRIPT_INPUT, output(address(ALWAYS_SUCCEEDS_V2), SCRIPT_INPUT_LOVELACE));
+        TransactionOutput withDatum = output(scriptAddress(), SCRIPT_INPUT_LOVELACE);
+        withDatum.setDatumHash(datumHash(DATUM));
+        utxo(view, DATUM_SCRIPT_INPUT, withDatum);
+        utxo(view, NATIVE_INPUT, output(address(NATIVE_SCRIPT), SCRIPT_INPUT_LOVELACE));
+        utxo(view, TIMELOCK_INPUT, output(address(TIMELOCK_SCRIPT), SCRIPT_INPUT_LOVELACE));
+        utxo(view, MALFORMED_SCRIPT_INPUT, output(address(MALFORMED_SCRIPT), SCRIPT_INPUT_LOVELACE));
+        utxo(view, BYRON_INPUT, output(bootstrapAddress(TestKey.DEV_42), SCRIPT_INPUT_LOVELACE));
+        utxo(view, TRAILING_BYTES_SCRIPT_INPUT, output(address(TRAILING_BYTES_SCRIPT), SCRIPT_INPUT_LOVELACE));
+        utxo(view, UNAVAILABLE_BUILTIN_SCRIPT_INPUT, output(address(UNAVAILABLE_BUILTIN_SCRIPT),
+                SCRIPT_INPUT_LOVELACE));
         return view;
     }
 
@@ -241,6 +335,37 @@ public final class MutationWorld {
         }
     }
 
+    /**
+     * The Byron (bootstrap) address of {@code key} with {@link #BOOTSTRAP_CHAIN_CODE} and
+     * {@link #BOOTSTRAP_ATTRIBUTES}: its root is {@code blake2b-224(sha3-256([0, [0, vkey ‖ chain code],
+     * attributes]))}, which Haskell's {@code bootstrapWitKeyHash} reproduces from a bootstrap witness.
+     *
+     * @return the base58 address
+     */
+    public static String bootstrapAddress(TestKey key) {
+        try {
+            byte[] spending = new byte[6 + 64 + BOOTSTRAP_ATTRIBUTES.length];
+            byte[] prefix = {(byte) 0x83, 0x00, (byte) 0x82, 0x00, 0x58, 0x40};
+            System.arraycopy(prefix, 0, spending, 0, 6);
+            System.arraycopy(key.verificationKey(), 0, spending, 6, 32);
+            System.arraycopy(BOOTSTRAP_CHAIN_CODE, 0, spending, 38, 32);
+            System.arraycopy(BOOTSTRAP_ATTRIBUTES, 0, spending, 70, BOOTSTRAP_ATTRIBUTES.length);
+            byte[] root = Blake2bUtil.blake2bHash224(MessageDigest.getInstance("SHA3-256").digest(spending));
+            byte[] payload = HexUtil.decodeHexString("83581c" + HexUtil.encodeHexString(root)
+                    + HexUtil.encodeHexString(BOOTSTRAP_ATTRIBUTES) + "00");
+            ByteString wrapped = new ByteString(payload);
+            wrapped.setTag(24);
+            CRC32 crc = new CRC32();
+            crc.update(payload);
+            Array address = new Array();
+            address.add(wrapped);
+            address.add(new UnsignedInteger(crc.getValue()));
+            return Base58.encode(CborSerializationUtil.serialize(address));
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot build a bootstrap address", e);
+        }
+    }
+
     public static ValidationEnv env() {
         return new ValidationEnv(SLOT, SLOT / EPOCH_LENGTH, 10, 0, NetworkId.TESTNET,
                 new SlotConfig(1000, 0, SYSTEM_START_MS), new byte[32]);
@@ -257,6 +382,7 @@ public final class MutationWorld {
 
     public static ProtocolParams protocolParams() {
         LinkedHashMap<String, List<Long>> costModels = new LinkedHashMap<>();
+        costModels.put("PlutusV2", LongStream.of(CostModelUtil.PlutusV2CostModel.getCosts()).boxed().toList());
         costModels.put("PlutusV3", LongStream.of(CostModelUtil.plutusV3Costs).boxed().toList());
         return ProtocolParams.builder()
                 .minFeeA(44)

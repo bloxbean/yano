@@ -13,28 +13,36 @@ import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
 import org.yanoproject.ledger.rules.phase2.ForecastHorizon;
 import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
-import java.math.BigInteger;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The Java engine with the real Scalus evaluator on {@code UTXOS.CollectErrors} cases the mutation matrix cannot
- * hold as single faults (Haskell also reports a {@code UTXOW} failure for them, which Phase 3b adds).
+ * hold as single faults (Haskell reports {@code UTXOW} failures with them).
  */
 class JavaEngineScriptPreparationTest {
 
     private static final ScalusScriptPhaseEvaluator EVALUATOR = new ScalusScriptPhaseEvaluator(
             ForecastHorizon.of(() -> 129_600, new EpochSlotCalc(432_000, 432_000, 0)));
 
-    /** A needed Plutus script without a redeemer: {@code CollectErrors [NoRedeemer]} (Evaluate.hs:151-155). */
+    /**
+     * A needed Plutus script without a redeemer: {@code UTXOW.MissingRedeemers} ({@code hasExactSetOfRedeemers}),
+     * then {@code UTXOS.CollectErrors [NoRedeemer]} (Evaluate.hs:151-155). The builder gives the body the hash
+     * Haskell expects (PlutusV3 is used: {@code a0} and the PlutusV3 view), so the integrity check holds.
+     */
     @Test
     @Covers("UTXOS.CollectErrors")
+    @Covers("UTXOW.MissingRedeemers")
     void aPlutusSpendWithoutARedeemerIsNotAccepted() {
         TxSpec spec = MutationWorld.scriptSpec();
         spec.redeemers.clear();
-        LedgerFailure first = firstFailure(spec);
-        assertThat(first.qualifiedName()).isEqualTo("UTXOS.CollectErrors");
-        assertThat(first.detail()).contains("NoRedeemer spend[1]");
+        TxValidationOutcome outcome = validate(spec);
+        assertThat(outcome).isInstanceOf(TxValidationOutcome.Invalid.class);
+        List<LedgerFailure> failures = ((TxValidationOutcome.Invalid) outcome).failures();
+        assertThat(failures).extracting(LedgerFailure::qualifiedName).containsExactly("UTXOW.MissingRedeemers",
+                "UTXOS.CollectErrors");
+        assertThat(failures.get(1).detail()).contains("NoRedeemer spend[1]");
     }
 
     /**

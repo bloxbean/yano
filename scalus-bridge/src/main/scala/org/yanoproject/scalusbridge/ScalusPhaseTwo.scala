@@ -37,6 +37,23 @@ object ScalusPhaseTwo:
       .map(_.scriptHash.toHex).sorted.asJava
 
   /**
+   * Haskell `isValidPlutusScript` (Alonzo/Scripts.hs:276-277) for one script: whether its `PlutusBinary` (the
+   * contents of the script's CBOR byte string) decodes as a program of its language at the protocol version
+   * (Scalus `PlutusScript.isWellFormed`).
+   *
+   * @param language 1 PlutusV1, 2 PlutusV2, 3 PlutusV3
+   */
+  def isWellFormed(language: Int, script: Array[Byte], protocolMajor: Int): Boolean =
+    val bytes = scalus.uplc.builtin.ByteString.fromArray(script)
+    val plutus: PlutusScript = language match
+      case 1 => Script.PlutusV1(bytes)
+      case 2 => Script.PlutusV2(bytes)
+      case 3 => Script.PlutusV3(bytes)
+      case other => throw new IllegalArgumentException(s"not a Plutus language: $other")
+    try plutus.isWellFormed(MajorProtocolVersion(protocolMajor))
+    catch case _: Exception => false
+
+  /**
    * Haskell `validateScriptsWellFormed`, second half: reference scripts of the transaction's own outputs,
    * including the collateral return, that are not well-formed.
    *

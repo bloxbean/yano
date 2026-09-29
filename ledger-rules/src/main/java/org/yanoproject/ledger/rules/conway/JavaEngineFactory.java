@@ -33,7 +33,7 @@ public final class JavaEngineFactory implements LedgerValidationEngineFactory {
                 .isPresent();
         if (!experimental) {
             throw new IllegalStateException("Validation engine 'java' is not available yet: the Java Conway rules "
-                    + "are incomplete until ADR-056 Phases 3-5 are done (Phase 3a: UTXO and UTXOS only). Use "
+                    + "are incomplete until ADR-056 Phases 3-5 are done (Phase 3: UTXOW, UTXO and UTXOS only). Use "
                     + "yano.validation.engine=scalus (the default), or amaru in a build with -PwithAmaru=true. "
                     + "Tests may set " + EXPERIMENTAL_KEY + "=true.");
         }

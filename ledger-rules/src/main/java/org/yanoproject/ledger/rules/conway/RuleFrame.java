@@ -18,10 +18,12 @@ import java.util.Objects;
  * <em>reverse</em> of everything it recorded, in execution order, where a sub-rule's contribution is that
  * sub-rule's own final list. The list is never reversed again, so the order an engine reports depends on the
  * nesting: rooted at {@code LEDGER}, the {@code UTXOW} checks come first in execution order, then
- * {@code UTXOS}, then the {@code UTXO} checks in reverse execution order. Amaru's scenarios, which name the
- * first failure of Haskell's {@code LEDGER} list, follow this (for example 00124:
- * {@code ValueNotConservedUTxO} before the {@code InsufficientCollateral} that {@code feesOK} found first;
- * 00278: {@code NoCollateralInputs} before {@code InsufficientCollateral}).</p>
+ * {@code UTXOS}, then the {@code UTXO} checks in reverse execution order; and since {@code LEDGER} runs
+ * {@code CERTS} before {@code UTXOW}, {@code UTXOW}'s failures come before {@code CERTS}'. (Amaru's scenarios name
+ * one predicate that its Haskell checker requires to be among Haskell's failures, not necessarily the first,
+ * {@code ValidatePhaseOne/Run.hs:263-270}; for example 00124: {@code ValueNotConservedUTxO} before the
+ * {@code InsufficientCollateral} that {@code feesOK} found first; 00278: {@code NoCollateralInputs} before
+ * {@code InsufficientCollateral}.)</p>
  *
  * <p>Not thread-safe: one transition runs on one thread.</p>
  */

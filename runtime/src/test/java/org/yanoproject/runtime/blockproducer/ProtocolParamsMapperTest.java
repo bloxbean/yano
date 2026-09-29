@@ -135,6 +135,32 @@ class ProtocolParamsMapperTest {
         assertEquals(new BigDecimal("0.0577"), pp.getPriceMem());
         assertEquals(new BigDecimal("150"), pp.getCollateralPercent());
         assertEquals(List.of(10L, 20L), new ArrayList<>(pp.getCostModels().get("PlutusV1").values()));
+        // The raw lists reach the view: the Java rules hash them into the script integrity hash (ADR-056 Phase 3b).
+        assertEquals(List.of(10L, 20L), pp.getCostModelsRaw().get("PlutusV1"));
+    }
+
+    /** The raw list keeps the ledger's parameter order, whatever the named map's keys would sort to. */
+    @Test
+    void rawCostModelsKeepTheLedgerOrder() {
+        ProtocolParamsSnapshot base = snapshot(285, BigInteger.valueOf(5000));
+        ProtocolParamsSnapshot snapshot = new ProtocolParamsSnapshot(base.epoch(), base.minFeeA(), base.minFeeB(),
+                base.maxBlockSize(), base.maxTxSize(), base.maxBlockHeaderSize(), base.keyDeposit(),
+                base.poolDeposit(), base.eMax(), base.nOpt(), base.a0(), base.rho(), base.tau(),
+                base.decentralisationParam(), base.extraEntropy(), base.protocolMajorVer(), base.protocolMinorVer(),
+                base.minUtxo(), base.minPoolCost(), base.nonce(), base.costModels(),
+                Map.of("PlutusV3", List.of(30L, -1L, 20L)), base.priceMem(), base.priceStep(), base.maxTxExMem(),
+                base.maxTxExSteps(), base.maxBlockExMem(), base.maxBlockExSteps(), base.maxValSize(),
+                base.collateralPercent(), base.maxCollateralInputs(), base.coinsPerUtxoSize(),
+                base.coinsPerUtxoWord(), base.pvtMotionNoConfidence(), base.pvtCommitteeNormal(),
+                base.pvtCommitteeNoConfidence(), base.pvtHardForkInitiation(), base.pvtPPSecurityGroup(),
+                base.dvtMotionNoConfidence(), base.dvtCommitteeNormal(), base.dvtCommitteeNoConfidence(),
+                base.dvtUpdateToConstitution(), base.dvtHardForkInitiation(), base.dvtPPNetworkGroup(),
+                base.dvtPPEconomicGroup(), base.dvtPPTechnicalGroup(), base.dvtPPGovGroup(),
+                base.dvtTreasuryWithdrawal(), base.committeeMinSize(), base.committeeMaxTermLength(),
+                base.govActionLifetime(), base.govActionDeposit(), base.drepDeposit(), base.drepActivity(),
+                base.minFeeRefScriptCostPerByte());
+        assertEquals(List.of(30L, -1L, 20L), ProtocolParamsMapper.fromSnapshot(snapshot).getCostModelsRaw()
+                .get("PlutusV3"));
     }
 
     @Test
@@ -177,6 +203,7 @@ class ProtocolParamsMapperTest {
         assertEquals(11, pp.getProtocolMajorVer());
         assertEquals(0, pp.getProtocolMinorVer());
         assertEquals(List.of(1L, 2L, 3L), new ArrayList<>(pp.getCostModels().get("PlutusV3").values()));
+        assertEquals(List.of(1L, 2L, 3L), pp.getCostModelsRaw().get("PlutusV3"));
         assertEquals(0, new BigDecimal("0.5").compareTo(pp.getPvtMotionNoConfidence()));
         assertEquals(0, new BigDecimal("0.75").compareTo(pp.getDvtPPGovGroup()));
     }

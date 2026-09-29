@@ -28,12 +28,12 @@ class ConwayPredicateCatalogueTest {
     }
 
     @Test
-    void phase3aCoversEveryReachableUtxoAndUtxosConstructor() {
+    void phase3CoversEveryReachableUtxoUtxowAndUtxosConstructor() {
         var implemented = Arrays.stream(ConwayPredicate.values()).map(ConwayPredicate::qualifiedName).toList();
-        // Every in-scope UTXO/UTXOS constructor, plus OutsideForecast: unreachable at the pin, but Haskell still
-        // runs its (never failing) check, so the engine keeps it in Haskell's order.
+        // Every in-scope UTXO/UTXOW/UTXOS constructor, plus OutsideForecast: unreachable at the pin, but Haskell
+        // still runs its (never failing) check, so the engine keeps it in Haskell's order.
         var expected = ConwayConstructorCatalogue.get().all().stream()
-                .filter(e -> e.family().equals("UTXO") || e.family().equals("UTXOS"))
+                .filter(e -> e.family().equals("UTXO") || e.family().equals("UTXOW") || e.family().equals("UTXOS"))
                 .filter(e -> e.inScope() || e.constructor().equals("OutsideForecast"))
                 .map(ConwayConstructorCatalogue.Entry::qualifiedName).toList();
         assertThat(implemented).containsExactlyInAnyOrderElementsOf(expected);

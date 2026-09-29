@@ -45,7 +45,7 @@ version was mapped to a commit through CHaP `_sources/<pkg>/<ver>/meta.toml`.
 | cardano-protocol-tpraos | 1.6.0.0 | – | 1.5.0.0 |
 | ouroboros-consensus (single package with `cardano`, `diffusion`, `protocol`, `lsm` sub-libraries; there is no separate ouroboros-consensus-cardano package any more) | **4.2.1.0** | `82ecba329d7d054340bf707d44fe6e9ac27cec40` (tag `release-ouroboros-consensus-4.2.1.0`, 2026-09-01) | 3.0.1.0 @ `c87aa760` |
 | ouroboros-network | 1.2.0.0 | – | 1.1.0.0 |
-| plutus-core / plutus-ledger-api | 1.65.0.0 | – | – |
+| plutus-core / plutus-ledger-api | **1.65.0.0** (from the 11.1.2 binary's strings) | IntersectMBO/plutus tag `1.65.0.0`, commit `b2db512` ("Release 1.65.0.0"); shallow clone in the scratchpad `haskell-refs/plutus-1.65.0.0`. Read for Phase 3b: `PlutusLedgerApi/Common/SerialisedScript.hs` (`deserialiseScript`, `scriptCBORDecoder`), `Common/Versions.hs` (`builtinsIntroducedIn`, `plcVersionsIntroducedIn`, `maxBoundsByPV`), `Common/Eval.hs` (`mkTermToEvaluate`: the PLC-version check is at evaluation, phase 2), `UntypedPlutusCore/Core/Instance/Flat.hs`, `PlutusCore/FlatInstances.hs`, `PlutusCore/Default/Universe.hs`, `PlutusCore/Data.hs`, `PlutusCore/Value.hs`, the vendored `flat` decoder | – |
 
 **Canonical rule revision: cardano-ledger `f649f975`.** Every rule file cited
 below is byte-identical at `4c81e909` and `0372ead6`, apart from the files noted
@@ -347,14 +347,14 @@ impossible.
 | GOV | VotingOnExpiredGovAction | NonEmpty (Voter, GovActionId) | – | Gov.hs:356-362, 607 |
 | GOV | DisallowedVoters | NonEmpty (Voter, GovActionId) | – | Gov.hs:364-376, 608. Voter-type vs action-type matrix |
 | UTXOW | InvalidWitnessesUTXOW | NonEmpty (VKey Witness) | – | Static. Shelley/Rules/Utxow.hs:391 |
-| UTXOW | MissingVKeyWitnessesUTXOW | NonEmptySet (KeyHash Witness) | – | Dynamic. Shelley/Rules/Utxow.hs:412. Uses the pre-CERTS certState |
+| UTXOW | MissingVKeyWitnessesUTXOW | NonEmptySet (KeyHash Witness) | – | Dynamic. Shelley/Rules/Utxow.hs:412. Conway's `getWitsVKeyNeeded _ = getConwayWitsVKeyNeeded` ignores the certState (Conway/UTxO.hs:148; corrected in Phase 3b) |
 | UTXOW | MissingScriptWitnessesUTXOW | NonEmptySet ScriptHash | – | Dynamic. Babbage/Rules/Utxow.hs:193-208 |
 | UTXOW | ExtraneousScriptWitnessesUTXOW | NonEmptySet ScriptHash | – | Dynamic. Same place |
 | UTXOW | ScriptWitnessNotValidatingUTXOW | NonEmptySet ScriptHash | – | **Dynamic in Conway** (Babbage/Rules/Utxow.hs:211-232, 349). Native scripts only |
 | UTXOW | MissingTxBodyMetadataHash | TxAuxDataHash | – | Static. Shelley/Rules/Utxow.hs:427-443 |
 | UTXOW | MissingTxMetadata | TxAuxDataHash | – | Static |
 | UTXOW | ConflictingMetadataHash | Mismatch RelEQ TxAuxDataHash | – | Static |
-| UTXOW | InvalidMetadata | – | – | Static. `validateTxAuxData … pv` |
+| UTXOW | InvalidMetadata | – | – | Static. `validateAlonzoTxAuxData … pv`: only the auxiliary data's Plutus scripts (well formed); the 64-byte metadatum limits are decoding failures (Metadata.hs:151-185; corrected in Phase 3b) |
 | UTXOW | MissingRedeemers | NonEmpty (PlutusPurpose AsItem, ScriptHash) | – | Dynamic. Alonzo/Rules/Utxow.hs:260-261 |
 | UTXOW | ExtraRedeemers | NonEmpty (PlutusPurpose AsIx) | – | Dynamic |
 | UTXOW | MissingRequiredDatums | NonEmptySet DataHash, Set DataHash | – | Dynamic. Alonzo/Rules/Utxow.hs:229-231 |

@@ -1,6 +1,8 @@
 package org.yanoproject.ledger.rules.fixtures.tx;
 
 import com.bloxbean.cardano.client.metadata.Metadata;
+import com.bloxbean.cardano.client.plutus.spec.PlutusData;
+import com.bloxbean.cardano.client.plutus.spec.PlutusV2Script;
 import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.spec.NetworkId;
@@ -9,6 +11,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Withdrawal;
 import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
 import com.bloxbean.cardano.client.transaction.spec.governance.ProposalProcedure;
+import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedures;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
 
 import java.math.BigInteger;
@@ -55,14 +58,29 @@ public final class TxSpec {
     /** Keep the body's auxiliary-data hash but leave the auxiliary data out. */
     public boolean dropAuxData;
     public List<PlutusV3Script> plutusScripts = new ArrayList<>();
+    public List<PlutusV2Script> plutusV2Scripts = new ArrayList<>();
+    /** Datums for the witness set (key 4). */
+    public List<PlutusData> datums = new ArrayList<>();
     public List<Redeemer> redeemers = new ArrayList<>();
+    /** PlutusV3 scripts carried in the auxiliary data (attached with or without metadata). */
+    public List<PlutusV3Script> auxPlutusScripts = new ArrayList<>();
+    /** Flip a bit of the body's script integrity hash. */
+    public boolean corruptScriptDataHash;
     public List<NativeScript> nativeScripts = new ArrayList<>();
     public List<TestKey> signers = new ArrayList<>();
+    /** Keys that sign as bootstrap witnesses of their {@link MutationWorld#bootstrapAddress(TestKey)}. */
+    public List<TestKey> bootstrapSigners = new ArrayList<>();
+    /** The index in {@link #bootstrapSigners} whose signature gets one bit flipped, or -1. */
+    public int corruptBootstrapSignature = -1;
+    /** Required signers (body key 14), key hashes hex. */
+    public List<String> requiredSigners = new ArrayList<>();
     /** Flip a bit of the first vkey witness's signature after signing. */
     public boolean corruptFirstSignature;
     public List<Certificate> certs = new ArrayList<>();
     public List<Withdrawal> withdrawals = new ArrayList<>();
     public List<ProposalProcedure> proposals = new ArrayList<>();
+    /** The voting procedures, or null to leave them out. */
+    public VotingProcedures votingProcedures;
     /** The treasury donation, or null to leave it out. */
     public BigInteger donation;
 
@@ -84,13 +102,21 @@ public final class TxSpec {
         copy.auxDataHash = auxDataHash;
         copy.dropAuxData = dropAuxData;
         copy.plutusScripts = new ArrayList<>(plutusScripts);
+        copy.plutusV2Scripts = new ArrayList<>(plutusV2Scripts);
+        copy.datums = new ArrayList<>(datums);
         copy.redeemers = new ArrayList<>(redeemers);
+        copy.auxPlutusScripts = new ArrayList<>(auxPlutusScripts);
+        copy.corruptScriptDataHash = corruptScriptDataHash;
         copy.nativeScripts = new ArrayList<>(nativeScripts);
         copy.signers = new ArrayList<>(signers);
+        copy.bootstrapSigners = new ArrayList<>(bootstrapSigners);
+        copy.corruptBootstrapSignature = corruptBootstrapSignature;
+        copy.requiredSigners = new ArrayList<>(requiredSigners);
         copy.corruptFirstSignature = corruptFirstSignature;
         copy.certs = new ArrayList<>(certs);
         copy.withdrawals = new ArrayList<>(withdrawals);
         copy.proposals = new ArrayList<>(proposals);
+        copy.votingProcedures = votingProcedures;
         copy.donation = donation;
         return copy;
     }

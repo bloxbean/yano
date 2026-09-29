@@ -164,6 +164,23 @@ public final class AddressBytes {
         return byronAttributes(address).attrsSize();
     }
 
+    /**
+     * Haskell {@code bootstrapKeyHash} (Address.hs): a bootstrap address's root, the 28-byte hash of its spending
+     * data, which the address's bootstrap witness must reproduce.
+     */
+    public static byte[] bootstrapRoot(byte[] address) {
+        CborReader outer = new CborReader(address);
+        outer.readArrayHeader();
+        outer.readTag();
+        CborReader payload = new CborReader(outer.readBytes());
+        payload.readArrayHeader();
+        byte[] root = payload.readBytes();
+        if (root.length != 28) {
+            throw new TxDecodingException("a bootstrap address root is 28 bytes");
+        }
+        return root;
+    }
+
     /** The parts of a Byron address's attributes that the ledger reads. */
     record ByronAttributes(boolean networkMagicPresent, int attrsSize) {
     }

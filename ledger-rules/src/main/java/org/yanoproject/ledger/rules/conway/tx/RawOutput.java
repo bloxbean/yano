@@ -16,20 +16,32 @@ import java.util.Objects;
  * @param address the address bytes
  * @param value   the value
  * @param collateralReturn true for the collateral return output
- * @param hasScriptRef     true when the output carries a reference script (map form, key 3)
+ * @param datumHash        the output's datum hash (legacy element 2, or {@code datum_option [0, hash]}), or null
+ * @param scriptRef        the output's reference script (map form, key 3), or null
  */
 public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue value, boolean collateralReturn,
-                        boolean hasScriptRef) {
+                        byte[] datumHash, RawScript scriptRef) {
 
     public RawOutput {
         Objects.requireNonNull(slice, "slice");
         address = Objects.requireNonNull(address, "address").clone();
         Objects.requireNonNull(value, "value");
+        datumHash = datumHash != null ? datumHash.clone() : null;
     }
 
     @Override
     public byte[] address() {
         return address.clone();
+    }
+
+    @Override
+    public byte[] datumHash() {
+        return datumHash != null ? datumHash.clone() : null;
+    }
+
+    /** @return true when the output carries a reference script */
+    public boolean hasScriptRef() {
+        return scriptRef != null;
     }
 
     /** @return the serialised size of the output as received */
@@ -43,7 +55,8 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
         CborReader item = new CborReader(tx, slice);
         byte[] address = null;
         LedgerValue value = null;
-        boolean scriptRef = false;
+        byte[] datumHash = null;
+        RawScript scriptRef = null;
         if (item.peekMajor() == 4) {
             // Legacy form (Babbage/TxOut.hs:553-576): exactly [address, value] or [address, value, datum_hash].
             long length = item.readArrayHeader();
@@ -53,7 +66,8 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
             address = item.readBytes();
             value = readValue(item);
             if (length == 3 || (length == CborReader.INDEFINITE && item.hasNext(length, 2))) {
-                if (item.readBytes().length != 32) {
+                datumHash = item.readBytes();
+                if (datumHash.length != 32) {
                     throw new TxDecodingException("output " + index + " has a datum hash that is not 32 bytes");
                 }
                 if (length == CborReader.INDEFINITE && item.hasNext(length, 3)) {
@@ -77,9 +91,10 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
                     address = item.readBytes();
                 } else if (key == 1) {
                     value = readValue(item);
+                } else if (key == 2) {
+                    datumHash = readDatumOption(item, index);
                 } else {
-                    scriptRef |= key == 3;
-                    item.skip();
+                    scriptRef = readScriptRef(item);
                 }
             }
         }
@@ -87,7 +102,51 @@ public record RawOutput(int index, CborSlice slice, byte[] address, LedgerValue 
             throw new TxDecodingException("output " + index + " has no address or no value");
         }
         AddressBytes.validate(address);
-        return new RawOutput(index, slice, address, value, collateralReturn, scriptRef);
+        return new RawOutput(index, slice, address, value, collateralReturn, datumHash, scriptRef);
+    }
+
+    /**
+     * {@code datum_option = [0, hash32] / [1, #6.24(bytes .cbor plutus_data)]}.
+     *
+     * @return the datum hash, or null for an inline datum
+     */
+    private static byte[] readDatumOption(CborReader reader, int index) {
+        long length = reader.readArrayHeader();
+        if (length != 2 && length != CborReader.INDEFINITE) {
+            throw new TxDecodingException("output " + index + ": a datum option is a two-element array");
+        }
+        long kind = reader.readUnsignedLong();
+        byte[] hash = null;
+        if (kind == 0) {
+            hash = reader.readBytes();
+            if (hash.length != 32) {
+                throw new TxDecodingException("output " + index + " has a datum hash that is not 32 bytes");
+            }
+        } else if (kind == 1) {
+            if (reader.readTag() != 24) {
+                throw new TxDecodingException("output " + index + ": an inline datum is wrapped in tag 24");
+            }
+            reader.readBytes();
+        } else {
+            throw new TxDecodingException("output " + index + ": unknown datum option " + kind);
+        }
+        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
+            throw new TxDecodingException("output " + index + ": a datum option is a two-element array");
+        }
+        return hash;
+    }
+
+    /** {@code script_ref = #6.24(bytes .cbor script)}. */
+    private static RawScript readScriptRef(CborReader reader) {
+        if (reader.readTag() != 24) {
+            throw new TxDecodingException("a script reference is wrapped in tag 24");
+        }
+        CborReader inner = new CborReader(reader.readBytes());
+        RawScript script = RawScript.readScript(inner);
+        if (!inner.atEnd()) {
+            throw new TxDecodingException("trailing bytes after a reference script");
+        }
+        return script;
     }
 
     /** Reads a {@code value}: {@code coin} or {@code [coin, multiasset<positive_coin>]}. */

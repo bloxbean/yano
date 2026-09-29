@@ -26,8 +26,7 @@ import java.util.Objects;
  * <p>Each family is a {@link SubRule}. Failures accumulate with Haskell's STS semantics ({@link RuleFrame}); only
  * {@code whenFailureFree} blocks are skipped ({@code UTXOS}' script execution). Families that later phases
  * implement are plugged in through the constructor; until then they are {@link SubRule#NOT_YET_IMPLEMENTED}
- * (Phase 3a: {@code LEDGER} pre-checks and {@code GOV} are Phase 5, {@code CERTS} Phase 4, the {@code UTXOW}
- * witness checks Phase 3b).</p>
+ * ({@code LEDGER} pre-checks and {@code GOV} are Phase 5, {@code CERTS} Phase 4).</p>
  *
  * <p>Stateless and thread-safe; each run gets its own {@link TransitionContext}.</p>
  */
@@ -68,7 +67,7 @@ public final class ConwayLedgerTransition {
         this.utxow = Objects.requireNonNull(utxow, "utxow");
     }
 
-    /** @return the families implemented so far (Phase 3a: {@code UTXOW} script preparation, {@code UTXO}, {@code UTXOS}) */
+    /** @return the families implemented so far (Phase 3: {@code UTXOW}, {@code UTXO}, {@code UTXOS}) */
     public static ConwayLedgerTransition standard() {
         return new ConwayLedgerTransition(SubRule.NOT_YET_IMPLEMENTED, SubRule.NOT_YET_IMPLEMENTED,
                 SubRule.NOT_YET_IMPLEMENTED, UtxowRule::apply);

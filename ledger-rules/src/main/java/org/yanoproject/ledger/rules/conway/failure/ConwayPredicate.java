@@ -13,11 +13,56 @@ import java.util.Objects;
  * (cardano-ledger {@code f649f975}; the pinned table is {@code adr/reports/adr-056-haskell-pinned-revisions.md}
  * §3d/§3e, and {@code ConwayConstructorCatalogueConsistencyTest} checks this enum against it).
  *
- * <p>Phase 3a lists the {@code UTXO} and {@code UTXOS} families; later phases add theirs. Wrapper constructors
- * ({@code UtxosFailure}, {@code UtxoFailure}, …) are not listed: {@link LedgerFailure} names the leaf with its
- * rule.</p>
+ * <p>Phase 3a lists the {@code UTXO} and {@code UTXOS} families, Phase 3b {@code UTXOW}; later phases add theirs.
+ * Wrapper constructors ({@code UtxosFailure}, {@code UtxoFailure}, …) are not listed: {@link LedgerFailure} names
+ * the leaf with its rule.</p>
  */
 public enum ConwayPredicate {
+
+    // ---------------------------------------------------------------- UTXOW (Babbage/Rules/Utxow.hs:328-391)
+    SCRIPT_WITNESS_NOT_VALIDATING(LedgerRuleName.UTXOW, "ScriptWitnessNotValidatingUTXOW", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Babbage/Rules/Utxow.hs:211-232 (validateFailedBabbageScripts), 349: runTest"),
+    EXTRANEOUS_SCRIPT_WITNESSES(LedgerRuleName.UTXOW, "ExtraneousScriptWitnessesUTXOW", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Babbage/Rules/Utxow.hs:193-208 (babbageMissingScripts), 354"),
+    MISSING_SCRIPT_WITNESSES(LedgerRuleName.UTXOW, "MissingScriptWitnessesUTXOW", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Babbage/Rules/Utxow.hs:193-208 (babbageMissingScripts), 354"),
+    UNSPENDABLE_UTXO_NO_DATUM_HASH(LedgerRuleName.UTXOW, "UnspendableUTxONoDatumHash", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Alonzo/Rules/Utxow.hs (missingRequiredDatums); Alonzo/UTxO.hs:245-275; "
+            + "Babbage/Rules/Utxow.hs:357"),
+    MISSING_REQUIRED_DATUMS(LedgerRuleName.UTXOW, "MissingRequiredDatums", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Alonzo/Rules/Utxow.hs (missingRequiredDatums); Babbage/Rules/Utxow.hs:357"),
+    NOT_ALLOWED_SUPPLEMENTAL_DATUMS(LedgerRuleName.UTXOW, "NotAllowedSupplementalDatums", PvRange.ALWAYS,
+            CheckLabel.DYNAMIC, "Alonzo/Rules/Utxow.hs (missingRequiredDatums); Babbage/UTxO.hs:74-84; "
+            + "Babbage/Rules/Utxow.hs:357"),
+    EXTRA_REDEEMERS(LedgerRuleName.UTXOW, "ExtraRedeemers", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Alonzo/Rules/Utxow.hs (hasExactSetOfRedeemers); Babbage/Rules/Utxow.hs:361"),
+    MISSING_REDEEMERS(LedgerRuleName.UTXOW, "MissingRedeemers", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Alonzo/Rules/Utxow.hs (hasExactSetOfRedeemers); Babbage/Rules/Utxow.hs:361"),
+    INVALID_WITNESSES(LedgerRuleName.UTXOW, "InvalidWitnessesUTXOW", PvRange.ALWAYS, CheckLabel.STATIC,
+            "Shelley/Rules/Utxow.hs:391-408 (validateVerifiedWits); Babbage/Rules/Utxow.hs:366: runTestOnSignal"),
+    MISSING_VKEY_WITNESSES(LedgerRuleName.UTXOW, "MissingVKeyWitnessesUTXOW", PvRange.ALWAYS, CheckLabel.DYNAMIC,
+            "Shelley/Rules/Utxow.hs:412-424 (validateNeededWitnesses); Conway/UTxO.hs:174-199; "
+            + "Babbage/Rules/Utxow.hs:369"),
+    MISSING_TX_BODY_METADATA_HASH(LedgerRuleName.UTXOW, "MissingTxBodyMetadataHash", PvRange.ALWAYS,
+            CheckLabel.STATIC, "Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374"),
+    MISSING_TX_METADATA(LedgerRuleName.UTXOW, "MissingTxMetadata", PvRange.ALWAYS, CheckLabel.STATIC,
+            "Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374"),
+    CONFLICTING_METADATA_HASH(LedgerRuleName.UTXOW, "ConflictingMetadataHash", PvRange.ALWAYS, CheckLabel.STATIC,
+            "Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374"),
+    INVALID_METADATA(LedgerRuleName.UTXOW, "InvalidMetadata", PvRange.ALWAYS, CheckLabel.STATIC,
+            "Shelley/Rules/Utxow.hs:442; Alonzo/TxAuxData.hs:360-373 (validateAlonzoTxAuxData: Plutus scripts "
+            + "well formed); Babbage/Rules/Utxow.hs:374"),
+    MALFORMED_SCRIPT_WITNESSES(LedgerRuleName.UTXOW, "MalformedScriptWitnesses", PvRange.ALWAYS, CheckLabel.STATIC,
+            "Babbage/Rules/Utxow.hs:234-273 (validateScriptsWellFormed), 379: runTestOnSignal"),
+    MALFORMED_REFERENCE_SCRIPTS(LedgerRuleName.UTXOW, "MalformedReferenceScripts", PvRange.ALWAYS,
+            CheckLabel.STATIC, "Babbage/Rules/Utxow.hs:234-273 (validateScriptsWellFormed), 379: outputs and "
+            + "collateral return"),
+    PP_VIEW_HASHES_DONT_MATCH(LedgerRuleName.UTXOW, "PPViewHashesDontMatch", PvRange.between(9, 10),
+            CheckLabel.DYNAMIC, "Alonzo/Rules/Utxow.hs (checkScriptIntegrityHash, pvMajor < 11); "
+            + "Babbage/Rules/Utxow.hs:387-389"),
+    SCRIPT_INTEGRITY_HASH_MISMATCH(LedgerRuleName.UTXOW, "ScriptIntegrityHashMismatch", PvRange.from(11),
+            CheckLabel.DYNAMIC, "Alonzo/Rules/Utxow.hs (checkScriptIntegrityHash, pvMajor >= 11); "
+            + "Babbage/Rules/Utxow.hs:387-389"),
 
     // ---------------------------------------------------------------- UTXO (Babbage/Rules/Utxo.hs:342-412)
     BABBAGE_NON_DISJOINT_REF_INPUTS(LedgerRuleName.UTXO, "BabbageNonDisjointRefInputs", PvRange.between(9, 10),
