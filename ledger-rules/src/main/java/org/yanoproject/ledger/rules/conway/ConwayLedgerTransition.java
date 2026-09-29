@@ -7,6 +7,8 @@ import org.yanoproject.ledger.rules.conway.certs.CertsRule;
 import org.yanoproject.ledger.rules.conway.gov.GovRule;
 import org.yanoproject.ledger.rules.conway.ledger.LedgerPreChecks;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
+import org.yanoproject.ledger.rules.conway.mempool.MempoolSubject;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayScopes;
 import org.yanoproject.ledger.rules.conway.utxow.UtxowRule;
 
 import java.util.List;
@@ -17,7 +19,7 @@ import java.util.Objects;
  * and mempool rebuilds, {@code LEDGER} for block selection and shadow sync.
  *
  * <ol start="0">
- *   <li>{@code MEMPOOL} (rule {@code MEMPOOL} only): {@link MempoolRule} against the incoming state; the
+ *   <li>{@code MEMPOOL} (rule {@code MEMPOOL} only): the {@link MempoolRule} checks against the incoming state; the
  *       all-inputs-spent failure stops everything ({@code whenFailureFreeDefault}), the unelected-voter failure
  *       is recorded and {@code LEDGER} still runs (Conway/Rules/Mempool.hs:103-138).</li>
  *   <li>{@code LEDGER} ({@code conwayLedgerTransitionTRC}, Conway/Rules/Ledger.hs:350-440): when
@@ -26,7 +28,9 @@ import java.util.Objects;
  *   <li>{@code UTXOW} → {@code UTXO} → {@code UTXOS}, nested as in Haskell.</li>
  * </ol>
  *
- * <p>Each family is a {@link SubRule}. Failures accumulate with Haskell's STS semantics ({@link RuleFrame}); only
+ * <p>Each family is a {@link SubRule} that runs its scopes of the protocol version's rule set
+ * ({@link TransitionContext#rules()}, ADR-056 Phase 5c): which checks and steps run, in which order, is the rule set's;
+ * the transition is only the skeleton. Failures accumulate with Haskell's STS semantics ({@link RuleFrame}); only
  * {@code whenFailureFree} blocks are skipped ({@code UTXOS}' script execution). The {@code LEDGER} pre-checks
  * ({@link LedgerPreChecks}) and {@code CERTS} ({@link CertsRule}) thread the intra-transaction certificate state
  * ({@link TransitionContext#certState()}) that {@code GOV} ({@link GovRule}) reads after the certificates.</p>
@@ -85,12 +89,10 @@ public final class ConwayLedgerTransition {
      */
     public List<LedgerFailure> apply(TransitionContext ctx) {
         if (ctx.rule() == TxValidationRequest.Rule.MEMPOOL) {
-            MempoolRule.Result mempool = MempoolRule.apply(ctx.tx().getBody(), ctx.preState(), ctx.protocolMajor());
-            if (!mempool.continueToLedger()) {
-                return mempool.failures();
-            }
             RuleFrame mempoolFrame = new RuleFrame(LedgerRuleName.MEMPOOL, ctx);
-            mempoolFrame.predicate(mempool.failures());
+            if (mempoolFrame.run(ConwayScopes.MEMPOOL, new MempoolSubject(ctx.tx().getBody(), ctx.preState()))) {
+                return mempoolFrame.failures();
+            }
             RuleFrame ledger = mempoolFrame.child(LedgerRuleName.LEDGER);
             ledger(ledger);
             mempoolFrame.subRule(ledger);

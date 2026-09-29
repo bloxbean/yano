@@ -17,13 +17,15 @@ import java.util.Objects;
  * {@code DELEG}, {@code POOL} and {@code GOVCERT} with the two protocol-version-11 {@code LEDGER} withdrawal checks;
  * Phase 5 adds {@code GOV}, the other {@code LEDGER} predicates and {@code ConwayMempoolFailure} ({@code MEMPOOL}'s own
  * failure, a {@code ConwayLedgerPredFailure} constructor); Phase 5b the two bootstrap-phase {@code GOV} constructors
- * (protocol version 9, {@link PvRange#BOOTSTRAP}). Every protocol-version difference is either a constructor's range
- * here or one named, single-purpose helper holding its own {@link PvRange} (for a difference that is not a whole check:
- * {@code RawParamUpdate}'s non-zero rules, {@code TxEffectsDeriver.drepExpiryVersioned},
- * {@code UtxosRule.CERTIFICATE_DEPOSITS_OMITTED}, {@code CertsRule.WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER}):
- * {@code hardforkConwayBootstrapPhase} is {@link PvRange#BOOTSTRAP} ("only during bootstrap") or
- * {@link PvRange#POST_BOOTSTRAP} ("{@code unless} bootstrap").
- * Wrapper constructors ({@code UtxosFailure}, {@code UtxoFailure}, …) are not listed: {@link LedgerFailure} names
+ * (protocol version 9, {@link PvRange#BOOTSTRAP}).</p>
+ *
+ * <p>The {@link #pvRange()} of a constructor is the pinned catalogue's fact about Haskell. Which check reports it at
+ * which protocol version is the rule sets' ({@code ConwayRuleSets}, ADR-056 Phase 5c): a version's rule set holds a
+ * unit reporting the constructor exactly when this range contains the version, which {@code ConwayRuleSets} checks
+ * when it composes them. A protocol-version difference that is not a whole constructor (a parameter table, a script
+ * context, a DRep's expiry) is a superseding unit or policy in that version's delta.</p>
+ *
+ * <p>Wrapper constructors ({@code UtxosFailure}, {@code UtxoFailure}, …) are not listed: {@link LedgerFailure} names
  * the leaf with its rule.</p>
  */
 public enum ConwayPredicate {

@@ -2,6 +2,9 @@ package org.yanoproject.ledger.rules.conway;
 
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
+import org.yanoproject.ledger.rules.conway.ruleset.RuleUnit;
+import org.yanoproject.ledger.rules.conway.ruleset.Scope;
+import org.yanoproject.ledger.rules.conway.ruleset.ScopeRunner;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -66,6 +69,18 @@ public final class RuleFrame {
     /** Records one failure of a predicate. */
     public void fail(LedgerFailure failure) {
         predicate(List.of(failure));
+    }
+
+    /**
+     * Runs the units of {@code scope} in the context's rule set ({@link TransitionContext#rules()}), in order, each as
+     * one predicate of this rule: a {@code static} unit is skipped on re-application ({@code lblStatic}, ADR-056 §6),
+     * and nothing else is skipped (small-steps accumulates the failures).
+     *
+     * @return true when a unit that {@linkplain RuleUnit#haltsOnFailure() halts} failed (the later units did not run)
+     */
+    public <S> boolean run(Scope<S> scope, S subject) {
+        return ScopeRunner.run(context.rules().units(scope), subject,
+                context.mode() == TransitionContext.Mode.REAPPLY, this::predicate);
     }
 
     /** Folds a finished sub-rule into this rule ({@code trans @sub}). */

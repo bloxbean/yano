@@ -11,6 +11,7 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -31,8 +32,13 @@ public final class CoversScanner {
      * @param constructor the {@code RULE.Constructor} the test covers
      * @param test        {@code SimpleClassName#method}, or the class name for a class-level annotation
      * @param className   the test class's binary name
+     * @param versions    the protocol versions the test validates at ({@link Covers#pv()}); empty when unstated
      */
-    public record Covering(String constructor, String test, String className) {
+    public record Covering(String constructor, String test, String className, List<Integer> versions) {
+
+        public Covering {
+            versions = List.copyOf(versions);
+        }
     }
 
     /** The scan's result: the coverings, and the classes that could not be inspected. */
@@ -66,6 +72,10 @@ public final class CoversScanner {
         return new Result(List.copyOf(coverings), List.copyOf(skipped));
     }
 
+    private static List<Integer> versions(Covers covers) {
+        return Arrays.stream(covers.pv()).boxed().toList();
+    }
+
     private static void scanDirectory(Path root, ClassLoader loader, List<Covering> coverings, List<String> skipped) {
         List<String> classNames;
         try (Stream<Path> files = Files.walk(root)) {
@@ -81,12 +91,12 @@ public final class CoversScanner {
             try {
                 Class<?> type = Class.forName(className, false, loader);
                 for (Covers covers : type.getDeclaredAnnotationsByType(Covers.class)) {
-                    coverings.add(new Covering(covers.value(), type.getSimpleName(), className));
+                    coverings.add(new Covering(covers.value(), type.getSimpleName(), className, versions(covers)));
                 }
                 for (Method method : type.getDeclaredMethods()) {
                     for (Covers covers : method.getDeclaredAnnotationsByType(Covers.class)) {
                         coverings.add(new Covering(covers.value(), type.getSimpleName() + "#" + method.getName(),
-                                className));
+                                className, versions(covers)));
                     }
                 }
             } catch (ClassNotFoundException | LinkageError e) {

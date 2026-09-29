@@ -1,19 +1,23 @@
 package org.yanoproject.ledger.conformance.coverage;
 
 import org.yanoproject.ledger.conformance.coverage.CoversScanner.Covering;
-import org.yanoproject.ledger.rules.conway.failure.ConwayPredicate;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSet;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayScopes;
+import org.yanoproject.ledger.rules.conway.ruleset.RuleUnit;
+import org.yanoproject.ledger.rules.conway.ruleset.Scope;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
 import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalogue;
 import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalogue.Entry;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * The per-constructor coverage matrix (ADR-056 §8): for every catalogue constructor, the {@code @Covers} tests and
@@ -46,8 +50,10 @@ public final class CoverageMatrix {
      * @param entry     the constructor
      * @param tests     the {@code @Covers} tests
      * @param scenarios the Amaru scenario names expecting it
+     * @param versions  per supported protocol version where the constructor exists, the tests that reject a
+     *                  transaction with it at that version (ADR-056 Phase 5c)
      */
-    public record Row(Entry entry, List<String> tests, List<String> scenarios) {
+    public record Row(Entry entry, List<String> tests, List<String> scenarios, Map<Integer, List<String>> versions) {
 
         public Status status() {
             if (!entry.inScope()) {
@@ -64,15 +70,23 @@ public final class CoverageMatrix {
     private final List<Row> rows;
     private final boolean scenariosConfigured;
     private final List<String> unknownCovers;
+    private final List<Integer> protocolVersions;
 
-    private CoverageMatrix(List<Row> rows, boolean scenariosConfigured, List<String> unknownCovers) {
+    private CoverageMatrix(List<Row> rows, boolean scenariosConfigured, List<String> unknownCovers,
+                           List<Integer> protocolVersions) {
         this.rows = List.copyOf(rows);
         this.scenariosConfigured = scenariosConfigured;
         this.unknownCovers = List.copyOf(unknownCovers);
+        this.protocolVersions = List.copyOf(protocolVersions);
     }
 
+    /**
+     * @param worldEvidence per protocol version, per constructor, the mutation-matrix cases that reject a mutant with it
+     *                      in that version's world ({@code Mutations.worldCases}); its keys are the supported versions
+     */
     public static CoverageMatrix build(ConwayConstructorCatalogue catalogue, List<Covering> coverings,
-                                       Optional<List<AmaruScenario>> scenarios) {
+                                       Optional<List<AmaruScenario>> scenarios,
+                                       Map<Integer, Map<String, List<String>>> worldEvidence) {
         Map<String, List<String>> tests = new LinkedHashMap<>();
         List<String> unknown = new ArrayList<>();
         for (Covering covering : coverings) {
@@ -88,11 +102,48 @@ public final class CoverageMatrix {
                 byConstructor.computeIfAbsent(p.qualifiedName(), k -> new ArrayList<>()).add(s.name());
             }
         }));
-        List<Row> rows = catalogue.all().stream()
-                .map(e -> new Row(e, tests.getOrDefault(e.qualifiedName(), List.of()),
-                        byConstructor.getOrDefault(e.qualifiedName(), List.of())))
-                .toList();
-        return new CoverageMatrix(rows, scenarios.isPresent(), unknown);
+        List<Integer> versions = new ArrayList<>(new TreeMap<>(worldEvidence).keySet());
+        List<Row> rows = new ArrayList<>();
+        for (Entry e : catalogue.all()) {
+            Map<Integer, List<String>> byVersion = new TreeMap<>();
+            for (int version : versions) {
+                if (!e.existsAt(version)) {
+                    continue;
+                }
+                List<String> evidence = new ArrayList<>(worldEvidence.get(version)
+                        .getOrDefault(e.qualifiedName(), List.of()));
+                coverings.stream().filter(c -> c.constructor().equals(e.qualifiedName())
+                        && c.versions().contains(version)).forEach(c -> evidence.add(c.test()));
+                byVersion.put(version, List.copyOf(evidence));
+            }
+            rows.add(new Row(e, tests.getOrDefault(e.qualifiedName(), List.of()),
+                    byConstructor.getOrDefault(e.qualifiedName(), List.of()), byVersion));
+        }
+        return new CoverageMatrix(rows, scenarios.isPresent(), unknown, versions);
+    }
+
+    /**
+     * @return {@code RULE.Constructor at PV n} for every in-scope constructor that no test rejects a transaction with at
+     *         a supported protocol version where it exists (the Phase 5c strict gate)
+     */
+    public List<String> missingPerVersion() {
+        List<String> missing = new ArrayList<>();
+        for (Row row : rows) {
+            if (!row.entry().inScope()) {
+                continue;
+            }
+            row.versions().forEach((version, evidence) -> {
+                if (evidence.isEmpty()) {
+                    missing.add(row.entry().qualifiedName() + " at PV " + version);
+                }
+            });
+        }
+        return missing;
+    }
+
+    /** @return the supported protocol versions the matrix counts per version */
+    public List<Integer> protocolVersions() {
+        return protocolVersions;
     }
 
     public List<Row> rows() {
@@ -119,29 +170,32 @@ public final class CoverageMatrix {
     }
 
     /**
-     * @return the Java engine class that reports the constructor (from {@link ConwayPredicate}), {@code TBD} while no
-     *         phase has implemented it, or {@code –} when it is out of scope
+     * @return the Java engine units that report the constructor, from the rule sets ({@code ConwayRuleSets}, ADR-056
+     *         Phase 5c) with the protocol versions of each, or {@code –} when it is out of scope
      */
     static String javaRule(Entry e) {
         if (!e.inScope()) {
             return "–";
         }
-        return Arrays.stream(ConwayPredicate.values())
-                .filter(p -> p.qualifiedName().equals(e.qualifiedName()))
-                .findFirst()
-                .map(p -> switch (p.rule()) {
-                    case UTXOW -> "`UtxowRule`";
-                    case UTXO -> "`UtxoRule`";
-                    case UTXOS -> "`UtxosRule`";
-                    case CERTS -> "`CertsRule`";
-                    case DELEG -> "`DelegRule`";
-                    case POOL -> "`PoolRule`";
-                    case GOVCERT -> "`GovCertRule`";
-                    case LEDGER -> p == ConwayPredicate.CONWAY_MEMPOOL_FAILURE ? "`MempoolRule`" : "`LedgerPreChecks`";
-                    case GOV -> "`GovRule`";
-                    default -> "`" + p.rule().name() + "`";
-                })
-                .orElse("TBD (P5)");
+        Map<String, TreeSet<Integer>> units = new LinkedHashMap<>();
+        for (ConwayRuleSet set : ConwayRuleSets.all()) {
+            for (Scope<?> scope : ConwayScopes.ALL) {
+                for (RuleUnit<?> unit : set.units(scope)) {
+                    if (unit.reports().stream().anyMatch(p -> p.qualifiedName().equals(e.qualifiedName()))) {
+                        String name = unit.getClass().getName();
+                        name = name.substring(name.lastIndexOf('.') + 1).replace('$', '.');
+                        units.computeIfAbsent(name, k -> new TreeSet<>()).add(set.protocolVersion());
+                    }
+                }
+            }
+        }
+        if (units.isEmpty()) {
+            return "TBD";
+        }
+        List<String> parts = new ArrayList<>();
+        units.forEach((name, versions) -> parts.add("`" + name + "` (" + versions.first()
+                + (versions.size() > 1 ? "–" + versions.last() : "") + ")"));
+        return String.join("<br>", parts);
     }
 
     /** @return the matrix as the {@code conway-rule-coverage.md} document */
@@ -164,7 +218,11 @@ public final class CoverageMatrix {
             md.append(" *Not configured when this file was generated.*");
         }
         md.append("\n");
-        md.append("- **Java rule**: the class implementing the check in the Java engine (Phases 3–5b).\n");
+        md.append("- **Java rule**: the units of the Java engine's rule sets that report the constructor, with the ")
+                .append("protocol versions whose rule set holds each (`ConwayRuleSets`, ADR-056 Phase 5c; the frozen ")
+                .append("manifests are `ledger-rules/src/test/resources/org/yanoproject/ledger/rules/conway/ruleset/`).\n");
+        md.append("- **Covered at PV**: per supported protocol version where the constructor exists, whether a test ")
+                .append("rejects a transaction with it at that version (see *Coverage per protocol version*).\n");
         md.append("- **Status**: `test + scenario`, `test`, `scenario only` (no negative test yet), `gap` ")
                 .append("(neither), `unreachable at pin` (cannot occur in Conway at the pinned revision).\n");
         md.append("- Strict since the Phase 5 gate (`conformance.strict`, on by default): every in-scope constructor ")
@@ -193,6 +251,23 @@ public final class CoverageMatrix {
                 .map(r -> "`" + r.entry().qualifiedName() + "` (" + r.entry().pvRange() + ")").toList()));
         md.append(".\n\n");
 
+        md.append("## Coverage per protocol version\n\n");
+        md.append("ADR-056 Phase 5c: a constructor must be covered at every supported protocol version where it exists, ")
+                .append("by the mutation matrix's world cases (every mutant built and validated in every world, ")
+                .append("`MutationWorldMatrixTest`) or by a `@Covers(pv = …)` test. Strict: a gap fails ")
+                .append("`:ledger-conformance:test`.\n\n");
+        md.append("| PV | Constructors that exist | covered | gaps |\n|---:|---:|---:|---|\n");
+        for (int version : protocolVersions) {
+            List<String> exist = rows.stream().filter(r -> r.entry().inScope() && r.versions().containsKey(version))
+                    .map(r -> r.entry().qualifiedName()).toList();
+            List<String> gaps = rows.stream().filter(r -> r.entry().inScope() && r.versions().containsKey(version)
+                    && r.versions().get(version).isEmpty()).map(r -> "`" + r.entry().qualifiedName() + "`").toList();
+            md.append("| ").append(version).append(" | ").append(exist.size()).append(" | ")
+                    .append(exist.size() - gaps.size()).append(" | ").append(gaps.isEmpty() ? "–" : String.join(", ", gaps))
+                    .append(" |\n");
+        }
+        md.append("\n");
+
         md.append("## Protocol-version gates to test on both sides\n\n");
         md.append("| Constructor | PV | Gate |\n|---|---|---|\n");
         rows.stream().filter(r -> r.entry().inScope() && !r.entry().pvGate().isBlank()
@@ -202,14 +277,15 @@ public final class CoverageMatrix {
         md.append("\n");
 
         md.append("## Matrix\n\n");
-        md.append("| Rule | Constructor | PV | Check | Java rule | Tests | Amaru scenarios | Status |\n");
-        md.append("|---|---|---|---|---|---|---|---|\n");
+        md.append("| Rule | Constructor | PV | Check | Java rule | Tests | Covered at PV | Amaru scenarios | Status |\n");
+        md.append("|---|---|---|---|---|---|---|---|---|\n");
         for (Row row : rows) {
             Entry e = row.entry();
             md.append("| ").append(e.rule()).append(" | `").append(e.constructor()).append("` | ").append(e.pvRange())
                     .append(" | ").append(e.check()).append(e.phase() == 2 ? " (phase 2)" : "")
                     .append(" | ").append(javaRule(e))
                     .append(" | ").append(row.tests().isEmpty() ? "–" : String.join("<br>", row.tests()))
+                    .append(" | ").append(versionCoverage(row))
                     .append(" | ").append(scenarioIds(row.scenarios()))
                     .append(" | ").append(row.status().label()).append(" |\n");
         }
@@ -233,6 +309,16 @@ public final class CoverageMatrix {
             }
         }
         return c;
+    }
+
+    /** e.g. {@code 9 ✓ · 10 ✓ · 11 ✗}: the supported versions where the constructor exists, and whether covered. */
+    private static String versionCoverage(Row row) {
+        if (!row.entry().inScope() || row.versions().isEmpty()) {
+            return "–";
+        }
+        List<String> parts = new ArrayList<>();
+        row.versions().forEach((version, evidence) -> parts.add(version + (evidence.isEmpty() ? " ✗" : " ✓")));
+        return String.join(" · ", parts);
     }
 
     /** Scenario names shortened to their number, e.g. {@code 00056}. */

@@ -642,6 +642,33 @@ class MutationMatrixTest {
         check("bootstrap-drep-vote-v9");
     }
 
+    // ------------------------------------------------------------------ Phase 5c: every constructor at every version
+
+    @Test
+    @Covers("GOV.ProposalCantFollow")
+    void hardForkCantFollowV11() {
+        check("hard-fork-cant-follow-v11");
+    }
+
+    @Test
+    @Covers("UTXO.WrongNetworkWithdrawal")
+    void wrongNetworkWithdrawal() {
+        check("wrong-network-withdrawal");
+    }
+
+    @Test
+    @Covers("DELEG.IncorrectDepositDELEG")
+    void registrationAndDelegationDepositIncorrect() {
+        check("reg-deleg-deposit-incorrect");
+    }
+
+    @Test
+    @Covers("DELEG.DelegateeDRepNotRegisteredDELEG")
+    void registrationAndVoteDelegationToAnUnregisteredDRep() {
+        check("vote-reg-deleg-drep-not-registered");
+        check("stake-vote-reg-deleg-drep-not-registered");
+    }
+
     /**
      * The other side of each bootstrap gate: the edit of a protocol version 10 mutant (rejected there, which its own
      * {@code @Covers} test and Amaru confirm) is valid in the protocol version 9 world under the Java engine. Amaru

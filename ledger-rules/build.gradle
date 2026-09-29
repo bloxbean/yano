@@ -16,6 +16,21 @@ dependencies {
     testFixturesAnnotationProcessor libs.lombok
 }
 
+// ADR-056 Phase 5c: the frozen Conway rule-set manifests. ConwayRuleSetManifestTest compares each protocol version's
+// composed rule set with its committed manifest; -PupdateRuleManifests=true rewrites the manifests from the code (then
+// review the diff: only the versions you meant to change may differ).
+// The manifests carry a content fingerprint of each unit's source (SourceFingerprints), read from src/main/java.
+def ruleManifestsDir = file('src/test/resources/org/yanoproject/ledger/rules/conway/ruleset')
+tasks.withType(Test).configureEach {
+    systemProperty 'ruleManifests.dir', ruleManifestsDir.absolutePath
+    systemProperty 'ruleSources.dir', file('src/main/java').absolutePath
+    inputs.dir('src/main/java').withPropertyName('ruleSources')
+    systemProperty 'updateRuleManifests', providers.gradleProperty('updateRuleManifests').getOrElse('false')
+    if (providers.gradleProperty('updateRuleManifests').isPresent()) {
+        outputs.upToDateWhen { false }
+    }
+}
+
 // The test fixtures are a build-time aid for Yano's own engine tests, not a published API: keep them
 // out of the Maven publication so the published ledger-rules artifact is unchanged.
 components.java.withVariantsFromConfiguration(configurations.testFixturesApiElements) { skip() }

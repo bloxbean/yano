@@ -7,7 +7,9 @@ import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidationEnv;
-import org.yanoproject.ledger.rules.conway.failure.ConwayPredicate;
+import org.yanoproject.ledger.rules.conway.certs.CertsRule;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSet;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
 import org.yanoproject.ledger.rules.effects.IntraTxFold;
@@ -26,12 +28,12 @@ import java.util.Optional;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.function.Supplier;
 
 /**
  * Everything one run of {@link ConwayLedgerTransition} reads: the transaction (original bytes and CCL
- * structure), the pre-transaction state, the environment, the protocol version that selects PV gates, the
- * validation mode, and the STS "is failing" flag that {@code whenFailureFree} consults.
+ * structure), the pre-transaction state, the environment, the protocol version and its {@link ConwayRuleSet} (which
+ * units run, in which order: ADR-056 Phase 5c), the validation mode, and the STS "is failing" flag that
+ * {@code whenFailureFree} consults.
  *
  * <p>The UTxO entries of every spending, collateral and reference input are read once, up front: an
  * {@link Lookup.Unavailable} read rejects the transaction (invariant 2) before any rule runs, and every rule
@@ -52,6 +54,7 @@ public final class TransitionContext {
     private final ValidationEnv env;
     private final ProtocolParams params;
     private final int protocolMajor;
+    private final ConwayRuleSet rules;
     private final Mode mode;
     private final TxValidationRequest.Rule rule;
     private final ConwayLedgerConstants constants;
@@ -61,19 +64,37 @@ public final class TransitionContext {
     private List<LedgerFailure> collectFailures = List.of();
     private SortedSet<Integer> plutusLanguagesUsed = Collections.emptySortedSet();
     private IntraTxFold certState;
+    private CertsRule.UndrainedWithdrawals undrainedWithdrawals;
 
     /**
+     * A context with the rule set of {@code protocolMajor} ({@link ConwayRuleSets#forProtocol(int)}).
+     *
      * @param resolved the UTxO entries of the inputs, from {@link #resolve(RawTransaction, LedgerView)}
+     * @throws IllegalArgumentException when no rule set validates {@code protocolMajor}
      */
     public TransitionContext(RawTransaction raw, LedgerView preState, ValidationEnv env, ProtocolParams params,
                              int protocolMajor, Mode mode, TxValidationRequest.Rule rule,
                              ConwayLedgerConstants constants, ScriptPhaseEvaluator evaluator,
                              Map<TxInRef, UtxoEntry> resolved) {
+        this(raw, preState, env, params, ConwayRuleSets.forProtocol(protocolMajor).orElseThrow(
+                        () -> new IllegalArgumentException("no Conway rule set for protocol version " + protocolMajor)),
+                mode, rule, constants, evaluator, resolved);
+    }
+
+    /**
+     * @param rules    the rule set of the protocol version being validated; its version is {@link #protocolMajor()}
+     * @param resolved the UTxO entries of the inputs, from {@link #resolve(RawTransaction, LedgerView)}
+     */
+    public TransitionContext(RawTransaction raw, LedgerView preState, ValidationEnv env, ProtocolParams params,
+                             ConwayRuleSet rules, Mode mode, TxValidationRequest.Rule rule,
+                             ConwayLedgerConstants constants, ScriptPhaseEvaluator evaluator,
+                             Map<TxInRef, UtxoEntry> resolved) {
+        this.rules = Objects.requireNonNull(rules, "rules");
+        this.protocolMajor = rules.protocolVersion();
         this.raw = Objects.requireNonNull(raw, "raw");
         this.preState = Objects.requireNonNull(preState, "preState");
         this.env = Objects.requireNonNull(env, "env");
         this.params = Objects.requireNonNull(params, "params");
-        this.protocolMajor = protocolMajor;
         this.mode = Objects.requireNonNull(mode, "mode");
         this.rule = Objects.requireNonNull(rule, "rule");
         this.constants = Objects.requireNonNull(constants, "constants");
@@ -124,9 +145,14 @@ public final class TransitionContext {
         return params;
     }
 
-    /** @return the protocol major version that selects PV gates */
+    /** @return the protocol major version being validated (the version of {@link #rules()}) */
     public int protocolMajor() {
         return protocolMajor;
+    }
+
+    /** @return the rule set of {@link #protocolMajor()}: the units every rule family runs */
+    public ConwayRuleSet rules() {
+        return rules;
     }
 
     public Mode mode() {
@@ -188,30 +214,6 @@ public final class TransitionContext {
         failing = true;
     }
 
-    /**
-     * Whether a check runs: its PV gate must include the protocol version, and a {@code static} check is skipped
-     * on re-application ({@code lblStatic}, ADR-056 §6).
-     */
-    public boolean runs(ConwayPredicate predicate) {
-        return predicate.pvRange().contains(protocolMajor)
-                && (mode == Mode.FULL || predicate.label() == CheckLabel.DYNAMIC);
-    }
-
-    /**
-     * Runs one check ({@code runTest} / {@code runTestOnSignal}) when {@link #runs(ConwayPredicate)} allows it.
-     *
-     * @param check returns the failure's detail when the check fails, or null when it holds
-     */
-    public void check(RuleFrame frame, ConwayPredicate predicate, Supplier<String> check) {
-        if (!runs(predicate)) {
-            return;
-        }
-        String detail = check.get();
-        if (detail != null) {
-            frame.fail(predicate.failure(detail));
-        }
-    }
-
     /** @return the {@code CollectErrors} the evaluator found while {@code UTXOW} prepared the scripts */
     public List<LedgerFailure> collectFailures() {
         return collectFailures;
@@ -231,6 +233,18 @@ public final class TransitionContext {
 
     public void plutusLanguagesUsed(SortedSet<Integer> languages) {
         this.plutusLanguagesUsed = Collections.unmodifiableSortedSet(new TreeSet<>(languages));
+    }
+
+    /**
+     * {@code withdrawalsThatDoNotDrainAccounts} against the incoming accounts ({@link #preState()}), computed once for
+     * the two {@code LEDGER} checks that read it from protocol version 11 ({@code ConwayWithdrawalsMissingAccounts},
+     * {@code ConwayIncompleteWithdrawals}).
+     */
+    public CertsRule.UndrainedWithdrawals undrainedWithdrawals() {
+        if (undrainedWithdrawals == null) {
+            undrainedWithdrawals = CertsRule.withdrawalsThatDoNotDrainAccounts(this, preState);
+        }
+        return undrainedWithdrawals;
     }
 
     /**

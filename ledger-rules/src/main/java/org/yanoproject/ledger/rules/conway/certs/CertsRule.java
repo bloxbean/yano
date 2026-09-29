@@ -21,10 +21,10 @@ import com.bloxbean.cardano.client.transaction.spec.cert.VoteRegDelegCert;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.LedgerRuleName;
-import org.yanoproject.ledger.rules.conway.PvRange;
 import org.yanoproject.ledger.rules.conway.RuleFrame;
 import org.yanoproject.ledger.rules.conway.TransitionContext;
-import org.yanoproject.ledger.rules.conway.failure.ConwayPredicate;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayScopes;
+import org.yanoproject.ledger.rules.conway.ruleset.Scope;
 import org.yanoproject.ledger.rules.conway.tx.RawCertificate;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.view.LedgerView;
@@ -40,7 +40,10 @@ import java.util.Optional;
 /**
  * Conway {@code CERTS} and {@code CERT} ({@code conwayCertsTransition}, Conway/Rules/Certs.hs:204-246;
  * {@code certTransition}, Cert.hs:210-223), run by {@code LEDGER} when {@code isValid = True} after its pre-checks
- * and before {@code GOV} (Ledger.hs:394-400).
+ * and before {@code GOV} (Ledger.hs:394-400). The units are the protocol version's rule set's: the base case
+ * ({@link ConwayScopes#CERTS}, {@link CertsChecks}), one scope per certificate kind of {@code DELEG}
+ * ({@link DelegChecks}), {@code POOL} ({@link PoolChecks}) and {@code GOVCERT} ({@link GovCertChecks}), and the
+ * certificate's state step ({@link ConwayScopes#CERT}).
  *
  * <ul>
  *   <li><b>Recursion.</b> {@code CERTS} on {@code gamma :|> c} runs {@code CERTS} on {@code gamma} as a sub-rule,
@@ -54,7 +57,7 @@ import java.util.Optional;
  *   <li><b>Base case.</b> Before protocol version 11 ({@code hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule}
  *       off): {@code WithdrawalsNotInRewardsCERTS} against the incoming accounts, then the dormant-DRep bump, the
  *       voting DReps' expiry refresh and the withdrawal drain (Certs.hs:223-241). From 11 the base case is the
- *       identity and {@code LEDGER} does both (Ledger.hs:384-392, {@code LedgerPreChecks}).</li>
+ *       identity and {@code LEDGER} does both (Ledger.hs:384-392): the protocol version 11 delta moves the units.</li>
  *   <li><b>Environment.</b> {@code DELEG} reads the pools of the running state, {@code POOL} the current epoch and
  *       parameters, {@code GOVCERT} the current committee and the committee proposals as they were before the
  *       transaction ({@code committeeProposals}, Ledger.hs:367-370: {@code GOV} adds this transaction's proposals
@@ -78,7 +81,7 @@ public final class CertsRule {
         }
 
         RuleFrame certs = ledger.child(LedgerRuleName.CERTS);
-        baseCase(certs);
+        certs.run(ConwayScopes.CERTS, ctx);
         for (int i = 0; i < certificates.size(); i++) {
             RawCertificate raw = certificates.get(i);
             Certificate certificate = decoded.get(i);
@@ -94,28 +97,53 @@ public final class CertsRule {
         ledger.subRule(certs);
     }
 
-    /** The {@code Empty} case (Certs.hs:223-241). */
-    private static void baseCase(RuleFrame certs) {
+    /** {@code CERT} (Cert.hs:210-223): dispatch to {@code DELEG}, {@code POOL} or {@code GOVCERT}, then the step. */
+    private static void cert(RuleFrame certs, RawCertificate raw, Certificate certificate) {
         TransitionContext ctx = certs.context();
-        if (movesWithdrawalsToLedger(ctx.protocolMajor())) {
-            // PV >= 11: pure certState; LEDGER ran the withdrawal checks and the pre-certificate step.
-            return;
-        }
+        RuleFrame cert = certs.child(LedgerRuleName.CERT);
         LedgerView state = ctx.certState().current();
-        ctx.check(certs, ConwayPredicate.WITHDRAWALS_NOT_IN_REWARDS, () -> withdrawalsThatDoNotDrain(ctx, state));
-        CertState.advancePreCertificate(ctx);
+        Scope<CertSubject> scope = scopeOf(raw);
+        LedgerRuleName family = familyOf(raw);
+        RuleFrame leaf = cert.child(family);
+        CertSubject subject = switch (family) {
+            case POOL -> CertSubject.pool(ctx, raw, certificate, state);
+            case GOVCERT -> CertSubject.govCert(ctx, raw, certificate, state);
+            default -> CertSubject.deleg(ctx, raw, certificate, state);
+        };
+        leaf.run(scope, subject);
+        cert.subRule(leaf);
+        cert.run(ConwayScopes.CERT, subject);
+        certs.subRule(cert);
     }
 
-    /**
-     * {@code hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule} (Conway/Era.hs:283-284, {@code pvMajor > 10}): the
-     * protocol versions at which the withdrawal checks and the pre-certificate step run in {@code LEDGER}, not in the
-     * {@code CERTS} base case.
-     */
-    public static final PvRange WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER = PvRange.from(11);
+    /** @return the rule a certificate belongs to */
+    static LedgerRuleName familyOf(RawCertificate raw) {
+        return switch (raw.tag()) {
+            case RawCertificate.POOL_REGISTRATION, RawCertificate.POOL_RETIREMENT -> LedgerRuleName.POOL;
+            case RawCertificate.AUTH_COMMITTEE_HOT, RawCertificate.RESIGN_COMMITTEE_COLD, RawCertificate.REG_DREP,
+                 RawCertificate.UNREG_DREP, RawCertificate.UPDATE_DREP -> LedgerRuleName.GOVCERT;
+            default -> LedgerRuleName.DELEG;
+        };
+    }
 
-    /** @return whether {@link #WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER} contains {@code protocolMajor} */
-    public static boolean movesWithdrawalsToLedger(int protocolMajor) {
-        return WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER.contains(protocolMajor);
+    /** @return the scope of a certificate's kind */
+    static Scope<CertSubject> scopeOf(RawCertificate raw) {
+        return switch (raw.tag()) {
+            case RawCertificate.STAKE_REGISTRATION, RawCertificate.REG -> ConwayScopes.DELEG_REG;
+            case RawCertificate.STAKE_DEREGISTRATION, RawCertificate.UNREG -> ConwayScopes.DELEG_UNREG;
+            case RawCertificate.STAKE_DELEGATION, RawCertificate.VOTE_DELEG, RawCertificate.STAKE_VOTE_DELEG ->
+                    ConwayScopes.DELEG_DELEG;
+            case RawCertificate.STAKE_REG_DELEG, RawCertificate.VOTE_REG_DELEG, RawCertificate.STAKE_VOTE_REG_DELEG ->
+                    ConwayScopes.DELEG_REG_DELEG;
+            case RawCertificate.POOL_REGISTRATION -> ConwayScopes.POOL_REG;
+            case RawCertificate.POOL_RETIREMENT -> ConwayScopes.POOL_RETIRE;
+            case RawCertificate.REG_DREP -> ConwayScopes.GOVCERT_REG_DREP;
+            case RawCertificate.UNREG_DREP -> ConwayScopes.GOVCERT_UNREG_DREP;
+            case RawCertificate.UPDATE_DREP -> ConwayScopes.GOVCERT_UPDATE_DREP;
+            case RawCertificate.AUTH_COMMITTEE_HOT -> ConwayScopes.GOVCERT_AUTH_COMMITTEE_HOT;
+            case RawCertificate.RESIGN_COMMITTEE_COLD -> ConwayScopes.GOVCERT_RESIGN_COMMITTEE_COLD;
+            default -> throw new IllegalArgumentException(raw + " is not a DELEG certificate");
+        };
     }
 
     /**
@@ -158,54 +186,12 @@ public final class CertsRule {
         return new UndrainedWithdrawals(missing, incomplete);
     }
 
-    /**
-     * The base case's predicate: {@code WithdrawalsNotInRewardsCERTS} carries the missing and the incomplete
-     * withdrawals (the latter with their supplied amounts) in one failure.
-     *
-     * @return the failure's detail, or null when every withdrawal drains its account
-     */
-    static String withdrawalsThatDoNotDrain(TransitionContext ctx, LedgerView accounts) {
-        UndrainedWithdrawals undrained = withdrawalsThatDoNotDrainAccounts(ctx, accounts);
-        if (undrained.isEmpty()) {
-            return null;
-        }
-        return "Withdrawals {missing or wrong network: " + undrained.missing() + ", incomplete: "
-                + undrained.incomplete() + "}";
-    }
-
     /** The credential of an account address (header bit 4: script). */
     static CredentialKey accountCredential(byte[] accountAddress) {
         byte[] hash = new byte[28];
         System.arraycopy(accountAddress, 1, hash, 0, 28);
         return new CredentialKey((accountAddress[0] & 0x10) != 0 ? CredentialType.SCRIPT : CredentialType.KEY,
                 HexUtil.encodeHexString(hash));
-    }
-
-    /** {@code CERT} (Cert.hs:210-223): dispatch to {@code DELEG}, {@code POOL} or {@code GOVCERT}. */
-    private static void cert(RuleFrame certs, RawCertificate raw, Certificate certificate) {
-        TransitionContext ctx = certs.context();
-        RuleFrame cert = certs.child(LedgerRuleName.CERT);
-        LedgerView state = ctx.certState().current();
-        boolean changesState;
-        RuleFrame leaf;
-        switch (raw.tag()) {
-            case RawCertificate.POOL_REGISTRATION, RawCertificate.POOL_RETIREMENT -> {
-                leaf = cert.child(LedgerRuleName.POOL);
-                changesState = PoolRule.apply(leaf, raw, state);
-            }
-            case RawCertificate.AUTH_COMMITTEE_HOT, RawCertificate.RESIGN_COMMITTEE_COLD, RawCertificate.REG_DREP,
-                 RawCertificate.UNREG_DREP, RawCertificate.UPDATE_DREP -> {
-                leaf = cert.child(LedgerRuleName.GOVCERT);
-                changesState = GovCertRule.apply(leaf, raw, state);
-            }
-            default -> {
-                leaf = cert.child(LedgerRuleName.DELEG);
-                changesState = DelegRule.apply(leaf, raw, state);
-            }
-        }
-        cert.subRule(leaf);
-        certs.subRule(cert);
-        CertState.advance(ctx, certificate, changesState);
     }
 
     /** @return the CDDL tag CCL decoded a certificate from */

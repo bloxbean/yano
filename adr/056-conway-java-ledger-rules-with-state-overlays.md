@@ -580,9 +580,14 @@ checks.
 5. **UTXOS.** Phase-2 through `ScriptPhaseEvaluator`, compared with the
    transaction's `isValid` flag.
 
-Protocol version gates are data: each check declares its PV range, and the
-constructor it reports is the one valid at that version. The coverage matrix
-and the Amaru differential mapping both key on (constructor, PV).
+Protocol versions are data. Since Phase 5c each check is a unit in a
+**versioned rule set**: `pv9 = base`, `pv10 = pv9.with(delta10)`,
+`pv11 = pv10.with(delta11)`. The engine picks the rule set from the ledger
+protocol major of the state it validates against, and fails closed when no rule
+set exists for that major. A version that changes behaviour supersedes a check
+instead of editing it. The rule families contain no version branches. See
+"Phase 5c results" for details. The coverage matrix, the mutation world matrix
+and the Amaru differential mapping all key on (constructor, PV).
 
 The existing CCL rule classes are starting material. Each is either extended
 into its family or rewritten where its model (independent checks against
@@ -1810,6 +1815,205 @@ helper per behaviour; no rule has a `pv == 9` branch.
   shadow sync of whole blocks must follow the same split. (b) The PV 9 overlay's forward-delegation divergence after a
   DRep deregistration surfaces only if shadow sync diffs state or effects, not verdicts; a PV 9 state or effects diff
   must compare with Haskell's reverse-index semantics or exclude account DRep delegations.
+
+#### Phase 5c results: versioned rule sets (2026-09-29)
+
+Required by Satya: new rules for new protocol versions must be easy to add without risk to existing rules. Phase 5c is
+a pure refactor of the Java engine: verdicts are unchanged, and the test coverage per protocol version grows. The
+contributor guide is `ledger-rules/README.md`.
+
+**Versioned rule sets.**
+
+- **Units.** Every Haskell predicate check is a `RuleUnit`: a `PredicateCheck`, or a custom unit for multi-failure
+  predicates. Each has:
+  - a stable id: `RULE.Constructor`, with `#suffix` where one constructor has several checks, e.g.
+    `GOV.InvalidGuardrailsScriptHash#treasuryWithdrawals`;
+  - a static/dynamic label;
+  - a Haskell reference;
+  - an implementation that reads one narrow subject and returns the predicate's failures.
+
+  State steps are units too, so they can be versioned: `UTXOW.prepareScripts`, `CERTS.preCertificateStep`,
+  `LEDGER.preCertificateStep`, `CERT.applyCertificate`, `GOV.proposalsAddAction`. Versioned functions are `RulePolicy`
+  objects (today one: `GOVCERT.computeDRepExpiry`).
+
+  Units are stateless named classes, grouped per family in `*Checks` files:
+  `UtxowChecks`, `UtxoChecks`, `UtxosChecks`, `LedgerChecks`, `CertsChecks`, `DelegChecks`, `PoolChecks`,
+  `GovCertChecks`, `GovChecks`, `MempoolChecks`. A Haskell predicate that reports several constructors
+  (`babbageMissingScripts`, `missingRequiredDatums`, `hasExactSetOfRedeemers`, `validateMetadata`,
+  `validateScriptsWellFormed`) becomes one unit per constructor, in the predicate's order. Small-steps prepends a
+  predicate's failures reversed, so adjacent units give exactly the same list.
+- **Scopes.** `ConwayScopes` defines 21 ordered scopes: `MEMPOOL`, `LEDGER`, `CERTS`, one per `DELEG`, `POOL` and
+  `GOVCERT` certificate kind, `CERT`, `GOV`, `GOV.proposal`, `GOV.votes`, `UTXOW`, `UTXO`, `UTXOS`. Each scope has a
+  subject type (`UtxowSubject`, `UtxoSubject`, `CertSubject`, `GovSubject`, `ProposalSubject`, `VotesSubject`,
+  `MempoolSubject`, or `TransitionContext`).
+
+  The family runners (`MempoolRule`, `LedgerPreChecks`, `CertsRule`, `GovRule`, `UtxowRule`, `UtxoRule`, `UtxosRule`)
+  only build subjects and run scopes, through `RuleFrame.run`. `RuleFrame.run` skips static units on re-application and
+  records each unit as one predicate. `RuleFrame` remains the authority for failure-list order. `MEMPOOL`'s
+  all-inputs-spent check is the one unit that halts (`whenFailureFreeDefault`). The UTXOS script run keeps its own
+  `whenFailureFree`.
+- **Base plus deltas.** The base (`ConwayBaseRules`) is the PV 9 rule set. `ConwayDelta10` and `ConwayDelta11` make
+  PV 10 and PV 11. A delta can make four changes:
+  - add a unit, at a position relative to an existing id;
+  - supersede a unit by id with a new implementation, which takes the same place and may carry a new id when Haskell
+    renamed the constructor;
+  - retire a unit;
+  - supersede a policy.
+
+  `ConwayRuleSet.with` never changes its receiver. A unit does not declare its versions. They come from the composition:
+  from the version whose delta introduced it (the manifest's `since`) up to the version before a delta retired it
+  (`ConwayRuleSets.versionsOf`). So adding a version never edits an existing unit.
+
+  `ConwayRuleSets` checks the composition when it loads. A failure here makes the engine unusable, not wrong. It
+  checks that:
+  - deltas are consecutive;
+  - every id a delta names exists;
+  - units are named classes;
+  - each version reports a constructor **exactly** when `ConwayPredicate.pvRange` contains the version.
+
+  The last check ties the rule sets to the pinned catalogue. It is per constructor. `ConwayRuleSetsTest` adds a
+  per-scope check: from one version to the next, the scopes that report a constructor, and the scopes that hold a unit
+  id, change only in scopes the delta names. It also requires a superseded or retired unit to be replaced in every
+  scope that holds it. The only scope move today is `preCertificateStep` from `CERTS` to `LEDGER` at 11, as intended.
+
+  A scope the base does not fill is empty. Manifests omit empty scopes, so a scope added later (for example a new
+  certificate kind) appears only in its own version's manifest.
+
+  An empty delta passes the composition check. The Haskell gate review (step 1 of the checklist below) is the only
+  guard that a new version needs changes.
+- **Selection.** `JavaLedgerValidationEngine` looks up `ConwayRuleSets.forProtocol(ledgerProtocolMajor)`. An empty
+  result is `ENGINE.EraNotSupported`. `SUPPORTED` is now derived from the registered rule sets (9–11). The
+  engine-neutral `MempoolRule.apply(body, view, major)` (used by the Scalus and Amaru engines) and
+  `TxEffectsDeriver.drepExpiryVersioned` use `forProtocolOrLatest`. For a version newer than the latest rule set it
+  returns the latest and logs a WARN once per version, so a rollout is visible. It throws for a version before Conway
+  (< 9). The Scalus engine turns that into a fail-closed `ENGINE` failure. For every Conway version, both keep their
+  previous answers. `RuleFrame.run` and `MempoolRule.apply` share one loop (`ScopeRunner`).
+
+**How each version-dependent behaviour moved.**
+
+| Behaviour | Base unit (PV 9) | Delta |
+|---|---|---|
+| Unelected committee voters | `MEMPOOL`: `LEDGER.ConwayMempoolFailure#unelectedCommitteeVoters` | Δ11: retire it; add `GOV.UnelectedCommitteeVoters` (first in `GOV`) |
+| Withdrawal checks and pre-certificate step, CERTS → LEDGER | `CERTS.WithdrawalsNotInRewardsCERTS`, `CERTS.preCertificateStep` | Δ11: retire both; add `LEDGER.ConwayWithdrawalsMissingAccounts`, `LEDGER.ConwayIncompleteWithdrawals`, `LEDGER.preCertificateStep` (was `CertsRule.WITHDRAWALS_AND_DREP_CHECKS_IN_LEDGER`) |
+| Script integrity constructor | `UTXOW.PPViewHashesDontMatch` | Δ11: supersede with `UTXOW.ScriptIntegrityHashMismatch` |
+| DELEG deposit and refund constructors | `DELEG.IncorrectDepositDELEG#deposit` (`ConwayRegCert`, `ConwayRegDelegCert`), `#refund` (`ConwayUnRegCert`) | Δ11: supersede with `DELEG.DepositIncorrectDELEG`, `DELEG.RefundIncorrectDELEG` |
+| Duplicate VRF keys | none | Δ11: add `POOL.VRFKeyHashAlreadyRegistered` after the cost check |
+| Disjoint reference inputs | `UTXO.BabbageNonDisjointRefInputs` | Δ11: retire |
+| `ppuWellFormed` non-zero keys (was `RawParamUpdate.NON_ZERO`) | `GOV.MalformedProposal`, `nonZero=[2,3,4,22,23,28,29,6,30,31]` | Δ10: supersede (+17 coinsPerUTxOByte); Δ11: supersede (+8 nOpt) |
+| Bootstrap-only GOV checks | `GOV.DisallowedProposalDuringBootstrap`, `GOV.DisallowedVotesDuringBootstrap` | Δ10: retire both |
+| `unless` bootstrap (`POST_BOOTSTRAP`) | none | Δ10: add `LEDGER.ConwayWdrlNotDelegatedToDRep`, `GOV.ProposalReturnAccountDoesNotExist`, `GOV.TreasuryWithdrawalReturnAccountsDoNotExist`, `DELEG.DelegateeDRepNotRegisteredDELEG` (two scopes) |
+| PlutusV3 context without certificate deposits (was `UtxosRule.CERTIFICATE_DEPOSITS_OMITTED`) | `UTXOS.ValidationTagMismatch` = `BootstrapPhasePlutusExecution` | Δ10: supersede with `PlutusExecutionAfterBootstrap` |
+| DRep expiry (was the branch in `drepExpiryVersioned`) | policy `DRepExpiries.Bootstrap` | Δ10: supersede with `DRepExpiries.DormantAdjusted` |
+
+Not moved, deliberately:
+
+- `PlutusScriptDecoder`'s per-version builtin and limit tables. They mirror plutus-ledger-api, which keys them by
+  version.
+- `ProposalCantFollow`'s use of the current version. That is data, not a gate.
+
+**Frozen manifests.** `ConwayRuleSet.manifest(fingerprint)` lists every non-empty scope's units in execution order.
+Each line has id, kind, label, `since`, implementation class, `content`, `variant` (parameters) and Haskell reference.
+Policies follow. The committed copies are
+`ledger-rules/src/test/resources/org/yanoproject/ledger/rules/conway/ruleset/conway-pv{9,10,11}.manifest`.
+
+`content` is a sha256 prefix of the unit's normalized source (`SourceFingerprints`). It is taken from
+`src/main/java`, so it does not depend on the toolchain. It covers:
+
+- the class declaration (nested classes are located by brace matching over tokens);
+- its superclasses in `org.yanoproject`;
+- the non-type members of those classes' files (the shared helpers).
+
+Comments and whitespace are ignored. So the manifests pin both the composition and each unit's content. Behaviour is
+pinned by the per-protocol-version gates, but only where a mutant or scenario exercises it. Subjects, the `tx` decoders
+and helpers in other files are not in the digest.
+
+**Rule:** units of a released protocol version are immutable. The only exception is a Haskell-cited bug fix that
+applies to every version containing the unit. That fix is an edit plus regenerating every affected manifest, and each
+must be reviewed; regenerating is the explicit "I mean all these versions" act. Any other change is a superseding unit
+in the newest delta.
+
+`ConwayRuleSetManifestTest` has one test per version. A difference fails with a scoped line diff:
+"rule set for PV10 changed: … — if intentional, regenerate with
+`./gradlew :ledger-rules:test --tests '*ConwayRuleSetManifestTest' -PupdateRuleManifests=true` and review the diff".
+It also checks that there is exactly one manifest per supported version. The pv10 → pv11 manifest diff reads as
+`ConwayDelta11`.
+
+`ConwayRuleSetsTest` checks the structure:
+
+- every prefix of the deltas composes byte-identical earlier manifests;
+- `with` leaves its receiver unchanged;
+- deltas are consecutive;
+- unknown or duplicate ids fail;
+- a hypothetical PV 12 that revives a retired check, drops a live one, or uses an anonymous class fails the
+  composition check;
+- versions derived from the composition equal the catalogue ranges;
+- policies are versioned;
+- every unit and policy field is final;
+- a delta changes the reporting and holding scopes only where it names them (above).
+
+**Per-PV regression pinning.**
+
+- *Mutation world matrix* (`MutationWorldMatrixTest`, one dynamic test per version). Every mutant is built and
+  validated in the 9, 10 and 11 worlds. Where a gate changes Haskell's verdict, `Mutations.WORLD_EXPECTATIONS` gives
+  the verdict and cites the gate: 42 entries, including renames, bootstrap starts and stops, and `MEMPOOL`-rule
+  expectations for `ConwayMempoolFailure`. `worldCases` refuses a replay whose list names a constructor that does not
+  exist in that world.
+
+  The Java engine must return Haskell's exact list. Amaru cross-checks the 10 and 11 worlds. The counts are pinned:
+  96, 96 and 95 cases, with 8, 4 and 4 valid. Result: 0 misses, 0 Amaru disagreements.
+
+  Two new mutants cover the constructors that the replays did not reach at some version:
+  `hard-fork-cant-follow-v11` (11.2 at 11.0; a major above 12 does not decode) and `wrong-network-withdrawal`
+  (Haskell's three-failure list; Amaru confirms). Three scope-level mutants exercise the DELEG units that live in
+  several certificate-kind scopes, through `ConwayRegDelegCert`:
+  - `reg-deleg-deposit-incorrect` (tag 11): `IncorrectDepositDELEG` at 9 and 10, `DepositIncorrectDELEG` at 11;
+  - `vote-reg-deleg-drep-not-registered` (tag 12) and `stake-vote-reg-deleg-drep-not-registered` (tag 13): valid at
+    9, `DelegateeDRepNotRegisteredDELEG` from 10.
+
+  Amaru confirms all three at 10 and 11. That brings the total to 94 mutants, and `java-engine` passes 94/94.
+- *Coverage per version.* `CoverageMatrix` now also counts, for each constructor at each supported version where it
+  exists, the world cases and `@Covers(pv = …)` tests that reject a transaction with it. `@Covers` gained `pv`, and
+  `GovRuleTest` covers `VotingOnExpiredGovAction` at 9, 10 and 11. Strict mode fails on any gap.
+  Result: PV 9 75/75, PV 10 77/77, PV 11 80/80. Overall strict coverage is still 86/86. The generated
+  `conway-rule-coverage.md` has a "Coverage per protocol version" table, a "Covered at PV" column, and a "Java rule"
+  column that lists the units with their versions.
+- *Phase 5 gate per version* (`JavaEnginePhase5GateTest`, one dynamic test per version), with pinned tallies:
+  PV 9: 1 scenario (bootstrap); PV 10: 273 (272 match, 1 recorded divergence); PV 11: 2 (both match).
+
+**Behaviour preservation.** A temporary harness recorded the Java engine's full verdict, before and after the refactor,
+for 2212 combinations: every Amaru scenario, base transaction, bootstrap acceptance, and every mutant in every world,
+each under rules `LEDGER` and `MEMPOOL` and in full and re-apply mode, with every failure's constructor and detail. The
+two runs are identical. The only new lines belong to the five new mutants. This was re-run after the review fixes:
+the 2212 original lines are unchanged, plus 60 new lines.
+
+`:ledger-rules:test` passes: 355 tests, 2 skipped (338 before; the new tests are the rule-set, manifest, fingerprint
+and per-version tests). `:ledger-conformance:test` passes with the corpus and Amaru: 115 tests. `:scalus-bridge:test`
+passes: 91 tests (14 skipped without the corpus, 1 with it). The Phase 3/4/5 gates are unchanged, and the baseline scenario columns are unchanged.
+
+##### How to add a protocol version (or a new era)
+
+1. List the pinned Haskell's `hardfork…` gates and `pvMajor` comparisons that change at the new version N:
+   Conway/Era.hs, the rules, `ppuWellFormed`, TxInfo, and plutus-ledger-api `builtinsAvailableIn`. An empty delta passes
+   every check, so this list is the only guard that N needs changes.
+2. Update the catalogue ranges (`conway-constructors.json`, `ConwayPredicate`). `ConwayPredicateCatalogueTest` keeps
+   them aligned.
+3. Write `ConwayDeltaN`: add, supersede or retire units, with new unit classes that cite Haskell. Existing unit classes
+   are never edited. Register it in `ConwayRuleSets.DELTAS`. The composition check names any missing or stale unit. A new
+   certificate kind or branch is a new scope in `ConwayScopes`, filled by the delta.
+4. Run `-PupdateRuleManifests=true`. Review:
+   - `conway-pvN.manifest` is new;
+   - no earlier manifest changes, in composition or `content`;
+   - a new scope appears only in `conway-pvN.manifest`.
+5. Add N to `Mutations.WORLDS` and `MutationWorldMatrixTest.PINNED`. Add mutants for the new constructors and
+   `WORLD_EXPECTATIONS` for the gates that change. Coverage per version must stay complete.
+6. Refresh the Amaru module and scenarios, and the Haskell pins (`adr-056-haskell-pinned-revisions.md`,
+   `ConformanceSettings.AMARU_TAG`). Add the corpus versions to `JavaEnginePhase5GateTest.PER_VERSION`.
+7. Check the things outside the rule sets: `PlutusScriptDecoder` tables, the phase-2 evaluator, and parameter decoding.
+8. Record an ADR entry with the gates, the delta, the counts and any divergences.
+
+A new era is not a delta. It needs a new transition skeleton with its own scopes, subjects, catalogue and base rule set.
+It reuses units where Haskell reuses a rule, and the engine's selection extends to it. Its versions then follow the
+same base-plus-delta model.
 
 ### Phase 6 — Runtime overlays
 

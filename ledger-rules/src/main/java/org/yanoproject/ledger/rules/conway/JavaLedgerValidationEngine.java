@@ -10,6 +10,8 @@ import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSet;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
@@ -23,15 +25,17 @@ import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * The {@code java} engine (ADR-056 §4, §7): Yano's own Conway rules, {@link ConwayLedgerTransition}, over the
  * request's {@link LedgerView}, with Plutus scripts run by the node's {@link ScriptPhaseEvaluator}.
  *
  * <ul>
- *   <li><b>Scope</b>: Conway at protocol major version 9 (the bootstrap phase), 10 or 11 (invariant 7); anything
- *       else is {@code ENGINE.EraNotSupported}, never "accept". The bootstrap-phase differences are protocol-version
- *       ranges on the checks ({@link PvRange#BOOTSTRAP}, {@link PvRange#POST_BOOTSTRAP}; ADR-056 Phase 5b).</li>
+ *   <li><b>Scope</b>: Conway at protocol major version 9 (the bootstrap phase), 10 or 11 (invariant 7): the versions
+ *       with a rule set ({@link ConwayRuleSets}, ADR-056 Phase 5c), which is selected from the ledger protocol major
+ *       of the state validated against ({@link ValidationEnv#ledgerProtocolMajor}); anything else is
+ *       {@code ENGINE.EraNotSupported}, never "accept".</li>
  *   <li><b>Decoding</b>: the transaction is read from its original bytes ({@link RawTransaction}); bytes Haskell
  *       would not decode are {@code ENGINE.DecodingFailure}.</li>
  *   <li><b>Mode</b>: full validation or re-application, decided from {@code previous} ({@link ReapplyPolicy}).</li>
@@ -43,8 +47,8 @@ import java.util.Objects;
  * </ul>
  *
  * <p>Phase 3 implements {@code UTXOW}, {@code UTXO} and {@code UTXOS}, Phase 4 {@code CERTS} with {@code DELEG},
- * {@code POOL} and {@code GOVCERT}; {@code GOV} and the {@code LEDGER} predicates follow in Phase 5, so the engine
- * is not selectable for production admission yet ({@link JavaEngineFactory}). Thread-safe and stateless.</p>
+ * {@code POOL} and {@code GOVCERT}, Phase 5 {@code GOV} and the {@code LEDGER} predicates; the engine is opt-in
+ * ({@link JavaEngineFactory}). Thread-safe and stateless.</p>
  */
 public final class JavaLedgerValidationEngine implements LedgerValidationEngine {
 
@@ -54,10 +58,10 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
     /** Engine constructor: the engine failed without a ledger verdict. */
     public static final String ENGINE_FAILURE = "JavaEngineFailure";
     /**
-     * The protocol versions the engine validates (invariant 7): every Conway version, the bootstrap phase (9)
-     * included since ADR-056 Phase 5b, up to the latest the pinned rules know (11).
+     * The protocol versions the engine validates (invariant 7): those with a rule set ({@link ConwayRuleSets}), every
+     * Conway version from the bootstrap phase (9, since ADR-056 Phase 5b) up to the latest the pinned rules know (11).
      */
-    public static final PvRange SUPPORTED = PvRange.between(9, 11);
+    public static final PvRange SUPPORTED = ConwayRuleSets.SUPPORTED;
 
     private final ScriptPhaseEvaluator evaluator;
     private final ConwayLedgerConstants constants;
@@ -110,7 +114,8 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
         ValidationEnv env = request.env();
         ProtocolParams params = view.protocolParams().require("protocol parameters");
         int major = env.ledgerProtocolMajor(params);
-        if (!SUPPORTED.contains(major)) {
+        Optional<ConwayRuleSet> rules = ConwayRuleSets.forProtocol(major);
+        if (rules.isEmpty()) {
             return TxValidationOutcome.Invalid.of(LedgerFailure.eraNotSupported(
                     "the java engine validates Conway at protocol versions " + SUPPORTED + ", not " + major));
         }
@@ -127,7 +132,7 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
         ValidatedTx previous = request.previous();
         ReapplyPolicy.Decision decision = ReapplyPolicy.decide(previous, raw.txId(), raw.isValid(), major, env,
                 request.origin(), resolvedDigest);
-        TransitionContext ctx = new TransitionContext(raw, view, env, params, major,
+        TransitionContext ctx = new TransitionContext(raw, view, env, params, rules.get(),
                 decision.reapply() ? TransitionContext.Mode.REAPPLY : TransitionContext.Mode.FULL, request.rule(),
                 constants, evaluator, resolved);
 

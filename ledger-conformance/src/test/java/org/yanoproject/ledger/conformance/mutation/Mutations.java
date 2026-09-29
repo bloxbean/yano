@@ -39,10 +39,13 @@ import com.bloxbean.cardano.client.transaction.spec.cert.RegCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.RegDRepCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeDelegation;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakePoolId;
+import com.bloxbean.cardano.client.transaction.spec.cert.StakeRegDelegCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.StakeVoteRegDelegCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.UnregCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.UnregDRepCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.UpdateDRepCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.VoteDelegCert;
+import com.bloxbean.cardano.client.transaction.spec.cert.VoteRegDelegCert;
 import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
 import com.bloxbean.cardano.client.util.HexUtil;
@@ -51,7 +54,9 @@ import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.HaskellFailureLists;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
+import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
+import org.yanoproject.ledger.rules.conway.failure.ConwayPredicate;
 import org.yanoproject.ledger.rules.conway.utxo.MinFee;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
@@ -499,7 +504,39 @@ public final class Mutations {
                     "dev-77's DRep votes on the standing parameter change at protocol version 9 (Gov.hs:378-391, 606: "
                             + "DReps vote only on InfoAction during the bootstrap phase)",
                     s -> vote(s, VoterType.DREP_KEY_HASH, TestKey.DEV_77, MutationWorld.PARAMETER_CHANGE_ACTION))
-                    .atProtocolVersion9());
+                    .atProtocolVersion9(),
+            // ---- Phase 5c: every constructor at every protocol version (worldCases). The two constructors the
+            // replays did not reach at some version get their own mutants.
+            new Mutation("hard-fork-cant-follow-v11", "GOV.ProposalCantFollow", List.of(), SIMPLE,
+                    "a hard fork to 11.2 at protocol version 11.0 (only 12.0 or 11.1 can follow; at 10.0 only 11.0 or "
+                            + "10.1, at 9.0 only 10.0 or 9.1, Gov.hs:673-695; a major above 12 does not decode)",
+                    s -> propose(s, proposal(new HardForkInitiationAction(null, new ProtocolVersion(11, 2)))))
+                    .atProtocolVersion11(),
+            new Mutation("wrong-network-withdrawal", "UTXO.WrongNetworkWithdrawal", List.of(
+                    "UTXO.WrongNetworkWithdrawal", "CERTS.WithdrawalsNotInRewardsCERTS",
+                    "LEDGER.ConwayWdrlNotDelegatedToDRep"), SIMPLE,
+                    "withdraws 0 from dev-42's mainnet reward account (not a single fault: CERTS' base case treats a "
+                            + "withdrawal on another network as one without an account, categorizeWithdrawals, "
+                            + "State/Account.hs:262-264, and dev-42 has no DRep delegation, Ledger.hs:379-381; LEDGER "
+                            + "lists UTXOW's failures before CERTS' and its own pre-checks last)",
+                    s -> s.withdrawals.add(new Withdrawal(MutationWorld.rewardAccount(TestKey.DEV_42,
+                            Networks.mainnet()), BigInteger.ZERO))),
+            // Scope-level coverage: the DELEG units that the rule sets hold in several certificate-kind scopes, through
+            // the kinds the other mutants do not use (ConwayRegDelegCert, tags 11-13).
+            new Mutation("reg-deleg-deposit-incorrect", "DELEG.IncorrectDepositDELEG", List.of(), SIMPLE,
+                    "registers dev-42 and delegates it to dev-77's pool (tag 11) stating a 1 ADA deposit (ppKeyDeposit "
+                            + "is 2 ADA, which the balance pays)",
+                    s -> certificate(s, new StakeRegDelegCert(MutationWorld.stakeCredential(TestKey.DEV_42),
+                            TestKey.DEV_77.keyHash(), ada(1)), ada(-2))),
+            new Mutation("vote-reg-deleg-drep-not-registered", "DELEG.DelegateeDRepNotRegisteredDELEG", List.of(),
+                    SIMPLE, "registers dev-42 and delegates its vote to dev-42's key hash, which is no DRep (tag 12)",
+                    s -> certificate(s, new VoteRegDelegCert(MutationWorld.stakeCredential(TestKey.DEV_42),
+                            DRep.addrKeyHash(TestKey.DEV_42.keyHash()), ada(2)), ada(-2))),
+            new Mutation("stake-vote-reg-deleg-drep-not-registered", "DELEG.DelegateeDRepNotRegisteredDELEG",
+                    List.of(), SIMPLE, "registers dev-42 and delegates it to dev-77's pool and its vote to dev-42's key "
+                            + "hash, which is no DRep (tag 13)",
+                    s -> certificate(s, new StakeVoteRegDelegCert(MutationWorld.stakeCredential(TestKey.DEV_42),
+                            TestKey.DEV_77.keyHash(), DRep.addrKeyHash(TestKey.DEV_42.keyHash()), ada(2)), ada(-2))));
 
     /**
      * Faults that protocol version 10 rejects and the bootstrap phase accepts (ADR-056 Phase 5b): each names a mutant
@@ -535,6 +572,215 @@ public final class Mutations {
         return testCase("bootstrap-accepts:" + acceptance.mutationId(), acceptance.gate(),
                 ConformanceCase.Kind.MUTATION_BASE, buildBootstrapAccepted(acceptance).cbor(), new Expected.Pass(),
                 List.of(), 9);
+    }
+
+    // ------------------------------------------------------------------ Phase 5c: every mutant in every world
+
+    /**
+     * Haskell's verdict on a mutant in a world other than its own, or under rule {@code MEMPOOL} (ADR-056 Phase 5c),
+     * where it is not the mutant's own failure list: a protocol-version gate starts or stops a check, or renames the
+     * constructor.
+     *
+     * @param mutationId    the mutation
+     * @param protocolMajor the world
+     * @param rule          the rule the case is validated under
+     * @param failures      Haskell's failure list, in order; empty when Haskell accepts the transaction
+     * @param haskell       the Haskell gate that makes the difference
+     */
+    public record WorldExpectation(String mutationId, int protocolMajor, TxValidationRequest.Rule rule,
+                                   List<String> failures, String haskell) {
+
+        public WorldExpectation {
+            failures = List.copyOf(failures);
+        }
+    }
+
+    private static WorldExpectation ledger(String id, int pv, String haskell, String... failures) {
+        return new WorldExpectation(id, pv, TxValidationRequest.Rule.LEDGER, List.of(failures), haskell);
+    }
+
+    private static WorldExpectation mempool(String id, int pv, String haskell, String... failures) {
+        return new WorldExpectation(id, pv, TxValidationRequest.Rule.MEMPOOL, List.of(failures), haskell);
+    }
+
+    private static final String NOT_BOOTSTRAP_ACTION = "Gov.hs:435-444, 483: not a bootstrap action "
+            + "(isBootstrapAction, :633-639) while hardforkConwayBootstrapPhase; the action's own checks still run";
+    private static final String BOOTSTRAP_PROPOSAL_ENDS = "Gov.hs:483: checkBootstrapProposal only while "
+            + "hardforkConwayBootstrapPhase";
+    private static final String DELEG_DEPOSITS_RENAMED = "Deleg.hs:199-211, 242-259: "
+            + "hardforkConwayDELEGIncorrectDepositsAndRefunds (protocol version 11) renames the constructor";
+    private static final String INTEGRITY_RENAMED = "Alonzo/Rules/Utxow.hs checkScriptIntegrityHash: "
+            + "PPViewHashesDontMatch before protocol version 11, ScriptIntegrityHashMismatch from 11";
+    private static final String WITHDRAWALS_MOVED = "hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule: "
+            + "Certs.hs:222-236 before protocol version 11, Ledger.hs:383-386 (testIncompleteAndMissingWithdrawals) "
+            + "from 11";
+
+    /**
+     * The mutants whose verdict in another world (or under {@code MEMPOOL}) differs from their own failure list. Every
+     * other mutant must be judged the same in every world; {@link #worldCases(int)} refuses a replay whose failure
+     * list names a constructor that does not exist at the world's protocol version, so a new mutant or a new protocol
+     * version forces an entry here.
+     */
+    public static final List<WorldExpectation> WORLD_EXPECTATIONS = List.of(
+            // The bootstrap-only constructors stop at protocol version 10.
+            ledger("bootstrap-proposal-v9", 10, BOOTSTRAP_PROPOSAL_ENDS),
+            ledger("bootstrap-proposal-v9", 11, BOOTSTRAP_PROPOSAL_ENDS),
+            ledger("bootstrap-drep-vote-v9", 10, "Gov.hs:606: checkBootstrapVotes only while "
+                    + "hardforkConwayBootstrapPhase"),
+            ledger("bootstrap-drep-vote-v9", 11, "Gov.hs:606: checkBootstrapVotes only while "
+                    + "hardforkConwayBootstrapPhase"),
+            ledger("bootstrap-treasury-withdrawal-v9", 10, "Gov.hs:504-520: from protocol version 10 the return "
+                    + "account and the withdrawal account (dev-aa, no account) must exist",
+                    "GOV.ProposalReturnAccountDoesNotExist", "GOV.TreasuryWithdrawalReturnAccountsDoNotExist"),
+            ledger("bootstrap-treasury-withdrawal-v9", 11, "Gov.hs:504-520: from protocol version 10 the return "
+                    + "account and the withdrawal account (dev-aa, no account) must exist",
+                    "GOV.ProposalReturnAccountDoesNotExist", "GOV.TreasuryWithdrawalReturnAccountsDoNotExist"),
+            // Proposals that are not bootstrap actions are also disallowed at protocol version 9.
+            ledger("committee-update-conflict", 9, NOT_BOOTSTRAP_ACTION, "GOV.DisallowedProposalDuringBootstrap",
+                    "GOV.ConflictingCommitteeUpdate"),
+            ledger("committee-expiration-too-small", 9, NOT_BOOTSTRAP_ACTION,
+                    "GOV.DisallowedProposalDuringBootstrap", "GOV.ExpirationEpochTooSmall"),
+            ledger("treasury-withdrawal-network", 9, NOT_BOOTSTRAP_ACTION, "GOV.DisallowedProposalDuringBootstrap",
+                    "GOV.TreasuryWithdrawalsNetworkIdMismatch"),
+            ledger("treasury-withdrawal-zero", 9, NOT_BOOTSTRAP_ACTION, "GOV.DisallowedProposalDuringBootstrap",
+                    "GOV.ZeroTreasuryWithdrawals"),
+            ledger("treasury-withdrawal-account-missing", 9, NOT_BOOTSTRAP_ACTION
+                    + "; the account checks are skipped (unless hardforkConwayBootstrapPhase, Gov.hs:504-520)",
+                    "GOV.DisallowedProposalDuringBootstrap"),
+            // Checks that start or stop at protocol version 11.
+            ledger("hard-fork-cant-follow", 11, "Gov.hs:673-695 (pvCanFollow): 12.0 follows that world's 11.0"),
+            ledger("non-disjoint-reference-inputs", 11, "Babbage/Rules/Utxo.hs:200-214, 356: disjointRefInputs "
+                    + "only before protocol version 11"),
+            ledger("pool-vrf-taken-v11", 9, "Pool.hs:265-267, 279-282: hardforkConwayDisallowDuplicatedVRFKeys "
+                    + "from protocol version 11"),
+            ledger("pool-vrf-taken-v11", 10, "Pool.hs:265-267, 279-282: hardforkConwayDisallowDuplicatedVRFKeys "
+                    + "from protocol version 11"),
+            ledger("unelected-committee-voter-v11", 9, "Gov.hs:478-481: hardforkConwayDisallowUnelectedCommittee"
+                    + "FromVoting from protocol version 11 (before, MEMPOOL checks it)"),
+            ledger("unelected-committee-voter-v11", 10, "Gov.hs:478-481: hardforkConwayDisallowUnelectedCommittee"
+                    + "FromVoting from protocol version 11 (before, MEMPOOL checks it)"),
+            ledger("script-unavailable-builtin", 11, "plutus-ledger-api builtinsAvailableIn: the builtin is "
+                    + "available from protocol version 11, so the script is well formed and fails when it runs "
+                    + "(Babbage/Rules/Utxos.hs:145-157)", "UTXOS.ValidationTagMismatch"),
+            // Constructors renamed at protocol version 11.
+            ledger("reg-deposit-incorrect", 11, DELEG_DEPOSITS_RENAMED, "DELEG.DepositIncorrectDELEG"),
+            ledger("reg-deleg-deposit-incorrect", 11, DELEG_DEPOSITS_RENAMED, "DELEG.DepositIncorrectDELEG"),
+            ledger("vote-reg-deleg-drep-not-registered", 9, "Deleg.hs:220-226: unless hardforkConwayBootstrapPhase, "
+                    + "DelegateeDRepNotRegisteredDELEG"),
+            ledger("stake-vote-reg-deleg-drep-not-registered", 9, "Deleg.hs:220-226: unless "
+                    + "hardforkConwayBootstrapPhase, DelegateeDRepNotRegisteredDELEG"),
+            ledger("reg-deposit-incorrect-v11", 9, DELEG_DEPOSITS_RENAMED, "DELEG.IncorrectDepositDELEG"),
+            ledger("reg-deposit-incorrect-v11", 10, DELEG_DEPOSITS_RENAMED, "DELEG.IncorrectDepositDELEG"),
+            ledger("unreg-refund-incorrect", 11, DELEG_DEPOSITS_RENAMED, "DELEG.RefundIncorrectDELEG"),
+            ledger("unreg-refund-incorrect-v11", 9, DELEG_DEPOSITS_RENAMED, "DELEG.IncorrectDepositDELEG"),
+            ledger("unreg-refund-incorrect-v11", 10, DELEG_DEPOSITS_RENAMED, "DELEG.IncorrectDepositDELEG"),
+            ledger("script-integrity-hash", 11, INTEGRITY_RENAMED, "UTXOW.ScriptIntegrityHashMismatch"),
+            ledger("script-integrity-hash-v11", 9, INTEGRITY_RENAMED, "UTXOW.PPViewHashesDontMatch"),
+            ledger("script-integrity-hash-v11", 10, INTEGRITY_RENAMED, "UTXOW.PPViewHashesDontMatch"),
+            ledger("withdrawal-not-draining", 11, WITHDRAWALS_MOVED, "LEDGER.ConwayIncompleteWithdrawals"),
+            ledger("withdrawal-incomplete-v11", 9, WITHDRAWALS_MOVED, "CERTS.WithdrawalsNotInRewardsCERTS"),
+            ledger("withdrawal-incomplete-v11", 10, WITHDRAWALS_MOVED, "CERTS.WithdrawalsNotInRewardsCERTS"),
+            ledger("withdrawal-missing-account-v11", 9, WITHDRAWALS_MOVED, "CERTS.WithdrawalsNotInRewardsCERTS"),
+            ledger("withdrawal-missing-account-v11", 10, WITHDRAWALS_MOVED, "CERTS.WithdrawalsNotInRewardsCERTS"),
+            ledger("wrong-network-withdrawal", 9, "Ledger.hs:379-381: no ConwayWdrlNotDelegatedToDRep during the "
+                    + "bootstrap phase", "UTXO.WrongNetworkWithdrawal", "CERTS.WithdrawalsNotInRewardsCERTS"),
+            ledger("wrong-network-withdrawal", 11, WITHDRAWALS_MOVED + " (another network counts as missing, "
+                    + "State/Account.hs:262-264); LEDGER's own list comes last, in reverse", "UTXO.WrongNetworkWithdrawal",
+                    "LEDGER.ConwayWithdrawalsMissingAccounts", "LEDGER.ConwayWdrlNotDelegatedToDRep"),
+            // Rule MEMPOOL: ConwayMempoolFailure (Mempool.hs:103-138).
+            mempool("empty-inputs", 9, "Mempool.hs:113-118: no spending input is in the UTxO (none at all counts as "
+                    + "all spent); whenFailureFreeDefault skips LEDGER", "LEDGER.ConwayMempoolFailure"),
+            mempool("empty-inputs", 10, "Mempool.hs:113-118: no spending input is in the UTxO (none at all counts as "
+                    + "all spent); whenFailureFreeDefault skips LEDGER", "LEDGER.ConwayMempoolFailure"),
+            mempool("empty-inputs", 11, "Mempool.hs:113-118: no spending input is in the UTxO (none at all counts as "
+                    + "all spent); whenFailureFreeDefault skips LEDGER", "LEDGER.ConwayMempoolFailure"),
+            mempool("unelected-committee-voter-v11", 9, "Mempool.hs:120-138: unless "
+                    + "hardforkConwayDisallowUnelectedCommitteeFromVoting, unelected committee voters",
+                    "LEDGER.ConwayMempoolFailure"),
+            mempool("unelected-committee-voter-v11", 10, "Mempool.hs:120-138: unless "
+                    + "hardforkConwayDisallowUnelectedCommitteeFromVoting, unelected committee voters",
+                    "LEDGER.ConwayMempoolFailure"));
+
+    /**
+     * One mutant validated in one world under one rule, with Haskell's failure list.
+     *
+     * @param mutation the mutation (in its own world)
+     * @param world    the protocol version of the world the mutant is built and validated in
+     * @param rule     the rule
+     * @param expected Haskell's failure list; empty when Haskell accepts it
+     * @param source   where the expectation comes from: {@code own} (the mutation's own list in its world),
+     *                 {@code replay} (the same list in another world), {@code bootstrap} ({@link #BOOTSTRAP_ACCEPTED}) or
+     *                 the {@link WorldExpectation}'s Haskell gate
+     */
+    public record WorldCase(Mutation mutation, int world, TxValidationRequest.Rule rule, List<String> expected,
+                            String source) {
+
+        public WorldCase {
+            expected = List.copyOf(expected);
+        }
+
+        /** @return {@code mutant:<id>@<world>[/MEMPOOL]} */
+        public String id() {
+            return mutation.caseId() + "@" + world + (rule == TxValidationRequest.Rule.MEMPOOL ? "/MEMPOOL" : "");
+        }
+
+        /** @return the mutant built in {@link #world()} as a case */
+        public ConformanceCase testCase() {
+            return mutantCase(inWorld(mutation, world));
+        }
+    }
+
+    /** @return {@code mutation} built and validated in the world of protocol version {@code world} */
+    public static Mutation inWorld(Mutation mutation, int world) {
+        return new Mutation(mutation.id(), mutation.covers(), mutation.haskellFailures(), mutation.base(),
+                mutation.description(), mutation.edit(), mutation.amaruReports(), world);
+    }
+
+    /**
+     * @return every mutant in the world of protocol version {@code world} under rule {@code LEDGER}, and those with a
+     *         {@code MEMPOOL} expectation there, with Haskell's failure lists
+     * @throws IllegalStateException when a mutant's own failure list names a constructor that does not exist at
+     *                               {@code world} and no {@link WorldExpectation} says what Haskell reports instead
+     */
+    public static List<WorldCase> worldCases(int world) {
+        List<WorldCase> cases = new ArrayList<>();
+        for (Mutation mutation : ALL) {
+            Optional<WorldExpectation> explicit = expectation(mutation.id(), world, TxValidationRequest.Rule.LEDGER);
+            List<String> own = mutation.haskellFailures().isEmpty() ? List.of(mutation.covers())
+                    : mutation.haskellFailures();
+            if (explicit.isPresent()) {
+                cases.add(new WorldCase(mutation, world, TxValidationRequest.Rule.LEDGER, explicit.get().failures(),
+                        explicit.get().haskell()));
+            } else if (world == 9 && BOOTSTRAP_ACCEPTED.stream().anyMatch(a -> a.mutationId().equals(mutation.id()))) {
+                cases.add(new WorldCase(mutation, world, TxValidationRequest.Rule.LEDGER, List.of(), "bootstrap"));
+            } else if (world == mutation.protocolMajor()) {
+                cases.add(new WorldCase(mutation, world, TxValidationRequest.Rule.LEDGER, own, "own"));
+            } else {
+                for (String constructor : own) {
+                    if (!existsAt(constructor, world)) {
+                        throw new IllegalStateException(mutation.id() + " reports " + constructor + ", which does not "
+                                + "exist at protocol version " + world + ": add a WorldExpectation with Haskell's "
+                                + "verdict in that world");
+                    }
+                }
+                cases.add(new WorldCase(mutation, world, TxValidationRequest.Rule.LEDGER, own, "replay"));
+            }
+            expectation(mutation.id(), world, TxValidationRequest.Rule.MEMPOOL).ifPresent(e -> cases.add(
+                    new WorldCase(mutation, world, TxValidationRequest.Rule.MEMPOOL, e.failures(), e.haskell())));
+        }
+        return cases;
+    }
+
+    private static Optional<WorldExpectation> expectation(String id, int world, TxValidationRequest.Rule rule) {
+        return WORLD_EXPECTATIONS.stream().filter(e -> e.mutationId().equals(id) && e.protocolMajor() == world
+                && e.rule() == rule).findFirst();
+    }
+
+    /** @return whether the catalogue constructor {@code qualifiedName} exists at {@code protocolMajor} */
+    static boolean existsAt(String qualifiedName, int protocolMajor) {
+        return Arrays.stream(ConwayPredicate.values()).filter(p -> p.qualifiedName().equals(qualifiedName))
+                .findFirst().map(p -> p.pvRange().contains(protocolMajor))
+                .orElseThrow(() -> new IllegalArgumentException("not a Conway constructor: " + qualifiedName));
     }
 
     private Mutations() {

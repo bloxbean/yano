@@ -36,7 +36,8 @@ import com.bloxbean.cardano.client.transaction.spec.governance.actions.UpdateCom
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.TxIdentity;
 import org.yanoproject.ledger.rules.ValidationEnv;
-import org.yanoproject.ledger.rules.conway.PvRange;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayPolicies;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
 import org.yanoproject.ledger.rules.effects.LedgerChange.AccountRegistered;
 import org.yanoproject.ledger.rules.effects.LedgerChange.AccountUnregistered;
 import org.yanoproject.ledger.rules.effects.LedgerChange.CommitteeHotAuthorized;
@@ -359,15 +360,14 @@ public final class TxEffectsDeriver {
     }
 
     /**
-     * {@code computeDRepExpiryVersioned} (GovCert.hs:282-292), the expiry of a new DRep: during the bootstrap phase
-     * ({@code hardforkConwayBootstrapPhase}, {@link PvRange#BOOTSTRAP}) {@code currentEpoch + drepActivity}, ignoring
-     * the dormant epochs; afterwards {@link #drepExpiry}. The version is {@link ValidationEnv#ledgerProtocolMajor}.
+     * {@code computeDRepExpiryVersioned} (GovCert.hs:282-292), the expiry of a new DRep: the
+     * {@link ConwayPolicies#DREP_EXPIRY} policy of the rule set of {@link ValidationEnv#ledgerProtocolMajor} (ADR-056
+     * Phase 5c; the bootstrap phase ignores the dormant epochs). A version after the latest rule set uses the latest
+     * policy ({@link ConwayRuleSets#forProtocolOrLatest}).
      */
     static long drepExpiryVersioned(ProtocolParams pp, ValidationEnv env, LedgerView state) {
-        if (PvRange.BOOTSTRAP.contains(env.ledgerProtocolMajor(pp))) {
-            return env.currentEpoch() + requireInt(pp.getDrepActivity(), "drepActivity");
-        }
-        return drepExpiry(pp, env.currentEpoch(), state.dormantEpochs().require("dormant epochs"));
+        return ConwayRuleSets.forProtocolOrLatest(env.ledgerProtocolMajor(pp)).drepExpiry()
+                .expiry(pp, env.currentEpoch(), state);
     }
 
     /** computeDRepExpiry = currentEpoch + drepActivity - numDormantEpochs (GovCert.hs:294-306). */

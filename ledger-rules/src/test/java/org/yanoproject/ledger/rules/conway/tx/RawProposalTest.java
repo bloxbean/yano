@@ -1,11 +1,16 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.util.HexUtil;
+
 import org.junit.jupiter.api.Test;
+import org.yanoproject.ledger.rules.conway.gov.GovChecks;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayScopes;
 
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedSet;
 import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,8 +80,8 @@ class RawProposalTest {
         RawParamUpdate update = update(hex.toString());
         assertThat(update.keys()).hasSize(30);
         assertThat(update.integer(30)).contains(new BigInteger("100000000000"));
-        assertThat(update.malformedKeys(10)).isEmpty();
-        assertThat(update.malformedKeys(11)).isEmpty();
+        assertThat(malformedKeys(update, 10)).isEmpty();
+        assertThat(malformedKeys(update, 11)).isEmpty();
         assertThat(update.anyInSecurityGroup()).isTrue();
     }
 
@@ -119,17 +124,17 @@ class RawProposalTest {
     void wellFormednessFollowsTheProtocolVersion() {
         for (int key : new int[]{2, 3, 4, 22, 23, 28, 29, 6, 30, 31, 17}) {
             String encoded = key < 24 ? String.format("%02x", key) : "18" + String.format("%02x", key);
-            assertThat(update("a1" + encoded + "00").malformedKeys(10)).as("key " + key).containsExactly(key);
+            assertThat(malformedKeys(update("a1" + encoded + "00"), 10)).as("key " + key).containsExactly(key);
         }
         // coinsPerUTxOByte = 0 is allowed during the bootstrap phase only (protocol version 9).
-        assertThat(update("a1" + "11" + "00").malformedKeys(9)).isEmpty();
+        assertThat(malformedKeys(update("a1" + "11" + "00"), 9)).isEmpty();
         // nOpt = 0 is malformed from protocol version 11.
-        assertThat(update("a1" + "08" + "00").malformedKeys(10)).isEmpty();
-        assertThat(update("a1" + "08" + "00").malformedKeys(11)).containsExactly(8);
+        assertThat(malformedKeys(update("a1" + "08" + "00"), 10)).isEmpty();
+        assertThat(malformedKeys(update("a1" + "08" + "00"), 11)).containsExactly(8);
         // Other zeros are fine (key deposit, minPoolCost, the DRep activity).
-        assertThat(update("a3" + "0500" + "1000" + "182000").malformedKeys(11)).isEmpty();
+        assertThat(malformedKeys(update("a3" + "0500" + "1000" + "182000"), 11)).isEmpty();
         // The empty update.
-        assertThat(update("a0").malformedKeys(10)).containsExactly(-1);
+        assertThat(malformedKeys(update("a0"), 10)).containsExactly(-1);
     }
 
     @Test
@@ -218,5 +223,12 @@ class RawProposalTest {
         assertThat(new RawProposal.ProtVer(12, 0).canFollow(ten)).isFalse();
         // Word32 minor arithmetic wraps.
         assertThat(new RawProposal.ProtVer(10, 0).canFollow(new RawProposal.ProtVer(10, 0xFFFF_FFFFL))).isTrue();
+    }
+
+    /** {@code ppuWellFormed pv} as the protocol version's rule set checks it ({@code GOV.MalformedProposal}). */
+    private static SortedSet<Integer> malformedKeys(RawParamUpdate update, int protocolMajor) {
+        GovChecks.MalformedProposal check = (GovChecks.MalformedProposal) ConwayRuleSets.forProtocol(protocolMajor)
+                .orElseThrow().unit(ConwayScopes.GOV_PROPOSAL, "GOV.MalformedProposal").orElseThrow();
+        return update.malformedKeys(check.nonZeroKeys());
     }
 }

@@ -2,6 +2,7 @@ package org.yanoproject.ledger.conformance.coverage;
 
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.ConformanceSettings;
+import org.yanoproject.ledger.conformance.mutation.Mutations;
 import org.yanoproject.ledger.conformance.runner.ScenarioCases;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruCorpusNames;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
@@ -10,7 +11,11 @@ import org.yanoproject.ledger.rules.fixtures.conformance.ConwayConstructorCatalo
 
 import java.net.URISyntaxException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,7 +69,8 @@ class CoverageMatrixTest {
         Path ownClasses = Path.of(CoverageMatrixTest.class.getProtectionDomain().getCodeSource().getLocation().toURI());
         CoversScanner.Result scan = CoversScanner.scan(ownClasses, ConformanceSettings.scanDirs(),
                 CoverageMatrixTest.class.getClassLoader());
-        CoverageMatrix matrix = CoverageMatrix.build(catalogue, scan.coverings(), ScenarioCases.scenarios());
+        CoverageMatrix matrix = CoverageMatrix.build(catalogue, scan.coverings(), ScenarioCases.scenarios(),
+                worldEvidence());
 
         assertThat(matrix.unknownCovers()).as("@Covers values that are not catalogue constructors").isEmpty();
         assertThat(scan.coverings()).as("the mutation matrix's @Covers tests are found").isNotEmpty();
@@ -77,13 +83,35 @@ class CoverageMatrixTest {
                 matrix.count(CoverageMatrix.Status.TEST), matrix.count(CoverageMatrix.Status.SCENARIO_ONLY),
                 matrix.count(CoverageMatrix.Status.GAP), written);
         scan.skipped().forEach(s -> System.out.println("  not inspected: " + s));
+        List<String> missingPerVersion = matrix.missingPerVersion();
+        System.out.printf("Coverage per protocol version %s: %d gaps %s%n", matrix.protocolVersions(),
+                missingPerVersion.size(), missingPerVersion);
         if (ConformanceSettings.strict()) {
             assertThat(scan.skipped()).as("test classes the @Covers scan could not inspect (conformance.strict)")
                     .isEmpty();
             assertThat(missing).as("in-scope constructors without a @Covers test (conformance.strict)").isEmpty();
+            assertThat(missingPerVersion).as("constructors not covered at a protocol version where they exist "
+                    + "(conformance.strict)").isEmpty();
         } else if (!missing.isEmpty()) {
             System.out.println("  " + missing.size() + " constructors have no @Covers test (reported because "
                     + "-Pconformance.strict=false)");
         }
+    }
+
+    /**
+     * @return per mutation world, per constructor, the world cases that reject a mutant with it (the mutation matrix's
+     *         per-version evidence, {@code MutationWorldMatrixTest})
+     */
+    private static Map<Integer, Map<String, List<String>>> worldEvidence() {
+        Map<Integer, Map<String, List<String>>> evidence = new TreeMap<>();
+        for (int world : Mutations.WORLDS) {
+            Map<String, List<String>> byConstructor = new LinkedHashMap<>();
+            for (Mutations.WorldCase c : Mutations.worldCases(world)) {
+                c.expected().forEach(constructor -> byConstructor.computeIfAbsent(constructor,
+                        k -> new ArrayList<>()).add(c.id()));
+            }
+            evidence.put(world, byConstructor);
+        }
+        return evidence;
     }
 }

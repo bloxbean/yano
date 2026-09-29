@@ -13,7 +13,7 @@ Amaru module: `amaru-validator-wasm` crate 0.1.1, sha256 `c43eeb3738cdce05caf3a8
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
 - **Scenarios**: 276 Haskell-cross-checked Amaru scenarios (tag `v10.11.20260925`), rule `LEDGER`, origin `SYNC`, one `InMemoryLedgerView` per scenario.
-- **Mutants**: 89 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions in a preprod-like PV 10 world with a PV 11 copy for the constructors that exist only from 11 and a PV 9 (bootstrap) copy for the bootstrap-only constructors (bases valid in all three), with a registered stake account, pools, a DRep, committee members and governance state (standing proposals, a treasury); signed with Amaru's corpus test keys and three more, re-signed after every edit.
+- **Mutants**: 94 mutants (single faults, or Haskell's whole failure list where a fault always has several) of 2 valid base transactions in a preprod-like PV 10 world with a PV 11 copy for the constructors that exist only from 11 and a PV 9 (bootstrap) copy for the bootstrap-only constructors (bases valid in all three), with a registered stake account, pools, a DRep, committee members and governance state (standing proposals, a treasury); signed with Amaru's corpus test keys and three more, re-signed after every edit.
 - **Constructors**: 88 Conway leaf predicate failures at cardano-ledger `f649f975 (cardano-ledger-conway 1.23.0.0)`, 86 reachable at PV 9–11 ([coverage matrix](../../ledger-rules/docs/conway-rule-coverage.md)).
 - **Verdict match**: accepted exactly when Haskell accepts. **Constructor match**: the verdict matches and the engine's *first* failure is the expected Haskell `RULE.Constructor` (a decoding failure must be reported as one). **Constructor found**: the expected constructor is among the engine's failures in any position (the copied Java rules report every failure, in their own order).
 
@@ -30,12 +30,12 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 38/89 | 6/6 | 33/86 | 2.08 |
-| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 51/89 | 6/6 | 47/86 | 0.37 |
-| `scalus-engine` | 193/276 | 187/276 | 187/276 | 54/89 | 6/6 | 49/86 | 0.36 |
-| `java-legacy` | 158/276 | 32/276 | 120/276 | 11/89 | 0/6 | 19/86 | 0.35 |
-| `java-engine` | 276/276 | 275/276 | 275/276 | 89/89 | 6/6 | 85/86 | 0.55 |
-| `amaru` | 276/276 | 275/276 | 275/276 | 79/89 | 4/6 | 77/86 | 2.16 |
+| `scalus-legacy` | 170/276 | 102/276 | 102/276 | 39/94 | 6/6 | 33/86 | 2.36 |
+| `scalus-legacy+supplementary` | 208/276 | 138/276 | 138/276 | 54/94 | 6/6 | 47/86 | 0.44 |
+| `scalus-engine` | 193/276 | 187/276 | 187/276 | 56/94 | 6/6 | 49/86 | 0.44 |
+| `java-legacy` | 158/276 | 32/276 | 120/276 | 12/94 | 0/6 | 19/86 | 0.37 |
+| `java-engine` | 276/276 | 275/276 | 275/276 | 94/94 | 6/6 | 85/86 | 0.57 |
+| `amaru` | 276/276 | 275/276 | 275/276 | 84/94 | 4/6 | 77/86 | 2.25 |
 
 *Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 85 of the 86 constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: `MempoolTransitionTest`).
 
@@ -158,8 +158,13 @@ Verdict matches / constructor matches, by the rule family of the expected constr
 | `mutant:bootstrap-proposal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
 | `mutant:bootstrap-treasury-withdrawal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `GOV.ProposalReturnAccountDoesNotExist` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
 | `mutant:bootstrap-drep-vote-v9` | GOV.DisallowedVotesDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | `ENGINE.EraNotSupported` |
+| `mutant:hard-fork-cant-follow-v11` | GOV.ProposalCantFollow | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:wrong-network-withdrawal` | UTXO.WrongNetworkWithdrawal (Haskell: UTXO.WrongNetworkWithdrawal, CERTS.WithdrawalsNotInRewardsCERTS, LEDGER.ConwayWdrlNotDelegatedToDRep) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:reg-deleg-deposit-incorrect` | DELEG.IncorrectDepositDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:vote-reg-deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:stake-vote-reg-deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 
-Mutants (89):
+Mutants (94):
 
 - `fee-too-small` → `UTXO.FeeTooSmallUTxO`: fee one lovelace below the minimum for the final bytes (change +1 keeps the balance)
 - `bad-input` → `UTXO.BadInputsUTxO`: an extra spending input that is not in the UTxO set (the balance counts only known inputs)
@@ -250,6 +255,11 @@ Mutants (89):
 - `bootstrap-proposal-v9` → `GOV.DisallowedProposalDuringBootstrap`: a no-confidence proposal at protocol version 9 (Gov.hs:435-444, 483: only ParameterChange, HardForkInitiation and InfoAction, isBootstrapAction :633-639)
 - `bootstrap-treasury-withdrawal-v9` → `GOV.DisallowedProposalDuringBootstrap`: a treasury withdrawal to dev-aa, which has no account, returning its deposit to dev-aa, at protocol version 9: disallowed, and the account checks are skipped (unless hardforkConwayBootstrapPhase, Gov.hs:504-520), so it is the only failure
 - `bootstrap-drep-vote-v9` → `GOV.DisallowedVotesDuringBootstrap`: dev-77's DRep votes on the standing parameter change at protocol version 9 (Gov.hs:378-391, 606: DReps vote only on InfoAction during the bootstrap phase)
+- `hard-fork-cant-follow-v11` → `GOV.ProposalCantFollow`: a hard fork to 11.2 at protocol version 11.0 (only 12.0 or 11.1 can follow; at 10.0 only 11.0 or 10.1, at 9.0 only 10.0 or 9.1, Gov.hs:673-695; a major above 12 does not decode)
+- `wrong-network-withdrawal` → `UTXO.WrongNetworkWithdrawal`: withdraws 0 from dev-42's mainnet reward account (not a single fault: CERTS' base case treats a withdrawal on another network as one without an account, categorizeWithdrawals, State/Account.hs:262-264, and dev-42 has no DRep delegation, Ledger.hs:379-381; LEDGER lists UTXOW's failures before CERTS' and its own pre-checks last)
+- `reg-deleg-deposit-incorrect` → `DELEG.IncorrectDepositDELEG`: registers dev-42 and delegates it to dev-77's pool (tag 11) stating a 1 ADA deposit (ppKeyDeposit is 2 ADA, which the balance pays)
+- `vote-reg-deleg-drep-not-registered` → `DELEG.DelegateeDRepNotRegisteredDELEG`: registers dev-42 and delegates its vote to dev-42's key hash, which is no DRep (tag 12)
+- `stake-vote-reg-deleg-drep-not-registered` → `DELEG.DelegateeDRepNotRegisteredDELEG`: registers dev-42 and delegates it to dev-77's pool and its vote to dev-42's key hash, which is no DRep (tag 13)
 
 ## Constructors demonstrated per engine
 
@@ -259,17 +269,17 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 |---|---:|---|---|---|---|---|---|
 | `LEDGER.ConwayTreasuryValueMismatch` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `LEDGER.ConwayTxRefScriptsSizeTooBig` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
-| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `LEDGER.ConwayWithdrawalsMissingAccounts` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `LEDGER.ConwayIncompleteWithdrawals` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
-| `CERTS.WithdrawalsNotInRewardsCERTS` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| `DELEG.IncorrectDepositDELEG` | 4 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `CERTS.WithdrawalsNotInRewardsCERTS` | 4 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.IncorrectDepositDELEG` | 5 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
 | `DELEG.DepositIncorrectDELEG` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
 | `DELEG.RefundIncorrectDELEG` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
 | `DELEG.StakeKeyRegisteredDELEG` | 6 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
 | `DELEG.StakeKeyNotRegisteredDELEG` | 5 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
 | `DELEG.StakeKeyHasNonZeroAccountBalanceDELEG` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
-| `DELEG.DelegateeDRepNotRegisteredDELEG` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `DELEG.DelegateeDRepNotRegisteredDELEG` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `DELEG.DelegateeStakePoolNotRegisteredDELEG` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `POOL.StakePoolNotRegisteredOnKeyPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
 | `POOL.StakePoolRetirementWrongEpochPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
@@ -285,7 +295,7 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `GOVCERT.ConwayCommitteeIsUnknown` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.UnelectedCommitteeVoters` | 13 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `GOV.DisallowedProposalDuringBootstrap` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
-| `GOV.ProposalCantFollow` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalCantFollow` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.MalformedProposal` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.ProposalReturnAccountDoesNotExist` | 10 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
 | `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
@@ -335,7 +345,7 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `UTXO.OutputTooBigUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
 | `UTXO.WrongNetwork` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.WrongNetworkWithdrawal` | 1 | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.WrongNetworkWithdrawal` | 2 | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
 | `UTXO.WrongNetworkInTxBody` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXO.MaxTxSizeUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `UTXO.ExUnitsTooBigUTxO` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |

@@ -62,6 +62,11 @@ public final class ConwayConstructorCatalogue {
             return reachable && pvMin <= 11 && (pvMax == null || pvMax >= 9);
         }
 
+        /** @return whether the constructor can occur at {@code protocolMajor} */
+        public boolean existsAt(int protocolMajor) {
+            return reachable && pvMin <= protocolMajor && (pvMax == null || protocolMajor <= pvMax);
+        }
+
         /** @return the PV range, e.g. {@code 9–10}, {@code 9}, {@code 11+} */
         public String pvRange() {
             if (!reachable) {

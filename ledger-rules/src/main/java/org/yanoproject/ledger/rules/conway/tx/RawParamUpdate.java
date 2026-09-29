@@ -1,13 +1,11 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import org.yanoproject.ledger.rules.conway.PvRange;
 import org.yanoproject.ledger.rules.view.model.ProposalState;
 
 import java.math.BigInteger;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.SortedMap;
@@ -159,37 +157,18 @@ public final class RawParamUpdate {
     }
 
     /**
-     * {@code ppuWellFormed}'s "not 0 when present" rules (Conway/PParams.hs:935-963), each with the protocol versions
-     * it applies at: coinsPerUTxOByte (17) is guarded by {@code hardforkConwayBootstrapPhase pv ||}
-     * (:949-950, so from 10), nOpt (8) by {@code pvMajor pv < 11 ||} (:952-953, so from 11).
-     */
-    private static final Map<Integer, PvRange> NON_ZERO = nonZeroRules();
-
-    private static Map<Integer, PvRange> nonZeroRules() {
-        Map<Integer, PvRange> rules = new LinkedHashMap<>();
-        for (int key : new int[]{2, 3, 4, 22, 23, 28, 29, 6, 30, 31}) {
-            rules.put(key, PvRange.ALWAYS);
-        }
-        rules.put(17, PvRange.POST_BOOTSTRAP);
-        rules.put(8, PvRange.from(11));
-        return Collections.unmodifiableMap(rules);
-    }
-
-    /**
-     * Conway's {@code ppuWellFormed pv} (Conway/PParams.hs:935-963): maxBBSize (2), maxTxSize (3), maxBHSize (4),
-     * maxValSize (22), collateralPercentage (23), committeeMaxTermLength (28), govActionLifetime (29), poolDeposit (6),
-     * govActionDeposit (30) and dRepDeposit (31) are not 0 when present; coinsPerUTxOByte (17) not 0 outside the
-     * bootstrap phase (protocol version 9); the update is not empty; and from protocol version 11 nOpt (8) is not 0.
+     * Conway's {@code ppuWellFormed pv} (Conway/PParams.hs:935-963): the listed parameters are not 0 when present, and
+     * the update is not empty. Which parameters are listed depends on the protocol version, so the caller passes them:
+     * the {@code GOV.MalformedProposal} unit of the version's rule set ({@code GovChecks.MalformedProposal}).
      *
+     * @param nonZeroKeys the parameter keys that must not be 0 when present
      * @return the offending parameter keys (with {@code -1} for an empty update); empty when well formed
      */
-    public SortedSet<Integer> malformedKeys(int protocolMajor) {
+    public SortedSet<Integer> malformedKeys(Collection<Integer> nonZeroKeys) {
         SortedSet<Integer> bad = new TreeSet<>();
-        NON_ZERO.forEach((key, versions) -> {
-            if (versions.contains(protocolMajor)) {
-                zero(key, bad);
-            }
-        });
+        for (int key : nonZeroKeys) {
+            zero(key, bad);
+        }
         if (isEmpty()) {
             bad.add(-1);
         }

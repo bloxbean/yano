@@ -454,9 +454,33 @@ class GovRuleTest {
         assertThat(runNamingOwnProposals(own, SAME_TX, 10)).containsExactly("Valid");
     }
 
+    /**
+     * {@link #votesAreNotForExpiredActions()} in the world of every protocol version (ADR-056 Phase 5c): the check has
+     * no version gate, and the votes (a DRep and a committee member on the standing info action) are allowed at every
+     * version, the bootstrap phase included (Gov.hs:378-391).
+     */
+    @Test
+    @Covers(value = "GOV.VotingOnExpiredGovAction", pv = {9, 10, 11})
+    void votesAreNotForExpiredActionsAtEveryProtocolVersion() {
+        TxSpec spec = voting(vote(vote(votes(), drep(TestKey.DEV_77), MutationWorld.INFO_ACTION), committee(
+                TestKey.DEV_42), MutationWorld.INFO_ACTION), TestKey.DEV_77);
+        for (int pv = 9; pv <= 11; pv++) {
+            assertThat(run(spec, MutationWorld.view(pv), atEpoch(6, pv), TxValidationRequest.Rule.LEDGER))
+                    .as("protocol version %d, epoch 6", pv).containsExactly("Valid");
+            assertThat(run(spec, MutationWorld.view(pv), atEpoch(7, pv), TxValidationRequest.Rule.LEDGER))
+                    .as("protocol version %d, epoch 7", pv).containsExactly("GOV.VotingOnExpiredGovAction");
+        }
+    }
+
     private static ValidationEnv atEpoch(long epoch) {
         ValidationEnv base = EngineTestSupport.env(10);
         return new ValidationEnv(base.currentSlot(), epoch, 10, 0, base.networkId(), base.slotConfig(),
+                base.phase2EnvDigest());
+    }
+
+    private static ValidationEnv atEpoch(long epoch, int protocolMajor) {
+        ValidationEnv base = EngineTestSupport.env(protocolMajor);
+        return new ValidationEnv(base.currentSlot(), epoch, protocolMajor, 0, base.networkId(), base.slotConfig(),
                 base.phase2EnvDigest());
     }
 

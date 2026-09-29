@@ -34,6 +34,17 @@ import java.util.function.Supplier;
  */
 public final class JavaViewEngine implements ConformanceEngine {
 
+    private final TxValidationRequest.Rule rule;
+
+    /** The engine under rule {@code LEDGER} (block selection and sync), as the gates run it. */
+    public JavaViewEngine() {
+        this(TxValidationRequest.Rule.LEDGER);
+    }
+
+    /** The engine under {@code rule} ({@code MEMPOOL} adds the mempool's own checks). */
+    public JavaViewEngine(TxValidationRequest.Rule rule) {
+        this.rule = rule;
+    }
 
     @Override
     public String name() {
@@ -55,7 +66,7 @@ public final class JavaViewEngine implements ConformanceEngine {
             engine = engine.withConstants(constants(testCase.constants()));
         }
         return Observation.of(engine.validate(new TxValidationRequest(testCase.txCbor(), testCase.view(),
-                testCase.env(), TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null)));
+                testCase.env(), rule, TxValidationRequest.Origin.SYNC, null)));
     }
 
     /** @return the engine as the node would create it, with the experimental opt-in and {@code evaluator} */
