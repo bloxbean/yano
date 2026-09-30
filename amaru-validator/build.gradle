@@ -238,6 +238,8 @@ tasks.withType(Test).configureEach {
         systemProperty 'yano.engine.benchmark.instances',
                 providers.gradleProperty('engineBenchmarkInstances').getOrElse('8')
         systemProperty 'yano.engine.benchmark.dir', layout.buildDirectory.dir('benchmark').get().asFile.absolutePath
+        // A measurement: never reuse an earlier run's result.
+        outputs.upToDateWhen { false }
     }
     // ADR-057 Phase C devnet parity (AmaruDevnetParityTest, about two minutes): -PledgerRulesGate=true
     // (CI: amaru-wasm.yml, conformance job).

@@ -6,6 +6,7 @@ import org.yanoproject.ledger.amaru.AmaruNetworkParameters;
 import org.yanoproject.ledger.amaru.AmaruNetworkParameters.EraBound;
 import org.yanoproject.ledger.amaru.AmaruNetworkParameters.EraSummary;
 import org.yanoproject.ledger.amaru.AmaruNetworkParameters.GlobalParameters;
+import org.yanoproject.ledger.amaru.AmaruNetworks;
 import org.yanoproject.ledger.amaru.AmaruTransactionValidator;
 import org.yanoproject.ledger.amaru.Phase2Mode;
 import org.yanoproject.ledger.amaru.runtime.WasmAmaruInstance;
@@ -13,8 +14,11 @@ import org.yanoproject.ledger.conformance.ConformanceSettings;
 import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
 import org.yanoproject.ledger.conformance.runner.Observation;
+import org.yanoproject.ledger.rules.LedgerValidationEngine;
+import org.yanoproject.ledger.rules.NetworkParameters;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
+import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 
 import java.util.List;
 import java.util.Map;
@@ -63,6 +67,19 @@ public final class AmaruReferenceEngine implements ConformanceEngine {
                         constants, () -> new WasmAmaruInstance(AmaruEngineConfig.DEFAULT_MAX_MEMORY_PAGES)));
         return Observation.of(engine.validate(new TxValidationRequest(testCase.txCbor(), testCase.view(),
                 testCase.env(), TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null)));
+    }
+
+    /**
+     * The Amaru engine for a real network ({@link AmaruNetworks#from}, Haskell's constants), as the node creates it;
+     * used by the latency benchmark on the public-network bundles.
+     *
+     * @param scripts null for {@code phase2 = full} (Amaru runs the scripts), or the evaluator for
+     *                {@code phase2 = scalus} (the node default)
+     */
+    public static LedgerValidationEngine forNetwork(NetworkParameters network, ScriptPhaseEvaluator scripts) {
+        return new AmaruTransactionValidator(
+                AmaruEngineConfig.defaults(scripts == null ? Phase2Mode.FULL : Phase2Mode.SCALUS, 2),
+                AmaruNetworks.from(network), scripts);
     }
 
     /**

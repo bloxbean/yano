@@ -16,7 +16,7 @@ the implementation plan:
 | C: overlays and runtime parity | done, one recorded divergence (full list in Phase D) | `f54e13a33` |
 | D: oracle integration | done | `e9341130e`, `88756fae1`, `cce882958` |
 | E: native image | done | `b02ba6fe1`, `943a5b6e0` |
-| E: latency benchmark, startup and memory figures, developer guide | in progress (the benchmark runs after the mainnet sync) | — |
+| E: latency benchmark, startup and memory figures, developer guide | done: target met on the scenario corpus; on real Plutus transactions `phase2: full` is far slower (Phase E results) | this commit |
 
 ## Date
 
@@ -747,8 +747,7 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   (40 observations per run: 22 accepted, 18 rejected; `amaru` and `java-julc` shadow sync 21 of 21 agreed each on
   the producer and the follower). This includes the Phase C divergence (`ENGINE` 1 against the `java-julc`
   shadow), which is identical in both. Amaru validates Conway from PV 10 only, so PV 9 is not run.
-- **Not done in Phase E yet:** the latency benchmark on the scenario corpus, and the startup and per-instance memory
-  figures. The procedure is ready ("Phase E: benchmark procedure" below). The developer guide is written.
+- The latency benchmark and the startup and per-instance memory figures are in "Phase E results: benchmark" below.
 
 #### Phase E results: developer guide (2026-09-30)
 
@@ -768,9 +767,7 @@ The Rust detail and the full upgrade runbook stay in [`amaru-validator-wasm/READ
 and the guide links to it. Every property named in the guide was checked against `YanoPropertyKeys.Validation`,
 `application.yml` or the module code, and every Gradle property against the build files.
 
-#### Phase E: benchmark procedure (to run after the mainnet sync)
-
-**Not run yet.** A mainnet sync is loading the machine, so any figures taken now would be distorted.
+#### Phase E: benchmark procedure
 
 What existed before:
 
@@ -785,7 +782,7 @@ which nothing read, is removed.
 
 | Test | Measures |
 |---|---|
-| `ledger-conformance` `EngineLatencyBenchmarkTest` | Warm per-transaction latency of `java-julc`, `java-scalus` and `amaru` on the same corpus: the 275 Amaru scenarios at PV ≥ 10 (00203, PV 9, is left out because Amaru refuses it without validating). Each engine is created once per network and constants and then reused, as the node does. One sample is one `validate` call with rule `LEDGER` and origin `SYNC`. The Java engines run on the calling thread. `amaru` runs through its pool's worker thread with `phase2 = full`, which covers request building, both module calls, Amaru's Plutus and the effects. By default there are 2 warm-up passes (the first is reported as the cold pass) and 5 sampled passes, so 1,375 samples per engine. It reports mean, p50, p90, p99 and max (nearest rank), and the valid and crash counts as a sanity check (114 valid). |
+| `ledger-conformance` `EngineLatencyBenchmarkTest` | Warm per-transaction latency of `java-julc`, `java-scalus` and `amaru` on two corpora. The first is the 275 Amaru scenarios at PV ≥ 10 (00203, PV 9, is left out because Amaru refuses it without validating). The second is the real preprod and preview transactions vendored in `PublicNetworkTransactions` (the 14 `PHASE2_CASES` and `PREPROD_INDEFINITE_ASSET_MAP_OUTPUT`), replayed with `bundle.replayRequest()` against the ledger state each was validated on. `amaru` runs only their PV ≥ 10 bundles, once with `phase2 = full` and once with `phase2 = scalus` (the node default, `yano.validation.amaru.phase2`). A bundle holds the Java engine's reads only, so for `amaru` the whole slices it always ships and these transactions never touch (committee, proposals, guardrail, treasury) are answered as empty when not recorded; the valid counts show every verdict is still the chain's. Each engine is created once per network and constants and then reused, as the node does. One sample is one `validate` call with rule `LEDGER` and origin `SYNC`. The Java engines run on the calling thread. `amaru` runs through its pool's worker thread with `phase2 = full`, which covers request building, both module calls, Amaru's Plutus and the effects. By default the scenarios get 2 warm-up passes (the first is reported as the cold pass) and 5 sampled passes, so 1,375 samples per engine; the public-network corpus gets 20 times as many passes of each (40 and 100), as it has only 15 transactions. It reports mean, p50, p90, p99 and max (nearest rank), and the valid and crash counts as a sanity check (114 valid). |
 | `amaru-validator` `AmaruFootprintBenchmarkTest` | In a fresh test JVM: the cold parse of the `.meta` module, the first instance (AOT machine classes, instantiation, `_initialize`), the first `validate`, and the mean of the first corpus pass. Then the metaspace and heap retained after the first instance (paid once per JVM), warm instantiation p50 and max (30 samples), and the retained heap per instance, fresh and after one corpus pass, with 8 instances held. The 256 MiB worker stacks are reserved address space and are not counted. |
 
 Preconditions:
@@ -808,11 +805,12 @@ shasum -a 256 "$W"
 
 - **Results.** The tables are written to `amaru-validator/build/benchmark/amaru-footprint.md` and
   `ledger-conformance/build/conformance/engine-latency.md`, with the JVM, OS and processor count in each header.
-- **Options.** `-PengineBenchmarkPasses=<n>` (default 5), `-PengineBenchmarkWarmup=<n>` (default 2) and
-  `-PengineBenchmarkInstances=<n>` (default 8).
-- **Scope.** Admission runs `amaru` with `phase2: scalus`; this corpus benchmark does not measure that mode. Under
-  block production it is covered by the Phase C budget figures. Native-image startup is not covered either; the node
-  logs `Amaru validator ready` when the engine has been created.
+- **Options.** `-PengineBenchmarkPasses=<n>` (default 5), `-PengineBenchmarkWarmup=<n>` (default 2),
+  `-PengineBenchmarkNetworkRepeat=<n>` (default 20, the pass multiplier of the public-network corpus) and
+  `-PengineBenchmarkInstances=<n>` (default 8). Both test tasks always re-run with `-PengineBenchmark=true`.
+- **Scope.** Admission runs `amaru` with `phase2: scalus`; the benchmark measures that mode on the public-network
+  corpus only. Under block production it is covered by the Phase C budget figures. Native-image startup is not
+  covered; the node logs `Amaru validator ready` when the engine has been created.
 
 To record, as "Phase E results: benchmark":
 
@@ -822,6 +820,87 @@ To record, as "Phase E results: benchmark":
 
 On 2026-09-30 both tests were run once, with 1 pass and 1 instance, only to check that they work. The mainnet sync
 was loading the machine, so those numbers are not recorded.
+
+#### Phase E results: benchmark (2026-09-30)
+
+**Setup.** Apple M4 Max, 16 cores, 128 GiB, macOS 26.0.1; OpenJDK 25.0.2+12-LTS (the test JVM: G1, max heap 4 GiB).
+Module `amaru_validator.wasm` sha256 `c43eeb3738cdce05caf3a897243485b4bca534a03272102cfab3579010c2c3e3`, crate
+`0.1.1`, Amaru `v10.11.20260925` (`eaf8ac3`), scenarios from the same tag. Julc: the combined local build
+`0.1.0-pre18-yano-local2` (released `0.1.0-pre17` plus bloxbean/julc PRs #219, #221, #227 and #228), the build that
+passed the ADR-056 Phase 7c public-network gates, applied with a Gradle init script (`-I`); one more run on the
+released `0.1.0-pre17`. Sources: this commit (parent `1ddedb6b3`). Default passes (scenarios 2 warm-up + 5 sampled;
+public networks 40 + 100). No Yano node and no other build ran; an IDE and a browser were open (1-minute load average
+4–7 on 16 cores). All engines are single-threaded per call, so this is one validation at a time, JVM, warm.
+
+**Latency** (ms per `validate` call; run 3 of three runs with the local Julc, the recorded table):
+
+| Corpus | Engine | cases | samples | p50 | p90 | p99 | max | valid |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| scenarios | `java-julc` | 275 | 1,375 | 0.238 | 0.367 | 0.698 | 4.7 | 114/275 |
+| scenarios | `java-scalus` | 275 | 1,375 | 0.220 | 0.482 | 1.874 | 11.7 | 114/275 |
+| scenarios | `amaru` | 275 | 1,375 | **0.711** | 1.619 | **3.349** | 36.8 | 114/275 |
+| preprod | `java-julc` | 9 | 900 | 1.201 | 2.499 | 3.206 | 5.8 | 9/9 |
+| preprod | `java-scalus` | 9 | 900 | 1.672 | 4.248 | 4.722 | 5.1 | 9/9 |
+| preprod | `amaru` | 6 | 600 | **19.5** | 285.3 | **296.6** | 309.6 | 6/6 |
+| preprod | `amaru`, `phase2: scalus` | 6 | 600 | 3.039 | 6.110 | 6.611 | 7.3 | 6/6 |
+| preview | `java-julc` | 6 | 600 | 1.010 | 2.270 | 2.550 | 3.4 | 6/6 |
+| preview | `java-scalus` | 6 | 600 | 2.285 | 4.736 | 5.761 | 7.3 | 6/6 |
+| preview | `amaru` | 5 | 500 | **47.0** | 186.2 | **188.0** | 189.8 | 5/5 |
+| preview | `amaru`, `phase2: scalus` | 5 | 500 | 2.842 | 6.115 | 6.893 | 8.8 | 5/5 |
+
+- **Run to run.** Across the three local-Julc runs, scenario `amaru` p50 was 0.56–0.71 ms and p99 2.3–3.3 ms;
+  `java-julc` p50 0.22–0.24 ms and p99 0.54–0.70 ms. The public-network rows of runs 2 and 3 (run 1 had no
+  `phase2: scalus` row) differ by 15 % or less, except single-sample maxima.
+- **The public-network corpus** is 15 real transactions: 9 preprod and 6 preview, of which 6 and 5 are PV ≥ 10.
+  Every one was once an engine finding, and 13 run Plutus scripts (1 to 4 redeemers). It is a real-network
+  Plutus-heavy sample, not typical traffic, and with this few distinct transactions p90 and p99 are simply the
+  slowest one or two.
+- **Where `amaru`'s time goes.** Per-transaction medians of `phase2: full` (a separate diagnostic run): preprod
+  `031e36a7…` 284 ms, `b35f5500…` 121 ms, `2edd684f…` 68 ms, `22434324…` 16 ms, `96ae78f7…` 4.0 ms,
+  `aee75c1c…` 1.4 ms; preview `f896a7ee…` 187 ms, `aec876ad…` 62 ms, `89d3a627…` and `2c3657d0…` 46 ms,
+  `b0e24e31…` 5.3 ms. The two without redeemers (`96ae78f7…`, `aee75c1c…`) are the 4.0 and 1.4 ms ones. The same
+  transactions with `phase2: scalus` take 1.2–7.3 ms, so the difference is Amaru's own script evaluation inside the
+  module. The scenario scripts are small test scripts, which is why the scenario corpus did not show it. Why
+  Amaru's evaluator is this slow under Endive has not been investigated.
+- **Released Julc `0.1.0-pre17`.** The timings are the same within run-to-run noise (scenario `java-julc` p50
+  0.224 ms, p99 0.559 ms; preprod p50 1.17, p99 2.66; preview p50 0.88, p99 2.45). The verdicts differ as
+  expected: `java-julc` accepts 8/9 preprod and 3/6 preview transactions, the four known Julc deviations of
+  `JulcPublicNetworkTest` that the local build fixes.
+
+**Amaru cold start and memory** (`AmaruFootprintBenchmarkTest`, fresh test JVM, 8 instances held; three runs, the
+spread is under 5 % except warm instantiation):
+
+| Figure | Value |
+|---|---:|
+| Parse the `.meta` module | 150–153 ms |
+| First instance (AOT machine classes, instantiation, `_initialize`) | 82–85 ms |
+| First `validate` on it | 14.1–14.7 ms |
+| First pass over the 276 scenarios, mean per request | 1.7 ms |
+| Metaspace after the first instance, once per JVM | 11.7 MiB |
+| Retained heap after the first instance, once per JVM | 35.7 MiB |
+| Warm instantiation p50 / max (30 samples) | 0.79–1.09 / 2.0 ms |
+| Retained heap per instance, fresh | 9.4 MiB |
+| Retained heap per instance, after one corpus pass | 14.6 MiB |
+
+So the engine is ready about 250 ms after the module is first touched, plus about 15 ms for the first call. The
+once-per-JVM figures include the first instance itself (which had run the corpus); each further instance adds
+9.4 MiB fresh and 14.6 MiB once it has run. The 256 MiB worker stacks are reserved address space and are not
+counted.
+
+**Against the target** (p50 ≤ 2 ms, p99 ≤ 10 ms on the scenario corpus, JVM, warm):
+
+- **Met on the scenario corpus**, the corpus the target was set on: `amaru` p50 0.56–0.71 ms and p99 2.3–3.3 ms.
+  `amaru` is 2.5–3 times slower than the Java engines there, and has the largest maximum (37–42 ms, a single call).
+- **Not met on real Plutus transactions with `phase2: full`**: p50 17–19 ms (preprod) and 46–47 ms (preview), p99
+  287–297 ms and 188 ms. These are single-transaction costs; a block with several such transactions takes seconds in
+  `amaru`, against a few milliseconds per transaction in the Java engines.
+- **`phase2: scalus`**, the node default, stays at p50 2.8–3.4 ms and p99 6.5–7.5 ms on the same sample: the p99
+  is inside the target, the p50 is 0.8–1.4 ms over it and 0.6–1.5 ms above `java-scalus`.
+- **Consequences.** In the node, `amaru` (admission engine, admission shadow or shadow-sync engine) should keep the
+  default `phase2: scalus`. `phase2: amaru` (full) is the test-oracle mode: fine on devnets and on the scenario
+  corpus, but on public networks with Plutus-heavy blocks it would cost tens to hundreds of milliseconds per script
+  transaction and fall behind the Java engines. Speeding up Amaru's script evaluation in the module would be the fix;
+  it is not part of this ADR.
 
 ## Acceptance criteria
 
@@ -836,7 +915,7 @@ Status on 2026-09-30.
 | With the module, the native image works. | **Met** | JVM = native at PV 10 and 11 for admission, block selection and shadow sync (Phase E results). |
 | The CI workflow reproduces the module from the pinned tag and toolchain, and publishes it with its sha256. | **Met; first publication pending** | `amaru-wasm.yml` builds the module and its bundle with the sha256 on every relevant push. Its `release` job attaches them to a Yano release tag; no release carries the module yet. |
 | ADR-056's differential gate runs against this module. | **Met** | Phase D status above. |
-| Phase E: latency benchmark on the scenario corpus, startup and per-instance memory, developer guide. | **In progress** | Being done separately; the benchmark runs after the mainnet sync. |
+| Phase E: latency benchmark on the scenario corpus, startup and per-instance memory, developer guide. | **Met on the scenario corpus**; slower on real Plutus transactions with `phase2: full` | Scenarios: `amaru` p50 0.56–0.71 ms, p99 2.3–3.3 ms (target 2 and 10). Real preprod/preview Plutus sample: `phase2: full` p50 17–47 ms, p99 188–297 ms; `phase2: scalus` p50 2.8–3.4 ms, p99 6.5–7.5 ms. Cold start about 250 ms, 9.4–14.6 MiB heap per instance. Developer guide written. ("Phase E results: benchmark".) |
 
 ## Alternatives considered
 
