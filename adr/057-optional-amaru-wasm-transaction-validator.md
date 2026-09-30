@@ -706,7 +706,7 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
     - an update of an unregistered DRep;
     - a pool metadata hash that is not 32 bytes;
     - two constructor-name differences.
-  - Two further differences in how failures are reported: Amaru stops at the first failure,
+  - One difference in how failures are reported: Amaru stops at the first failure,
     while Haskell lists all of them.
 
   The two false acceptances make `amaru` unsuitable as the only admission engine for those
