@@ -6,10 +6,10 @@ Accepted (2026-09-28). The design was reviewed by Fable and in four Codex
 review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
 with the decisions recorded at the end of this ADR.
 
-Implementation (2026-09-30): Phases 0–7 are done on PR #155, and the Phase 7c
-public-network gate passed on preprod and preview. The mainnet shadow sync is
-running. Phase 8 (the default switch) waits for the Julc release. See
-"Acceptance criteria" for the status of each criterion.
+Implementation (2026-09-30): Phases 0–7 are done on PR #155. The Phase 7c
+public-network gate passed on preprod, preview and mainnet. Phase 8, the default
+switch, waits for the Julc release. See "Acceptance criteria" for the status of each
+criterion.
 
 ## Date
 
@@ -982,7 +982,7 @@ commits of the one PR. Status (2026-09-30):
 | 4: CERTS, DELEG, POOL, GOVCERT | done | `39696c24b` |
 | 5: GOV, LEDGER pre-checks, MEMPOOL; 5b PV 9; 5c versioned rule sets | done | `ea8881f2b`, `55ee52a83`, `76f5343e7` |
 | 6: runtime overlays (6a mempool, 6b block production) | done | `d265caf55`, `f54e13a33`, `0e158a26f` |
-| 7: blueprint vectors (7b), shadow sync (7a), public networks, Julc, native parity (7c) | done, except the mainnet shadow sync (running) | `a8b71a20a`, `edcf1627f`, `cce882958`, `507b00927`, `c30b27297`, `64395b758`, `526513cb5`, `b02ba6fe1`, `c84c05ba1`, `943a5b6e0`, `55291b253`, `d7616de51` |
+| 7: blueprint vectors (7b), shadow sync (7a), public networks incl. mainnet, Julc, native parity (7c) | done | `a8b71a20a`, `edcf1627f`, `cce882958`, `507b00927`, `c30b27297`, `64395b758`, `526513cb5`, `b02ba6fe1`, `c84c05ba1`, `943a5b6e0`, `55291b253`, `d7616de51` |
 | 8: default switch, clean-up | waits for the Julc release (bloxbean/julc PRs #219, #221, #227, #228) | — |
 
 ### Phase 0 — Module consolidation (no behaviour change)
@@ -3035,6 +3035,31 @@ shadow sync on `java-julc,java-scalus`, reached the tip with:
 - The first sync (before the fixes) had 465 disagreements and 18 engine failures across the two networks. Its reports
   are kept beside the new run.
 
+**Mainnet (2026-09-30): passed.** A sync from genesis followed a local Haskell node (cardano-node on `localhost:3002`)
+with shadow sync on `java-julc,java-scalus`.
+- **Duration:** 13 h 51 min to the tip (epoch 658, block ≈ 14,008,000), including a one-minute restart at epoch 615
+  onto `eb06dcbcd` (virtual-thread shadow sync). The restart left no gap: the first run stopped with `failed=0`, and
+  the second run's counters were 0 for failed before submit, failed after submit and skipped at stop.
+
+| Conway | Blocks | Transactions (PV 9 / 10 / 11) | `java-julc` | `java-scalus` | Findings |
+|---|---|---|---|---|---|
+| mainnet, tip epoch 658 | 2,885,170 | 28,420,354 (9,690,266 / 17,064,085 / 1,666,003) | all agreed | all agreed | 0 |
+
+- **Block rules:** the reference-script size, execution-unit sum and body size and hash checks showed 0 violations on
+  every block.
+- **Reorg:** a real reorganisation at the tip was handled.
+- **AdaPot:** verification against `expected_ada_pots_mainnet.json` passed at every boundary.
+- **Koios, epochs 209–658:** 0 mismatches for treasury, reserves, fees and the deposit residue (450 epochs each); the
+  registered DRep set (1,050); the DRep distribution totals for epochs 657 and 658 (exact to the lovelace:
+  5,234,352,595.808375 ADA over 859 DReps at 658); and every proposal's state (158).
+- **Deposits:** the exact figure at the tip differs by the same Koios artefact as on preview (4 pools registered and
+  retired in one transaction).
+- **Throughput:** mainnet Conway catch-up was limited by shadow sync's former fixed pool of 4 platform threads. Block
+  application waited on validation 59% of the time; the machine had 16 cores, 4.7 of them busy, validating 1,591
+  transactions per second per engine at about 153 blocks per second. With virtual threads and
+  `max-in-flight = cores / 2 = 8` (`eb06dcbcd`), the wait fell to 8%, with 5.2 cores busy, 1,762 transactions per
+  second per engine and about 243 blocks per second.
+
 **Findings**
 
 - **`DELEG.StakeKeyRegisteredDELEG` and `GOVCERT.ConwayDRepAlreadyRegistered`: Yano's canonical ledger state was wrong
@@ -3709,10 +3734,10 @@ Status on 2026-09-30.
 | Criterion | Status | Evidence |
 |---|---|---|
 | The coverage matrix is 100% for the Conway PV10–11 leaf constructors, and every PV gate is tested on both sides. | **Met; scope changed to PV 9–11** (Phase 5b, decision 1) | `ledger-rules/docs/conway-rule-coverage.md`: 86/86 constructors (56 test + scenario, 30 test, 0 gaps), strict by default since Phase 5. Per version: PV 9 75/75, PV 10 77/77, PV 11 80/80, with a mutation world for each version (Phase 5c). |
-| The Amaru scenarios, blueprint vectors, mutation matrix, shadow sync and native parity gates all pass. | **Met, except the mainnet shadow sync, which is running** | Amaru scenarios: `java-julc` and `java-scalus` 276/276 verdicts, 275/276 constructors; 00280 matches Haskell where Amaru diverges (`ledger-conformance/docs/baseline-2026-09.md`). Blueprint vectors: 310/320, 2,472/2,487 transactions; the other 10 vectors need an epoch transition (Phase 7b, Phase 7c Julc). Mutation matrix: 94/94 mutants, and 96/96/95 cases in the PV 9/10/11 worlds. Shadow sync: preprod 4,240,097 and preview 2,117,011 Conway transactions, 0 findings under both engines (Phase 7c gate, `d7616de51`). Native parity: JVM = native for `java-julc`, `java-scalus`, `scalus` and `amaru` at PV 9–11 (`943a5b6e0`). |
+| The Amaru scenarios, blueprint vectors, mutation matrix, shadow sync and native parity gates all pass. | **Met** | Amaru scenarios: `java-julc` and `java-scalus` 276/276 verdicts, 275/276 constructors; 00280 matches Haskell where Amaru diverges (`ledger-conformance/docs/baseline-2026-09.md`). Blueprint vectors: 310/320, 2,472/2,487 transactions; the other 10 vectors need an epoch transition (Phase 7b, Phase 7c Julc). Mutation matrix: 94/94 mutants, and 96/96/95 cases in the PV 9/10/11 worlds. Shadow sync: preprod 4,240,097, preview 2,117,011 and mainnet 28,420,354 Conway transactions, 0 findings under both engines (Phase 7c gate). Native parity: JVM = native for `java-julc`, `java-scalus`, `scalus` and `amaru` at PV 9–11 (`943a5b6e0`). |
 | Dependent chains in the mempool and in one block, and across an epoch boundary, validate identically under `java-julc` and `amaru`, and under `scalus` for the state it models. A Haskell follower accepts every Yano-produced block in the Phase 6 matrix. | **Met** | The devnet matrix (`JavaEngineDevnetGateTest`; 423 transactions re-validated in `SYNC` mode) and `AmaruDevnetParityTest` give identical observations. The one Amaru divergence is recorded and rejected under both engines (ADR-057 Phase C). The native-parity workload runs the same chains under all four engines (legacy `scalus` with each certificate confirmed first). Haskell follower in lock-step: 2,497 blocks with the Java rules (engine id `java` then, `java-scalus` now; `java-julc` runs the same rules) and 2,362 blocks with `amaru` (Phase 6b). |
 | With `engine: java-julc`, the submit path does not call Scalus (Julc runs phase 2); with `engine: java-scalus`, only for phase-2 script execution. | **Met; engine ids changed** (Phase 7c: `java` split into `java-julc` and `java-scalus`) | `JavaJulcEngineFactory` wires `JulcScriptPhaseEvaluator` and stops startup without it. `java-scalus` reaches Scalus only through the `ScriptPhaseEvaluator` SPI (`JavaEngineFactoriesTest`). |
-| Canonical ledger-state, reward, AdaPot and ratification outputs are unchanged. The existing verification suites stay green. | **Changed** | The rules engines do not write canonical state. Phase 7c found ledger-state bugs and fixed them to match Haskell, which changes deposits, treasury credits and the DRep distribution: same-block registration state, the DRep `deregistered` flag and committee-state pruning (#156) in `c30b27297`; DRep delegator sets and the PV 10 rebuild at the enacting boundary in `c84c05ba1`. Existing chainstates need a full resync from genesis ("Impact on a chainstate synced before the fix"). After the fixes, AdaPot verification passed every epoch on preprod and preview, and Koios matched (Phase 7c gate). The mainnet AdaPot check waits for the running mainnet sync. CI build, commit-build and integration jobs are green. |
+| Canonical ledger-state, reward, AdaPot and ratification outputs are unchanged. The existing verification suites stay green. | **Changed** | The rules engines do not write canonical state. Phase 7c found ledger-state bugs and fixed them to match Haskell, which changes deposits, treasury credits and the DRep distribution: same-block registration state, the DRep `deregistered` flag and committee-state pruning (#156) in `c30b27297`; DRep delegator sets and the PV 10 rebuild at the enacting boundary in `c84c05ba1`. Existing chainstates need a full resync from genesis ("Impact on a chainstate synced before the fix"). After the fixes, AdaPot verification passed every epoch on preprod and preview, and Koios matched (Phase 7c gate). Mainnet: AdaPot verification passed every epoch, and Koios matched for epochs 209–658 (Phase 7c gate). CI build, commit-build and integration jobs are green. |
 
 ## Follow-ups
 
