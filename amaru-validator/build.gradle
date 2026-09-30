@@ -231,7 +231,14 @@ tasks.withType(Test).configureEach {
             .orElse(providers.environmentVariable('AMARU_REQUEST_DUMPS_DIR'))
             .getOrElse(new File(wasmCrateDir, 'target/scenario-requests').absolutePath)
     systemProperty 'amaru.request.dumps.dir', dumps
-    systemProperty 'amaru.scenario.latency', providers.gradleProperty('amaruLatency').getOrElse('false')
+    // ADR-057 Phase E startup and memory figures (AmaruFootprintBenchmarkTest): -PengineBenchmark=true, optionally
+    // -PengineBenchmarkInstances=<n> (default 8). Run that test class alone (--tests), so the module loads cold.
+    if (project.hasProperty('engineBenchmark')) {
+        systemProperty 'yano.engine.benchmark', 'true'
+        systemProperty 'yano.engine.benchmark.instances',
+                providers.gradleProperty('engineBenchmarkInstances').getOrElse('8')
+        systemProperty 'yano.engine.benchmark.dir', layout.buildDirectory.dir('benchmark').get().asFile.absolutePath
+    }
     // ADR-057 Phase C devnet parity (AmaruDevnetParityTest, about two minutes): -PledgerRulesGate=true
     // (CI: amaru-wasm.yml, conformance job).
     if (project.hasProperty('ledgerRulesGate')) {

@@ -736,8 +736,81 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   (40 observations per run: 22 accepted, 18 rejected; `amaru` and `java-julc` shadow sync 21 of 21 agreed each on
   the producer and the follower). This includes the Phase C divergence (`ENGINE` 1 against the `java-julc`
   shadow), which is identical in both. Amaru validates Conway from PV 10 only, so PV 9 is not run.
-- **Not done in Phase E yet:** the latency benchmark on the scenario corpus, startup and per-instance memory
-  figures, and the developer guide.
+- **Not done in Phase E yet:** the latency benchmark on the scenario corpus, and the startup and per-instance memory
+  figures. The procedure is ready ("Phase E: benchmark procedure" below). The developer guide is written.
+
+#### Phase E results: developer guide (2026-09-30)
+
+[`amaru-validator/README.md`](../amaru-validator/README.md) covers:
+
+- the four roles: admission engine, admission shadow, shadow-sync engine, test oracle;
+- building the module: toolchains, `AMARU_VERSION`, and the CI artifact;
+- building Yano with it: `-PwithAmaru=true` and the three `prepareWasm` sources, plus the JVM, native and test
+  commands;
+- the runtime properties (`yano.validation.engine=amaru`, `yano.validation.amaru.*`), `shadow-engines` and
+  `shadow-sync-engines`, pool sizing, health and failures, rollback, and native-image notes;
+- the known divergences and limits;
+- the upgrade steps on the Yano side: the crate version check (`AmaruReferenceEngine.verifyModule`), `abi_version`,
+  the gates to re-run, and the release pin.
+
+The Rust detail and the full upgrade runbook stay in [`amaru-validator-wasm/README.md`](../amaru-validator-wasm/README.md),
+and the guide links to it. Every property named in the guide was checked against `YanoPropertyKeys.Validation`,
+`application.yml` or the module code, and every Gradle property against the build files.
+
+#### Phase E: benchmark procedure (to run after the mainnet sync)
+
+**Not run yet.** A mainnet sync is loading the machine, so any figures taken now would be distorted.
+
+What existed before:
+
+- `AmaruScenarioGateTest` prints `amaru`-only latency (the Phase B figures).
+- `EndiveRuntimeTest.instantiationCost` gives warm instantiation.
+- The conformance baseline's "ms / scenario (one pass)" is a single cold pass. For the Java engines it includes
+  creating an engine per case.
+
+None of these compares the engines warm on one corpus, and none measures cold start or memory. Phase E therefore
+adds two opt-in tests, both skipped unless `-PengineBenchmark=true` is passed. The `amaruLatency` Gradle property,
+which nothing read, is removed.
+
+| Test | Measures |
+|---|---|
+| `ledger-conformance` `EngineLatencyBenchmarkTest` | Warm per-transaction latency of `java-julc`, `java-scalus` and `amaru` on the same corpus: the 275 Amaru scenarios at PV ≥ 10 (00203, PV 9, is left out because Amaru refuses it without validating). Each engine is created once per network and constants and then reused, as the node does. One sample is one `validate` call with rule `LEDGER` and origin `SYNC`. The Java engines run on the calling thread. `amaru` runs through its pool's worker thread with `phase2 = full`, which covers request building, both module calls, Amaru's Plutus and the effects. By default there are 2 warm-up passes (the first is reported as the cold pass) and 5 sampled passes, so 1,375 samples per engine. It reports mean, p50, p90, p99 and max (nearest rank), and the valid and crash counts as a sanity check (114 valid). |
+| `amaru-validator` `AmaruFootprintBenchmarkTest` | In a fresh test JVM: the cold parse of the `.meta` module, the first instance (AOT machine classes, instantiation, `_initialize`), the first `validate`, and the mean of the first corpus pass. Then the metaspace and heap retained after the first instance (paid once per JVM), warm instantiation p50 and max (30 samples), and the retained heap per instance, fresh and after one corpus pass, with 8 instances held. The 256 MiB worker stacks are reserved address space and are not counted. |
+
+Preconditions:
+
+- The machine is otherwise idle: no Yano node, no mainnet sync, no other build.
+- The module is the current one: crate `0.1.1`, `c43eeb37…` today. Record its sha256.
+- The corpus is Amaru at the pinned tag (`v10.11.20260925`, commit `eaf8ac3`). Cargo's own checkout works.
+
+The command runs both tests in one Gradle invocation. Each test task forks its own JVM, so the Amaru module
+loads cold:
+
+```sh
+W=$PWD/amaru-validator-wasm/target/wasm-out/amaru_validator.wasm       # or the amaru-wasm.yml artifact
+S=$HOME/.cargo/git/checkouts/amaru-fe100b3fda4676be/eaf8ac3            # or a clone of pragma-org/amaru at the tag
+shasum -a 256 "$W"
+./gradlew --offline -PwithAmaru=true -PamaruWasm="$W" -PamaruScenariosDir="$S" -PengineBenchmark=true \
+  :amaru-validator:test --tests '*AmaruFootprintBenchmarkTest' \
+  :ledger-conformance:test --tests '*EngineLatencyBenchmarkTest'
+```
+
+- **Results.** The tables are written to `amaru-validator/build/benchmark/amaru-footprint.md` and
+  `ledger-conformance/build/conformance/engine-latency.md`, with the JVM, OS and processor count in each header.
+- **Options.** `-PengineBenchmarkPasses=<n>` (default 5), `-PengineBenchmarkWarmup=<n>` (default 2) and
+  `-PengineBenchmarkInstances=<n>` (default 8).
+- **Scope.** Admission runs `amaru` with `phase2: scalus`; this corpus benchmark does not measure that mode. Under
+  block production it is covered by the Phase C budget figures. Native-image startup is not covered either; the node
+  logs `Amaru validator ready` when the engine has been created.
+
+To record, as "Phase E results: benchmark":
+
+- the machine, the JDK, the module sha256 and the commit;
+- the two tables;
+- `amaru` p50 and p99 against the target (p50 ≤ 2 ms, p99 ≤ 10 ms).
+
+On 2026-09-30 both tests were run once, with 1 pass and 1 instance, only to check that they work. The mainnet sync
+was loading the machine, so those numbers are not recorded.
 
 ## Acceptance criteria
 
