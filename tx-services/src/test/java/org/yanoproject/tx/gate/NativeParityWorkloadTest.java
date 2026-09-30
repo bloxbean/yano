@@ -69,7 +69,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * selection), a phase-1 failure per rule family ({@code MEMPOOL}, {@code UTXO}, {@code UTXOW}, {@code DELEG},
  * {@code POOL}, {@code GOVCERT}, {@code GOV}, {@code LEDGER}, {@code CERTS}), certificates and governance, PlutusV1,
  * V2 (also through a reference script) and V3 spends evaluated by the node (Scalus phase 2) and an always-failing V3
- * script, the node's evaluate endpoint, a rollback that removes a pending child's parent (mempool rebuild), and
+ * script, a V3 script on the crypto builtins backed by native libraries (BLS12-381 through blst, secp256k1), the node's
+ * evaluate endpoint, a rollback that removes a pending child's parent (mempool rebuild), and
  * transactions after an epoch boundary (ticked views, {@code currentTreasuryValue}).</p>
  *
  * <p>Runs only with {@code -Dyano.parity.remote-url=http://host:port}; {@code -Dyano.parity.report=<file>} writes
@@ -89,7 +90,7 @@ class NativeParityWorkloadTest {
      */
     private static final boolean CHAIN_CERTIFICATES = Boolean.parseBoolean(
             System.getProperty("yano.parity.chain-certificates", "true"));
-    private static final ExUnits BUDGET = new ExUnits(BigInteger.valueOf(500_000), BigInteger.valueOf(200_000_000));
+    private static final ExUnits BUDGET = new ExUnits(BigInteger.valueOf(500_000), BigInteger.valueOf(1_000_000_000));
     private static final PlutusData DATUM = BigIntPlutusData.of(42);
     private static final PlutusData REDEEMER = BigIntPlutusData.of(7);
 
@@ -105,6 +106,29 @@ class NativeParityWorkloadTest {
     /** {@code (program 1.1.0 (error))}. */
     private static final PlutusV3Script V3_FAILS = PlutusV3Script.builder().type("PlutusScriptV3")
             .cborHex("454401010061").build();
+    /**
+     * A V3 validator that ignores its context and succeeds only when every crypto builtin backed by a native library
+     * returns the value of the Plutus conformance vectors: {@code bls12_381_G1_compress} and {@code _G2_compress} of
+     * {@code bls12_381_G1_hashToGroup} and {@code _G2_hashToGroup} of {@code #8e} with DST {@code #0a},
+     * {@code bls12_381_G1_equal} with {@code bls12_381_G1_uncompress}, {@code verifyEcdsaSecp256k1Signature} (test
+     * vector 01) and {@code verifySchnorrSecp256k1Signature} (BIP-340 test vector 0). About 420M CPU steps. Decode with
+     * {@code julc uplc decode}.
+     */
+    private static final PlutusV3Script V3_CRYPTO = PlutusV3Script.builder().type("PlutusScriptV3")
+            .cborHex("59023d59023a010100253335734666ae68cdc79bba33778911018e004881010a00488130a45ddef02cdd86039be4b0"
+                    + "a863cba70ea903194ea0489ce619c6276175839d62eea72b095d6566067f4a44b85614f19900333573466e3cde099b"
+                    + "c34881018e004881010a00488160abdb064dbaa986d9609796d7a80ef07f719f99fa5d9876e01f9298793d4c7e7ba9"
+                    + "b2c55da6896f90693ad76a093d280118a4c24df9a387eaf85b15927365a110fe5256f53ddf8bef4069fe761d8215d4"
+                    + "a73ec980f1a801dbaba25146b6ca7e0700333573466ee4cdde2441018e004881010a003776910130a45ddef02cdd86"
+                    + "039be4b0a863cba70ea903194ea0489ce619c6276175839d62eea72b095d6566067f4a44b85614f199003335734666"
+                    + "ed122121032e433589dce61863199171f4d1e3fa946a5832621fcd29559940a0950f96fb6f00488120e3b0c44298fc"
+                    + "1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855004881404941155e2303988a1be97a021fbaf9fe60"
+                    + "64d05ea694bc5e89328f297154e5c63a2f3e7b5f509294a4c2e22feb697a16b792fabfebe9d0f38403b1c929836b5a"
+                    + "0033376a910120f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90048812000000000"
+                    + "0000000000000000000000000000000000000000000000000000000000488140e907831f80848d1069a5371b402410"
+                    + "364bdf1c5f8307b0084c55f1ce2dca821525f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d3105"
+                    + "36c0004a0941282501498581")
+            .build();
 
     private final RemoteYanoNode node = new RemoteYanoNode(System.getProperty("yano.parity.remote-url"));
     private final List<String> observations = new ArrayList<>();
@@ -138,7 +162,7 @@ class NativeParityWorkloadTest {
         observe("env protocol-version " + params.getProtocolMajorVer() + "." + params.getProtocolMinorVer());
         wallet.add(node.genesisUtxo(payer.baseAddress()));
         wallet2.add(node.genesisUtxo(payer2.baseAddress()));
-        for (PlutusScript script : List.of(V1, V2, V3, V3_FAILS)) {
+        for (PlutusScript script : List.of(V1, V2, V3, V3_FAILS, V3_CRYPTO)) {
             scripts.put(HexUtil.encodeHexString(script.getScriptHash()), script);
         }
 
@@ -237,6 +261,7 @@ class NativeParityWorkloadTest {
         String v2Address = scriptAddress(V2);
         String v3Address = scriptAddress(V3);
         String failAddress = scriptAddress(V3_FAILS);
+        String cryptoAddress = scriptAddress(V3_CRYPTO);
         String datumHash = DATUM.getDatumHash();
         Tx lock = new Tx()
                 .payToContract(v1Address, Amount.ada(20), datumHash)
@@ -245,6 +270,7 @@ class NativeParityWorkloadTest {
                 .payToContract(v3Address, Amount.ada(20), DATUM)
                 .payToContract(failAddress, Amount.ada(20), DATUM)
                 .payToAddress(payer2.baseAddress(), Amount.ada(30), V2)
+                .payToContract(cryptoAddress, Amount.ada(20), DATUM)
                 .from(payer.baseAddress());
         GateTxFactory.Built locked = build(wallet, lock, signer());
         String lockHash = accept("plutus.lock", locked);
@@ -256,6 +282,7 @@ class NativeParityWorkloadTest {
         Utxo v3Utxo = utxoOf(lockHash, 3, outs.get(3));
         Utxo failUtxo = utxoOf(lockHash, 4, outs.get(4));
         Utxo refScriptUtxo = utxoOf(lockHash, 5, outs.get(5));
+        Utxo cryptoUtxo = utxoOf(lockHash, 6, outs.get(6));
 
         GateTxFactory.Built v3Spend = buildScript(new ScriptTx().collectFrom(v3Utxo, REDEEMER)
                 .payToAddress(payer.baseAddress(), Amount.ada(19)).attachSpendingValidator(V3));
@@ -269,6 +296,10 @@ class NativeParityWorkloadTest {
         plutus.add(accept("plutus.v2-reference-script-spend", buildScript(new ScriptTx()
                 .readFrom(refScriptUtxo).collectFrom(v2RefSpendUtxo, REDEEMER)
                 .payToAddress(payer.baseAddress(), Amount.ada(20)), V2)));
+        GateTxFactory.Built cryptoSpend = buildScript(new ScriptTx().collectFrom(cryptoUtxo, REDEEMER)
+                .payToAddress(payer.baseAddress(), Amount.ada(19)).attachSpendingValidator(V3_CRYPTO));
+        observe("plutus.v3-crypto-evaluate " + evaluate(cryptoSpend.cbor()));
+        plutus.add(accept("plutus.v3-crypto-spend", cryptoSpend));
         rejectRaw("reject.plutus-v3-fails", buildScript(new ScriptTx().collectFrom(failUtxo, REDEEMER)
                 .payToAddress(payer.baseAddress(), Amount.ada(19)).attachSpendingValidator(V3_FAILS)).cbor());
         awaitConfirmed("plutus", plutus);

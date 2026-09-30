@@ -2843,6 +2843,20 @@ with the conformance suite on the JVM (Phases 2-7b).
      installs one.
    - Test: `LedgerMempoolTest.anUnavailableLedgerStateIsRetryableNotARejection`. The parity workload now retries
      only on 503.
+5. **Phase-2 crypto builtins failed in native** (found 2026-10-01 by a native preprod shadow sync on Oracle GraalVM
+   25.3; the workload above used no BLS or secp256k1 builtin). Every such transaction was an engine failure, not a
+   wrong verdict, and native admission would have rejected it:
+   - `java-julc`, BLS12-381: `julc-bls` calls blst through FFM downcalls with no native `foreign` metadata
+     (`MissingForeignRegistrationError`, then `NoClassDefFoundError: BlsOperations`). Fixed at the source:
+     julc #230 / PR #231 ships `reachability-metadata.json` in `julc-bls`; Yano gets it with the Julc release.
+   - `java-scalus` and the default `scalus` path, secp256k1: Quarkus initialised `scalus.crypto.Secp256k1Context` at
+     build time, so the JNI library was loaded into the image builder only (`UnsatisfiedLinkError`). Fixed in
+     `scalus-bridge`'s `native-image.properties` (run-time initialisation of `Secp256k1Context` and
+     `org.scijava.nativelib`) and `resource-config.json` (the bundled `libscalus_secp256k1`).
+   - Guard: the parity workload spends a `V3_CRYPTO` script (G1/G2 `hashToGroup` + `compress`, `uncompress`,
+     ECDSA and Schnorr secp256k1 vectors). The gate fails without the fixes and passes with them.
+   - Evidence: a native preprod sync from genesis to epoch 217 on both engines re-validated all 1,453 affected
+     transactions: 1,513,964 transactions per engine, 0 disagreements, 0 engine failures.
 
 Nothing else was needed by this workload's paths. The rule sets are plain code (Phase 5c units are classes composed in code; no manifest or
 resource is read at runtime). `ProtocolParams` already had an `allDeclared*` entry in the app's

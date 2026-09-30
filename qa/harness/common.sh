@@ -25,8 +25,8 @@ HS_EKG=12889
 HS_PROM=12899
 
 # Log lines that mean a native-image gap (missing reachability metadata, unsupported feature, a service provider
-# that cannot be loaded). JVM runs are checked with the same pattern.
-NATIVE_IMAGE_ERRORS='NoClassDefFoundError|ClassNotFoundException|UnsupportedFeature|Missing(Reflection|Resource|JNI)Registration|ServiceConfigurationError|InvalidDefinitionException'
+# that cannot be loaded, a JNI library not loaded at run time). JVM runs are checked with the same pattern.
+NATIVE_IMAGE_ERRORS='NoClassDefFoundError|ClassNotFoundException|UnsupportedFeature|Missing(Reflection|Resource|JNI|Foreign)Registration|UnsatisfiedLinkError|ServiceConfigurationError|InvalidDefinitionException'
 
 PIDFILE=${PIDFILE:-$SP/pids.txt}
 mkdir -p "$SP"
