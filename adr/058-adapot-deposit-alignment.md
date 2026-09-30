@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (pending verification), 2026-09-30.
+Accepted and verified on preprod and preview, 2026-10-01 (see "Verification results"). A mainnet resync is the
+recommended follow-up.
 
 - An independent review approved the design with changes and found no blocker. It confirmed the design against
   cardano-ledger `f649f975`, including:
@@ -15,7 +16,6 @@ Accepted (pending verification), 2026-09-30.
   treasury, reserves, fees, rewards and the DRep distribution are unchanged on public networks, and that every
   rollback, resume and crash path is safe. The minor findings are applied.
 - Implemented on branch `feat/adapot-deposit-alignment`, stacked on PR #155 (`feat/conway-ledger-rules` @ `1ddedb6b3`).
-- It waits for the preprod and preview resync with the extended Koios comparison (see "Verification plan").
 
 ## Date
 
@@ -316,6 +316,39 @@ network with proposal enactments, sibling drops and DRep churn at scale.
 5. **Boundary time**: the `artifact-finalize` phase grows by less than 100 ms on preview, which has the largest DRep
    set.
 6. **Follow-up: a mainnet resync**, then `koios_compare.py` for epochs 209 to the tip.
+
+## Verification results (2026-10-01)
+
+Fresh syncs from genesis of the PR #161 build, then `qa/tools/koios_compare.py` at the tip. The runs are under
+`~/Downloads/yano-deposits/{preprod,preview}` and `~/Downloads/yano-native/preprod`.
+
+| Run | Epochs | Deposits by category (exact) | Treasury / reserves / fees | Tip audit | DReps, DRep distribution, proposals |
+|---|---|---|---|---|---|
+| Preprod, JVM (`9ffaf3532`) | 5–316 | 312 epochs, 0 mismatches | 0 mismatches | consistent | 0 mismatches |
+| Preprod, native, Oracle GraalVM 25.3 (`9ffaf3532`) | 5–316 | 312 epochs, 0 mismatches | 0 mismatches | endpoint failed (fixed in `99c4253b9`) | 0 mismatches |
+| Preview, JVM (`9ffaf3532`, restarted once mid-sync) | 1–1436 | 1,436 epochs, 0 mismatches | 0 mismatches | consistent | 0 mismatches |
+| Preprod, native, Oracle GraalVM 25.3 (`a97431af5`, the merge candidate) | 5–316 | 312 epochs, 0 mismatches | 0 mismatches | consistent | 0 mismatches |
+
+- **Plan items 3–4 hold.**
+  - The built-in AdaPot verification passed at every boundary of every run.
+  - Epoch by epoch, `/epochs/adapots` equals the ADR-056 Phase 7c run's in every field but `deposits`: treasury,
+    reserves, fees and the four reward fields, 313 preprod and 1,436 preview epochs, 0 differences. `deposits`
+    changed in every epoch after the bootstrap pot, as intended.
+- **Item 5 holds.**
+  - On preview (epochs 1380–1436, the largest DRep set), `artifact-finalize` went from a 0 ms to a 6 ms median, with
+    a maximum of 17 ms. The target was < 100 ms.
+  - The other phases' times moved with machine load (two other syncs and a native build ran alongside); their code
+    is unchanged.
+- **The pool count** at the preview tip is 727 in Yano and 756 in Koios `pool_list`. The 29 are pools registered and
+    retired in one transaction, the known Koios artefact. The pool deposits still match `deposits_stake` exactly,
+    so db-sync's obligation does not count them either.
+- **The final native run** (`a97431af5` with Julc `0.1.0-pre18-yano-local3`) also ran shadow sync on `java-julc` and
+  `java-scalus`. It validated 4,250,615 Conway transactions per engine (pv9 471,883, pv10 2,849,458, pv11 929,274),
+  all agreeing with the chain, with 0 disagreements and 0 engine failures. AdaPot verification passed at every
+  boundary, and the log has no native-image error. Genesis to the tip took 57 min via a local cardano-node.
+- **Two defects were found by these runs and fixed in `99c4253b9`:**
+  - `DepositAuditDto` had no native reflection entry;
+  - `koios_compare.py` called the audit at `/api/debug/deposits` instead of `/api/v1/api/debug/deposits`.
 
 ## Risks
 
