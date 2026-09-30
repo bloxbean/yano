@@ -13,7 +13,7 @@ the implementation plan:
 |---|---|---|
 | A: Rust crate, interface, CI build | done | `312e54ad9` |
 | B: Java module and engine | done | `5fb2bf944`, `88756fae1` (engine wiring, ADR-056 step 1d) |
-| C: overlays and runtime parity | done, one recorded divergence | `f54e13a33` |
+| C: overlays and runtime parity | done, one recorded divergence (full list in Phase D) | `f54e13a33` |
 | D: oracle integration | done | `e9341130e`, `88756fae1`, `cce882958` |
 | E: native image | done | `b02ba6fe1`, `943a5b6e0` |
 | E: latency benchmark, startup and memory figures, developer guide | in progress (the benchmark runs after the mainnet sync) | — |
@@ -695,11 +695,22 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   this module as the reference engine (`BaselineEngines.amaru()`: scenarios, mutation
   matrix, blueprint vectors), and `amaru` as an admission shadow or shadow-sync engine,
   with dumps (`ShadowValidationRunner`, ADR-056 Phase 7a). The `amaru-wasm.yml`
-  `conformance` job runs it on every build of the module. Two divergences are recorded:
-  - scenario 00280, where Amaru differs from Haskell (ADR-056 Phase 3a);
-  - a delegation from an unregistered credential, which is rejected under both engines
-    (Phase C, `AmaruKnownDivergencesTest`).
-  Neither is fixed.
+  `conformance` job runs it on every build of the module. The recorded divergences, none
+  fixed (full list in `amaru-validator/README.md`, "Known divergences and limits"):
+  - **Accepted by Amaru, rejected by Haskell**, both on the conformance mutants: a PlutusV3
+    script followed by one extra byte (`UTXOW.MalformedScriptWitnesses`), and a VRF key hash
+    reused by another pool at PV 11 (`POOL.VRFKeyHashAlreadyRegistered`).
+  - **Rejected by both, under a different name or as an engine failure:**
+    - scenario 00280 (ADR-056 Phase 3a);
+    - a delegation from an unregistered credential (Phase C, `AmaruKnownDivergencesTest`);
+    - an update of an unregistered DRep;
+    - a pool metadata hash that is not 32 bytes;
+    - two constructor-name differences.
+  - Two further differences in how failures are reported: Amaru stops at the first failure,
+    while Haskell lists all of them.
+
+  The two false acceptances make `amaru` unsuitable as the only admission engine for those
+  inputs. As a shadow engine or oracle they only show up as recorded disagreements.
 
 ### Phase E — Native image, performance, docs
 
