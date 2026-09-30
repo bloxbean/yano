@@ -98,3 +98,38 @@ test is `PASS` or `KNOWN`. The report also marks each test `regressed`, `fixed` 
 3. Add a line to `REGISTRY` in `release-qa.sh`: id, category, mode, title, time limit
    in minutes, and the command.
 4. Optionally add a `test-*` skill that runs `qa/release-qa.sh --only <id>`.
+
+## Ledger compatibility check (shadow sync + Koios)
+
+A manual check, outside `release-qa.sh`, that a node syncing a public network keeps
+Haskell's ledger (ADR-056 Phase 7). Run it on a fresh sync from genesis after a change
+to the ledger rules or the ledger state.
+
+1. Start a node (`quarkus.profile` `preprod`, `preview` or `mainnet`) with shadow sync on.
+   Every Conway transaction is then validated against the pre-block state:
+   ```bash
+   -Dyano.validation.shadow-sync=true \
+   -Dyano.validation.shadow-sync-engines=java-julc,java-scalus \
+   -Dyano.validation.shadow-sync-report=$RUN/shadow-sync.jsonl \
+   -Dyano.validation.shadow-sync-dump-dir=$RUN/shadow-dumps
+   ```
+2. While it syncs, check the metrics
+   (`curl -s localhost:7171/q/metrics | grep yano_validation_shadow_sync`), the
+   `Shadow sync` summary lines in the log, and the JSONL report. Each disagreement,
+   engine failure and block-level finding writes one report line and one replay bundle.
+   The built-in AdaPot verification checks treasury and reserves at every epoch
+   boundary; a mismatch logs an ERROR and shows in `/api/v1/node/epoch-calc-status`.
+3. Replay the bundles on the JVM, after a fix or to triage:
+   `./gradlew :tx-services:test --tests '*ShadowBundleReplayTest' -Dyano.shadow.bundles=$RUN/shadow-dumps`.
+4. At the tip, compare the ledger state with Koios (read-only; exit 0 = no mismatch):
+   ```bash
+   qa/tools/koios_compare.py --network preprod --yano http://localhost:7171 --out koios-preprod.md
+   ```
+   It checks treasury, reserves and fees for every epoch, the deposits, the registered
+   DReps, the DRep distribution of the last epochs (`--drep-epochs`) and every governance
+   proposal's state. Add `--cafile /etc/ssl/cert.pem` when Python has no trust store
+   (python.org builds on macOS).
+5. Expected difference: the deposits at the tip (informational, not counted) can be
+   whole pool deposits above Koios. Koios `pool_list` still reports pools registered and
+   retired in the same transaction as registered, although POOLREAP retired them and
+   refunded their deposits.
