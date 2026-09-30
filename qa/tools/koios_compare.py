@@ -15,7 +15,7 @@ Checks (Yano REST /api/v1 vs Koios /api/v1):
   stake-key plus pool obligations), `deposits_drep` vs `deposits_drep`, `deposits_proposal` vs `deposits_proposal`,
   and `deposits` vs the sum of the three. A Yano AdaPot written before ADR-058 has no categories (its `deposits` is
   key + DRep only); such epochs are listed, not compared.
-- Deposit audit at the tip (Yano-internal, /api/debug/deposits): the stake accounts' deposits add up to Yano's
+- Deposit audit at the tip (Yano-internal, /api/v1/api/debug/deposits): the stake accounts' deposits add up to Yano's
   total_dep minus its DRep deposits, and the pool deposits equal the pool count x pool_deposit (valid while the
   pool deposit parameter has never changed, as on mainnet, preprod and preview). The pool count is
   also shown next to Koios /pool_list (registered or retiring) for information only: Koios still lists pools
@@ -117,13 +117,12 @@ class Koios:
 
 class Yano:
     def __init__(self, base, timeout):
-        self.root = base.rstrip("/")
-        self.base = self.root + "/api/v1"
+        self.base = base.rstrip("/") + "/api/v1"
         self.timeout = timeout
         self.requests = 0
 
-    def get(self, path, params=None, allow_404=False, base=None, absent_codes=(404,)):
-        url = f"{base or self.base}/{path}" + ("?" + urllib.parse.urlencode(params) if params else "")
+    def get(self, path, params=None, allow_404=False, absent_codes=(404,)):
+        url = f"{self.base}/{path}" + ("?" + urllib.parse.urlencode(params) if params else "")
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
         for attempt in range(3):
             self.requests += 1
@@ -221,7 +220,7 @@ def compare_deposits(koios_totals, yano_pots, epochs):
 
 def deposit_audit(koios, yano, pool_deposit):
     """Yano-internal deposit checks at the tip, and the pool count next to Koios pool_list (informational)."""
-    audit = yano.get("debug/deposits", base=yano.root + "/api", allow_404=True, absent_codes=(404, 503))
+    audit = yano.get("api/debug/deposits", allow_404=True, absent_codes=(404, 503))
     if audit is None:
         return None
     koios_pools = sum(1 for r in koios.get_all("pool_list", {"select": "pool_status"})
@@ -367,7 +366,7 @@ def render(c):
               f"{ranges(c['legacy_deposits'])}", ""]
     da = c["deposit_audit"]
     if da is None:
-        L += ["Deposit audit at the tip: `/api/debug/deposits` is not available on this Yano.", ""]
+        L += ["Deposit audit at the tip: `/api/v1/api/debug/deposits` is not available on this Yano.", ""]
     else:
         a = da["audit"]
         L += [f"Deposit audit at the tip: total_dep {ada(int(a['total_deposited']))} ADA, {a['account_count']:,} stake "

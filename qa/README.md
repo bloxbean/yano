@@ -133,7 +133,7 @@ to the ledger rules or the ledger state.
    qa/tools/koios_compare.py --network preprod --yano http://localhost:7171 --out koios-preprod.md
    ```
    It checks treasury, reserves and fees for every epoch, each deposit category for every
-   epoch (ADR-058), a deposit audit at the tip (`/api/debug/deposits`), the registered
+   epoch (ADR-058), a deposit audit at the tip (`/api/v1/api/debug/deposits`), the registered
    DReps, the DRep distribution of the last epochs (`--drep-epochs`) and every governance
    proposal's state. Add `--cafile /etc/ssl/cert.pem` when Python has no trust store
    (python.org builds on macOS).

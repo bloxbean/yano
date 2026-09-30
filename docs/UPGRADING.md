@@ -12,7 +12,7 @@ new fields split it by category: `deposits_key`, `deposits_pool`, `deposits_drep
 No migration runs. On an existing chainstate, AdaPots written before the upgrade keep the
 old value and have `null` categories; every epoch boundary after the upgrade writes the new
 value. For a consistent history, sync from genesis. The archive's `ada_pots.deposits` column
-follows the same rule. `GET /api/debug/deposits` audits the deposit state at the tip.
+follows the same rule. `GET /api/v1/api/debug/deposits` audits the deposit state at the tip.
 While an epoch boundary is being processed, `/epochs/{n}/adapot` for the new epoch briefly
 shows the previous epoch's `deposits` with `null` categories; the categories appear when the
 boundary completes.

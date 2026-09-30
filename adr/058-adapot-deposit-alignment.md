@@ -248,7 +248,7 @@ from the existing records, and store them in the AdaPot. No new incrementally ma
   - `null` categories mark a pot written before this ADR. There is no version flag.
   - `deposits_drep` and `deposits_proposal` mean what they mean in Koios, and Koios's `deposits_stake` is
     `deposits_key + deposits_pool`. The name `deposits_stake` is not reused.
-- `GET /api/debug/deposits` (admin group) is a read-only audit at the tip, taken under one RocksDB snapshot. It
+- `GET <api-prefix>/api/debug/deposits` (admin group; `/api/v1/api/debug/deposits` by default) is a read-only audit at the tip, taken under one RocksDB snapshot. It
   returns `total_dep`, and counts and sums of the stake accounts, DReps and pools. It also returns
   `stake_keys_consistent`, which is true when `Σ PREFIX_ACCT.deposit == total_dep − Σ PREFIX_DREP_REG.deposit`. It
   scans every account, so it is meant for operators.
@@ -358,7 +358,7 @@ Changed files:
 - `ledger-state/.../EpochBoundaryProcessor.java`: `finalizeDeposits` at step 7, the rewards-step placeholder, the
   bootstrap pot, and the governance adjuster carrying the categories.
 - `app/.../epochs/dto/AdaPotDto.java`: the `deposits_*` fields.
-- `app/.../accounts/DebugSnapshotResource.java`: `GET /api/debug/deposits`.
+- `app/.../accounts/DebugSnapshotResource.java`: `GET <api-prefix>/api/debug/deposits`.
 - `qa/tools/koios_compare.py` and `qa/README.md`: exact per-category checks and the tip audit.
 - `docs/UPGRADING.md` and `docs/archive/DUCKLAKE_PROJECTION_SCHEMA.md`.
 - Tests:
