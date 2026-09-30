@@ -6,12 +6,17 @@ Accepted (2026-09-28). The design was reviewed by Fable and in four Codex
 review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
 with the decisions recorded at the end of this ADR.
 
-Phase A is implemented (`amaru-validator-wasm/`). Phase B is implemented
-(2026-09-29, module `amaru-validator`); its results and deviations are in
-"Phase B results" under the implementation plan. Phase C (2026-09-29): the
-ADR-056 Phase 6 devnet matrix passes with `engine: amaru`, with one recorded
-divergence, and a Haskell follower accepts the Amaru-forged chain ("Phase C
-results").
+Implementation (2026-09-30), on PR #155; the results are under each phase of
+the implementation plan:
+
+| Phase | Status | Commits |
+|---|---|---|
+| A: Rust crate, interface, CI build | done | `312e54ad9` |
+| B: Java module and engine | done | `5fb2bf944`, `88756fae1` (engine wiring, ADR-056 step 1d) |
+| C: overlays and runtime parity | done, one recorded divergence | `f54e13a33` |
+| D: oracle integration | done | `e9341130e`, `88756fae1`, `cce882958` |
+| E: native image | done | `b02ba6fe1`, `943a5b6e0` |
+| E: latency benchmark, startup and memory figures, developer guide | in progress (the benchmark runs after the mainnet sync) | — |
 
 ## Date
 
@@ -381,7 +386,7 @@ with a clear message. There is no silent fallback.
 
 ## Implementation plan
 
-Shipped in the same final PR as ADR-056, through the stacked steps S2 (A, B), S4 (C) and S5 (D, E) defined there.
+Shipped in the same PR as ADR-056 (#155), phase by phase (ADR-056 "Implementation plan").
 
 ### Phase A — Rust crate, interface, CI build
 
@@ -686,6 +691,15 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   engine with disagreement dumps, and a CI job that runs the differential
   whenever the wasm artifact is available.
 - Gate: every divergence is either fixed or recorded with its Haskell reference.
+- **Status (2026-09-30): done.** The differential is ADR-056's conformance harness, with
+  this module as the reference engine (`BaselineEngines.amaru()`: scenarios, mutation
+  matrix, blueprint vectors), and `amaru` as an admission shadow or shadow-sync engine,
+  with dumps (`ShadowValidationRunner`, ADR-056 Phase 7a). The `amaru-wasm.yml`
+  `conformance` job runs it on every build of the module. Two divergences are recorded:
+  - scenario 00280, where Amaru differs from Haskell (ADR-056 Phase 3a);
+  - a delegation from an unregistered credential, which is rejected under both engines
+    (Phase C, `AmaruKnownDivergencesTest`).
+  Neither is fixed.
 
 ### Phase E — Native image, performance, docs
 
@@ -727,16 +741,18 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 
 ## Acceptance criteria
 
-- The default Yano build, tests and distributions are byte-for-byte unaffected
-  when `-PwithAmaru` is not set.
-- With the module:
-  - all 276 Amaru scenarios pass through the Java engine path in `full` mode;
-  - the Phase C devnet matrix passes with `engine: amaru`;
-  - a trap or timeout rejects one transaction and never destabilises the node;
-  - the native image works.
-- The CI workflow reproduces the module from the pinned tag and toolchain, and
-  publishes it with its sha256.
-- ADR-056's differential gate runs against this module.
+Status on 2026-09-30.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| The default Yano build, tests and distributions are byte-for-byte unaffected when `-PwithAmaru` is not set. | **Met by exclusion** | Without the flag, `settings.gradle` leaves the module out. It is not in the BOM, it is excluded from central deployment, and the publication scope check still reports the default 24 projects (Phase B). No byte comparison of the distributions was run. |
+| With the module, all 276 Amaru scenarios pass through the Java engine path in `full` mode. | **Met** | 275 with the expected verdict, rule and constructor; 00203 (PV 9) refused with `ENGINE.EraNotSupported` by invariant 6 (Phase B). |
+| With the module, the Phase C devnet matrix passes with `engine: amaru`. | **Met** | `AmaruDevnetParityTest`, with one recorded divergence; Haskell follower in lock-step for 2,362 blocks (Phase C). |
+| With the module, a trap or timeout rejects one transaction and never destabilises the node. | **Met** | A real trap and a timeout each reject with `AmaruEngineFailure`, and the next call succeeds; stuck workers turn the engine unhealthy and it fails closed (Phase B). |
+| With the module, the native image works. | **Met** | JVM = native at PV 10 and 11 for admission, block selection and shadow sync (Phase E results). |
+| The CI workflow reproduces the module from the pinned tag and toolchain, and publishes it with its sha256. | **Met; first publication pending** | `amaru-wasm.yml` builds the module and its bundle with the sha256 on every relevant push. Its `release` job attaches them to a Yano release tag; no release carries the module yet. |
+| ADR-056's differential gate runs against this module. | **Met** | Phase D status above. |
+| Phase E: latency benchmark on the scenario corpus, startup and per-instance memory, developer guide. | **In progress** | Being done separately; the benchmark runs after the mainnet sync. |
 
 ## Alternatives considered
 

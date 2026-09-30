@@ -6,6 +6,11 @@ Accepted (2026-09-28). The design was reviewed by Fable and in four Codex
 review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
 with the decisions recorded at the end of this ADR.
 
+Implementation (2026-09-30): Phases 0–7 are done on PR #155, and the Phase 7c
+public-network gate passed on preprod and preview. The mainnet shadow sync is
+running. Phase 8 (the default switch) waits for the Julc release. See
+"Acceptance criteria" for the status of each criterion.
+
 ## Date
 
 2026-09-28
@@ -965,17 +970,20 @@ single PR (#155) into `main`. Each logical step or phase is:
 4. tested;
 5. committed and pushed to the PR, with the PR description updated.
 
-Order across both ADRs:
+The stacked steps S1–S5 planned here were not used: the phases landed as
+commits of the one PR. Status (2026-09-30):
 
-| Step | Contents |
-|---|---|
-| S1 | 056-P0 (mechanical rename) |
-| S2 | 056-P1, P2 + 057-A, B |
-| S3 | 056-P3, P4, P5 |
-| S4 | 056-P6 + 057-C |
-| S5 | 056-P7, P8 + 057-D, E |
-
-The final PR merges once S5's gates are green.
+| Phase | Status | Commits |
+|---|---|---|
+| 0: module consolidation | done | `a77c49bed` |
+| 1: API, views, ticking, effects, engine selection | done | `95978298f`, `f2ce50a88`, `bc7d32243`, `7847f2b29`, `88756fae1` |
+| 2: conformance harness | done | `e9341130e` |
+| 3: UTXO, UTXOW, UTXOS | done | `06356e23e`, `f9e0c2e37` |
+| 4: CERTS, DELEG, POOL, GOVCERT | done | `39696c24b` |
+| 5: GOV, LEDGER pre-checks, MEMPOOL; 5b PV 9; 5c versioned rule sets | done | `ea8881f2b`, `55ee52a83`, `76f5343e7` |
+| 6: runtime overlays (6a mempool, 6b block production) | done | `d265caf55`, `f54e13a33`, `0e158a26f` |
+| 7: blueprint vectors (7b), shadow sync (7a), public networks, Julc, native parity (7c) | done, except the mainnet shadow sync (running) | `a8b71a20a`, `edcf1627f`, `cce882958`, `507b00927`, `c30b27297`, `64395b758`, `526513cb5`, `b02ba6fe1`, `c84c05ba1`, `943a5b6e0`, `55291b253`, `d7616de51` |
+| 8: default switch, clean-up | waits for the Julc release (bloxbean/julc PRs #219, #221, #227, #228) | — |
 
 ### Phase 0 — Module consolidation (no behaviour change)
 
@@ -3001,6 +3009,9 @@ shadow sync on `java-julc,java-scalus`, reached the tip with:
   - the registered DRep set (292 and 9,164);
   - the DRep distribution totals of the last two epochs, to the lovelace;
   - every governance proposal's state at the tip (124 and 1,552).
+
+  The comparison is `qa/tools/koios_compare.py`; the whole routine (shadow sync, report and dumps, bundle replay,
+  Koios) is "Ledger compatibility check" in [qa/README.md](../qa/README.md#ledger-compatibility-check-shadow-sync--koios).
 - The one remaining difference is preview's exact deposit figure at the tip: Yano is 14,500 ADA (29 × 500 ADA) above a
   Koios-derived value. Koios `pool_list` still reports 29 pools as registered whose registration and retirement are in
   the same transaction. POOLREAP retired those pools and refunded their deposits, as Yano did: Yano has 727 pools,
@@ -3668,21 +3679,35 @@ the shadow-sync findings. Julc is upgraded to `0.1.0-pre17` (group `org.julclang
   `scalus` stays selectable).
 - Update docs, the release notes and the testkit end-to-end profiles
   (`DRepValidationTestProfile`).
+- **Status (2026-09-30): waiting.** Phase 8 starts once Julc is released with bloxbean/julc
+  PRs #219, #221, #227 and #228. On the released Julc 0.1.0-pre17, `java-julc` still gets 4
+  public-network transactions wrong. They are pinned as canaries
+  (`JulcPublicNetworkTest.knownJulcDeviationsStillFail`), which fail once the catalog moves to
+  a fixed Julc. Until then the Java engines stay behind
+  `yano.validation.java-engine.experimental`.
 
 ## Acceptance criteria
 
-- The coverage matrix is 100% for the Conway PV10–11 leaf constructors, and every
-  PV gate is tested on both sides.
-- The Amaru scenarios, blueprint vectors, mutation matrix, shadow sync and
-  native parity gates all pass.
-- Dependent chains in the mempool and in one block, and across an epoch
-  boundary, validate identically under `java-julc` and `amaru`, and under `scalus`
-  for the state it models. A Haskell follower accepts every Yano-produced block
-  in the Phase 6 matrix.
-- With `engine: java-julc`, the submit path does not call Scalus (julc runs
-  phase 2); with `engine: java-scalus`, only for phase-2 script execution.
-- Canonical ledger-state, reward, AdaPot and ratification outputs are
-  unchanged. The existing verification suites stay green.
+Status on 2026-09-30.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| The coverage matrix is 100% for the Conway PV10–11 leaf constructors, and every PV gate is tested on both sides. | **Met; scope changed to PV 9–11** (Phase 5b, decision 1) | `ledger-rules/docs/conway-rule-coverage.md`: 86/86 constructors (56 test + scenario, 30 test, 0 gaps), strict by default since Phase 5. Per version: PV 9 75/75, PV 10 77/77, PV 11 80/80, with a mutation world for each version (Phase 5c). |
+| The Amaru scenarios, blueprint vectors, mutation matrix, shadow sync and native parity gates all pass. | **Met, except the mainnet shadow sync, which is running** | Amaru scenarios: `java-julc` and `java-scalus` 276/276 verdicts, 275/276 constructors; 00280 matches Haskell where Amaru diverges (`ledger-conformance/docs/baseline-2026-09.md`). Blueprint vectors: 310/320, 2,472/2,487 transactions; the other 10 vectors need an epoch transition (Phase 7b, Phase 7c Julc). Mutation matrix: 94/94 mutants, and 96/96/95 cases in the PV 9/10/11 worlds. Shadow sync: preprod 4,240,097 and preview 2,117,011 Conway transactions, 0 findings under both engines (Phase 7c gate, `d7616de51`). Native parity: JVM = native for `java-julc`, `java-scalus`, `scalus` and `amaru` at PV 9–11 (`943a5b6e0`). |
+| Dependent chains in the mempool and in one block, and across an epoch boundary, validate identically under `java-julc` and `amaru`, and under `scalus` for the state it models. A Haskell follower accepts every Yano-produced block in the Phase 6 matrix. | **Met** | The devnet matrix (`JavaEngineDevnetGateTest`; 423 transactions re-validated in `SYNC` mode) and `AmaruDevnetParityTest` give identical observations. The one Amaru divergence is recorded and rejected under both engines (ADR-057 Phase C). The native-parity workload runs the same chains under all four engines (legacy `scalus` with each certificate confirmed first). Haskell follower in lock-step: 2,497 blocks with the Java rules (engine id `java` then, `java-scalus` now; `java-julc` runs the same rules) and 2,362 blocks with `amaru` (Phase 6b). |
+| With `engine: java-julc`, the submit path does not call Scalus (Julc runs phase 2); with `engine: java-scalus`, only for phase-2 script execution. | **Met; engine ids changed** (Phase 7c: `java` split into `java-julc` and `java-scalus`) | `JavaJulcEngineFactory` wires `JulcScriptPhaseEvaluator` and stops startup without it. `java-scalus` reaches Scalus only through the `ScriptPhaseEvaluator` SPI (`JavaEngineFactoriesTest`). |
+| Canonical ledger-state, reward, AdaPot and ratification outputs are unchanged. The existing verification suites stay green. | **Changed** | The rules engines do not write canonical state. Phase 7c found ledger-state bugs and fixed them to match Haskell, which changes deposits, treasury credits and the DRep distribution: same-block registration state, the DRep `deregistered` flag and committee-state pruning (#156) in `c30b27297`; DRep delegator sets and the PV 10 rebuild at the enacting boundary in `c84c05ba1`. Existing chainstates need a full resync from genesis ("Impact on a chainstate synced before the fix"). After the fixes, AdaPot verification passed every epoch on preprod and preview, and Koios matched (Phase 7c gate). The mainnet AdaPot check waits for the running mainnet sync. CI build, commit-build and integration jobs are green. |
+
+## Follow-ups
+
+Out of scope for PR #155:
+
+- yano #158: remove an unregistering DRep's votes from proposals (Haskell `cleanupProposalVotes`).
+- yano #159: the genesis committee bootstrap overwrites a hot key authorised in epoch 0.
+- yano #160: a validation mode for sync (observe, log, enforce) for blocks from untrusted peers.
+- Align the AdaPot `deposits` (`total_dep`) with Haskell's `utxosDeposited`, in a separate PR.
+- Julc #223 (`NewConstitution` data encoding), #224 (V1/V2 translation errors in
+  `JulcTransactionEvaluator`), #229 (one Plutus Data CBOR encoder).
 
 ## Risks and mitigations
 
@@ -3699,15 +3724,15 @@ the shadow-sync findings. Julc is upgraded to `0.1.0-pre17` (group `org.julclang
 | Valid first-time registrations rejected as "missing state" | Three-outcome `Lookup`; Phase 1 lookup gate |
 | A phase-2-invalid transaction reaches a block the builder can't encode | Rejected at admission until the follow-up ADR lands |
 | PV11 constructor and ordering changes | (constructor, PV) keyed matrix; tests on both sides of each gate |
-| The scope makes the final PR hard to review | Stacked PRs into the integration branch, each gated and reviewed |
+| The scope makes the final PR hard to review | One commit or more per phase, each reviewed by independent sub-agents and gated before it is pushed |
 
 ## Rollback plan
 
 - **Behaviour.** Until Phase 8, `engine: scalus` is the default, so a
   regression in the Java engine is contained by configuration. After Phase 8,
   set `yano.validation.engine=scalus` to roll back without a redeploy of code.
-- **Module rename.** Phase 0 is mechanical and isolated in S1. Reverting S1
-  restores `ccl-ledger-rules`. The BOM entry for `yano-ccl-ledger-rules` is
+- **Module rename.** Phase 0 is mechanical and isolated in `a77c49bed`.
+  Reverting it restores `ccl-ledger-rules`. The BOM entry for `yano-ccl-ledger-rules` is
   dropped only in the final merge, and the release notes list it.
 
 ## Alternatives considered
