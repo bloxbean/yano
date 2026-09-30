@@ -18,7 +18,8 @@
 //   -PblueprintVectors=<dir>                           another copy of the cardano-blueprint vectors (default: the
 //                                                       vendored vectors/cardano-blueprint, see its README.md)
 //   -PengineBenchmark=true                             EngineLatencyBenchmarkTest: warm p50/p99 per engine on the
-//                                                       Amaru scenarios (ADR-057 Phase E; amaru-validator/README.md)
+//                                                       Amaru scenarios and the preprod/preview replay bundles
+//                                                       (ADR-057 Phase E; amaru-validator/README.md)
 
 description = 'ADR-056 conformance harness: Amaru scenarios, coverage matrix, mutation matrix, engine baseline'
 
@@ -75,11 +76,14 @@ tasks.withType(Test).configureEach {
             project(':ledger-rules').layout.buildDirectory.dir('classes/java/test').get().asFile.absolutePath
     systemProperty 'conformance.report.dir', layout.buildDirectory.dir('conformance').get().asFile.absolutePath
     // ADR-057 Phase E engine latency benchmark (EngineLatencyBenchmarkTest): -PengineBenchmark=true, optionally
-    // -PengineBenchmarkPasses=<n> (default 5) and -PengineBenchmarkWarmup=<n> (default 2).
+    // -PengineBenchmarkPasses=<n> (default 5) and -PengineBenchmarkWarmup=<n> (default 2); the public-network corpus runs
+    // -PengineBenchmarkNetworkRepeat=<n> (default 20) times as many passes of each.
     if (project.hasProperty('engineBenchmark')) {
         systemProperty 'yano.engine.benchmark', 'true'
         systemProperty 'yano.engine.benchmark.passes', providers.gradleProperty('engineBenchmarkPasses').getOrElse('5')
         systemProperty 'yano.engine.benchmark.warmup', providers.gradleProperty('engineBenchmarkWarmup').getOrElse('2')
+        systemProperty 'yano.engine.benchmark.networkRepeat',
+                providers.gradleProperty('engineBenchmarkNetworkRepeat').getOrElse('20')
     }
     dependsOn ':ledger-rules:testClasses'
     // The results depend on the external Amaru corpus and on engines outside this module: always run.

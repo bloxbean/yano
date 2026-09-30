@@ -1,6 +1,9 @@
 package org.yanoproject.ledger.conformance.engines;
 
 import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
+import org.yanoproject.ledger.rules.LedgerValidationEngine;
+import org.yanoproject.ledger.rules.NetworkParameters;
+import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
@@ -34,6 +37,22 @@ public final class BaselineEngines {
             throw new IllegalStateException("cannot create the Amaru reference engine", e);
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException("cannot create the Amaru reference engine", e);
+        }
+    }
+
+    /**
+     * @param scripts null for {@code phase2 = full}, or the evaluator for {@code phase2 = scalus}
+     * @return the Amaru engine for a real network ({@code AmaruReferenceEngine.forNetwork}), when the build includes it
+     */
+    public static Optional<LedgerValidationEngine> amaru(NetworkParameters network, ScriptPhaseEvaluator scripts) {
+        try {
+            return Optional.of((LedgerValidationEngine) Class.forName(AMARU_ADAPTER)
+                    .getMethod("forNetwork", NetworkParameters.class, ScriptPhaseEvaluator.class)
+                    .invoke(null, network, scripts));
+        } catch (ClassNotFoundException e) {
+            return Optional.empty();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("cannot create the Amaru engine for network " + network.networkMagic(), e);
         }
     }
 

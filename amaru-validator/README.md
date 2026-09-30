@@ -247,8 +247,14 @@ Two opt-in tests measure latency, startup and memory. They are skipped unless yo
 commands and what each figure means.
 
 - `ledger-conformance` `EngineLatencyBenchmarkTest`: warm per-transaction p50, p90 and p99 for
-  `java-julc`, `java-scalus` and `amaru` on the Amaru scenarios. It writes
+  `java-julc`, `java-scalus` and `amaru` on the Amaru scenarios, and on the vendored preprod and
+  preview replay bundles (also `amaru` with `phase2: scalus`). It writes
   `ledger-conformance/build/conformance/engine-latency.md`.
+
+The results are in ADR-057 "Phase E results: benchmark". In short: on the scenarios `amaru` is
+well inside its target, but on real Plutus transactions `phase2: full` takes tens to hundreds of
+milliseconds per transaction, because of Amaru's script evaluation; `phase2: scalus`, the default,
+stays at a few milliseconds. Keep the default on public networks.
 - `amaru-validator` `AmaruFootprintBenchmarkTest`: cold module load and first instance, warm
   instantiation, and retained heap per instance. It writes
   `amaru-validator/build/benchmark/amaru-footprint.md`.
