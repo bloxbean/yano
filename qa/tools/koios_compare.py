@@ -11,11 +11,15 @@ Checks (Yano REST /api/v1 vs Koios /api/v1):
 - Treasury, reserves, fees per epoch: /epochs/adapots vs /totals. Same label on both sides: epoch N is the pots
   after the N-1 -> N boundary, and fees at N are the fees of epoch N-1. Yano's first AdaPot has fees = 0
   (pre-bootstrap fees are not tracked), so that one fee value is skipped.
-- Deposits per epoch: Yano `deposits` is key + DRep deposits; Koios `deposits_stake` is key + pool deposits. So
-  (yano - deposits_stake - deposits_drep) mod pool_deposit must be 0; a residue means extra or missing key deposits.
-  At the tip, an exact figure uses Koios /pool_list (registered or retiring pools x pool_deposit). It is reported but
-  not counted: Koios still lists pools registered and retired in the same transaction, which POOLREAP retired and
-  refunded, so the exact figure can be off by whole pool deposits.
+- Deposits per epoch, exactly (ADR-058): Yano `deposits_key + deposits_pool` vs Koios `deposits_stake` (db-sync's
+  stake-key plus pool obligations), `deposits_drep` vs `deposits_drep`, `deposits_proposal` vs `deposits_proposal`,
+  and `deposits` vs the sum of the three. A Yano AdaPot written before ADR-058 has no categories (its `deposits` is
+  key + DRep only); such epochs are listed, not compared.
+- Deposit audit at the tip (Yano-internal, /api/debug/deposits): the stake accounts' deposits add up to Yano's
+  total_dep minus its DRep deposits, and the pool deposits equal the pool count x pool_deposit (valid while the
+  pool deposit parameter has never changed, as on mainnet, preprod and preview). The pool count is
+  also shown next to Koios /pool_list (registered or retiring) for information only: Koios still lists pools
+  registered and retired in the same transaction, which POOLREAP retired and refunded.
 - Registered DReps at the tip: /governance/dreps?status=active vs /drep_list?registered=eq.true.
 - DRep distribution totals of the last K epochs: the sum of /governance/dreps/{id}/distribution/{epoch} vs
   /drep_epoch_summary minus the always-abstain and always-no-confidence pseudo DReps; for the latest mismatching
@@ -113,12 +117,13 @@ class Koios:
 
 class Yano:
     def __init__(self, base, timeout):
-        self.base = base.rstrip("/") + "/api/v1"
+        self.root = base.rstrip("/")
+        self.base = self.root + "/api/v1"
         self.timeout = timeout
         self.requests = 0
 
-    def get(self, path, params=None, allow_404=False):
-        url = f"{self.base}/{path}" + ("?" + urllib.parse.urlencode(params) if params else "")
+    def get(self, path, params=None, allow_404=False, base=None, absent_codes=(404,)):
+        url = f"{base or self.base}/{path}" + ("?" + urllib.parse.urlencode(params) if params else "")
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
         for attempt in range(3):
             self.requests += 1
@@ -126,7 +131,7 @@ class Yano:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return json.load(resp)
             except urllib.error.HTTPError as e:
-                if e.code == 404 and allow_404:
+                if e.code in absent_codes and allow_404:
                     return None
                 if e.code not in (502, 503, 504) or attempt == 2:
                     raise FetchError(f"Yano GET {url} -> HTTP {e.code}: {e.read()[:200]!r}")
@@ -190,29 +195,46 @@ def compare_pots(koios_totals, yano_pots, epochs):
     return mismatches
 
 
-def compare_deposits(koios_totals, yano_pots, epochs, pool_deposit):
-    """Epochs whose (yano - koios key/pool/DRep deposits) is not a whole number of pool deposits."""
-    rows = []
+DEPOSIT_CHECKS = (
+    ("key + pool", ("deposits_key", "deposits_pool"), ("deposits_stake",)),
+    ("DRep", ("deposits_drep",), ("deposits_drep",)),
+    ("proposal", ("deposits_proposal",), ("deposits_proposal",)),
+    ("total", ("deposits",), ("deposits_stake", "deposits_drep", "deposits_proposal")),
+)
+
+
+def compare_deposits(koios_totals, yano_pots, epochs):
+    """Per epoch, the exact category checks that fail, and the epochs whose Yano AdaPot has no categories."""
+    rows, legacy = [], []
     for epoch in epochs:
         k, y = koios_totals[epoch], yano_pots[epoch]
-        yd = to_int(y.get("deposits")) or 0
-        kd = (to_int(k.get("deposits_stake")) or 0) + (to_int(k.get("deposits_drep")) or 0)
-        residue = (yd - kd) % pool_deposit
-        if residue:
-            rows.append({"epoch": epoch, "yano": yd, "koios": kd, "residue": residue})
-    return rows
+        if y.get("deposits_key") is None:
+            legacy.append(epoch)
+            continue
+        for name, yano_fields, koios_fields in DEPOSIT_CHECKS:
+            yv = sum(to_int(y.get(f)) or 0 for f in yano_fields)
+            kv = sum(to_int(k.get(f)) or 0 for f in koios_fields)
+            if yv != kv:
+                rows.append({"epoch": epoch, "check": name, "yano": yv, "koios": kv})
+    return rows, legacy
 
 
-def exact_tip_deposits(koios, koios_totals, yano_pots, tip, pool_deposit):
-    k, y = koios_totals.get(tip), yano_pots.get(tip)
-    if k is None or y is None:
+def deposit_audit(koios, yano, pool_deposit):
+    """Yano-internal deposit checks at the tip, and the pool count next to Koios pool_list (informational)."""
+    audit = yano.get("debug/deposits", base=yano.root + "/api", allow_404=True, absent_codes=(404, 503))
+    if audit is None:
         return None
-    pools = sum(1 for r in koios.get_all("pool_list", {"select": "pool_status"})
-                if r.get("pool_status") in ("registered", "retiring"))
-    koios_keys = int(k["deposits_stake"]) - pools * pool_deposit
-    koios_drep = int(k.get("deposits_drep") or 0)
-    return {"epoch": tip, "pools": pools, "koios_keys": koios_keys, "koios_drep": koios_drep,
-            "yano": int(y["deposits"]), "excess": int(y["deposits"]) - koios_keys - koios_drep}
+    koios_pools = sum(1 for r in koios.get_all("pool_list", {"select": "pool_status"})
+                      if r.get("pool_status") in ("registered", "retiring"))
+    total, dreps = int(audit["total_deposited"]), int(audit["drep_deposits"])
+    pools, pool_count = int(audit["pool_deposits"]), int(audit["pool_count"])
+    failures = []
+    if not audit["stake_keys_consistent"]:
+        failures.append(f"stake accounts' deposits {int(audit['account_deposits']):,} != total_dep {total:,} "
+                        f"- DRep deposits {dreps:,}")
+    if pools != pool_count * pool_deposit:
+        failures.append(f"pool deposits {pools:,} != {pool_count} pools x {pool_deposit:,}")
+    return {"audit": audit, "koios_pools": koios_pools, "failures": failures}
 
 
 def expected_status(p, epoch):
@@ -335,17 +357,26 @@ def render(c):
                   for r in rows if r["step"]]
             L.append("")
     if c["deposits"]:
-        L += ["## Deposits", "", f"`(yano − koios deposits_stake − deposits_drep) mod {c['pool_deposit']:,}` is not 0:",
-              "", "| Epoch | Yano (ADA) | Koios stake + DRep (ADA) | Residue (lovelace) |", "|---:|---:|---:|---:|"]
-        L += [f"| {r['epoch']} | {ada(r['yano'])} | {ada(r['koios'])} | {r['residue']:,} |" for r in c["deposits"]]
+        L += ["## Deposits", "", "| Epoch | Check | Yano (ADA) | Koios (ADA) | Yano − Koios (lovelace) |",
+              "|---:|---|---:|---:|---:|"]
+        L += [f"| {r['epoch']} | {r['check']} | {ada(r['yano'])} | {ada(r['koios'])} | {r['yano'] - r['koios']:+,} |"
+              for r in c["deposits"]]
         L.append("")
-    td = c["tip_deposits"]
-    if td:
-        L += [f"Deposits at epoch {td['epoch']} (informational): Koios key deposits {ada(td['koios_keys'])} ADA "
-              f"(`deposits_stake` minus {td['pools']} pools from `pool_list`) + DRep deposits {ada(td['koios_drep'])} "
-              f"ADA; Yano {ada(td['yano'])} ADA; difference {td['excess']:+,} lovelace "
-              f"({td['excess'] / c['pool_deposit']:+g} pool deposits). A positive whole number of pool deposits is "
-              "expected when Koios lists pools registered and retired in one transaction as still registered.", ""]
+    if c["legacy_deposits"]:
+        L += [f"AdaPots without deposit categories (written before ADR-058, not compared): "
+              f"{ranges(c['legacy_deposits'])}", ""]
+    da = c["deposit_audit"]
+    if da is None:
+        L += ["Deposit audit at the tip: `/api/debug/deposits` is not available on this Yano.", ""]
+    else:
+        a = da["audit"]
+        L += [f"Deposit audit at the tip: total_dep {ada(int(a['total_deposited']))} ADA, {a['account_count']:,} stake "
+              f"accounts {ada(int(a['account_deposits']))} ADA, {a['drep_count']:,} DReps "
+              f"{ada(int(a['drep_deposits']))} ADA, {a['pool_count']:,} pools {ada(int(a['pool_deposits']))} ADA. "
+              f"Koios `pool_list` reports {da['koios_pools']:,} registered or retiring pools (informational).", ""]
+        L += [f"- FAIL: {f}" for f in da["failures"]]
+        if da["failures"]:
+            L.append("")
     ds = c["drep_set"]
     for label, ids in (("Registered DReps only in Yano", ds["only_yano"]), ("Registered DReps only in Koios",
                                                                             ds["only_koios"])):
@@ -397,7 +428,7 @@ def main():
         log(f"Yano tip epoch {yano_tip}, Koios tip epoch {koios_tip}, epochs {first}-{last}")
 
         koios_totals = {int(r["epoch_no"]): r for r in koios.get_all("totals", {
-            "select": "epoch_no,treasury,reserves,fees,deposits_stake,deposits_drep",
+            "select": "epoch_no,treasury,reserves,fees,deposits_stake,deposits_drep,deposits_proposal",
             "and": f"(epoch_no.gte.{first},epoch_no.lte.{last})", "order": "epoch_no.asc"})}
         yano_pots = {}
         for a in range(first, min(last, yano_tip) + 1, 100):
@@ -410,9 +441,9 @@ def main():
         not_synced = sorted(e for e in koios_totals if e > yano_tip)
 
         pots = compare_pots(koios_totals, yano_pots, epochs)
-        deposits = compare_deposits(koios_totals, yano_pots, epochs, pool_deposit)
+        deposits, legacy_deposits = compare_deposits(koios_totals, yano_pots, epochs)
         tip = min(yano_tip, koios_tip)
-        tip_deposits = exact_tip_deposits(koios, koios_totals, yano_pots, tip, pool_deposit) if last >= tip else None
+        audit = deposit_audit(koios, yano, pool_deposit)
 
         yano_reg = {r["drep_id"] for r in yano.pages("governance/dreps", {"status": "active"})}
         koios_reg = {r["drep_id"] for r in koios.get_all("drep_list", {"select": "drep_id", "registered": "eq.true"})}
@@ -439,7 +470,8 @@ def main():
         ("Reserves", len(epochs), len(pots["reserves"])),
         ("Fees", len(epochs), len(pots["fees"])),
         ("AdaPot missing in Yano", len(gaps), len(gaps)),
-        ("Deposits (residue modulo pool deposit)", len(epochs), len(deposits)),
+        ("Deposits by category (exact)", len(epochs) - len(legacy_deposits), len({r["epoch"] for r in deposits})),
+        ("Deposit audit at the tip", 2 if audit else 0, len(audit["failures"]) if audit else 0),
         ("Registered DReps at the tip", len(koios_reg), set_bad),
         ("DRep distribution totals", len(drep_rows), drep_bad),
         ("Governance proposals", props_checked, len(proposals)),
@@ -450,7 +482,7 @@ def main():
         "yano_url": args.yano, "koios_url": koios.base, "yano_tip": yano_tip, "koios_tip": koios_tip,
         "epochs": epochs, "not_synced": not_synced, "gaps": gaps, "yano_requests": yano.requests,
         "koios_requests": koios.requests, "summary": summary, "total_bad": total_bad, "pots": pots,
-        "deposits": deposits, "tip_deposits": tip_deposits, "pool_deposit": pool_deposit, "drep_set": drep_set,
+        "deposits": deposits, "legacy_deposits": legacy_deposits, "deposit_audit": audit, "drep_set": drep_set,
         "drep_rows": drep_rows, "drep_diff": drep_diff, "proposals": proposals,
     })
     if args.out:

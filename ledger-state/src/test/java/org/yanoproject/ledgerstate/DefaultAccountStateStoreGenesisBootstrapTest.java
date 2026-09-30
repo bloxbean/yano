@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.BlockHeader;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.HeaderBody;
+import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.api.EpochParamProvider;
 import org.yanoproject.api.events.GenesisBlockEvent;
@@ -71,18 +72,23 @@ class DefaultAccountStateStoreGenesisBootstrapTest {
                     .containsEntry("0:" + STAKE_HASH,
                             new AccountStateCborCodec.EpochDelegSnapshot(POOL_HASH, BigInteger.valueOf(1_000)));
 
-            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(502));
+            // total_dep counts the stake-key deposit only; the pool deposit is summed from the pool record
+            var obligations = new LedgerStateProvider.DepositObligations(BigInteger.valueOf(2),
+                    BigInteger.valueOf(500), BigInteger.ZERO, BigInteger.ZERO);
+            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(2));
+            assertThat(store.depositObligations()).isEqualTo(obligations);
             assertThat(store.getAdaPot(0))
                     .isPresent()
                     .get()
                     .satisfies(pot -> {
                         assertThat(pot.deposits()).isEqualTo(BigInteger.valueOf(502));
+                        assertThat(pot.depositObligations()).isEqualTo(obligations);
                         assertThat(pot.reserves()).isEqualTo(BigInteger.valueOf(9_000));
                     });
 
             store.handleGenesisBlock(event);
 
-            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(502));
+            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(2));
             assertThat(store.getAdaPot(0).orElseThrow().deposits()).isEqualTo(BigInteger.valueOf(502));
         }
     }
@@ -189,18 +195,18 @@ class DefaultAccountStateStoreGenesisBootstrapTest {
             store.applyBlock(new BlockAppliedEvent(Era.Conway, 10, 1, "cc", block(10, 1, "cc")));
 
             assertThat(store.getPoolBlockCount(0, POOL_HASH)).isEqualTo(2);
-            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(502));
+            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(2));
 
             store.rollbackToSlot(0);
 
             assertThat(store.getPoolBlockCount(0, POOL_HASH)).isEqualTo(1);
-            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(502));
+            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(2));
 
             store.handleGenesisBlock(event);
             store.applyBlock(new BlockAppliedEvent(Era.Conway, 10, 1, "cc", block(10, 1, "cc")));
 
             assertThat(store.getPoolBlockCount(0, POOL_HASH)).isEqualTo(2);
-            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(502));
+            assertThat(store.getTotalDeposited()).isEqualTo(BigInteger.valueOf(2));
             assertThat(store.getAdaPot(0).orElseThrow().deposits()).isEqualTo(BigInteger.valueOf(502));
 
             var rewardCalculator = new EpochRewardCalculator(rocks.db(), rocks.cfState(), rocks.cfSnapshot(), true);
