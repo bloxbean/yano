@@ -40,11 +40,22 @@ import java.util.concurrent.atomic.LongAdder;
  *       ({@code BodyRefScriptsSizeTooBig}, {@code TooManyExUnits}, {@code WrongBlockBodySizeBBODY},
  *       {@code InvalidBodyHashBBODY}), with supplied and limit;</li>
  *   <li>{@code "type":"block"}, {@code "kind":"ENGINE_FAILURE"}: the block could not be validated at all (no
- *       pre-block state, undecodable bytes, no environment, skipped under backpressure), with reason and txCount;</li>
+ *       pre-block state, undecodable bytes, no environment, skipped under backpressure or still validating when
+ *       shadow sync stopped), with reason and txCount;</li>
  *   <li>{@code "type":"block"}, {@code "kind":"ID_MISMATCH"}: the ids reassembled from the stored bytes differ from
  *       the applied block's;</li>
  *   <li>{@code "type":"summary"}: written when the node stops, the counters.</li>
  * </ul>
+ *
+ * <h2>Coverage</h2>
+ * Every applied Conway block with transactions is either submitted (captured and handed to validation) or failed
+ * before submit; every submitted block ends validated, pre-Conway after capture (a Conway-era block below protocol
+ * version 9) or failed after submit, which includes skipped at stop:
+ * <pre>
+ *   Conway blocks with transactions = submitted + failedBeforeSubmit
+ *   submitted = validated + preConwayAfterCapture + failedAfterSubmit   (nothing in flight)
+ * </pre>
+ * Any failed block is a coverage gap: a clean run has both failure counts at 0.
  */
 @Slf4j
 public final class ShadowSyncReport implements AutoCloseable {
@@ -61,13 +72,23 @@ public final class ShadowSyncReport implements AutoCloseable {
      * The counters.
      *
      * @param byEngine             per engine, per protocol major version
+     * @param blocksSubmitted      blocks handed to validation (captured); each ends validated, pre-Conway after
+     *                             capture or failed after submit
      * @param blocksValidated      blocks whose transactions were validated
  * @param boundaryBlocks       of those, blocks that were the first of their epoch (validated after the boundary)
-     * @param blocksSkippedPreConway blocks before Conway (not validated)
+     * @param blocksSkippedPreConway blocks before Conway (not validated), including those found pre-Conway after
+     *                             capture
      * @param txsSkippedPreConway  their transactions
      * @param blocksEmpty          Conway blocks without transactions
-     * @param blockFailures        Conway blocks that could not be validated (state, bytes, environment, backpressure)
+     * @param blockFailures        Conway blocks that could not be validated: failed before plus after submit
      * @param txsInFailedBlocks    their transactions
+     * @param blocksPreConwayAfterCapture submitted Conway-era blocks whose pre-block protocol version is below 9
+     * @param blocksFailedBeforeSubmit blocks not handed to validation: outside a write section, no free slot within
+     *                             the maximum wait, interrupted while waiting (the apply thread stopping), no pre-block
+     *                             state
+     * @param blocksFailedAfterSubmit submitted blocks not validated: no bytes, undecodable, no environment, an engine
+     *                             crash, or skipped at stop
+     * @param blocksSkippedAtStop  of those, blocks still validating when shadow sync stopped and gave up waiting
      * @param refScriptChecks      blocks whose reference-script size was checked
      * @param refScriptViolations  of those, blocks over the limit
      * @param refScriptUnavailable blocks where the check could not run
@@ -83,9 +104,11 @@ public final class ShadowSyncReport implements AutoCloseable {
      * @param dumpsWritten         replay bundles written
      * @param reportLines          JSONL lines written
      */
-    public record Stats(Map<String, Map<Integer, Counts>> byEngine, long blocksValidated, long boundaryBlocks,
-                        long blocksSkippedPreConway,
+    public record Stats(Map<String, Map<Integer, Counts>> byEngine, long blocksSubmitted, long blocksValidated,
+                        long boundaryBlocks, long blocksSkippedPreConway,
                         long txsSkippedPreConway, long blocksEmpty, long blockFailures, long txsInFailedBlocks,
+                        long blocksPreConwayAfterCapture, long blocksFailedBeforeSubmit, long blocksFailedAfterSubmit,
+                        long blocksSkippedAtStop,
                         long refScriptChecks, long refScriptViolations, long refScriptUnavailable,
                         long exUnitsChecks, long exUnitsViolations, long exUnitsUnavailable, long bodyChecks,
                         long bodyViolations, long idMismatches,
@@ -134,6 +157,7 @@ public final class ShadowSyncReport implements AutoCloseable {
     private final Object writeLock = new Object();
 
     private final Map<String, Map<Integer, Adders>> byEngine = new ConcurrentHashMap<>();
+    private final LongAdder blocksSubmitted = new LongAdder();
     private final LongAdder blocksValidated = new LongAdder();
     private final LongAdder boundaryBlocks = new LongAdder();
     private final LongAdder blocksSkippedPreConway = new LongAdder();
@@ -141,6 +165,10 @@ public final class ShadowSyncReport implements AutoCloseable {
     private final LongAdder blocksEmpty = new LongAdder();
     private final LongAdder blockFailures = new LongAdder();
     private final LongAdder txsInFailedBlocks = new LongAdder();
+    private final LongAdder blocksPreConwayAfterCapture = new LongAdder();
+    private final LongAdder blocksFailedBeforeSubmit = new LongAdder();
+    private final LongAdder blocksFailedAfterSubmit = new LongAdder();
+    private final LongAdder blocksSkippedAtStop = new LongAdder();
     private final LongAdder refScriptChecks = new LongAdder();
     private final LongAdder refScriptViolations = new LongAdder();
     private final LongAdder refScriptUnavailable = new LongAdder();
@@ -325,6 +353,35 @@ public final class ShadowSyncReport implements AutoCloseable {
                 body.headerHash());
     }
 
+    /** Records a block handed to validation. */
+    public void submitted() {
+        blocksSubmitted.increment();
+    }
+
+    /** Records a submitted block that shadow sync stopped before validating (a failure after submit). */
+    public void skippedAtStop(BlockRef block, int txCount, String reason) {
+        blocksSkippedAtStop.increment();
+        failedAfterSubmit(block, txCount, reason);
+    }
+
+    /** Records a submitted Conway-era block whose pre-block protocol version is before Conway (not validated). */
+    public void preConwayAfterCapture(int txCount) {
+        blocksPreConwayAfterCapture.increment();
+        skippedPreConway(txCount);
+    }
+
+    /** Records a Conway block with transactions that was never handed to validation. */
+    public void failedBeforeSubmit(BlockRef block, int txCount, String reason) {
+        blocksFailedBeforeSubmit.increment();
+        blockFailure(block, txCount, reason);
+    }
+
+    /** Records a submitted block that could not be validated. */
+    public void failedAfterSubmit(BlockRef block, int txCount, String reason) {
+        blocksFailedAfterSubmit.increment();
+        blockFailure(block, txCount, reason);
+    }
+
     /** Records a block before Conway (not validated). */
     public void skippedPreConway(int txCount) {
         blocksSkippedPreConway.increment();
@@ -336,8 +393,7 @@ public final class ShadowSyncReport implements AutoCloseable {
         blocksEmpty.increment();
     }
 
-    /** Records a Conway block that could not be validated at all. */
-    public void blockFailure(BlockRef block, int txCount, String reason) {
+    private void blockFailure(BlockRef block, int txCount, String reason) {
         blockFailures.increment();
         txsInFailedBlocks.add(txCount);
         ObjectNode line = blockLine(block, "ENGINE_FAILURE", -1, -1);
@@ -450,8 +506,10 @@ public final class ShadowSyncReport implements AutoCloseable {
                     a.engineFailures.sum())));
             engines.put(engine, Map.copyOf(counts));
         });
-        return new Stats(Map.copyOf(engines), blocksValidated.sum(), boundaryBlocks.sum(), blocksSkippedPreConway.sum(),
-                txsSkippedPreConway.sum(), blocksEmpty.sum(), blockFailures.sum(), txsInFailedBlocks.sum(),
+        return new Stats(Map.copyOf(engines), blocksSubmitted.sum(), blocksValidated.sum(), boundaryBlocks.sum(),
+                blocksSkippedPreConway.sum(), txsSkippedPreConway.sum(), blocksEmpty.sum(), blockFailures.sum(),
+                txsInFailedBlocks.sum(), blocksPreConwayAfterCapture.sum(), blocksFailedBeforeSubmit.sum(),
+                blocksFailedAfterSubmit.sum(), blocksSkippedAtStop.sum(),
                 refScriptChecks.sum(), refScriptViolations.sum(), refScriptUnavailable.sum(), exUnitsChecks.sum(),
                 exUnitsViolations.sum(), exUnitsUnavailable.sum(), bodyChecks.sum(), bodyViolations.sum(),
                 idMismatches.sum(),
@@ -462,9 +520,13 @@ public final class ShadowSyncReport implements AutoCloseable {
     /** @return one line for the INFO summary */
     public static String summary(Stats s) {
         StringBuilder out = new StringBuilder();
-        out.append("blocks validated=").append(s.blocksValidated())
+        out.append("blocks: submitted=").append(s.blocksSubmitted())
+                .append(" validated=").append(s.blocksValidated())
                 .append(" (first of epoch ").append(s.boundaryBlocks()).append(')')
-                .append(" failed=").append(s.blockFailures())
+                .append(" pre-Conway-after-capture=").append(s.blocksPreConwayAfterCapture())
+                .append(" failed(before submit)=").append(s.blocksFailedBeforeSubmit())
+                .append(" failed(after submit)=").append(s.blocksFailedAfterSubmit())
+                .append(" skippedAtStop=").append(s.blocksSkippedAtStop())
                 .append(" empty=").append(s.blocksEmpty())
                 .append(" pre-Conway skipped=").append(s.blocksSkippedPreConway())
                 .append(" (txs ").append(s.txsSkippedPreConway()).append(')');
@@ -523,6 +585,7 @@ public final class ShadowSyncReport implements AutoCloseable {
                 counts.put("engineFailures", c.engineFailures());
             });
         });
+        node.put("blocksSubmitted", s.blocksSubmitted());
         node.put("blocksValidated", s.blocksValidated());
         node.put("boundaryBlocks", s.boundaryBlocks());
         node.put("blocksSkippedPreConway", s.blocksSkippedPreConway());
@@ -530,6 +593,10 @@ public final class ShadowSyncReport implements AutoCloseable {
         node.put("blocksEmpty", s.blocksEmpty());
         node.put("blockFailures", s.blockFailures());
         node.put("txsInFailedBlocks", s.txsInFailedBlocks());
+        node.put("blocksPreConwayAfterCapture", s.blocksPreConwayAfterCapture());
+        node.put("blocksFailedBeforeSubmit", s.blocksFailedBeforeSubmit());
+        node.put("blocksFailedAfterSubmit", s.blocksFailedAfterSubmit());
+        node.put("blocksSkippedAtStop", s.blocksSkippedAtStop());
         node.put("refScriptChecks", s.refScriptChecks());
         node.put("refScriptViolations", s.refScriptViolations());
         node.put("refScriptUnavailable", s.refScriptUnavailable());

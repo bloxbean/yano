@@ -980,6 +980,9 @@ public class YanoProducer {
         }
     }
 
+    /** Removed with the shadow-sync thread pool (shadow sync runs on virtual threads); ignored with a warning. */
+    private static final String REMOVED_SHADOW_SYNC_THREADS = "yano.validation.shadow-sync-threads";
+
     /** ADR-056 §7 engine selection and shadowing, and ADR-057 §2 Amaru settings, forwarded verbatim. */
     static final List<String> VALIDATION_ENGINE_KEYS = List.of(
             YanoPropertyKeys.Validation.ENGINE,
@@ -992,7 +995,6 @@ public class YanoProducer {
             YanoPropertyKeys.Validation.SHADOW_SYNC_DUMP_DIR,
             YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_DUMPS,
             YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT,
-            YanoPropertyKeys.Validation.SHADOW_SYNC_THREADS,
             YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_WAIT_MS,
             YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS,
             YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS,
@@ -1020,7 +1022,8 @@ public class YanoProducer {
 
     /**
      * ADR-056 §7: {@code supplementary-rules-enabled} and {@code default-validator-enabled} are deprecated and
-     * removed in ADR-056 Phase 8. Their behaviour is unchanged until then; setting either logs a warning.
+     * removed in ADR-056 Phase 8. Their behaviour is unchanged until then; setting either logs a warning. The removed
+     * {@code shadow-sync-threads} is ignored with a warning.
      */
     private void warnDeprecatedValidationKeys() {
         for (String key : List.of(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED,
@@ -1029,6 +1032,10 @@ public class YanoProducer {
                 log.warn("{} is deprecated (ADR-056 §7) and will be removed; select the admission engine with {} "
                         + "instead", key, YanoPropertyKeys.Validation.ENGINE);
             }
+        }
+        if (appConfig.getConfigValue(REMOVED_SHADOW_SYNC_THREADS).getRawValue() != null) {
+            log.warn("{} is ignored: shadow sync validates on virtual threads, bounded by {}",
+                    REMOVED_SHADOW_SYNC_THREADS, YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT);
         }
     }
 

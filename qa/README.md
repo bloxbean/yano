@@ -119,6 +119,13 @@ to the ledger rules or the ledger state.
    engine failure and block-level finding writes one report line and one replay bundle.
    The built-in AdaPot verification checks treasury and reserves at every epoch
    boundary; a mismatch logs an ERROR and shows in `/api/v1/node/epoch-calc-status`.
+   `shadow-sync-max-in-flight` (default half the cores, keep it below the core count)
+   bounds how many blocks validate in parallel. The summary lines and the JSONL summary
+   give the coverage: `blocks: submitted validated pre-Conway-after-capture
+   failed(before submit) failed(after submit) skippedAtStop`. Every Conway block with
+   transactions is submitted or failed before submit, and every submitted block ends
+   validated, pre-Conway after capture or failed after submit (skipped at stop included).
+   **Any failed block is a coverage gap: a clean run has both failure counts at 0.**
 3. Replay the bundles on the JVM, after a fix or to triage:
    `./gradlew :tx-services:test --tests '*ShadowBundleReplayTest' -Dyano.shadow.bundles=$RUN/shadow-dumps`.
 4. At the tip, compare the ledger state with Koios (read-only; exit 0 = no mismatch):

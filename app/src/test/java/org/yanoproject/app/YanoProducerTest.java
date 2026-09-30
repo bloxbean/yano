@@ -109,6 +109,17 @@ class YanoProducerTest {
     }
 
     @Test
+    void shadowSyncMaxInFlightIsForwardedAndTheRemovedThreadsKeyIsNot() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT, "6",
+                "yano.validation.shadow-sync-threads", "3"));
+        Map<String, Object> globals = new HashMap<>();
+        producer.forwardValidationEngineKeys(globals);
+        assertEquals(Map.of(YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT, "6"), globals);
+    }
+
+    @Test
     void smallRyeReversibleEnvironmentBundleNameIsRetainedForExactCatalogResolution() {
         String environmentName =
                 "YANO_PLUGINS_BUNDLE_HEX__636F6D2E6578616D706C652E70726F647563742D70617373706F7274__ENDPOINT_URL";

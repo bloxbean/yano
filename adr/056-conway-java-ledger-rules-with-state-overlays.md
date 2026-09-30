@@ -2479,26 +2479,42 @@ each one as the chain did. `yano.validation.shadow-sync=true` (off by default) n
     path does not otherwise make them: header validation only compares the header's own fields.
   - Out of scope: `HeaderProtVerTooHigh` (a header-version check, enforced by Haskell on mainnet only below PV 12)
     and `incrBlocks` (block-count bookkeeping, canonical state rather than a verdict).
-- **Throughput and backpressure.** The apply thread only captures and queues; a pool of `shadow-sync-threads`
-  (default half the cores, 1 to 4) validates, blocks in parallel, each block's transactions in order. At most
-  `shadow-sync-max-in-flight` (default 8) blocks, each holding its snapshot, are queued or running; when all are
-  taken the apply thread waits (sync slows to validation speed) up to `shadow-sync-max-wait-ms` (default 30 s),
-  after which the block is skipped and reported. Workers never take the gate. Pre-Conway blocks, Byron blocks and
-  empty blocks are counted without a capture (Byron blocks as pre-Conway blocks; their events carry no transactions).
+- **Throughput and backpressure.** The apply thread only captures and starts one virtual thread per block once it
+  holds a permit; blocks validate in parallel, each block's transactions in order. `shadow-sync-max-in-flight` is the
+  only concurrency setting: at most that many blocks, each holding its snapshot, validate at once (default half the
+  cores, at least 1). Raise it for faster catch-up on a dedicated machine, but keep it below the core count:
+  validation is CPU-bound, not time-sliced, and shares the virtual-thread carriers with the node's own sync pipeline
+  (ledger apply, header sync, body fetch, header-applied events, the kernel schedulers), and the rest of the node
+  (RocksDB compaction, GC, reward calculation) and other processes on the machine need CPU too; a value at or above
+  the core count is accepted with a WARN. When every permit is taken the apply thread waits (sync slows to validation
+  speed) up to `shadow-sync-max-wait-ms` (default 30 s), after which the block is skipped and reported. Validation
+  never takes the gate. Pre-Conway blocks, Byron blocks and empty blocks are counted without a capture (Byron blocks
+  as pre-Conway blocks; their events carry no transactions).
+  - **Stopping.** `close()` unsubscribes, then waits up to 120 s for every block already handed over to finish, so a
+    restart leaves no coverage gap. Blocks still validating after that are reported as skipped at stop (one JSONL
+    `ENGINE_FAILURE` block line each, a WARN with the count) and their results, which may read a closed database, are
+    discarded. `RuntimeNode` closes shadow sync after sync has stopped and before the engines and the database.
+  - **Coverage.** The summary lines and the JSONL summary count `blocks: submitted, validated,
+    pre-Conway-after-capture, failed(before submit), failed(after submit), skippedAtStop`, with
+    Conway blocks with transactions = submitted + failed(before submit) and, once nothing is in flight, submitted =
+    validated + pre-Conway-after-capture + failed(after submit) (which includes skipped at stop). Failed before
+    submit covers outside a write section, no free slot within the maximum wait, a permit wait interrupted when the
+    apply worker is stopped, and no pre-block state. **Any failed block is a coverage gap; a clean run has both
+    failure counts at 0.**
   - **The wait holds the canonical write lock** (it happens inside the block's write section). Meanwhile every
     snapshot acquisition waits: engine-API mempool admission and rebuilds, block selection, admission shadows and
     other snapshot readers; the published tip does not move and chain sync buffers upstream. That is the point of
     backpressure for block application, but it should not become an outage: 30 s (lowered from the first draft's
     300 s) bounds what a stuck or pathologically slow engine can cost per block, after which it costs coverage (a
     reported, skipped block) rather than availability. A healthy engine frees a slot within one block's validation
-    time (the fastest of 8 in-flight blocks), far below 30 s; Amaru calls are bounded by `amaru.timeout-ms`.
+    time (the fastest of the in-flight blocks), far below 30 s; Amaru calls are bounded by `amaru.timeout-ms`.
 - **Startup guard.** `RuntimeNode` starts shadow sync only when account state and the UTxO store are enabled and UTxO
   apply is synchronous (`ShadowSyncPreconditions`); otherwise it logs a WARN with the reason and the node runs
   without it (never a startup failure, never a block-by-block failure). Installing the same engines again is a
   no-op; replacing them closes the previous validator (`ValidationEngines.attachShadowSync` is idempotent).
 - **Engines.** `shadow-sync-engines` (default `java-julc` since Phase 7c, before it `java`; optionally `amaru` in
   `-PwithAmaru` builds) get their own
-  instances; the java engine needs no `java-engine.experimental` for shadow sync (it only observes). Shadow sync
+  instances (Amaru's `pool-size: 0` resolves to `shadow-sync-max-in-flight` for them); the java engine needs no `java-engine.experimental` for shadow sync (it only observes). Shadow sync
   alone leaves admission and the mempool exactly as without engines (`ValidationEngines.affectsAdmission()` false:
   `TxSubsystem` gets no engines). Their health is reported but **never gates readiness** (a failed-closed Amaru
   shadow-sync engine only produces engine failures): `shadowSync.<engine>.healthy` and `shadowSyncUnhealthy` in the

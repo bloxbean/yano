@@ -277,10 +277,12 @@ public final class YanoPropertyKeys {
         public static final String SHADOW_SYNC_DUMP_DIR = "yano.validation.shadow-sync-dump-dir";
         /** ADR-056 Phase 7a: at most this many bundles are written (default 1000). */
         public static final String SHADOW_SYNC_MAX_DUMPS = "yano.validation.shadow-sync-max-dumps";
-        /** ADR-056 Phase 7a: blocks (each holding one snapshot) validated or queued at once (default 8). */
+        /**
+         * ADR-056 Phase 7a: blocks validated in parallel, each on a virtual thread holding one snapshot (0 or unset:
+         * half the processors). Raise it for faster catch-up on a dedicated machine; keep it below the processor
+         * count, since validation shares the virtual-thread carriers with the node's own sync.
+         */
         public static final String SHADOW_SYNC_MAX_IN_FLIGHT = "yano.validation.shadow-sync-max-in-flight";
-        /** ADR-056 Phase 7a: validation threads (default half the processors, 1 to 4). */
-        public static final String SHADOW_SYNC_THREADS = "yano.validation.shadow-sync-threads";
         /** ADR-056 Phase 7a: longest the apply thread waits for a free slot before skipping a block (default 30000). */
         public static final String SHADOW_SYNC_MAX_WAIT_MS = "yano.validation.shadow-sync-max-wait-ms";
         /** ADR-056 Phase 7a: seconds between INFO summaries (default 60; 0 disables). */
@@ -289,7 +291,10 @@ public final class YanoPropertyKeys {
         public static final String SNAPSHOT_MAX_AGE_MS = "yano.validation.snapshot-max-age-ms";
         /** ADR-057 §2: who runs Plutus under {@code engine: amaru}, {@code scalus} (default) | {@code amaru}. */
         public static final String AMARU_PHASE2 = "yano.validation.amaru.phase2";
-        /** ADR-057 §2: Amaru instances; 0 (default) means one per validation thread plus two (rebuild, selection). */
+        /**
+         * ADR-057 §2: Amaru instances; 0 (default) means one per validation thread plus two (rebuild, selection);
+         * for the shadow-sync engine, 0 means {@link #SHADOW_SYNC_MAX_IN_FLIGHT} instances.
+         */
         public static final String AMARU_POOL_SIZE = "yano.validation.amaru.pool-size";
         /** ADR-057 §2: how long a caller waits for one Amaru module call (default 2000). */
         public static final String AMARU_TIMEOUT_MS = "yano.validation.amaru.timeout-ms";

@@ -137,7 +137,7 @@ class ShadowSyncPreBlockCaptureTest {
                                 TxValidationRequest.Origin.SYNC), false);
             }
         };
-        ShadowSyncSettings settings = new ShadowSyncSettings(List.of("java-julc"), null, null, 0, 2, 1, 10_000, 0);
+        ShadowSyncSettings settings = new ShadowSyncSettings(List.of("java-julc"), null, null, 0, 2, 10_000, 0);
         CanonicalStateGate gate = stores.gate;
         try (ShadowSyncValidator validator = new ShadowSyncValidator(settings, List.of(engine),
                 (slot, view) -> new ValidationEnv(slot, 0, 10, 0, NetworkId.TESTNET, new SlotConfig(1000, 0, 0),

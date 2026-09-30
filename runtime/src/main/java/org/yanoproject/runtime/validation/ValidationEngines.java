@@ -1,6 +1,7 @@
 package org.yanoproject.runtime.validation;
 
 import lombok.extern.slf4j.Slf4j;
+import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.ledger.rules.EngineContext;
 import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
@@ -108,7 +109,8 @@ public final class ValidationEngines implements AutoCloseable {
             // engine needs no experimental opt-in there (it still needs one for admission and admission shadows).
             List<LedgerValidationEngine> shadowSync = new ArrayList<>();
             if (settings.shadowSync()) {
-                EngineContext observeOnly = new ObserveOnlyContext(context);
+                EngineContext observeOnly = new ObserveOnlyContext(context,
+                        settings.shadowSyncSettings().maxInFlight());
                 for (String name : settings.shadowSyncSettings().engines()) {
                     shadowSync.add(create(registry, name, observeOnly, created));
                 }
@@ -244,11 +246,23 @@ public final class ValidationEngines implements AutoCloseable {
         shadowSyncEngines.forEach(ValidationEngines::closeQuietly);
     }
 
-    /** The node's context with the Java engines' experimental opt-in answered (shadow sync only observes). */
-    private record ObserveOnlyContext(EngineContext delegate) implements EngineContext {
+    /**
+     * The node's context with the Java engines' experimental opt-in answered (shadow sync only observes), and
+     * Amaru's {@code pool-size: 0} (or unset) answered with the shadow-sync concurrency: at most
+     * {@code shadow-sync-max-in-flight} blocks call the engine at once, and shadow sync needs none of the admission
+     * callers' headroom.
+     */
+    private record ObserveOnlyContext(EngineContext delegate, int maxInFlight) implements EngineContext {
         @Override
         public Optional<String> config(String key) {
-            return JAVA_EXPERIMENTAL.equals(key) ? Optional.of("true") : delegate.config(key);
+            if (JAVA_EXPERIMENTAL.equals(key)) {
+                return Optional.of("true");
+            }
+            if (YanoPropertyKeys.Validation.AMARU_POOL_SIZE.equals(key)) {
+                return delegate.config(key).filter(v -> !v.isBlank() && !"0".equals(v.trim()))
+                        .or(() -> Optional.of(Integer.toString(maxInFlight)));
+            }
+            return delegate.config(key);
         }
 
         @Override

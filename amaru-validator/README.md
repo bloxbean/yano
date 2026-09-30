@@ -147,7 +147,9 @@ public-network run with `amaru` is recorded yet.
 **Pool size.** Each role (admission, admission shadow, shadow sync) creates its own engine with its
 own pool. `pool-size: 0` resolves to `ValidationEngineBootstrap.VALIDATION_THREADS` (4: admission,
 the rebuild worker and two shadow workers) plus `AmaruEngineFactory.EXTRA_CALLERS` (2: the rebuild
-worker and block selection), so 6 instances per engine today. Each
+worker and block selection), so 6 instances per engine today. The shadow-sync engine resolves
+`pool-size: 0` to `shadow-sync-max-in-flight` (default half the cores) instead: at most that many
+blocks call it at once, and it needs no rebuild or selection callers. Each
 instance runs on its own platform thread with a 256 MiB stack. That stack is reserved address
 space, committed only as deep as a call goes. Linear memory is on the heap and grows up to
 `max-memory-pages`.

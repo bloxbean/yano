@@ -19,12 +19,13 @@ import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport.BlockRef;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,12 +47,14 @@ import java.util.function.Function;
  * ({@code CanonicalStateGate.captureInWriteSection}).
  *
  * <h2>Throughput and backpressure</h2>
- * The apply thread only captures (a RocksDB snapshot plus a small copy) and hands the block to a bounded pool.
- * At most {@code shadow-sync-max-in-flight} blocks (each holding its own snapshot) are queued or running; when all are
- * taken the apply thread waits, so sync slows to validation speed, up to {@code shadow-sync-max-wait-ms} (default
- * 30 s), after which the block is skipped and reported. Workers never take the canonical gate, so waiting inside the
- * write section cannot deadlock. Blocks validate in parallel; the transactions of one block sequentially over its
- * overlay.
+ * The apply thread only captures (a RocksDB snapshot plus a small copy) and starts a virtual thread for the block once
+ * it holds one of {@code shadow-sync-max-in-flight} permits (default half the processors). So at most that many
+ * blocks, each holding its own snapshot, validate at once; when all permits are taken the apply thread waits, so sync
+ * slows to validation speed, up to {@code shadow-sync-max-wait-ms} (default 30 s), after which the block is skipped
+ * and reported. Validation never takes the canonical gate, so waiting inside the write section cannot deadlock. Blocks
+ * validate in parallel; the transactions of one block sequentially over its overlay. Validation is CPU-bound and
+ * shares the virtual-thread carriers with the node's own sync pipeline, which is why the bound stays below the
+ * carrier count (see {@link ShadowSyncSettings#maxInFlight()}).
  *
  * <p><b>The wait holds the canonical write lock.</b> It happens inside the block's write section, so while the apply
  * thread waits every snapshot acquisition waits too: mempool admission and rebuilds (engine-API admission), block
@@ -60,6 +63,11 @@ import java.util.function.Function;
  * or pathologically slow engine delays the node by at most that long per block, then costs coverage (a reported
  * skipped block) rather than availability. A healthy engine frees a slot within one block's validation time (the
  * fastest of {@code max-in-flight} blocks), far below 30 s.</p>
+ *
+ * <h2>Stopping</h2>
+ * {@link #close()} stops taking blocks, then lets every block already handed over finish (up to
+ * {@link #CLOSE_TIMEOUT_SECONDS}), so a restart leaves no coverage gap. Blocks still validating after that are reported
+ * as skipped at stop, and their results, which may read a closed database, are discarded.
  */
 @Slf4j
 public final class ShadowSyncValidator implements AutoCloseable {
@@ -73,10 +81,13 @@ public final class ShadowSyncValidator implements AutoCloseable {
     /** The first Conway protocol major version. */
     public static final int FIRST_CONWAY_MAJOR = 9;
 
+    /** How long {@link #close()} waits for the blocks already handed over to finish. */
+    public static final long CLOSE_TIMEOUT_SECONDS = 120;
+
     /**
      * Counters of the validator itself (the rest is in {@link ShadowSyncReport.Stats}).
      *
-     * @param inFlight   blocks captured and not yet finished
+     * @param inFlight   blocks captured and not yet finished (each on its own virtual thread)
      * @param maxInFlight the bound
      * @param outsideWriteSection {@code BlockAppliedEvent}s delivered outside a write section (not validated)
      */
@@ -93,9 +104,9 @@ public final class ShadowSyncValidator implements AutoCloseable {
     private final ShadowSyncReport report;
     private final SyncBlockValidator validator = new SyncBlockValidator();
     private final Semaphore permits;
-    private final ThreadPoolExecutor workers;
+    private final ExecutorService workers;
     private final ScheduledExecutorService summaries;
-    private final AtomicInteger inFlight = new AtomicInteger();
+    private final Set<Job> inFlight = ConcurrentHashMap.newKeySet();
     private final AtomicInteger outsideWriteSection = new AtomicInteger();
     private final AtomicBoolean closing = new AtomicBoolean();
     private volatile SubscriptionHandle subscription;
@@ -122,10 +133,9 @@ public final class ShadowSyncValidator implements AutoCloseable {
         this.storedBlock = Objects.requireNonNull(storedBlock, "storedBlock");
         this.inWriteSection = Objects.requireNonNull(inWriteSection, "inWriteSection");
         this.report = Objects.requireNonNull(report, "report");
-        this.permits = new Semaphore(settings.maxInFlight(), true);
-        // The queue never holds more than maxInFlight jobs: a job is queued only after its permit was taken.
-        this.workers = new ThreadPoolExecutor(settings.threads(), settings.threads(), 60, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(), Thread.ofPlatform().daemon().name("yano-shadow-sync-", 0).factory());
+        this.permits = new Semaphore(settings.maxInFlight());
+        // One virtual thread per block, started only after its permit was taken: the permits bound the parallelism.
+        this.workers = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("yano-shadow-sync-", 0).factory());
         this.summaries = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().daemon().name("yano-shadow-sync-summary").factory());
         if (settings.summarySeconds() > 0) {
@@ -141,9 +151,11 @@ public final class ShadowSyncValidator implements AutoCloseable {
         }
         subscription = eventBus.subscribe(BlockAppliedEvent.class, ctx -> onBlockApplied(ctx.event()),
                 SubscriptionOptions.builder().priority(SUBSCRIPTION_PRIORITY).build());
-        log.info("Shadow sync on (ADR-056 Phase 7a): engines={}, threads={}, max-in-flight={}, report={}, dumps={}",
-                engines.stream().map(LedgerValidationEngine::name).toList(), settings.threads(),
-                settings.maxInFlight(), settings.reportFile() != null ? settings.reportFile() : "none",
+        log.info("Shadow sync on (ADR-056 Phase 7a): engines={}, max-in-flight={} (virtual threads, {} carriers), "
+                        + "report={}, dumps={}",
+                engines.stream().map(LedgerValidationEngine::name).toList(), settings.maxInFlight(),
+                ShadowSyncSettings.carriers(),
+                settings.reportFile() != null ? settings.reportFile() : "none",
                 settings.dumpDir() != null ? settings.dumpDir() : "none");
     }
 
@@ -184,7 +196,7 @@ public final class ShadowSyncValidator implements AutoCloseable {
         if (!inWriteSection.getAsBoolean()) {
             // Not applied through a canonical write section: no pre-block state can be captured.
             outsideWriteSection.incrementAndGet();
-            report.blockFailure(ref, bodies.size(), "block applied outside a canonical write section");
+            report.failedBeforeSubmit(ref, bodies.size(), "block applied outside a canonical write section");
             return;
         }
         if (!acquirePermit(ref, bodies.size())) {
@@ -195,25 +207,29 @@ public final class ShadowSyncValidator implements AutoCloseable {
             captured = states.capture(event.slot());
         } catch (RuntimeException e) {
             permits.release();
-            report.blockFailure(ref, bodies.size(), "pre-block state capture failed: " + e);
+            report.failedBeforeSubmit(ref, bodies.size(), "pre-block state capture failed: " + e);
             return;
         }
         if (!(captured instanceof Lookup.Present<PreBlockState> present)) {
             permits.release();
-            report.blockFailure(ref, bodies.size(), "pre-block state unavailable: "
+            report.failedBeforeSubmit(ref, bodies.size(), "pre-block state unavailable: "
                     + (captured instanceof Lookup.Unavailable<PreBlockState> u ? u.reason() : "absent"));
             return;
         }
-        PreBlockState state = present.value();
         List<String> appliedIds = new ArrayList<>(bodies.size());
         bodies.forEach(body -> appliedIds.add(body.getTxHash()));
-        String cbor = block.getCbor();
-        inFlight.incrementAndGet();
+        Job job = new Job(ref, block.getCbor(), appliedIds, present.value());
+        inFlight.add(job);
+        report.submitted();
         try {
-            workers.execute(new Job(ref, cbor, appliedIds, state));
+            workers.execute(job);
         } catch (RejectedExecutionException e) {
-            finish(state);
-            report.blockFailure(ref, bodies.size(), "shadow sync is shutting down");
+            // close() began after the check above. Unreachable in the node (sync stops before shadow sync closes);
+            // if it happens after close() closed the report, only the block's JSONL line is lost, not its counts.
+            if (job.settle()) {
+                report.skippedAtStop(ref, bodies.size(), "skipped: shadow sync is stopping");
+            }
+            finish(job);
         }
     }
 
@@ -226,75 +242,83 @@ public final class ShadowSyncValidator implements AutoCloseable {
             boolean acquired = permits.tryAcquire(settings.maxWaitMs(), TimeUnit.MILLISECONDS);
             report.backpressureWait(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             if (!acquired) {
-                report.blockFailure(ref, txCount, "skipped: no free shadow-sync slot within "
+                report.failedBeforeSubmit(ref, txCount, "skipped: no free shadow-sync slot within "
                         + settings.maxWaitMs() + " ms (validation is not keeping up)");
             }
             return acquired;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            report.blockFailure(ref, txCount, "skipped: interrupted while waiting for a shadow-sync slot");
+            report.failedBeforeSubmit(ref, txCount, "skipped: interrupted while waiting for a shadow-sync slot");
             return false;
         }
     }
 
-    private void run(BlockRef ref, String cbor, List<String> appliedIds, PreBlockState state) {
+    /**
+     * Validates one block on its virtual thread. Every outcome is recorded only if {@link Job#settle()} succeeds: once
+     * {@link #close()} gave up on the block and reported it skipped, its result is discarded.
+     */
+    private void validate(Job job) {
+        BlockRef ref = job.ref;
+        int txCount = job.appliedIds.size();
         try {
-            if (closing.get()) {
-                return;
-            }
-            byte[] bytes = cbor != null && !cbor.isEmpty() ? HexUtil.decodeHexString(cbor)
+            byte[] bytes = job.cbor != null && !job.cbor.isEmpty() ? HexUtil.decodeHexString(job.cbor)
                     : storedBlock.apply(ref.blockHash());
             if (bytes == null) {
-                report.blockFailure(ref, appliedIds.size(), "the block bytes are not available");
+                failed(job, txCount, "the block bytes are not available");
                 return;
             }
             SyncBlock block;
             try {
                 block = SyncBlock.parse(bytes);
             } catch (IllegalArgumentException e) {
-                report.blockFailure(ref, appliedIds.size(), e.getMessage());
+                failed(job, txCount, e.getMessage());
                 return;
             }
-            if (!block.txIds().equals(appliedIds)) {
-                report.idMismatch(ref, block.txIds(), appliedIds);
+            if (!block.txIds().equals(job.appliedIds)) {
+                report.idMismatch(ref, block.txIds(), job.appliedIds);
             }
             LedgerView view;
             ValidationEnv env;
             try {
-                view = state.view();
-                env = envFactory.create(ref.slot(), view).withForecastBasisSlot(state.forecastBasisSlot());
+                view = job.state.view();
+                env = envFactory.create(ref.slot(), view).withForecastBasisSlot(job.state.forecastBasisSlot());
             } catch (RuntimeException e) {
-                report.blockFailure(ref, block.size(), "no pre-block view or environment: " + e.getMessage());
+                failed(job, block.size(), "no pre-block view or environment: " + e.getMessage());
                 return;
             }
             if (env.protocolMajor() < FIRST_CONWAY_MAJOR) {
-                report.skippedPreConway(block.size());
+                if (job.settle()) {
+                    report.preConwayAfterCapture(block.size());
+                }
                 return;
             }
             long started = System.nanoTime();
             SyncBlockValidator.BlockResult result = validator.validate(block, view, env, engines, report.dumper());
-            if (closing.get()) {
-                return; // results after shutdown began may read a closed database: discarded
+            if (job.settle()) {
+                int parentEpoch = job.state.parentEpoch();
+                report.record(ref, (int) env.currentEpoch(), parentEpoch >= 0 && parentEpoch < env.currentEpoch(),
+                        result, System.nanoTime() - started);
             }
-            int parentEpoch = state.parentEpoch();
-            report.record(ref, (int) env.currentEpoch(), parentEpoch >= 0 && parentEpoch < env.currentEpoch(), result,
-                    System.nanoTime() - started);
         } catch (RuntimeException | LinkageError e) {
-            if (!closing.get()) {
-                report.blockFailure(ref, appliedIds.size(), "shadow sync failed: " + e);
-            }
+            failed(job, txCount, "shadow sync failed: " + e);
         } finally {
-            finish(state);
+            finish(job);
         }
     }
 
-    private void finish(PreBlockState state) {
+    private void failed(Job job, int txCount, String reason) {
+        if (job.settle()) {
+            report.failedAfterSubmit(job.ref, txCount, reason);
+        }
+    }
+
+    private void finish(Job job) {
         try {
-            state.close();
+            job.state.close();
         } catch (RuntimeException e) {
             log.debug("Releasing a pre-block state failed: {}", e.toString());
         } finally {
-            inFlight.decrementAndGet();
+            inFlight.remove(job);
             permits.release();
         }
     }
@@ -306,7 +330,7 @@ public final class ShadowSyncValidator implements AutoCloseable {
      */
     public boolean awaitIdle(long timeout, TimeUnit unit) throws InterruptedException {
         long deadline = System.nanoTime() + unit.toNanos(timeout);
-        while (inFlight.get() > 0) {
+        while (!inFlight.isEmpty()) {
             if (System.nanoTime() > deadline) {
                 return false;
             }
@@ -315,20 +339,13 @@ public final class ShadowSyncValidator implements AutoCloseable {
         return true;
     }
 
-    private void releaseQueued(List<Runnable> queued) {
-        for (Runnable runnable : queued) {
-            if (runnable instanceof Job job) {
-                finish(job.state);
-            }
-        }
-    }
-
-    /** One queued block; it owns {@link #state} until {@link #finish} releases it. */
+    /** One block handed to validation; it owns {@link #state} until {@link #finish} releases it. */
     private final class Job implements Runnable {
         private final BlockRef ref;
         private final String cbor;
         private final List<String> appliedIds;
         private final PreBlockState state;
+        private final AtomicBoolean settled = new AtomicBoolean();
 
         Job(BlockRef ref, String cbor, List<String> appliedIds, PreBlockState state) {
             this.ref = ref;
@@ -337,14 +354,19 @@ public final class ShadowSyncValidator implements AutoCloseable {
             this.state = state;
         }
 
+        /** @return true for the one caller that records the block's outcome: the job itself, or a timed-out close */
+        boolean settle() {
+            return settled.compareAndSet(false, true);
+        }
+
         @Override
         public void run() {
-            ShadowSyncValidator.this.run(ref, cbor, appliedIds, state);
+            validate(this);
         }
     }
 
     public Status status() {
-        return new Status(inFlight.get(), settings.maxInFlight(), outsideWriteSection.get(),
+        return new Status(inFlight.size(), settings.maxInFlight(), outsideWriteSection.get(),
                 engines.stream().map(LedgerValidationEngine::name).toList(), report.stats());
     }
 
@@ -352,20 +374,30 @@ public final class ShadowSyncValidator implements AutoCloseable {
         return report;
     }
 
+    /** @return the free permits (tests: every path returns its permit) */
+    int availablePermits() {
+        return permits.availablePermits();
+    }
+
     private void logSummary() {
         try {
-            log.info("Shadow sync summary (in flight {}): {}", inFlight.get(), ShadowSyncReport.summary(report.stats()));
+            log.info("Shadow sync summary (in flight {}): {}", inFlight.size(), ShadowSyncReport.summary(report.stats()));
         } catch (RuntimeException e) {
             log.debug("Shadow sync summary failed: {}", e.toString());
         }
     }
 
     /**
-     * Stops listening, lets running blocks finish for up to 10 s, discards the rest (releasing their snapshots),
-     * logs the final summary and closes the report. Call before the database closes.
+     * Stops taking blocks, lets every block already handed over finish (up to {@link #CLOSE_TIMEOUT_SECONDS}), reports
+     * the ones still validating after that as skipped at stop, logs the final summary and closes the report. Call
+     * before the engines and the database close.
      */
     @Override
     public void close() {
+        close(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    void close(long timeout, TimeUnit unit) {
         if (!closing.compareAndSet(false, true)) {
             return;
         }
@@ -375,16 +407,29 @@ public final class ShadowSyncValidator implements AutoCloseable {
         }
         summaries.shutdownNow();
         workers.shutdown();
+        String gaveUp = null;
         try {
-            if (!workers.awaitTermination(10, TimeUnit.SECONDS)) {
-                releaseQueued(workers.shutdownNow());
-                workers.awaitTermination(5, TimeUnit.SECONDS);
+            if (!workers.awaitTermination(timeout, unit)) {
+                gaveUp = "still validating " + unit.toMillis(timeout) + " ms after shadow sync began to stop";
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            releaseQueued(workers.shutdownNow());
+            gaveUp = "interrupted while shadow sync waited for it to finish";
+        }
+        if (gaveUp != null) {
+            int skipped = 0;
+            for (Job job : List.copyOf(inFlight)) {
+                if (job.settle()) {
+                    skipped++;
+                    report.skippedAtStop(job.ref, job.appliedIds.size(), "skipped: " + gaveUp);
+                }
+            }
+            workers.shutdownNow();
+            // A block still running keeps its snapshot until it returns; the database invalidates it when it closes.
+            log.warn("Shadow sync: {} blocks were not validated: {}", skipped, gaveUp);
         }
         try {
+            // Starts with the coverage counts (ShadowSyncReport, "Coverage"): any failed block is a gap.
             log.info("Shadow sync stopped: {}", ShadowSyncReport.summary(report.stats()));
         } catch (RuntimeException e) {
             log.debug("Shadow sync summary failed: {}", e.toString());

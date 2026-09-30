@@ -375,8 +375,10 @@ yano:
     shadow-sync-report: ""          # JSONL file: one line per disagreement, engine failure or block finding
     shadow-sync-dump-dir: ""        # replay bundle (tx + every view read) per finding
     shadow-sync-max-dumps: 1000
-    shadow-sync-max-in-flight: 8    # blocks (each holding one ledger snapshot) queued or validating at once
-    shadow-sync-threads: 0          # 0 = half the processors, 1 to 4
+    # Blocks validated in parallel, each on a virtual thread holding one ledger snapshot. 0 = half the cores.
+    # Raise it for faster catch-up on a dedicated machine; keep it below the core count: validation is CPU-bound
+    # and shares the virtual-thread carriers with the node's own sync (at or above the core count logs a WARN).
+    shadow-sync-max-in-flight: 0
     shadow-sync-max-wait-ms: 30000  # apply-thread wait for a free slot (holding the canonical write lock) before a
                                     # block is skipped (and reported)
     shadow-sync-summary-seconds: 60
@@ -387,7 +389,8 @@ yano:
     max-live-snapshots: 4
     amaru:
       phase2: scalus            # scalus (default): Amaru phase one + Scalus Plutus | amaru: Amaru for both
-      pool-size: 0              # Amaru instances; 0 = validation threads + 2 (mempool rebuild, block selection)
+      pool-size: 0              # Amaru instances; 0 = validation threads + 2 (mempool rebuild, block selection);
+                                # for shadow sync, 0 = shadow-sync-max-in-flight
       timeout-ms: 2000          # a call that takes longer is rejected and its instance replaced
       max-abandoned: 2          # stuck calls tolerated before the engine turns unhealthy (fails closed)
       max-memory-pages: 2048    # 128 MiB linear memory per instance

@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.validation.shadowsync;
 
+import lombok.extern.slf4j.Slf4j;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.ledger.rules.LedgerValidationEngines;
 
@@ -21,22 +22,26 @@ import java.util.Set;
  *                         failure, or {@code null} for none
  * @param dumpDir          {@code yano.validation.shadow-sync-dump-dir}: replay bundles, or {@code null} for none
  * @param maxDumps         {@code yano.validation.shadow-sync-max-dumps}: at most this many bundles (default 1000)
- * @param maxInFlight      {@code yano.validation.shadow-sync-max-in-flight}: blocks validated or queued at once, each
- *                         holding its own snapshot; when all are taken the apply thread waits (default 8)
- * @param threads          {@code yano.validation.shadow-sync-threads}: validation threads (0 or unset: half the
- *                         processors, 1 to 4)
+ * @param maxInFlight      {@code yano.validation.shadow-sync-max-in-flight}: blocks validated in parallel, each on
+ *                         its own virtual thread and holding its own snapshot; when all are taken the apply thread
+ *                         waits. 0 or unset: half the virtual-thread carriers (at least 1), that is half the
+ *                         processors unless {@code jdk.virtualThreadScheduler.parallelism} is set. Raise it for faster
+ *                         catch-up on a dedicated machine, but keep it below the carrier count: validation is
+ *                         CPU-bound and shares the carriers with the node's own sync pipeline (ledger apply, header
+ *                         sync, body fetch, event publishing, the kernel schedulers), so a value at or above it can
+ *                         starve sync and logs a warning
  * @param maxWaitMs        {@code yano.validation.shadow-sync-max-wait-ms}: longest the apply thread waits for a free
  *                         slot; a block that still finds none is skipped and reported (default 30000). The wait holds
  *                         the canonical write lock (see {@link ShadowSyncValidator})
  * @param summarySeconds   {@code yano.validation.shadow-sync-summary-seconds}: INFO summary interval, 0 for none
  *                         (default 60)
  */
+@Slf4j
 public record ShadowSyncSettings(List<String> engines, Path reportFile, Path dumpDir, int maxDumps, int maxInFlight,
-                                 int threads, long maxWaitMs, long summarySeconds) {
+                                 long maxWaitMs, long summarySeconds) {
 
     public static final List<String> DEFAULT_ENGINES = List.of(LedgerValidationEngines.JAVA_JULC);
     public static final int DEFAULT_MAX_DUMPS = 1000;
-    public static final int DEFAULT_MAX_IN_FLIGHT = 8;
     public static final long DEFAULT_MAX_WAIT_MS = 30_000;
     public static final long DEFAULT_SUMMARY_SECONDS = 60;
 
@@ -51,9 +56,6 @@ public record ShadowSyncSettings(List<String> engines, Path reportFile, Path dum
         if (maxInFlight < 1) {
             throw new IllegalArgumentException(YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT + " must be >= 1");
         }
-        if (threads < 1) {
-            throw new IllegalArgumentException(YanoPropertyKeys.Validation.SHADOW_SYNC_THREADS + " must be >= 1");
-        }
         if (maxWaitMs < 1) {
             throw new IllegalArgumentException(YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_WAIT_MS + " must be >= 1");
         }
@@ -63,33 +65,50 @@ public record ShadowSyncSettings(List<String> engines, Path reportFile, Path dum
         }
     }
 
-    /** @return the default thread count: half the processors, at least 1 and at most 4 */
-    public static int defaultThreads() {
-        return Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
+    /** @return the default {@link #maxInFlight}: half of {@code carriers}, at least 1 */
+    public static int defaultMaxInFlight(int carriers) {
+        return Math.max(1, carriers / 2);
+    }
+
+    /** @return the virtual-thread carrier count: {@code jdk.virtualThreadScheduler.parallelism}, or the processors */
+    public static int carriers() {
+        return Integer.getInteger("jdk.virtualThreadScheduler.parallelism", Runtime.getRuntime().availableProcessors());
     }
 
     /** The defaults: the java-julc engine, no report file, no dumps. */
     public static ShadowSyncSettings defaults() {
-        return new ShadowSyncSettings(DEFAULT_ENGINES, null, null, DEFAULT_MAX_DUMPS, DEFAULT_MAX_IN_FLIGHT,
-                defaultThreads(), DEFAULT_MAX_WAIT_MS, DEFAULT_SUMMARY_SECONDS);
+        return new ShadowSyncSettings(DEFAULT_ENGINES, null, null, DEFAULT_MAX_DUMPS,
+                defaultMaxInFlight(carriers()), DEFAULT_MAX_WAIT_MS,
+                DEFAULT_SUMMARY_SECONDS);
     }
 
     /** Reads the settings; the engine list may be a collection, a comma-separated string or indexed keys. */
     public static ShadowSyncSettings fromGlobals(Map<String, Object> globals) {
+        return fromGlobals(globals, carriers());
+    }
+
+    static ShadowSyncSettings fromGlobals(Map<String, Object> globals, int carriers) {
         Map<String, Object> g = globals != null ? globals : Map.of();
         List<String> engines = engines(g);
         return new ShadowSyncSettings(engines.isEmpty() ? DEFAULT_ENGINES : engines,
                 path(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_REPORT)),
                 path(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_DUMP_DIR)),
                 (int) number(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_DUMPS), DEFAULT_MAX_DUMPS),
-                (int) number(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT), DEFAULT_MAX_IN_FLIGHT),
-                threads((int) number(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_THREADS), 0)),
+                maxInFlight((int) number(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT), 0), carriers),
                 number(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_WAIT_MS), DEFAULT_MAX_WAIT_MS),
                 number(g.get(YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS), DEFAULT_SUMMARY_SECONDS));
     }
 
-    private static int threads(int configured) {
-        return configured <= 0 ? defaultThreads() : configured;
+    private static int maxInFlight(int configured, int carriers) {
+        if (configured == 0) {
+            return defaultMaxInFlight(carriers);
+        }
+        if (configured >= carriers) {
+            log.warn("{}={} is not below the {} virtual-thread carriers: CPU-bound shadow-sync validation can starve "
+                    + "the node's own sync, which runs on the same carriers; keep it below the carrier count",
+                    YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT, configured, carriers);
+        }
+        return configured; // a negative value is rejected by the constructor
     }
 
     private static List<String> engines(Map<String, Object> g) {
