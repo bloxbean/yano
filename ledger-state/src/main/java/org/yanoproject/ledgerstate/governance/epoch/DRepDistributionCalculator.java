@@ -125,19 +125,13 @@ public class DRepDistributionCalculator {
         OrderedStakeLookup orderedStake = stakeBalanceView != null
                 ? new OrderedStakeLookup(stakeBalanceView) : null;
 
-        // Pre-compute DRep states for delegation validation.
-        // Per Amaru (governance.rs lines 94-117): include DRep if registeredAt > previousDeregistration.
-        // This excludes deregistered DReps (previousDeregistration > registeredAt) but includes:
-        //   - Never-deregistered DReps (previousDeregistration = null)
-        //   - Re-registered DReps (registeredAt > previousDeregistration)
-        //   - Expired DReps (expiry is separate from deregistration)
+        // Pre-compute DRep states for delegation validation: every DRep that is not retired, including
+        // re-registered and expired ones (expiry is separate from deregistration).
         Map<CredentialKey, DRepStateRecord> allDRepStates = governanceStore.getAllDRepStates();
         Map<CredentialKey, DRepStateRecord> activeDReps = new HashMap<>();
         for (var entry : allDRepStates.entrySet()) {
             DRepStateRecord rec = entry.getValue();
-            Long prevDeregSlot = rec.previousDeregistrationSlot();
-            // Include if never deregistered OR registered after last deregistration
-            if (prevDeregSlot == null || rec.registeredAtSlot() > prevDeregSlot) {
+            if (!rec.deregistered()) {
                 activeDReps.put(entry.getKey(), rec);
             }
         }
@@ -174,7 +168,7 @@ public class DRepDistributionCalculator {
                 String drepHash = deleg.drepHash();
 
                 // Check if delegated-to DRep is currently registered
-                DRepDistKey drepKey = resolveDRepKey(drepType, drepHash, activeDReps, deleg.slot());
+                DRepDistKey drepKey = resolveDRepKey(drepType, drepHash, activeDReps);
                 if (drepKey == null) {
                     skippedDrep++;
                     it.next();
@@ -350,37 +344,16 @@ public class DRepDistributionCalculator {
     }
 
     /**
-     * Resolve a DRep delegation target to a distribution key.
-     * Returns null if the DRep is not currently registered, or if the delegation predates
-     * the DRep's previous deregistration.
-     * <p>
-     * The main correctness mechanism is the PV10 reverse-index rebuild + unconditional
-     * cleanup on DRep deregistration. The {@code delegSlot <= prevDeregSlot} check is a
-     * defensive safety guard for Yano's tombstone-based DRep state representation.
+     * Resolve a DRep delegation target to a distribution key; null if the credential DRep is not
+     * registered. Every delegation to a registered DRep counts, whenever it was made
+     * (cardano-ledger {@code Conway/Governance/DRepPulser.hs:236-241}): the delegations a retirement
+     * clears are already gone from the account state.
      */
     private DRepDistKey resolveDRepKey(int drepType, String drepHash,
-                                       Map<CredentialKey, DRepStateRecord> activeDReps,
-                                       long delegSlot) {
+                                       Map<CredentialKey, DRepStateRecord> activeDReps) {
         return switch (drepType) {
-            case DREP_KEY, DREP_SCRIPT -> {
-                // Regular DRep — must be registered
-                CredentialKey ck = new CredentialKey(drepType, drepHash);
-                DRepStateRecord drepState = activeDReps.get(ck);
-                if (drepState == null) {
-                    yield null;
-                }
-
-                // Defensive safety guard: delegation valid only if made AFTER the DRep's
-                // previous deregistration. This is a per-delegator check that compensates
-                // for Yano's tombstone state model. Normal correctness comes from the PV10
-                // reverse-index rebuild + cleanup on DRep deregistration.
-                Long prevDeregSlot = drepState.previousDeregistrationSlot();
-                if (prevDeregSlot != null && delegSlot <= prevDeregSlot) {
-                    yield null;
-                }
-
-                yield new DRepDistKey(drepType, drepHash);
-            }
+            case DREP_KEY, DREP_SCRIPT -> activeDReps.containsKey(new CredentialKey(drepType, drepHash))
+                    ? new DRepDistKey(drepType, drepHash) : null;
             case DREP_ABSTAIN -> new DRepDistKey(DREP_ABSTAIN, ABSTAIN_HASH);
             case DREP_NO_CONF -> new DRepDistKey(DREP_NO_CONF, NO_CONFIDENCE_HASH);
             default -> null;

@@ -1,26 +1,47 @@
+plugins {
+    id 'java-test-fixtures'
+}
+
 dependencies {
     api project(':core-api')
     api libs.cardano.client.core  // CCL core types: ProtocolParams, Utxo, Transaction
 
-    implementation(libs.aiken.java.binding) {
-        exclude group: 'com.bloxbean.cardano'
-    }
+    // Test fixtures shared with the engines' conformance suites (ADR-056 Phase 2, ADR-057 Phase B):
+    // AmaruScenarioLoader reads Amaru's implementation-generic JSON scenarios into LedgerViews.
+    testFixturesApi libs.junit.jupiter.api
+    testFixturesImplementation libs.jackson.databind
+    // Shadow-dump bundles (ADR-056 §7) are JSON.
+    implementation libs.jackson.databind
+    testFixturesCompileOnly libs.lombok
+    testFixturesAnnotationProcessor libs.lombok
+}
 
-    implementation(libs.julc.cardano.client.lib) {
-        exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
-    }
-
-    implementation(libs.julc.vm.java) {
-        exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
+// ADR-056 Phase 5c: the frozen Conway rule-set manifests. ConwayRuleSetManifestTest compares each protocol version's
+// composed rule set with its committed manifest; -PupdateRuleManifests=true rewrites the manifests from the code (then
+// review the diff: only the versions you meant to change may differ).
+// The manifests carry a content fingerprint of each unit's source (SourceFingerprints), read from src/main/java.
+def ruleManifestsDir = file('src/test/resources/org/yanoproject/ledger/rules/conway/ruleset')
+tasks.withType(Test).configureEach {
+    systemProperty 'ruleManifests.dir', ruleManifestsDir.absolutePath
+    systemProperty 'ruleSources.dir', file('src/main/java').absolutePath
+    inputs.dir('src/main/java').withPropertyName('ruleSources')
+    systemProperty 'updateRuleManifests', providers.gradleProperty('updateRuleManifests').getOrElse('false')
+    if (providers.gradleProperty('updateRuleManifests').isPresent()) {
+        outputs.upToDateWhen { false }
     }
 }
+
+// The test fixtures are a build-time aid for Yano's own engine tests, not a published API: keep them
+// out of the Maven publication so the published ledger-rules artifact is unchanged.
+components.java.withVariantsFromConfiguration(configurations.testFixturesApiElements) { skip() }
+components.java.withVariantsFromConfiguration(configurations.testFixturesRuntimeElements) { skip() }
 
 publishing {
     publications {
         mavenJava(MavenPublication) {
             pom {
                 name = 'Yano Ledger Rules'
-                description = 'Yano Ledger Rules - Transaction validation interface for Cardano ledger rules'
+                description = 'Yano Ledger Rules - Conway transaction validation API and ledger rule engine'
             }
         }
     }

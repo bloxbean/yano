@@ -11,6 +11,25 @@ public interface BlockTransactionSelector {
 
     List<byte[]> drainForBlock();
 
+    /**
+     * Selects transactions for a block forged at {@code forgeSlot}. Selectors that validate against ledger state
+     * (ADR-056 §6, "Block production") validate every candidate for that slot; the default ignores the slot.
+     *
+     * @param forgeSlot the slot of the block being forged; negative when unknown (the slot after the tip)
+     */
+    default List<byte[]> drainForBlock(long forgeSlot) {
+        return drainForBlock();
+    }
+
+    /**
+     * Whether the in-flight selection is still valid for the canonical state: false when the canonical
+     * generation it was validated against has changed (ADR-056 §6: the selection is then discarded, never
+     * forged). Producers call it inside their store section, just before storing the forged block.
+     */
+    default boolean selectionCurrent() {
+        return true;
+    }
+
     /** Release a successful selection after its block reaches canonical apply. */
     default void blockSelectionCompleted() {
     }

@@ -508,6 +508,25 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
+    /**
+     * Returns read-only unspent-output access bound to a caller-owned RocksDB read snapshot
+     * (ADR-056 canonical snapshots). The caller owns {@code reads} and its snapshot and keeps them
+     * alive while the reader is used. The reader never writes.
+     *
+     * @param snapshotDb the database the snapshot was taken on; it must be this store's database
+     * @param reads      read options carrying the snapshot
+     * @throws IllegalStateException when the store is disabled or {@code snapshotDb} is not its database
+     */
+    public UtxoSnapshotReader snapshotReader(RocksDB snapshotDb, ReadOptions reads) {
+        if (!enabled || db == null || cfUnspent == null || cfScriptRef == null) {
+            throw new IllegalStateException("UTxO store is unavailable");
+        }
+        if (snapshotDb != db) {
+            throw new IllegalStateException("snapshot was taken on a different RocksDB instance");
+        }
+        return new UtxoSnapshotReader(db, cfUnspent, cfScriptRef, reads);
+    }
+
     private void scanCfForTxHash(ColumnFamilyHandle cf, byte[] hashPrefix, String txHashHex, List<Utxo> results, boolean isSpent) {
         try (RocksIterator it = db.newIterator(cf)) {
             it.seek(hashPrefix);

@@ -1,9 +1,10 @@
 package org.yanoproject.compat.contract;
 
-import com.bloxbean.cardano.julc.ledger.ScriptContext;
-import com.bloxbean.cardano.julc.stdlib.Builtins;
-import com.bloxbean.cardano.julc.stdlib.annotation.Entrypoint;
-import com.bloxbean.cardano.julc.stdlib.annotation.SpendingValidator;
+import org.julclang.core.types.JulcG1;
+import org.julclang.ledger.ScriptContext;
+import org.julclang.stdlib.Builtins;
+import org.julclang.stdlib.annotation.Entrypoint;
+import org.julclang.stdlib.annotation.SpendingValidator;
 
 /**
  * Smallest useful BLS12-381 spending validator: the redeemer carries a compressed
@@ -36,9 +37,9 @@ public class BlsDoublingValidator {
 
     @Entrypoint
     public static boolean validate(BlsDatum datum, BlsRedeemer redeemer, ScriptContext ctx) {
-        byte[] point = Builtins.bls12_381_G1_uncompress(redeemer.point());
-        byte[] doubled = Builtins.bls12_381_G1_add(point, point);
-        byte[] expected = Builtins.bls12_381_G1_uncompress(datum.expected());
+        JulcG1 point = Builtins.bls12_381_G1_uncompress(redeemer.point());
+        JulcG1 doubled = Builtins.bls12_381_G1_add(point, point);
+        JulcG1 expected = Builtins.bls12_381_G1_uncompress(datum.expected());
         return Builtins.bls12_381_G1_equal(doubled, expected);
     }
 }

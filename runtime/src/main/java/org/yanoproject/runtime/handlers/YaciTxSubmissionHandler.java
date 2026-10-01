@@ -172,6 +172,10 @@ public class YaciTxSubmissionHandler implements TxSubmissionListener, TxSubmissi
 
     @Override
     public boolean shouldRequestTransaction(TxId txId) {
+        if (!transactionAdmission.admitting()) {
+            // ADR-056 §6 step 7: while the mempool catches up, peer transactions are not requested.
+            return false;
+        }
         if (!diffusionEnabled()) {
             return true;
         }

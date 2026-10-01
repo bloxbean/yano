@@ -1,7 +1,7 @@
 package org.yanoproject.appchain.anchor.onchain;
 
-import com.bloxbean.cardano.julc.core.PlutusData;
-import com.bloxbean.cardano.julc.core.Program;
+import org.julclang.core.PlutusData;
+import org.julclang.core.Program;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**

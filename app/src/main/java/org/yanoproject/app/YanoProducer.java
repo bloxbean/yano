@@ -31,6 +31,7 @@ import org.yanoproject.api.db.IncompatibleChainStateException;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.api.plugin.operations.PluginOperationsView;
 import org.yanoproject.app.bootstrap.BootstrapConfigParser;
+import org.yanoproject.app.api.validation.ValidationEnginesSource;
 import org.yanoproject.app.archive.HistoryArchiveService;
 import org.yanoproject.app.archive.ProjectionHistoryService;
 import org.yanoproject.bootstrap.providers.DefaultBootstrapDataProviderFactory;
@@ -669,6 +670,8 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, metricsSampleRocksDbSeconds);
         globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);
         globals.put(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, supplementaryRulesEnabled);
+        warnDeprecatedValidationKeys();
+        forwardValidationEngineKeys(globals);
         globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, txMempoolMaxTxs);
         globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, txMempoolMaxBytes);
         globals.put(YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, txMempoolTtlSeconds);
@@ -977,6 +980,63 @@ public class YanoProducer {
         }
     }
 
+    /** Removed with the shadow-sync thread pool (shadow sync runs on virtual threads); ignored with a warning. */
+    private static final String REMOVED_SHADOW_SYNC_THREADS = "yano.validation.shadow-sync-threads";
+
+    /** ADR-056 §7 engine selection and shadowing, and ADR-057 §2 Amaru settings, forwarded verbatim. */
+    static final List<String> VALIDATION_ENGINE_KEYS = List.of(
+            YanoPropertyKeys.Validation.ENGINE,
+            YanoPropertyKeys.Validation.SHADOW_ENGINES,
+            YanoPropertyKeys.Validation.SHADOW_DUMP_DIR,
+            YanoPropertyKeys.Validation.SHADOW_SYNC,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_REPORT,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_DUMP_DIR,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_DUMPS,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_WAIT_MS,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS,
+            YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS,
+            YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS,
+            YanoPropertyKeys.Validation.AMARU_POOL_SIZE,
+            YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS,
+            YanoPropertyKeys.Validation.AMARU_MAX_ABANDONED,
+            YanoPropertyKeys.Validation.AMARU_MAX_MEMORY_PAGES);
+
+    void forwardValidationEngineKeys(Map<String, Object> globals) {
+        for (String key : VALIDATION_ENGINE_KEYS) {
+            appConfig.getOptionalValue(key, String.class)
+                    .filter(value -> !value.isBlank())
+                    .ifPresent(value -> globals.put(key, value));
+        }
+        if (!globals.containsKey(YanoPropertyKeys.Validation.SHADOW_ENGINES)) {
+            // A YAML list may only exist as indexed keys.
+            forwardDynamicKeys(YanoPropertyKeys.Validation.SHADOW_ENGINES + "[", globals);
+        }
+        if (!globals.containsKey(YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES)) {
+            forwardDynamicKeys(YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES + "[", globals);
+        }
+    }
+
+    /**
+     * ADR-056 §7: {@code supplementary-rules-enabled} and {@code default-validator-enabled} are deprecated and
+     * removed in ADR-056 Phase 8. Their behaviour is unchanged until then; setting either logs a warning. The removed
+     * {@code shadow-sync-threads} is ignored with a warning.
+     */
+    private void warnDeprecatedValidationKeys() {
+        for (String key : List.of(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED,
+                YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED)) {
+            if (appConfig.getConfigValue(key).getRawValue() != null) {
+                log.warn("{} is deprecated (ADR-056 §7) and will be removed; select the admission engine with {} "
+                        + "instead", key, YanoPropertyKeys.Validation.ENGINE);
+            }
+        }
+        if (appConfig.getConfigValue(REMOVED_SHADOW_SYNC_THREADS).getRawValue() != null) {
+            log.warn("{} is ignored: shadow sync validates on virtual threads, bounded by {}",
+                    REMOVED_SHADOW_SYNC_THREADS, YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT);
+        }
+    }
+
     void forwardUtxoContributorKeys(Map<String, Object> globals) {
         forwardDynamicKeys(YanoPropertyKeys.Utxo.INDEX_CONTRIBUTORS + "[", globals);
     }
@@ -997,6 +1057,12 @@ public class YanoProducer {
     public DebugLedgerStateAccess createDebugLedgerStateAccess() {
         return ensureYano().debugLedgerStateAccess()
                 .orElseThrow(() -> new IllegalStateException("Debug ledger-state access unavailable"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public ValidationEnginesSource createValidationEnginesSource() {
+        return () -> ensureYano().validationEngines();
     }
 
     @Produces

@@ -1,0 +1,137 @@
+package org.yanoproject.ledger.rules.conway;
+
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.api.model.Utxo;
+import com.bloxbean.cardano.client.plutus.spec.CostMdls;
+import com.bloxbean.cardano.client.spec.NetworkId;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import lombok.Builder;
+
+import org.yanoproject.ledger.rules.conway.rule.*;
+import org.yanoproject.ledger.rules.view.slice.*;
+import org.yanoproject.ledger.rules.util.UtxoUtil;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
+/**
+ * Pure-Java implementation of Cardano Conway-era transaction validation.
+ * <p>
+ * Implements {@link LedgerRuleValidator} by running a set of {@link LedgerRule}s
+ * and collecting all validation errors. By default, includes all Phase 1 rules
+ * (basic checks, output validation, fee validation, etc.).
+ * <p>
+ * When state slices are not provided, stateful checks in
+ * {@link CertificateValidationRule} and {@link GovernanceValidationRule}
+ * are silently skipped (degraded mode).
+ */
+public class LedgerStateValidator implements LedgerRuleValidator {
+
+    private final ProtocolParams protocolParams;
+    private final long currentSlot;
+    private final long currentEpoch;
+    private final NetworkId networkId;
+    private final CostMdls costMdls;
+    private final AccountsSlice accountsSlice;
+    private final PoolsSlice poolsSlice;
+    private final DRepsSlice drepsSlice;
+    private final CommitteeSlice committeeSlice;
+    private final ProposalsSlice proposalsSlice;
+    private final List<LedgerRule> rules;
+
+    public LedgerStateValidator(ProtocolParams protocolParams, long currentSlot, long currentEpoch,
+                                NetworkId networkId, CostMdls costMdls,
+                                AccountsSlice accountsSlice, PoolsSlice poolsSlice,
+                                DRepsSlice drepsSlice, CommitteeSlice committeeSlice,
+                                ProposalsSlice proposalsSlice, List<LedgerRule> customRules) {
+        this(protocolParams, currentSlot, Long.valueOf(currentEpoch), networkId, costMdls, accountsSlice,
+                poolsSlice, drepsSlice, committeeSlice, proposalsSlice, customRules);
+    }
+
+    @Builder
+    public LedgerStateValidator(ProtocolParams protocolParams, long currentSlot, Long currentEpoch,
+                                NetworkId networkId, CostMdls costMdls,
+                                AccountsSlice accountsSlice, PoolsSlice poolsSlice,
+                                DRepsSlice drepsSlice, CommitteeSlice committeeSlice,
+                                ProposalsSlice proposalsSlice, List<LedgerRule> customRules) {
+        this.protocolParams = protocolParams;
+        this.currentSlot = currentSlot;
+        this.currentEpoch = currentEpoch != null ? currentEpoch : -1;
+        this.networkId = networkId;
+        this.costMdls = costMdls;
+        this.accountsSlice = accountsSlice;
+        this.poolsSlice = poolsSlice;
+        this.drepsSlice = drepsSlice;
+        this.committeeSlice = committeeSlice;
+        this.proposalsSlice = proposalsSlice;
+        this.rules = customRules != null ? customRules : defaultRules();
+    }
+
+    public static class LedgerStateValidatorBuilder {
+        public LedgerStateValidatorBuilder currentEpoch(long currentEpoch) {
+            this.currentEpoch = currentEpoch;
+            return this;
+        }
+    }
+
+    @Override
+    public RuleValidationResult validateTx(Transaction transaction, Set<Utxo> inputUtxos) {
+        // Build context with resolved UTxO slice and any configured state slices
+        SimpleUtxoSlice utxoSlice = new SimpleUtxoSlice(UtxoUtil.toUtxoMap(inputUtxos));
+        LedgerContext context = LedgerContext.builder()
+                .protocolParams(protocolParams)
+                .currentSlot(currentSlot)
+                .currentEpoch(currentEpoch)
+                .networkId(networkId)
+                .costMdls(costMdls)
+                .utxoSlice(utxoSlice)
+                .accountsSlice(accountsSlice)
+                .poolsSlice(poolsSlice)
+                .drepsSlice(drepsSlice)
+                .committeeSlice(committeeSlice)
+                .proposalsSlice(proposalsSlice)
+                .build();
+
+        return validate(context, transaction);
+    }
+
+    /**
+     * Validate a transaction with a pre-built context.
+     * Useful for Yaci or other callers who manage their own slices.
+     *
+     * @param context     the pre-built ledger context with slices
+     * @param transaction the transaction to validate
+     * @return validation result
+     */
+    public RuleValidationResult validate(LedgerContext context, Transaction transaction) {
+        List<RuleValidationError> allErrors = new ArrayList<>();
+
+        for (LedgerRule rule : rules) {
+            List<RuleValidationError> errors = rule.validate(context, transaction);
+            if (errors != null && !errors.isEmpty()) {
+                allErrors.addAll(errors);
+            }
+        }
+
+        if (allErrors.isEmpty()) {
+            return RuleValidationResult.success();
+        }
+        return RuleValidationResult.failure(allErrors);
+    }
+
+    private static List<LedgerRule> defaultRules() {
+        return List.of(
+                new InputValidationRule(),
+                new TxSizeValidationRule(),
+                new ValidityIntervalRule(),
+                new NetworkIdValidationRule(),
+                new OutputValidationRule(),
+                new FeeAndCollateralRule(),
+                new ValueConservationRule(),
+                new WitnessValidationRule(),
+                new CertificateValidationRule(),
+                new GovernanceValidationRule()
+        );
+    }
+}

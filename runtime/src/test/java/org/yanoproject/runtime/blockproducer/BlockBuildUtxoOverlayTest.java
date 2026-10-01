@@ -3,6 +3,9 @@ package org.yanoproject.runtime.blockproducer;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
+import org.yanoproject.ledger.rules.fixtures.PublicNetworkTransactions;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -57,6 +60,19 @@ class BlockBuildUtxoOverlayTest {
 
         // After marking spent, resolver should return null
         assertThat(resolver.apply(op)).isNull();
+    }
+
+    /** ADR-056 Phase 7c: an output produced earlier in the block keeps its inline datum's original bytes. */
+    @Test
+    void aProducedOutputKeepsItsInlineDatumBytes() throws Exception {
+        byte[] producer = PublicNetworkTransactions.cbor(PublicNetworkTransactions.PREPROD_SAME_BLOCK_DATUM_PRODUCER);
+        byte[] original = RawTransaction.parse(producer, Transaction.deserialize(producer)).outputs().get(0)
+                .inlineDatum();
+
+        overlay.applyTransaction(producer);
+
+        Utxo produced = overlay.resolver().apply(new Outpoint(TransactionUtil.getTxHash(producer), 0));
+        assertThat(produced.inlineDatum()).isEqualTo(original);
     }
 
     @Test

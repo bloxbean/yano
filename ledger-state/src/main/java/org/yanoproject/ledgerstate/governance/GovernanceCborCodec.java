@@ -116,7 +116,7 @@ public final class GovernanceCborCodec {
     // --- DRepStateRecord (prefix 0x62) ---
     // {0: deposit, 1: anchorUrl, 2: anchorHash, 3: registeredAtEpoch,
     //  4: lastInteractionEpoch, 5: expiryEpoch, 6: isActive, 7: registeredAtSlot,
-    //  8: protocolVersionAtRegistration}
+    //  8: protocolVersionAtRegistration, 9: previousDeregistrationSlot, 10: deregistered}
 
     public static byte[] encodeDRepState(DRepStateRecord rec) {
         Map map = new Map();
@@ -138,6 +138,7 @@ public final class GovernanceCborCodec {
         if (rec.previousDeregistrationSlot() != null) {
             map.put(new UnsignedInteger(9), new UnsignedInteger(rec.previousDeregistrationSlot()));
         }
+        map.put(new UnsignedInteger(10), new UnsignedInteger(rec.deregistered() ? 1 : 0));
         return CborSerializationUtil.serialize(map, true);
     }
 
@@ -165,9 +166,15 @@ public final class GovernanceCborCodec {
         DataItem prevDeregDi = map.get(new UnsignedInteger(9));
         Long previousDeregistrationSlot = (prevDeregDi != null) ? CborSerializationUtil.toLong(prevDeregDi) : null;
 
+        // Records written before key 10 existed: derive the flag from the slots, as the readers used to.
+        DataItem deregisteredDi = map.get(new UnsignedInteger(10));
+        boolean deregistered = (deregisteredDi != null)
+                ? CborSerializationUtil.toInt(deregisteredDi) == 1
+                : previousDeregistrationSlot != null && registeredAtSlot <= previousDeregistrationSlot;
+
         return new DRepStateRecord(deposit, anchorUrl, anchorHash, registeredAtEpoch,
                 lastInteractionEpoch, expiryEpoch, active, registeredAtSlot, protocolVersion,
-                previousDeregistrationSlot);
+                previousDeregistrationSlot, deregistered);
     }
 
     // --- CommitteeMemberRecord (prefix 0x63) ---

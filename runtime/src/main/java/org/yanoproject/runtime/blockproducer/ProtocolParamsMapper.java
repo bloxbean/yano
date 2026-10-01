@@ -341,6 +341,11 @@ public class ProtocolParamsMapper {
         pp.setNonce(snapshot.nonce());
         Map<String, ?> costModels = nonEmpty(snapshot.costModelsRaw()) ? snapshot.costModelsRaw() : snapshot.costModels();
         pp.setCostModels(toCostModels(costModels));
+        // The raw lists, in the ledger's parameter order, are what the Java rules hash into the script integrity
+        // hash's language views (LedgerView#protocolParams contract, ADR-056 Phase 3b).
+        if (nonEmpty(snapshot.costModelsRaw())) {
+            pp.setCostModelsRaw(new LinkedHashMap<>(snapshot.costModelsRaw()));
+        }
         pp.setPriceMem(snapshot.priceMem());
         pp.setPriceStep(snapshot.priceStep());
         pp.setMaxTxExMem(string(snapshot.maxTxExMem()));

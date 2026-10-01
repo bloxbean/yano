@@ -1,0 +1,8 @@
+# Python dependencies of scripts/run_wasm_scenarios.py (the wasmtime replay).
+# Install with: pip install --require-hashes -r scripts/requirements-replay.txt
+# Hashes: the PyPI wheels for Linux x86_64/aarch64 and macOS arm64/x86_64.
+wasmtime==49.0.0 \
+    --hash=sha256:839225359e01360974795bd7869c25d4305da96627df0af360b0668e20ecf1fb \
+    --hash=sha256:de98d6282c61d5dd4dc1ff1b410936ceb6fff3a27439e9cab51a375b8da2ec2f \
+    --hash=sha256:94f0288f9e1c33924995a72bb769f4c4e2885002391589dd6992cdaa35d1990a \
+    --hash=sha256:263b924576d9519c43d5a1acff50a03ab03209d16d26c53543c9ab9a409fb93f

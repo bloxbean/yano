@@ -153,9 +153,19 @@ class DefaultAccountStateStoreDRepDelegationTest {
     private void registerDRep(int drepType, String drepHash, int epoch, long slot) throws Exception {
         var state = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                epoch, null, epoch + 20, true, slot, 10, null);
+                epoch, null, epoch + 20, true, slot, 10, null, false);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(drepType, drepHash, state, batch, new ArrayList<>());
+            commit(batch);
+        }
+    }
+
+    /** Runs the PV10 rebuild in one committed batch, as governance Phase 1 does. */
+    private void rebuild(Set<String> registered) throws Exception {
+        var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                LoggerFactory.getLogger(DefaultAccountStateStore.class), true);
+        try (WriteBatch batch = new WriteBatch()) {
+            store.rebuildDRepDelegReverseIndexIfNeeded(() -> registered, batch, new ArrayList<>());
             commit(batch);
         }
     }
@@ -186,15 +196,7 @@ class DefaultAccountStateStoreDRepDelegationTest {
         Set<String> registered = Set.of("0:" + DREP_A, "0:" + DREP_B);
 
         // Run PV10 rebuild
-        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            // Use reflection-free approach: call the public method with a mock EpochParamProvider
-            // that returns PV10
-            // Actually, we need to test the private rebuildDRepDelegReverseIndex directly.
-            // Since it's in DefaultAccountStateStore, let's create a minimal store instance.
-            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
-                    LoggerFactory.getLogger(DefaultAccountStateStore.class), true);
-            store.rebuildDRepDelegReverseIndexIfNeeded(537, registered, PV10_PROVIDER);
-        }
+        rebuild(registered);
 
         // After rebuild: stale A→{X} should be gone, B→{X} should exist
         assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X))
@@ -221,9 +223,7 @@ class DefaultAccountStateStoreDRepDelegationTest {
         // Register only A and B (not C)
         Set<String> registered = Set.of("0:" + DREP_A, "0:" + DREP_B);
 
-        var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
-                    LoggerFactory.getLogger(DefaultAccountStateStore.class), true);
-        store.rebuildDRepDelegReverseIndexIfNeeded(537, registered, PV10_PROVIDER);
+        rebuild(registered);
 
         // Forward Y→C should be deleted (dangling)
         assertThat(readForwardDelegation(0, CRED_Y))
@@ -242,9 +242,7 @@ class DefaultAccountStateStoreDRepDelegationTest {
         Set<String> registered = Set.of("0:" + DREP_A);
 
         // First rebuild (marker will be written)
-        var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
-                    LoggerFactory.getLogger(DefaultAccountStateStore.class), true);
-        store.rebuildDRepDelegReverseIndexIfNeeded(537, registered, PV10_PROVIDER);
+        rebuild(registered);
 
         // Verify state after first rebuild
         assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isTrue();
@@ -252,7 +250,7 @@ class DefaultAccountStateStoreDRepDelegationTest {
         assertThat(fwd1).isNotNull();
 
         // Second rebuild — should be skipped (marker exists)
-        store.rebuildDRepDelegReverseIndexIfNeeded(538, registered, PV10_PROVIDER);
+        rebuild(registered);
 
         // State unchanged
         assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isTrue();
@@ -720,6 +718,90 @@ class DefaultAccountStateStoreDRepDelegationTest {
         assertThat(reverseEntryExists(0, DREP_B, 0, CRED_X)).isTrue();
     }
 
+    // ===== PV9 delegation to a DRep before its registration (preview 99e03aae… / 0c9775f6…) =====
+    // Haskell adds the delegator to the target's drepDelegs with Map.adjust (Deleg.hs:363-365), a
+    // no-op while the DRep is unregistered, and ConwayRegDRep starts with an empty set
+    // (GovCert.hs:229). ConwayUnRegDRep clears only that set (GovCert.hs:246-254).
+
+    @Test
+    @DisplayName("PV9 delegation made before the DRep registered: redelegation and retirement in one tx")
+    void pv9DelegationBeforeRegistration_redelegationAndRetirementInOneTx_keepsNewDelegation() throws Exception {
+        var store = delegateBeforeDRepRegistration();
+        assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isFalse();
+
+        applyBlock(store, 3, epochStartSlot(734) + 50,
+                tx(voteDeleg(CRED_X, DREP_B), unregDRep(DREP_A)));
+
+        assertForwardDelegation(CRED_X, 0, DREP_B);
+        assertThat(reverseEntryExists(0, DREP_B, 0, CRED_X)).isTrue();
+    }
+
+    @Test
+    @DisplayName("PV9 delegation made before the DRep registered: redelegation and retirement in one block")
+    void pv9DelegationBeforeRegistration_redelegationAndRetirementInOneBlock_keepsNewDelegation() throws Exception {
+        var store = delegateBeforeDRepRegistration();
+        assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isFalse();
+
+        applyBlock(store, 3, epochStartSlot(734) + 50,
+                tx(voteDeleg(CRED_X, DREP_B)), tx(unregDRep(DREP_A)));
+
+        assertForwardDelegation(CRED_X, 0, DREP_B);
+    }
+
+    @Test
+    @DisplayName("PV9 delegation made before the DRep registered: redelegation and retirement in two blocks")
+    void pv9DelegationBeforeRegistration_redelegationAndRetirementInTwoBlocks_keepsNewDelegation() throws Exception {
+        var store = delegateBeforeDRepRegistration();
+        assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isFalse();
+
+        applyBlock(store, 3, epochStartSlot(734) + 50, tx(voteDeleg(CRED_X, DREP_B)));
+        applyBlock(store, 4, epochStartSlot(734) + 100, tx(unregDRep(DREP_A)));
+
+        assertForwardDelegation(CRED_X, 0, DREP_B);
+    }
+
+    @Test
+    @DisplayName("PV9 delegation made before the DRep registered is not cleared by its retirement")
+    void pv9DelegationBeforeRegistration_retirement_keepsDelegation() throws Exception {
+        var store = delegateBeforeDRepRegistration();
+        assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isFalse();
+
+        applyBlock(store, 3, epochStartSlot(734) + 50, tx(unregDRep(DREP_A)));
+
+        // Haskell keeps the account's (now dangling) delegation; the PV10 hard fork removes it.
+        assertForwardDelegation(CRED_X, 0, DREP_A);
+    }
+
+    /** Registers X and DRep B, then delegates X to the unregistered DRep A and registers A, in one tx. */
+    private DefaultAccountStateStore delegateBeforeDRepRegistration() throws Exception {
+        var store = newConwayStore(PV9_PROVIDER);
+        applyBlock(store, 1, epochStartSlot(734),
+                tx(RegCert.builder().stakeCredential(stakeCred(CRED_X)).coin(BigInteger.valueOf(2_000_000)).build(),
+                        regDRep(DREP_B)));
+        applyBlock(store, 2, epochStartSlot(734) + 10,
+                tx(voteDeleg(CRED_X, DREP_A), regDRep(DREP_A)));
+
+        return store;
+    }
+
+    private static VoteDelegCert voteDeleg(String credentialHash, String drepHash) {
+        return VoteDelegCert.builder().stakeCredential(stakeCred(credentialHash)).drep(Drep.addrKeyHash(drepHash)).build();
+    }
+
+    private static RegDrepCert regDRep(String drepHash) {
+        return RegDrepCert.builder()
+                .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, drepHash))
+                .coin(BigInteger.valueOf(500_000_000))
+                .build();
+    }
+
+    private static UnregDrepCert unregDRep(String drepHash) {
+        return UnregDrepCert.builder()
+                .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, drepHash))
+                .coin(BigInteger.valueOf(500_000_000))
+                .build();
+    }
+
     private void assertForwardDelegation(String credentialHash, int drepType, String drepHash) throws Exception {
         byte[] forward = readForwardDelegation(0, credentialHash);
         assertThat(forward).isNotNull();
@@ -737,17 +819,22 @@ class DefaultAccountStateStoreDRepDelegationTest {
 
     private static void applyBlockWithCerts(DefaultAccountStateStore store, long blockNo, long slot,
                                             Certificate... certs) {
-        var txs = new ArrayList<TransactionBody>();
-        var tx = TransactionBody.builder()
-                .certificates(new ArrayList<>(Arrays.asList(certs)))
-                .build();
-        txs.add(tx);
+        applyBlock(store, blockNo, slot, tx(certs));
+    }
 
+    private static void applyBlock(DefaultAccountStateStore store, long blockNo, long slot,
+                                   TransactionBody... txs) {
         Block block = Block.builder()
-                .transactionBodies(txs)
+                .transactionBodies(new ArrayList<>(Arrays.asList(txs)))
                 .build();
 
         store.applyBlock(new BlockAppliedEvent(Era.Conway, slot, blockNo, "hash" + blockNo, block));
+    }
+
+    private static TransactionBody tx(Certificate... certs) {
+        return TransactionBody.builder()
+                .certificates(new ArrayList<>(Arrays.asList(certs)))
+                .build();
     }
 
     private static long epochStartSlot(int epoch) {

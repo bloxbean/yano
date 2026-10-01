@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
+import org.rocksdb.RocksDB;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.BlockBodyRetentionBoundary;
 import org.yanoproject.api.EpochParamProvider;
@@ -54,8 +55,8 @@ import org.yanoproject.api.model.TxEvaluationResult;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
-import org.yanoproject.ledgerrules.TransactionEvaluator;
-import org.yanoproject.ledgerrules.TransactionValidator;
+import org.yanoproject.ledger.rules.TransactionEvaluator;
+import org.yanoproject.ledger.rules.TransactionValidator;
 import org.yanoproject.api.bootstrap.BootstrapDataProvider;
 import org.yanoproject.api.bootstrap.BootstrapOutpoint;
 import org.yanoproject.runtime.bootstrap.BootstrapResult;
@@ -124,6 +125,7 @@ import org.yanoproject.runtime.devnet.spi.DevnetRuntime;
 import org.yanoproject.runtime.devnet.spi.DevnetRuntimeProvider;
 import org.yanoproject.runtime.events.PropagatingEventBus;
 import org.yanoproject.api.util.EpochSlotCalc;
+import org.yanoproject.ledgerstate.governance.ConwayGenesisGovernance;
 import org.yanoproject.runtime.kernel.KernelLifecycleException;
 import org.yanoproject.runtime.kernel.KernelState;
 import org.yanoproject.runtime.kernel.NodeKernel;
@@ -152,9 +154,19 @@ import org.yanoproject.runtime.sync.validation.BodyValidator;
 import org.yanoproject.runtime.db.RocksDbSupplier;
 import org.yanoproject.runtime.tx.TxSubsystem;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusionStats;
+import org.yanoproject.runtime.config.NetworkGenesisValuesFactory;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
+import org.yanoproject.runtime.ledger.canonical.RocksCanonicalSnapshotSource;
+import org.yanoproject.runtime.utxo.DefaultUtxoStore;
 import org.yanoproject.runtime.utxo.UtxoSubsystem;
 import org.yanoproject.runtime.utxo.UtxoStoreWriter;
 import org.yanoproject.runtime.validation.DefaultConsensusListener;
+import org.yanoproject.runtime.validation.ValidationEngines;
+import org.yanoproject.runtime.validation.shadowsync.PreBlockState;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncPreconditions;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncSettings;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.file.Files;
@@ -219,6 +231,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private volatile long resolvedGenesisTimestamp;
     private final ChronologySubsystem chronologySubsystem;
     private final TxSubsystem txSubsystem;
+    // ADR-056 §7: the configured validation engines (admission, shadows, shadow sync), or null.
+    private volatile ValidationEngines validationEngines;
     private final DevnetRuntime devnetRuntime;
     // Status tracking
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
@@ -593,6 +607,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             this.kernel = new NodeKernel(
                     runtimeKernelSubsystems(),
                     new SubsystemContext(eventBus, schedulers, this.runtimeOptions.globals(), new ServiceRegistry()));
+            wireCanonicalStateGate();
             constructionCleanup.clear();
         } catch (Throwable failure) {
             throw propagateConstructionFailure(
@@ -639,12 +654,62 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return new IllegalStateException("Runtime construction cleanup failed", failure);
     }
 
+    /**
+     * ADR-056 step 1d (6a): the Conway genesis governance the canonical view falls back to before the
+     * bootstrap is persisted, loaded once from the file the bootstrap reads.
+     */
+    private Supplier<ConwayGenesisGovernance> conwayGenesisGovernance() {
+        AtomicReference<Optional<ConwayGenesisGovernance>> loaded = new AtomicReference<>();
+        return () -> {
+            Optional<ConwayGenesisGovernance> value = loaded.get();
+            if (value == null) {
+                value = ConwayGenesisGovernance.load(config.getConwayGenesisFile(),
+                        NetworkGenesisValuesFactory.knownInitialTreasury((int) config.getProtocolMagic()));
+                loaded.compareAndSet(null, value);
+            }
+            return value.orElse(null);
+        };
+    }
+
     private RocksDbSupplier rocksDbSupplierOrNull() {
         return chainStorage.rocksDbSupplierOrNull();
     }
 
     private RocksDbAccess rocksDbAccessOrNull() {
         return chainStorage.rocksDbAccessOrNull();
+    }
+
+    /**
+     * ADR-056: configures the canonical state gate owned by the chain state. Snapshots are only
+     * available over the RocksDB-backed stores; every supplier is re-read at capture time because
+     * snapshot restore reopens the database and reinitializes the stores.
+     */
+    private void wireCanonicalStateGate() {
+        CanonicalStateGate gate = CanonicalStateGate.of(chainState);
+        int maxLive = (int) parseLong(runtimeOptions.globals().get(YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS),
+                CanonicalStateGate.DEFAULT_MAX_LIVE_SNAPSHOTS);
+        gate.setMaxLiveSnapshots(maxLive > 0 ? maxLive : CanonicalStateGate.DEFAULT_MAX_LIVE_SNAPSHOTS);
+        gate.configureLedgerEpochReader(() -> RocksCanonicalSnapshotSource.completedBoundaryEpoch(
+                getDefaultAccountStateStore().orElse(null)));
+        gate.configureEpochCalculator(slot -> {
+            EpochParamProvider provider = getEpochParamProvider();
+            return provider != null ? provider.getEpochSlotCalc().slotToEpoch(slot) : -1;
+        });
+        gate.configureEpochStartSlot(epoch -> {
+            EpochParamProvider provider = getEpochParamProvider();
+            return provider != null ? provider.getEpochSlotCalc().epochToStartSlot(epoch) : -1;
+        });
+        RocksDbAccess rocks = rocksDbAccessOrNull();
+        if (rocks == null) {
+            return;
+        }
+        gate.installSnapshotSource(new RocksCanonicalSnapshotSource(
+                () -> (RocksDB) rocks.getDb(),
+                () -> getDefaultAccountStateStore().orElse(null),
+                () -> utxoSubsystem.store() instanceof DefaultUtxoStore store ? store : null,
+                epoch -> getDefaultAccountStateStore().flatMap(store -> store.getProtocolParameters(epoch)),
+                utxoSubsystem::isApplyAsync,
+                conwayGenesisGovernance()));
     }
 
     /**
@@ -1251,6 +1316,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 validateChainState();
                 performStartupAdhocRollback();
                 completeStartupDerivedStateRecovery();
+                // Bootstrap, adhoc rollback and interrupted-boundary recovery change the tip and ledger
+                // state outside any write section; republish the canonical tip (ADR-056).
+                CanonicalStateGate.of(chainState).refreshTip();
             }
 
             @Override
@@ -2413,8 +2481,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      */
     private void storeGenesisUtxosIfNeeded(boolean freshStart) {
         if (freshStart && utxoStore != null) {
-            utxoStore.storeGenesisUtxos(genesisConfig.getInitialFunds(),
-                    config.getProtocolMagic(), 0, 0, "");
+            // Initial ledger state is a canonical write (ADR-056); reentrant inside a producer's
+            // genesis section.
+            CanonicalStateGate.of(chainState).runWrite(() -> utxoStore.storeGenesisUtxos(
+                    genesisConfig.getInitialFunds(), config.getProtocolMagic(), 0, 0, ""));
         }
     }
 
@@ -2613,6 +2683,82 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     public void setScriptEvaluator(TransactionEvaluator scriptEvaluator) {
         txSubsystem.setScriptEvaluator(scriptEvaluator);
+    }
+
+    /**
+     * Installs the validation engines (ADR-056 §7): mempool admission then validates against canonical
+     * snapshots of this node's state gate.
+     */
+    public void setValidationEngines(ValidationEngines engines) {
+        ValidationEngines previous = this.validationEngines;
+        if (previous != null && previous != engines) {
+            stopShadowSync(previous);
+        }
+        this.validationEngines = engines;
+        // Shadow sync alone (ADR-056 Phase 7a) leaves admission and the mempool exactly as without engines.
+        txSubsystem.setValidationEngines(engines != null && engines.affectsAdmission() ? engines : null,
+                () -> CanonicalStateGate.of(chainState));
+        if (engines != null && !engines.shadowSyncEngines().isEmpty()) {
+            startShadowSync(engines);
+        }
+    }
+
+    /**
+     * Starts shadow sync (ADR-056 Phase 7a): every applied Conway block is validated by the shadow-sync engines against
+     * its pre-block state, captured inside the block's write section.
+     */
+    private void startShadowSync(ValidationEngines engines) {
+        if (engines.shadowSync() != null) {
+            return; // already running for these engines
+        }
+        Optional<String> unmet = ShadowSyncPreconditions.unmetReason(
+                getDefaultAccountStateStore().map(DefaultAccountStateStore::isEnabled).orElse(false),
+                utxoSubsystem.store() instanceof DefaultUtxoStore store && store.isEnabled(),
+                utxoSubsystem.isApplyAsync());
+        if (unmet.isPresent()) {
+            log.warn("yano.validation.shadow-sync=true, but shadow sync is not started: {}. The node runs without it.",
+                    unmet.get());
+            return;
+        }
+        ShadowSyncSettings settings = engines.settings().shadowSyncSettings();
+        ShadowSyncValidator validator = new ShadowSyncValidator(settings, engines.shadowSyncEngines(),
+                engines.envFactory(), PreBlockState.ofGate(() -> CanonicalStateGate.of(chainState)),
+                hash -> chainState.getBlock(HexUtil.decodeHexString(hash)),
+                () -> CanonicalStateGate.of(chainState).isWriteHeldByCurrentThread(),
+                new ShadowSyncReport(settings.reportFile(), settings.dumpDir(), settings.maxDumps()));
+        engines.attachShadowSync(validator);
+        validator.attach(eventBus);
+    }
+
+    private void stopShadowSync(ValidationEngines engines) {
+        ShadowSyncValidator validator = engines.shadowSync();
+        if (validator != null) {
+            validator.close();
+        }
+        if (!engines.affectsAdmission()) {
+            // Not handed to the transaction subsystem, which closes the engines it holds.
+            engines.close();
+        }
+    }
+
+    /** @return the installed validation engines, or {@code null} when none are configured */
+    public ValidationEngines getValidationEngines() {
+        return validationEngines;
+    }
+
+    /** @return the transaction subsystem (mempool diagnostics and the ADR-056 Phase 6 gates) */
+    public TxSubsystem getTxSubsystem() {
+        return txSubsystem;
+    }
+
+    /** @return this node's canonical state gate (ADR-056 §3; diagnostics and the Phase 6 gates) */
+    public CanonicalStateGate getCanonicalStateGate() {
+        return CanonicalStateGate.of(chainState);
+    }
+
+    /** @return the runtime globals (configuration forwarded by the host) */
+    public Map<String, Object> runtimeGlobals() {
+        return runtimeOptions.globals() != null ? runtimeOptions.globals() : Map.of();
     }
 
     @Override
@@ -3179,28 +3325,38 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 }
                 targetSlot = rollbackPoint.getSlot();
 
-                // 2. Rollback chain state to the resolved point.
-                rollbackStarted = true;
-                ChainStateRollback.rollbackToPoint(chainState, rollbackPoint);
+                // 2-4 form one canonical write section (ADR-056): chain-state rollback, the
+                // rollback listeners and, with async UTxO apply, the drained UTxO rollback.
+                ChainTip newTip;
+                try (CanonicalStateGate.WriteSection ignored = CanonicalStateGate.of(chainState).enterWrite()) {
+                    // 2. Rollback chain state to the resolved point.
+                    rollbackStarted = true;
+                    ChainStateRollback.rollbackToPoint(chainState, rollbackPoint);
 
-                // 3. Verify the exact restored point.
-                ChainTip newTip = chainState.getTip();
-                if (newTip == null || newTip.getSlot() != rollbackPoint.getSlot()
-                        || !HexUtil.encodeHexString(newTip.getBlockHash()).equalsIgnoreCase(rollbackPoint.getHash())) {
-                    throw new IllegalStateException("ChainState did not restore exact API rollback point " + rollbackPoint);
-                }
+                    // 3. Verify the exact restored point.
+                    newTip = chainState.getTip();
+                    if (newTip == null || newTip.getSlot() != rollbackPoint.getSlot()
+                            || !HexUtil.encodeHexString(newTip.getBlockHash())
+                            .equalsIgnoreCase(rollbackPoint.getHash())) {
+                        throw new IllegalStateException(
+                                "ChainState did not restore exact API rollback point " + rollbackPoint);
+                    }
 
-                // 4. Publish RollbackEvent (isReal=true so UTXO deltas get unwound)
-                try {
-                    EventMetadata meta = EventMetadata.builder().origin("api-rollback").build();
-                    eventBus.publish(new RollbackEvent(rollbackPoint, true),
-                            meta, PublishOptions.builder().build());
-                } catch (Exception ex) {
-                    log.warn("RollbackEvent publish failed: {}", ex.toString());
-                    throw new RuntimeException("RollbackEvent publish failed during API rollback", ex);
-                }
-                if (!utxoSubsystem.drainAsyncHandlerAndRestart(Duration.ofSeconds(30))) {
-                    throw new IllegalStateException("Async UTXO handler did not drain after API rollback");
+                    // 4. Publish RollbackEvent (isReal=true so UTXO deltas get unwound)
+                    try {
+                        EventMetadata meta = EventMetadata.builder().origin("api-rollback").build();
+                        eventBus.publish(new RollbackEvent(rollbackPoint, true),
+                                meta, PublishOptions.builder().build());
+                    } catch (Exception ex) {
+                        log.warn("RollbackEvent publish failed: {}", ex.toString());
+                        throw new RuntimeException("RollbackEvent publish failed during API rollback", ex);
+                    }
+                    // Draining inside the section cannot deadlock: with async UTxO apply the snapshot
+                    // source reports itself unavailable before the gate's read lock is taken, so no
+                    // capture ever waits here, and the async handler never takes the gate.
+                    if (!utxoSubsystem.drainAsyncHandlerAndRestart(Duration.ofSeconds(30))) {
+                        throw new IllegalStateException("Async UTXO handler did not drain after API rollback");
+                    }
                 }
                 // 5. Notify server (ChainSyncServerAgent sends Rollbackward to connected clients)
                 if (serveSubsystem.notifyNewDataAvailable()) {
@@ -3526,8 +3682,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private FundResult fundAddress(String address, long lovelace) {
+        // The faucet injects a UTxO outside any block: a canonical change of its own (ADR-056).
         return withRuntimeMaintenance("devnet faucet",
-                () -> devnetFaucetService().fundAddress(address, lovelace));
+                () -> CanonicalStateGate.of(chainState).callWrite(
+                        () -> devnetFaucetService().fundAddress(address, lovelace)));
     }
 
     private DevnetFaucetService devnetFaucetService() {
@@ -3833,6 +3991,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         cleanupFailure = attemptRuntimeCleanup(
                 cleanupFailure, "block producer", producerSubsystem::stop);
         cleanupFailure = closeNonceListenerSubscriptions(cleanupFailure);
+        cleanupFailure = attemptRuntimeCleanup(cleanupFailure, "shadow sync", () -> {
+            ValidationEngines engines = validationEngines;
+            if (engines != null) {
+                stopShadowSync(engines);
+            }
+        });
         cleanupFailure = attemptRuntimeCleanup(
                 cleanupFailure, "transaction subsystem", txSubsystem::close);
         cleanupFailure = attemptRuntimeCleanup(
@@ -4269,6 +4433,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
         TxDiffusionStats txDiffusionStats = txSubsystem.txDiffusionStats();
         var mempoolStats = txSubsystem.mempoolStats();
+        var mempoolLedger = txSubsystem.ledgerMempoolStatus();
         RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
         RuntimeMaintenanceGate.Degradation maintenanceDegradation = maintenanceGate.degradation();
 
@@ -4416,6 +4581,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .mempoolAdmissionHoldNanos(mempoolStats.totalAdmissionHoldNanos())
                 .mempoolValidationNanos(mempoolStats.totalValidationNanos())
                 .mempoolSlowValidations(mempoolStats.slowValidations())
+                .mempoolLedgerState(mempoolLedger != null ? mempoolLedger.state() : null)
+                .mempoolCatchingUp(mempoolLedger != null && mempoolLedger.catchingUp())
+                .mempoolCanonicalLagGenerations(mempoolLedger != null
+                        ? Math.max(0, mempoolLedger.canonicalGeneration() - mempoolLedger.baseGeneration()) : 0L)
                 .mempoolAccepting(txSubsystem.isAccepting())
                 .mempoolValidationAvailable(txSubsystem.transactionValidationService() != null)
                 .mempoolEvaluationAvailable(txSubsystem.isTransactionEvaluationAvailable())

@@ -15,14 +15,14 @@ dependencies {
     // compiled UPLC artifacts are CHECKED IN, not generated at build time, so
     // there is no annotation processor here; the opt-in JulcSourceCompile* tests
     // recompile from source only as a drift check.
-    compileOnly "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
-    compileOnly "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
+    compileOnly "org.julclang:julc-stdlib:${libs.versions.julc.get()}"
+    compileOnly "org.julclang:julc-ledger-api:${libs.versions.julc.get()}"
 
-    testImplementation "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
-    testImplementation "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
-    testImplementation "com.bloxbean.cardano:julc-testkit:${libs.versions.julc.get()}"
-    testImplementation "com.bloxbean.cardano:julc-compiler:${libs.versions.julc.get()}"
-    testRuntimeOnly "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
+    testImplementation "org.julclang:julc-stdlib:${libs.versions.julc.get()}"
+    testImplementation "org.julclang:julc-ledger-api:${libs.versions.julc.get()}"
+    testImplementation "org.julclang:julc-testkit:${libs.versions.julc.get()}"
+    testImplementation "org.julclang:julc-compiler:${libs.versions.julc.get()}"
+    testRuntimeOnly "org.julclang:julc-vm-java:${libs.versions.julc.get()}"
     testImplementation libs.junit.jupiter.api
     testImplementation libs.assertj.core
     testRuntimeOnly libs.junit.jupiter.engine

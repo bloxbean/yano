@@ -5,8 +5,8 @@ import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
-import org.yanoproject.ledgerrules.ScriptReferenceResolverScope;
-import org.yanoproject.ledgerrules.TransactionEvaluator;
+import org.yanoproject.ledger.rules.ScriptReferenceResolverScope;
+import org.yanoproject.ledger.rules.TransactionEvaluator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;

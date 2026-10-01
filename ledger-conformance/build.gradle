@@ -1,0 +1,129 @@
+// ADR-056 §8: the conformance harness. Test-only: no main sources, never published (see the end of this
+// file and centralDeploymentExclusions in the root build).
+//
+// It is a module of its own, not the `conformanceTest` source set of ledger-rules the ADR first described,
+// because it runs every engine side by side: scalus-bridge and the optional amaru-validator both depend on
+// ledger-rules, so ledger-rules cannot depend on them.
+//
+//   ./gradlew :ledger-conformance:test                  runner, coverage matrix and mutation matrix; the
+//                                                       scenario parts skip without the Amaru corpus
+//   -PamaruScenariosDir=<amaru clone or its            the 276 Amaru scenarios (or AMARU_SCENARIOS_DIR)
+//      crates/amaru-ledger/tests/data/transaction>
+//   -PwithAmaru=true -PamaruWasm=<module.wasm>         adds the Amaru engine as the reference
+//   ./gradlew :ledger-conformance:conformanceReport ... regenerates docs/baseline-2026-09.md,
+//                                                       docs/blueprint-vectors-2026-09.md and
+//                                                       ledger-rules/docs/conway-rule-coverage.md
+//   -Pconformance.strict=false                         report missing coverage instead of failing (strict is the
+//                                                       default since the ADR-056 Phase 5 gate)
+//   -PblueprintVectors=<dir>                           another copy of the cardano-blueprint vectors (default: the
+//                                                       vendored vectors/cardano-blueprint, see its README.md)
+//   -PengineBenchmark=true                             EngineLatencyBenchmarkTest: warm p50/p99 per engine on the
+//                                                       Amaru scenarios and the preprod/preview replay bundles
+//                                                       (ADR-057 Phase E; amaru-validator/README.md)
+
+description = 'ADR-056 conformance harness: Amaru scenarios, coverage matrix, mutation matrix, engine baseline'
+
+def withAmaru = rootProject.findProject(':amaru-validator') != null
+
+dependencies {
+    testImplementation project(':ledger-rules')
+    testImplementation testFixtures(project(':ledger-rules'))
+    testImplementation project(':scalus-bridge')
+    // ADR-056 Phase 7c: the julc phase-2 evaluator of the java engine
+    testImplementation project(':script-evaluators')
+    testImplementation libs.jackson.databind
+    testImplementation libs.cardano.client.address
+    if (withAmaru) {
+        testImplementation project(':amaru-validator')
+    }
+}
+
+// The Amaru reference engine adapter compiles only when the optional module is in the build.
+if (withAmaru) {
+    sourceSets.test.java.srcDir 'src/amaruTest/java'
+}
+
+def scenariosDir = providers.gradleProperty('amaruScenariosDir')
+        .orElse(providers.environmentVariable('AMARU_SCENARIOS_DIR')).getOrElse('')
+
+// ADR-056 Phase 7b: the cardano-blueprint ledger conformance vectors, vendored under vectors/cardano-blueprint
+// (README.md there has the pin and how to update it). -PblueprintVectors=<dir> points the tests at another extracted
+// copy (a directory holding eras/ and pparams/, or an Amaru checkout); the tests check the files against the pinned
+// corpus digest either way.
+def blueprintVectorsDir = providers.gradleProperty('blueprintVectors')
+        .orElse(providers.environmentVariable('BLUEPRINT_VECTORS')).getOrElse('')
+        ?: file('vectors/cardano-blueprint').absolutePath
+// Strict since the ADR-056 Phase 5 gate: an in-scope constructor without a @Covers test fails the build.
+def strict = providers.gradleProperty('conformance.strict').getOrElse('true')
+// The Amaru module under test must report this crate version (amaru_version()'s crate= line); the reference engine
+// refuses a stale module.
+def amaruCrateVersion = (rootProject.file('amaru-validator-wasm/Cargo.toml').text =~ /(?m)^version\s*=\s*"([^"]+)"/)[0][1]
+
+tasks.withType(Test).configureEach {
+    if (scenariosDir) {
+        systemProperty 'amaru.scenarios.dir', scenariosDir
+    }
+    systemProperty 'blueprint.vectors.dir', blueprintVectorsDir
+    systemProperty 'conformance.strict', strict
+    systemProperty 'conformance.withAmaru', withAmaru.toString()
+    if (withAmaru) {
+        systemProperty 'amaru.wasm.crateVersion', amaruCrateVersion
+        systemProperty 'amaru.wasm.file', project(':amaru-validator').layout.buildDirectory
+                .file('amaru-wasm/amaru_validator.wasm').get().asFile.absolutePath
+    }
+    // Test classes of other modules scanned for @Covers (ledger-rules' rule tests from Phase 3 on).
+    systemProperty 'conformance.scan.dirs',
+            project(':ledger-rules').layout.buildDirectory.dir('classes/java/test').get().asFile.absolutePath
+    systemProperty 'conformance.report.dir', layout.buildDirectory.dir('conformance').get().asFile.absolutePath
+    // ADR-057 Phase E engine latency benchmark (EngineLatencyBenchmarkTest): -PengineBenchmark=true, optionally
+    // -PengineBenchmarkPasses=<n> (default 5) and -PengineBenchmarkWarmup=<n> (default 2); the public-network corpus runs
+    // -PengineBenchmarkNetworkRepeat=<n> (default 20) times as many passes of each.
+    if (project.hasProperty('engineBenchmark')) {
+        systemProperty 'yano.engine.benchmark', 'true'
+        systemProperty 'yano.engine.benchmark.passes', providers.gradleProperty('engineBenchmarkPasses').getOrElse('5')
+        systemProperty 'yano.engine.benchmark.warmup', providers.gradleProperty('engineBenchmarkWarmup').getOrElse('2')
+        systemProperty 'yano.engine.benchmark.networkRepeat',
+                providers.gradleProperty('engineBenchmarkNetworkRepeat').getOrElse('20')
+    }
+    dependsOn ':ledger-rules:testClasses'
+    // The results depend on the external Amaru corpus and on engines outside this module: always run.
+    outputs.cacheIf { false }
+    outputs.upToDateWhen { false }
+    if (withAmaru) {
+        maxHeapSize = '4g'
+    }
+}
+
+tasks.register('conformanceReport', Test) {
+    group = 'verification'
+    description = 'Regenerates the ADR-056 baseline report and the Conway rule coverage matrix (needs the Amaru scenarios).'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    filter {
+        includeTestsMatching '*ConformanceBaselineTest'
+        includeTestsMatching '*CoverageMatrixTest'
+        includeTestsMatching '*BlueprintVectorGateTest'
+    }
+    systemProperty 'conformance.writeDocs', 'true'
+    systemProperty 'conformance.baseline.file', file('docs/baseline-2026-09.md').absolutePath
+    systemProperty 'conformance.coverage.file', rootProject.file('ledger-rules/docs/conway-rule-coverage.md').absolutePath
+    systemProperty 'conformance.blueprint.file', file('docs/blueprint-vectors-2026-09.md').absolutePath
+    doFirst {
+        if (!scenariosDir) {
+            throw new GradleException('conformanceReport needs the Amaru scenarios: pass -PamaruScenariosDir=<dir> ' +
+                    'or set AMARU_SCENARIOS_DIR (a clone of pragma-org/amaru at the tag in amaru-validator-wasm/AMARU_VERSION)')
+        }
+    }
+}
+
+// Never published: a test harness, like amaru-validator (ADR-057 §3).
+def conformancePublication = publishing.publications.findByName('mavenJava')
+if (conformancePublication != null) {
+    publishing.publications.remove(conformancePublication)
+}
+tasks.withType(PublishToMavenRepository).configureEach {
+    enabled = false
+}
+tasks.withType(PublishToMavenLocal).configureEach {
+    enabled = false
+}

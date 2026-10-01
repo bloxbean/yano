@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.CanonicalBlockReference;
 import org.yanoproject.runtime.blockproducer.NonceStateStore;
 import org.yanoproject.runtime.blockproducer.NonceStateSnapshot;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGateOwner;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -24,7 +26,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
 @Slf4j
 public class InMemoryChainState implements ChainState, NonceStateStore,
         ByronEbHeaderStore, OriginRollbackCapable, PointRollbackCapable,
-        NearestPointLookup, ArchiveChainStateCapabilities {
+        NearestPointLookup, ArchiveChainStateCapabilities, CanonicalStateGateOwner {
+    private final CanonicalStateGate canonicalStateGate = new CanonicalStateGate(this::getTip);
     // Use hex string keys instead of byte[] to ensure proper equals/hashCode behavior
     private Map<String, byte[]> blockStore = new ConcurrentHashMap<>();
     private Map<String, byte[]> blockHeaderStore = new ConcurrentHashMap<>();
@@ -45,6 +48,11 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
     private volatile byte[] epochNonceState;
     private final Map<Integer, byte[]> epochNonces = new ConcurrentHashMap<>();
     private final Map<Integer, NonceStateSnapshot> epochNonceCheckpoints = new ConcurrentHashMap<>();
+
+    @Override
+    public CanonicalStateGate canonicalStateGate() {
+        return canonicalStateGate;
+    }
 
     @Override
     public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {

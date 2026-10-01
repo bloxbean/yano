@@ -1,0 +1,115 @@
+package org.yanoproject.ledger.rules.conway;
+
+import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.LedgerRuleName;
+import org.yanoproject.ledger.rules.TxValidationRequest;
+import org.yanoproject.ledger.rules.conway.certs.CertsRule;
+import org.yanoproject.ledger.rules.conway.gov.GovRule;
+import org.yanoproject.ledger.rules.conway.ledger.LedgerPreChecks;
+import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
+import org.yanoproject.ledger.rules.conway.mempool.MempoolSubject;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayScopes;
+import org.yanoproject.ledger.rules.conway.utxow.UtxowRule;
+
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * The Conway transaction transition (ADR-056 §4), rooted where Haskell roots it: {@code MEMPOOL} for admission
+ * and mempool rebuilds, {@code LEDGER} for block selection and shadow sync.
+ *
+ * <ol start="0">
+ *   <li>{@code MEMPOOL} (rule {@code MEMPOOL} only): the {@link MempoolRule} checks against the incoming state; the
+ *       all-inputs-spent failure stops everything ({@code whenFailureFreeDefault}), the unelected-voter failure
+ *       is recorded and {@code LEDGER} still runs (Conway/Rules/Mempool.hs:103-138).</li>
+ *   <li>{@code LEDGER} ({@code conwayLedgerTransitionTRC}, Conway/Rules/Ledger.hs:350-440): when
+ *       {@code isValid = True}, the pre-checks (:364-392), then {@code CERTS} (:394-400), then {@code GOV}
+ *       (:409-421); for every transaction {@code UTXOW} (:428-439) with the pre-certificate state.</li>
+ *   <li>{@code UTXOW} → {@code UTXO} → {@code UTXOS}, nested as in Haskell.</li>
+ * </ol>
+ *
+ * <p>Each family is a {@link SubRule} that runs its scopes of the protocol version's rule set
+ * ({@link TransitionContext#rules()}, ADR-056 Phase 5c): which checks and steps run, in which order, is the rule set's;
+ * the transition is only the skeleton. Failures accumulate with Haskell's STS semantics ({@link RuleFrame}); only
+ * {@code whenFailureFree} blocks are skipped ({@code UTXOS}' script execution). The {@code LEDGER} pre-checks
+ * ({@link LedgerPreChecks}) and {@code CERTS} ({@link CertsRule}) thread the intra-transaction certificate state
+ * ({@link TransitionContext#certState()}) that {@code GOV} ({@link GovRule}) reads after the certificates.</p>
+ *
+ * <p>Stateless and thread-safe; each run gets its own {@link TransitionContext}.</p>
+ */
+public final class ConwayLedgerTransition {
+
+    /** One rule family, run against its parent rule's frame. */
+    @FunctionalInterface
+    public interface SubRule {
+
+        /** A family no phase has implemented yet: it records nothing. */
+        SubRule NOT_YET_IMPLEMENTED = parent -> {
+        };
+
+        /**
+         * Runs the family. A sub-rule opens its own frame with {@link RuleFrame#child(LedgerRuleName)} and folds it
+         * back with {@link RuleFrame#subRule(RuleFrame)}; the {@code LEDGER} pre-checks record into
+         * {@code parent} directly, as they are predicates of {@code LEDGER} itself.
+         */
+        void apply(RuleFrame parent);
+    }
+
+    private final SubRule ledgerPreChecks;
+    private final SubRule certs;
+    private final SubRule gov;
+    private final SubRule utxow;
+
+    /**
+     * @param ledgerPreChecks the {@code LEDGER} predicates before {@code CERTS} (treasury value, reference-script
+     *                        size, DRep-delegated withdrawals, the PV11 withdrawal checks)
+     * @param certs           {@code CERTS} (with {@code DELEG}, {@code POOL}, {@code GOVCERT})
+     * @param gov             {@code GOV}
+     * @param utxow           {@code UTXOW}, which runs {@code UTXO} and {@code UTXOS}
+     */
+    public ConwayLedgerTransition(SubRule ledgerPreChecks, SubRule certs, SubRule gov, SubRule utxow) {
+        this.ledgerPreChecks = Objects.requireNonNull(ledgerPreChecks, "ledgerPreChecks");
+        this.certs = Objects.requireNonNull(certs, "certs");
+        this.gov = Objects.requireNonNull(gov, "gov");
+        this.utxow = Objects.requireNonNull(utxow, "utxow");
+    }
+
+    /**
+     * @return every family: {@code UTXOW}, {@code UTXO}, {@code UTXOS} (Phase 3), {@code CERTS} with {@code DELEG},
+     *         {@code POOL}, {@code GOVCERT} (Phase 4), the {@code LEDGER} pre-checks and {@code GOV} (Phase 5)
+     */
+    public static ConwayLedgerTransition standard() {
+        return new ConwayLedgerTransition(LedgerPreChecks::apply, CertsRule::apply, GovRule::apply, UtxowRule::apply);
+    }
+
+    /**
+     * Runs the transition.
+     *
+     * @return the failures in the order Haskell reports them for the context's root rule; empty when valid
+     */
+    public List<LedgerFailure> apply(TransitionContext ctx) {
+        if (ctx.rule() == TxValidationRequest.Rule.MEMPOOL) {
+            RuleFrame mempoolFrame = new RuleFrame(LedgerRuleName.MEMPOOL, ctx);
+            if (mempoolFrame.run(ConwayScopes.MEMPOOL, new MempoolSubject(ctx.tx().getBody(), ctx.preState()))) {
+                return mempoolFrame.failures();
+            }
+            RuleFrame ledger = mempoolFrame.child(LedgerRuleName.LEDGER);
+            ledger(ledger);
+            mempoolFrame.subRule(ledger);
+            return mempoolFrame.failures();
+        }
+        RuleFrame ledger = new RuleFrame(LedgerRuleName.LEDGER, ctx);
+        ledger(ledger);
+        return ledger.failures();
+    }
+
+    /** {@code conwayLedgerTransitionTRC} (Conway/Rules/Ledger.hs:350-440). */
+    private void ledger(RuleFrame ledger) {
+        if (ledger.context().raw().isValid()) {
+            ledgerPreChecks.apply(ledger);
+            certs.apply(ledger);
+            gov.apply(ledger);
+        }
+        utxow.apply(ledger);
+    }
+}

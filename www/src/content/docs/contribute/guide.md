@@ -15,7 +15,8 @@ To run Yano, [download a release](/start/installation/). To change the node itse
 | --- | --- |
 | `core-api` | Public contracts, role interfaces, plugin SPI |
 | `runtime` | Node assembly and runtime implementation |
-| `ledger-state`, `ledger-rules` | Ledger state and validation contracts |
+| `ledger-state`, `ledger-rules` | Ledger state, validation API and Conway ledger rules |
+| `script-evaluators`, `scalus-bridge` | Plutus script evaluators and the Scalus bridge |
 | `p2p`, `consensus` | Networking and consensus components |
 | `devnet-toolkit`, `testkit`, `testkit-ccl` | Local development and Java testing |
 | `app` | Quarkus API and runnable distribution |

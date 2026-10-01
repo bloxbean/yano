@@ -1,0 +1,6 @@
+# Same style as Amaru (the code sits next to its API).
+unstable_features = true
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+max_width = 120
+use_small_heuristics = "Max"

@@ -2,7 +2,7 @@
 // You only need this to REGENERATE the script: BlsProbe embeds the compiled hex,
 // so the normal compatibility run does not build this project.
 //
-//   ./gradlew build   (Java 25 required - julc 0.1.0-pre16 is Java-25-only)
+//   ./gradlew build   (Java 25 required - julc 0.1.0-pre17 is Java-25-only)
 //
 // Then paste the emitted hex into BlsProbe.SCRIPT_CBOR_HEX.
 plugins {
@@ -14,11 +14,16 @@ repositories {
     maven { url = 'https://central.sonatype.com/repository/maven-snapshots/' }
 }
 
-def julcVersion = '0.1.0-pre16'
+def julcVersion = '0.1.0-pre17'
 
 dependencies {
-    implementation "com.bloxbean.cardano:julc-vm-java:${julcVersion}"
-    implementation "com.bloxbean.cardano:julc-cardano-client-lib:${julcVersion}"
+    // Since 0.1.0-pre17 (group org.julclang) julc-cardano-client-lib no longer leaks
+    // the authoring stack onto the compile classpath, so declare it explicitly.
+    implementation "org.julclang:julc-stdlib:${julcVersion}"
+    implementation "org.julclang:julc-ledger-api:${julcVersion}"
+    annotationProcessor "org.julclang:julc-annotation-processor:${julcVersion}"
+    implementation "org.julclang:julc-vm-java:${julcVersion}"
+    implementation "org.julclang:julc-cardano-client-lib:${julcVersion}"
 }
 
 java {

@@ -1,0 +1,269 @@
+package org.yanoproject.ledger.rules.conway;
+
+import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+
+import org.yanoproject.api.utxo.model.Outpoint;
+import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.TxValidationRequest;
+import org.yanoproject.ledger.rules.ValidationEnv;
+import org.yanoproject.ledger.rules.conway.certs.CertsRule;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSet;
+import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
+import org.yanoproject.ledger.rules.conway.tx.TxInRef;
+import org.yanoproject.ledger.rules.effects.IntraTxFold;
+import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
+import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
+import org.yanoproject.ledger.rules.view.LedgerView;
+import org.yanoproject.ledger.rules.view.Lookup;
+import org.yanoproject.ledger.rules.view.model.UtxoEntry;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.SortedSet;
+import java.util.TreeMap;
+import java.util.TreeSet;
+
+/**
+ * Everything one run of {@link ConwayLedgerTransition} reads: the transaction (original bytes and CCL
+ * structure), the pre-transaction state, the environment, the protocol version and its {@link ConwayRuleSet} (which
+ * units run, in which order: ADR-056 Phase 5c), the validation mode, and the STS "is failing" flag that
+ * {@code whenFailureFree} consults.
+ *
+ * <p>The UTxO entries of every spending, collateral and reference input are read once, up front: an
+ * {@link Lookup.Unavailable} read rejects the transaction (invariant 2) before any rule runs, and every rule
+ * then sees the same answer. {@code UTXOW}/{@code UTXO}/{@code UTXOS} read {@link #preState()}, the state
+ * before the transaction's certificates (invariant 5); {@code CERTS} and {@code GOV} read and advance
+ * {@link #certState()}, the intra-transaction state in body order.</p>
+ */
+public final class TransitionContext {
+
+    /** Full validation, or re-application of a validated transaction (ADR-056 §6, Haskell {@code reapplyTx}). */
+    public enum Mode {
+        FULL,
+        REAPPLY
+    }
+
+    private final RawTransaction raw;
+    private final LedgerView preState;
+    private final ValidationEnv env;
+    private final ProtocolParams params;
+    private final int protocolMajor;
+    private final ConwayRuleSet rules;
+    private final Mode mode;
+    private final TxValidationRequest.Rule rule;
+    private final ConwayLedgerConstants constants;
+    private final ScriptPhaseEvaluator evaluator;
+    private final Map<TxInRef, UtxoEntry> utxo;
+    private boolean failing;
+    private List<LedgerFailure> collectFailures = List.of();
+    private SortedSet<Integer> plutusLanguagesUsed = Collections.emptySortedSet();
+    private IntraTxFold certState;
+    private CertsRule.UndrainedWithdrawals undrainedWithdrawals;
+
+    /**
+     * A context with the rule set of {@code protocolMajor} ({@link ConwayRuleSets#forProtocol(int)}).
+     *
+     * @param resolved the UTxO entries of the inputs, from {@link #resolve(RawTransaction, LedgerView)}
+     * @throws IllegalArgumentException when no rule set validates {@code protocolMajor}
+     */
+    public TransitionContext(RawTransaction raw, LedgerView preState, ValidationEnv env, ProtocolParams params,
+                             int protocolMajor, Mode mode, TxValidationRequest.Rule rule,
+                             ConwayLedgerConstants constants, ScriptPhaseEvaluator evaluator,
+                             Map<TxInRef, UtxoEntry> resolved) {
+        this(raw, preState, env, params, ConwayRuleSets.forProtocol(protocolMajor).orElseThrow(
+                        () -> new IllegalArgumentException("no Conway rule set for protocol version " + protocolMajor)),
+                mode, rule, constants, evaluator, resolved);
+    }
+
+    /**
+     * @param rules    the rule set of the protocol version being validated; its version is {@link #protocolMajor()}
+     * @param resolved the UTxO entries of the inputs, from {@link #resolve(RawTransaction, LedgerView)}
+     */
+    public TransitionContext(RawTransaction raw, LedgerView preState, ValidationEnv env, ProtocolParams params,
+                             ConwayRuleSet rules, Mode mode, TxValidationRequest.Rule rule,
+                             ConwayLedgerConstants constants, ScriptPhaseEvaluator evaluator,
+                             Map<TxInRef, UtxoEntry> resolved) {
+        this.rules = Objects.requireNonNull(rules, "rules");
+        this.protocolMajor = rules.protocolVersion();
+        this.raw = Objects.requireNonNull(raw, "raw");
+        this.preState = Objects.requireNonNull(preState, "preState");
+        this.env = Objects.requireNonNull(env, "env");
+        this.params = Objects.requireNonNull(params, "params");
+        this.mode = Objects.requireNonNull(mode, "mode");
+        this.rule = Objects.requireNonNull(rule, "rule");
+        this.constants = Objects.requireNonNull(constants, "constants");
+        this.evaluator = evaluator;
+        this.utxo = Collections.unmodifiableMap(new TreeMap<>(Objects.requireNonNull(resolved, "resolved")));
+    }
+
+    /**
+     * Reads the UTxO entries of all inputs ({@code allInputsTxBodyF}).
+     *
+     * @throws LedgerStateUnavailableException when any read is unavailable
+     */
+    public static Map<TxInRef, UtxoEntry> resolve(RawTransaction raw, LedgerView view) {
+        Map<TxInRef, UtxoEntry> found = new TreeMap<>();
+        for (TxInRef in : raw.allInputs()) {
+            switch (view.utxo(in.outpoint())) {
+                case Lookup.Present<UtxoEntry> p -> found.put(in, p.value());
+                case Lookup.Absent<UtxoEntry> a -> {
+                    // Not in the UTxO: BadInputsUTxO, and it contributes nothing to any sum (txInsFilter).
+                }
+                case Lookup.Unavailable<UtxoEntry> u ->
+                        throw new LedgerStateUnavailableException("utxo " + in + ": " + u.reason());
+            }
+        }
+        return Collections.unmodifiableMap(found);
+    }
+
+    public RawTransaction raw() {
+        return raw;
+    }
+
+    /** @return the decoded CCL transaction (structure only) */
+    public Transaction tx() {
+        return raw.decoded();
+    }
+
+    /** @return the state before the transaction (pre-certificate, invariant 5) */
+    public LedgerView preState() {
+        return preState;
+    }
+
+    public ValidationEnv env() {
+        return env;
+    }
+
+    /** @return the epoch-effective protocol parameters (from the view) */
+    public ProtocolParams params() {
+        return params;
+    }
+
+    /** @return the protocol major version being validated (the version of {@link #rules()}) */
+    public int protocolMajor() {
+        return protocolMajor;
+    }
+
+    /** @return the rule set of {@link #protocolMajor()}: the units every rule family runs */
+    public ConwayRuleSet rules() {
+        return rules;
+    }
+
+    public Mode mode() {
+        return mode;
+    }
+
+    public TxValidationRequest.Rule rule() {
+        return rule;
+    }
+
+    public ConwayLedgerConstants constants() {
+        return constants;
+    }
+
+    /** @return the phase-2 evaluator, or null when the node has none */
+    public ScriptPhaseEvaluator evaluator() {
+        return evaluator;
+    }
+
+    /** @return the UTxO entry of an input, empty when it is not in the UTxO */
+    public Optional<UtxoEntry> utxo(TxInRef in) {
+        return Optional.ofNullable(utxo.get(in));
+    }
+
+    /** @return the resolved spending, collateral and reference inputs, for the phase-2 evaluator */
+    public Map<Outpoint, UtxoEntry> resolvedInputs() {
+        Map<Outpoint, UtxoEntry> result = new LinkedHashMap<>();
+        utxo.forEach((in, entry) -> result.put(in.outpoint(), entry));
+        return result;
+    }
+
+    /**
+     * The slot the phase-2 evaluator's {@code ForecastHorizon} is computed from: Haskell's script context
+     * translates slots with the hard-fork combinator's epoch info of the ledger state the transaction is applied
+     * to, whose horizon is based on {@code next(tip)} of that state (ouroboros-consensus
+     * {@code HardFork/History/Summary.hs:370-404}).
+     *
+     * <p>This is {@link ValidationEnv#forecastBasisSlot()}: {@code next(tip)} of the state validated against. The
+     * mempool (ADR-056 Phase 6a) passes the slot after the canonical tip explicitly, which differs from
+     * {@code currentSlot} in a producer's boundary window (decision 6b); environments that do not set it use
+     * {@code currentSlot}, exact for rule {@code MEMPOOL} and for the Amaru fixtures, which validate at their tip.
+     * Block building (Phase 6b) and shadow sync (Phase 7) must pass the slot after the previous block.</p>
+     */
+    public long forecastBasisSlot() {
+        return env.forecastBasisSlot();
+    }
+
+    /** @return the resolved inputs keyed as the body names them */
+    public Map<TxInRef, UtxoEntry> resolvedByInput() {
+        return utxo;
+    }
+
+    /** Haskell {@code IsFailing}: some rule of this transition already recorded a failure. */
+    public boolean failing() {
+        return failing;
+    }
+
+    void markFailing() {
+        failing = true;
+    }
+
+    /** @return the {@code CollectErrors} the evaluator found while {@code UTXOW} prepared the scripts */
+    public List<LedgerFailure> collectFailures() {
+        return collectFailures;
+    }
+
+    public void collectFailures(List<LedgerFailure> failures) {
+        this.collectFailures = List.copyOf(failures);
+    }
+
+    /**
+     * @return Haskell's {@code plutusLanguagesUsed} as {@code UTXOW} computed it: the languages (1–3) of the needed,
+     *         provided Plutus scripts; empty before {@code UTXOW} ran
+     */
+    public SortedSet<Integer> plutusLanguagesUsed() {
+        return plutusLanguagesUsed;
+    }
+
+    public void plutusLanguagesUsed(SortedSet<Integer> languages) {
+        this.plutusLanguagesUsed = Collections.unmodifiableSortedSet(new TreeSet<>(languages));
+    }
+
+    /**
+     * {@code withdrawalsThatDoNotDrainAccounts} against the incoming accounts ({@link #preState()}), computed once for
+     * the two {@code LEDGER} checks that read it from protocol version 11 ({@code ConwayWithdrawalsMissingAccounts},
+     * {@code ConwayIncompleteWithdrawals}).
+     */
+    public CertsRule.UndrainedWithdrawals undrainedWithdrawals() {
+        if (undrainedWithdrawals == null) {
+            undrainedWithdrawals = CertsRule.withdrawalsThatDoNotDrainAccounts(this, preState);
+        }
+        return undrainedWithdrawals;
+    }
+
+    /**
+     * The certificate state as the {@code LEDGER} branch threads it (ADR-056 invariant 5): the pre-transaction
+     * state, then — once {@code CERTS} ran — the state after the pre-certificate step (Haskell's {@code CERTS}
+     * base case before protocol version 11, the {@code LEDGER} step from 11) and after each certificate, in body
+     * order. {@code GOV} reads it after {@code CERTS} ({@code certStateAfterCERTS}, Conway/Rules/Ledger.hs:394-421).
+     *
+     * @return the fold; a fold with no steps over {@link #preState()} until a rule advances it
+     */
+    public IntraTxFold certState() {
+        if (certState == null) {
+            certState = IntraTxFold.start(raw.txIdHex(), preState);
+        }
+        return certState;
+    }
+
+    /** Replaces the certificate state with a fold that advanced {@link #certState()}. */
+    public void certState(IntraTxFold advanced) {
+        this.certState = Objects.requireNonNull(advanced, "advanced");
+    }
+}

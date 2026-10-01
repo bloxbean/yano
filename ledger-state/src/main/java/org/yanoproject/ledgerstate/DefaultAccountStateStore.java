@@ -49,6 +49,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
  * RocksDB-backed account state store.
@@ -64,7 +65,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public static final byte PREFIX_ACCT = 0x01;
     public static final byte PREFIX_POOL_DELEG = 0x02;
     public static final byte PREFIX_DREP_DELEG = 0x03;
-    static final byte PREFIX_DREP_DELEG_REVERSE = 0x04; // DRep → delegators reverse index (PV9 stale, rebuilt at PV10)
+    static final byte PREFIX_DREP_DELEG_REVERSE = 0x04; // registered DRep → delegators (Haskell drepDelegs; PV9 stale, rebuilt at PV10)
     static final byte PREFIX_POOL_DEPOSIT = 0x10;
     static final byte PREFIX_POOL_RETIRE = 0x11;
     static final byte PREFIX_DREP_REG = 0x20;
@@ -174,7 +175,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final int INITIAL_MARK_SNAPSHOT_KEY = -1;
     // Epoch boundary completion tracking — stores the last completed step for crash recovery.
     // Format: 8 bytes (epoch as int, step as int). Steps: 0=started, 1=rewards, 2=snapshot, 3=poolreap, 4=governance, 5=complete
-    private static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
+    static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_BOUNDARY_COORDINATES =
             "meta.boundary.coordinates.v1".getBytes(StandardCharsets.UTF_8);
     private static final byte[] MARKER_PV10_REVERSE_REBUILD = "meta.pv10_drep_reverse_rebuild".getBytes(StandardCharsets.UTF_8);
@@ -220,6 +221,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private ColumnFamilyHandle cfDelta;
     private ColumnFamilyHandle cfBoundaryDelta;
     private ColumnFamilyHandle cfEpochSnapshot;
+
+    /** Largest journal value {@link #commitBoundaryDelta(long, byte, WriteBatch, List)} writes (4 MiB). */
+    static final int MAX_BOUNDARY_DELTA_BYTES = 4 << 20;
 
     // Boundary delta phase constants — identify which epoch-boundary sub-step produced a delta entry
     public static final byte PHASE_REWARDS = 1;
@@ -269,7 +273,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Per-batch overlay of in-flight cfState values.
      * Needed because RocksDB db.get() does not see pending WriteBatch mutations.
      */
-    static final class BatchStateOverlay {
+    public static final class BatchStateOverlay {
         private final Map<ByteArrayKey, byte[]> values = new HashMap<>();
 
         boolean contains(byte[] key) {
@@ -286,6 +290,32 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
         void clear() {
             values.clear();
+        }
+
+        /**
+         * The value the block being applied sees: {@code overlay}'s uncommitted value when the block
+         * already wrote the key, else the committed value. {@code overlay} may be {@code null}.
+         */
+        public static byte[] readThrough(BatchStateOverlay overlay, RocksDB db, ColumnFamilyHandle cf,
+                                         byte[] key) throws RocksDBException {
+            if (overlay != null && overlay.contains(key)) {
+                return overlay.get(key);
+            }
+            return db.get(cf, key);
+        }
+
+        /**
+         * Put {@code value}, journalling {@code prev} (the value {@link #readThrough} returned) for
+         * rollback, and record the write in {@code overlay} when there is one.
+         */
+        public static void putThrough(BatchStateOverlay overlay, WriteBatch batch, ColumnFamilyHandle cf,
+                                      List<DeltaOp> deltaOps, byte[] key, byte[] prev, byte[] value)
+                throws RocksDBException {
+            deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+            batch.put(cf, key, value);
+            if (overlay != null) {
+                overlay.put(key, value);
+            }
         }
     }
 
@@ -515,6 +545,57 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             throw new IllegalStateException("persistent historical epoch state is unavailable");
         }
         return new HistoricalEpochStateView(db, cfEpochSnapshot, cfState);
+    }
+
+    /**
+     * Returns a read-only view of this store bound to a caller-owned RocksDB read snapshot
+     * (ADR-056 canonical snapshots). The caller owns {@code reads} and the snapshot in it and must
+     * keep both alive while the reader is used. The reader never writes.
+     *
+     * @param snapshotDb the database the snapshot in {@code reads} was taken on; it must be this
+     *                   store's database, otherwise a read could use a foreign snapshot
+     * @param reads      read options carrying the snapshot
+     * @throws IllegalStateException when the store is disabled or {@code snapshotDb} is not its database
+     */
+    public LedgerStateSnapshotReader snapshotReader(RocksDB snapshotDb, ReadOptions reads) {
+        if (!enabled || db == null || cfState == null) {
+            throw new IllegalStateException("persistent account state is unavailable");
+        }
+        if (snapshotDb != db) {
+            throw new IllegalStateException("snapshot was taken on a different RocksDB instance");
+        }
+        return new LedgerStateSnapshotReader(db, cfState, reads, governanceBlockProcessor != null);
+    }
+
+    /**
+     * Captures the in-memory inputs of an {@link EpochBoundaryPreview} of the boundary into
+     * {@code newEpoch}: the parameter tracker's relevant state, the era answers for the new epoch and
+     * the boundary configuration. Cheap (a few era-metadata reads). Call it while no block is being applied (under the canonical gate's read lock), together
+     * with the RocksDB snapshot the preview will read.
+     *
+     * <p>Assumes the wiring of {@code LedgerStateSubsystem}: the tracker set here is the one the
+     * boundary processor finalizes and the enactment processor updates.</p>
+     */
+    public EpochBoundaryPreview.Inputs captureBoundaryPreviewInputs(int newEpoch) {
+        EpochBoundaryProcessor processor = epochBoundaryProcessor;
+        if (!enabled) {
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch, "account state is disabled");
+        }
+        if (processor == null) {
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch, "epoch boundary processing is not configured");
+        }
+        if (!processor.isNetworkConfigAvailable()) {
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch,
+                    "epoch boundary processing is not ready (no rewards network configuration)");
+        }
+        try {
+            return EpochBoundaryPreview.Inputs.capture(newEpoch, paramTracker, epochParamProvider,
+                    processor.getGovernanceEpochProcessor(), processor.isPoolReapRefundProcessorEnabled());
+        } catch (RuntimeException e) {
+            // Never fail the canonical snapshot itself; only its dry run becomes unavailable.
+            return EpochBoundaryPreview.Inputs.unavailable(newEpoch,
+                    "the boundary dry-run inputs could not be captured: " + e);
+        }
     }
 
     /**
@@ -843,14 +924,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Reverse index key: DRep credential → delegator credential.
+     * Reverse index key: DRep credential → delegator credential, Haskell's {@code drepDelegs}.
      * Key: [PREFIX_DREP_DELEG_REVERSE | drepType(1) | drepHash(28) | delegatorCredType(1) | delegatorHash(28)]
      * <p>
+     * Registered target DReps only: a delegation to an unregistered DRep (PV9 bootstrap) adds no entry.
      * Maintained by {@link #delegateToDRep} and {@link #deregisterStake}. Used by
      * {@link #clearDRepDelegationsForDeregisteredDRep} on DRep deregistration.
      * <p>
      * PV9: stale entries preserved (re-delegated creds not removed from old DRep's set).
-     * PV10: rebuilt at hardfork boundary by {@link #rebuildDRepDelegReverseIndexIfNeeded}
+     * PV10: rebuilt at the boundary that enacts PV10 by {@link #rebuildDRepDelegReverseIndexIfNeeded}
      * to match Haskell's {@code updateDRepDelegations} (HardFork.hs).
      */
     static byte[] drepDelegReverseKey(int drepType, String drepHash,
@@ -1713,13 +1795,29 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     @Override
     public Optional<ProtocolParamsSnapshot> getProtocolParameters(int epoch) {
+        return protocolParamsSnapshot(paramTracker, epochParamProvider, epoch);
+    }
+
+    /**
+     * Builds the effective {@link ProtocolParamsSnapshot} of {@code epoch} from a parameter tracker
+     * (when enabled) or the static provider. {@link #getProtocolParameters(int)} calls it with the
+     * live tracker; the ADR-056 boundary preview calls it with
+     * {@link EpochParamTracker#previewView}, so both build the snapshot with the same code.
+     *
+     * @param paramTracker       tracker, or {@code null}
+     * @param epochParamProvider static provider used when the tracker is absent or disabled
+     */
+    public static Optional<ProtocolParamsSnapshot> protocolParamsSnapshot(EpochParamTracker paramTracker,
+                                                                         EpochParamProvider epochParamProvider,
+                                                                         int epoch) {
         if (epoch < 0) return Optional.empty();
         if (paramTracker != null && paramTracker.isEnabled()
                 && paramTracker.getResolvedParams(epoch) == null) {
             return Optional.empty();
         }
 
-        EpochParamProvider provider = effectiveEpochParamProvider();
+        EpochParamProvider provider = paramTracker != null && paramTracker.isEnabled()
+                ? paramTracker : epochParamProvider;
         var trackedParams = paramTracker != null && paramTracker.isEnabled()
                 ? paramTracker.getResolvedParams(epoch)
                 : null;
@@ -1798,10 +1896,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 drepActivity,
                 provider.getMinFeeRefScriptCostPerByte(epoch)
         ));
-    }
-
-    private EpochParamProvider effectiveEpochParamProvider() {
-        return paramTracker != null && paramTracker.isEnabled() ? paramTracker : epochParamProvider;
     }
 
     private static BigDecimal ratio(UnitInterval interval) {
@@ -2062,17 +2156,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                                    BigInteger amount, int earnedEpoch, long slot,
                                    org.rocksdb.WriteBatch batch,
                                    java.util.List<DeltaOp> deltaOps) throws RocksDBException {
-        if (rewardAccountHex == null || rewardAccountHex.length() < 58 || amount.signum() <= 0) {
+        RewardRestCredential credential = rewardRestCredential(rewardAccountHex, amount);
+        if (credential == null) {
             return false;
         }
-        int headerByte;
-        try {
-            headerByte = Integer.parseInt(rewardAccountHex.substring(0, 2), 16);
-        } catch (NumberFormatException e) {
-            return false;
-        }
-        int credType = ((headerByte & 0x10) != 0) ? 1 : 0;
-        String credHash = rewardAccountHex.substring(2, 58);
+        int credType = credential.credType();
+        String credHash = credential.credHash();
 
         // Check if the stake credential is registered. Per Haskell spec,
         // deposits for deregistered addresses go to treasury (return false).
@@ -2099,6 +2188,36 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         batch.put(cfState, key, val);
         deltaOps.add(new DeltaOp(OP_PUT, key, prev));
         return true;
+    }
+
+    /**
+     * The stake credential {@link #storeRewardRest} files a reward_rest entry under: the header's
+     * credential type and the 28-byte hash that follows it (as written, not re-cased).
+     *
+     * @return the credential, or {@code null} when the account is malformed or the amount is not
+     *         positive ({@link #storeRewardRest} then stores nothing and returns false)
+     */
+    public static RewardRestCredential rewardRestCredential(String rewardAccountHex, BigInteger amount) {
+        if (rewardAccountHex == null || rewardAccountHex.length() < 58 || amount.signum() <= 0) {
+            return null;
+        }
+        int headerByte;
+        try {
+            headerByte = Integer.parseInt(rewardAccountHex.substring(0, 2), 16);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        int credType = ((headerByte & 0x10) != 0) ? 1 : 0;
+        return new RewardRestCredential(credType, rewardAccountHex.substring(2, 58));
+    }
+
+    /**
+     * Stake credential of a reward_rest entry.
+     *
+     * @param credType 0 key hash, 1 script hash
+     * @param credHash credential hash hex, as taken from the reward account
+     */
+    public record RewardRestCredential(int credType, String credHash) {
     }
 
     /**
@@ -3045,7 +3164,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
             List<DeltaOp> deltaOps = new ArrayList<>();
             BigInteger totalDepositedDelta = BigInteger.ZERO;
-            BatchStateOverlay poolStateOverlay = new BatchStateOverlay();
+            // Every cfState value a later certificate, withdrawal or vote of this block reads back
+            // (pool lifecycle, stake accounts, DRep registrations, MIR accumulators and the governance
+            // DRep and committee records): db.get() does not see the uncommitted batch.
+            BatchStateOverlay blockStateOverlay = new BatchStateOverlay();
 
             // Identify invalid transactions
             List<Integer> invList = block.getInvalidTransactions();
@@ -3072,8 +3194,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     Map<String, BigInteger> withdrawals = tx.getWithdrawals();
                     if (withdrawals != null) {
                         for (var entry : withdrawals.entrySet()) {
-                            processWithdrawal(entry.getKey(), entry.getValue(), batch, deltaOps);
+                            processWithdrawal(entry.getKey(), entry.getValue(), batch, deltaOps,
+                                    blockStateOverlay);
                         }
+                    }
+
+                    // Voting DReps' expiry refresh, before the transaction's certificates as in Haskell
+                    // (Conway/Rules/Certs.hs:240 at PV 9, Ledger.hs:390 from PV 10)
+                    if (governanceBlockProcessor != null) {
+                        governanceBlockProcessor.processVotes(tx, currentEpoch, batch, deltaOps, blockStateOverlay);
                     }
 
                     // Process certificates (DELEGS phase)
@@ -3083,7 +3212,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                             totalDepositedDelta = totalDepositedDelta.add(
                                     processCertificate(certs.get(certIdx), slot, currentEpoch,
                                             txIdx, certIdx, event.era(), batch, deltaOps,
-                                            poolStateOverlay));
+                                            blockStateOverlay));
                         }
                     }
 
@@ -3094,7 +3223,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 }
             }
 
-            // Process governance actions (proposals, votes, donations)
+            // Process governance actions (proposals, donations; votes are per transaction above)
             if (governanceBlockProcessor != null) {
                 try {
                     governanceBlockProcessor.processBlock(block, slot, currentEpoch, batch, deltaOps);
@@ -3149,26 +3278,27 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private BigInteger processCertificate(Certificate cert, long slot, int currentEpoch,
                                           int txIdx, int certIdx, Era era,
                                           WriteBatch batch, List<DeltaOp> deltaOps,
-                                          BatchStateOverlay poolStateOverlay) throws RocksDBException {
+                                          BatchStateOverlay blockStateOverlay) throws RocksDBException {
         BigInteger depositDelta = BigInteger.ZERO;
 
         switch (cert) {
             case StakeRegistration sr -> {
                 depositDelta = registerStake(sr.getStakeCredential(),
-                        epochParamProvider.getKeyDeposit(0), slot, txIdx, certIdx, batch, deltaOps);
+                        epochParamProvider.getKeyDeposit(0), slot, txIdx, certIdx, batch, deltaOps,
+                        blockStateOverlay);
             }
             case RegCert rc -> {
                 BigInteger deposit = rc.getCoin() != null ? rc.getCoin() : BigInteger.ZERO;
                 depositDelta = registerStake(rc.getStakeCredential(), deposit,
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, batch, deltaOps, blockStateOverlay);
             }
             case StakeDeregistration sd -> {
                 depositDelta = deregisterStake(sd.getStakeCredential(),
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, batch, deltaOps, blockStateOverlay);
             }
             case UnregCert uc -> {
                 depositDelta = deregisterStake(uc.getStakeCredential(),
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, batch, deltaOps, blockStateOverlay);
             }
             case StakeDelegation sd -> {
                 delegateToPool(sd.getStakeCredential(), sd.getStakePoolId().getPoolKeyHash(),
@@ -3176,47 +3306,47 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
             case VoteDelegCert vd -> {
                 delegateToDRep(vd.getStakeCredential(), vd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case StakeVoteDelegCert svd -> {
                 delegateToPool(svd.getStakeCredential(), svd.getPoolKeyHash(),
                         slot, txIdx, certIdx, batch, deltaOps);
                 delegateToDRep(svd.getStakeCredential(), svd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case StakeRegDelegCert srd -> {
                 BigInteger deposit = srd.getCoin() != null ? srd.getCoin() : BigInteger.ZERO;
                 depositDelta = registerStake(srd.getStakeCredential(), deposit,
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, batch, deltaOps, blockStateOverlay);
                 delegateToPool(srd.getStakeCredential(), srd.getPoolKeyHash(),
                         slot, txIdx, certIdx, batch, deltaOps);
             }
             case VoteRegDelegCert vrd -> {
                 BigInteger deposit = vrd.getCoin() != null ? vrd.getCoin() : BigInteger.ZERO;
                 depositDelta = registerStake(vrd.getStakeCredential(), deposit,
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, batch, deltaOps, blockStateOverlay);
                 delegateToDRep(vrd.getStakeCredential(), vrd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case StakeVoteRegDelegCert svrd -> {
                 BigInteger deposit = svrd.getCoin() != null ? svrd.getCoin() : BigInteger.ZERO;
                 depositDelta = registerStake(svrd.getStakeCredential(), deposit,
-                        slot, txIdx, certIdx, batch, deltaOps);
+                        slot, txIdx, certIdx, batch, deltaOps, blockStateOverlay);
                 delegateToPool(svrd.getStakeCredential(), svrd.getPoolKeyHash(),
                         slot, txIdx, certIdx, batch, deltaOps);
                 delegateToDRep(svrd.getStakeCredential(), svrd.getDrep(),
-                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps);
+                        slot, txIdx, certIdx, currentEpoch, batch, deltaOps, blockStateOverlay);
             }
             case PoolRegistration pr -> {
                 var params = pr.getPoolParams();
                 String poolHash = params.getOperator();
                 byte[] key = poolDepositKey(poolHash);
-                byte[] prev = getStateWithOverlay(key, poolStateOverlay);
+                byte[] prev = getStateWithOverlay(key, blockStateOverlay);
 
                 // A WriteBatch is not visible to db.get(). Read all pool lifecycle state through
                 // the per-block overlay so certificates retain ledger order across transactions.
                 byte[] retKey = poolRetireKey(poolHash);
-                byte[] retPrev = getStateWithOverlay(retKey, poolStateOverlay);
+                byte[] retPrev = getStateWithOverlay(retKey, blockStateOverlay);
                 boolean reRegisteredAfterRetirement = false;
                 if (retPrev != null) {
                     long retireEpoch = AccountStateCborCodec.decodePoolRetirement(retPrev);
@@ -3242,10 +3372,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                         lifecycleDeposit,
                         marginNum, marginDen, cost, pledge, rewardAccount, owners, vrfKeyHash);
                 byte[] val = AccountStateCborCodec.encodePoolRegistration(data);
-                putStateWithDelta(key, val, batch, deltaOps, poolStateOverlay);
+                putStateWithDelta(key, val, batch, deltaOps, blockStateOverlay);
 
                 // Cancel any pending retirement
-                deleteStateWithDelta(retKey, batch, deltaOps, poolStateOverlay);
+                deleteStateWithDelta(retKey, batch, deltaOps, blockStateOverlay);
 
                 // Write pool params history keyed by ACTIVE epoch.
                 // On Cardano, a new pool registration takes effect at epoch + 2.
@@ -3254,50 +3384,50 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 // should become active on the same cadence as a fresh registration (+2), not +3.
                 int activeEpoch = treatAsFreshRegistration ? currentEpoch + 2 : currentEpoch + 3;
                 byte[] histKey = poolParamsHistKey(poolHash, activeEpoch);
-                putStateWithDelta(histKey, val, batch, deltaOps, poolStateOverlay);
+                putStateWithDelta(histKey, val, batch, deltaOps, blockStateOverlay);
 
                 // Track pool registration slot: set on first registration or re-registration after retirement.
                 // Used by snapshot creation to exclude stale delegations (delegated before pool's current lifecycle).
                 if (treatAsFreshRegistration) {
                     byte[] regSlotKey = poolRegSlotKey(poolHash);
                     byte[] regSlotVal = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array();
-                    putStateWithDelta(regSlotKey, regSlotVal, batch, deltaOps, poolStateOverlay);
+                    putStateWithDelta(regSlotKey, regSlotVal, batch, deltaOps, blockStateOverlay);
                 }
             }
             case PoolRetirement pr -> {
                 byte[] key = poolRetireKey(pr.getPoolKeyHash());
                 byte[] val = AccountStateCborCodec.encodePoolRetirement(pr.getEpoch());
-                putStateWithDelta(key, val, batch, deltaOps, poolStateOverlay);
+                putStateWithDelta(key, val, batch, deltaOps, blockStateOverlay);
             }
             case RegDrepCert rd -> {
                 int ct = credTypeFromModel(rd.getDrepCredential());
                 String hash = rd.getDrepCredential().getHash();
                 BigInteger deposit = rd.getCoin() != null ? rd.getCoin() : BigInteger.ZERO;
                 byte[] key = drepRegKey(ct, hash);
-                byte[] prev = db.get(cfState, key);
                 byte[] val = AccountStateCborCodec.encodeDRepRegistration(deposit);
-                batch.put(cfState, key, val);
-                deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+                putStateWithDelta(key, val, batch, deltaOps, blockStateOverlay);
                 depositDelta = deposit;
                 // Governance dual-write: richer DRepStateRecord
                 if (governanceBlockProcessor != null) {
-                    governanceBlockProcessor.processDRepRegistration(rd, slot, currentEpoch, batch, deltaOps);
+                    governanceBlockProcessor.processDRepRegistration(rd, slot, currentEpoch, batch, deltaOps,
+                            blockStateOverlay);
                 }
             }
             case UnregDrepCert ud -> {
                 int ct = credTypeFromModel(ud.getDrepCredential());
                 String hash = ud.getDrepCredential().getHash();
                 byte[] key = drepRegKey(ct, hash);
-                byte[] prev = db.get(cfState, key);
+                // Through the block overlay: the registration may be earlier in this block.
+                byte[] prev = getStateWithOverlay(key, blockStateOverlay);
                 if (prev != null) {
                     BigInteger refund = AccountStateCborCodec.decodeDRepDeposit(prev);
                     depositDelta = refund.negate();
-                    batch.delete(cfState, key);
-                    deltaOps.add(new DeltaOp(OP_DELETE, key, prev));
+                    deleteStateWithDelta(key, prev, batch, deltaOps, blockStateOverlay);
                 }
                 // Governance dual-write: track deregistration for v9 bug
                 if (governanceBlockProcessor != null) {
-                    governanceBlockProcessor.processDRepDeregistration(ud, slot, batch, deltaOps);
+                    governanceBlockProcessor.processDRepDeregistration(ud, slot, batch, deltaOps,
+                            blockStateOverlay);
                 }
                 // Haskell origin/master ConwayUnRegDRep (GovCert.hs) clears delegations
                 // using drepDelegs (the DRep's reverse delegation set).
@@ -3313,20 +3443,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 }
             }
             case UpdateDrepCert upd -> {
-                // DRep update only changes anchor — deposit stays the same.
-                // We re-write the existing entry to keep the key alive.
-                int ct = credTypeFromModel(upd.getDrepCredential());
-                String hash = upd.getDrepCredential().getHash();
-                byte[] key = drepRegKey(ct, hash);
-                byte[] prev = db.get(cfState, key);
-                if (prev != null) {
-                    // Preserve existing deposit
-                    batch.put(cfState, key, prev);
-                    deltaOps.add(new DeltaOp(OP_PUT, key, prev));
-                }
-                // Governance dual-write: update anchor + track interaction
+                // A DRep update changes only the anchor and expiry (governance record); the
+                // registration entry and its deposit are unchanged.
                 if (governanceBlockProcessor != null) {
-                    governanceBlockProcessor.processDRepUpdate(upd, currentEpoch, batch, deltaOps);
+                    governanceBlockProcessor.processDRepUpdate(upd, currentEpoch, batch, deltaOps,
+                            blockStateOverlay);
                 }
             }
             case AuthCommitteeHotCert ac -> {
@@ -3342,7 +3463,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 deltaOps.add(new DeltaOp(OP_PUT, key, prev));
                 // Governance dual-write: richer CommitteeMemberRecord
                 if (governanceBlockProcessor != null) {
-                    governanceBlockProcessor.processCommitteeHotKeyAuth(ac, batch, deltaOps);
+                    governanceBlockProcessor.processCommitteeHotKeyAuth(ac, batch, deltaOps, blockStateOverlay);
                 }
             }
             case ResignCommitteeColdCert rc -> {
@@ -3356,11 +3477,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 deltaOps.add(new DeltaOp(OP_PUT, key, prev));
                 // Governance dual-write: mark member as resigned
                 if (governanceBlockProcessor != null) {
-                    governanceBlockProcessor.processCommitteeResignation(rc, batch, deltaOps);
+                    governanceBlockProcessor.processCommitteeResignation(rc, batch, deltaOps, blockStateOverlay);
                 }
             }
             case MoveInstataneous mir -> {
-                processMir(mir, currentEpoch, era, batch, deltaOps);
+                processMir(mir, currentEpoch, era, batch, deltaOps, blockStateOverlay);
             }
             default -> {
                 // Unknown certificate type — skip
@@ -3589,13 +3710,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private BigInteger registerStake(StakeCredential cred, BigInteger deposit,
                                      long slot, int txIdx, int certIdx,
-                                     WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                     WriteBatch batch, List<DeltaOp> deltaOps,
+                                     BatchStateOverlay overlay) throws RocksDBException {
         int ct = credTypeInt(cred.getType());
         byte[] key = accountKey(ct, cred.getHash());
-        byte[] prev = db.get(cfState, key);
+        // Read through the block overlay: an earlier certificate of this block (same or earlier
+        // transaction) may have deregistered or registered the credential in the uncommitted batch.
+        byte[] prev = getStateWithOverlay(key, overlay);
         byte[] val = AccountStateCborCodec.encodeStakeAccount(BigInteger.ZERO, deposit);
-        batch.put(cfState, key, val);
-        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+        putStateWithDelta(key, prev, val, batch, deltaOps, overlay);
 
         // Re-registration after deregistration: clean up stale pool/DRep delegation entries.
         // Per Haskell ledger (Deleg.hs): re-registration starts fresh with no delegation.
@@ -3648,17 +3771,20 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private BigInteger deregisterStake(StakeCredential cred,
                                        long slot, int txIdx, int certIdx,
-                                       WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                       WriteBatch batch, List<DeltaOp> deltaOps,
+                                       BatchStateOverlay overlay) throws RocksDBException {
         int ct = credTypeInt(cred.getType());
         BigInteger depositRefund = BigInteger.ZERO;
 
-        // Remove account
+        // Remove account. Read through the block overlay: a registration earlier in this block
+        // (the same transaction's RegCert, or an earlier transaction) exists only in the uncommitted
+        // batch, and db.get() alone would miss it and leave the account registered (preprod/preview
+        // shadow sync, ADR-056 Phase 7c).
         byte[] acctKey = accountKey(ct, cred.getHash());
-        byte[] acctPrev = db.get(cfState, acctKey);
+        byte[] acctPrev = getStateWithOverlay(acctKey, overlay);
         if (acctPrev != null) {
             depositRefund = AccountStateCborCodec.decodeStakeAccount(acctPrev).deposit().negate();
-            batch.delete(cfState, acctKey);
-            deltaOps.add(new DeltaOp(OP_DELETE, acctKey, acctPrev));
+            deleteStateWithDelta(acctKey, acctPrev, batch, deltaOps, overlay);
         }
 
         // Per Haskell ledger (Deleg.hs): deregistration completely removes the account entry
@@ -3852,103 +3978,89 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Rebuild PREFIX_DREP_DELEG_REVERSE at PV10 hardfork boundary if not already done.
-     * Matches Haskell's {@code updateDRepDelegations} (HardFork.hs) which:
-     * <ol>
-     *   <li>Resets all drepDelegs to empty</li>
-     *   <li>Rebuilds from current account delegations</li>
-     *   <li>Removes dangling delegations to non-existent DReps</li>
-     * </ol>
-     * Owns its own WriteBatch — opens, rebuilds, writes marker, commits atomically.
+     * The PV 10 hard fork's {@code updateDRepDelegations} (cardano-ledger {@code Conway/Rules/HardFork.hs:82-105}),
+     * once: every DRep's delegator set becomes exactly its current delegators, and a delegation to a DRep that
+     * is not registered is removed. Called by the governance boundary after Phase 1 enactment has set PV 10,
+     * before the Phase 2 DRep distribution, as Haskell's {@code HARDFORK} runs between enactment and
+     * {@code setFreshDRepPulsingState} ({@code Conway/Rules/Epoch.hs:367-372}).
+     * <p>
+     * Writes into the caller's batch and journals every change in {@code deltaOps}, so a rollback of the
+     * boundary restores the PV 9 sets, the removed delegations and the marker. Only the entries that differ
+     * are written.
      *
-     * @param newEpoch          The new epoch number
-     * @param registeredDRepIds Set of "drepType:drepHash" for currently registered DReps
-     *                          (previousDeregistrationSlot == null || registeredAtSlot > previousDeregistrationSlot)
-     * @param ep                EpochParamProvider for protocol version lookup
+     * @param registeredDRepIdsSupplier "drepType:drepHash" of the registered DReps (records not
+     *                                  {@code deregistered}); read only when the rebuild runs
      */
-    public void rebuildDRepDelegReverseIndexIfNeeded(int newEpoch,
-            Set<String> registeredDRepIds, EpochParamProvider ep) throws RocksDBException {
-        int newMajor = ep.getProtocolMajor(newEpoch);
-        if (newMajor < 10) return;
+    public void rebuildDRepDelegReverseIndexIfNeeded(Supplier<Set<String>> registeredDRepIdsSupplier,
+            WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         if (db.get(cfState, MARKER_PV10_REVERSE_REBUILD) != null) return;
-        // Marker missing and PV10+ → rebuild needed
-        if (registeredDRepIds == null) {
-            throw new IllegalStateException("registeredDRepIds must not be null for PV10 reverse-index rebuild");
-        }
-
-        log.info("PV10 hardfork: rebuilding DRep delegation reverse index...");
-        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            rebuildDRepDelegReverseIndex(registeredDRepIds, batch);
-            batch.put(cfState, MARKER_PV10_REVERSE_REBUILD, new byte[]{1});
-            db.write(wo, batch);
-        }
-    }
-
-    /**
-     * Rebuild reverse index from current forward delegations.
-     * Deletes all existing reverse entries, then rebuilds from PREFIX_DREP_DELEG.
-     * Dangling forward delegations (to non-existent DReps) are deleted.
-     */
-    private void rebuildDRepDelegReverseIndex(Set<String> registeredDRepIds,
-            WriteBatch batch) throws RocksDBException {
-        // Assert overlays are inactive (epoch boundary, not block processing)
+        Set<String> registeredDRepIds = registeredDRepIdsSupplier.get();
+        // Overlays belong to block application; the boundary reads committed state.
         if (batchForwardDeleg != null || batchReverseAdded != null || batchReverseRemoved != null) {
             throw new IllegalStateException("Overlay maps must be null during PV10 reverse-index rebuild");
         }
 
-        // 1. Delete all existing reverse entries
-        byte[] seekPrefix = new byte[]{PREFIX_DREP_DELEG_REVERSE};
+        log.info("PV10 hardfork: rebuilding DRep delegation reverse index...");
+        int removed = 0, added = 0, dangling = 0;
+
+        // 1. Drop reverse entries that are not a current delegation to a registered DRep (stale PV 9 members).
+        byte[] reversePrefix = new byte[]{PREFIX_DREP_DELEG_REVERSE};
         try (RocksIterator it = db.newIterator(cfState)) {
-            it.seek(seekPrefix);
-            while (it.isValid()) {
+            for (it.seek(reversePrefix); it.isValid(); it.next()) {
                 byte[] key = it.key();
-                if (key.length < 1 || key[0] != PREFIX_DREP_DELEG_REVERSE) break;
-                batch.delete(cfState, java.util.Arrays.copyOf(key, key.length));
-                it.next();
-            }
-        }
-
-        // 2. Iterate all forward delegations, rebuild reverse + clean dangling
-        int rebuilt = 0, dangling = 0;
-        byte[] fwdSeek = new byte[]{PREFIX_DREP_DELEG};
-        try (RocksIterator it = db.newIterator(cfState)) {
-            it.seek(fwdSeek);
-            while (it.isValid()) {
-                byte[] key = it.key();
-                if (key.length < 2 || key[0] != PREFIX_DREP_DELEG) break;
-
-                byte[] keyCopy = java.util.Arrays.copyOf(key, key.length);
-                byte[] rawVal = it.value();
-                if (rawVal == null) { it.next(); continue; }
-                byte[] valCopy = java.util.Arrays.copyOf(rawVal, rawVal.length);
-
-                int credType = keyCopy[1] & 0xFF;
-                String credHash = HexUtil.encodeHexString(
-                        java.util.Arrays.copyOfRange(keyCopy, 2, keyCopy.length));
-                var deleg = AccountStateCborCodec.decodeDRepDelegation(valCopy);
-                int drepType = deleg.drepType();
-                String drepHash = deleg.drepHash();
-
-                if (isCredentialDRep(drepType)) {
-                    String drepId = drepType + ":" + drepHash;
-                    if (registeredDRepIds.contains(drepId)) {
-                        // Registered DRep → add reverse entry
-                        byte[] revKey = drepDelegReverseKey(drepType, drepHash, credType, credHash);
-                        batch.put(cfState, revKey, new byte[]{1});
-                        rebuilt++;
-                    } else {
-                        // Dangling delegation to non-existent DRep → delete forward
-                        batch.delete(cfState, keyCopy);
-                        dangling++;
-                    }
+                if (key[0] != PREFIX_DREP_DELEG_REVERSE) break;
+                int drepType = key[1] & 0xFF;
+                String drepHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 2, 30));
+                int delegatorType = key[30] & 0xFF;
+                String delegatorHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 31, key.length));
+                byte[] forward = db.get(cfState, drepDelegKey(delegatorType, delegatorHash));
+                boolean current = forward != null
+                        && registeredDRepIds.contains(drepType + ":" + drepHash)
+                        && isDelegationTo(AccountStateCborCodec.decodeDRepDelegation(forward), drepType, drepHash);
+                if (!current) {
+                    byte[] keyCopy = Arrays.copyOf(key, key.length);
+                    batch.delete(cfState, keyCopy);
+                    deltaOps.add(new DeltaOp(OP_DELETE, keyCopy, it.value()));
+                    removed++;
                 }
-                // Virtual DReps (ABSTAIN, NO_CONFIDENCE): no reverse entry needed
-
-                it.next();
             }
         }
-        log.info("PV10 reverse-index rebuild: {} reverse entries rebuilt, {} dangling forward delegations removed",
-                rebuilt, dangling);
+
+        // 2. Every delegation to a registered credential DRep is in its set; one to an unregistered DRep is removed.
+        byte[] forwardPrefix = new byte[]{PREFIX_DREP_DELEG};
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(forwardPrefix); it.isValid(); it.next()) {
+                byte[] key = it.key();
+                if (key[0] != PREFIX_DREP_DELEG) break;
+                var deleg = AccountStateCborCodec.decodeDRepDelegation(it.value());
+                if (!isCredentialDRep(deleg.drepType())) continue; // AlwaysAbstain / AlwaysNoConfidence
+                byte[] keyCopy = Arrays.copyOf(key, key.length);
+                int credType = keyCopy[1] & 0xFF;
+                String credHash = HexUtil.encodeHexString(Arrays.copyOfRange(keyCopy, 2, keyCopy.length));
+                if (registeredDRepIds.contains(deleg.drepType() + ":" + deleg.drepHash())) {
+                    byte[] revKey = drepDelegReverseKey(deleg.drepType(), deleg.drepHash(), credType, credHash);
+                    if (db.get(cfState, revKey) == null) {
+                        batch.put(cfState, revKey, new byte[]{1});
+                        deltaOps.add(new DeltaOp(OP_PUT, revKey, null));
+                        added++;
+                    }
+                } else {
+                    batch.delete(cfState, keyCopy);
+                    deltaOps.add(new DeltaOp(OP_DELETE, keyCopy, it.value()));
+                    dangling++;
+                }
+            }
+        }
+
+        batch.put(cfState, MARKER_PV10_REVERSE_REBUILD, new byte[]{1});
+        deltaOps.add(new DeltaOp(OP_PUT, MARKER_PV10_REVERSE_REBUILD, null));
+        log.info("PV10 reverse-index rebuild: {} stale reverse entries removed, {} added, "
+                + "{} dangling forward delegations removed", removed, added, dangling);
+    }
+
+    private static boolean isDelegationTo(AccountStateCborCodec.DRepDelegationRecord deleg,
+                                          int drepType, String drepHash) {
+        return deleg.drepType() == drepType && deleg.drepHash().equals(drepHash);
     }
 
     private void delegateToPool(StakeCredential cred, String poolHash,
@@ -3964,7 +4076,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private void delegateToDRep(StakeCredential cred, Drep drep,
                                 long slot, int txIdx, int certIdx, int currentEpoch,
-                                WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                WriteBatch batch, List<DeltaOp> deltaOps,
+                                BatchStateOverlay overlay) throws RocksDBException {
         int ct = credTypeInt(cred.getType());
         String credHash = cred.getHash();
         byte[] key = drepDelegKey(ct, credHash);
@@ -4012,8 +4125,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
         }
 
-        // Add new reverse entry if new DRep is a credential DRep
-        if (isCredentialDRep(newDrepType)) {
+        // Add the delegator to the new DRep's reverse set only if that DRep is registered. Haskell's
+        // insert is a Map.adjust on vsDReps (Conway/Rules/Deleg.hs:363-365, Conway/State/VState.hs:142),
+        // a no-op for an unregistered DRep, which the PV9 bootstrap lets a delegation target
+        // (Deleg.hs:225-226). ConwayRegDRep then starts with an empty set (GovCert.hs:229), so a later
+        // retirement of that DRep does not clear the delegation. Read through the block overlay: the
+        // registration or retirement may be earlier in this block.
+        if (isCredentialDRep(newDrepType)
+                && getStateWithOverlay(drepRegKey(newDrepType, drep.getHash()), overlay) != null) {
             byte[] newRevKey = drepDelegReverseKey(newDrepType, drep.getHash(), ct, credHash);
             byte[] newRevPrev = db.get(cfState, newRevKey);
             batch.put(cfState, newRevKey, new byte[]{1}); // marker value
@@ -4036,7 +4155,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     private void processWithdrawal(String rewardAddrHex, BigInteger amount,
-                                   WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                                   WriteBatch batch, List<DeltaOp> deltaOps,
+                                   BatchStateOverlay overlay) throws RocksDBException {
         // Reward address format: header(1) + credential(28)
         // header byte: network_id(4 bits) | type(4 bits)
         // type 0xe0 or 0xf0 for stake addresses
@@ -4052,7 +4172,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         String credHashHex = HexUtil.encodeHexString(credHash);
 
         byte[] key = accountKey(credType, credHashHex);
-        byte[] prev = db.get(cfState, key);
+        byte[] prev = getStateWithOverlay(key, overlay);
         if (prev == null) return;
 
         // Cardano: withdrawals always withdraw the ENTIRE reward balance (no partial).
@@ -4062,8 +4182,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         //  in the same block would read stale balance and overwrite the first withdrawal.)
         var acct = AccountStateCborCodec.decodeStakeAccount(prev);
         byte[] val = AccountStateCborCodec.encodeStakeAccount(BigInteger.ZERO, acct.deposit());
-        batch.put(cfState, key, val);
-        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+        putStateWithDelta(key, prev, val, batch, deltaOps, overlay);
     }
 
     /**
@@ -4118,7 +4237,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * 2. Pot transfer: accumulates reserves↔treasury transfer amounts in metadata keys
      */
     private void processMir(MoveInstataneous mir, int currentEpoch, Era era,
-                            WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+                            WriteBatch batch, List<DeltaOp> deltaOps,
+                            BatchStateOverlay overlay) throws RocksDBException {
         Map<StakeCredential, BigInteger> credMap = mir.getStakeCredentialCoinMap();
 
         if (credMap != null && !credMap.isEmpty()) {
@@ -4140,16 +4260,16 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
                 int ct = credTypeInt(cred.getType());
 
-                // Legacy per-credential accumulator (PREFIX_MIR_REWARD)
+                // Legacy per-credential accumulator (PREFIX_MIR_REWARD), summed in every era; only
+                // getInstantReward reads it. The reward_rest entry below is the era-correct input.
                 byte[] key = mirRewardKey(ct, cred.getHash());
-                byte[] prev = db.get(cfState, key);
+                byte[] prev = getStateWithOverlay(key, overlay);
                 BigInteger existing = (prev != null)
                         ? AccountStateCborCodec.decodeMirReward(prev)
                         : BigInteger.ZERO;
                 BigInteger updated = existing.add(amount);
                 byte[] val = AccountStateCborCodec.encodeMirReward(updated);
-                batch.put(cfState, key, val);
-                deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+                putStateWithDelta(key, prev, val, batch, deltaOps, overlay);
 
                 // Store as reward_rest (type=REWARD_REST_MIR) for epoch-scoped tracking.
                 // spendable_epoch = earned_epoch + 1 (matching Yaci Store convention).
@@ -4157,7 +4277,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 //   Per Haskell ledger spec and Yaci Store InstantRewardSnapshotService.
                 // Alonzo+: all MIR certs for same credential in an epoch are summed.
                 byte[] restKey = rewardRestKey(spendableEpoch, mirType, ct, cred.getHash());
-                byte[] restPrev = db.get(cfState, restKey);
+                byte[] restPrev = getStateWithOverlay(restKey, overlay);
                 BigInteger restAmount;
                 if (era != null && era.getValue() < Era.Alonzo.getValue()) {
                     // Pre-Alonzo: replace — blocks are processed in slot order,
@@ -4172,23 +4292,20 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     restAmount = restExisting.add(amount);
                 }
                 byte[] restVal = AccountStateCborCodec.encodeRewardRest(restAmount, currentEpoch, 0L);
-                batch.put(cfState, restKey, restVal);
-                deltaOps.add(new DeltaOp(OP_PUT, restKey, restPrev));
+                putStateWithDelta(restKey, restPrev, restVal, batch, deltaOps, overlay);
             }
         } else if (mir.getAccountingPotCoin() != null && mir.getAccountingPotCoin().signum() > 0) {
             // Mode 2: pot transfer (reserves ↔ treasury)
             // reserves=true means source is reserves (reserves → treasury)
             // treasury=true means source is treasury (treasury → reserves)
             byte[] metaKey = mir.isTreasury() ? META_MIR_TO_RESERVES : META_MIR_TO_TREASURY;
-            byte[] prev = db.get(cfState, metaKey);
+            byte[] prev = getStateWithOverlay(metaKey, overlay);
 
             BigInteger existing = (prev != null && prev.length >= 8)
                     ? new BigInteger(1, prev) : BigInteger.ZERO;
             BigInteger updated = existing.add(mir.getAccountingPotCoin());
 
-            byte[] val = totalDepositedToBytes(updated);
-            batch.put(cfState, metaKey, val);
-            deltaOps.add(new DeltaOp(OP_PUT, metaKey, prev));
+            putStateWithDelta(metaKey, prev, totalDepositedToBytes(updated), batch, deltaOps, overlay);
         }
     }
 
@@ -5446,8 +5563,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private void undoBoundaryDeltaSlotBounded(long slot) throws RocksDBException {
         for (byte phase : BOUNDARY_PHASE_REVERSE_ORDER) {
             while (true) {
-                byte[] seek = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
-                        .putLong(slot).put(phase).putInt(Integer.MAX_VALUE).array();
+                byte[] seek = boundaryDeltaKey(slot, phase, Integer.MAX_VALUE);
                 byte[] key;
                 byte[] encoded;
                 try (RocksIterator iterator = db.newIterator(cfBoundaryDelta)) {
@@ -5912,14 +6028,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Put a value into cfState with rollback journaling. Reads the previous committed value
-     * and appends a DeltaOp so the write can be undone on rollback.
+     * The cfState value as the block being applied sees it: {@code overlay}'s uncommitted value when
+     * the block already wrote the key, else the committed value.
      */
     byte[] getStateWithOverlay(byte[] key, BatchStateOverlay overlay) throws RocksDBException {
-        if (overlay != null && overlay.contains(key)) {
-            return overlay.get(key);
-        }
-        return db.get(cfState, key);
+        return BatchStateOverlay.readThrough(overlay, db, cfState, key);
     }
 
     void putStateWithDelta(byte[] key, byte[] newVal, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
@@ -5928,12 +6041,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     void putStateWithDelta(byte[] key, byte[] newVal, WriteBatch batch, List<DeltaOp> deltaOps,
                            BatchStateOverlay overlay) throws RocksDBException {
-        byte[] prev = getStateWithOverlay(key, overlay);
-        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
-        batch.put(cfState, key, newVal);
-        if (overlay != null) {
-            overlay.put(key, newVal);
-        }
+        putStateWithDelta(key, getStateWithOverlay(key, overlay), newVal, batch, deltaOps, overlay);
+    }
+
+    /** As above, with {@code prev} already read through {@link #getStateWithOverlay}. */
+    void putStateWithDelta(byte[] key, byte[] prev, byte[] newVal, WriteBatch batch, List<DeltaOp> deltaOps,
+                           BatchStateOverlay overlay) throws RocksDBException {
+        BatchStateOverlay.putThrough(overlay, batch, cfState, deltaOps, key, prev, newVal);
     }
 
     /**
@@ -5946,7 +6060,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     void deleteStateWithDelta(byte[] key, WriteBatch batch, List<DeltaOp> deltaOps,
                               BatchStateOverlay overlay) throws RocksDBException {
-        byte[] prev = getStateWithOverlay(key, overlay);
+        deleteStateWithDelta(key, getStateWithOverlay(key, overlay), batch, deltaOps, overlay);
+    }
+
+    /** As above, with {@code prev} already read through {@link #getStateWithOverlay}. */
+    void deleteStateWithDelta(byte[] key, byte[] prev, WriteBatch batch, List<DeltaOp> deltaOps,
+                              BatchStateOverlay overlay) throws RocksDBException {
         if (prev != null) {
             deltaOps.add(new DeltaOp(OP_DELETE, key, prev));
             batch.delete(cfState, key);
@@ -5960,20 +6079,64 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Persist a boundary delta journal entry. Called atomically with the same WriteBatch
      * that contains the boundary mutations, ensuring the journal and mutations are committed together.
      *
+     * <p>
+     * The entries go after the phase's committed ones, so a phase that runs again at the same boundary
+     * (crash recovery) never overwrites the journal of its first run, and a journal larger than
+     * {@link #MAX_BOUNDARY_DELTA_BYTES} is split over consecutive sequences. Rollback undoes a phase's
+     * sequences from the highest down, which is the reverse of the order written here.
+     * <p>
+     * Call it at most once per (slot, phase) per uncommitted batch: the next sequence is read from the
+     * committed journal, so a second call before the batch is written would reuse the first call's
+     * sequences and overwrite its entries.
+     *
      * @param slot  the slot of the first block that triggered this epoch boundary
      * @param phase one of PHASE_REWARDS, PHASE_MIR, PHASE_SPENDABLE_REST, PHASE_GOV_ENACT, PHASE_GOV_RATIFY
      */
     public void commitBoundaryDelta(long slot, byte phase, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
-        commitBoundaryDelta(slot, phase, 0, batch, deltaOps);
+        if (deltaOps.isEmpty()) return;
+        int sequence = nextBoundaryDeltaSequence(slot, phase);
+        int from = 0;
+        int bytes = DELTA_HEADER_BYTES;
+        for (int i = 0; i < deltaOps.size(); i++) {
+            int size = encodedSize(deltaOps.get(i));
+            if (i > from && bytes + size > MAX_BOUNDARY_DELTA_BYTES) {
+                commitBoundaryDelta(slot, phase, sequence++, batch, deltaOps.subList(from, i));
+                from = i;
+                bytes = DELTA_HEADER_BYTES;
+            }
+            bytes += size;
+        }
+        commitBoundaryDelta(slot, phase, sequence, batch, deltaOps.subList(from, deltaOps.size()));
+    }
+
+    /**
+     * The sequence after the last committed journal entry of {@code phase} at {@code slot}; 0 when none.
+     * Reads the committed journal only, not an uncommitted batch (see {@link #commitBoundaryDelta}).
+     */
+    private int nextBoundaryDeltaSequence(long slot, byte phase) {
+        byte[] last = boundaryDeltaKey(slot, phase, Integer.MAX_VALUE);
+        try (RocksIterator it = db.newIterator(cfBoundaryDelta)) {
+            it.seekForPrev(last);
+            if (!it.isValid()) return 0;
+            byte[] key = it.key();
+            if (key.length != 13 || ByteBuffer.wrap(key, 0, 8).order(ByteOrder.BIG_ENDIAN).getLong() != slot
+                    || key[8] != phase) {
+                return 0;
+            }
+            return ByteBuffer.wrap(key, 9, 4).order(ByteOrder.BIG_ENDIAN).getInt() + 1;
+        }
     }
 
     public void commitBoundaryDelta(long slot, byte phase, int sequence,
                                     WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         if (deltaOps.isEmpty()) return;
-        byte[] key = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
+        batch.put(cfBoundaryDelta, boundaryDeltaKey(slot, phase, sequence), encodeDelta(slot, deltaOps));
+    }
+
+    /** Boundary journal key: slot(8) | phase(1) | sequence(4), big-endian. */
+    static byte[] boundaryDeltaKey(long slot, byte phase, int sequence) {
+        return ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
                 .putLong(slot).put(phase).putInt(sequence).array();
-        byte[] val = encodeDelta(slot, deltaOps);
-        batch.put(cfBoundaryDelta, key, val);
     }
 
     // --- Delta encoding ---
@@ -5981,16 +6144,23 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public record DeltaOp(byte opType, byte[] key, byte[] prevValue) {}
     private record DecodedDelta(long slot, List<DeltaOp> ops) {}
 
+    /** slot(8) + numOps(4) before an encoded delta's ops. */
+    private static final int DELTA_HEADER_BYTES = 8 + 4;
+
+    private static int encodedSize(DeltaOp op) {
+        return 1 + 2 + op.key.length + 2 + (op.prevValue != null ? op.prevValue.length : 0);
+    }
+
     private byte[] encodeDelta(long slot, List<DeltaOp> ops) {
         // Format: slot(8) + numOps(4) + [opType(1) + keyLen(2) + key(N) + prevLen(2) + prev(M)]*
-        int size = 8 + 4;
+        int size = DELTA_HEADER_BYTES;
         for (DeltaOp op : ops) {
             if (op.key.length > 0xFFFF
                     || (op.prevValue != null && op.prevValue.length > 0xFFFF)) {
                 throw new IllegalArgumentException(
                         "Boundary delta v1 cannot encode keys or values larger than 65535 bytes");
             }
-            size += 1 + 2 + op.key.length + 2 + (op.prevValue != null ? op.prevValue.length : 0);
+            size += encodedSize(op);
         }
 
         ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);

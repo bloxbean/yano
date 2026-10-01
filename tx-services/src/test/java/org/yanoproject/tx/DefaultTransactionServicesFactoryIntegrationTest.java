@@ -2,13 +2,14 @@ package org.yanoproject.tx;
 
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
 import org.yanoproject.runtime.assembly.YanoAssembly;
 import org.yanoproject.runtime.assembly.Yano;
 import org.yanoproject.runtime.config.InMemoryDevnetGenesis;
 import org.yanoproject.runtime.genesis.ShelleyGenesisParser;
 import org.yanoproject.runtime.tx.TransactionServices;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
+import org.yanoproject.runtime.validation.ValidationEngineConfigurationException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import scalus.cardano.ledger.SlotConfig;
@@ -16,15 +17,33 @@ import scalus.cardano.ledger.SlotConfig;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultTransactionServicesFactoryIntegrationTest {
+
+    /**
+     * ADR-056 Phase 7c: with transaction validation enabled, a validator that cannot be built stops startup instead
+     * of leaving the node admitting every transaction unvalidated (runtime assembly lets this exception through).
+     */
+    @Test
+    void aValidatorThatCannotBeBuiltStopsStartup() {
+        IllegalStateException cause = new IllegalStateException("no validator in this image");
+        ValidationEngineConfigurationException e = assertThrows(ValidationEngineConfigurationException.class,
+                () -> DefaultTransactionServicesFactory.requireValidator(() -> {
+                    throw cause;
+                }));
+        assertSame(cause, e.getCause());
+        assertTrue(e.getMessage().contains("no validator in this image"));
+    }
 
     @Test
     void assemblyWithRealBootstrapperInstallsScriptEvaluatorFromStaticProtocolParams(@TempDir Path tempDir) {
@@ -109,34 +128,105 @@ class DefaultTransactionServicesFactoryIntegrationTest {
         }
     }
 
+    /** {@code engine: scalus} (legacy): an invalid slot config leaves the node without transaction services. */
     @Test
     void invalidBootstrapSlotConfigDoesNotInstallTransactionServices(@TempDir Path tempDir) {
-        YanoConfig config = YanoConfig.serverOnly(0);
-        config.setUseRocksDB(true);
-        config.setRocksDBPath(tempDir.resolve("chainstate").toString());
-        config.setProtocolMagic(42);
-        config.setShelleyGenesisFile(testPath("app/config/network/devnet/shelley-genesis.json").toString());
-        config.setProtocolParametersFile(testPath("app/config/network/devnet/protocol-param.json").toString());
-        config.setGenesisTimestamp(1_780_000_000L);
-
-        RuntimeOptions runtimeOptions = new RuntimeOptions(null, null, Map.of(
-                "yano.utxo.enabled", true,
-                "yano.utxo.prune.schedule.seconds", 60,
-                "yano.metrics.sample.rocksdb.seconds", 0,
-                "yano.validation.default-validator-enabled", false));
-
-        Yano node = YanoAssembly.relay(config)
-                .runtimeOptions(runtimeOptions)
-                .transactionBootstrap(
-                        TransactionBootstrapOptions.enabled(false, false, "aiken"),
-                        DefaultTransactionServicesFactory::create)
-                .build();
-
+        Yano node = invalidSlotConfigNode(tempDir, Map.of("yano.validation.engine", "scalus"));
         try {
             assertFalse(node.txEvaluationGateway().isTransactionEvaluationAvailable());
         } finally {
             node.close();
         }
+    }
+
+    /** With the default engine ({@code java-julc}) the same configuration stops startup: no silent fallback. */
+    @Test
+    void invalidBootstrapSlotConfigStopsStartupWithTheDefaultEngine(@TempDir Path tempDir) {
+        ValidationEngineConfigurationException error = assertThrows(ValidationEngineConfigurationException.class,
+                () -> invalidSlotConfigNode(tempDir, Map.of()).close());
+        assertTrue(error.getMessage().contains("transaction validation cannot be initialized"), error.getMessage());
+    }
+
+    /**
+     * No protocol-parameter source (no protocol-param file, no derived ledger state, and a genesis without a valid
+     * protocol version): the legacy engine runs without transaction services, the default stops startup.
+     */
+    @Test
+    void noProtocolParamsSourceStopsStartupWithTheDefaultEngine(@TempDir Path tempDir) throws Exception {
+        Path shelley = tempDir.resolve("shelley-genesis.json");
+        Files.writeString(shelley, Files.readString(testPath("app/config/network/devnet/shelley-genesis.json"))
+                .replaceFirst("\"major\" : 11", "\"major\" : 0"));
+        Yano legacy = noProtocolParamsNode(tempDir.resolve("legacy-chainstate"), shelley,
+                Map.of("yano.validation.engine", "scalus"));
+        try {
+            assertFalse(legacy.txEvaluationGateway().isTransactionEvaluationAvailable());
+        } finally {
+            legacy.close();
+        }
+        ValidationEngineConfigurationException error = assertThrows(ValidationEngineConfigurationException.class,
+                () -> noProtocolParamsNode(tempDir.resolve("default-chainstate"), shelley, Map.of()).close());
+        assertTrue(error.getMessage().contains("no protocol params source available"), error.getMessage());
+    }
+
+    /** Engine-API admission needs the UTxO store for its ledger-state mempool: startup names the ways out. */
+    @Test
+    void theDefaultEngineWithoutTheUtxoStoreStopsStartup(@TempDir Path tempDir) {
+        YanoConfig config = devnetConfig(tempDir.resolve("chainstate"));
+        ValidationEngineConfigurationException error = assertThrows(ValidationEngineConfigurationException.class,
+                () -> node(config, Map.of("yano.utxo.enabled", false)).close());
+        assertTrue(error.getMessage().contains("'java-julc' needs the UTxO store"), error.getMessage());
+        assertTrue(error.getMessage().contains("yano.utxo.enabled=false or yano.storage.rocksdb=false"),
+                error.getMessage());
+        assertTrue(error.getMessage().contains("yano.validation.engine=scalus"), error.getMessage());
+        assertTrue(error.getMessage().contains("yano.block-producer.tx-evaluation=false"), error.getMessage());
+
+        Yano legacy = node(devnetConfig(tempDir.resolve("legacy-chainstate")), Map.of("yano.utxo.enabled", false,
+                "yano.validation.engine", "scalus"));
+        legacy.close();
+    }
+
+    private static Yano noProtocolParamsNode(Path chainstate, Path shelley, Map<String, Object> validation) {
+        YanoConfig config = YanoConfig.serverOnly(0);
+        config.setUseRocksDB(true);
+        config.setRocksDBPath(chainstate.toString());
+        config.setProtocolMagic(42);
+        config.setShelleyGenesisFile(shelley.toString());
+        config.setByronGenesisFile(null);
+        config.setAlonzoGenesisFile(null);
+        config.setConwayGenesisFile(null);
+        config.setProtocolParametersFile(null);
+        return node(config, validation);
+    }
+
+    private static YanoConfig devnetConfig(Path chainstate) {
+        YanoConfig config = YanoConfig.serverOnly(0);
+        config.setUseRocksDB(true);
+        config.setRocksDBPath(chainstate.toString());
+        config.setProtocolMagic(42);
+        config.setShelleyGenesisFile(testPath("app/config/network/devnet/shelley-genesis.json").toString());
+        config.setProtocolParametersFile(testPath("app/config/network/devnet/protocol-param.json").toString());
+        return config;
+    }
+
+    private static Yano node(YanoConfig config, Map<String, Object> overrides) {
+        Map<String, Object> globals = new HashMap<>(Map.of(
+                "yano.utxo.enabled", true,
+                "yano.utxo.prune.schedule.seconds", 60,
+                "yano.metrics.sample.rocksdb.seconds", 0,
+                "yano.validation.default-validator-enabled", false));
+        globals.putAll(overrides);
+        return YanoAssembly.relay(config)
+                .runtimeOptions(new RuntimeOptions(null, null, globals))
+                .transactionBootstrap(
+                        TransactionBootstrapOptions.enabled(false, false, "aiken"),
+                        DefaultTransactionServicesFactory::create)
+                .build();
+    }
+
+    private static Yano invalidSlotConfigNode(Path tempDir, Map<String, Object> validation) {
+        YanoConfig config = devnetConfig(tempDir.resolve("chainstate"));
+        config.setGenesisTimestamp(1_780_000_000L);
+        return node(config, validation);
     }
 
     @Test

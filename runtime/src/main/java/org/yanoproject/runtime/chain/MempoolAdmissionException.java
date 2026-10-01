@@ -12,4 +12,9 @@ public final class MempoolAdmissionException extends RuntimeException {
     public MempoolAdmissionResult result() {
         return result;
     }
+
+    /** @return true when the admission may succeed on retry ({@link MempoolAdmissionResult#retryable()}) */
+    public boolean retryable() {
+        return result.retryable();
+    }
 }

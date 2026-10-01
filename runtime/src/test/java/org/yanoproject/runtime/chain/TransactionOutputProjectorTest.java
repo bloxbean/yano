@@ -39,7 +39,7 @@ class TransactionOutputProjectorTest {
                 .scriptRef(script)
                 .build();
 
-        var projected = TransactionOutputProjector.project("11".repeat(32), 3, output);
+        var projected = TransactionOutputProjector.project("11".repeat(32), 3, output, null);
 
         assertThat(projected.outpoint().index()).isEqualTo(3);
         assertThat(projected.lovelace()).isEqualTo(BigInteger.valueOf(3_000_000));
@@ -63,7 +63,7 @@ class TransactionOutputProjectorTest {
                 .datumHash(datumHash)
                 .build();
 
-        var projected = TransactionOutputProjector.project("22".repeat(32), 0, output);
+        var projected = TransactionOutputProjector.project("22".repeat(32), 0, output, null);
 
         assertThat(projected.datumHash()).isEqualTo(HexUtil.encodeHexString(datumHash));
         assertThat(projected.inlineDatum()).isNull();

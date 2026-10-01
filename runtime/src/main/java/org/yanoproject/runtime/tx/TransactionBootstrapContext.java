@@ -7,6 +7,8 @@ import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.runtime.config.InMemoryDevnetGenesis;
 
+import java.util.Map;
+
 /**
  * Runtime state needed to create transaction validation/evaluation services.
  */
@@ -25,5 +27,10 @@ public interface TransactionBootstrapContext {
 
     default InMemoryDevnetGenesis inMemoryDevnetGenesis() {
         return null;
+    }
+
+    /** @return the runtime globals, for settings such as {@code yano.validation.*} */
+    default Map<String, Object> globals() {
+        return Map.of();
     }
 }

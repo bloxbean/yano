@@ -23,6 +23,8 @@ import org.yanoproject.runtime.db.RocksDbContext;
 import org.yanoproject.api.archive.ProjectionCfNames;
 import org.yanoproject.runtime.db.RocksDbSupplier;
 import org.yanoproject.runtime.db.UtxoCfNames;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGateOwner;
 import org.yanoproject.runtime.wallet.WalletIndexCf;
 import lombok.extern.slf4j.Slf4j;
 import org.rocksdb.*;
@@ -59,7 +61,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         OriginRollbackCapable, PointRollbackCapable, ChainStateRecovery, ChainStateSnapshots,
         NearestSlotLookup, NearestPointLookup,
         BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore,
-        ArchiveChainStateCapabilities {
+        ArchiveChainStateCapabilities, CanonicalStateGateOwner {
 
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
@@ -95,6 +97,10 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
     // Name → CF handle registry (includes UTXO CFs)
     private final Map<String, ColumnFamilyHandle> cfByName = new HashMap<>();
+
+    // ADR-056: guards canonical application over this database and owns its read snapshots, which
+    // must be released before the database is closed or replaced.
+    private final CanonicalStateGate canonicalStateGate = new CanonicalStateGate(this::getTip);
 
 
     static {
@@ -1572,6 +1578,11 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
      * 3. Updates tips to the recovered position
      */
     public void recoverFromCorruption() {
+        // Recovery truncates the chain tip, a canonical change: run it as one write section.
+        canonicalStateGate.runWrite(this::recoverFromCorruptionInWriteSection);
+    }
+
+    private void recoverFromCorruptionInWriteSection() {
         log.warn("🔧 Starting chain state recovery from corruption...");
 
         try {
@@ -2258,10 +2269,17 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         rollbackTo(targetSlot);
     }
 
+    @Override
+    public CanonicalStateGate canonicalStateGate() {
+        return canonicalStateGate;
+    }
+
     /**
      * Close the database connection
      */
     public void close() {
+        // Canonical snapshots hold native RocksDB snapshots of this database; free them first.
+        canonicalStateGate.invalidateSnapshots("chain state database closed");
         for (ColumnFamilyHandle handle : openedColumnFamilyHandles) {
             try {
                 handle.close();

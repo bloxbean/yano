@@ -149,7 +149,8 @@ dependencies {
 | `org.yanoproject:yano-core-api` | Public node interfaces and plugin SPI |
 | `org.yanoproject:yano-runtime` | Node implementation with RocksDB persistence |
 | `org.yanoproject:yano-ledger-state` | Account / delegation / governance state stores |
-| `org.yanoproject:yano-ledger-rules` | Validation rule interfaces |
+| `org.yanoproject:yano-ledger-rules` | Transaction validation API and Conway ledger rules |
+| `org.yanoproject:yano-script-evaluators` | Aiken / julc Plutus script evaluators (ExUnits) |
 | `org.yanoproject:yano-scalus-bridge` | Scalus-based Plutus script evaluation adapter |
 | `org.yanoproject:yano-bootstrap-providers` | Initial-state providers (Blockfrost / Koios / …) |
 
@@ -180,7 +181,8 @@ yano/
 ├── plugin-catalog/      # Manifest validation + JVM-only yano-plugins CLI
 ├── runtime/             # Main node implementation (RocksDB-backed)
 ├── ledger-state/        # Account / delegation / governance state stores
-├── ledger-rules/        # Validation rule interfaces
+├── ledger-rules/        # Transaction validation API and Conway ledger rules
+├── script-evaluators/   # Aiken / julc Plutus script evaluators
 ├── scalus-bridge/       # Scalus Plutus script-eval adapter (Scala + Java)
 ├── bootstrap-providers/ # Initial-state providers
 ├── app/                 # Quarkus REST application + devnet block producer

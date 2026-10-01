@@ -376,7 +376,7 @@ publishing {
             // yano-runtime api-depends on plugin-catalog, consensus, p2p,
             // ledger-rules and ledger-state, so these two coordinates give a
             // downstream application the whole node stack transitively.
-            // Optional modules -- scalus-bridge, ccl-ledger-rules, archive-*,
+            // Optional modules -- scalus-bridge, script-evaluators, archive-*,
             // tx-services, bootstrap-providers -- stay opt-in, and the testkits
             // must never reach an application's compile classpath. Use
             // :yano-bom to align versions when adding them.
@@ -681,8 +681,14 @@ allprojects { candidate ->
 // The root is included: it publishes org.yanoproject:yano, the POM-only starter
 // aggregate that gives a downstream application the node stack in one
 // coordinate.
+//
+// `amaru-validator` (ADR-057) exists only in builds run with -PwithAmaru=true
+// and never publishes (amaru-validator/build.gradle removes its publication), so
+// even such a build deploys exactly the default scope. Listing a name that is
+// not a project is harmless. `ledger-conformance` (ADR-056 §8) is a test-only
+// harness that removes its publication the same way.
 def centralDeploymentExclusions = nonLibraryModules +
-        ['appchain-plugin-conformance'] as Set
+        ['appchain-plugin-conformance', 'amaru-validator', 'ledger-conformance'] as Set
 def centralDeploymentProjects = ([rootProject] + subprojects.toList()).findAll { candidate ->
     !(candidate.name in centralDeploymentExclusions)
 } + project(':yano-bom')

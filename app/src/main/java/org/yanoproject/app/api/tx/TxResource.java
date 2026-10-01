@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.TxGateway;
 import org.yanoproject.app.api.ApiGroup;
 import org.yanoproject.runtime.blockproducer.TransactionValidationException;
+import org.yanoproject.runtime.chain.MempoolAdmissionException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.POST;
@@ -84,6 +85,18 @@ public class TxResource {
             body.put("validationErrors", validationErrors);
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(body)
+                    .build();
+        } catch (MempoolAdmissionException e) {
+            if (e.retryable()) {
+                // ADR-056 §6: the mempool is catching up with the canonical chain; the transaction was not judged.
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .header("Retry-After", "5")
+                        .entity(Map.of("error", "Mempool is catching up with the canonical chain; retry later",
+                                "status", e.result().status().name()))
+                        .build();
+            }
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "Failed to submit transaction: " + e.getMessage()))
                     .build();
         } catch (Exception e) {
             return Response.status(Response.Status.BAD_REQUEST)

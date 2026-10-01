@@ -272,7 +272,8 @@ All modules ship as standalone libraries on Maven Central (`com.bloxbean.cardano
 | **core-api** | Public node interfaces and plugin SPI | `NodePlugin`, `PluginContext`, `StorageFilter`, `UtxoState`, all event types |
 | **runtime** | Node implementation with RocksDB | `Yano`, `DirectRocksDBChainState`, `DefaultUtxoStore`, `BlockProducer` |
 | **bootstrap-providers** | Fast startup via external APIs | `BlockfrostBootstrapProvider`, `KoiosBootstrapProvider` |
-| **ledger-rules** | Transaction validation interfaces | `TransactionValidator`, `TransactionEvaluator` |
+| **ledger-rules** | Transaction validation API and Conway ledger rules | `TransactionValidator`, `TransactionEvaluator`, `LedgerStateValidator` |
+| **script-evaluators** | Aiken / julc Plutus script evaluators | `AikenTxEvaluator`, `JulcTxEvaluator` |
 | **scalus-bridge** | Plutus script evaluation via Scalus | `ScalusBasedTransactionValidator`, `ScalusBasedTransactionEvaluator` |
 | **app** | Quarkus REST application wrapper | JAX-RS resources, health checks, CDI producers |
 

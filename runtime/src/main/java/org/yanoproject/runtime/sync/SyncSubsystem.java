@@ -72,6 +72,7 @@ import org.yanoproject.runtime.sync.validation.HeaderValidator;
 import org.yanoproject.runtime.sync.validation.HeaderValidatorFactory;
 import org.yanoproject.p2p.tx.diffusion.PeerClass;
 import org.yanoproject.p2p.tx.diffusion.TxDiffusion;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
@@ -1055,19 +1056,24 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         }
 
         boolean isReal = isRealRollback(point);
-        ChainStateRollback.rollbackToPoint(chainState, point);
+        // ADR-056: the chain-state rollback and every ledger rollback listener form one canonical
+        // write section. Mempool reconciliation is deferred until the section releases the gate.
+        // (Corruption repair below runs in its own section inside recoverFromCorruption.)
+        try (CanonicalStateGate.WriteSection ignored = CanonicalStateGate.of(chainState).enterWrite()) {
+            ChainStateRollback.rollbackToPoint(chainState, point);
 
-        try {
-            eventBus.publish(new RollbackEvent(point, isReal),
-                    EventMetadata.builder().origin("runtime").build(),
-                    PublishOptions.builder().build());
-        } catch (Exception ex) {
-            log.error("RollbackEvent publish failed after chainstate rollback to slot {}. "
-                    + "Refusing to continue with possibly inconsistent ledger state.", rollbackSlot, ex);
-            log.error("EMERGENCY EXIT - rollback listeners did not complete after chainstate rollback");
-            System.exit(1);
-            throw new RuntimeException("Rollback event handling failed after chainstate rollback to slot "
-                    + rollbackSlot, ex);
+            try {
+                eventBus.publish(new RollbackEvent(point, isReal),
+                        EventMetadata.builder().origin("runtime").build(),
+                        PublishOptions.builder().build());
+            } catch (Exception ex) {
+                log.error("RollbackEvent publish failed after chainstate rollback to slot {}. "
+                        + "Refusing to continue with possibly inconsistent ledger state.", rollbackSlot, ex);
+                log.error("EMERGENCY EXIT - rollback listeners did not complete after chainstate rollback");
+                System.exit(1);
+                throw new RuntimeException("Rollback event handling failed after chainstate rollback to slot "
+                        + rollbackSlot, ex);
+            }
         }
 
         log.info("ROLLBACK_EVENT: slot={}, type={}, phase={}, serverNotified={}",

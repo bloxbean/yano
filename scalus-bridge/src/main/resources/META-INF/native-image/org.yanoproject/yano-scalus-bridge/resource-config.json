@@ -12,6 +12,21 @@
       },
       {
         "pattern": "supranational/blst/Mac/aarch64/libblst\\.dylib"
+      },
+      {
+        "pattern": "natives/linux_64/libscalus_secp256k1\\.so"
+      },
+      {
+        "pattern": "natives/linux_arm64/libscalus_secp256k1\\.so"
+      },
+      {
+        "pattern": "natives/osx_64/libscalus_secp256k1\\.dylib"
+      },
+      {
+        "pattern": "natives/osx_arm64/libscalus_secp256k1\\.dylib"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/org.yanoproject.ledger.rules.LedgerValidationEngineFactory\\E"
       }
     ]
   }

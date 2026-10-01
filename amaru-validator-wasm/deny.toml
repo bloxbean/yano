@@ -1,0 +1,36 @@
+# cargo-deny policy for amaru-validator-wasm (ADR-057 §1 "Licences").
+# CI runs `cargo deny --locked check licenses sources`.
+
+[graph]
+# What ships is the wasm32-wasip1 module: check that graph, without dev-dependencies (the
+# fixture test's serde/proptest never reach the artifact). Build-dependencies are included.
+targets = ["wasm32-wasip1"]
+exclude-dev = true
+
+[licenses]
+# Permissive licences only. Each entry is needed by at least one crate at the pinned Amaru tag.
+# An entry is removed when it stops being needed (unused-allowed-license), and a new licence
+# needs a reviewed addition here, never a wildcard.
+allow = [
+    "Apache-2.0",                     # Amaru, most crates
+    "Apache-2.0 WITH LLVM-exception", # ar_archive_writer (build-time only)
+    "MIT",                            # this crate, most crates
+    "BSD-3-Clause",                   # curve25519-dalek, ed25519-dalek, subtle
+    "BlueOak-1.0.0",                  # minicbor, minicbor-derive
+    "CC0-1.0",                        # secp256k1, secp256k1-sys, bitcoin_hashes, hex-conservative, ...
+    "Unicode-3.0",                    # unicode-ident (build-time only)
+    "Zlib",                           # foldhash
+]
+confidence-threshold = 0.93
+unused-allowed-license = "deny"
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+# crates.io, plus Amaru itself from its GitHub repository (pinned by tag and Cargo.lock).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/pragma-org/amaru"]

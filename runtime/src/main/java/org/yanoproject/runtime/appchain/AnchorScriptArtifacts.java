@@ -7,8 +7,8 @@ import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.BytesPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.PlutusData;
 import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script;
-import com.bloxbean.cardano.julc.clientlib.JulcScriptAdapter;
-import com.bloxbean.cardano.julc.clientlib.PlutusDataAdapter;
+import org.julclang.clientlib.JulcScriptAdapter;
+import org.julclang.clientlib.PlutusDataAdapter;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.appchain.AppChainConfig.AnchorScriptConfig;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -82,7 +82,7 @@ final class AnchorScriptArtifacts {
     // ------------------------------------------------------------------
 
     private static PlutusV3Script apply(String templateHex, PlutusData... params) {
-        var coreParams = new com.bloxbean.cardano.julc.core.PlutusData[params.length];
+        var coreParams = new org.julclang.core.PlutusData[params.length];
         for (int i = 0; i < params.length; i++) {
             coreParams[i] = PlutusDataAdapter.fromClientLib(params[i]);
         }

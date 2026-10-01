@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.sync;
 
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
@@ -20,8 +21,11 @@ import org.yanoproject.api.config.UpstreamPreset;
 import org.yanoproject.api.config.UpstreamSyncConfig;
 import org.yanoproject.api.config.UpstreamTxConfig;
 import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.events.RollbackEvent;
+import org.yanoproject.runtime.events.PropagatingEventBus;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.ledger.LedgerStateSubsystem;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.p2p.peer.PeerEndpoint;
 import org.yanoproject.p2p.peer.PeerRecoveryReason;
 import org.yanoproject.runtime.server.ServeSubsystem;
@@ -140,6 +144,55 @@ class SyncSubsystemTest {
             sync.close();
             ledgerState.close();
             serve.close();
+            chainStorage.closeAfterRuntimeDrain(false);
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void chainSyncRollbackPublishesRollbackEventInsideOneCanonicalWriteSection() {
+        YanoConfig config = YanoConfig.builder()
+                .remoteHost("localhost")
+                .remotePort(3001)
+                .protocolMagic(42L)
+                .serverPort(0)
+                .enableServer(false)
+                .enableClient(false)
+                .useRocksDB(false)
+                .enablePipelinedSync(false)
+                .build();
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of("yano.account-state.enabled", false));
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        ChainStorageSubsystem chainStorage = new ChainStorageSubsystem(config, options,
+                LoggerFactory.getLogger(SyncSubsystemTest.class));
+        LedgerStateSubsystem ledgerState = new LedgerStateSubsystem(config, options, chainStorage.chainState(),
+                new NoopEventBus(), LoggerFactory.getLogger(SyncSubsystemTest.class),
+                null, null, null, null, () -> null, () -> null, () -> null, null);
+        ServeSubsystem serve = new ServeSubsystem(0, config.getProtocolMagic(), chainStorage.chainState(),
+                noopTransactionAdmission(), false, LoggerFactory.getLogger(SyncSubsystemTest.class));
+        PropagatingEventBus bus = new PropagatingEventBus();
+        CanonicalStateGate gate = CanonicalStateGate.of(chainStorage.chainState());
+        List<String> seen = Collections.synchronizedList(new ArrayList<>());
+        bus.subscribe(RollbackEvent.class, ctx -> {
+            seen.add("rollback held=" + gate.isWriteHeldByCurrentThread() + " gen=" + gate.generation());
+            CanonicalStateGate.runAfterWriteRelease(
+                    () -> seen.add("mempool held=" + gate.isWriteHeldByCurrentThread()));
+        }, SubscriptionOptions.builder().build());
+        SyncSubsystem sync = new SyncSubsystem(config, chainStorage.chainState(), bus, scheduler, serve,
+                ledgerState, chainStorage, () -> false, ledgerState::epochParamProvider,
+                ledgerState::currentGenesisBootstrapData, config.getRemoteHost(), config.getRemotePort(),
+                config.getProtocolMagic(), LoggerFactory.getLogger(SyncSubsystemTest.class));
+        try {
+            long generation = gate.generation();
+            sync.handleChainSyncRollback(Point.ORIGIN);
+
+            assertThat(seen).containsExactly("rollback held=true gen=" + generation, "mempool held=false");
+            assertThat(gate.generation()).isEqualTo(generation + 1);
+        } finally {
+            sync.close();
+            ledgerState.close();
+            serve.close();
+            bus.close();
             chainStorage.closeAfterRuntimeDrain(false);
             scheduler.shutdownNow();
         }

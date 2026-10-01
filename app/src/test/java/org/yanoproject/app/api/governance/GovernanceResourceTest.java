@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -95,6 +96,28 @@ class GovernanceResourceTest {
     }
 
     @Test
+    void drepRetiredAndReRegisteredInOneBlockIsActive() {
+        // Equal slots: only the deregistered flag says the re-registration came last.
+        GovernanceResource resource = resourceWith(readProvider(drep(2_000L, 2_000L, false)));
+
+        DRepDto drep = (DRepDto) resource.getDRep(CardanoBech32Ids.drepId(0, DREP_HASH)).getEntity();
+        assertTrue(drep.active());
+        assertFalse(drep.retired());
+        assertEquals(1, ((List<?>) resource.listDReps("active", 1, 20, "asc").getEntity()).size());
+        assertEquals(0, ((List<?>) resource.listDReps("inactive", 1, 20, "asc").getEntity()).size());
+    }
+
+    @Test
+    void retiredDRepIsInactive() {
+        GovernanceResource resource = resourceWith(readProvider(drep(2_000L, 2_000L, true)));
+
+        DRepDto drep = (DRepDto) resource.getDRep(CardanoBech32Ids.drepId(0, DREP_HASH)).getEntity();
+        assertFalse(drep.active());
+        assertTrue(drep.retired());
+        assertEquals(1, ((List<?>) resource.listDReps("inactive", 1, 20, "asc").getEntity()).size());
+    }
+
+    @Test
     void invalidProposalHashReturns400() {
         GovernanceResource resource = resourceWith(readProvider());
 
@@ -120,6 +143,17 @@ class GovernanceResourceTest {
     }
 
     private static LedgerStateProvider readProvider() {
+        return readProvider(drep(2_000L, null, false));
+    }
+
+    /** A DRep registered at {@code registeredAtSlot}, last retired at {@code previousDeregistrationSlot}. */
+    private static AccountStateReadStore.DRepInfo drep(long registeredAtSlot, Long previousDeregistrationSlot,
+                                                       boolean deregistered) {
+        return new AccountStateReadStore.DRepInfo(0, DREP_HASH, BigInteger.valueOf(500_000_000), null, null,
+                20, null, 50, true, registeredAtSlot, 10, previousDeregistrationSlot, deregistered);
+    }
+
+    private static LedgerStateProvider readProvider(AccountStateReadStore.DRepInfo drep) {
         AccountStateReadStore.GovernanceProposal proposal = new AccountStateReadStore.GovernanceProposal(
                 TX_HASH,
                 1,
@@ -133,19 +167,6 @@ class GovernanceResourceTest {
                 null,
                 null,
                 1_000L);
-        AccountStateReadStore.DRepInfo drep = new AccountStateReadStore.DRepInfo(
-                0,
-                DREP_HASH,
-                BigInteger.valueOf(500_000_000),
-                null,
-                null,
-                20,
-                null,
-                50,
-                true,
-                2_000L,
-                10,
-                null);
         return (LedgerStateProvider) Proxy.newProxyInstance(LedgerStateProvider.class.getClassLoader(),
                 new Class<?>[]{LedgerStateProvider.class, AccountStateReadStore.class},
                 (proxy, method, args) -> switch (method.getName()) {

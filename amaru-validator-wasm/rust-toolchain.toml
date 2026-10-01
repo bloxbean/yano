@@ -1,0 +1,6 @@
+# Same channel as Amaru's rust-toolchain.toml at the pinned tag (see AMARU_VERSION).
+# Amaru needs nightly (unstable `try_trait_v2`).
+[toolchain]
+channel = "nightly-2026-09-04"
+components = ["rustc", "rust-src", "rustfmt", "clippy"]
+targets = ["wasm32-wasip1"]

@@ -15,6 +15,8 @@ import org.yanoproject.api.utxo.model.Utxo;
 import org.junit.jupiter.api.Test;
 
 import org.yanoproject.api.util.AddressKeyUtil;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
+import org.yanoproject.ledger.rules.fixtures.PublicNetworkTransactions;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -607,6 +609,38 @@ class DefaultMemPoolTest {
 
         assertThat(pool.contains(TransactionUtil.getTxHash(regularSpender))).isTrue();
         assertThat(pool.contains(TransactionUtil.getTxHash(collateralSpender))).isFalse();
+    }
+
+    /**
+     * ADR-056 Phase 7c: a chained output keeps its inline datum's original bytes. Preprod {@code 1fc4d810…} output 0 has a
+     * datum map whose keys are not in canonical order; CCL's re-encoding would sort them, and a PlutusV2 script spending
+     * it in the same block ({@code 4cad6278…}) would see another {@code Data}.
+     */
+    @Test
+    void aChainedOutputKeepsItsInlineDatumBytes() throws Exception {
+        byte[] producer = PublicNetworkTransactions.cbor(PublicNetworkTransactions.PREPROD_SAME_BLOCK_DATUM_PRODUCER);
+        byte[] original = RawTransaction.parse(producer, Transaction.deserialize(producer)).outputs().get(0)
+                .inlineDatum();
+        DefaultMemPool pool = new DefaultMemPool();
+        pool.addTransaction(producer);
+
+        Outpoint output = new Outpoint(TransactionUtil.getTxHash(producer), 0);
+        Utxo chained = pool.resolveUtxos(List.of(output), ignored -> null).get(output);
+
+        assertThat(chained.inlineDatum()).isEqualTo(original);
+        assertThat(Transaction.deserialize(producer).getBody().getOutputs().get(0).getInlineDatum().serializeToBytes())
+                .isNotEqualTo(original);
+    }
+
+    /** Preview {@code 1c09afd8…}: a pool registration with indefinite-length owners, which CCL alone cannot decode. */
+    @Test
+    void aTransactionCclDecodesOnlyWithDefiniteLengthsIsProjected() {
+        byte[] tx = PublicNetworkTransactions.cbor(PublicNetworkTransactions.PREVIEW_INDEFINITE_POOL_OWNERS);
+        DefaultMemPool pool = new DefaultMemPool();
+
+        pool.addTransaction(tx);
+
+        assertThat(pool.contains(TransactionUtil.getTxHash(tx))).isTrue();
     }
 
     private static MempoolAdmissionResult admit(DefaultMemPool pool, byte[] tx,

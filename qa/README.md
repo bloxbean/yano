@@ -31,6 +31,7 @@ qa/release-qa.sh --render qa/results/<run-id> # re-render after adding triage no
 | `load` (opt-in) | `load-jvm` | `compat-tests/` load and chained-transaction cases on a fresh node |
 | `docker` | `docker-dist` | Compose bundle on devnet: launcher, read-only config and writable network mounts, API sweep, snapshot restore, edited and new profiles, instance ownership, older `config/env`, projection history, in-place upgrade from the unnamed-project layout |
 | `docker-public` (opt-in) | `docker-public` | Compose bundle syncing preprod (`wallet,small`), preview (`small`) and mainnet (`wallet,medium`) to a target epoch; needs internet |
+| `ledger-rules` (opt-in) | `ledger-rules-native` | ADR-056 Phase 7c: the same transaction workload (`NativeParityWorkloadTest`) against a JVM and a native devnet producer with `engine: java-julc` (the default, julc phase 2; admission shadow `scalus`, shadow sync `java-julc,java-scalus` on the producer and a follower), with `engine: java-scalus` (Scalus phase 2), and with the legacy `scalus` path, at protocol versions 9, 10 and 11; every verdict, shadow counter and dump must be identical, and native dumps must replay on the JVM. With `-PwithAmaru=true` artifacts: `JAR=... NATIVE=... qa/harness/ledger-rules-native-parity.sh "amaru-scalus amaru java-julc" "11 10"` |
 
 A full default run takes about 2-3 hours, most of it in the Haskell and app-chain tests.
 
@@ -97,3 +98,45 @@ test is `PASS` or `KNOWN`. The report also marks each test `regressed`, `fixed` 
 3. Add a line to `REGISTRY` in `release-qa.sh`: id, category, mode, title, time limit
    in minutes, and the command.
 4. Optionally add a `test-*` skill that runs `qa/release-qa.sh --only <id>`.
+
+## Ledger compatibility check (shadow sync + Koios)
+
+A manual check, outside `release-qa.sh`, that a node syncing a public network keeps
+Haskell's ledger (ADR-056 Phase 7). Run it on a fresh sync from genesis after a change
+to the ledger rules or the ledger state.
+
+1. Start a node (`quarkus.profile` `preprod`, `preview` or `mainnet`) with shadow sync on.
+   Every Conway transaction is then validated against the pre-block state:
+   ```bash
+   -Dyano.validation.shadow-sync=true \
+   -Dyano.validation.shadow-sync-engines=java-julc,java-scalus \
+   -Dyano.validation.shadow-sync-report=$RUN/shadow-sync.jsonl \
+   -Dyano.validation.shadow-sync-dump-dir=$RUN/shadow-dumps
+   ```
+2. While it syncs, check the metrics
+   (`curl -s localhost:7171/q/metrics | grep yano_validation_shadow_sync`), the
+   `Shadow sync` summary lines in the log, and the JSONL report. Each disagreement,
+   engine failure and block-level finding writes one report line and one replay bundle.
+   The built-in AdaPot verification checks treasury and reserves at every epoch
+   boundary; a mismatch logs an ERROR and shows in `/api/v1/node/epoch-calc-status`.
+   `shadow-sync-max-in-flight` (default half the cores, keep it below the core count)
+   bounds how many blocks validate in parallel. The summary lines and the JSONL summary
+   give the coverage: `blocks: submitted validated pre-Conway-after-capture
+   failed(before submit) failed(after submit) skippedAtStop`. Every Conway block with
+   transactions is submitted or failed before submit, and every submitted block ends
+   validated, pre-Conway after capture or failed after submit (skipped at stop included).
+   **Any failed block is a coverage gap: a clean run has both failure counts at 0.**
+3. Replay the bundles on the JVM, after a fix or to triage:
+   `./gradlew :tx-services:test --tests '*ShadowBundleReplayTest' -Dyano.shadow.bundles=$RUN/shadow-dumps`.
+4. At the tip, compare the ledger state with Koios (read-only; exit 0 = no mismatch):
+   ```bash
+   qa/tools/koios_compare.py --network preprod --yano http://localhost:7171 --out koios-preprod.md
+   ```
+   It checks treasury, reserves and fees for every epoch, the deposits, the registered
+   DReps, the DRep distribution of the last epochs (`--drep-epochs`) and every governance
+   proposal's state. Add `--cafile /etc/ssl/cert.pem` when Python has no trust store
+   (python.org builds on macOS).
+5. Expected difference: the deposits at the tip (informational, not counted) can be
+   whole pool deposits above Koios. Koios `pool_list` still reports pools registered and
+   retired in the same transaction as registered, although POOLREAP retired them and
+   refunded their deposits.

@@ -4,14 +4,15 @@ import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.util.EpochSlotCalc;
-import org.yanoproject.ledgerrules.EpochProtocolParamsSupplier;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
-import org.yanoproject.ledgerrules.TransactionEvaluator;
-import org.yanoproject.ledgerrules.TransactionValidator;
-import org.yanoproject.ledgerrules.impl.AikenTxEvaluator;
-import org.yanoproject.ledgerrules.impl.JulcTxEvaluator;
-import org.yanoproject.ledgerrules.impl.YaciScriptSupplier;
+import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.TransactionEvaluator;
+import org.yanoproject.ledger.rules.TransactionValidator;
+import org.yanoproject.ledger.scripteval.AikenTxEvaluator;
+import org.yanoproject.ledger.scripteval.JulcTxEvaluator;
+import org.yanoproject.ledger.scripteval.YaciScriptSupplier;
 import org.yanoproject.runtime.blockproducer.GenesisConfig;
 import org.yanoproject.runtime.config.DefaultEpochParamProvider;
 import org.yanoproject.runtime.config.NetworkGenesisConfig;
@@ -20,6 +21,9 @@ import org.yanoproject.runtime.tx.ProtocolParamsMapper;
 import org.yanoproject.runtime.tx.TransactionBootstrapContext;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
 import org.yanoproject.runtime.tx.TransactionServices;
+import org.yanoproject.runtime.validation.ValidationEngineConfigurationException;
+import org.yanoproject.runtime.validation.ValidationEngineSettings;
+import org.yanoproject.runtime.validation.ValidationEngines;
 import org.yanoproject.scalusbridge.ScalusTransactionFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,7 +48,20 @@ public final class DefaultTransactionServicesFactory {
     public static Optional<TransactionServices> create(TransactionBootstrapContext context,
                                                        TransactionBootstrapOptions options) {
         if (options == null || !options.enabled()) {
+            if (enginesConfigured(context)) {
+                log.warn("transaction validation is disabled ({}=false); validation engine '{}' is not created",
+                        YanoPropertyKeys.BlockProducer.TX_EVALUATION, configuredEngine(context));
+            }
             return Optional.empty();
+        }
+        if (context.utxoState() == null && engineAdmission(context)) {
+            // An engine-API admission engine needs a LedgerMempool, whose base is built from the UTxO store; without
+            // it the mempool would stay CATCHING_UP forever (ADR-056 §6).
+            throw new ValidationEngineConfigurationException("Validation engine '" + configuredEngine(context)
+                    + "' needs the UTxO store, which is not available (" + YanoPropertyKeys.Utxo.ENABLED + "=false or "
+                    + YanoPropertyKeys.Storage.ROCKSDB + "=false). Enable both, or set "
+                    + YanoPropertyKeys.Validation.ENGINE + "=scalus, or "
+                    + YanoPropertyKeys.BlockProducer.TX_EVALUATION + "=false.");
         }
 
         YanoConfig yaciConfig = context.config();
@@ -69,9 +86,6 @@ public final class DefaultTransactionServicesFactory {
             epochSlotCalc = resolveEpochSlotCalc(context, yaciConfig, genesis);
             ProtocolParamsResolution protocolParamsResolution = resolveTransactionProtocolParams(
                     context, effectiveEpochParamsTrackingEnabled, ledgerStateProvider, genesis, epochSlotCalc, yaciConfig);
-            if (protocolParamsResolution == null) {
-                return Optional.empty();
-            }
             protocolParamsSupplier = protocolParamsResolution.supplier();
             protocolParamsSource = protocolParamsResolution.source();
             requireLedgerStateProviderForValidation = protocolParamsResolution.requireLedgerStateProvider();
@@ -104,22 +118,20 @@ public final class DefaultTransactionServicesFactory {
 
             networkId = magic == Constants.MAINNET_PROTOCOL_MAGIC ? 1 : 0;
         } catch (Exception e) {
+            if (enginesConfigured(context)) {
+                throw new ValidationEngineConfigurationException("Validation engine configured but transaction "
+                        + "validation cannot be initialized: " + e.getMessage(), e);
+            }
             log.warn("Transaction validation/evaluation not initialized: {}", e.getMessage(), e);
             return Optional.empty();
         }
 
-        TransactionValidator validator = null;
-        try {
-            validator = ScalusTransactionFactory.createValidator(protocolParamsSupplier,
-                    new YaciScriptSupplier(context.utxoState()), slotConfigSupplier, networkId,
-                    ledgerStateProvider, currentSlotSupplier, epochSlotCalc::slotToEpoch,
-                    requireLedgerStateProviderForValidation, supplementaryRulesEnabled);
-            log.info("Transaction validator created (networkId={}, protocolParams={}, supplementaryRules={})",
-                    networkId, protocolParamsSource, supplementaryRulesEnabled);
-        } catch (Exception e) {
-            log.error("Failed to initialize transaction validator (Scalus). "
-                    + "Transactions will NOT be validated on submission! Error: {}", e.getMessage(), e);
-        }
+        TransactionValidator validator = requireValidator(() -> ScalusTransactionFactory.createValidator(
+                protocolParamsSupplier, new YaciScriptSupplier(context.utxoState()), slotConfigSupplier, networkId,
+                ledgerStateProvider, currentSlotSupplier, epochSlotCalc::slotToEpoch,
+                requireLedgerStateProviderForValidation, supplementaryRulesEnabled));
+        log.info("Transaction validator created (networkId={}, protocolParams={}, supplementaryRules={})",
+                networkId, protocolParamsSource, supplementaryRulesEnabled);
 
         TransactionEvaluator transactionEvaluator = null;
         try {
@@ -141,13 +153,54 @@ public final class DefaultTransactionServicesFactory {
                     + "The /utils/txs/evaluate endpoint will not work. Error: {}", scriptEvaluator, e.getMessage(), e);
         }
 
-        if (validator == null && transactionEvaluator == null) {
+        // ADR-056 §7: the engine API is used unless engine: scalus (legacy) runs alone.
+        ValidationEngines engines = ValidationEngineBootstrap.create(context.globals(), genesis, epochSlotCalc,
+                slotConfigSupplier, protocolParamsSupplier, currentSlotSupplier, yaciConfig.getProtocolMagic(),
+                networkId, supplementaryRulesEnabled).orElse(null);
+
+        if (validator == null && transactionEvaluator == null && engines == null) {
             log.error("Neither transaction validator nor script evaluator could be initialized. "
                     + "Plutus script transactions will not be validated!");
             return Optional.empty();
         }
 
-        return Optional.of(new TransactionServices(validator, transactionEvaluator));
+        return Optional.of(new TransactionServices(validator, transactionEvaluator, engines));
+    }
+
+    /**
+     * Creates the admission validator. Validation is enabled here, so a validator that cannot be built stops startup
+     * (ADR-056 §7): without it the node would admit every transaction unvalidated.
+     */
+    static TransactionValidator requireValidator(Supplier<TransactionValidator> factory) {
+        try {
+            return factory.get();
+        } catch (RuntimeException e) {
+            throw new ValidationEngineConfigurationException("Transaction validation is enabled but the Scalus "
+                    + "validator cannot be created: " + e.getMessage(), e);
+        }
+    }
+
+    private static boolean enginesConfigured(TransactionBootstrapContext context) {
+        try {
+            return ValidationEngineSettings.fromGlobals(context.globals()).usesEngineApi();
+        } catch (RuntimeException e) {
+            return true; // invalid settings: the engine bootstrap reports them
+        }
+    }
+
+    private static boolean engineAdmission(TransactionBootstrapContext context) {
+        try {
+            return ValidationEngineSettings.fromGlobals(context.globals()).engineAdmission();
+        } catch (RuntimeException e) {
+            return false; // invalid settings: the engine bootstrap reports them
+        }
+    }
+
+    /** @return the configured admission engine id, or the default when unset */
+    private static String configuredEngine(TransactionBootstrapContext context) {
+        Object engine = context.globals() != null ? context.globals().get(YanoPropertyKeys.Validation.ENGINE) : null;
+        String name = engine != null ? engine.toString().trim() : "";
+        return name.isEmpty() ? ValidationEngineSettings.DEFAULT_ENGINE : name;
     }
 
     private static ProtocolParamsResolution resolveTransactionProtocolParams(TransactionBootstrapContext context,
@@ -166,12 +219,10 @@ public final class DefaultTransactionServicesFactory {
             return resolution;
         }
 
-        log.warn("Transaction validation/evaluation not initialized: no protocol params source available "
-                        + "(effectiveLedger={}, protocolParamFile={}, shelleyGenesis={})",
-                effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null,
-                sourceLabel(yaciConfig.getProtocolParametersFile()),
-                sourceLabel(yaciConfig.getShelleyGenesisFile()));
-        return null;
+        throw new IllegalStateException("no protocol params source available (effectiveLedger="
+                + (effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null) + ", protocolParamFile="
+                + sourceLabel(yaciConfig.getProtocolParametersFile()) + ", shelleyGenesis="
+                + sourceLabel(yaciConfig.getShelleyGenesisFile()) + ")");
     }
 
     static ProtocolParamsResolution selectTransactionProtocolParams(boolean effectiveEpochParamsTrackingEnabled,
