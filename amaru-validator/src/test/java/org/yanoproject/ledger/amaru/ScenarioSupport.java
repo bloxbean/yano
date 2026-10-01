@@ -8,6 +8,7 @@ import org.yanoproject.ledger.amaru.runtime.WasmAmaruInstance;
 import org.yanoproject.ledger.amaru.wire.AmaruRequest;
 import org.yanoproject.ledger.amaru.wire.AmaruRequest.ProposalKind;
 import org.yanoproject.ledger.amaru.wire.ProtocolParamsEncoder;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
@@ -64,7 +65,7 @@ final class ScenarioSupport {
         AmaruNetworkParameters network = network(scenario);
         AmaruLedgerConstants constants = constants(scenario);
         return ENGINES.computeIfAbsent(network + "|" + constants, key -> new AmaruTransactionValidator(
-                AmaruEngineConfig.defaults(Phase2Mode.FULL, 2), network, null, constants, wasm()));
+                LedgerValidationEngines.AMARU, AmaruEngineConfig.defaults(2), network, null, constants, wasm()));
     }
 
     static TxValidationOutcome validate(AmaruTransactionValidator engine, AmaruScenario scenario,

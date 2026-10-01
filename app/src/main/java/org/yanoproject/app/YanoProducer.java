@@ -986,7 +986,6 @@ public class YanoProducer {
     /** ADR-056 §7 engine selection and shadowing, and ADR-057 §2 Amaru settings, forwarded verbatim. */
     static final List<String> VALIDATION_ENGINE_KEYS = List.of(
             YanoPropertyKeys.Validation.ENGINE,
-            YanoPropertyKeys.Validation.JAVA_ENGINE_EXPERIMENTAL,
             YanoPropertyKeys.Validation.SHADOW_ENGINES,
             YanoPropertyKeys.Validation.SHADOW_DUMP_DIR,
             YanoPropertyKeys.Validation.SHADOW_SYNC,
@@ -999,7 +998,6 @@ public class YanoProducer {
             YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS,
             YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS,
             YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS,
-            YanoPropertyKeys.Validation.AMARU_PHASE2,
             YanoPropertyKeys.Validation.AMARU_POOL_SIZE,
             YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS,
             YanoPropertyKeys.Validation.AMARU_MAX_ABANDONED,

@@ -3,6 +3,7 @@ package org.yanoproject.ledger.amaru;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
@@ -16,14 +17,15 @@ import java.math.BigInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The Amaru engine with {@code phase2 = scalus} on the mutation world: the phase-2 contract the
+ * The {@code amaru-scalus} engine on the mutation world: the phase-2 contract the
  * {@link ScalusScriptPhaseEvaluator} carries, and what it does with a transaction Haskell's decoder rejects.
  */
 class AmaruScalusPhaseTwoTest {
 
     private final AmaruTransactionValidator engine = new AmaruTransactionValidator(
-            AmaruEngineConfig.defaults(Phase2Mode.SCALUS, 2), ScenarioSupport.network(MutationWorld.network()),
-            new ScalusScriptPhaseEvaluator(), AmaruLedgerConstants.HASKELL, ScenarioSupport.wasm());
+            LedgerValidationEngines.AMARU_SCALUS, AmaruEngineConfig.defaults(2),
+            ScenarioSupport.network(MutationWorld.network()), new ScalusScriptPhaseEvaluator(),
+            AmaruLedgerConstants.HASKELL, ScenarioSupport.wasm());
 
     @AfterEach
     void close() {

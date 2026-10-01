@@ -46,9 +46,6 @@ public final class ValidationEngines implements AutoCloseable {
                          Map<String, Boolean> shadowSyncHealth) {
     }
 
-    /** Engine-context key the shadow-sync engines are created with (the Java engines are observe-only there). */
-    static final String JAVA_EXPERIMENTAL = "yano.validation.java-engine.experimental";
-
     private final ValidationEngineSettings settings;
     private final LedgerValidationEngine admission;
     private final List<LedgerValidationEngine> shadows;
@@ -59,7 +56,7 @@ public final class ValidationEngines implements AutoCloseable {
 
     /**
      * @param admission    the admission engine, or {@code null} when admission stays on the legacy validator
-     *                     ({@code engine: scalus} with shadow engines)
+     *                     ({@code engine: scalus} with shadow engines or shadow sync)
      * @param shadowRunner the runner for {@code shadows}, or {@code null} when there are none
      */
     public ValidationEngines(ValidationEngineSettings settings, LedgerValidationEngine admission,
@@ -105,8 +102,7 @@ public final class ValidationEngines implements AutoCloseable {
             for (String name : settings.shadowEngines()) {
                 shadows.add(create(registry, name, context, created));
             }
-            // Shadow sync (ADR-056 Phase 7a) gets its own instances. It only observes synced blocks, so the java
-            // engine needs no experimental opt-in there (it still needs one for admission and admission shadows).
+            // Shadow sync (ADR-056 Phase 7a) gets its own instances; it only observes synced blocks.
             List<LedgerValidationEngine> shadowSync = new ArrayList<>();
             if (settings.shadowSync()) {
                 EngineContext observeOnly = new ObserveOnlyContext(context,
@@ -247,17 +243,13 @@ public final class ValidationEngines implements AutoCloseable {
     }
 
     /**
-     * The node's context with the Java engines' experimental opt-in answered (shadow sync only observes), and
-     * Amaru's {@code pool-size: 0} (or unset) answered with the shadow-sync concurrency: at most
-     * {@code shadow-sync-max-in-flight} blocks call the engine at once, and shadow sync needs none of the admission
-     * callers' headroom.
+     * The node's context with Amaru's {@code pool-size: 0} (or unset) answered with the shadow-sync concurrency: at
+     * most {@code shadow-sync-max-in-flight} blocks call the engine at once, and shadow sync needs none of the
+     * admission callers' headroom.
      */
     private record ObserveOnlyContext(EngineContext delegate, int maxInFlight) implements EngineContext {
         @Override
         public Optional<String> config(String key) {
-            if (JAVA_EXPERIMENTAL.equals(key)) {
-                return Optional.of("true");
-            }
             if (YanoPropertyKeys.Validation.AMARU_POOL_SIZE.equals(key)) {
                 return delegate.config(key).filter(v -> !v.isBlank() && !"0".equals(v.trim()))
                         .or(() -> Optional.of(Integer.toString(maxInFlight)));

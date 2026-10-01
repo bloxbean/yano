@@ -14,6 +14,7 @@ import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
 import org.yanoproject.ledger.conformance.runner.Observation;
 import org.yanoproject.ledger.conformance.runner.ScenarioCases;
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.NetworkParameters;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
@@ -57,15 +58,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * of real preprod and preview transactions: the replay bundles of {@link PublicNetworkTransactions} (each transaction
  * with the ledger state it was validated against, {@code ShadowDumpBundle.replayRequest()}). That corpus is small and
  * biased toward unusual Plutus transactions (each was once an engine finding): a real-network Plutus-heavy sample, not
- * typical traffic. On that corpus {@code amaru} runs twice, with {@code phase2 = full} (the oracle mode) and with
- * {@code phase2 = scalus} (the node default), and only on the PV 10 and later bundles, over
+ * typical traffic. On that corpus Amaru runs twice, as {@code amaru} (Amaru runs the scripts; the oracle) and as
+ * {@code amaru-scalus} (Amaru phase one, Scalus phase two), and only on the PV 10 and later bundles, over
  * {@link WholeSlicesView}: a bundle holds the Java engine's reads, and Amaru's request also ships whole slices the Java
  * engine did not read for these transactions.
  *
  * <p>Each engine is created once per network and ledger constants and reused, as the node reuses its engines, so a
  * sample is one {@code validate} call: rule {@code LEDGER}, origin {@code SYNC}, the case's in-memory view. The Java
  * engines run on the calling thread; {@code amaru} hands each call to its instance pool's worker thread, as in the
- * node, with {@code phase2 = full} (Amaru runs the scripts) unless stated. Warm-up passes are not sampled; the first
+ * node, as {@code amaru} (Amaru runs the scripts) unless stated. Warm-up passes are not sampled; the first
  * of them is reported as the cold pass.</p>
  *
  * <pre>
@@ -82,8 +83,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EngineLatencyBenchmarkTest {
 
     private static final int FIRST_AMARU_MAJOR = 10;
-    /** {@code amaru} with {@code phase2 = scalus}, the node default: Amaru judges phase 1, Scalus the scripts. */
-    private static final String AMARU_SCALUS = "amaru (phase2 scalus)";
 
     /** Preprod genesis (Shelley and Byron): 4 Byron epochs of 21,600 slots at 20 s, then 432,000-slot epochs. */
     static final NetworkParameters PREPROD = new NetworkParameters(1, NetworkId.TESTNET, 2160, 0.05,
@@ -120,8 +119,8 @@ class EngineLatencyBenchmarkTest {
                 .append(String.format(Locale.ROOT, "%s %s, %s %s, %d processors, max heap %d MiB. Scenarios: %d "
                                 + "cases (Amaru scenarios, PV >= 10), %d warm-up + %d sampled passes. Preprod and "
                                 + "preview: the public-network replay bundles (real-network Plutus-heavy sample), "
-                                + "%d warm-up + %d sampled passes; `amaru` runs the PV >= 10 bundles only, and "
-                                + "`amaru (phase2 scalus)` is the node default.%n%n",
+                                + "%d warm-up + %d sampled passes; `amaru` and `amaru-scalus` (Amaru phase one, "
+                                + "Scalus phase two) run the PV >= 10 bundles only.%n%n",
                         System.getProperty("java.vm.name"), System.getProperty("java.version"),
                         System.getProperty("os.name"), System.getProperty("os.arch"),
                         Runtime.getRuntime().availableProcessors(), Runtime.getRuntime().maxMemory() >> 20,
@@ -144,7 +143,7 @@ class EngineLatencyBenchmarkTest {
             BaselineEngines.amaru(parameters, null)
                     .ifPresent(amaru -> networkEngines.put(BaselineEngines.AMARU, amaru));
             BaselineEngines.amaru(parameters, new ScalusScriptPhaseEvaluator(horizon))
-                    .ifPresent(amaru -> networkEngines.put(AMARU_SCALUS, amaru));
+                    .ifPresent(amaru -> networkEngines.put(LedgerValidationEngines.AMARU_SCALUS, amaru));
             networkEngines.forEach((engineName, engine) -> table.append(measure(name, engineName, requests.stream()
                     .filter(r -> !engineName.startsWith(BaselineEngines.AMARU)
                             || r.env().protocolMajor() >= FIRST_AMARU_MAJOR)

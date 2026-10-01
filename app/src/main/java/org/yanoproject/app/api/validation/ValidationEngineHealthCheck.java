@@ -12,9 +12,9 @@ import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport;
 import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
 
 /**
- * Readiness of the validation engines (ADR-057 §2): it matters only when {@code amaru} is the admission or a
- * shadow engine, since only that engine can turn unhealthy (after {@code max-abandoned} stuck calls it fails
- * every request closed until restart).
+ * Readiness of the validation engines (ADR-057 §2): it matters only when an Amaru engine ({@code amaru} or
+ * {@code amaru-scalus}) is the admission or a shadow engine, since only Amaru can turn unhealthy (after
+ * {@code max-abandoned} stuck calls it fails every request closed until restart).
  *
  * <ul>
  *   <li>No Amaru engine configured: UP, with the engine name.</li>
@@ -64,7 +64,7 @@ public class ValidationEngineHealthCheck implements HealthCheck {
                     builder.withData("shadowSync." + name + ".healthy", healthy));
             builder.withData("shadowSyncUnhealthy", status.shadowSyncHealth().containsValue(false));
         }
-        if (!engines.uses(LedgerValidationEngines.AMARU)) {
+        if (!engines.uses(LedgerValidationEngines.AMARU) && !engines.uses(LedgerValidationEngines.AMARU_SCALUS)) {
             return builder.up().build();
         }
         status.engineHealth().forEach((name, healthy) -> builder.withData(name + ".healthy", healthy));

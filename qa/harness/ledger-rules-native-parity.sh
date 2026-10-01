@@ -11,13 +11,14 @@
 # on the JVM (ShadowBundleReplayTest).
 #
 # Usage: qa/harness/ledger-rules-native-parity.sh [configs] [pvs]  (defaults: "java-julc java-scalus scalus" "11 10 9")
-#   java-julc    engine java-julc (the Java rules, julc phase 2; experimental), admission shadow scalus with dumps,
+#   java-julc    engine java-julc (the default: the Java rules, julc phase 2), admission shadow scalus with dumps,
 #                shadow sync java-julc and java-scalus with report and dumps, plus a follower with shadow sync; the
 #                evaluate endpoint uses the Julc evaluator (script-evaluator=julc)
 #   java-scalus  engine java-scalus (the same rules, Scalus phase 2), admission shadow scalus, shadow sync
 #                java-scalus, plus a follower
-#   scalus  the default: legacy Scalus admission, no engines
-#   amaru   engine amaru, admission shadow java-julc, shadow sync java-julc and amaru, plus a follower (JAR and NATIVE built with
+#   scalus  engine scalus: legacy Scalus admission, no engines
+#   amaru-scalus, amaru  that engine (Amaru phase one with Scalus Plutus, or Amaru for both phases), admission shadow
+#           java-julc, shadow sync java-julc and the engine, plus a follower (JAR and NATIVE built with
 #           -PwithAmaru=true; protocol version 10 or later)
 # Binaries: $JAR and $NATIVE (common.sh defaults: the release-QA build in qa/work/bin). Ports: producer
 # HTTP_A/N2N_A, follower HTTP_B/N2N_B. Runs under $SP/runs/ledger-rules-native-parity.
@@ -49,17 +50,16 @@ engine_opts() { # <config> <dir> <producer|follower>
     -Dyano.validation.shadow-sync-dump-dir=$2/sync-dumps -Dyano.validation.shadow-sync-summary-seconds=15"
   case $1 in
     java-julc) [ "$3" = producer ] && echo "-Dyano.validation.engine=java-julc
-            -Dyano.validation.java-engine.experimental=true
             -Dyano.validation.shadow-engines=scalus -Dyano.validation.shadow-dump-dir=$2/shadow-dumps
             -Dyano.block-producer.script-evaluator=julc"
           echo "$sync -Dyano.validation.shadow-sync-engines=java-julc,java-scalus" ;;
     java-scalus) [ "$3" = producer ] && echo "-Dyano.validation.engine=java-scalus
-            -Dyano.validation.java-engine.experimental=true
             -Dyano.validation.shadow-engines=scalus -Dyano.validation.shadow-dump-dir=$2/shadow-dumps"
           echo "$sync -Dyano.validation.shadow-sync-engines=java-scalus" ;;
-    amaru) [ "$3" = producer ] && echo "-Dyano.validation.engine=amaru -Dyano.validation.java-engine.experimental=true
+    scalus) echo "-Dyano.validation.engine=scalus" ;;
+    amaru|amaru-scalus) [ "$3" = producer ] && echo "-Dyano.validation.engine=$1
             -Dyano.validation.shadow-engines=java-julc -Dyano.validation.shadow-dump-dir=$2/shadow-dumps"
-           echo "$sync -Dyano.validation.shadow-sync-engines=java-julc,amaru" ;;
+           echo "$sync -Dyano.validation.shadow-sync-engines=java-julc,$1" ;;
   esac
 }
 
@@ -149,7 +149,7 @@ parity_view() { # <mode dir>: what must be equal between the JVM and the native 
 
 for c in $CONFIGS; do
   for pv in $PVS; do
-    [ "$c" = amaru ] && [ "$pv" -lt 10 ] && { log "amaru pv$pv: skipped (Amaru validates Conway from PV 10)"; continue; }
+    case $c in amaru*) [ "$pv" -lt 10 ] && { log "$c pv$pv: skipped (Amaru validates Conway from PV 10)"; continue; } ;; esac
     for mode in jvm native; do run_mode "$c" "$pv" "$mode"; check_mode "$c" "$pv" "$mode"; done
     d=$OUT/$c-pv$pv
     if [ ! -s "$d/jvm/observations.txt" ] || [ ! -s "$d/native/observations.txt" ]; then

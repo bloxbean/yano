@@ -12,7 +12,6 @@ import org.yanoproject.ledger.rules.conway.EngineTestSupport.StubEvaluator;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 
-import java.util.Map;
 import java.util.Optional;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -23,25 +22,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class JavaEngineFactoriesTest {
 
     @Test
-    void isDiscoveredAndRefusedWithoutTheExperimentalFlag() {
+    void isDiscoveredAndTheFormerJavaIdIsRefused() {
         LedgerValidationEngines engines = LedgerValidationEngines.discover(getClass().getClassLoader());
         assertThat(engines.available()).contains("java-julc", "java-scalus").doesNotContain("java");
-        for (String engine : new String[]{"java-julc", "java-scalus"}) {
-            assertThatThrownBy(() -> engines.factory(engine).create(context(Map.of())))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("'" + engine + "' is experimental")
-                    .hasMessageContaining(JavaLedgerValidationEngine.EXPERIMENTAL_KEY);
-            assertThatThrownBy(() -> engines.factory(engine).create(context(Map.of(
-                    JavaLedgerValidationEngine.EXPERIMENTAL_KEY, "yes")))).isInstanceOf(IllegalStateException.class);
-        }
         assertThatThrownBy(() -> engines.factory("java")).hasMessageContaining("Unknown validation engine 'java'")
                 .hasMessageContaining("java-julc").hasMessageContaining("java-scalus");
     }
 
     @Test
-    void createsTheEngineWithTheFlag() {
-        LedgerValidationEngine engine = new JavaJulcEngineFactory().create(
-                context(Map.of(JavaLedgerValidationEngine.EXPERIMENTAL_KEY, " TRUE ")));
+    void createsTheEngineWithoutAnOptIn() {
+        LedgerValidationEngine engine = new JavaJulcEngineFactory().create(context(null, new StubEvaluator()));
         assertThat(engine.name()).isEqualTo("java-julc");
         assertThat(engine).isInstanceOf(JavaLedgerValidationEngine.class);
     }
@@ -71,17 +61,15 @@ class JavaEngineFactoriesTest {
     void javaJulcUsesTheJulcEvaluatorAndJavaScalusTheScalusOne() {
         StubEvaluator scalus = new StubEvaluator();
         StubEvaluator julc = new StubEvaluator();
-        Map<String, String> flag = Map.of(JavaLedgerValidationEngine.EXPERIMENTAL_KEY, "true");
         LedgerValidationEngines engines = LedgerValidationEngines.discover(getClass().getClassLoader());
 
-        var javaJulc = (JavaLedgerValidationEngine) engines.factory("java-julc").create(context(flag, scalus, julc));
+        var javaJulc = (JavaLedgerValidationEngine) engines.factory("java-julc").create(context(scalus, julc));
         assertThat(javaJulc.name()).isEqualTo("java-julc");
         assertThat(javaJulc.evaluator()).isSameAs(julc);
-        assertThatThrownBy(() -> engines.factory("java-julc").create(context(flag, scalus, null)))
+        assertThatThrownBy(() -> engines.factory("java-julc").create(context(scalus, null)))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("julc phase-2 evaluator");
 
-        var javaScalus = (JavaLedgerValidationEngine) engines.factory("java-scalus").create(context(flag, scalus,
-                julc));
+        var javaScalus = (JavaLedgerValidationEngine) engines.factory("java-scalus").create(context(scalus, julc));
         assertThat(javaScalus.name()).isEqualTo("java-scalus");
         assertThat(javaScalus.evaluator()).isSameAs(scalus);
         assertThat(javaScalus.withConstants(ConwayLedgerConstants.HASKELL).name()).isEqualTo("java-scalus");
@@ -93,16 +81,11 @@ class JavaEngineFactoriesTest {
         assertThat(EngineTestSupport.names(outcome)).containsExactly("ENGINE.DecodingFailure");
     }
 
-    private static EngineContext context(Map<String, String> config) {
-        return context(config, null, new StubEvaluator());
-    }
-
-    private static EngineContext context(Map<String, String> config, ScriptPhaseEvaluator scalus,
-                                         ScriptPhaseEvaluator julc) {
+    private static EngineContext context(ScriptPhaseEvaluator scalus, ScriptPhaseEvaluator julc) {
         return new EngineContext() {
             @Override
             public Optional<String> config(String key) {
-                return Optional.ofNullable(config.get(key));
+                return Optional.empty();
             }
 
             @Override

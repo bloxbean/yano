@@ -88,7 +88,7 @@ the implementation plan:
    (build-time AOT) and implements ADR-056's `LedgerValidationEngine`.
    - It is excluded from default builds and distributions.
    - Developers opt in at build time, and select it at run time with
-     `yano.validation.engine=amaru`.
+     `yano.validation.engine=amaru-scalus` or `amaru` (decision 6).
    - It can also run as a shadow engine and as a test oracle.
 3. **Overlays are handled on the Java side.** Yano builds each request from the
    ADR-056 `OverlayLedgerView` over the ticked base view. Earlier mempool
@@ -97,9 +97,9 @@ the implementation plan:
    engine. Effects are derived by the shared `TxEffectsDeriver` from the verdict,
    not by Amaru. The ADR-056 `Origin` policy for `isValid=false` applies
    unchanged.
-4. **Phase-2 stays with Scalus by default.** In `amaru` mode, Amaru judges
-   phase-1 and Scalus runs the Plutus scripts. `phase2: amaru` runs Amaru's full
-   validation instead, which is the setting used for oracle runs. ExUnits
+4. **Phase-2 can stay with Scalus.** Under engine `amaru-scalus`, Amaru judges
+   phase-1 and Scalus runs the Plutus scripts. Engine `amaru` runs Amaru's full
+   validation instead, which is the engine used for oracle runs. ExUnits
    evaluation (`TransactionEvaluator`) is unchanged.
 5. **Yano's CI builds the wasm** in a separate, path-filtered workflow, gates it
    on Amaru's scenarios, and publishes it (workflow artifact and a Yano release
@@ -276,7 +276,7 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
   3. Resolve each key through the request's `LedgerView` (the overlay).
   4. Encode the request and call `validate`.
   5. Map the response to `TxValidationOutcome`.
-  6. In `phase2: scalus` mode, run ADR-056's `ScriptPhaseEvaluator` after a
+  6. Under `amaru-scalus`, run ADR-056's `ScriptPhaseEvaluator` after a
      phase-1 pass.
   7. On success, compute effects with `TxEffectsDeriver`.
 - **Instances.** One instance per validation thread, pooled. Instances aren't
@@ -292,7 +292,7 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
     code can keep running; it counts as abandoned.
   - To stop a hostile or looping input from exhausting the node, a hard cap of
     `yano.validation.amaru.max-abandoned` (default 2) applies. When it is
-    reached, the engine is marked **unhealthy**: admission through `amaru`
+    reached, the engine is marked **unhealthy**: admission through Amaru
     fails closed, and a health check and metric alert fire until restart.
   - Endive's interrupt and fuel support was verified in Phase B (open
     question 3).
@@ -303,16 +303,15 @@ Responses are `[u32 LE length][CBOR]`, freed by the host with `dealloc`.
 ```yaml
 yano:
   validation:
-    engine: amaru              # or keep scalus/java-julc/java-scalus and list amaru under shadow-engines
-    amaru:
-      phase2: scalus           # scalus (default) | amaru
+    engine: amaru-scalus       # or amaru; or keep java-julc/java-scalus/scalus and list it under shadow-engines
+    amaru:                     # settings of both Amaru engines
       pool-size: 0             # 0 = validation threads + 2
       timeout-ms: 2000
       max-abandoned: 2         # stuck calls tolerated before the engine turns unhealthy
       max-memory-pages: 2048   # 128 MiB per instance
 ```
 
-If `engine: amaru` is set but the module isn't on the classpath, startup fails
+If an Amaru engine is configured but the module isn't on the classpath, startup fails
 with a clear message. There is no silent fallback.
 
 ### 3. Build and distribution
@@ -375,7 +374,7 @@ with a clear message. There is no silent fallback.
 
 ### 5. Relationship to ADR-056 conformance
 
-- **Oracle.** In oracle runs, `amaru-validator` uses `phase2: amaru`. It
+- **Oracle.** In oracle runs, `amaru-validator` runs as engine `amaru`. It
   provides:
   - the JUnit differential for ADR-056's scenarios, mutation matrix and
     shadow-dump bundles;
@@ -966,7 +965,7 @@ Status on 2026-09-30.
 
 ## Rollback plan
 
-Set `yano.validation.engine` to `java-julc`, `java-scalus` or `scalus` and remove `amaru` from
+Set `yano.validation.engine` to `java-julc`, `java-scalus` or `scalus` and remove the Amaru engines from
 `shadow-engines`. Nothing else depends on the module. Removing
 `amaru-validator-wasm/`, the `amaru-validator` module and `amaru-wasm.yml`
 reverts this ADR completely. No persisted state is involved.
@@ -1014,8 +1013,18 @@ reverts this ADR completely. No persisted state is involved.
    tag and a pinned nightly toolchain.
 2. **Endive build-time AOT** is the only execution mode. The runtime compiler
    is disabled.
-3. `engine: amaru` defaults to `phase2: scalus`. Oracle runs use `full`.
+3. `engine: amaru` defaults to `phase2: scalus`. Oracle runs use `full`. Superseded by decision 6: these
+   are now the engines `amaru-scalus` and `amaru`.
 4. Timeouts and abandoned threads: the engine fails closed and turns unhealthy
    once the cap is reached.
 5. Yano proposes the interface upstream to Pragma as a published wasm artifact.
    Yano's own build does not depend on that.
+
+## Decision (2026-10-01): engine ids name the rules and the evaluator
+
+6. Amaru engine ids follow `<rules>-<evaluator>`, as `java-julc` and `java-scalus` do. A single name means one
+   implementation runs both phases (like the legacy `scalus`). `amaru-scalus` is Amaru phase one with the node's
+   Scalus `ScriptPhaseEvaluator` (formerly `engine: amaru` with `phase2: scalus`); `amaru` is Amaru for both phases
+   (formerly `phase2: amaru` or `full`). The `yano.validation.amaru.phase2` key is removed; the other
+   `yano.validation.amaru.*` settings apply to both engines. Phase results above use the names of their time. A
+   future `amaru-julc` is another factory on the same `ScriptPhaseEvaluator` SPI.

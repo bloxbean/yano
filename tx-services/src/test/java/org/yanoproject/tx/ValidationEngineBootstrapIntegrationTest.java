@@ -68,10 +68,32 @@ class ValidationEngineBootstrapIntegrationTest {
         }
     }
 
+    /** ADR-056 Phase 8: with no engine configured, admission goes through {@code java-julc}. */
     @Test
-    void defaultConfigurationCreatesNoEngines(@TempDir Path dir) {
+    void defaultConfigurationAdmitsThroughJavaJulc(@TempDir Path dir) {
         AtomicReference<TransactionServices> services = new AtomicReference<>();
         try (Yano node = build(dir, Map.of(), services)) {
+            var engines = services.get().validationEngines();
+            assertThat(engines.admissionEngine().name()).isEqualTo("java-julc");
+            assertThat(engines.affectsAdmission()).isTrue();
+            assertThat(engines.shadowEngines()).isEmpty();
+            assertThat(node.validationEngines()).containsSame(engines);
+        }
+    }
+
+    @Test
+    void javaScalusIsSelectable(@TempDir Path dir) {
+        AtomicReference<TransactionServices> services = new AtomicReference<>();
+        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "java-scalus"), services)) {
+            assertThat(services.get().validationEngines().admissionEngine().name()).isEqualTo("java-scalus");
+        }
+    }
+
+    /** {@code engine: scalus} restores the legacy validator: no engines are created. */
+    @Test
+    void scalusAloneCreatesNoEngines(@TempDir Path dir) {
+        AtomicReference<TransactionServices> services = new AtomicReference<>();
+        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus"), services)) {
             assertThat(services.get().validator()).isNotNull();
             assertThat(services.get().validationEngines()).isNull();
         }
@@ -80,7 +102,8 @@ class ValidationEngineBootstrapIntegrationTest {
     @Test
     void scalusWithAShadowEngineKeepsLegacyAdmission(@TempDir Path dir) {
         AtomicReference<TransactionServices> services = new AtomicReference<>();
-        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_ENGINES, "capture",
+        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus",
+                YanoPropertyKeys.Validation.SHADOW_ENGINES, "capture",
                 YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS, "750"), services)) {
             var engines = services.get().validationEngines();
             assertThat(engines).isNotNull();
@@ -117,7 +140,8 @@ class ValidationEngineBootstrapIntegrationTest {
     @Test
     void shadowSyncAloneCreatesItsOwnJavaEngineAndLeavesAdmissionLegacy(@TempDir Path dir) {
         AtomicReference<TransactionServices> services = new AtomicReference<>();
-        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
+        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus",
+                YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
                 YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT, "3",
                 YanoPropertyKeys.AccountState.ENABLED, true), services)) {
             var engines = services.get().validationEngines();
@@ -125,7 +149,7 @@ class ValidationEngineBootstrapIntegrationTest {
             assertThat(engines.affectsAdmission()).isFalse();
             assertThat(engines.admissionEngine()).isNull();
             assertThat(engines.shadowEngines()).isEmpty();
-            // java-julc, the default, needs no experimental opt-in for shadow sync, which only observes.
+            // java-julc is the default shadow-sync engine.
             assertThat(engines.shadowSyncEngines()).extracting(LedgerValidationEngine::name)
                     .containsExactly("java-julc");
             assertThat(engines.settings().shadowSyncSettings().maxInFlight()).isEqualTo(3);
@@ -148,7 +172,8 @@ class ValidationEngineBootstrapIntegrationTest {
     @Test
     void shadowSyncIsNotStartedWithoutAccountStateAndTheNodeStillStarts(@TempDir Path dir) {
         AtomicReference<TransactionServices> services = new AtomicReference<>();
-        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_SYNC, "true"), services)) {
+        try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus",
+                YanoPropertyKeys.Validation.SHADOW_SYNC, "true"), services)) {
             var engines = services.get().validationEngines();
             assertThat(engines.shadowSyncEngines()).isNotEmpty();
             assertThat(engines.shadowSync()).as("refused: the pre-block view needs account state").isNull();
@@ -166,16 +191,6 @@ class ValidationEngineBootstrapIntegrationTest {
                 .hasMessageContaining("supplementary-rules-enabled=true applies to the legacy Scalus validator only");
     }
 
-    @Test
-    void javaEnginesStopStartupWithoutTheExperimentalFlag(@TempDir Path dir) {
-        for (String engine : new String[]{"java-julc", "java-scalus"}) {
-            assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, engine),
-                    new AtomicReference<>()))
-                    .isInstanceOf(ValidationEngineConfigurationException.class)
-                    .hasMessageContaining("'" + engine + "' is experimental");
-        }
-    }
-
     /** The engine id {@code java} is gone (ADR-056 Phase 7c): startup names the two Java engine ids. */
     @Test
     void thePlainJavaEngineIdStopsStartupNamingItsReplacements(@TempDir Path dir) {
@@ -188,14 +203,16 @@ class ValidationEngineBootstrapIntegrationTest {
 
     @Test
     void amaruWithoutTheModuleStopsStartup(@TempDir Path dir) {
-        assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "amaru"),
-                new AtomicReference<>()))
-                .isInstanceOf(ValidationEngineConfigurationException.class)
-                .hasMessageContaining("amaru-validator module is not on the classpath");
-        assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_ENGINES, "amaru"),
-                new AtomicReference<>()))
-                .isInstanceOf(ValidationEngineConfigurationException.class)
-                .hasMessageContaining("-PwithAmaru=true");
+        for (String amaru : new String[]{"amaru", "amaru-scalus"}) {
+            assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, amaru),
+                    new AtomicReference<>()))
+                    .isInstanceOf(ValidationEngineConfigurationException.class)
+                    .hasMessageContaining("amaru-validator module is not on the classpath");
+            assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_ENGINES, amaru),
+                    new AtomicReference<>()))
+                    .isInstanceOf(ValidationEngineConfigurationException.class)
+                    .hasMessageContaining("-PwithAmaru=true");
+        }
     }
 
     /**

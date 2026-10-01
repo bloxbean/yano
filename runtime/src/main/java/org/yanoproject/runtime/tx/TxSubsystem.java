@@ -91,7 +91,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     private final Logger log;
     private final DefaultMemPool legacyMemPool = new DefaultMemPool();
     // ADR-056 Phase 6a: with an engine-API admission engine the mempool is a LedgerMempool (ledger-state
-    // overlays); the legacy default keeps DefaultMemPool. Chosen by setValidationEngines, before transactions arrive.
+    // overlays); engine: scalus keeps DefaultMemPool. Chosen by setValidationEngines, before transactions arrive.
     private volatile MemPool memPool = legacyMemPool;
     private volatile LedgerMempool ledgerMempool;
     private ExecutorService ledgerRebuildExecutor;

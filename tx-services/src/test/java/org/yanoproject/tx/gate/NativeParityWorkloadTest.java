@@ -68,9 +68,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Coverage: payments and chains admitted while their parents are pending (ledger-state mempool, block
  * selection), a phase-1 failure per rule family ({@code MEMPOOL}, {@code UTXO}, {@code UTXOW}, {@code DELEG},
  * {@code POOL}, {@code GOVCERT}, {@code GOV}, {@code LEDGER}, {@code CERTS}), certificates and governance, PlutusV1,
- * V2 (also through a reference script) and V3 spends evaluated by the node (Scalus phase 2) and an always-failing V3
- * script, a V3 script on the crypto builtins backed by native libraries (BLS12-381 through blst, secp256k1), the node's
- * evaluate endpoint, a rollback that removes a pending child's parent (mempool rebuild), and
+ * V2 (also through a reference script) and V3 spends evaluated by the node (the engine's phase-2 evaluator) and an
+ * always-failing V3 script, a V3 script on the crypto builtins backed by native libraries (BLS12-381 through blst,
+ * secp256k1), the node's evaluate endpoint, a rollback that removes a pending child's parent (mempool rebuild), and
  * transactions after an epoch boundary (ticked views, {@code currentTreasuryValue}).</p>
  *
  * <p>Runs only with {@code -Dyano.parity.remote-url=http://host:port}; {@code -Dyano.parity.report=<file>} writes
@@ -256,7 +256,7 @@ class NativeParityWorkloadTest {
                 signer(SignerProviders.signerFrom(poolKey.stakeHdKeyPair())));
         rejectTreasury("reject.treasury-mismatch", BigInteger.valueOf(123_456));
 
-        // ---------------------------------------------------------------- Plutus V1, V2, V3 (Scalus phase 2)
+        // ---------------------------------------------------------------- Plutus V1, V2, V3 (engine phase 2)
         String v1Address = scriptAddress(V1);
         String v2Address = scriptAddress(V2);
         String v3Address = scriptAddress(V3);

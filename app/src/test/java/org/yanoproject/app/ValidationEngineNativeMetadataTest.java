@@ -17,8 +17,9 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * ADR-056 Phase 7c: every validation-engine provider the application ships ({@code java}, {@code scalus}, and
- * {@code amaru} in {@code -PwithAmaru=true} builds) is registered for reflective construction in the native image.
+ * ADR-056 Phase 7c: every validation-engine provider the application ships ({@code java-julc}, {@code java-scalus},
+ * {@code scalus}, and {@code amaru} and {@code amaru-scalus} in {@code -PwithAmaru=true} builds) is registered for
+ * reflective construction in the native image.
  * Quarkus does not register {@code META-INF/services} providers by itself, and a missing registration makes the
  * native {@code ServiceLoader} fail ({@code Provider ... not found}) where the JVM works.
  */

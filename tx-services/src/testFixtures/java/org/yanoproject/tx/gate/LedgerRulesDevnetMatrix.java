@@ -31,7 +31,7 @@ import java.util.Set;
 
 /**
  * The ADR-056 Phase 6 devnet matrix (Phase 6b), run against an in-process {@link DevnetGateNode}; ADR-057 Phase C
- * runs the same matrix with {@code engine: amaru} and compares the {@link Report#lines() report}.
+ * runs the same matrix with {@code engine: amaru-scalus} and compares the {@link Report#lines() report}.
  *
  * <ul>
  *   <li><b>A, one block:</b> the producer is stopped, the four dependent chains (stake register → delegate → vote

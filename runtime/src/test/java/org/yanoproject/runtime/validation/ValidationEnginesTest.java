@@ -95,6 +95,7 @@ class ValidationEnginesTest {
             }
         };
         ValidationEngineSettings settings = ValidationEngineSettings.fromGlobals(Map.of(
+                YanoPropertyKeys.Validation.ENGINE, LedgerValidationEngines.SCALUS,
                 YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
                 YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES, LedgerValidationEngines.AMARU,
                 YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT, "5"));

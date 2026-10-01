@@ -9,7 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-056 Phase 6b gate: the Phase 6 devnet matrix ({@link LedgerRulesDevnetMatrix}) on an in-process devnet
- * producer whose admission engine is {@code java-julc} (experimental flag), with the ledger-state mempool and the
+ * producer whose admission engine is {@code java-julc} (the default), with the ledger-state mempool and the
  * block-production overlay; every produced block is re-validated independently (java-julc engine, rule {@code LEDGER},
  * origin {@code SYNC}, full validation). Runs with {@code -PledgerRulesGate=true}.
  */

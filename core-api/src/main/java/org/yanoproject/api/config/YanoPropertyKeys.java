@@ -246,17 +246,13 @@ public final class YanoPropertyKeys {
         /** ADR-056 §6 step 7: synchronous rebuild attempts before the mempool enters CATCHING_UP (default 3). */
         public static final String REBUILD_SYNC_ATTEMPTS = "yano.validation.rebuild-sync-attempts";
         /**
-         * ADR-056 §7: admission engine, {@code scalus} (default) | {@code java-julc} | {@code java-scalus} |
-         * {@code amaru}. The Java rules run Plutus on julc ({@code java-julc}) or Scalus ({@code java-scalus}), ADR-056
-         * Phase 7c.
+         * ADR-056 §7: admission engine, {@code java-julc} (default, ADR-056 Phase 8) | {@code java-scalus} |
+         * {@code scalus} (the legacy validator) | {@code amaru} | {@code amaru-scalus}. Ids name
+         * {@code <rules>-<evaluator>}: the Java rules run Plutus on julc ({@code java-julc}) or Scalus
+         * ({@code java-scalus}), ADR-056 Phase 7c; Amaru runs it itself ({@code amaru}) or on Scalus
+         * ({@code amaru-scalus}), ADR-057.
          */
         public static final String ENGINE = "yano.validation.engine";
-        /**
-         * ADR-056 §7: opt-in for {@code java-julc} and {@code java-scalus} until the default flips (Phase 8); startup
-         * fails without it.
-         * Set only on test and gate nodes (the Phase 6b Haskell-follower run).
-         */
-        public static final String JAVA_ENGINE_EXPERIMENTAL = "yano.validation.java-engine.experimental";
         /** ADR-056 §7: engines run in the shadow of admission, comma-separated (default none). */
         public static final String SHADOW_ENGINES = "yano.validation.shadow-engines";
         /** ADR-056 §7: directory for replay bundles of engine disagreements (default empty: no dumps). */
@@ -289,8 +285,6 @@ public final class YanoPropertyKeys {
         public static final String SHADOW_SYNC_SUMMARY_SECONDS = "yano.validation.shadow-sync-summary-seconds";
         /** ADR-056 §3: a shadow task older than this is cancelled and its snapshot released (default 30000). */
         public static final String SNAPSHOT_MAX_AGE_MS = "yano.validation.snapshot-max-age-ms";
-        /** ADR-057 §2: who runs Plutus under {@code engine: amaru}, {@code scalus} (default) | {@code amaru}. */
-        public static final String AMARU_PHASE2 = "yano.validation.amaru.phase2";
         /**
          * ADR-057 §2: Amaru instances; 0 (default) means one per validation thread plus two (rebuild, selection);
          * for the shadow-sync engine, 0 means {@link #SHADOW_SYNC_MAX_IN_FLIGHT} instances.

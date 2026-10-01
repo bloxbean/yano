@@ -59,11 +59,14 @@ class LedgerValidationEnginesTest {
     void amaruWithoutTheModuleFailsClearly() {
         LedgerValidationEngines engines = LedgerValidationEngines.discover(getClass().getClassLoader());
 
-        assertThat(engines.available()).doesNotContain("amaru");
-        assertThatThrownBy(() -> engines.factory("amaru"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("amaru-validator module is not on the classpath")
-                .hasMessageContaining("-PwithAmaru=true");
+        assertThat(engines.available()).doesNotContain("amaru", "amaru-scalus");
+        for (String amaru : new String[]{"amaru", "amaru-scalus"}) {
+            assertThatThrownBy(() -> engines.factory(amaru))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("'" + amaru + "' is configured but the amaru-validator module is not on the "
+                            + "classpath")
+                    .hasMessageContaining("-PwithAmaru=true");
+        }
     }
 
     @Test

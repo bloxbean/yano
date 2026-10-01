@@ -29,14 +29,24 @@ class AmaruEngineFactoryTest {
     @Test
     void discoveredNextToScalus() {
         assertThat(LedgerValidationEngines.discover(getClass().getClassLoader()).available())
-                .contains("amaru", "scalus");
+                .contains("amaru", "amaru-scalus", "scalus");
+    }
+
+    @Test
+    void eachIdCreatesItsEngine() {
+        try (AmaruTransactionValidator amaru = (AmaruTransactionValidator) new AmaruEngineFactory()
+                .create(context(Map.of(), 1, null));
+             AmaruTransactionValidator amaruScalus = (AmaruTransactionValidator) new AmaruScalusEngineFactory()
+                     .create(context(Map.of(), 1, new ScalusScriptPhaseEvaluator()))) {
+            assertThat(amaru.name()).isEqualTo(LedgerValidationEngines.AMARU);
+            assertThat(amaruScalus.name()).isEqualTo(LedgerValidationEngines.AMARU_SCALUS);
+        }
     }
 
     @Test
     void defaultsMapPoolSizeZeroToTheValidationThreadsPlusTheRebuildWorkerAndTheProducer() {
         AmaruEngineConfig config = AmaruEngineFactory.config(context(Map.of(), 3, new ScalusScriptPhaseEvaluator()));
 
-        assertThat(config.phase2()).isEqualTo(Phase2Mode.SCALUS);
         assertThat(config.poolSize()).isEqualTo(3 + AmaruEngineFactory.EXTRA_CALLERS);
         assertThat(config.timeout()).isEqualTo(Duration.ofMillis(2000));
         assertThat(config.maxAbandoned()).isEqualTo(2);
@@ -46,13 +56,11 @@ class AmaruEngineFactoryTest {
     @Test
     void explicitSettingsAreMapped() {
         AmaruEngineConfig config = AmaruEngineFactory.config(context(Map.of(
-                YanoPropertyKeys.Validation.AMARU_PHASE2, "amaru",
                 YanoPropertyKeys.Validation.AMARU_POOL_SIZE, "5",
                 YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS, "750",
                 YanoPropertyKeys.Validation.AMARU_MAX_ABANDONED, "4",
                 YanoPropertyKeys.Validation.AMARU_MAX_MEMORY_PAGES, "1024"), 3, null));
 
-        assertThat(config.phase2()).isEqualTo(Phase2Mode.FULL);
         assertThat(config.poolSize()).isEqualTo(5);
         assertThat(config.timeout()).isEqualTo(Duration.ofMillis(750));
         assertThat(config.maxAbandoned()).isEqualTo(4);
@@ -62,10 +70,10 @@ class AmaruEngineFactoryTest {
     @Test
     void invalidSettingsAreRejected() {
         assertThatThrownBy(() -> AmaruEngineFactory.config(context(Map.of(
-                YanoPropertyKeys.Validation.AMARU_PHASE2, "julc"), 1, null)))
-                .hasMessageContaining("must be scalus or amaru");
-        assertThatThrownBy(() -> new AmaruEngineFactory().create(context(Map.of(), 1, null)))
-                .hasMessageContaining("phase2=scalus needs the Scalus phase-2 evaluator");
+                YanoPropertyKeys.Validation.AMARU_POOL_SIZE, "-1"), 1, null)))
+                .hasMessageContaining("must be >= 0");
+        assertThatThrownBy(() -> new AmaruScalusEngineFactory().create(context(Map.of(), 1, null)))
+                .hasMessageContaining("'amaru-scalus' needs the Scalus phase-2 evaluator");
     }
 
     @Test

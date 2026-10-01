@@ -6,6 +6,7 @@ import com.bloxbean.cardano.client.spec.NetworkId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.NetworkParameters;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
@@ -35,7 +36,7 @@ class AmaruOutputValueSizeTest {
             1_654_041_600_000L, 21_600, 20_000, 86_400, 432_000, 1000);
 
     private final AmaruTransactionValidator engine = new AmaruTransactionValidator(
-            AmaruEngineConfig.defaults(Phase2Mode.SCALUS, 1), AmaruNetworks.from(PREPROD),
+            LedgerValidationEngines.AMARU_SCALUS, AmaruEngineConfig.defaults(1), AmaruNetworks.from(PREPROD),
             new ScalusScriptPhaseEvaluator(), AmaruLedgerConstants.HASKELL, ScenarioSupport.wasm());
 
     @AfterEach

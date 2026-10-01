@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * ADR-057 Phase C: the ADR-056 Phase 6 devnet matrix ({@link LedgerRulesDevnetMatrix}: dependent chains in the
  * mempool and in one block, an epoch crossing with chains pending, a rollback with chains pending) with
- * {@code engine: amaru} ({@code phase2: scalus}, the default), compared with the same matrix under
+ * {@code engine: amaru-scalus} (Amaru phase one, Scalus phase two), compared with the same matrix under
  * {@code engine: java-julc}: the same admission verdicts, mempool contents, block placement and drop reasons. Every
  * block the Amaru devnet produces is re-validated by the java-julc engine and by Amaru in {@code SYNC} mode, and the two
  * must derive the same effects for every transaction. Runs with {@code -PledgerRulesGate=true}.
@@ -28,13 +28,13 @@ class AmaruDevnetParityTest {
 
     @Test
     void thePhase6DevnetMatrixGivesTheSameVerdictsAndEffectsUnderAmaruAndJava() throws Exception {
-        LedgerRulesDevnetMatrix.Report amaru = run(new DevnetGateNode.Settings("amaru", 500, 100,
+        LedgerRulesDevnetMatrix.Report amaru = run(new DevnetGateNode.Settings("amaru-scalus", 500, 100,
                 Map.of(YanoPropertyKeys.Validation.AMARU_POOL_SIZE, "2")));
         LedgerRulesDevnetMatrix.Report java = run(DevnetGateNode.Settings.of("java-julc"));
 
         assertThat(amaru.problems()).as("amaru matrix").isEmpty();
         assertThat(java.problems()).as("java matrix").isEmpty();
-        assertThat(amaru.metrics().get("revalidation.engines")).asList().containsExactly("java-julc", "amaru");
+        assertThat(amaru.metrics().get("revalidation.engines")).asList().containsExactly("java-julc", "amaru-scalus");
         assertThat(normalise(amaru.lines())).as("same verdicts, mempool states, placements and drop reasons")
                 .containsExactlyElementsOf(java.lines());
     }

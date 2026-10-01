@@ -7,9 +7,9 @@ review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
 with the decisions recorded at the end of this ADR.
 
 Implementation (2026-09-30): Phases 0–7 are done on PR #155. The Phase 7c
-public-network gate passed on preprod, preview and mainnet. Phase 8, the default
-switch, waits for the Julc release. See "Acceptance criteria" for the status of each
-criterion.
+public-network gate passed on preprod, preview and mainnet. Phase 8: the default
+switch to `java-julc` is done (2026-10-01); the rest waits for the Julc release. See
+"Acceptance criteria" for the status of each criterion.
 
 ## Date
 
@@ -889,11 +889,11 @@ block-local and ticked state.
 ```yaml
 yano:
   validation:
-    engine: scalus            # scalus | java-julc | java-scalus | amaru
-    shadow-engines: []        # e.g. [java-julc] or [java-julc, amaru]
+    engine: java-julc         # java-julc (default since Phase 8) | java-scalus | scalus | amaru-scalus | amaru
+    shadow-engines: []        # e.g. [scalus] or [scalus, amaru-scalus]
     shadow-dump-dir: ""       # when set, write a replayable bundle per disagreement
     shadow-sync: false        # validate every applied Conway (PV9+) block (observe only; Phase 7a)
-    shadow-sync-engines: java-julc # engines shadow sync runs (no experimental flag needed here);
+    shadow-sync-engines: java-julc # engines shadow sync runs;
                               # java-julc,java-scalus runs both phase-2 evaluators side by side (Phase 7c)
     shadow-sync-report: ""    # JSONL, one line per disagreement / engine failure / block finding
 ```
@@ -3726,20 +3726,31 @@ the shadow-sync findings. Julc is upgraded to `0.1.0-pre17` (group `org.julclang
 
 ### Phase 8 — Switch the default, clean up
 
-- Set `engine: java-julc`. Keep `scalus` selectable, and as a default shadow engine
-  for one release.
+- Set `engine: java-julc`. Keep `scalus` selectable. ~~Keep it as a default shadow engine
+  for one release~~ (dropped 2026-10-01, see Status below).
 - Remove the deprecated keys and profile overrides. Migrate or delete the
   Scalus-specific tests that no longer apply (`ScalusBasedTransactionValidatorTest`,
   `CertStateBridgeTest`, `YanoValueNotConservedUTxOValidatorTest` stay while
   `scalus` stays selectable).
 - Update docs, the release notes and the testkit end-to-end profiles
   (`DRepValidationTestProfile`).
-- **Status (2026-09-30): waiting.** Phase 8 starts once Julc is released with bloxbean/julc
-  PRs #219, #221, #227 and #228. On the released Julc 0.1.0-pre17, `java-julc` still gets 4
-  public-network transactions wrong. They are pinned as canaries
-  (`JulcPublicNetworkTest.knownJulcDeviationsStillFail`), which fail once the catalog moves to
-  a fixed Julc. Until then the Java engines stay behind
-  `yano.validation.java-engine.experimental`.
+- **Status (2026-10-01): default switched; the rest waits.** The first bullet is done:
+  `yano.validation.engine` defaults to `java-julc` (code, `application.yml` and the profiles
+  that follow it), and the `yano.validation.java-engine.experimental` gate is removed. `scalus`
+  stays selectable but is not a default shadow engine: a default `shadow-engines: scalus` would
+  refuse the rollback setting `engine: scalus` (an engine cannot shadow itself) unless
+  special-cased, adds a second validation and snapshot per admission, and reports known
+  disagreements on governance, which Scalus does not model; shadow sync already gives the
+  evidence. `DRepValidationTestProfile` sets `engine: scalus`, since it tests the
+  supplementary rules of the legacy validator. Block building follows the admission engine:
+  with `java-julc` the mempool is a `LedgerMempool` and block selection validates through it
+  (Phase 6b); only `engine: scalus` keeps the legacy selector and `BlockBuildUtxoOverlay`.
+  The rest of Phase 8 (the deprecated keys and profile overrides, the Scalus-specific tests,
+  the release notes) waits for the Julc release with bloxbean/julc PRs #219, #221, #227 and
+  #228: the Julc bump, after which the 4 `KNOWN_JULC_DEVIATIONS` canaries
+  (`JulcPublicNetworkTest.knownJulcDeviationsStillFail`) fail and are removed. On the
+  released Julc 0.1.0-pre17, `java-julc` still gets those 4 public-network transactions
+  wrong.
 
 ## Acceptance criteria
 
@@ -3783,9 +3794,9 @@ Out of scope for PR #155:
 
 ## Rollback plan
 
-- **Behaviour.** Until Phase 8, `engine: scalus` is the default, so a
-  regression in the Java engine is contained by configuration. After Phase 8,
-  set `yano.validation.engine=scalus` to roll back without a redeploy of code.
+- **Behaviour.** Since Phase 8 (2026-10-01) `java-julc` is the default. To roll
+  back, set `yano.validation.engine=scalus`: the legacy validator, mempool and
+  block selector return, without a redeploy of code.
 - **Module rename.** Phase 0 is mechanical and isolated in `a77c49bed`.
   Reverting it restores `ccl-ledger-rules`. The BOM entry for `yano-ccl-ledger-rules` is
   dropped only in the final merge, and the release notes list it.
