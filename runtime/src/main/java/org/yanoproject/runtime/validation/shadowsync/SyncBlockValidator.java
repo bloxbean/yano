@@ -273,7 +273,9 @@ public final class SyncBlockValidator {
         try {
             return engine.validate(new TxValidationRequest(tx, view, env, TxValidationRequest.Rule.LEDGER,
                     TxValidationRequest.Origin.SYNC, null));
-        } catch (RuntimeException | LinkageError e) {
+        } catch (RuntimeException | LinkageError | StackOverflowError e) {
+            // A deeply nested transaction can overflow a recursive decoder (preprod block 5183974): an engine
+            // failure for this transaction, not a lost block.
             return TxValidationOutcome.Invalid.of(new LedgerFailure(LedgerRuleName.ENGINE, ENGINE_THREW,
                     LedgerFailure.Phase.PHASE_1, e.toString()));
         }
@@ -317,7 +319,7 @@ public final class SyncBlockValidator {
         }
         try {
             return deriver.derive(tx, overlay, env, phase2Valid);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | StackOverflowError e) {
             return null;
         }
     }
@@ -335,7 +337,7 @@ public final class SyncBlockValidator {
                     TxValidationRequest.Origin.SYNC, env, new RecordedOutcome(CHAIN, true, List.of()),
                     RecordedOutcome.of(engine.name(), replayed), recording.reads());
             return dumper.write(bundle);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | StackOverflowError e) {
             return null;
         }
     }
@@ -347,7 +349,7 @@ public final class SyncBlockValidator {
             RawTransaction t;
             try {
                 t = RawTransaction.parse(tx, CclTransactions.deserialize(tx));
-            } catch (Exception e) {
+            } catch (Exception | StackOverflowError e) {
                 t = null;
             }
             decoded.add(t);

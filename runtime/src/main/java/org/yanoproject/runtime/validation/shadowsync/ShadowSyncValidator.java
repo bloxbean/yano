@@ -299,7 +299,8 @@ public final class ShadowSyncValidator implements AutoCloseable {
                 report.record(ref, (int) env.currentEpoch(), parentEpoch >= 0 && parentEpoch < env.currentEpoch(),
                         result, System.nanoTime() - started);
             }
-        } catch (RuntimeException | LinkageError e) {
+        } catch (RuntimeException | LinkageError | StackOverflowError e) {
+            // Recorded and counted like any failed block; the virtual thread must not die with the job unsettled.
             failed(job, txCount, "shadow sync failed: " + e);
         } finally {
             finish(job);
