@@ -305,7 +305,7 @@ One network Ada-pot snapshot per epoch. Logical row key: `epoch`.
 | `epoch` | `BIGINT` | No | Semantic epoch represented by the pot snapshot. |
 | `treasury` | `BIGINT` | No | Treasury balance in lovelace. |
 | `reserves` | `BIGINT` | No | Reserves balance in lovelace. |
-| `deposits` | `BIGINT` | No | Deposit pot balance in lovelace. |
+| `deposits` | `BIGINT` | No | Deposit pot balance in lovelace: the ledger's `utxosDeposited`, the stake-key, pool, DRep and proposal deposits (ADR-058). Archived from a chainstate synced before ADR-058, it counts only stake-key and DRep deposits. |
 | `fees` | `BIGINT` | No | Fee pot balance in lovelace. |
 | `distributed` | `BIGINT` | No | Reward amount distributed at the boundary. |
 | `undistributed` | `BIGINT` | No | Calculated reward amount not distributed. |

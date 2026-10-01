@@ -49,6 +49,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -1188,10 +1189,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     private int getProtocolMajor(int epoch) {
-        if (paramTracker != null && paramTracker.isEnabled()) {
-            return paramTracker.getProtocolMajor(epoch);
-        }
-        return epochParamProvider.getProtocolMajor(epoch);
+        return effectiveParams().getProtocolMajor(epoch);
+    }
+
+    /** The epoch-effective parameters: the tracker when enabled, otherwise the base provider. */
+    private EpochParamProvider effectiveParams() {
+        return paramTracker != null && paramTracker.isEnabled() ? paramTracker : epochParamProvider;
     }
 
     private int epochForSlot(long slot) {
@@ -1313,6 +1316,93 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         } catch (RocksDBException e) {
             throw ledgerStateReadFailure("getTotalDeposited", e);
         }
+    }
+
+    /**
+     * The deposit obligations of the current state, as Haskell's {@code allObligations} (ADR-058).
+     * <ul>
+     *   <li>pools: the lifecycle deposit of every registered or retiring pool ({@code PREFIX_POOL_DEPOSIT});</li>
+     *   <li>DReps: the deposit of every registered DRep ({@code PREFIX_DREP_REG});</li>
+     *   <li>stake keys: {@code total_dep} minus the DRep deposits. The certificate branches that write and delete
+     *       {@code PREFIX_DREP_REG} are the only DRep moves of {@code total_dep}, so the difference is the sum of
+     *       the stake-account deposits, without scanning every account;</li>
+     *   <li>proposals: the deposit of every proposal still in governance state.</li>
+     * </ul>
+     * Reads committed state only: the epoch boundary calls it after every phase has committed.
+     */
+    public LedgerStateProvider.DepositObligations depositObligations() {
+        try (ReadOptions options = new ReadOptions()) {
+            BigInteger totalDeposited = getTotalDeposited();
+            BigInteger dreps = sumDeposits(options, PREFIX_DREP_REG,
+                    AccountStateCborCodec::decodeDRepDeposit).total();
+            BigInteger pools = sumDeposits(options, PREFIX_POOL_DEPOSIT,
+                    AccountStateCborCodec::decodePoolDeposit).total();
+            BigInteger stakeKeys = totalDeposited.subtract(dreps);
+            if (stakeKeys.signum() < 0) {
+                throw new IllegalStateException("DRep deposits " + dreps + " exceed the total deposited "
+                        + totalDeposited + "; the deposit state is corrupt, resync from genesis");
+            }
+            BigInteger proposals = BigInteger.ZERO;
+            if (governanceBlockProcessor != null) {
+                for (var proposal : governanceBlockProcessor.getGovernanceStore().getAllActiveProposals().values()) {
+                    proposals = proposals.add(proposal.deposit());
+                }
+            }
+            return new LedgerStateProvider.DepositObligations(stakeKeys, pools, dreps, proposals);
+        } catch (RocksDBException e) {
+            throw ledgerStateReadFailure("depositObligations", e);
+        }
+    }
+
+    /**
+     * A consistent read-only audit of the deposit state at the tip, to check a synced chainstate against its
+     * AdaPot categories (ADR-058). It scans every stake account, so it is for operators, not hot paths.
+     *
+     * @param totalDeposited  {@code total_dep}: stake-key plus DRep deposits
+     * @param accountDeposits the sum of every stake account's deposit
+     * @param drepDeposits    the sum of the registered DReps' deposits
+     * @param poolCount       registered or retiring pools
+     * @param poolDeposits    the sum of their lifecycle deposits
+     */
+    public record DepositAudit(BigInteger totalDeposited, long accountCount, BigInteger accountDeposits,
+                               long drepCount, BigInteger drepDeposits, long poolCount, BigInteger poolDeposits) {
+        /** @return true when the per-account deposits add up to the stake-key share of {@code total_dep} */
+        public boolean stakeKeysConsistent() {
+            return accountDeposits.equals(totalDeposited.subtract(drepDeposits));
+        }
+    }
+
+    public DepositAudit auditDeposits() {
+        Snapshot snapshot = db.getSnapshot();
+        try (ReadOptions options = new ReadOptions().setFillCache(false).setSnapshot(snapshot)) {
+            byte[] total = db.get(cfState, options, META_TOTAL_DEPOSITED);
+            DepositSum accounts = sumDeposits(options, PREFIX_ACCT,
+                    value -> AccountStateCborCodec.decodeStakeAccount(value).deposit());
+            DepositSum dreps = sumDeposits(options, PREFIX_DREP_REG, AccountStateCborCodec::decodeDRepDeposit);
+            DepositSum pools = sumDeposits(options, PREFIX_POOL_DEPOSIT, AccountStateCborCodec::decodePoolDeposit);
+            return new DepositAudit(total != null ? new BigInteger(1, total) : BigInteger.ZERO,
+                    accounts.count(), accounts.total(), dreps.count(), dreps.total(),
+                    pools.count(), pools.total());
+        } catch (RocksDBException e) {
+            throw ledgerStateReadFailure("auditDeposits", e);
+        } finally {
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    private record DepositSum(long count, BigInteger total) {}
+
+    /** Count and sum the deposits of every record under a one-byte key prefix. */
+    private DepositSum sumDeposits(ReadOptions options, byte prefix, Function<byte[], BigInteger> deposit) {
+        long count = 0;
+        BigInteger total = BigInteger.ZERO;
+        try (RocksIterator it = db.newIterator(cfState, options)) {
+            for (it.seek(new byte[]{prefix}); it.isValid() && it.key()[0] == prefix; it.next()) {
+                count++;
+                total = total.add(deposit.apply(it.value()));
+            }
+        }
+        return new DepositSum(count, total);
     }
 
     @Override
@@ -1912,7 +2002,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 pot.distributed(),
                 pot.undistributed(),
                 pot.rewardsPot(),
-                pot.poolRewardsPot()
+                pot.poolRewardsPot(),
+                pot.depositObligations()
         );
     }
 
@@ -2827,10 +2918,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
             BigInteger poolDeposit = shelley.poolDeposit();
             BigInteger keyDeposit = shelley.keyDeposit();
-            BigInteger genesisDeposits = poolDeposit.multiply(BigInteger.valueOf(pools.size()))
-                    .add(keyDeposit.multiply(BigInteger.valueOf(delegations.size())));
+            // total_dep counts stake-key and DRep deposits only. Pool deposits are summed from the pool
+            // records when the AdaPot is finalised (ADR-058), so the genesis pools must not be added here.
+            BigInteger genesisKeyDeposits = keyDeposit.multiply(BigInteger.valueOf(delegations.size()));
+            BigInteger genesisPoolDeposits = poolDeposit.multiply(BigInteger.valueOf(pools.size()));
             BigInteger totalBefore = getTotalDeposited();
-            BigInteger totalAfter = totalBefore.add(genesisDeposits);
+            BigInteger totalAfter = totalBefore.add(genesisKeyDeposits);
 
             try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
                 int activeEpoch = 0;
@@ -2877,9 +2970,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                                     genesisSlot, 0, certIdx));
                 }
 
-                if (genesisDeposits.signum() > 0) {
+                if (genesisKeyDeposits.signum() > 0 || genesisPoolDeposits.signum() > 0) {
                     batch.put(cfState, META_TOTAL_DEPOSITED, totalDepositedToBytes(totalAfter));
-                    putGenesisAdaPotDeposits(event.epoch(), shelley, totalAfter, batch);
+                    putGenesisAdaPotDeposits(event.epoch(), shelley, new LedgerStateProvider.DepositObligations(
+                            totalAfter, genesisPoolDeposits, BigInteger.ZERO, BigInteger.ZERO), batch);
                 }
 
                 batch.put(cfState, META_GENESIS_STAKING_BOOTSTRAP,
@@ -2887,8 +2981,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 db.write(wo, batch);
             }
 
-            log.info("Genesis staking bootstrapped: pools={}, delegations={}, deposits={}, totalDeposited={}",
-                    pools.size(), delegations.size(), genesisDeposits, totalAfter);
+            log.info("Genesis staking bootstrapped: pools={}, delegations={}, keyDeposits={}, poolDeposits={}",
+                    pools.size(), delegations.size(), genesisKeyDeposits, genesisPoolDeposits);
         } catch (RocksDBException e) {
             log.error("genesis staking bootstrap failed", e);
             throw new IllegalStateException("genesis staking bootstrap failed", e);
@@ -3035,7 +3129,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return key;
     }
 
-    private void putGenesisAdaPotDeposits(int epoch, ShelleyGenesisBootstrap shelley, BigInteger totalDeposited,
+    private void putGenesisAdaPotDeposits(int epoch, ShelleyGenesisBootstrap shelley,
+                                          LedgerStateProvider.DepositObligations obligations,
                                           WriteBatch batch) throws RocksDBException {
         if (adaPotTracker == null || !adaPotTracker.isEnabled()) return;
 
@@ -3043,20 +3138,16 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         byte[] existing = db.get(cfState, key);
         AccountStateCborCodec.AdaPot pot;
         if (existing != null) {
-            var current = AccountStateCborCodec.decodeAdaPot(existing);
-            pot = new AccountStateCborCodec.AdaPot(
-                    current.treasury(), current.reserves(), totalDeposited,
-                    current.fees(), current.distributed(), current.undistributed(),
-                    current.rewardsPot(), current.poolRewardsPot());
+            pot = AccountStateCborCodec.decodeAdaPot(existing);
         } else {
             BigInteger reserves = shelley.maxLovelaceSupply().subtract(shelley.initialFundsTotal());
             if (reserves.signum() < 0) reserves = BigInteger.ZERO;
             pot = new AccountStateCborCodec.AdaPot(
-                    BigInteger.ZERO, reserves, totalDeposited,
+                    BigInteger.ZERO, reserves, BigInteger.ZERO,
                     BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO,
                     BigInteger.ZERO, BigInteger.ZERO);
         }
-        batch.put(cfState, key, AccountStateCborCodec.encodeAdaPot(pot));
+        batch.put(cfState, key, AccountStateCborCodec.encodeAdaPot(pot.withDepositObligations(obligations)));
     }
 
     private static String genesisMarkerIdentity(String genesisHash) {
@@ -3245,7 +3336,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (totalDepositedDelta.signum() != 0) {
                 BigInteger current = getTotalDeposited();
                 BigInteger updated = current.add(totalDepositedDelta);
-                if (updated.signum() < 0) updated = BigInteger.ZERO;
+                if (updated.signum() < 0) {
+                    // Every refund subtracts a deposit this counter added, so a negative total means the
+                    // stake-key or DRep deposit state is corrupt; do not hide it.
+                    throw new IllegalStateException("Total deposited would become negative at block " + blockNo
+                            + ": current=" + current + ", delta=" + totalDepositedDelta
+                            + "; the deposit state is corrupt, resync from genesis");
+                }
 
                 byte[] prev = totalDepositedToBytes(current);
                 byte[] newVal = totalDepositedToBytes(updated);
@@ -3284,7 +3381,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         switch (cert) {
             case StakeRegistration sr -> {
                 depositDelta = registerStake(sr.getStakeCredential(),
-                        epochParamProvider.getKeyDeposit(0), slot, txIdx, certIdx, batch, deltaOps,
+                        effectiveParams().getKeyDeposit(currentEpoch), slot, txIdx, certIdx, batch, deltaOps,
                         blockStateOverlay);
             }
             case RegCert rc -> {
@@ -3356,7 +3453,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 boolean isNewPool = prev == null;
                 boolean treatAsFreshRegistration = isNewPool || reRegisteredAfterRetirement;
                 BigInteger lifecycleDeposit = treatAsFreshRegistration
-                        ? epochParamProvider.getPoolDeposit(currentEpoch)
+                        ? effectiveParams().getPoolDeposit(currentEpoch)
                         : AccountStateCborCodec.decodePoolRegistration(prev).deposit();
 
                 var margin = params.getMargin();

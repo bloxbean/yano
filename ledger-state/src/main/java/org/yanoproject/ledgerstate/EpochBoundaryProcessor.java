@@ -1,6 +1,7 @@
 package org.yanoproject.ledgerstate;
 
 import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.api.account.LedgerStateProvider.DepositObligations;
 import org.yanoproject.ledgerstate.UtxoBalanceAggregator;
 import org.yanoproject.api.archive.EpochArchiveStagingSink;
 import org.yanoproject.ledgerstate.governance.epoch.GovernanceEpochProcessor;
@@ -159,7 +160,8 @@ public class EpochBoundaryProcessor {
                     BigInteger adjustedTreasury = pot.treasury().add(treasuryDelta);
                     var adjustedPot = new AccountStateCborCodec.AdaPot(adjustedTreasury, pot.reserves(),
                             pot.deposits(), pot.fees(), pot.distributed(),
-                            pot.undistributed(), pot.rewardsPot(), pot.poolRewardsPot());
+                            pot.undistributed(), pot.rewardsPot(), pot.poolRewardsPot(),
+                            pot.depositObligations());
                     adaPotTracker.storeAdaPotBatch(epoch, adjustedPot, batch, deltaOps, snapshotCreator);
                 }
             });
@@ -553,27 +555,29 @@ public class EpochBoundaryProcessor {
             }
         }
 
-        // 7. Verify final AdaPot (after both reward calculation and governance adjustment)
+        // 7. Finalise the deposit pot, then verify the final AdaPot (after both reward calculation and
+        //    governance adjustment)
         try (var ignored = telemetry.phase("artifact-finalize")) {
-            if (adaPotTracker != null && adaPotTracker.isEnabled() && newEpoch >= 2) {
-                var finalPot = adaPotTracker.getAdaPot(newEpoch);
-                if (finalPot.isPresent()) {
-                    verifyAdaPot(newEpoch, finalPot.get().treasury(), finalPot.get().reserves());
+            Optional<AccountStateCborCodec.AdaPot> finalPot = Optional.empty();
+            if (adaPotTracker != null && adaPotTracker.isEnabled()) {
+                finalPot = adaPotTracker.getAdaPot(newEpoch).map(pot -> finalizeDeposits(newEpoch, pot));
+            }
+            if (finalPot.isPresent() && newEpoch >= 2) {
+                var p = finalPot.get();
+                verifyAdaPot(newEpoch, p.treasury(), p.reserves());
 
-                    // ADR-039: record the artifact against the same final value the legacy staging
-                    // path below writes, so both pipelines describe the identical pot.
-                    if (snapshotCreator != null) {
-                        snapshotCreator.contributeAdaPotArtifact(newEpoch, finalPot.get());
-                    }
+                // ADR-039: record the artifact against the same final value the legacy staging
+                // path below writes, so both pipelines describe the identical pot.
+                if (snapshotCreator != null) {
+                    snapshotCreator.contributeAdaPotArtifact(newEpoch, p);
+                }
 
-                    if (archiveStaging.enabled(EpochArchiveStagingSink.Dataset.ADA_POT)) {
-                        var p = finalPot.get();
-                        try (var writer = archiveStaging.openAdaPot(newEpoch)) {
-                            writer.append(new EpochArchiveStagingSink.AdaPotFact(
-                                    p.treasury(), p.reserves(), p.deposits(), p.fees(),
-                                    p.distributed(), p.undistributed(), p.rewardsPot(), p.poolRewardsPot()));
-                            writer.commit();
-                        }
+                if (archiveStaging.enabled(EpochArchiveStagingSink.Dataset.ADA_POT)) {
+                    try (var writer = archiveStaging.openAdaPot(newEpoch)) {
+                        writer.append(new EpochArchiveStagingSink.AdaPotFact(
+                                p.treasury(), p.reserves(), p.deposits(), p.fees(),
+                                p.distributed(), p.undistributed(), p.rewardsPot(), p.poolRewardsPot()));
+                        writer.commit();
                     }
                 }
             }
@@ -651,7 +655,8 @@ public class EpochBoundaryProcessor {
         // Get previous AdaPot
         BigInteger prevTreasury = BigInteger.ZERO;
         BigInteger prevReserves = BigInteger.ZERO;
-        BigInteger currentDeposits = BigInteger.ZERO;
+        // Placeholder until step 7 finalises the deposit pot from the post-POOLREAP, post-governance state
+        BigInteger previousDeposits = BigInteger.ZERO;
 
         if (adaPotTracker != null && adaPotTracker.isEnabled()) {
             var prevPot = adaPotTracker.getAdaPot(previousEpoch);
@@ -664,15 +669,11 @@ public class EpochBoundaryProcessor {
             if (prevPot.isPresent()) {
                 prevTreasury = prevPot.get().treasury();
                 prevReserves = prevPot.get().reserves();
-                currentDeposits = prevPot.get().deposits();
+                previousDeposits = prevPot.get().deposits();
             } else {
                 throw new IllegalStateException("No AdaPot found for previous epoch " + previousEpoch
                         + "; reward calculation cannot proceed with zero treasury/reserves");
             }
-        }
-
-        if (snapshotCreator != null) {
-            currentDeposits = snapshotCreator.getTotalDeposited();
         }
 
         // Resolve param provider (prefer tracker if available)
@@ -695,7 +696,7 @@ public class EpochBoundaryProcessor {
                 var newPot = new AccountStateCborCodec.AdaPot(
                         result.getTreasury(),
                         result.getReserves(),
-                        currentDeposits,
+                        previousDeposits,
                         rewardCalculator.getEpochFees(newEpoch - 1),
                         result.getTotalDistributedRewards(),
                         result.getTotalUndistributedRewards() != null
@@ -714,6 +715,30 @@ public class EpochBoundaryProcessor {
         } catch (org.rocksdb.RocksDBException e) {
             throw new RuntimeException("Failed to commit reward boundary delta for epoch " + newEpoch, e);
         }
+    }
+
+    /**
+     * Set the epoch's deposit pot to Haskell's {@code totalObligation} of the state after this boundary (ADR-058):
+     * POOLREAP and governance have committed, and no block of the new epoch has been applied yet, so the
+     * obligations are those {@code EPOCH} writes into {@code utxosDeposited} and db-sync records for the epoch.
+     * <p>
+     * Every earlier phase has committed its own batch, so there is no pending batch here, and this write is not
+     * journaled. Rollback still removes it: the rewards phase journaled this key with its pre-boundary value
+     * (absent), which undoing the boundary restores, and {@code rollbackInternal} deletes every AdaPot beyond the
+     * rollback target's epoch. Recomputing it on a resume reads the same committed state.
+     * <p>
+     * The exception is {@link #processEpochBoundary}'s "re-processing first" path: an incomplete earlier boundary
+     * re-processed after an epoch of blocks reads that later state here, like the other steps it re-runs.
+     */
+    private AccountStateCborCodec.AdaPot finalizeDeposits(int epoch, AccountStateCborCodec.AdaPot pot) {
+        if (snapshotCreator == null) return pot;
+        var obligations = snapshotCreator.depositObligations();
+        var finalPot = pot.withDepositObligations(obligations);
+        adaPotTracker.storeAdaPot(epoch, finalPot);
+        log.info("AdaPot deposits for epoch {}: total={}, stakeKeys={}, pools={}, dreps={}, proposals={}",
+                epoch, obligations.total(), obligations.stakeKeys(), obligations.pools(), obligations.dreps(),
+                obligations.proposals());
+        return finalPot;
     }
 
     private boolean shouldCalculateRewards(int newEpoch) {
@@ -852,14 +877,15 @@ public class EpochBoundaryProcessor {
         if (initialReserves == null) initialReserves = BigInteger.ZERO;
         if (initialTreasury == null) initialTreasury = BigInteger.ZERO;
 
-        BigInteger deposits = snapshotCreator != null ? snapshotCreator.getTotalDeposited() : BigInteger.ZERO;
-
+        // No Shelley certificate precedes the Shelley start, so the pot starts with no deposit obligations
+        // (a devnet with genesis staking already has its genesis pot and does not reach here)
+        var noDeposits = new DepositObligations(BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO);
         var pot = new AccountStateCborCodec.AdaPot(
                 initialTreasury, initialReserves,
-                deposits, BigInteger.ZERO, BigInteger.ZERO,
-                BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO);
+                BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO,
+                BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO).withDepositObligations(noDeposits);
         adaPotTracker.storeAdaPot(shelleyStartEpoch, pot);
-        log.info("AdaPot bootstrapped at shelley start epoch {}: treasury={}, reserves={}, deposits={}",
-                shelleyStartEpoch, initialTreasury, initialReserves, deposits);
+        log.info("AdaPot bootstrapped at shelley start epoch {}: treasury={}, reserves={}",
+                shelleyStartEpoch, initialTreasury, initialReserves);
     }
 }

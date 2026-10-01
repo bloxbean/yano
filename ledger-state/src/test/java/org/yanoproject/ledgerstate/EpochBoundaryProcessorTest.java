@@ -1,6 +1,16 @@
 package org.yanoproject.ledgerstate;
 
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Credential;
+import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.certs.RegCert;
+import com.bloxbean.cardano.yaci.core.model.certs.RegDrepCert;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeCredType;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeCredential;
 import org.yanoproject.api.CanonicalBlockReference;
+import org.yanoproject.api.account.LedgerStateProvider.DepositObligations;
+import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.api.archive.EpochArchiveStagingSink;
 import org.yanoproject.api.utxo.StakeBalanceView;
 import org.yanoproject.api.utxo.StakeCredentialBalance;
@@ -15,6 +25,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
@@ -96,6 +108,55 @@ class EpochBoundaryProcessorTest {
 
             method.invoke(processor, 1);
             assertThat(adaPotTracker.getAdaPot(0)).isPresent();
+        }
+    }
+
+    @Test
+    void depositFinalisationStoresTheObligationsWithoutAnArtifactCapture() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var adaPotTracker = new AdaPotTracker(rocks.db(), rocks.cfState(), true,
+                    BigInteger.valueOf(45_000_000_000_000_000L));
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(EpochBoundaryProcessorTest.class), true);
+            var block = Block.builder()
+                    .transactionBodies(new ArrayList<>(List.of(
+                            TransactionBody.builder()
+                                    .certificates(new ArrayList<>(List.of(
+                                            RegCert.builder()
+                                                    .stakeCredential(StakeCredential.builder()
+                                                            .type(StakeCredType.ADDR_KEYHASH)
+                                                            .hash("a1".repeat(28)).build())
+                                                    .coin(BigInteger.TWO).build(),
+                                            RegDrepCert.builder()
+                                                    .drepCredential(Credential.builder()
+                                                            .type(StakeCredType.ADDR_KEYHASH)
+                                                            .hash("d3".repeat(28)).build())
+                                                    .coin(BigInteger.valueOf(500)).build())))
+                                    .build())))
+                    .build();
+            store.applyBlock(new BlockAppliedEvent(Era.Conway, 100, 1, "b1", block));
+            // The rewards step's placeholder: the previous pot's deposits, no categories
+            adaPotTracker.storeAdaPot(5, new AccountStateCborCodec.AdaPot(BigInteger.ONE, BigInteger.TEN,
+                    BigInteger.valueOf(7), BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO, BigInteger.ZERO,
+                    BigInteger.ZERO));
+            var processor = new EpochBoundaryProcessor(adaPotTracker, null, null, null, 2L, null);
+            processor.setSnapshotCreator(store);
+
+            Method method = EpochBoundaryProcessor.class.getDeclaredMethod("finalizeDeposits", int.class,
+                    AccountStateCborCodec.AdaPot.class);
+            method.setAccessible(true);
+            method.invoke(processor, 5, adaPotTracker.getAdaPot(5).orElseThrow());
+
+            var pot = adaPotTracker.getAdaPot(5).orElseThrow();
+            assertThat(pot.depositObligations()).isEqualTo(new DepositObligations(
+                    BigInteger.TWO, BigInteger.ZERO, BigInteger.valueOf(500), BigInteger.ZERO));
+            assertThat(pot.deposits()).isEqualTo(BigInteger.valueOf(502));
+            assertThat(pot.treasury()).isEqualTo(BigInteger.ONE);
+            assertThat(pot.reserves()).isEqualTo(BigInteger.TEN);
+
+            // A resume re-runs the step on the same committed state and writes the same pot
+            method.invoke(processor, 5, pot);
+            assertThat(adaPotTracker.getAdaPot(5).orElseThrow()).isEqualTo(pot);
         }
     }
 

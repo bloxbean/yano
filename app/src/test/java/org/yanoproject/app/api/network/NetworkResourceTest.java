@@ -84,7 +84,8 @@ class NetworkResourceTest {
                             BigInteger.ZERO,
                             BigInteger.ZERO,
                             BigInteger.ZERO,
-                            BigInteger.ZERO));
+                            BigInteger.ZERO,
+                            null));
                     case "getLatestSnapshotEpoch" -> stakeAvailable ? 42 : -1;
                     case "getTotalActiveStake" -> stakeAvailable
                             ? Optional.of(BigInteger.valueOf(12345))
