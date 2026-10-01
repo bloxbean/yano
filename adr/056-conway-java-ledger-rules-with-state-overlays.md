@@ -3031,6 +3031,17 @@ shadow sync on `java-julc,java-scalus`, reached the tip with:
 | preprod, tip epoch 316 | 4,240,097 | all agreed | all agreed | 0 |
 | preview, tip epoch 1435 | 2,117,011 | all agreed | all agreed | 0 |
 
+*Correction (2026-10-01):* one preprod block was not validated in this run, or in the later preprod runs. Block
+5183974 carries tx `f90dce57…`, a 16,181-byte transaction with a native script nested 5,383 levels deep, which
+Haskell accepts. It overflowed the stack of a recursive CBOR decoder on the shadow-sync thread, and that thread
+caught only `RuntimeException | LinkageError`. The thread died with the block unsettled, and no failure counter moved
+(the native run later showed `submitted` one above `validated`). Only the observer lost the block:
+- ledger application, which parses through Yaci's iterative fallback, applied it;
+- all 23 transactions' inputs and outputs and all 78 outputs' spent status match Koios.
+
+Shadow sync now catches `StackOverflowError` per transaction and per block, and reports an engine failure instead.
+The decoders themselves are still recursive; making them iterative is tracked separately.
+
 - The built-in AdaPot verification (treasury and reserves against `expected_ada_pots_{preprod,preview}.json`) passed at
   every epoch boundary on both networks.
 - A read-only comparison with Koios matched:

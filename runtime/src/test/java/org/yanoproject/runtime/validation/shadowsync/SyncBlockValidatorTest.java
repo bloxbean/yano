@@ -130,6 +130,21 @@ class SyncBlockValidatorTest {
     }
 
     @Test
+    void aStackOverflowIsAnEngineFailureForThatTransactionOnly() {
+        LedgerValidationEngine overflowsOnFirst = engine("java-julc", request -> {
+            if (indexOf(request.txCbor()) == 0) {
+                throw new StackOverflowError();
+            }
+            return valid(request.txCbor(), true);
+        });
+        List<TxResult> txs = validator.validate(block(2, Set.of()), base(10), env(10), List.of(overflowsOnFirst), null)
+                .engines().getFirst().txs();
+        assertThat(txs.get(0).kind()).isEqualTo(Kind.ENGINE_FAILURE);
+        assertThat(txs.get(0).actual()).isEqualTo("ENGINE." + SyncBlockValidator.ENGINE_THREW);
+        assertThat(txs.get(1).kind()).isEqualTo(Kind.AGREED);
+    }
+
+    @Test
     void aFindingWhoseEffectsCannotBeRecoveredTaintsTheRestOfTheBlock() {
         // Placeholder transactions do not decode, so the chain's effects of a rejected one cannot be derived.
         LedgerValidationEngine rejectsSecond = engine("java-julc", request -> indexOf(request.txCbor()) == 1
