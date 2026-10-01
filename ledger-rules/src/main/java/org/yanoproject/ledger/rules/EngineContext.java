@@ -38,8 +38,8 @@ public interface EngineContext {
     LongSupplier currentSlot();
 
     /**
-     * @return the node's Scalus phase-2 evaluator (engines {@code java-scalus} and {@code amaru} with
-     *         {@code phase2: scalus}), or {@code null} when none is available; engines that delegate Plutus execution
+     * @return the node's Scalus phase-2 evaluator (engines {@code java-scalus} and {@code amaru-scalus}), or
+     *         {@code null} when none is available; engines that delegate Plutus execution
      *         must then fail closed on transactions that need it
      */
     ScriptPhaseEvaluator scriptPhaseEvaluator();

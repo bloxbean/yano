@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.model.FundResult;
 import org.yanoproject.api.utxo.model.Outpoint;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxIdentity;
 import org.yanoproject.devnet.YanoDevnetAssembly;
 import org.yanoproject.runtime.assembly.Yano;
@@ -29,16 +30,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * ADR-056 step 1d / ADR-057 Phase B: a devnet whose mempool admission runs through
- * {@code yano.validation.engine=amaru} (the real module, {@code phase2: scalus}), with the canonical snapshot,
+ * {@code yano.validation.engine=amaru-scalus} or {@code amaru} (the real module), with the canonical snapshot,
  * ticked view and mempool overlay of the runtime wiring.
  */
 class AmaruDevnetAdmissionTest {
 
     @Test
+    void paymentsAreJudgedByTheAmaruScalusEngine() throws Exception {
+        paymentsAreJudgedBy(LedgerValidationEngines.AMARU_SCALUS);
+    }
+
+    @Test
     void paymentsAreJudgedByTheAmaruEngine() throws Exception {
+        paymentsAreJudgedBy(LedgerValidationEngines.AMARU);
+    }
+
+    private static void paymentsAreJudgedBy(String engineId) throws Exception {
         YanoDevnetTestConfig config = YanoDevnetTestConfig.builder()
                 .temporaryRocksDbStorage()
-                .runtimeOption(YanoPropertyKeys.Validation.ENGINE, "amaru")
+                .runtimeOption(YanoPropertyKeys.Validation.ENGINE, engineId)
                 .runtimeOption(YanoPropertyKeys.Validation.AMARU_POOL_SIZE, "1")
                 .build();
         try (config; Yano node = YanoDevnetAssembly.devnet(config.yanoConfig())
@@ -48,7 +58,7 @@ class AmaruDevnetAdmissionTest {
                 .build()) {
             node.start();
             ValidationEngines engines = node.validationEngines().orElseThrow();
-            assertThat(engines.admissionEngine().name()).isEqualTo("amaru");
+            assertThat(engines.admissionEngine().name()).isEqualTo(engineId);
 
             Account payer = new Account(Networks.testnet());
             FundResult funded = node.devnetControl().orElseThrow().fundAddress(payer.baseAddress(), 10_000_000_000L);

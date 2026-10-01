@@ -43,6 +43,7 @@ class ShadowSyncBothEvaluatorsTest {
     @Test
     void createsJavaJulcAndJavaScalusForShadowSyncWithoutTouchingAdmission() {
         Map<String, Object> globals = Map.of(
+                YanoPropertyKeys.Validation.ENGINE, "scalus",
                 YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
                 YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES, "java-julc, java-scalus");
         ValidationEngineSettings settings = ValidationEngineSettings.fromGlobals(globals);

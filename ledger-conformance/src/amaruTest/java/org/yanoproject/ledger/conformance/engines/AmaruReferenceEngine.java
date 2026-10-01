@@ -8,13 +8,13 @@ import org.yanoproject.ledger.amaru.AmaruNetworkParameters.EraSummary;
 import org.yanoproject.ledger.amaru.AmaruNetworkParameters.GlobalParameters;
 import org.yanoproject.ledger.amaru.AmaruNetworks;
 import org.yanoproject.ledger.amaru.AmaruTransactionValidator;
-import org.yanoproject.ledger.amaru.Phase2Mode;
 import org.yanoproject.ledger.amaru.runtime.WasmAmaruInstance;
 import org.yanoproject.ledger.conformance.ConformanceSettings;
 import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
 import org.yanoproject.ledger.conformance.runner.Observation;
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.NetworkParameters;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
@@ -25,7 +25,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * The reference engine: {@link AmaruTransactionValidator} in {@code full} mode (Amaru runs the scripts too) on
+ * The reference engine: {@link AmaruTransactionValidator} as engine {@code amaru} (Amaru runs the scripts too) on
  * the Endive AOT module, one engine per network and constants, as the ADR-057 Phase B gate builds it. Only in
  * {@code -PwithAmaru=true} builds.
  */
@@ -53,7 +53,7 @@ public final class AmaruReferenceEngine implements ConformanceEngine {
 
     @Override
     public String description() {
-        return "AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057); module crate "
+        return "AmaruTransactionValidator, engine amaru, Endive AOT (reference; ADR-057); module crate "
                 + ConformanceSettings.amaruCrateVersion().orElse("?") + ", sha256 "
                 + ConformanceSettings.amaruWasmSha256().orElse("?");
     }
@@ -63,8 +63,9 @@ public final class AmaruReferenceEngine implements ConformanceEngine {
         AmaruNetworkParameters network = network(testCase.network());
         AmaruLedgerConstants constants = constants(testCase.constants());
         AmaruTransactionValidator engine = ENGINES.computeIfAbsent(network + "|" + constants,
-                key -> new AmaruTransactionValidator(AmaruEngineConfig.defaults(Phase2Mode.FULL, 2), network, null,
-                        constants, () -> new WasmAmaruInstance(AmaruEngineConfig.DEFAULT_MAX_MEMORY_PAGES)));
+                key -> new AmaruTransactionValidator(LedgerValidationEngines.AMARU, AmaruEngineConfig.defaults(2),
+                        network, null, constants,
+                        () -> new WasmAmaruInstance(AmaruEngineConfig.DEFAULT_MAX_MEMORY_PAGES)));
         return Observation.of(engine.validate(new TxValidationRequest(testCase.txCbor(), testCase.view(),
                 testCase.env(), TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null)));
     }
@@ -73,13 +74,13 @@ public final class AmaruReferenceEngine implements ConformanceEngine {
      * The Amaru engine for a real network ({@link AmaruNetworks#from}, Haskell's constants), as the node creates it;
      * used by the latency benchmark on the public-network bundles.
      *
-     * @param scripts null for {@code phase2 = full} (Amaru runs the scripts), or the evaluator for
-     *                {@code phase2 = scalus} (the node default)
+     * @param scripts null for {@code amaru} (Amaru runs the scripts), or the Scalus evaluator for
+     *                {@code amaru-scalus}
      */
     public static LedgerValidationEngine forNetwork(NetworkParameters network, ScriptPhaseEvaluator scripts) {
-        return new AmaruTransactionValidator(
-                AmaruEngineConfig.defaults(scripts == null ? Phase2Mode.FULL : Phase2Mode.SCALUS, 2),
-                AmaruNetworks.from(network), scripts);
+        return new AmaruTransactionValidator(scripts == null ? LedgerValidationEngines.AMARU
+                : LedgerValidationEngines.AMARU_SCALUS, AmaruEngineConfig.defaults(2), AmaruNetworks.from(network),
+                scripts);
     }
 
     /**

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.LedgerFailure;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidatedTx;
@@ -36,8 +37,9 @@ class AmaruEngineReapplyTest {
 
     private final CountingEvaluator evaluator = new CountingEvaluator(new ScalusScriptPhaseEvaluator());
     private final AmaruTransactionValidator engine = new AmaruTransactionValidator(
-            AmaruEngineConfig.defaults(Phase2Mode.SCALUS, 2), ScenarioSupport.network(MutationWorld.network()),
-            evaluator, AmaruLedgerConstants.HASKELL, ScenarioSupport.wasm());
+            LedgerValidationEngines.AMARU_SCALUS, AmaruEngineConfig.defaults(2),
+            ScenarioSupport.network(MutationWorld.network()), evaluator, AmaruLedgerConstants.HASKELL,
+            ScenarioSupport.wasm());
     private final InMemoryLedgerView world = MutationWorld.view();
 
     @AfterEach

@@ -58,7 +58,7 @@ import java.util.function.Function;
 
 /**
  * An in-process devnet block producer for the ADR-056 Phase 6b gates, with an engine-API admission engine
- * ({@code java-julc} or {@code java-scalus} behind the experimental flag, or {@code amaru}): isolated temporary storage
+ * ({@code java-julc} or {@code java-scalus}, or {@code amaru-scalus} or {@code amaru}): isolated temporary storage
  * and a free port, short epochs, and the governance parameters patched so a proposal expires within the test (lifetime
  * 1 epoch).
  */
@@ -112,7 +112,6 @@ public final class DevnetGateNode implements AutoCloseable {
                 .blockTimeMillis(settings.blockTimeMillis())
                 .epochLength(settings.epochLength())
                 .runtimeOption(YanoPropertyKeys.Validation.ENGINE, settings.engine())
-                .runtimeOption(YanoPropertyKeys.Validation.JAVA_ENGINE_EXPERIMENTAL, "true")
                 .runtimeOption(YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS, "16");
         settings.extraOptions().forEach(builder::runtimeOption);
         this.config = builder.build();

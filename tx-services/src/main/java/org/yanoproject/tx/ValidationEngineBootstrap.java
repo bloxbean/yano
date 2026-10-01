@@ -37,10 +37,10 @@ import java.util.function.Supplier;
 /**
  * Creates the validation engines of ADR-056 §7 from the runtime globals, when
  * {@link ValidationEngineSettings#usesEngineApi()}: engines are discovered with {@code ServiceLoader}
- * ({@code scalus} from scalus-bridge, {@code amaru} from the optional amaru-validator module), and each gets an
- * {@link EngineContext} with the node's configuration, genesis-derived network facts, slot timing and the
- * phase-2 evaluators: julc (engine {@code java-julc}) and Scalus (engines {@code java-scalus} and {@code amaru} with
- * {@code phase2: scalus}; ADR-056 Phase 7c).
+ * ({@code scalus} from scalus-bridge, {@code amaru} and {@code amaru-scalus} from the optional amaru-validator
+ * module), and each gets an {@link EngineContext} with the node's configuration, genesis-derived network facts, slot
+ * timing and the phase-2 evaluators: julc (engine {@code java-julc}) and Scalus (engines {@code java-scalus} and
+ * {@code amaru-scalus}; ADR-056 Phase 7c).
  */
 final class ValidationEngineBootstrap {
 
@@ -96,7 +96,7 @@ final class ValidationEngineBootstrap {
         Supplier<NetworkParameters> network = memoized(network(genesis, epochSlotCalc, slotConfig, protocolMagic,
                 networkId));
         ForecastHorizon horizon = ForecastHorizon.of(() -> network.get().stabilityWindow(), epochSlotCalc);
-        // Both phase-2 evaluators share the forecast horizon: julc for java-julc, Scalus for java-scalus and amaru.
+        // Both phase-2 evaluators share the forecast horizon: julc for java-julc, Scalus for java-scalus, amaru-scalus.
         EngineContext context = new Context(globals, network, protocolParams, slotConfig, currentSlot,
                 new ScalusScriptPhaseEvaluator(horizon), new JulcScriptPhaseEvaluator(horizon));
         return Optional.of(ValidationEngines.create(settings, registry, context,

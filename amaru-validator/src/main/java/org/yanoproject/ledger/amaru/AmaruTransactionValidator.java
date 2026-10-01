@@ -60,8 +60,10 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * The {@code amaru} admission engine (ADR-057): Pragma's Amaru Conway rules, compiled to WebAssembly
- * ({@code amaru-validator-wasm}, interface v1) and run in the JVM by Endive's build-time AOT code.
+ * The Amaru admission engine (ADR-057): Pragma's Amaru Conway rules, compiled to WebAssembly
+ * ({@code amaru-validator-wasm}, interface v1) and run in the JVM by Endive's build-time AOT code. Engine ids follow
+ * {@code <rules>-<evaluator>}: {@code amaru} runs both phases on Amaru; {@code amaru-scalus} runs Amaru phase one and
+ * then the node's Scalus {@link ScriptPhaseEvaluator}.
  *
  * <p><b>Request flow</b> (ADR-057 §2), for one {@link TxValidationRequest}:</p>
  * <ol start="0">
@@ -75,8 +77,8 @@ import java.util.function.Supplier;
  *       without calling {@code validate} (invariant 3). The full committee (members and candidates) and
  *       all active proposals are always sent, with the enacted roots, treasury, dormant epochs,
  *       guardrail script, protocol parameters, era history and global parameters.</li>
- *   <li>{@code validate} in {@code full} mode, or in {@code phase_one} mode followed by the
- *       {@link ScriptPhaseEvaluator} ({@link Phase2Mode#SCALUS}).</li>
+ *   <li>{@code validate} in {@code full} mode, or, with a {@link ScriptPhaseEvaluator}, in {@code phase_one}
+ *       mode followed by the evaluator.</li>
  *   <li>The response's rule, constructor and phase are already Haskell-named by the module.</li>
  *   <li>On a valid verdict, effects come from {@link TxEffectsDeriver} for the phase-2 verdict, and the
  *       ADR-056 origin policy rejects {@code is_valid = false} from every origin except {@code SYNC}
@@ -97,8 +99,6 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
 
     private static final Logger log = LoggerFactory.getLogger(AmaruTransactionValidator.class);
 
-    /** Engine name in configuration and metrics ({@code yano.validation.engine=amaru}). */
-    public static final String NAME = "amaru";
     /** The interface version this host speaks (INTERFACE.md, invariant 5). */
     public static final int SUPPORTED_ABI_VERSION = AmaruRequestEncoder.ABI_VERSION;
 
@@ -116,25 +116,28 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
     private static final Comparator<Outpoint> OUTPOINT_ORDER =
             Comparator.comparing(Outpoint::txHash).thenComparingInt(Outpoint::index);
 
+    private final String name;
     private final AmaruEngineConfig config;
     private final Supplier<AmaruNetworkParameters> networkSupplier;
     private volatile AmaruNetworkParameters network;
-    private final ScriptPhaseEvaluator phase2Evaluator;
+    private final ScriptPhaseEvaluator scriptEvaluator;
     private final AmaruLedgerConstants ledgerConstants;
     private final AmaruInstancePool pool;
     private final String amaruVersion;
     private final TxEffectsDeriver effectsDeriver = new TxEffectsDeriver();
 
     /**
+     * @param name            the engine id its verdicts, counters, health and reports carry ({@code amaru} or
+     *                        {@code amaru-scalus})
      * @param config          engine settings
      * @param network         magic, era history and global parameters of the running network
-     * @param phase2Evaluator the phase-2 engine for {@link Phase2Mode#SCALUS}; may be null, in which case
-     *                        a transaction with redeemers fails closed in that mode
+     * @param scriptEvaluator runs the Plutus scripts after Amaru's phase one; null for Amaru's full validation
+     *                        (its own UPLC machine)
      * @throws IllegalStateException when the module's {@code abi_version} is not supported
      */
-    public AmaruTransactionValidator(AmaruEngineConfig config, AmaruNetworkParameters network,
-                                     ScriptPhaseEvaluator phase2Evaluator) {
-        this(config, network, phase2Evaluator, AmaruLedgerConstants.HASKELL,
+    public AmaruTransactionValidator(String name, AmaruEngineConfig config, AmaruNetworkParameters network,
+                                     ScriptPhaseEvaluator scriptEvaluator) {
+        this(name, config, network, scriptEvaluator, AmaruLedgerConstants.HASKELL,
                 () -> new WasmAmaruInstance(config.maxMemoryPages()));
     }
 
@@ -143,9 +146,9 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
      * late): {@code network} is called on the first validation and its result kept. Until it succeeds every
      * request fails closed with {@code ENGINE.AmaruEngineFailure}.
      */
-    public AmaruTransactionValidator(AmaruEngineConfig config, Supplier<AmaruNetworkParameters> network,
-                                     ScriptPhaseEvaluator phase2Evaluator) {
-        this(config, network, phase2Evaluator, AmaruLedgerConstants.HASKELL,
+    public AmaruTransactionValidator(String name, AmaruEngineConfig config, Supplier<AmaruNetworkParameters> network,
+                                     ScriptPhaseEvaluator scriptEvaluator) {
+        this(name, config, network, scriptEvaluator, AmaruLedgerConstants.HASKELL,
                 () -> new WasmAmaruInstance(config.maxMemoryPages()));
     }
 
@@ -156,23 +159,25 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
      *                        ({@link AmaruLedgerConstants#HASKELL} in production)
      * @param instances       creates module instances (on the worker thread that will own each)
      */
-    public AmaruTransactionValidator(AmaruEngineConfig config, AmaruNetworkParameters network,
-                                     ScriptPhaseEvaluator phase2Evaluator, AmaruLedgerConstants ledgerConstants,
+    public AmaruTransactionValidator(String name, AmaruEngineConfig config, AmaruNetworkParameters network,
+                                     ScriptPhaseEvaluator scriptEvaluator, AmaruLedgerConstants ledgerConstants,
                                      Supplier<? extends AmaruInstance> instances) {
-        this(config, fixed(Objects.requireNonNull(network, "network")), phase2Evaluator, ledgerConstants, instances);
+        this(name, config, fixed(Objects.requireNonNull(network, "network")), scriptEvaluator, ledgerConstants,
+                instances);
     }
 
     private static Supplier<AmaruNetworkParameters> fixed(AmaruNetworkParameters network) {
         return () -> network;
     }
 
-    /** Full constructor with a late-resolved network (see the three-argument supplier constructor). */
-    public AmaruTransactionValidator(AmaruEngineConfig config, Supplier<AmaruNetworkParameters> network,
-                                     ScriptPhaseEvaluator phase2Evaluator, AmaruLedgerConstants ledgerConstants,
+    /** Full constructor with a late-resolved network (see the four-argument supplier constructor). */
+    public AmaruTransactionValidator(String name, AmaruEngineConfig config, Supplier<AmaruNetworkParameters> network,
+                                     ScriptPhaseEvaluator scriptEvaluator, AmaruLedgerConstants ledgerConstants,
                                      Supplier<? extends AmaruInstance> instances) {
+        this.name = Objects.requireNonNull(name, "name");
         this.config = Objects.requireNonNull(config, "config");
         this.networkSupplier = Objects.requireNonNull(network, "network");
-        this.phase2Evaluator = phase2Evaluator;
+        this.scriptEvaluator = scriptEvaluator;
         this.ledgerConstants = Objects.requireNonNull(ledgerConstants, "ledgerConstants");
         Objects.requireNonNull(instances, "instances");
         try (AmaruInstance probe = instances.get()) {
@@ -185,19 +190,15 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         }
         this.pool = new AmaruInstancePool(instances, config.poolSize(), config.timeout(), config.maxAbandoned(),
                 config.workerStackSize());
-        log.info("Amaru validator ready: {} instance(s), phase2={}, timeout={} ms, max-abandoned={}, "
-                        + "max-memory-pages={}; module {}", config.poolSize(), config.phase2(),
+        log.info("Amaru validator '{}' ready: {} instance(s), timeout={} ms, max-abandoned={}, "
+                        + "max-memory-pages={}; module {}", name, config.poolSize(),
                 config.timeout().toMillis(), config.maxAbandoned(), config.maxMemoryPages(),
                 amaruVersion.replace('\n', ' '));
-        if (config.phase2() == Phase2Mode.SCALUS && phase2Evaluator == null) {
-            log.warn("Amaru validator runs phase2=scalus without a ScriptPhaseEvaluator: transactions with "
-                    + "redeemers are rejected (fail closed)");
-        }
     }
 
     @Override
     public String name() {
-        return NAME;
+        return name;
     }
 
     /** @return the network facts, resolved once from the supplier */
@@ -281,8 +282,7 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         byte[] protocolParameters = ProtocolParamsEncoder.encode(params);
         byte[] keysEnv = AmaruRequestEncoder.keysEnv(paramsMajor, params.getProtocolMinorVer());
         RequiredKeys.Result keysResult = decodeKeys(pool.call(instance -> instance.requiredKeys(txCbor, keysEnv)));
-        AmaruRequest.Mode mode = config.phase2() == Phase2Mode.FULL ? AmaruRequest.Mode.FULL
-                : AmaruRequest.Mode.PHASE_ONE;
+        AmaruRequest.Mode mode = scriptEvaluator == null ? AmaruRequest.Mode.FULL : AmaruRequest.Mode.PHASE_ONE;
 
         if (keysResult instanceof RequiredKeys.Error error) {
             // The transaction does not decode (or the env is malformed). validate names the decoding
@@ -374,7 +374,7 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
     }
 
     /**
-     * {@link Phase2Mode#SCALUS}: Amaru judged phase one; the {@link ScriptPhaseEvaluator} runs the scripts,
+     * Amaru judged phase one; the {@link ScriptPhaseEvaluator} runs the scripts,
      * and the result is compared with the transaction's {@code is_valid} flag
      * ({@code UTXOS.ValidationTagMismatch}, Alonzo/Rules/Utxos.hs).
      */
@@ -383,14 +383,11 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
         boolean scriptsPassed;
         if (!needsScriptPhase(tx, resolvedInputs)) {
             scriptsPassed = true;
-        } else if (phase2Evaluator == null) {
-            return new Phase2(false, engine(AMARU_ENGINE_FAILURE, "phase2 = scalus needs a ScriptPhaseEvaluator "
-                    + "and none is configured"));
         } else {
             ScriptPhaseResult result;
             try {
                 // The forecast horizon is based on next(tip) (ADR-056 Phase 6 dependency): the mempool sets it.
-                result = phase2Evaluator.evaluate(txCbor, tx, Map.copyOf(resolvedInputs), params, env.slotConfig(),
+                result = scriptEvaluator.evaluate(txCbor, tx, Map.copyOf(resolvedInputs), params, env.slotConfig(),
                         env.forecastBasisSlot());
             } catch (LedgerStateUnavailableException e) {
                 throw e;
@@ -410,8 +407,8 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
             String mismatch = tx.isValid() ? "FailedUnexpectedly" : "PassedUnexpectedly";
             return new Phase2(false, TxValidationOutcome.Invalid.of(new LedgerFailure(LedgerRuleName.UTXOS,
                     "ValidationTagMismatch", LedgerFailure.Phase.PHASE_2, mismatch + ": "
-                    + (tx.isValid() ? "a Plutus script failed (phase2 = scalus)"
-                    : "every Plutus script succeeded (phase2 = scalus)"))));
+                    + (tx.isValid() ? "a Plutus script failed (" + name + ")"
+                    : "every Plutus script succeeded (" + name + ")"))));
         }
         return new Phase2(scriptsPassed, null);
     }

@@ -58,7 +58,7 @@ import java.util.function.Function;
 
 /**
  * The mempool over ledger-state overlays (ADR-056 §6), used when an engine-API admission engine is configured
- * ({@code yano.validation.engine} other than {@code scalus}). The legacy default keeps {@code DefaultMemPool}.
+ * ({@code yano.validation.engine} other than {@code scalus}). The legacy {@code scalus} keeps {@code DefaultMemPool}.
  *
  * <h2>State</h2>
  * <p>One immutable {@link MempoolLedgerState} is published through a volatile reference. Queries read it without

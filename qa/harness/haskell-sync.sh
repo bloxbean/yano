@@ -2,8 +2,7 @@
 # test-haskell-sync / test-native-haskell-sync on isolated ports.
 # pv10 epochLength=1200, slotLength=0.2 -> 240 s/epoch; 2-epoch bar = slot >= 2400.
 # Optional knobs (defaults keep the standard test):
-#   YANO_EXTRA_OPTS   extra -D options for Yano, e.g. "-Dyano.validation.engine=java-julc
-#                     -Dyano.validation.java-engine.experimental=true" (ADR-056 Phase 6b)
+#   YANO_EXTRA_OPTS   extra -D options for Yano, e.g. "-Dyano.validation.engine=amaru-scalus" (ADR-056 Phase 6b)
 #   HS_GENESIS_PATCH  a command run with G=<genesis copy> before either node starts
 #   HS_WORKLOAD       a command run in the background once the Haskell node follows, with
 #                     YANO_URL=http://localhost:<http>; its output goes to workload.log and a

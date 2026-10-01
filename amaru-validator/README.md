@@ -9,20 +9,22 @@ the JVM. The design is in
   Its interface is in [`INTERFACE.md`](../amaru-validator-wasm/INTERFACE.md).
 - This module loads the `.wasm` with Endive (`run.endive`, the continuation of Chicory). The
   module is compiled to JVM bytecode at build time (AOT), and the runtime compiler is never on
-  the classpath. It implements ADR-056's `LedgerValidationEngine` as engine `amaru`
-  (`org.yanoproject.ledger.amaru`).
+  the classpath. It implements ADR-056's `LedgerValidationEngine` as two engines
+  (`org.yanoproject.ledger.amaru`). Engine ids name `<rules>-<evaluator>`, like `java-julc` and
+  `java-scalus`: `amaru-scalus` runs Amaru phase one and then the node's Scalus
+  `ScriptPhaseEvaluator` for the Plutus scripts; `amaru`, a single name, runs both phases on Amaru.
 - Only a build run with `-PwithAmaru=true` contains this module. Default builds, releases,
   Docker images, native images and Maven Central publications do not. With any other build,
-  `yano.validation.engine=amaru` stops startup with a clear message.
+  `yano.validation.engine=amaru` (or `amaru-scalus`) stops startup with a clear message.
 
 ## When to use it
 
 | Role | Configuration | What it gives you |
 |---|---|---|
-| Admission engine | `yano.validation.engine: amaru` | Mempool admission and block selection go through Amaru's phase-1 rules. Plutus runs on Scalus by default. |
-| Admission shadow | `shadow-engines: amaru` next to another admission engine | Every admission is also validated by Amaru. The verdict never changes; disagreements are counted and dumped. |
-| Shadow-sync engine | `shadow-sync: true`, `shadow-sync-engines: java-julc,amaru` | Every transaction of every applied Conway block is re-validated against its pre-block state. Observe only. |
-| Test oracle | `:ledger-conformance:test -PwithAmaru=true …` | The reference engine for ADR-056's conformance harness (baseline, mutation matrices), run with `phase2 = full`. |
+| Admission engine | `yano.validation.engine: amaru-scalus` | Mempool admission and block selection go through Amaru's phase-1 rules; Plutus runs on Scalus. |
+| Admission shadow | `shadow-engines: amaru-scalus` next to another admission engine | Every admission is also validated by Amaru. The verdict never changes; disagreements are counted and dumped. |
+| Shadow-sync engine | `shadow-sync: true`, `shadow-sync-engines: java-julc,amaru-scalus` | Every transaction of every applied Conway block is re-validated against its pre-block state. Observe only. |
+| Test oracle | `:ledger-conformance:test -PwithAmaru=true …` | The reference engine for ADR-056's conformance harness (baseline, mutation matrices), engine `amaru` (Amaru runs the scripts too). |
 
 Amaru is Haskell-cross-checked (276 scenarios at the pinned tag). A Java-vs-Amaru disagreement is
 resolved against Haskell, not by copying Amaru.
@@ -85,7 +87,7 @@ W=/abs/path/amaru_validator.wasm
 # at the tag in AMARU_VERSION, or its crates/amaru-ledger/tests/data/transaction directory)
 ./gradlew :amaru-validator:test -PwithAmaru=true -PamaruWasm=$W -PamaruScenariosDir=<amaru clone>
 
-# Phase C devnet parity (engine amaru against java-julc, about two minutes)
+# Phase C devnet parity (engine amaru-scalus against java-julc, about two minutes)
 ./gradlew :amaru-validator:test --tests '*AmaruDevnetParityTest' -PwithAmaru=true -PamaruWasm=$W \
   -PledgerRulesGate=true
 ```
@@ -95,54 +97,51 @@ W=/abs/path/amaru_validator.wasm
 ## 3. Enable it at runtime
 
 The properties live under `yano.validation` in `app/src/main/resources/application.yml`. You can
-also pass them as `-D` system properties, for example `-Dyano.validation.engine=amaru`.
+also pass them as `-D` system properties, for example `-Dyano.validation.engine=amaru-scalus`.
 
 ```yaml
 yano:
   validation:
-    engine: amaru               # scalus (default) | java-julc | java-scalus | amaru
-    amaru:
-      phase2: scalus            # scalus (default): Amaru phase one + Scalus Plutus | amaru: Amaru for both
+    engine: amaru-scalus        # java-julc (default) | java-scalus | scalus | amaru-scalus | amaru
+    amaru:                      # settings of both Amaru engines
       pool-size: 0              # Amaru instances; 0 = validation threads + 2
       timeout-ms: 2000          # a call that takes longer is rejected and its instance replaced
       max-abandoned: 2          # stuck calls tolerated before the engine turns unhealthy
       max-memory-pages: 2048    # linear-memory limit per instance, 64 KiB pages (128 MiB)
 ```
 
-**Phase 2.** With `phase2: scalus`, Amaru runs phase one and the node's Scalus
-`ScriptPhaseEvaluator` runs the Plutus scripts. That is the default for admission. `phase2: amaru`
-(or `full`) lets Amaru run the scripts too; oracle runs use it. ExUnits evaluation
-(`TransactionEvaluator`) does not change in either mode.
+**Phase 2.** Under `amaru-scalus`, Amaru runs phase one and the node's Scalus
+`ScriptPhaseEvaluator` runs the Plutus scripts; use it for admission. Under `amaru`, Amaru runs the
+scripts too; oracle runs use it. ExUnits evaluation (`TransactionEvaluator`) does not change with
+either engine.
 
 **As a shadow.** Shadows run asynchronously on frozen copies of each admission and never change the
 verdict. Disagreements are counted in `yano_validation_disagreements_total{engine,rule}`, and
 `shadow-dump-dir` writes a replay bundle for each.
 
 ```yaml
-# Amaru shadows the default (legacy Scalus) admission:
-engine: scalus
-shadow-engines: amaru
+# Amaru shadows the default (java-julc) admission:
+engine: java-julc
+shadow-engines: amaru-scalus
 shadow-dump-dir: /var/lib/yano/shadow-dumps
 
-# or Amaru admits, and the Java engine shadows it (an admission shadow needs the opt-in):
-engine: amaru
+# or Amaru admits, and the Java engine shadows it:
+engine: amaru-scalus
 shadow-engines: java-julc
-java-engine:
-  experimental: true
 ```
 
-**Shadow sync.** `shadow-sync-engines: java-julc,amaru` runs both engines on every Conway block the
+**Shadow sync.** `shadow-sync-engines: java-julc,amaru-scalus` runs both engines on every Conway block the
 node applies, and writes findings to `shadow-sync-report` (JSONL) and `shadow-sync-dump-dir`. It is
 observe only. Two things to know:
 
 - Amaru is slower than the Java engines: admission p50 was 1.2–1.4 ms under block production
   (ADR-057 Phase C), and one pass over the scenarios took 2.17 ms per scenario against 0.41–0.55 ms
   for `java-scalus` and `java-julc` (`ledger-conformance/docs/baseline-2026-09.md`). Block
-  application waits when shadow sync falls behind, so `amaru` slows a sync from genesis.
+  application waits when shadow sync falls behind, so an Amaru engine slows a sync from genesis.
 - Blocks at protocol version 9 give Amaru engine failures (`ENGINE.EraNotSupported`, no verdict).
 
 The public-network shadow-sync gate of ADR-056 Phase 7c ran `java-julc,java-scalus`. No
-public-network run with `amaru` is recorded yet.
+public-network run with an Amaru engine is recorded yet.
 
 **Pool size.** Each role (admission, admission shadow, shadow sync) creates its own engine with its
 own pool. `pool-size: 0` resolves to `ValidationEngineBootstrap.VALIDATION_THREADS` (4: admission,
@@ -168,25 +167,26 @@ space, committed only as deep as a call goes. Linear memory is on the heap and g
   report each engine.
 - A missing module, or one with an unsupported interface version, stops startup.
 
-**Rollback.** Set `engine` back to `scalus`, `java-julc` or `java-scalus`, and remove `amaru` from
-`shadow-engines` and `shadow-sync-engines`. There is no persisted state.
+**Rollback.** Set `engine` back to `java-julc` (the default), `java-scalus` or `scalus`, and remove the
+Amaru engines from `shadow-engines` and `shadow-sync-engines`. There is no persisted state.
 
 ### Native image
 
 Build with the native command above. Only the build-time AOT classes and the `.meta` resource are
 used, so nothing compiles wasm at run time. The module ships its own `META-INF/native-image`
 configuration: `resource-config.json` for the `.meta` resource and the engine's service file, and
-`reflect-config.json` for `AmaruEngineFactory`. ADR-057 Phase E checked JVM-vs-native parity with
-`JAR=… NATIVE=… qa/harness/ledger-rules-native-parity.sh amaru "11 10"`. That covered admission,
-block selection, `java-julc` as a shadow, shadow sync with `java-julc,amaru`, the instance pool,
-health, metrics and shutdown. The verdicts were identical at PV 10 and 11.
+`reflect-config.json` for `AmaruEngineFactory` and `AmaruScalusEngineFactory`. ADR-057 Phase E checked
+JVM-vs-native parity with `JAR=… NATIVE=… qa/harness/ledger-rules-native-parity.sh amaru-scalus "11 10"`
+(then named `amaru`). That covered admission, block selection, `java-julc` as a shadow, shadow sync with
+`java-julc` and the Amaru engine, the instance pool, health, metrics and shutdown. The verdicts were
+identical at PV 10 and 11. The harness also takes `amaru`.
 
 ## Known divergences and limits
 
 - **Conway from protocol version 10 only.** Below 10, or for a non-Conway body, the engine answers
   `ENGINE.EraNotSupported` (ADR-057 invariant 6).
 - **Transactions Amaru accepts and Haskell rejects** (recorded on the conformance mutants,
-  `phase2 = full`):
+  engine `amaru`):
   - a PlutusV3 script whose CBOR is followed by one more byte (Haskell:
     `UTXOW.MalformedScriptWitnesses`);
   - a pool registration whose VRF key hash another pool already uses, at PV 11 (Haskell:
@@ -203,7 +203,7 @@ health, metrics and shutdown. The verdicts were identical at PV 10 and 11.
     `OutputBootAddrAttrsTooBig`), non-ADA collateral (`ValueNotConservedUTxO` for
     `CollateralContainsNonADA`), and `VotersDoNotExist` for PV 11's `UnelectedCommitteeVoters`.
   - Amaru stops at its first failure, while Haskell lists all of them.
-- **`phase2: scalus` gaps are covered by the evaluator.** Amaru's phase-one mode does not report
+- **`amaru-scalus` gaps are covered by the evaluator.** Amaru's phase-one mode does not report
   `MalformedScriptWitnesses` or `CollectErrors`, so the engine calls the Scalus evaluator whenever
   a transaction has redeemers or Plutus witness scripts, or spends an input carrying a reference
   script.
@@ -248,13 +248,13 @@ commands and what each figure means.
 
 - `ledger-conformance` `EngineLatencyBenchmarkTest`: warm per-transaction p50, p90 and p99 for
   `java-julc`, `java-scalus` and `amaru` on the Amaru scenarios, and on the vendored preprod and
-  preview replay bundles (also `amaru` with `phase2: scalus`). It writes
+  preview replay bundles (also `amaru-scalus`). It writes
   `ledger-conformance/build/conformance/engine-latency.md`.
 
 The results are in ADR-057 "Phase E results: benchmark". In short: on the scenarios `amaru` is
-well inside its target, but on real Plutus transactions `phase2: full` takes tens to hundreds of
-milliseconds per transaction, because of Amaru's script evaluation; `phase2: scalus`, the default,
-stays at a few milliseconds. Keep the default on public networks.
+well inside its target, but on real Plutus transactions `amaru` takes tens to hundreds of
+milliseconds per transaction, because of Amaru's script evaluation; `amaru-scalus` stays at a few
+milliseconds. Use `amaru-scalus` on public networks.
 - `amaru-validator` `AmaruFootprintBenchmarkTest`: cold module load and first instance, warm
   instantiation, and retained heap per instance. It writes
   `amaru-validator/build/benchmark/amaru-footprint.md`.

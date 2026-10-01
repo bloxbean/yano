@@ -335,16 +335,17 @@ yano:
         seconds: 30
   validation:
     # Transaction validation engines (ADR-056 §7, ADR-057).
-    # Admission engine: scalus (default) | java-julc | java-scalus | amaru.
-    #   scalus      - Scalus Conway rules. With no shadow engines this is the legacy validator, unchanged.
-    #   java-julc   - the Java Conway rules (ADR-056 Phases 3-5) with Plutus on julc (Phase 7c), the Java engine
-    #                 wherever one is defaulted. Startup fails unless yano.validation.java-engine.experimental=true,
-    #                 which only tests, the conformance harness and the Phase 6b Haskell-follower gate set, until the
-    #                 default flips (Phase 8).
-    #   java-scalus - the same Java rules with Plutus on Scalus, same opt-in. Its own engine id, so it can run next to
-    #                 java-julc: shadow-sync-engines: java-julc,java-scalus gives every Conway transaction both
-    #                 verdicts, and metrics, health and report lines name the engine.
-    #   amaru       - Amaru's rules as WebAssembly; needs a build with -PwithAmaru=true, otherwise startup fails.
+    # Admission engine: java-julc (default) | java-scalus | scalus | amaru | amaru-scalus.
+    # Ids name <rules>-<evaluator> (who runs the Plutus scripts); a single name runs both phases.
+    #   java-julc    - the Java Conway rules (ADR-056 Phases 3-5) with Plutus on julc (Phase 7c). The default since
+    #                  ADR-056 Phase 8, and the Java engine wherever one is defaulted.
+    #   java-scalus  - the same Java rules with Plutus on Scalus. Its own engine id, so it can run next to
+    #                  java-julc: shadow-sync-engines: java-julc,java-scalus gives every Conway transaction both
+    #                  verdicts, and metrics, health and report lines name the engine.
+    #   scalus       - the legacy Scalus validator, unchanged; set it to restore the behaviour before Phase 8.
+    #   amaru        - Amaru's rules as WebAssembly, for both phases; needs a build with -PwithAmaru=true, otherwise
+    #                  startup fails.
+    #   amaru-scalus - Amaru phase one with Plutus on Scalus; same build requirement.
     # The former id "java" is gone: startup fails and names the valid ids.
     # Any engine other than scalus validates admission against one canonical snapshot ticked to the slot
     # after the tip (or, right after a producer applied the next boundary, the first slot of that epoch).
@@ -352,12 +353,12 @@ yano:
     # block-local overlay of its own snapshot ticked to the forge slot (ADR-056 Phase 6b).
     # supplementary-rules-enabled=true applies to the legacy validator only: combined with another engine
     # startup fails.
-    engine: scalus
+    engine: java-julc
     # Engines run asynchronously on frozen copies of each admission and never change the verdict. With
     # engine: scalus admission stays on the legacy validator; the shadows use their own snapshot and are
     # compared with the legacy verdict (valid/invalid, plus the Haskell constructor where the legacy name
     # maps to one). Disagreements are counted (yano_validation_disagreements_total{engine,rule}) and logged
-    # once per tx. e.g. shadow-engines: amaru   or, with engine: amaru, shadow-engines: scalus
+    # once per tx. e.g. shadow-engines: scalus   or, with engine: amaru, shadow-engines: java-julc
     shadow-engines: ""
     # When set, a JSON replay bundle (tx CBOR + every ledger-view read both engines made) is written
     # here for each disagreement.
@@ -370,8 +371,8 @@ yano:
     # yano_validation_shadow_sync_* metrics and the JSONL report. It never changes what the node applies; when
     # validation falls behind, block application waits (sync slows to validation speed).
     shadow-sync: false
-    shadow-sync-engines: java-julc  # java-julc and/or java-scalus (no experimental flag needed: observe only;
-                                    # java-julc,java-scalus runs both phase-2 evaluators) and/or amaru (-PwithAmaru)
+    shadow-sync-engines: java-julc  # java-julc and/or java-scalus (java-julc,java-scalus runs both phase-2
+                                    # evaluators) and/or amaru, amaru-scalus (-PwithAmaru)
     shadow-sync-report: ""          # JSONL file: one line per disagreement, engine failure or block finding
     shadow-sync-dump-dir: ""        # replay bundle (tx + every view read) per finding
     shadow-sync-max-dumps: 1000
@@ -387,8 +388,7 @@ yano:
     snapshot-max-age-ms: 30000
     # Soft cap on live canonical snapshots; when reached, new shadow tasks are dropped (never admission).
     max-live-snapshots: 4
-    amaru:
-      phase2: scalus            # scalus (default): Amaru phase one + Scalus Plutus | amaru: Amaru for both
+    amaru:                      # settings of the amaru and amaru-scalus engines
       pool-size: 0              # Amaru instances; 0 = validation threads + 2 (mempool rebuild, block selection);
                                 # for shadow sync, 0 = shadow-sync-max-in-flight
       timeout-ms: 2000          # a call that takes longer is rejected and its instance replaced
@@ -593,3 +593,6 @@ yano:
     storage:
       rocksdb: false
       path: "./chainstate-test"
+    # In-memory storage has no UTxO store, so there is nothing to validate transactions against.
+    block-producer:
+      tx-evaluation: false

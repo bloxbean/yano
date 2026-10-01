@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.amaru;
 
 import org.junit.jupiter.api.Test;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest.Origin;
 import org.yanoproject.ledger.rules.TxValidationRequest.Rule;
@@ -17,11 +18,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * ADR-056 step 1d / ADR-057 deviation 9: the scenario gate in {@code phase2: scalus} mode, the default for
- * {@code engine: amaru}. Amaru judges phase one ({@code mode = phase_one}); the real Scalus
- * {@code ScriptPhaseEvaluator} runs the scripts and reports the phase-1 checks Amaru makes while preparing
- * script contexts ({@code MalformedScriptWitnesses}, {@code CollectErrors}). Every scenario must get the same
- * verdict, rule and Haskell constructor as in {@code full} mode ({@link AmaruScenarioGateTest#mismatch}).
+ * ADR-056 step 1d / ADR-057 deviation 9: the scenario gate for {@code engine: amaru-scalus}. Amaru judges phase
+ * one ({@code mode = phase_one}); the real Scalus {@code ScriptPhaseEvaluator} runs the scripts and reports the
+ * phase-1 checks Amaru makes while preparing script contexts ({@code MalformedScriptWitnesses},
+ * {@code CollectErrors}). Every scenario must get the same verdict, rule and Haskell constructor as
+ * {@code engine: amaru} ({@link AmaruScenarioGateTest#mismatch}).
  */
 class AmaruScalusModeGateTest {
 
@@ -40,8 +41,8 @@ class AmaruScalusModeGateTest {
             AmaruNetworkParameters network = ScenarioSupport.network(scenario);
             AmaruLedgerConstants constants = ScenarioSupport.constants(scenario);
             AmaruTransactionValidator engine = ENGINES.computeIfAbsent(network + "|" + constants,
-                    key -> new AmaruTransactionValidator(AmaruEngineConfig.defaults(Phase2Mode.SCALUS, 2), network,
-                            evaluator, constants, ScenarioSupport.wasm()));
+                    key -> new AmaruTransactionValidator(LedgerValidationEngines.AMARU_SCALUS,
+                            AmaruEngineConfig.defaults(2), network, evaluator, constants, ScenarioSupport.wasm()));
             TxValidationOutcome outcome = ScenarioSupport.validate(engine, scenario, Rule.LEDGER, Origin.SYNC);
             String problem = AmaruScenarioGateTest.mismatch(scenario, outcome);
             if (problem == null) {
@@ -53,10 +54,10 @@ class AmaruScalusModeGateTest {
                 mismatches.add(scenario.name() + ": " + problem);
             }
         }
-        System.out.printf(Locale.ROOT, "Amaru scenarios in phase2 = scalus mode: %d of %d matched "
+        System.out.printf(Locale.ROOT, "Amaru scenarios under amaru-scalus: %d of %d matched "
                 + "(%d refused below protocol version 10 by invariant 6)%n", matched, scenarios.size(),
                 refusedBelowConway);
         mismatches.forEach(m -> System.out.println("  MISMATCH " + m));
-        assertThat(mismatches).as("scenario mismatches in phase2 = scalus mode").isEmpty();
+        assertThat(mismatches).as("scenario mismatches under amaru-scalus").isEmpty();
     }
 }

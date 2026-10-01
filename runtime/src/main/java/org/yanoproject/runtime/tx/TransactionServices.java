@@ -7,7 +7,7 @@ import org.yanoproject.runtime.validation.ValidationEngines;
 /**
  * Transaction services created by an edge adapter and installed by runtime assembly.
  *
- * @param validator         the legacy Scalus validator (default admission path and block selection)
+ * @param validator         the legacy Scalus validator (admission and block selection under {@code engine: scalus})
  * @param scriptEvaluator   the ExUnits evaluator for {@code /utils/txs/evaluate}
  * @param validationEngines the engine-API admission engines (ADR-056 §7), or {@code null} for the legacy path
  */

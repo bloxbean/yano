@@ -15,6 +15,7 @@ import org.yanoproject.ledger.amaru.wire.AmaruRequestEncoder;
 import org.yanoproject.ledger.amaru.wire.CborReader;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxIdentity;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest.Origin;
@@ -45,8 +46,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * ADR-057 Phase B gates on the engine's behaviour: absence handling, fail-closed unavailable state,
- * traps, timeouts, the abandoned-call cap, Endive interruption, the MEMPOOL step, {@code phase2: scalus}
- * and the origin policy. All of them run the real AOT-compiled module; faults are injected around it.
+ * traps, timeouts, the abandoned-call cap, Endive interruption, the MEMPOOL step, {@code amaru-scalus}
+ * (phase one, then the evaluator) and the origin policy. All of them run the real AOT-compiled module; faults are
+ * injected around it.
  */
 class AmaruEngineBehaviourTest {
 
@@ -57,14 +59,16 @@ class AmaruEngineBehaviourTest {
         return AmaruScenarioLoader.fromEnvironment().load(file);
     }
 
+    /** {@code amaru} without an evaluator, {@code amaru-scalus} with one. */
     private static AmaruTransactionValidator engine(AmaruScenario scenario, FaultyInstance.Shared shared,
                                                     AmaruEngineConfig config, ScriptPhaseEvaluator evaluator) {
-        return new AmaruTransactionValidator(config, ScenarioSupport.network(scenario), evaluator,
+        return new AmaruTransactionValidator(evaluator == null ? LedgerValidationEngines.AMARU
+                : LedgerValidationEngines.AMARU_SCALUS, config, ScenarioSupport.network(scenario), evaluator,
                 ScenarioSupport.constants(scenario), shared.factory());
     }
 
-    private static AmaruEngineConfig config(Phase2Mode mode) {
-        return AmaruEngineConfig.defaults(mode, 1);
+    private static AmaruEngineConfig config() {
+        return AmaruEngineConfig.defaults(1);
     }
 
     private static LedgerFailure onlyFailure(TxValidationOutcome outcome) {
@@ -85,7 +89,7 @@ class AmaruEngineBehaviourTest {
     void firstTimeDRepRegistrationIsSentWithoutTheDRepAndPasses() {
         AmaruScenario s = scenario("00003-pass-drep-registration-on-unregistered-key-hash-credential.json");
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             TxValidationOutcome outcome = ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL);
             assertThat(outcome.isValid()).as(outcome.toString()).isTrue();
             assertThat(slice(shared.requests.getLast(), 16)).as("dreps slice").isEmpty();
@@ -98,7 +102,7 @@ class AmaruEngineBehaviourTest {
     void deregistrationThenRegistrationInOneTransactionPasses() {
         AmaruScenario s = scenario("00006-pass-deregister-re-register-then-delegate-succeeds.json");
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             TxValidationOutcome outcome = ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL);
             assertThat(outcome.isValid()).as(outcome.toString()).isTrue();
         }
@@ -109,7 +113,7 @@ class AmaruEngineBehaviourTest {
         // 00111 registers a pool (absent from the state) whose cost is one lovelace below the minimum.
         AmaruScenario s = scenario("00111-fail-pool-registration-with-cost-one-below-minimum.json");
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             LedgerFailure failure = onlyFailure(ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL));
             assertThat(failure.qualifiedName()).isEqualTo("POOL.StakePoolCostTooLowPOOL");
             assertThat(slice(shared.requests.getLast(), 15)).as("pools slice").isEmpty();
@@ -131,7 +135,7 @@ class AmaruEngineBehaviourTest {
         PoolId pool = s.state().pools().getFirst();
         LedgerView view = new OverridingView(s.view()).override(pool, Lookup.absent());
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             LedgerFailure failure = onlyFailure(ScenarioSupport.validate(engine, s, view, Rule.LEDGER, Origin.LOCAL));
             assertThat(failure.qualifiedName()).isEqualTo("DELEG.DelegateeStakePoolNotRegisteredDELEG");
         }
@@ -141,7 +145,7 @@ class AmaruEngineBehaviourTest {
     void unavailableReadRejectsWithoutCallingValidate() {
         AmaruScenario s = scenario(DELEGATION);
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             for (Object key : List.of(s.state().pools().getFirst(), s.state().utxo().getFirst().outpoint(),
                     s.state().accounts().getFirst().credential())) {
                 int validateCalls = shared.validateCalls.get();
@@ -162,7 +166,7 @@ class AmaruEngineBehaviourTest {
         AmaruScenario s = scenario("00182-pass-vote-stake-pool-parameter-change-security-group.json");
         ProposalState proposal = s.view().activeProposals().require("proposals").getFirst();
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             // govActionDeposit (key 30) is a Conway key CCL's ProtocolParamUpdate cannot even represent.
             LedgerView deposit = new OverridingView(s.view()).proposals(List.of(proposal.withParamUpdateKeys(Set.of(30))));
             assertThat(ScenarioSupport.validate(engine, s, deposit, Rule.LEDGER, Origin.LOCAL).isValid()).isTrue();
@@ -188,7 +192,7 @@ class AmaruEngineBehaviourTest {
     void aTrapRejectsTheTransactionAndTheNextCallGetsAFreshInstance() {
         AmaruScenario s = scenario(DELEGATION);
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             assertThat(ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL).isValid()).isTrue();
             int created = shared.created.get();
 
@@ -207,7 +211,7 @@ class AmaruEngineBehaviourTest {
     void aTimeoutRejectsInterruptsTheWorkerAndRecovers() {
         AmaruScenario s = scenario(DELEGATION);
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        AmaruEngineConfig config = config(Phase2Mode.FULL).withTimeout(Duration.ofMillis(300));
+        AmaruEngineConfig config = config().withTimeout(Duration.ofMillis(300));
         try (AmaruTransactionValidator engine = engine(s, shared, config, null)) {
             shared.fault.set(FaultyInstance.Fault.LOOP_INTERRUPTIBLE);
             LedgerFailure failure = onlyFailure(ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL));
@@ -224,7 +228,7 @@ class AmaruEngineBehaviourTest {
     void theAbandonedCallCapTurnsTheEngineUnhealthyAndItFailsClosed() {
         AmaruScenario s = scenario(DELEGATION);
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        AmaruEngineConfig config = config(Phase2Mode.FULL).withTimeout(Duration.ofMillis(200)).withMaxAbandoned(2);
+        AmaruEngineConfig config = config().withTimeout(Duration.ofMillis(200)).withMaxAbandoned(2);
         try (AmaruTransactionValidator engine = engine(s, shared, config, null)) {
             for (int i = 1; i <= 2; i++) {
                 shared.fault.set(FaultyInstance.Fault.STUCK);
@@ -301,8 +305,8 @@ class AmaruEngineBehaviourTest {
             public void close() {
             }
         };
-        assertThatThrownBy(() -> new AmaruTransactionValidator(config(Phase2Mode.FULL), ScenarioSupport.network(s),
-                null, AmaruLedgerConstants.HASKELL, () -> wrongAbi))
+        assertThatThrownBy(() -> new AmaruTransactionValidator(LedgerValidationEngines.AMARU, config(),
+                ScenarioSupport.network(s), null, AmaruLedgerConstants.HASKELL, () -> wrongAbi))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("interface version 2");
     }
@@ -315,7 +319,7 @@ class AmaruEngineBehaviourTest {
         Outpoint input = s.state().utxo().getFirst().outpoint();
         LedgerView spent = new OverridingView(s.view()).override(input, Lookup.absent());
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             LedgerFailure mempool = onlyFailure(ScenarioSupport.validate(engine, s, spent, Rule.MEMPOOL, Origin.PEER));
             assertThat(mempool.qualifiedName()).isEqualTo("LEDGER.ConwayMempoolFailure");
             assertThat(mempool.detail()).isEqualTo(
@@ -337,7 +341,7 @@ class AmaruEngineBehaviourTest {
         AmaruScenario pv11 = scenario(
                 "00171-fail-vote-cast-by-an-unelected-committee-member-with-an-authorized-hot-key-v11.json");
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(unelected, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(unelected, shared, config(), null)) {
             LedgerFailure failure = onlyFailure(ScenarioSupport.validate(engine, unelected, Rule.MEMPOOL,
                     Origin.LOCAL));
             assertThat(failure.qualifiedName()).isEqualTo("LEDGER.ConwayMempoolFailure");
@@ -361,29 +365,25 @@ class AmaruEngineBehaviourTest {
     // --------------------------------------------------------------------- phase 2 and origins
 
     @Test
-    void scalusModeRunsAmaruPhaseOneThenTheEvaluator() {
+    void amaruScalusRunsAmaruPhaseOneThenTheEvaluator() {
         AmaruScenario plutus = scenario(PLUTUS_SPEND);
         AmaruScenario plain = scenario(DELEGATION);
-        FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(plutus, shared, config(Phase2Mode.SCALUS), null)) {
-            LedgerFailure failure = onlyFailure(ScenarioSupport.validate(engine, plutus, Rule.LEDGER, Origin.LOCAL));
-            assertThat(failure.qualifiedName()).isEqualTo("ENGINE.AmaruEngineFailure");
-            assertThat(failure.detail()).contains("needs a ScriptPhaseEvaluator");
-            assertThat(ScenarioSupport.validate(engine, plain, Rule.LEDGER, Origin.LOCAL).isValid())
-                    .as("no redeemers, no evaluator needed").isTrue();
-            // phase_one mode was sent.
-            assertThat(((Map<?, ?>) CborReader.decode(shared.requests.getLast())).get(1L)).isEqualTo(0L);
-        }
-
         AtomicReference<ScriptPhaseResult> next = new AtomicReference<>(new ScriptPhaseResult.Passed(List.of()));
         AtomicReference<Map<Outpoint, UtxoEntry>> seenInputs = new AtomicReference<>();
+        AtomicReference<Integer> calls = new AtomicReference<>(0);
         ScriptPhaseEvaluator evaluator = (byte[] txCbor, Transaction tx, Map<Outpoint, UtxoEntry> inputs,
                                           ProtocolParams params, SlotConfig slotConfig) -> {
+            calls.set(calls.get() + 1);
             seenInputs.set(inputs);
             return next.get();
         };
-        try (AmaruTransactionValidator engine = engine(plutus, new FaultyInstance.Shared(),
-                config(Phase2Mode.SCALUS), evaluator)) {
+        FaultyInstance.Shared shared = new FaultyInstance.Shared();
+        try (AmaruTransactionValidator engine = engine(plutus, shared, config(), evaluator)) {
+            assertThat(ScenarioSupport.validate(engine, plain, Rule.LEDGER, Origin.LOCAL).isValid()).isTrue();
+            assertThat(calls.get()).as("no redeemers, no evaluator call").isZero();
+            // phase_one mode was sent.
+            assertThat(((Map<?, ?>) CborReader.decode(shared.requests.getLast())).get(1L)).isEqualTo(0L);
+
             assertThat(ScenarioSupport.validate(engine, plutus, Rule.LEDGER, Origin.LOCAL).isValid()).isTrue();
             assertThat(seenInputs.get()).containsKeys(plutus.state().utxo().stream()
                     .map(AmaruScenario.RawUtxo::outpoint).toArray(Outpoint[]::new));
@@ -403,7 +403,7 @@ class AmaruEngineBehaviourTest {
     }
 
     @Test
-    void scalusModeSendsMalformedPlutusWitnessesToTheEvaluator() {
+    void amaruScalusSendsMalformedPlutusWitnessesToTheEvaluator() {
         // Amaru's phase-one mode does not decode Plutus witness scripts (INTERFACE.md, "Modes").
         AmaruScenario s = scenario("00256-fail-plutus-witness-script-that-cannot-be-flat-decoded.json");
         LedgerFailure malformed = new LedgerFailure(LedgerRuleName.UTXOW, "MalformedScriptWitnesses",
@@ -413,8 +413,7 @@ class AmaruEngineBehaviourTest {
             calls.set(calls.get() + 1);
             return new ScriptPhaseResult.Rejected(List.of(malformed));
         };
-        try (AmaruTransactionValidator engine = engine(s, new FaultyInstance.Shared(), config(Phase2Mode.SCALUS),
-                evaluator)) {
+        try (AmaruTransactionValidator engine = engine(s, new FaultyInstance.Shared(), config(), evaluator)) {
             assertThat(onlyFailure(ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL)))
                     .isEqualTo(malformed);
             assertThat(calls.get()).isEqualTo(1);
@@ -448,7 +447,7 @@ class AmaruEngineBehaviourTest {
     void isValidFalseIsAdmittedOnlyFromShadowSync() {
         AmaruScenario s = scenario("00017-pass-invalid-transaction-collects-fee-from-collateral.json");
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             assertThat(onlyFailure(ScenarioSupport.validate(engine, s, Rule.MEMPOOL, Origin.LOCAL)).qualifiedName())
                     .isEqualTo("ENGINE.Phase2InvalidTxNotSupported");
             TxValidationOutcome sync = ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.SYNC);
@@ -463,7 +462,7 @@ class AmaruEngineBehaviourTest {
     void validOutcomeCarriesEffectsAndProvenance() {
         AmaruScenario s = scenario(DELEGATION);
         FaultyInstance.Shared shared = new FaultyInstance.Shared();
-        try (AmaruTransactionValidator engine = engine(s, shared, config(Phase2Mode.FULL), null)) {
+        try (AmaruTransactionValidator engine = engine(s, shared, config(), null)) {
             TxValidationOutcome outcome = ScenarioSupport.validate(engine, s, Rule.MEMPOOL, Origin.LOCAL);
             assertThat(outcome.isValid()).isTrue();
             TxValidationOutcome.Valid valid = (TxValidationOutcome.Valid) outcome;
@@ -475,7 +474,7 @@ class AmaruEngineBehaviourTest {
                     new LedgerChange.StakeDelegated(account, s.state().pools().getFirst()));
             assertThat(valid.effects().consumed()).containsExactly(s.state().utxo().getFirst().outpoint());
             assertThat(engine.amaruVersion()).contains("tag=v10.11.20260925");
-            assertThat(engine.name()).isEqualTo("amaru");
+            assertThat(engine.name()).isEqualTo(LedgerValidationEngines.AMARU);
         }
     }
 }

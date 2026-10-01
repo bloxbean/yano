@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.amaru.wire.CborReader;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
 import org.yanoproject.ledger.rules.TxValidationRequest.Origin;
 import org.yanoproject.ledger.rules.TxValidationRequest.Rule;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
@@ -57,8 +58,8 @@ class EngineRequestEquivalenceTest {
 
             FaultyInstance.Shared shared = new FaultyInstance.Shared();
             try (AmaruTransactionValidator engine = new AmaruTransactionValidator(
-                    AmaruEngineConfig.defaults(Phase2Mode.FULL, 1), ScenarioSupport.network(scenario), null,
-                    ScenarioSupport.constants(scenario), shared.factory())) {
+                    LedgerValidationEngines.AMARU, AmaruEngineConfig.defaults(1), ScenarioSupport.network(scenario),
+                    null, ScenarioSupport.constants(scenario), shared.factory())) {
                 ScenarioSupport.validate(engine, scenario, Rule.LEDGER, Origin.SYNC);
             }
             assertThat(shared.requests).as(scenario.name()).hasSize(1);

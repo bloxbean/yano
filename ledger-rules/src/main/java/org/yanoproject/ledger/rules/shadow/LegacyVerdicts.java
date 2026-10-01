@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Turns a verdict of the legacy {@code TransactionValidator} (the default Scalus admission path) into a
+ * Turns a verdict of the legacy {@code TransactionValidator} (the {@code engine: scalus} admission path) into a
  * {@link RecordedOutcome} shadow engines can be compared with (ADR-056 §7, step 1d M4).
  *
  * <p>The legacy validator names a failure after the Scalus exception class ({@code BadInputsUTxO},

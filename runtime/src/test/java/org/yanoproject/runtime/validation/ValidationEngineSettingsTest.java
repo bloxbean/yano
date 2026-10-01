@@ -14,22 +14,30 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ValidationEngineSettingsTest {
 
     @Test
-    void defaultsKeepTheLegacyPath() {
+    void defaultsAdmitThroughJavaJulc() {
         ValidationEngineSettings settings = ValidationEngineSettings.fromGlobals(Map.of());
 
         assertThat(settings).isEqualTo(ValidationEngineSettings.defaults());
-        assertThat(settings.engine()).isEqualTo("scalus");
+        assertThat(settings.engine()).isEqualTo("java-julc");
         assertThat(settings.shadowEngines()).isEmpty();
         assertThat(settings.shadowDumpDir()).isNull();
         assertThat(settings.shadowSync()).isFalse();
         assertThat(settings.snapshotMaxAgeMs()).isEqualTo(30_000);
         assertThat(settings.maxLiveSnapshots()).isEqualTo(4);
-        assertThat(settings.usesEngineApi()).isFalse();
-        // application.yml ships the defaults explicitly; they must not switch the engine API on.
-        assertThat(ValidationEngineSettings.fromGlobals(Map.of(
+        assertThat(settings.engineAdmission()).isTrue();
+        assertThat(settings.usesEngineApi()).isTrue();
+    }
+
+    @Test
+    void scalusAloneKeepsTheLegacyPath() {
+        ValidationEngineSettings settings = ValidationEngineSettings.fromGlobals(Map.of(
                 YanoPropertyKeys.Validation.ENGINE, "scalus",
                 YanoPropertyKeys.Validation.SHADOW_ENGINES, "",
-                YanoPropertyKeys.Validation.SHADOW_DUMP_DIR, "")).usesEngineApi()).isFalse();
+                YanoPropertyKeys.Validation.SHADOW_DUMP_DIR, ""));
+
+        assertThat(settings.engineAdmission()).isFalse();
+        assertThat(settings.affectsAdmission()).isFalse();
+        assertThat(settings.usesEngineApi()).isFalse();
     }
 
     @Test
@@ -54,9 +62,9 @@ class ValidationEngineSettingsTest {
 
     @Test
     void shadowEnginesAloneSwitchTheEngineApiOnAndYamlListsParse() {
-        assertThat(ValidationEngineSettings.fromGlobals(Map.of(YanoPropertyKeys.Validation.SHADOW_ENGINES,
-                List.of("amaru"))).usesEngineApi()).isTrue();
-        assertThat(ValidationEngineSettings.fromGlobals(Map.of(
+        assertThat(ValidationEngineSettings.fromGlobals(Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus",
+                YanoPropertyKeys.Validation.SHADOW_ENGINES, List.of("amaru"))).usesEngineApi()).isTrue();
+        assertThat(ValidationEngineSettings.fromGlobals(Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus",
                 YanoPropertyKeys.Validation.SHADOW_ENGINES + "[0]", "amaru",
                 YanoPropertyKeys.Validation.SHADOW_ENGINES + "[1]", "java-julc")).shadowEngines())
                 .containsExactly("amaru", "java-julc");
@@ -67,6 +75,9 @@ class ValidationEngineSettingsTest {
         assertThatThrownBy(() -> ValidationEngineSettings.fromGlobals(Map.of(
                 YanoPropertyKeys.Validation.ENGINE, "amaru", YanoPropertyKeys.Validation.SHADOW_ENGINES, "amaru")))
                 .hasMessageContaining("must differ");
+        assertThatThrownBy(() -> ValidationEngineSettings.fromGlobals(Map.of(
+                YanoPropertyKeys.Validation.SHADOW_ENGINES, "java-julc")))
+                .hasMessageContaining("'java-julc' (the default when yano.validation.engine is unset)");
         assertThatThrownBy(() -> ValidationEngineSettings.fromGlobals(Map.of(
                 YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS, "0")))
                 .hasMessageContaining("snapshot-max-age-ms");

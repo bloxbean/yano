@@ -67,7 +67,7 @@ public final class ScalusLegacyEngine implements ConformanceEngine {
     public String description() {
         return (supplementary
                 ? "ScalusBasedTransactionValidator with the supplementary CCL certificate and governance rules"
-                : "ScalusBasedTransactionValidator (the default admission path), no supplementary rules")
+                : "ScalusBasedTransactionValidator (the legacy admission path, engine scalus), no supplementary rules")
                 + ", behind TransactionValidationService's decode and UTxO-resolution pre-checks";
     }
 

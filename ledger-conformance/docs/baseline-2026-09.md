@@ -19,13 +19,13 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 
 | Engine | What runs |
 |---|---|
-| `scalus-legacy` | ScalusBasedTransactionValidator (the default admission path), no supplementary rules, behind TransactionValidationService's decode and UTxO-resolution pre-checks |
+| `scalus-legacy` | ScalusBasedTransactionValidator (the legacy admission path, engine scalus), no supplementary rules, behind TransactionValidationService's decode and UTxO-resolution pre-checks |
 | `scalus-legacy+supplementary` | ScalusBasedTransactionValidator with the supplementary CCL certificate and governance rules, behind TransactionValidationService's decode and UTxO-resolution pre-checks |
 | `scalus-engine` | ScalusLedgerValidationEngine over the LedgerView (engine API, step 1d) |
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
 | `java-julc` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, julc phase 2 (Yano script contexts, julc CEK machine) |
 | `java-scalus` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, Scalus phase 2 |
-| `amaru` | AmaruTransactionValidator, phase2 = full, Endive AOT (reference; ADR-057); module crate 0.1.1, sha256 c43eeb3738cdce05caf3a897243485b4bca534a03272102cfab3579010c2c3e3 |
+| `amaru` | AmaruTransactionValidator, engine amaru, Endive AOT (reference; ADR-057); module crate 0.1.1, sha256 c43eeb3738cdce05caf3a897243485b4bca534a03272102cfab3579010c2c3e3 |
 
 ## Summary
 

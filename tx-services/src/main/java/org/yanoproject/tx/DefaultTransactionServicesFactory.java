@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.util.EpochSlotCalc;
 import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
 import org.yanoproject.ledger.rules.SlotConfigSupplier;
@@ -48,10 +49,19 @@ public final class DefaultTransactionServicesFactory {
                                                        TransactionBootstrapOptions options) {
         if (options == null || !options.enabled()) {
             if (enginesConfigured(context)) {
-                log.warn("yano.validation.engine / shadow-engines / shadow-sync are set but transaction validation is disabled; "
-                        + "no validation engine is created");
+                log.warn("transaction validation is disabled ({}=false); validation engine '{}' is not created",
+                        YanoPropertyKeys.BlockProducer.TX_EVALUATION, configuredEngine(context));
             }
             return Optional.empty();
+        }
+        if (context.utxoState() == null && engineAdmission(context)) {
+            // An engine-API admission engine needs a LedgerMempool, whose base is built from the UTxO store; without
+            // it the mempool would stay CATCHING_UP forever (ADR-056 §6).
+            throw new ValidationEngineConfigurationException("Validation engine '" + configuredEngine(context)
+                    + "' needs the UTxO store, which is not available (" + YanoPropertyKeys.Utxo.ENABLED + "=false or "
+                    + YanoPropertyKeys.Storage.ROCKSDB + "=false). Enable both, or set "
+                    + YanoPropertyKeys.Validation.ENGINE + "=scalus, or "
+                    + YanoPropertyKeys.BlockProducer.TX_EVALUATION + "=false.");
         }
 
         YanoConfig yaciConfig = context.config();
@@ -76,9 +86,6 @@ public final class DefaultTransactionServicesFactory {
             epochSlotCalc = resolveEpochSlotCalc(context, yaciConfig, genesis);
             ProtocolParamsResolution protocolParamsResolution = resolveTransactionProtocolParams(
                     context, effectiveEpochParamsTrackingEnabled, ledgerStateProvider, genesis, epochSlotCalc, yaciConfig);
-            if (protocolParamsResolution == null) {
-                return Optional.empty();
-            }
             protocolParamsSupplier = protocolParamsResolution.supplier();
             protocolParamsSource = protocolParamsResolution.source();
             requireLedgerStateProviderForValidation = protocolParamsResolution.requireLedgerStateProvider();
@@ -146,7 +153,7 @@ public final class DefaultTransactionServicesFactory {
                     + "The /utils/txs/evaluate endpoint will not work. Error: {}", scriptEvaluator, e.getMessage(), e);
         }
 
-        // ADR-056 §7: the engine API is used for admission only when configured; otherwise nothing changes.
+        // ADR-056 §7: the engine API is used unless engine: scalus (legacy) runs alone.
         ValidationEngines engines = ValidationEngineBootstrap.create(context.globals(), genesis, epochSlotCalc,
                 slotConfigSupplier, protocolParamsSupplier, currentSlotSupplier, yaciConfig.getProtocolMagic(),
                 networkId, supplementaryRulesEnabled).orElse(null);
@@ -181,6 +188,21 @@ public final class DefaultTransactionServicesFactory {
         }
     }
 
+    private static boolean engineAdmission(TransactionBootstrapContext context) {
+        try {
+            return ValidationEngineSettings.fromGlobals(context.globals()).engineAdmission();
+        } catch (RuntimeException e) {
+            return false; // invalid settings: the engine bootstrap reports them
+        }
+    }
+
+    /** @return the configured admission engine id, or the default when unset */
+    private static String configuredEngine(TransactionBootstrapContext context) {
+        Object engine = context.globals() != null ? context.globals().get(YanoPropertyKeys.Validation.ENGINE) : null;
+        String name = engine != null ? engine.toString().trim() : "";
+        return name.isEmpty() ? ValidationEngineSettings.DEFAULT_ENGINE : name;
+    }
+
     private static ProtocolParamsResolution resolveTransactionProtocolParams(TransactionBootstrapContext context,
                                                                             boolean effectiveEpochParamsTrackingEnabled,
                                                                             LedgerStateProvider ledgerStateProvider,
@@ -197,12 +219,10 @@ public final class DefaultTransactionServicesFactory {
             return resolution;
         }
 
-        log.warn("Transaction validation/evaluation not initialized: no protocol params source available "
-                        + "(effectiveLedger={}, protocolParamFile={}, shelleyGenesis={})",
-                effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null,
-                sourceLabel(yaciConfig.getProtocolParametersFile()),
-                sourceLabel(yaciConfig.getShelleyGenesisFile()));
-        return null;
+        throw new IllegalStateException("no protocol params source available (effectiveLedger="
+                + (effectiveEpochParamsTrackingEnabled && ledgerStateProvider != null) + ", protocolParamFile="
+                + sourceLabel(yaciConfig.getProtocolParametersFile()) + ", shelleyGenesis="
+                + sourceLabel(yaciConfig.getShelleyGenesisFile()) + ")");
     }
 
     static ProtocolParamsResolution selectTransactionProtocolParams(boolean effectiveEpochParamsTrackingEnabled,

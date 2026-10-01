@@ -18,7 +18,6 @@ import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
-import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -26,7 +25,7 @@ import java.util.function.Supplier;
 
 /**
  * The {@code java-julc} engine ({@link JavaLedgerValidationEngine}, ADR-056 Phases 3-5b) over the case's view: rule
- * {@code LEDGER}, origin {@code SYNC}, created through {@link JavaJulcEngineFactory} with the experimental flag, and
+ * {@code LEDGER}, origin {@code SYNC}, created through {@link JavaJulcEngineFactory}, and
  * with the julc {@code ScriptPhaseEvaluator} for Plutus; {@link #scalus()} is engine {@code java-scalus}, the same rules
  * with the Scalus evaluator ({@link JavaScalusEngineFactory}).
  *
@@ -94,7 +93,7 @@ public final class JavaViewEngine implements ConformanceEngine {
                 testCase.env(), rule, TxValidationRequest.Origin.SYNC, null)));
     }
 
-    /** @return engine {@code java-julc} as the node would create it, with the experimental opt-in and {@code julc} */
+    /** @return engine {@code java-julc} as the node would create it, with {@code julc} */
     public static JavaLedgerValidationEngine create(ScriptPhaseEvaluator julc) {
         return (JavaLedgerValidationEngine) new JavaJulcEngineFactory().create(context(null, julc));
     }
@@ -109,12 +108,12 @@ public final class JavaViewEngine implements ConformanceEngine {
                 c.refScriptCostStride(), c.refScriptCostMultiplierNumerator(), c.refScriptCostMultiplierDenominator());
     }
 
-    /** A minimal engine context: the experimental opt-in and the evaluators; nothing else is read at creation. */
+    /** A minimal engine context: the evaluators; nothing else is read at creation. */
     private static EngineContext context(ScriptPhaseEvaluator scalus, ScriptPhaseEvaluator julc) {
         return new EngineContext() {
             @Override
             public Optional<String> config(String key) {
-                return Optional.ofNullable(Map.of(JavaLedgerValidationEngine.EXPERIMENTAL_KEY, "true").get(key));
+                return Optional.empty();
             }
 
             @Override

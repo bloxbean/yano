@@ -20,6 +20,18 @@ boundary completes.
 On a devnet with Shelley-genesis pools, the genesis pool deposits are no longer counted in
 the internal stake-key and DRep deposit total. Recreate such devnets.
 
+## ADR-056 default validation engine
+
+- The default transaction validation engine is now `java-julc`. To roll back, set
+  `yano.validation.engine=scalus`.
+- Mempool admission and block selection now go through the engine, over a ledger-state mempool (`LedgerMempool`).
+- Transaction validation that cannot be initialised now stops the node; before, it logged a warning and ran
+  unvalidated. This includes a node with the UTxO store off (`yano.utxo.enabled=false`) and transaction evaluation
+  on: set `yano.utxo.enabled=true`, `yano.validation.engine=scalus` or `yano.block-producer.tx-evaluation=false`.
+- `yano.validation.java-engine.experimental` is removed and ignored if still set.
+- Amaru builds (`-PwithAmaru=true`): the former `amaru` (Scalus for Plutus) is now `amaru-scalus`; `amaru` now
+  means Amaru for both phases. `yano.validation.amaru.phase2` is gone.
+
 ## ADR-050 pool-lifecycle correctness
 
 ADR-050 adds ordered same-block pool lifecycle handling and complete live-state

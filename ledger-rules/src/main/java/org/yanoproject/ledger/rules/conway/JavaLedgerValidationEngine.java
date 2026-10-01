@@ -3,7 +3,6 @@ package org.yanoproject.ledger.rules.conway;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 
-import org.yanoproject.ledger.rules.EngineContext;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
@@ -26,7 +25,6 @@ import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -53,21 +51,14 @@ import java.util.Optional;
  *
  * <p>Phase 3 implements {@code UTXOW}, {@code UTXO} and {@code UTXOS}, Phase 4 {@code CERTS} with {@code DELEG},
  * {@code POOL} and {@code GOVCERT}, Phase 5 {@code GOV} and the {@code LEDGER} predicates. Two engine ids create it
- * (Phase 7c): {@code java-julc} with the julc phase-2 evaluator ({@link JavaJulcEngineFactory}, the default Java engine)
- * and {@code java-scalus} with Scalus ({@link JavaScalusEngineFactory}). Thread-safe and stateless.</p>
- *
- * <p>Every Conway rule family is implemented and the ADR-056 Phase 5 gate passed (the Amaru scenarios, the complete
- * coverage matrix, the mutation matrix). The engine is still not the default admission engine; Phase 8 makes it
- * selectable without the flag. Until then both factories create it, as admission or shadow engine, only when
- * {@value #EXPERIMENTAL_KEY}{@code =true} is set explicitly (tests and the conformance harness set it); otherwise the
- * node stops at startup.</p>
+ * (Phase 7c): {@code java-julc} with the julc phase-2 evaluator ({@link JavaJulcEngineFactory}, the default admission
+ * engine since ADR-056 Phase 8) and {@code java-scalus} with Scalus ({@link JavaScalusEngineFactory}). Thread-safe and
+ * stateless.</p>
  */
 public final class JavaLedgerValidationEngine implements LedgerValidationEngine {
 
     /** The engine id of the default construction: {@code java-julc}. */
     public static final String NAME = LedgerValidationEngines.JAVA_JULC;
-    /** Opt-in for the engine until Phase 8; never set it on a node that admits transactions. */
-    public static final String EXPERIMENTAL_KEY = "yano.validation.java-engine.experimental";
     /** Engine constructor: the bytes do not decode as a Conway transaction. */
     public static final String DECODING_FAILURE = "DecodingFailure";
     /** Engine constructor: the engine failed without a ledger verdict. */
@@ -121,20 +112,6 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
     /** @return the phase-2 evaluator, or null (for the factories' tests) */
     ScriptPhaseEvaluator evaluator() {
         return evaluator;
-    }
-
-    /** Stops engine creation unless {@value #EXPERIMENTAL_KEY}{@code =true}. */
-    static void requireExperimental(EngineContext context, String engine) {
-        boolean experimental = context.config(EXPERIMENTAL_KEY)
-                .map(v -> v.trim().toLowerCase(Locale.ROOT))
-                .filter("true"::equals)
-                .isPresent();
-        if (!experimental) {
-            throw new IllegalStateException("Validation engine '" + engine + "' is experimental: the Java Conway "
-                    + "rules are complete (ADR-056 Phases 3-5) but have not yet run behind the runtime overlays, shadow "
-                    + "sync and the native-image gate (Phases 6-7). Set " + EXPERIMENTAL_KEY + "=true to use it, or keep "
-                    + "yano.validation.engine=scalus (the default), or amaru in a build with -PwithAmaru=true.");
-        }
     }
 
     @Override

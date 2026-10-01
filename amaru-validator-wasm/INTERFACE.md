@@ -361,7 +361,7 @@ mode therefore does not report:
   PV 10 the UTXO rule's `BabbageNonDisjointRefInputs` fires first, and phase-one
   mode does report that.
 
-In `phase2: scalus` mode (ADR-057 Phase B), the host's phase-2 engine must report
+Under `engine: amaru-scalus` (ADR-057 Phase B), the host's phase-2 engine must report
 all three with these names, as phase-1 failures, before running any script. In
 the scenario gate, phase-one mode matches full mode on every scenario, except
 where full mode's verdict came from that phase-two code.

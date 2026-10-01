@@ -6,7 +6,6 @@ import java.util.Objects;
 /**
  * Engine settings ({@code yano.validation.amaru.*}, ADR-057 §2).
  *
- * @param phase2          who runs the Plutus scripts ({@code phase2}: {@code scalus} | {@code amaru})
  * @param poolSize        instances (each on its own worker thread); {@code pool-size: 0} means one per
  *                        validation thread, which the caller resolves before building this record
  * @param timeout         how long a caller waits for one module call ({@code timeout-ms}, default 2000)
@@ -17,7 +16,7 @@ import java.util.Objects;
  * @param workerStackSize the Java stack of each worker thread, in bytes (AOT-compiled wasm calls are Java
  *                        calls; deep Plutus evaluation needs a large stack)
  */
-public record AmaruEngineConfig(Phase2Mode phase2, int poolSize, Duration timeout, int maxAbandoned,
+public record AmaruEngineConfig(int poolSize, Duration timeout, int maxAbandoned,
                                 int maxMemoryPages, long workerStackSize) {
 
     public static final int DEFAULT_MAX_MEMORY_PAGES = 2048;
@@ -28,7 +27,6 @@ public record AmaruEngineConfig(Phase2Mode phase2, int poolSize, Duration timeou
     public static final long DEFAULT_WORKER_STACK_SIZE = 256L * 1024 * 1024;
 
     public AmaruEngineConfig {
-        Objects.requireNonNull(phase2, "phase2");
         Objects.requireNonNull(timeout, "timeout");
         if (poolSize < 1) {
             throw new IllegalArgumentException("poolSize must be >= 1 (resolve pool-size 0 first): " + poolSize);
@@ -47,21 +45,21 @@ public record AmaruEngineConfig(Phase2Mode phase2, int poolSize, Duration timeou
         }
     }
 
-    /** The ADR-057 defaults with the given phase-2 mode and pool size. */
-    public static AmaruEngineConfig defaults(Phase2Mode phase2, int poolSize) {
-        return new AmaruEngineConfig(phase2, poolSize, DEFAULT_TIMEOUT, DEFAULT_MAX_ABANDONED,
+    /** The ADR-057 defaults with the given pool size. */
+    public static AmaruEngineConfig defaults(int poolSize) {
+        return new AmaruEngineConfig(poolSize, DEFAULT_TIMEOUT, DEFAULT_MAX_ABANDONED,
                 DEFAULT_MAX_MEMORY_PAGES, DEFAULT_WORKER_STACK_SIZE);
     }
 
     public AmaruEngineConfig withTimeout(Duration newTimeout) {
-        return new AmaruEngineConfig(phase2, poolSize, newTimeout, maxAbandoned, maxMemoryPages, workerStackSize);
+        return new AmaruEngineConfig(poolSize, newTimeout, maxAbandoned, maxMemoryPages, workerStackSize);
     }
 
     public AmaruEngineConfig withMaxAbandoned(int newMaxAbandoned) {
-        return new AmaruEngineConfig(phase2, poolSize, timeout, newMaxAbandoned, maxMemoryPages, workerStackSize);
+        return new AmaruEngineConfig(poolSize, timeout, newMaxAbandoned, maxMemoryPages, workerStackSize);
     }
 
     public AmaruEngineConfig withPoolSize(int newPoolSize) {
-        return new AmaruEngineConfig(phase2, newPoolSize, timeout, maxAbandoned, maxMemoryPages, workerStackSize);
+        return new AmaruEngineConfig(newPoolSize, timeout, maxAbandoned, maxMemoryPages, workerStackSize);
     }
 }

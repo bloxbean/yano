@@ -54,8 +54,8 @@ public final class BlockTransactionSelectors {
      * <p>With a ledger-state mempool (an engine-API admission engine, ADR-056 §6) selection is
      * {@link LedgerMempool#selectForBlock(long)}: a block-local overlay over its own {@code BLOCK_BUILD}
      * snapshot ticked to the forge slot, rule {@code LEDGER}, each entry's {@code ValidatedTx} as
-     * {@code previous}. The legacy {@code DefaultMemPool} keeps the legacy validator over
-     * {@link BlockBuildUtxoOverlay} until Phase 8.</p>
+     * {@code previous}. The legacy {@code DefaultMemPool} ({@code engine: scalus}) keeps the legacy validator over
+     * {@link BlockBuildUtxoOverlay}.</p>
      */
     private static final class MempoolBlockTransactionSelector implements BlockTransactionSelector {
         private final Supplier<MemPool> memPools;
@@ -163,7 +163,7 @@ public final class BlockTransactionSelectors {
             blockSelectionCompleted();
         }
 
-        /** The legacy selection (the default {@code engine: scalus} path, until ADR-056 Phase 8). */
+        /** The legacy selection (the {@code engine: scalus} path). */
         private List<byte[]> selectMempool(TransactionValidationService validatorService,
                                            UtxoState utxoState) {
             MemPool memPool = memPool();

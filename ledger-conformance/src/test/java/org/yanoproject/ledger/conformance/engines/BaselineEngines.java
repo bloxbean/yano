@@ -41,7 +41,7 @@ public final class BaselineEngines {
     }
 
     /**
-     * @param scripts null for {@code phase2 = full}, or the evaluator for {@code phase2 = scalus}
+     * @param scripts null for {@code amaru}, or the Scalus evaluator for {@code amaru-scalus}
      * @return the Amaru engine for a real network ({@code AmaruReferenceEngine.forNetwork}), when the build includes it
      */
     public static Optional<LedgerValidationEngine> amaru(NetworkParameters network, ScriptPhaseEvaluator scripts) {

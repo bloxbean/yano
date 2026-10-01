@@ -14,7 +14,8 @@ import java.util.Objects;
 /**
  * Engine selection and shadowing settings (ADR-056 §7), read from the runtime globals.
  *
- * @param engine            {@code yano.validation.engine}: the admission engine (default {@code scalus})
+ * @param engine            {@code yano.validation.engine}: the admission engine (default {@code java-julc}, ADR-056
+ *                          Phase 8; {@code scalus} keeps the legacy validator)
  * @param shadowEngines     {@code yano.validation.shadow-engines}: engines run in the shadow of admission
  * @param shadowDumpDir     {@code yano.validation.shadow-dump-dir}: where disagreement bundles go, or
  *                          {@code null} for none
@@ -29,7 +30,7 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
                                        boolean shadowSync, long snapshotMaxAgeMs, int maxLiveSnapshots,
                                        ShadowSyncSettings shadowSyncSettings) {
 
-    public static final String DEFAULT_ENGINE = LedgerValidationEngines.SCALUS;
+    public static final String DEFAULT_ENGINE = LedgerValidationEngines.JAVA_JULC;
     public static final long DEFAULT_SNAPSHOT_MAX_AGE_MS = 30_000;
 
     public ValidationEngineSettings {
@@ -55,7 +56,7 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
         this(engine, shadowEngines, shadowDumpDir, shadowSync, snapshotMaxAgeMs, maxLiveSnapshots, null);
     }
 
-    /** The defaults: {@code scalus}, no shadows, no dumps. */
+    /** The defaults: {@code java-julc}, no shadows, no dumps. */
     public static ValidationEngineSettings defaults() {
         return new ValidationEngineSettings(DEFAULT_ENGINE, List.of(), null, false, DEFAULT_SNAPSHOT_MAX_AGE_MS,
                 CanonicalStateGate.DEFAULT_MAX_LIVE_SNAPSHOTS);
@@ -86,7 +87,8 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
 
     /**
      * @return true when validation engines are created (any engine but {@code scalus}, any shadow engine, or shadow
-     *         sync); false keeps the legacy {@code TransactionValidator} path with nothing else running
+     *         sync); false ({@code engine: scalus} alone) keeps the legacy {@code TransactionValidator} path with
+     *         nothing else running
      */
     public boolean usesEngineApi() {
         return affectsAdmission() || shadowSync;
@@ -97,7 +99,7 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
      *         to admission. Shadow sync alone leaves the admission path (and the mempool) exactly as without engines.
      */
     public boolean affectsAdmission() {
-        return !engine.equals(DEFAULT_ENGINE) || !shadowEngines.isEmpty();
+        return engineAdmission() || !shadowEngines.isEmpty();
     }
 
     /**
@@ -105,7 +107,7 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
      *         {@code engine: scalus} admission stays on the legacy validator even when shadows are configured
      */
     public boolean engineAdmission() {
-        return !engine.equals(DEFAULT_ENGINE);
+        return !engine.equals(LedgerValidationEngines.SCALUS);
     }
 
     /** @return true when {@code name} is the admission engine or a shadow engine */

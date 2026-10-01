@@ -11,9 +11,8 @@ import org.yanoproject.ledger.rules.LedgerValidationEngines;
  * example {@code yano.validation.shadow-sync-engines: java-julc,java-scalus}: every transaction then gets both
  * verdicts, and counters, health, report lines and replay bundles carry the engine id.
  *
- * <p>Same opt-in as {@code java-julc} ({@value JavaLedgerValidationEngine#EXPERIMENTAL_KEY}; shadow sync answers it).
- * Without the node's Scalus evaluator ({@code EngineContext#scriptPhaseEvaluator()}), the engine fails closed on every
- * transaction that needs phase 2.</p>
+ * <p>Without the node's Scalus evaluator ({@code EngineContext#scriptPhaseEvaluator()}), the engine fails closed on
+ * every transaction that needs phase 2.</p>
  */
 public final class JavaScalusEngineFactory implements LedgerValidationEngineFactory {
 
@@ -24,7 +23,6 @@ public final class JavaScalusEngineFactory implements LedgerValidationEngineFact
 
     @Override
     public LedgerValidationEngine create(EngineContext context) {
-        JavaLedgerValidationEngine.requireExperimental(context, name());
         return new JavaLedgerValidationEngine(name(), context.scriptPhaseEvaluator());
     }
 }
