@@ -1,8 +1,10 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -44,21 +46,14 @@ public record RawVoter(int tag, byte[] hash) implements Comparable<RawVoter> {
         return tag == 4;
     }
 
-    /** Reads a voter at the reader's position. */
-    static RawVoter read(CborReader reader) {
-        long length = reader.readArrayHeader();
-        if (length != 2 && length != CborReader.INDEFINITE) {
-            throw new TxDecodingException("a voter is a two-element array");
-        }
-        long tag = reader.readUnsignedLong();
+    /** Reads a voter. */
+    static RawVoter read(CborSpan item) {
+        List<CborSpan> fields = StrictCbor.array(item, 2, "a voter is a two-element array");
+        long tag = StrictCbor.unsignedLong(fields.get(0));
         if (tag > 4) {
             throw new TxDecodingException("unknown voter tag " + tag);
         }
-        byte[] hash = reader.readDefiniteBytes();
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-            throw new TxDecodingException("a voter is a two-element array");
-        }
-        return new RawVoter((int) tag, hash);
+        return new RawVoter((int) tag, StrictCbor.definiteBytes(fields.get(1)));
     }
 
     private int kind() {

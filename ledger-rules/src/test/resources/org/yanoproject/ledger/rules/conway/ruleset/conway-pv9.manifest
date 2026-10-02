@@ -88,7 +88,7 @@ GOV.DisallowedVoters | check | dynamic | 9 | gov.GovChecks$DisallowedVoters | 7e
 
 [UTXOW]
 UTXOW.prepareScripts | step | dynamic | 9 | utxow.UtxowChecks$PrepareScripts | 1257a3c7bc571b0a |  | Alonzo/UTxO.hs (plutusLanguagesUsed); Alonzo/Plutus/Context.hs (collectPlutusScriptsWithContext, whose CollectErrors UTXOS reports: Babbage/Rules/Utxos.hs:143, 206)
-UTXOW.ScriptWitnessNotValidatingUTXOW | check | dynamic | 9 | utxow.UtxowChecks$ScriptWitnessNotValidating | 3081ec7d95cbebc3 |  | Babbage/Rules/Utxow.hs:211-232 (validateFailedBabbageScripts), 349: runTest
+UTXOW.ScriptWitnessNotValidatingUTXOW | check | dynamic | 9 | utxow.UtxowChecks$ScriptWitnessNotValidating | 824aa383a85a1ce1 |  | Babbage/Rules/Utxow.hs:211-232 (validateFailedBabbageScripts), 349: runTest
 UTXOW.ExtraneousScriptWitnessesUTXOW | check | dynamic | 9 | utxow.UtxowChecks$ExtraneousScriptWitnesses | ac4b034f6385f70c |  | Babbage/Rules/Utxow.hs:193-208 (babbageMissingScripts), 354
 UTXOW.MissingScriptWitnessesUTXOW | check | dynamic | 9 | utxow.UtxowChecks$MissingScriptWitnesses | d7ff2b0c844869d1 |  | Babbage/Rules/Utxow.hs:193-208 (babbageMissingScripts), 354
 UTXOW.UnspendableUTxONoDatumHash | check | dynamic | 9 | utxow.UtxowChecks$UnspendableUtxoNoDatumHash | acb0e8784298789c |  | Alonzo/Rules/Utxow.hs (missingRequiredDatums); Alonzo/UTxO.hs:245-275; Babbage/Rules/Utxow.hs:357
@@ -99,9 +99,9 @@ UTXOW.MissingRedeemers | check | dynamic | 9 | utxow.UtxowChecks$MissingRedeemer
 UTXOW.InvalidWitnessesUTXOW | check | static | 9 | utxow.UtxowChecks$InvalidWitnesses | 0a05382a6cbdaec5 |  | Shelley/Rules/Utxow.hs:391-408 (validateVerifiedWits); Babbage/Rules/Utxow.hs:366: runTestOnSignal
 UTXOW.MissingVKeyWitnessesUTXOW | check | dynamic | 9 | utxow.UtxowChecks$MissingVKeyWitnesses | de11d3b0d7c7d9ff |  | Shelley/Rules/Utxow.hs:412-424 (validateNeededWitnesses); Conway/UTxO.hs:174-199; Babbage/Rules/Utxow.hs:369
 UTXOW.MissingTxMetadata | check | static | 9 | utxow.UtxowChecks$MissingTxMetadata | 84397b36a0b00cfd |  | Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374
-UTXOW.MissingTxBodyMetadataHash | check | static | 9 | utxow.UtxowChecks$MissingTxBodyMetadataHash | e3f99890664cc522 |  | Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374
-UTXOW.ConflictingMetadataHash | check | static | 9 | utxow.UtxowChecks$ConflictingMetadataHash | f6c30c491533b9be |  | Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374
-UTXOW.InvalidMetadata | check | static | 9 | utxow.UtxowChecks$InvalidMetadata | b3dba5c922dbfee5 |  | Shelley/Rules/Utxow.hs:442; Alonzo/TxAuxData.hs:360-373 (validateAlonzoTxAuxData: Plutus scripts well formed); Babbage/Rules/Utxow.hs:374
+UTXOW.MissingTxBodyMetadataHash | check | static | 9 | utxow.UtxowChecks$MissingTxBodyMetadataHash | 207c01da1ad7d529 |  | Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374
+UTXOW.ConflictingMetadataHash | check | static | 9 | utxow.UtxowChecks$ConflictingMetadataHash | 750ada368b02dd2d |  | Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374
+UTXOW.InvalidMetadata | check | static | 9 | utxow.UtxowChecks$InvalidMetadata | cd43e3fe34295e88 |  | Shelley/Rules/Utxow.hs:442; Alonzo/TxAuxData.hs:360-373 (validateAlonzoTxAuxData: Plutus scripts well formed); Babbage/Rules/Utxow.hs:374
 UTXOW.MalformedScriptWitnesses | check | static | 9 | utxow.UtxowChecks$MalformedScriptWitnesses | fa4c65b1b931268b |  | Babbage/Rules/Utxow.hs:234-273 (validateScriptsWellFormed), 379: runTestOnSignal
 UTXOW.MalformedReferenceScripts | check | static | 9 | utxow.UtxowChecks$MalformedReferenceScripts | 9ff4420caff8753d |  | Babbage/Rules/Utxow.hs:234-273 (validateScriptsWellFormed), 379: outputs and collateral return
 UTXOW.PPViewHashesDontMatch | check | dynamic | 9 | utxow.UtxowChecks$PpViewHashesDontMatch | ce4e34e5208aa529 |  | Alonzo/Rules/Utxow.hs (checkScriptIntegrityHash, pvMajor < 11); Babbage/Rules/Utxow.hs:387-389

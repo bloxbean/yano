@@ -1,6 +1,9 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
+import com.bloxbean.cardano.client.transaction.raw.RawDatum;
+import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.util.HexUtil;
 
@@ -10,6 +13,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -19,18 +23,18 @@ import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.function.Consumer;
 
 /**
  * A Conway transaction read from its <em>original</em> bytes (ADR-056 Phase 3a).
  *
- * <p>Everything the rules hash or size comes from byte ranges of the received transaction, never from a
- * re-serialisation: the transaction id ({@link #txId()}, blake2b-256 of the body bytes), the size
- * ({@link #size()}), each output's encoded size, the witness-set fields (redeemers, datums) and the auxiliary
- * data. Scalar body fields, inputs, outputs, withdrawals and the mint are decoded here too, so the checks see
- * exactly what Haskell decodes (for example whether a validity bound is present at all). The decoded CCL
- * {@link Transaction} is kept for the structure the rules do not need byte-exact (certificates, proposals,
- * votes).</p>
+ * <p>The bytes are read with CCL's raw view ({@link RawTx}): the body, the witness set, the auxiliary data and
+ * every field are spans of the received transaction, so everything the rules hash or size comes from the original
+ * bytes, never from a re-serialisation: the transaction id ({@link #txId()}, blake2b-256 of the body bytes), the size
+ * ({@link #size()}), each output's encoded size, the witness-set fields (redeemers, datums) and the auxiliary data.
+ * Over those spans every field is decoded with Haskell's bounds ({@link StrictCbor}), so the checks see exactly what
+ * Haskell decodes (for example whether a validity bound is present at all) and bytes Haskell would not decode are a
+ * {@link TxDecodingException}. The decoded CCL {@link Transaction} is kept for the structure the rules do not need
+ * byte-exact.</p>
  *
  * <p>Definite and indefinite encodings and tag-258 sets are accepted wherever Conway accepts them; redeemers
  * may be the list form or the Conway map form.</p>
@@ -73,7 +77,6 @@ public final class RawTransaction {
     public static final int WITNESS_PLUTUS_V2 = 6;
     public static final int WITNESS_PLUTUS_V3 = 7;
 
-    private static final int SET_TAG = 258;
     /** The keys Conway's body decoder knows (Conway/TxBody.hs:190-252). */
     private static final Set<Integer> BODY_KEYS = Set.of(0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 13, 14, 15, 16, 17, 18, 19,
             20, 21, 22);
@@ -104,13 +107,8 @@ public final class RawTransaction {
     }
 
     private final byte[] txCbor;
-    private final CborSlice body;
-    private final CborSlice witnessSet;
-    private final CborSlice auxData;
-    private final boolean isValid;
+    private final RawTx tx;
     private final byte[] txId;
-    private final Map<Integer, CborSlice> bodyFields;
-    private final Map<Integer, CborSlice> witnessFields;
     private final List<TxInRef> inputs;
     private final List<TxInRef> collateralInputs;
     private final List<TxInRef> referenceInputs;
@@ -138,18 +136,13 @@ public final class RawTransaction {
     private final List<byte[]> requiredSigners;
     private final byte[] auxDataHash;
     private final byte[] scriptDataHash;
-    private final RawAuxData auxDataContent;
+    private final List<RawScript> auxScripts;
     private final Transaction decoded;
 
     private RawTransaction(Builder b) {
         this.txCbor = b.txCbor;
-        this.body = b.body;
-        this.witnessSet = b.witnessSet;
-        this.auxData = b.auxData;
-        this.isValid = b.isValid;
-        this.txId = Blake2bUtil.blake2bHash256(body.copy(txCbor));
-        this.bodyFields = Collections.unmodifiableMap(b.bodyFields);
-        this.witnessFields = Collections.unmodifiableMap(b.witnessFields);
+        this.tx = b.tx;
+        this.txId = tx.txId();
         this.inputs = List.copyOf(b.inputs);
         this.collateralInputs = List.copyOf(b.collateralInputs);
         this.referenceInputs = List.copyOf(b.referenceInputs);
@@ -177,7 +170,7 @@ public final class RawTransaction {
         this.requiredSigners = List.copyOf(b.requiredSigners);
         this.auxDataHash = b.auxDataHash;
         this.scriptDataHash = b.scriptDataHash;
-        this.auxDataContent = b.auxDataContent;
+        this.auxScripts = List.copyOf(b.auxScripts);
         this.decoded = b.decoded;
     }
 
@@ -191,7 +184,11 @@ public final class RawTransaction {
     public static RawTransaction parse(byte[] txCbor, Transaction decoded) {
         Objects.requireNonNull(txCbor, "txCbor");
         Builder b = new Builder(txCbor.clone(), decoded);
-        b.read();
+        try {
+            b.read();
+        } catch (CborRuntimeException e) {
+            throw new TxDecodingException(e.getMessage(), e);
+        }
         return new RawTransaction(b);
     }
 
@@ -213,27 +210,29 @@ public final class RawTransaction {
         return HexUtil.encodeHexString(txId);
     }
 
-    public CborSlice body() {
-        return body;
+    /** @return CCL's view of the transaction's original bytes */
+    public RawTx rawTx() {
+        return tx;
     }
 
-    public CborSlice witnessSet() {
-        return witnessSet;
+    /** @return the body, as encoded */
+    public CborSpan body() {
+        return tx.body();
     }
 
-    /** @return the auxiliary data's bytes, or null when the transaction has none ({@code null}) */
-    public CborSlice auxData() {
-        return auxData;
+    /** @return the witness set, as encoded */
+    public CborSpan witnessSet() {
+        return tx.witnessSet();
+    }
+
+    /** @return the auxiliary data, as encoded, or null when the transaction has none ({@code null}) */
+    public CborSpan auxData() {
+        return tx.auxData().orElse(null);
     }
 
     /** @return the {@code is_valid} flag (Haskell {@code IsPhase2Valid}) */
     public boolean isValid() {
-        return isValid;
-    }
-
-    /** @return a copy of an item's bytes */
-    public byte[] bytes(CborSlice slice) {
-        return slice.copy(txCbor);
+        return tx.isValid();
     }
 
     /**
@@ -244,17 +243,8 @@ public final class RawTransaction {
      * (scalus-bridge).
      */
     public int size() {
-        return 1 + body.length() + witnessSet.length() + (auxData == null ? 1 : auxData.length());
-    }
-
-    /** @return the body's fields as byte ranges of the original bytes, by key */
-    public Map<Integer, CborSlice> bodyFields() {
-        return bodyFields;
-    }
-
-    /** @return the witness set's fields as byte ranges of the original bytes, by key */
-    public Map<Integer, CborSlice> witnessFields() {
-        return witnessFields;
+        CborSpan auxData = auxData();
+        return 1 + body().length() + witnessSet().length() + (auxData == null ? 1 : auxData.length());
     }
 
     /** @return the spending inputs, in encoded order */
@@ -430,21 +420,16 @@ public final class RawTransaction {
         return scriptDataHash != null ? scriptDataHash.clone() : null;
     }
 
-    /** @return the decoded auxiliary data, or null when the transaction has none */
-    public RawAuxData auxDataContent() {
-        return auxDataContent;
+    /** @return the auxiliary data's scripts ({@code RawTx.auxScripts()}), in encoded order; empty without any */
+    public List<RawScript> auxScripts() {
+        return auxScripts;
     }
 
     /** Parser state. */
     private static final class Builder {
         private final byte[] txCbor;
         private final Transaction decoded;
-        private CborSlice body;
-        private CborSlice witnessSet;
-        private CborSlice auxData;
-        private boolean isValid;
-        private final Map<Integer, CborSlice> bodyFields = new TreeMap<>();
-        private final Map<Integer, CborSlice> witnessFields = new TreeMap<>();
+        private RawTx tx;
         private List<TxInRef> inputs = List.of();
         private List<TxInRef> collateralInputs = List.of();
         private List<TxInRef> referenceInputs = List.of();
@@ -470,44 +455,32 @@ public final class RawTransaction {
         private final Map<RawVoter, SortedMap<GovActionId, Integer>> votes = new TreeMap<>();
         private final List<RawProposal> proposals = new ArrayList<>();
         private final List<byte[]> requiredSigners = new ArrayList<>();
+        private final List<RawScript> auxScripts = new ArrayList<>();
         private byte[] auxDataHash;
         private byte[] scriptDataHash;
-        private RawAuxData auxDataContent;
 
         Builder(byte[] txCbor, Transaction decoded) {
             this.txCbor = txCbor;
             this.decoded = decoded;
         }
 
+        /** {@code [body, witness_set, is_valid, auxiliary_data / null]}, read with CCL's view. */
         void read() {
             if (txCbor.length == 0) {
                 throw new TxDecodingException("empty transaction bytes");
             }
-            CborReader tx = new CborReader(txCbor);
-            long length = tx.readArrayHeader();
-            if (length != 4 && length != CborReader.INDEFINITE) {
+            tx = RawTx.of(txCbor);
+            int length = tx.span().size();
+            if (length != 4) {
                 throw new TxDecodingException("a Conway transaction has 4 elements, found " + length);
-            }
-            body = tx.readItem();
-            witnessSet = tx.readItem();
-            isValid = tx.readBoolean();
-            if (tx.peekNull()) {
-                tx.readNull();
-                auxData = null;
-            } else {
-                auxData = tx.readItem();
-            }
-            if (length == CborReader.INDEFINITE && tx.hasNext(length, 4)) {
-                throw new TxDecodingException("a Conway transaction has 4 elements");
-            }
-            if (!tx.atEnd()) {
-                throw new TxDecodingException("trailing bytes after the transaction");
             }
             readBody();
             readWitnessSet();
-            if (auxData != null) {
-                auxDataContent = RawAuxData.decode(auxData.copy(txCbor));
-            }
+            tx.auxData().ifPresent(auxData -> {
+                RawAuxData.validate(auxData);
+                // the scripts, read once with CCL's view and decoded as Haskell does
+                tx.auxScripts().forEach(script -> auxScripts.add(RawScript.of(script.type(), script.span())));
+            });
         }
 
         /**
@@ -518,47 +491,46 @@ public final class RawTransaction {
          * ({@code decodePositiveCoin}).
          */
         private void readBody() {
-            CborReader reader = new CborReader(txCbor, body);
-            long entries = reader.readMapHeader();
-            for (long i = 0; reader.hasNext(entries, i); i++) {
-                long key = reader.readUnsignedLong();
+            Set<Integer> keys = new HashSet<>();
+            for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(tx.body())) {
+                long key = StrictCbor.unsignedLong(entry.getKey());
                 if (!BODY_KEYS.contains((int) key) || key > 22) {
                     throw new TxDecodingException("unknown transaction body key " + key);
                 }
-                CborSlice value = reader.readItem();
-                if (bodyFields.put((int) key, value) != null) {
+                if (!keys.add((int) key)) {
                     throw new TxDecodingException("duplicate transaction body key " + key);
                 }
             }
             for (int required : new int[]{BODY_INPUTS, BODY_OUTPUTS, BODY_FEE}) {
-                if (!bodyFields.containsKey(required)) {
+                if (!keys.contains(required)) {
                     throw new TxDecodingException("transaction body has no key " + required);
                 }
             }
-            inputs = readInputs(bodyFields.get(BODY_INPUTS), false);
-            collateralInputs = optional(BODY_COLLATERAL)
-                    ? readInputs(bodyFields.get(BODY_COLLATERAL), true) : List.of();
+            inputs = readInputs(tx.bodySetItems(BODY_INPUTS), false);
+            collateralInputs = optional(BODY_COLLATERAL) ? readInputs(tx.bodySetItems(BODY_COLLATERAL), true)
+                    : List.of();
             referenceInputs = optional(BODY_REFERENCE_INPUTS)
-                    ? readInputs(bodyFields.get(BODY_REFERENCE_INPUTS), true) : List.of();
-            readOutputs();
-            fee = field(BODY_FEE).readUnsigned();
-            ttl = optional(BODY_TTL) ? field(BODY_TTL).readUnsigned() : null;
-            validityStart = optional(BODY_VALIDITY_START) ? field(BODY_VALIDITY_START).readUnsigned() : null;
+                    ? readInputs(tx.bodySetItems(BODY_REFERENCE_INPUTS), true) : List.of();
+            List<CborSpan> outputItems = StrictCbor.array(field(BODY_OUTPUTS));
+            for (int i = 0; i < outputItems.size(); i++) {
+                outputs.add(RawOutput.read(outputItems.get(i), i, false));
+            }
+            fee = StrictCbor.unsigned(field(BODY_FEE));
+            ttl = optional(BODY_TTL) ? StrictCbor.unsigned(field(BODY_TTL)) : null;
+            validityStart = optional(BODY_VALIDITY_START) ? StrictCbor.unsigned(field(BODY_VALIDITY_START)) : null;
             if (optional(BODY_WITHDRAWALS)) {
                 // Withdrawals: a map without duplicate keys (decodeMap at version 9, Decoder.hs:810-830) of
                 // account addresses (decodeAccountAddressT, Address.hs:938-955: header & 0xEE == 0xE0, 28-byte hash).
-                CborReader w = field(BODY_WITHDRAWALS);
-                long count = w.readMapHeader();
                 Set<String> seen = new HashSet<>();
-                for (long i = 0; w.hasNext(count, i); i++) {
-                    byte[] account = w.readDefiniteBytes();
+                for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(field(BODY_WITHDRAWALS))) {
+                    byte[] account = StrictCbor.definiteBytes(entry.getKey());
                     if (account.length != 29 || (account[0] & 0xee) != 0xe0) {
                         throw new TxDecodingException("withdrawal key is not an account address");
                     }
                     if (!seen.add(HexUtil.encodeHexString(account))) {
                         throw new TxDecodingException("duplicate withdrawal key " + HexUtil.encodeHexString(account));
                     }
-                    withdrawals.add(new Withdrawal(account, w.readUnsigned()));
+                    withdrawals.add(new Withdrawal(account, StrictCbor.unsigned(entry.getValue())));
                 }
                 nonEmpty(withdrawals.isEmpty(), "Withdrawals");
             }
@@ -567,54 +539,49 @@ public final class RawTransaction {
                 nonEmpty(mint.isEmpty(), "Mint");
             }
             if (optional(BODY_NETWORK_ID)) {
-                long network = field(BODY_NETWORK_ID).readUnsignedLong();
+                long network = StrictCbor.unsignedLong(field(BODY_NETWORK_ID));
                 if (network > 1) {
                     throw new TxDecodingException("network id " + network);
                 }
                 networkId = (int) network;
             }
             if (optional(BODY_AUX_DATA_HASH)) {
-                auxDataHash = hash(field(BODY_AUX_DATA_HASH).readDefiniteBytes(), 32, "auxiliary data hash");
+                auxDataHash = hash(StrictCbor.definiteBytes(field(BODY_AUX_DATA_HASH)), 32, "auxiliary data hash");
             }
             if (optional(BODY_SCRIPT_DATA_HASH)) {
-                scriptDataHash = hash(field(BODY_SCRIPT_DATA_HASH).readDefiniteBytes(), 32, "script integrity hash");
+                scriptDataHash = hash(StrictCbor.definiteBytes(field(BODY_SCRIPT_DATA_HASH)), 32,
+                        "script integrity hash");
             }
             if (optional(BODY_REQUIRED_SIGNERS)) {
-                CborReader r = field(BODY_REQUIRED_SIGNERS);
-                r.skipTag(SET_TAG);
-                long count = r.readArrayHeader();
                 Set<String> seen = new HashSet<>();
-                int n = 0;
-                for (; r.hasNext(count, n); n++) {
-                    byte[] signer = hash(r.readDefiniteBytes(), 28, "required signer");
+                for (CborSpan item : tx.bodySetItems(BODY_REQUIRED_SIGNERS)) {
+                    byte[] signer = hash(StrictCbor.definiteBytes(item), 28, "required signer");
                     if (!seen.add(HexUtil.encodeHexString(signer))) {
                         throw new TxDecodingException("duplicate required signer");
                     }
                     requiredSigners.add(signer);
                 }
-                nonEmpty(n == 0, "Required Signer Hashes");
+                nonEmpty(requiredSigners.isEmpty(), "Required Signer Hashes");
             }
             if (optional(BODY_COLLATERAL_RETURN)) {
-                CborReader r = field(BODY_COLLATERAL_RETURN);
-                collateralReturn = RawOutput.read(r, txCbor, Math.min(outputs.size(), 0xFFFF), true);
+                collateralReturn = RawOutput.read(field(BODY_COLLATERAL_RETURN), Math.min(outputs.size(), 0xFFFF),
+                        true);
             }
-            totalCollateral = optional(BODY_TOTAL_COLLATERAL) ? field(BODY_TOTAL_COLLATERAL).readUnsigned() : null;
+            totalCollateral = optional(BODY_TOTAL_COLLATERAL)
+                    ? StrictCbor.unsigned(field(BODY_TOTAL_COLLATERAL)) : null;
             currentTreasuryValue = optional(BODY_CURRENT_TREASURY_VALUE)
-                    ? field(BODY_CURRENT_TREASURY_VALUE).readUnsigned() : null;
-            donation = optional(BODY_DONATION) ? field(BODY_DONATION).readUnsigned() : BigInteger.ZERO;
+                    ? StrictCbor.unsigned(field(BODY_CURRENT_TREASURY_VALUE)) : null;
+            donation = optional(BODY_DONATION) ? StrictCbor.unsigned(field(BODY_DONATION)) : BigInteger.ZERO;
             if (optional(BODY_DONATION) && donation.signum() == 0) {
                 throw new TxDecodingException("TxBody: 'Treasury Donation' must be non-zero when supplied");
             }
             if (optional(BODY_CERTS)) {
                 // An OSet: decodeOSet rejects two equal certificates (decodeSetLikeEnforceNoDuplicates).
-                CborReader c = field(BODY_CERTS);
-                c.skipTag(SET_TAG);
-                long count = c.readArrayHeader();
                 Set<String> seen = new HashSet<>();
-                for (int i = 0; c.hasNext(count, i); i++) {
-                    int start = c.position();
-                    RawCertificate cert = RawCertificate.read(c, i);
-                    if (!seen.add(key(new CborSlice(start, c.position()), cert.tag() == 3 ? 7 : -1, -1))) {
+                List<CborSpan> items = tx.bodySetItems(BODY_CERTS);
+                for (int i = 0; i < items.size(); i++) {
+                    RawCertificate cert = RawCertificate.read(items.get(i), i);
+                    if (!seen.add(key(items.get(i), cert.tag() == 3 ? 7 : -1, -1))) {
                         throw new TxDecodingException("duplicate certificate " + i);
                     }
                     certificates.add(cert);
@@ -622,61 +589,17 @@ public final class RawTransaction {
                 nonEmpty(certificates.isEmpty(), "Certificates");
             }
             if (optional(BODY_VOTING_PROCEDURES)) {
-                // voting_procedures = {+ voter => {+ gov_action_id => voting_procedure}}; decodeMap rejects
-                // duplicate voters from version 9.
-                CborReader v = field(BODY_VOTING_PROCEDURES);
-                long count = v.readMapHeader();
-                TreeSet<RawVoter> seen = new TreeSet<>();
-                for (long i = 0; v.hasNext(count, i); i++) {
-                    RawVoter voter = RawVoter.read(v);
-                    if (!seen.add(voter)) {
-                        throw new TxDecodingException("duplicate voter " + voter);
-                    }
-                    // {+ gov_action_id => voting_procedure}, voting_procedure = [vote, anchor / null]: a non-empty map
-                    // without duplicate action ids (Procedures.hs:408-416), the vote 0–2 (decodeEnumBounded), the
-                    // anchor with its bounds.
-                    long actions = v.readMapHeader();
-                    TreeMap<GovActionId, Integer> ids = new TreeMap<>(GOV_ACTION_ID_ORDER);
-                    for (long j = 0; v.hasNext(actions, j); j++) {
-                        GovActionId id = govActionId(v);
-                        if (ids.containsKey(id)) {
-                            throw new TxDecodingException("duplicate governance action id " + id + " for " + voter);
-                        }
-                        long fields = v.readArrayHeader();
-                        if (fields != 2 && fields != CborReader.INDEFINITE) {
-                            throw new TxDecodingException("a voting procedure has 2 elements");
-                        }
-                        long vote = v.readUnsignedLong();
-                        if (vote > 2) {
-                            throw new TxDecodingException("unknown vote " + vote);
-                        }
-                        ids.put(id, (int) vote);
-                        BoundedFields.anchorOrNull(v, "vote");
-                        if (fields == CborReader.INDEFINITE && v.hasNext(fields, 2)) {
-                            throw new TxDecodingException("a voting procedure has 2 elements");
-                        }
-                    }
-                    if (ids.isEmpty()) {
-                        throw new TxDecodingException("VotingProcedures require votes, but Voter: " + voter
-                                + " didn't have any");
-                    }
-                    votes.put(voter, Collections.unmodifiableSortedMap(ids));
-                }
-                nonEmpty(seen.isEmpty(), "VotingProcedures");
-                voters.addAll(seen);
+                readVotes(field(BODY_VOTING_PROCEDURES));
             }
             if (optional(BODY_PROPOSAL_PROCEDURES)) {
                 // An OSet too: two equal proposal procedures do not decode.
-                CborReader p = field(BODY_PROPOSAL_PROCEDURES);
-                p.skipTag(SET_TAG);
-                long count = p.readArrayHeader();
                 Set<String> seen = new HashSet<>();
-                for (int i = 0; p.hasNext(count, i); i++) {
-                    int start = p.position();
-                    RawProposal proposal = RawProposal.read(p, i);
+                List<CborSpan> items = tx.bodySetItems(BODY_PROPOSAL_PROCEDURES);
+                for (int i = 0; i < items.size(); i++) {
+                    RawProposal proposal = RawProposal.read(items.get(i), i);
                     // [deposit, account, gov_action, anchor]; an update-committee action [4, prev, set, map, q]
                     // holds a set at position 2
-                    if (!seen.add(key(new CborSlice(start, p.position()), -1, proposal.actionTag() == 4 ? 2 : -1))) {
+                    if (!seen.add(key(items.get(i), -1, proposal.actionTag() == 4 ? 2 : -1))) {
                         throw new TxDecodingException("duplicate proposal procedure " + i);
                     }
                     proposals.add(proposal);
@@ -687,55 +610,70 @@ public final class RawTransaction {
         }
 
         /**
+         * {@code voting_procedures = {+ voter => {+ gov_action_id => voting_procedure}}}: {@code decodeMap} rejects
+         * duplicate voters from version 9; each voter's map is non-empty without duplicate action ids
+         * (Procedures.hs:408-416), {@code voting_procedure = [vote, anchor / null]} with the vote 0–2
+         * ({@code decodeEnumBounded}) and the anchor with its bounds.
+         */
+        private void readVotes(CborSpan field) {
+            TreeSet<RawVoter> seen = new TreeSet<>();
+            for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(field)) {
+                RawVoter voter = RawVoter.read(entry.getKey());
+                if (!seen.add(voter)) {
+                    throw new TxDecodingException("duplicate voter " + voter);
+                }
+                TreeMap<GovActionId, Integer> ids = new TreeMap<>(GOV_ACTION_ID_ORDER);
+                for (Map.Entry<CborSpan, CborSpan> action : StrictCbor.map(entry.getValue())) {
+                    GovActionId id = RawProposal.govActionId(action.getKey());
+                    if (ids.containsKey(id)) {
+                        throw new TxDecodingException("duplicate governance action id " + id + " for " + voter);
+                    }
+                    List<CborSpan> procedure = StrictCbor.array(action.getValue(), 2,
+                            "a voting procedure has 2 elements");
+                    long vote = StrictCbor.unsignedLong(procedure.get(0));
+                    if (vote > 2) {
+                        throw new TxDecodingException("unknown vote " + vote);
+                    }
+                    ids.put(id, (int) vote);
+                    BoundedFields.anchorOrNull(procedure.get(1), "vote");
+                }
+                if (ids.isEmpty()) {
+                    throw new TxDecodingException("VotingProcedures require votes, but Voter: " + voter
+                            + " didn't have any");
+                }
+                votes.put(voter, Collections.unmodifiableSortedMap(ids));
+            }
+            nonEmpty(seen.isEmpty(), "VotingProcedures");
+            voters.addAll(seen);
+        }
+
+        /**
          * The equality key of a decoded certificate or proposal ({@link CborCanonical}): its canonical encoding,
          * with an untagged set sorted too — at position {@code setAt} of the item (a pool registration's owners), or
          * at position {@code actionSetAt} of the proposal's governance action (an update committee's removals).
          */
-        private String key(CborSlice slice, int setAt, int actionSetAt) {
+        private static String key(CborSpan item, int setAt, int actionSetAt) {
             if (setAt < 0 && actionSetAt < 0) {
-                return HexUtil.encodeHexString(CborCanonical.of(txCbor, slice));
+                return HexUtil.encodeHexString(CborCanonical.of(item));
             }
             StringBuilder key = new StringBuilder();
-            CborReader r = new CborReader(txCbor, slice);
-            long n = r.readArrayHeader();
-            for (int i = 0; r.hasNext(n, i); i++) {
-                CborSlice element = r.readItem();
+            List<CborSpan> elements = StrictCbor.array(item);
+            for (int i = 0; i < elements.size(); i++) {
+                CborSpan element = elements.get(i);
                 if (i == setAt) {
-                    key.append(HexUtil.encodeHexString(CborCanonical.set(txCbor, element)));
+                    key.append(HexUtil.encodeHexString(CborCanonical.set(element)));
                 } else if (i == 2 && actionSetAt >= 0) {
-                    CborReader a = new CborReader(txCbor, element);
-                    long m = a.readArrayHeader();
-                    for (int j = 0; a.hasNext(m, j); j++) {
-                        CborSlice part = a.readItem();
-                        key.append(HexUtil.encodeHexString(j == actionSetAt ? CborCanonical.set(txCbor, part)
-                                : CborCanonical.of(txCbor, part))).append(',');
+                    List<CborSpan> parts = StrictCbor.array(element);
+                    for (int j = 0; j < parts.size(); j++) {
+                        key.append(HexUtil.encodeHexString(j == actionSetAt ? CborCanonical.set(parts.get(j))
+                                : CborCanonical.of(parts.get(j)))).append(',');
                     }
                 } else {
-                    key.append(HexUtil.encodeHexString(CborCanonical.of(txCbor, element)));
+                    key.append(HexUtil.encodeHexString(CborCanonical.of(element)));
                 }
                 key.append('|');
             }
             return key.toString();
-        }
-
-        /** {@code gov_action_id = [transaction_id, Word16]}. */
-        private static GovActionId govActionId(CborReader reader) {
-            long length = reader.readArrayHeader();
-            if (length != 2 && length != CborReader.INDEFINITE) {
-                throw new TxDecodingException("a governance action id has 2 elements");
-            }
-            byte[] txId = reader.readDefiniteBytes();
-            if (txId.length != 32) {
-                throw new TxDecodingException("a governance action id's transaction id of " + txId.length + " bytes");
-            }
-            long ix = reader.readUnsignedLong();
-            if (ix > 0xFFFF) {
-                throw new TxDecodingException("a governance action index exceeds Word16: " + ix);
-            }
-            if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-                throw new TxDecodingException("a governance action id has 2 elements");
-            }
-            return new GovActionId(HexUtil.encodeHexString(txId), (int) ix);
         }
 
         private static void nonEmpty(boolean empty, String field) {
@@ -752,34 +690,25 @@ public final class RawTransaction {
         }
 
         private boolean optional(int key) {
-            return bodyFields.containsKey(key);
+            return tx.bodyField(key).isPresent();
         }
 
-        private CborReader field(int key) {
-            return new CborReader(txCbor, bodyFields.get(key));
+        private CborSpan field(int key) {
+            return tx.bodyField(key).orElseThrow();
         }
 
-        private List<TxInRef> readInputs(CborSlice slice, boolean nonEmpty) {
-            CborReader reader = new CborReader(txCbor, slice);
-            reader.skipTag(SET_TAG);
-            long count = reader.readArrayHeader();
+        private static List<TxInRef> readInputs(List<CborSpan> items, boolean nonEmpty) {
             List<TxInRef> result = new ArrayList<>();
             TreeSet<TxInRef> seen = new TreeSet<>();
-            for (long i = 0; reader.hasNext(count, i); i++) {
-                long elements = reader.readArrayHeader();
-                if (elements != 2 && elements != CborReader.INDEFINITE) {
-                    throw new TxDecodingException("a transaction input is a two-element array");
-                }
-                byte[] id = reader.readDefiniteBytes();
+            for (CborSpan item : items) {
+                List<CborSpan> parts = StrictCbor.array(item, 2, "a transaction input is a two-element array");
+                byte[] id = StrictCbor.definiteBytes(parts.get(0));
                 if (id.length != TX_ID_LENGTH) {
                     throw new TxDecodingException("transaction id of " + id.length + " bytes");
                 }
-                long index = reader.readUnsignedLong();
+                long index = StrictCbor.unsignedLong(parts.get(1));
                 if (index > 0xFFFF) {
                     throw new TxDecodingException("output index " + index + " exceeds Word16");
-                }
-                if (elements == CborReader.INDEFINITE && reader.hasNext(elements, 2)) {
-                    throw new TxDecodingException("a transaction input is a two-element array");
                 }
                 TxInRef in = new TxInRef(HexUtil.encodeHexString(id), (int) index);
                 if (!seen.add(in)) {
@@ -793,105 +722,68 @@ public final class RawTransaction {
             return result;
         }
 
-        private void readOutputs() {
-            CborReader reader = field(BODY_OUTPUTS);
-            long count = reader.readArrayHeader();
-            for (int i = 0; reader.hasNext(count, i); i++) {
-                outputs.add(RawOutput.read(reader, txCbor, i, false));
-            }
-        }
-
         private void readWitnessSet() {
-            CborReader reader = new CborReader(txCbor, witnessSet);
-            long entries = reader.readMapHeader();
-            for (long i = 0; reader.hasNext(entries, i); i++) {
-                long key = reader.readUnsignedLong();
+            Set<Integer> keys = new HashSet<>();
+            for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(tx.witnessSet())) {
+                long key = StrictCbor.unsignedLong(entry.getKey());
                 // AlonzoTxWits: keys 0-7, anything else is invalidField (Alonzo/TxWits.hs:650-675)
                 if (key > WITNESS_PLUTUS_V3) {
                     throw new TxDecodingException("unknown witness set key " + key);
                 }
-                CborSlice value = reader.readItem();
-                if (witnessFields.put((int) key, value) != null) {
+                if (!keys.add((int) key)) {
                     throw new TxDecodingException("duplicate witness set key " + key);
                 }
             }
             // Version 9+: vkey and bootstrap witnesses, native scripts and datums are non-empty lists or tag-258
             // sets (addrWitsSetDecoder, nativeScriptsDecoder, TxDatsRaw: decodeNonEmptyList; TxWits.hs:613-700, 334-352).
             for (int key : new int[]{WITNESS_VKEYS, WITNESS_NATIVE_SCRIPTS, WITNESS_BOOTSTRAP, WITNESS_DATUMS}) {
-                if (witnessFields.containsKey(key)) {
-                    CborReader list = new CborReader(txCbor, witnessFields.get(key));
-                    list.skipTag(SET_TAG);
-                    long length = list.readArrayHeader();
-                    if (length == 0 || (length == CborReader.INDEFINITE && !list.hasNext(length, 0))) {
-                        throw new TxDecodingException("witness set key " + key + " is an empty list");
-                    }
+                if (keys.contains(key) && tx.witnessSetItems(key).isEmpty()) {
+                    throw new TxDecodingException("witness set key " + key + " is an empty list");
                 }
             }
-            if (witnessFields.containsKey(WITNESS_VKEYS)) {
-                forEachWitness(WITNESS_VKEYS, w -> vkeyWitnesses.add(new VKeyWitness(
-                        checkLength(w.readDefiniteBytes(), VKEY_LENGTH, "vkey"),
-                        checkLength(w.readDefiniteBytes(), SIGNATURE_LENGTH, "vkey witness signature"))));
+            // scriptDecoderV9 (Alonzo/TxWits.hs:741-751): a list or tag-258 set of Plutus binaries, not empty.
+            for (int key : new int[]{WITNESS_PLUTUS_V1, WITNESS_PLUTUS_V2, WITNESS_PLUTUS_V3}) {
+                if (keys.contains(key) && tx.witnessSetItems(key).isEmpty()) {
+                    throw new TxDecodingException("Empty list of scripts is not allowed");
+                }
             }
-            if (witnessFields.containsKey(WITNESS_BOOTSTRAP)) {
+            for (CborSpan witness : tx.vkeyWitnesses()) {
+                List<CborSpan> parts = StrictCbor.array(witness, 2,
+                        "a vkey witness at " + witness.offset() + " is [vkey, signature]");
+                vkeyWitnesses.add(new VKeyWitness(
+                        checkLength(StrictCbor.definiteBytes(parts.get(0)), VKEY_LENGTH, "vkey"),
+                        checkLength(StrictCbor.definiteBytes(parts.get(1)), SIGNATURE_LENGTH,
+                                "vkey witness signature")));
+            }
+            for (CborSpan witness : tx.bootstrapWitnesses()) {
+                List<CborSpan> parts = StrictCbor.array(witness, 4,
+                        "a bootstrap witness at " + witness.offset() + " is [vkey, signature, chain_code, attributes]");
                 // The chain code is checked to be 32 bytes only from protocol version 12 (Keys/Bootstrap.hs:72-78).
-                forEachWitness(WITNESS_BOOTSTRAP, w -> bootstrapWitnesses.add(new BootstrapWitness(
-                        checkLength(w.readDefiniteBytes(), VKEY_LENGTH, "bootstrap witness vkey"),
-                        checkLength(w.readDefiniteBytes(), SIGNATURE_LENGTH, "bootstrap witness signature"),
-                        w.readDefiniteBytes(),
-                        w.readDefiniteBytes())));
+                bootstrapWitnesses.add(new BootstrapWitness(
+                        checkLength(StrictCbor.definiteBytes(parts.get(0)), VKEY_LENGTH, "bootstrap witness vkey"),
+                        checkLength(StrictCbor.definiteBytes(parts.get(1)), SIGNATURE_LENGTH,
+                                "bootstrap witness signature"),
+                        StrictCbor.definiteBytes(parts.get(2)),
+                        StrictCbor.definiteBytes(parts.get(3))));
             }
-            if (witnessFields.containsKey(WITNESS_NATIVE_SCRIPTS)) {
-                // nativeScriptsDecoder at version 9: a non-empty list (duplicates collapse in Map.fromList).
-                CborReader list = new CborReader(txCbor, witnessFields.get(WITNESS_NATIVE_SCRIPTS));
-                list.skipTag(SET_TAG);
-                long count = list.readArrayHeader();
-                for (long i = 0; list.hasNext(count, i); i++) {
-                    RawScript script = new RawScript(RawScript.NATIVE, list.copy(list.readItem()));
-                    script.timelock();
-                    witnessScripts.add(script);
-                }
-            }
-            readPlutusScripts(WITNESS_PLUTUS_V1, RawScript.PLUTUS_V1);
-            readPlutusScripts(WITNESS_PLUTUS_V2, RawScript.PLUTUS_V2);
-            readPlutusScripts(WITNESS_PLUTUS_V3, RawScript.PLUTUS_V3);
-            if (witnessFields.containsKey(WITNESS_DATUMS)) {
-                CborReader list = new CborReader(txCbor, witnessFields.get(WITNESS_DATUMS));
-                list.skipTag(SET_TAG);
-                long count = list.readArrayHeader();
-                for (long i = 0; list.hasNext(count, i); i++) {
-                    byte[] datum = list.copy(list.readItem());
-                    PlutusData.validate(datum); // DecCBOR (PlutusData era) = Cborg.decode (Plutus/Data.hs:99-103)
-                    datumHashes.add(Hashes.blake2b256(datum));
-                }
-            }
-            if (witnessFields.containsKey(WITNESS_REDEEMERS)) {
-                readRedeemers(new CborReader(txCbor, witnessFields.get(WITNESS_REDEEMERS)));
-            }
-        }
-
-        /**
-         * {@code scriptDecoderV9} (Alonzo/TxWits.hs:741-751): a list or tag-258 set of Plutus binaries, not empty,
-         * with no two scripts of the same hash ({@code decodeMapLikeEnforceNoDuplicates}).
-         */
-        private void readPlutusScripts(int key, int language) {
-            if (!witnessFields.containsKey(key)) {
-                return;
-            }
-            CborReader list = new CborReader(txCbor, witnessFields.get(key));
-            list.skipTag(SET_TAG);
-            long count = list.readArrayHeader();
-            Set<String> seen = new HashSet<>();
-            int n = 0;
-            for (; list.hasNext(count, n); n++) {
-                RawScript script = new RawScript(language, list.readDefiniteBytes());
-                if (!seen.add(script.hashHex())) {
-                    throw new TxDecodingException("duplicate PlutusV" + language + " script " + script.hashHex());
+            // Native scripts (nativeScriptsDecoder at version 9: duplicates collapse in Map.fromList), then Plutus
+            // V1-V3 with no two scripts of the same hash (decodeMapLikeEnforceNoDuplicates).
+            Map<Integer, Set<String>> plutusHashes = new HashMap<>();
+            for (var view : tx.scripts()) {
+                RawScript script = RawScript.of(view.type(), view.span());
+                if (script.isPlutus() && !plutusHashes.computeIfAbsent(script.language(), l -> new HashSet<>())
+                        .add(script.hashHex())) {
+                    throw new TxDecodingException("duplicate PlutusV" + script.language() + " script "
+                            + script.hashHex());
                 }
                 witnessScripts.add(script);
             }
-            if (n == 0) {
-                throw new TxDecodingException("Empty list of scripts is not allowed");
+            for (RawDatum datum : tx.witnessDatums()) {
+                // DecCBOR (PlutusData era) = Cborg.decode (Plutus/Data.hs:99-103)
+                PlutusData.validate(datum.span().bytes());
+                datumHashes.add(datum.hash());
             }
+            tx.witnessField(WITNESS_REDEEMERS).ifPresent(this::readRedeemers);
         }
 
         /**
@@ -905,71 +797,31 @@ public final class RawTransaction {
             return value;
         }
 
-        private void forEachWitness(int key, Consumer<CborReader> body) {
-            CborReader reader = new CborReader(txCbor, witnessFields.get(key));
-            reader.skipTag(SET_TAG);
-            long count = reader.readArrayHeader();
-            for (long i = 0; reader.hasNext(count, i); i++) {
-                long elements = reader.readArrayHeader();
-                int start = reader.position();
-                body.accept(reader);
-                if (elements == CborReader.INDEFINITE && reader.hasNext(elements, 99)) {
-                    throw new TxDecodingException("witness at " + start + " has extra elements");
-                }
-            }
-        }
-
         /**
          * {@code RedeemersRaw} at version 9+ (Alonzo/TxWits.hs:548-598): the map form or the list form, never empty
          * ({@code "Expected redeemers map to be non-empty"}, {@code decodeNonEmptyList}); both end in
          * {@code Map.fromList} of the entries in encoded order (the map form reverses its accumulator first), so a
          * later duplicate key replaces an earlier one. A key is a {@code Word8} tag 0–5 and a {@code Word32}
-         * index.
+         * index; the data is plutus-core's {@code decodeData}. CCL's redeemer view is lenient about these bounds, so
+         * the field is read here.
          */
-        private void readRedeemers(CborReader reader) {
+        private void readRedeemers(CborSpan field) {
             TreeMap<Long, RawRedeemer> byKey = new TreeMap<>();
             int count = 0;
-            if (reader.peekMajor() == 5) {
-                long entries = reader.readMapHeader();
-                for (long i = 0; reader.hasNext(entries, i); i++) {
-                    long keyLength = reader.readArrayHeader();
-                    if (keyLength != 2 && keyLength != CborReader.INDEFINITE) {
-                        throw new TxDecodingException("a redeemer key is [tag, index]");
-                    }
-                    long tag = reader.readUnsignedLong();
-                    long index = reader.readUnsignedLong();
-                    if (keyLength == CborReader.INDEFINITE && reader.hasNext(keyLength, 2)) {
-                        throw new TxDecodingException("a redeemer key is [tag, index]");
-                    }
-                    long valueLength = reader.readArrayHeader();
-                    if (valueLength != 2 && valueLength != CborReader.INDEFINITE) {
-                        throw new TxDecodingException("a redeemer value is [data, ex_units]");
-                    }
-                    CborSlice data = reader.readItem();
-                    PlutusData.validate(reader.copy(data)); // data: plutus-core's decodeData
-                    RawRedeemer redeemer = readExUnits(reader, tag, index, data);
-                    if (valueLength == CborReader.INDEFINITE && reader.hasNext(valueLength, 2)) {
-                        throw new TxDecodingException("a redeemer value is [data, ex_units]");
-                    }
-                    byKey.put(key(tag, index), redeemer);
+            if (StrictCbor.major(field) == 5) {
+                for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(field)) {
+                    List<CborSpan> key = StrictCbor.array(entry.getKey(), 2, "a redeemer key is [tag, index]");
+                    List<CborSpan> value = StrictCbor.array(entry.getValue(), 2,
+                            "a redeemer value is [data, ex_units]");
+                    RawRedeemer redeemer = redeemer(key.get(0), key.get(1), value.get(0), value.get(1));
+                    byKey.put(redeemer.key(), redeemer);
                     count++;
                 }
             } else {
-                long length0 = reader.readArrayHeader();
-                for (long i = 0; reader.hasNext(length0, i); i++) {
-                    long length = reader.readArrayHeader();
-                    if (length != 4 && length != CborReader.INDEFINITE) {
-                        throw new TxDecodingException("a redeemer is [tag, index, data, ex_units]");
-                    }
-                    long tag = reader.readUnsignedLong();
-                    long index = reader.readUnsignedLong();
-                    CborSlice data = reader.readItem();
-                    PlutusData.validate(reader.copy(data)); // data: plutus-core's decodeData
-                    RawRedeemer redeemer = readExUnits(reader, tag, index, data);
-                    if (length == CborReader.INDEFINITE && reader.hasNext(length, 4)) {
-                        throw new TxDecodingException("a redeemer is [tag, index, data, ex_units]");
-                    }
-                    byKey.put(key(tag, index), redeemer);
+                for (CborSpan item : StrictCbor.array(field)) {
+                    List<CborSpan> parts = StrictCbor.array(item, 4, "a redeemer is [tag, index, data, ex_units]");
+                    RawRedeemer redeemer = redeemer(parts.get(0), parts.get(1), parts.get(2), parts.get(3));
+                    byKey.put(redeemer.key(), redeemer);
                     count++;
                 }
             }
@@ -979,22 +831,18 @@ public final class RawTransaction {
             redeemers.addAll(byKey.values());
         }
 
-        private static long key(long tag, long index) {
+        private static RawRedeemer redeemer(CborSpan tagItem, CborSpan indexItem, CborSpan data, CborSpan exUnits) {
+            long tag = StrictCbor.unsignedLong(tagItem);
+            long index = StrictCbor.unsignedLong(indexItem);
+            PlutusData.validate(data.bytes()); // data: plutus-core's decodeData
+            List<CborSpan> units = StrictCbor.array(exUnits, 2, "ex_units is [mem, steps]");
+            BigInteger mem = StrictCbor.unsigned(units.get(0));
+            BigInteger steps = StrictCbor.unsigned(units.get(1));
             if (tag > 5) {
                 throw new TxDecodingException("redeemer tag " + tag);
             }
             if (index > 0xFFFF_FFFFL) {
                 throw new TxDecodingException("redeemer index " + index + " exceeds Word32");
-            }
-            return RawRedeemer.key((int) tag, index);
-        }
-
-        private static RawRedeemer readExUnits(CborReader reader, long tag, long index, CborSlice data) {
-            long length = reader.readArrayHeader();
-            BigInteger mem = reader.readUnsigned();
-            BigInteger steps = reader.readUnsigned();
-            if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-                throw new TxDecodingException("ex_units is [mem, steps]");
             }
             return new RawRedeemer((int) tag, index, mem, steps, data);
         }

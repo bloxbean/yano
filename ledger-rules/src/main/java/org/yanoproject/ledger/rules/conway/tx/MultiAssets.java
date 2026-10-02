@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.math.BigInteger;
@@ -31,11 +32,10 @@ final class MultiAssets {
      *               {@code Word64})
      * @return policy id → asset name → quantity (hex keys)
      */
-    static Map<String, Map<String, BigInteger>> read(CborReader reader, boolean signed) {
+    static Map<String, Map<String, BigInteger>> read(CborSpan item, boolean signed) {
         TreeMap<String, Map<String, BigInteger>> result = new TreeMap<>();
-        long policies = reader.readMapHeader();
-        for (long p = 0; reader.hasNext(policies, p); p++) {
-            byte[] policy = reader.readDefiniteBytes();
+        for (Map.Entry<CborSpan, CborSpan> policyEntry : StrictCbor.map(item)) {
+            byte[] policy = StrictCbor.definiteBytes(policyEntry.getKey());
             if (policy.length != POLICY_ID_LENGTH) {
                 throw new TxDecodingException("policy id of " + policy.length + " bytes");
             }
@@ -44,13 +44,13 @@ final class MultiAssets {
                 throw new TxDecodingException("duplicate policy id " + policyHex);
             }
             Map<String, BigInteger> names = new TreeMap<>();
-            long assets = reader.readMapHeader();
-            for (long a = 0; reader.hasNext(assets, a); a++) {
-                byte[] name = reader.readDefiniteBytes();
+            for (Map.Entry<CborSpan, CborSpan> asset : StrictCbor.map(policyEntry.getValue())) {
+                byte[] name = StrictCbor.definiteBytes(asset.getKey());
                 if (name.length > MAX_ASSET_NAME_LENGTH) {
                     throw new TxDecodingException("asset name of " + name.length + " bytes");
                 }
-                BigInteger quantity = signed ? reader.readInteger() : reader.readUnsigned();
+                CborSpan amount = asset.getValue();
+                BigInteger quantity = signed ? StrictCbor.integer(amount) : StrictCbor.unsigned(amount);
                 if (signed && (quantity.compareTo(INT64_MIN) < 0 || quantity.compareTo(INT64_MAX) > 0)) {
                     throw new TxDecodingException("overflow when decoding mint field: " + quantity);
                 }

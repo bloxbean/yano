@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.fixtures.amaru;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
@@ -37,7 +38,6 @@ import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.RawDRep;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.RawProposal;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.RawUtxo;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.State;
-import org.yanoproject.ledger.rules.util.CborItems;
 import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
 import org.yanoproject.ledger.rules.view.model.AccountState;
 import org.yanoproject.ledger.rules.view.model.CommitteeMemberState;
@@ -656,10 +656,10 @@ public final class AmaruScenarioLoader {
                 break;
             }
             long[] key = head(output, offset);
-            int valueOffset = CborItems.skip(output, offset);
+            int valueOffset = CborSpan.skip(output, offset, output.length);
             if (key[0] == 0 && key[1] == 2) {
                 long[] option = head(output, valueOffset);
-                int tagOffset = CborItems.skip(output, (int) option[2]);
+                int tagOffset = CborSpan.skip(output, (int) option[2], output.length);
                 long[] kind = head(output, (int) option[2]);
                 if (kind[0] == 0 && kind[1] == 1) {
                     long[] tag = head(output, tagOffset);
@@ -672,7 +672,7 @@ public final class AmaruScenarioLoader {
                 }
                 return null;
             }
-            offset = CborItems.skip(output, valueOffset);
+            offset = CborSpan.skip(output, valueOffset, output.length);
         }
         return null;
     }

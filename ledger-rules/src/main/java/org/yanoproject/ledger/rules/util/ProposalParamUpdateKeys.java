@@ -1,6 +1,12 @@
 package org.yanoproject.ledger.rules.util;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
+
+import java.math.BigInteger;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
@@ -22,7 +28,6 @@ import java.util.TreeSet;
  */
 public final class ProposalParamUpdateKeys {
 
-
     private ProposalParamUpdateKeys() {
     }
 
@@ -33,98 +38,35 @@ public final class ProposalParamUpdateKeys {
      */
     public static Set<Integer> fromGovAction(byte[] govActionCbor) {
         Objects.requireNonNull(govActionCbor, "govActionCbor");
-        return govAction(new Reader(govActionCbor, 0));
+        try {
+            CborSpan action = untagged(CborSpan.at(govActionCbor, 0), 4);
+            List<CborSpan> fields = action.items();
+            if (fields.isEmpty()) {
+                throw new IllegalArgumentException("a gov_action is an empty array");
+            }
+            if (untagged(fields.get(0), 0).asBigInteger().signum() != 0) {
+                return null;
+            }
+            if (action.isIndefinite() || fields.size() != 4) {
+                throw new IllegalArgumentException("parameter_change_action must have 4 fields");
+            }
+            Set<Integer> keys = new TreeSet<>();
+            for (Map.Entry<CborSpan, CborSpan> entry : untagged(fields.get(2), 5).entries()) {
+                BigInteger key = untagged(entry.getKey(), 0).asBigInteger();
+                if (key.bitLength() > 31 || !keys.add(key.intValue())) {
+                    throw new IllegalArgumentException("bad or duplicate protocol_param_update key " + key);
+                }
+            }
+            return Collections.unmodifiableSet(keys);
+        } catch (CborRuntimeException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
+        }
     }
 
-    private static Set<Integer> govAction(Reader r) {
-        int start = r.offset;
-        long fields = r.containerHead(4);
-        long tag = r.uint();
-        if (tag != 0) {
-            r.offset = CborItems.skip(r.data, start);
-            return null;
+    private static CborSpan untagged(CborSpan item, int major) {
+        if (item.tag() != -1 || item.majorType() != major) {
+            throw new IllegalArgumentException("expected CBOR major type " + major + " at " + item.offset());
         }
-        if (fields != 4) {
-            throw new IllegalArgumentException("parameter_change_action must have 4 fields");
-        }
-        r.skip(); // gov_action_id / null
-        Set<Integer> keys = new TreeSet<>();
-        long entries = r.containerHead(5);
-        for (long i = 0; entries < 0 ? !r.atBreak() : i < entries; i++) {
-            long key = r.uint();
-            if (key > Integer.MAX_VALUE || !keys.add((int) key)) {
-                throw new IllegalArgumentException("bad or duplicate protocol_param_update key " + key);
-            }
-            r.skip();
-        }
-        r.skip(); // policy hash / null
-        return Collections.unmodifiableSet(keys);
-    }
-
-    /** A cursor over CBOR heads; containers are entered, other items skipped with {@link CborItems}. */
-    private static final class Reader {
-        private final byte[] data;
-        private int offset;
-
-        Reader(byte[] data, int offset) {
-            this.data = data;
-            this.offset = offset;
-        }
-
-        boolean atBreak() {
-            if (offset >= data.length) {
-                throw new IllegalArgumentException("truncated");
-            }
-            if ((data[offset] & 0xff) == 0xff) {
-                offset++;
-                return true;
-            }
-            return false;
-        }
-
-        void skip() {
-            offset = CborItems.skip(data, offset);
-        }
-
-        /** @return the length of an array (4) or map (5) head, or -1 when indefinite */
-        long containerHead(int major) {
-            if (offset >= data.length || (data[offset] & 0xff) >>> 5 != major) {
-                throw new IllegalArgumentException("expected CBOR major type " + major + " at " + offset);
-            }
-            if ((data[offset] & 0x1f) == 31) {
-                offset++;
-                return -1;
-            }
-            return argument();
-        }
-
-        long uint() {
-            if (offset >= data.length || (data[offset] & 0xff) >>> 5 != 0) {
-                throw new IllegalArgumentException("expected an unsigned integer at " + offset);
-            }
-            return argument();
-        }
-
-        private long argument() {
-            int info = data[offset++] & 0x1f;
-            if (info < 24) {
-                return info;
-            }
-            int bytes = switch (info) {
-                case 24 -> 1;
-                case 25 -> 2;
-                case 26 -> 4;
-                case 27 -> 8;
-                default -> throw new IllegalArgumentException("unsupported additional information " + info);
-            };
-            if (offset + bytes > data.length) {
-                throw new IllegalArgumentException("truncated");
-            }
-            long value = 0;
-            for (int i = 0; i < bytes; i++) {
-                value = (value << 8) | (data[offset++] & 0xff);
-            }
-            return value;
-        }
+        return item;
     }
 }

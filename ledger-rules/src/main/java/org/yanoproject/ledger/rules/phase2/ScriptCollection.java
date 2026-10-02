@@ -25,8 +25,10 @@ import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -59,6 +61,9 @@ public final class ScriptCollection {
 
     private static final List<BigInteger> PLC_1_0_0 = List.of(BigInteger.ONE, BigInteger.ZERO, BigInteger.ZERO);
     private static final List<BigInteger> PLC_1_1_0 = List.of(BigInteger.ONE, BigInteger.ONE, BigInteger.ZERO);
+    private static final Comparator<TransactionInput> TX_IN_ORDER = Comparator
+            .comparing((TransactionInput in) -> in.getTransactionId().toLowerCase(Locale.ROOT))
+            .thenComparingInt(TransactionInput::getIndex);
 
     /**
      * A Plutus script the transaction needs (Haskell {@code scriptsNeeded} restricted to the scripts provided as Plutus,
@@ -318,14 +323,15 @@ public final class ScriptCollection {
                 return error;
             }
         }
-        // Inputs, then reference inputs, (V3 from PV 11: disjointness), then outputs, as the TxInfo is built.
-        for (TransactionInput input : nullToEmpty(body.getInputs())) {
+        // Inputs, then reference inputs, (V3 from PV 11: disjointness), then outputs, as the TxInfo is built; the
+        // inputs as the Set TxIn the TxInfo translates (Set.toList, Ord TxIn), not in body order.
+        for (TransactionInput input : inSetOrder(body.getInputs())) {
             Optional<String> error = outputError(output(resolved, input), language, "input " + input);
             if (error.isPresent()) {
                 return error;
             }
         }
-        for (TransactionInput input : nullToEmpty(body.getReferenceInputs())) {
+        for (TransactionInput input : inSetOrder(body.getReferenceInputs())) {
             Optional<String> error = outputError(output(resolved, input), language, "reference input " + input);
             if (error.isPresent()) {
                 return error;
@@ -392,6 +398,11 @@ public final class ScriptCollection {
     private static TransactionOutput output(Map<Outpoint, UtxoEntry> resolved, TransactionInput input) {
         UtxoEntry entry = resolved.get(Outpoints.normalize(new Outpoint(input.getTransactionId(), input.getIndex())));
         return entry != null ? entry.output() : null;
+    }
+
+    /** @return the inputs in Haskell's {@code Ord TxIn} order: transaction id bytes, then index */
+    private static List<TransactionInput> inSetOrder(List<TransactionInput> inputs) {
+        return nullToEmpty(inputs).stream().sorted(TX_IN_ORDER).toList();
     }
 
     private static String key(TransactionInput input) {

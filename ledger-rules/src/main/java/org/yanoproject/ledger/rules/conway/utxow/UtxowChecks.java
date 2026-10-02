@@ -11,10 +11,8 @@ import org.yanoproject.ledger.rules.conway.ruleset.PredicateCheck;
 import org.yanoproject.ledger.rules.conway.ruleset.RuleUnit;
 import org.yanoproject.ledger.rules.conway.ruleset.UnitKind;
 import org.yanoproject.ledger.rules.conway.tx.BootstrapWitness;
-import org.yanoproject.ledger.rules.conway.tx.Hashes;
 import org.yanoproject.ledger.rules.conway.tx.RawOutput;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
-import org.yanoproject.ledger.rules.conway.tx.Timelock;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
 import org.yanoproject.ledger.rules.conway.tx.VKeyWitness;
 import org.yanoproject.ledger.rules.conway.utxos.UtxosRule;
@@ -109,7 +107,7 @@ public final class UtxowChecks {
             List<String> failed = new ArrayList<>();
             s.provided().forEach((hash, script) -> {
                 if (script.isNative() && s.neededHashes().contains(hash)
-                        && !Timelock.evaluate(script.timelock(), vkeyHashes, raw.validityStart(), raw.ttl())) {
+                        && !script.nativeScriptHolds(vkeyHashes, raw.validityStart(), raw.ttl())) {
                     failed.add(hash);
                 }
             });
@@ -296,7 +294,7 @@ public final class UtxowChecks {
             if (raw.auxData() == null || raw.auxDataHash() != null) {
                 return null;
             }
-            return HexUtil.encodeHexString(Hashes.blake2b256(raw.bytes(raw.auxData())));
+            return HexUtil.encodeHexString(raw.rawTx().auxDataHash().orElseThrow());
         }
     }
 
@@ -317,7 +315,7 @@ public final class UtxowChecks {
             if (raw.auxData() == null || bodyHash == null) {
                 return null;
             }
-            byte[] computed = Hashes.blake2b256(raw.bytes(raw.auxData()));
+            byte[] computed = raw.rawTx().auxDataHash().orElseThrow();
             return Arrays.equals(bodyHash, computed) ? null : "Mismatch {mismatchSupplied = "
                     + HexUtil.encodeHexString(bodyHash) + ", mismatchExpected = " + HexUtil.encodeHexString(computed)
                     + "}";
@@ -340,7 +338,7 @@ public final class UtxowChecks {
             if (raw.auxData() == null || raw.auxDataHash() == null) {
                 return null;
             }
-            List<String> malformed = s.malformed(raw.auxDataContent().plutusScripts());
+            List<String> malformed = s.malformed(raw.auxScripts());
             return malformed.isEmpty() ? null : "malformed Plutus scripts " + malformed;
         }
     }

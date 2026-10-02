@@ -1,5 +1,16 @@
 # Upgrading preview releases
 
+## Reference-script hashes from the original bytes
+
+The UTxO store now hashes a reference script from its original bytes (CCL's raw script view), as the ledger does.
+Before, it hashed CCL's re-encoding, which differs for a script whose encoding is not canonical (for example an
+indefinite-length native script array). The UTxO record stores that hash and the reference-script column family
+(`cfScriptRef`) is keyed by it, so a chainstate built before this change can resolve such a reference script under
+the old hash and report a false `MissingScriptWitnessesUTXOW` in mempool or shadow validation. Ledger application
+is unaffected. No migration runs: resync. The full UTxO rebuild from retained block bodies
+(`DefaultUtxoStore.rebuildFullStateFromGenesis`, which clears `cfScriptRef`) also fixes it, but it is reachable only
+through `yano.utxo.rebuild-unmarked-from-genesis` on a chainstate without the Byron capability marker.
+
 ## ADR-058 AdaPot deposits
 
 The AdaPot `deposits` field (`/api/v1/epochs/{n}/adapot`, `/latest/adapot`, `/adapots`)

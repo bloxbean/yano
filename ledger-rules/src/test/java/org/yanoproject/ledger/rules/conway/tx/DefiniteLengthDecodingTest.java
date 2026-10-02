@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.crypto.Base58;
 import com.bloxbean.cardano.client.metadata.cbor.CBORMetadata;
 import com.bloxbean.cardano.client.plutus.spec.BytesPlutusData;
@@ -319,11 +320,9 @@ class DefiniteLengthDecodingTest {
         BuiltTx built = ConwayTxBuilder.build(spec, MutationWorld.view());
         byte[] address = Base58.decode(byron);
         // address = [24(bytes payload), crc]: chunk the payload and re-encode the address byte string.
-        CborReader reader = new CborReader(address);
-        reader.readArrayHeader();
-        reader.readTag();
-        byte[] payload = reader.readDefiniteBytes();
-        byte[] crc = Arrays.copyOfRange(address, reader.position(), address.length);
+        List<CborSpan> parts = StrictCbor.span(address).items();
+        byte[] payload = parts.get(0).untag().byteString();
+        byte[] crc = Arrays.copyOfRange(address, parts.get(1).offset(), address.length);
         byte[] chunkedAddress = concat(new byte[]{(byte) 0x82, (byte) 0xd8, 0x18, 0x5f}, head(2, payload.length), payload,
                 new byte[]{(byte) 0xff}, crc);
         byte[] original = concat(head(2, address.length), address);

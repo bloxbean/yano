@@ -30,11 +30,11 @@ class RawProposalTest {
     private static final String DEPOSIT = "1a05f5e100";
 
     private static RawParamUpdate update(String hex) {
-        return RawParamUpdate.read(new CborReader(HexUtil.decodeHexString(hex)));
+        return RawParamUpdate.read(StrictCbor.span(HexUtil.decodeHexString(hex)));
     }
 
     private static RawProposal proposal(String actionHex) {
-        return RawProposal.read(new CborReader(HexUtil.decodeHexString("84" + DEPOSIT + ACCOUNT + actionHex + ANCHOR)),
+        return RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + ACCOUNT + actionHex + ANCHOR)),
                 0);
     }
 
@@ -196,16 +196,16 @@ class RawProposalTest {
                 .isInstanceOf(TxDecodingException.class);
         assertThatThrownBy(() -> proposal("82" + "03" + "82" + "5820" + "11".repeat(32) + "1a00010000"))
                 .isInstanceOf(TxDecodingException.class);
-        assertThatThrownBy(() -> RawProposal.read(new CborReader(HexUtil.decodeHexString("84" + DEPOSIT + "581d01"
+        assertThatThrownBy(() -> RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + "581d01"
                 + KEY_HASH + "8106" + ANCHOR)), 0)).isInstanceOf(TxDecodingException.class);
         // Indefinite-length byte and text strings: definite only below decoder version 12 (decodeBytesDefinite,
         // decodeByteArrayDefinite, cborg's decodeString).
-        assertThatThrownBy(() -> RawProposal.read(new CborReader(HexUtil.decodeHexString("84" + DEPOSIT + "5f" + "41e0"
+        assertThatThrownBy(() -> RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + "5f" + "41e0"
                 + "581c" + KEY_HASH + "ff" + "8106" + ANCHOR)), 0)).isInstanceOf(TxDecodingException.class)
                 .hasMessageContaining("indefinite-length byte string");
         assertThatThrownBy(() -> proposal("82" + "03" + "82" + "5f" + "5820" + "11".repeat(32) + "ff" + "00"))
                 .isInstanceOf(TxDecodingException.class);
-        assertThatThrownBy(() -> RawProposal.read(new CborReader(HexUtil.decodeHexString("84" + DEPOSIT + ACCOUNT
+        assertThatThrownBy(() -> RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + ACCOUNT
                 + "8106" + "82" + "7f" + "60" + "ff" + "5820" + "00".repeat(32))), 0)).isInstanceOf(TxDecodingException.class)
                 .hasMessageContaining("indefinite-length text string");
         // A guardrails policy hash that is not 28 bytes.
