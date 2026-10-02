@@ -1,8 +1,8 @@
 package org.yanoproject.ledger.rules.fixtures.blueprint;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.util.HexUtil;
-
-import org.yanoproject.ledger.rules.util.CborItems;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -250,8 +250,8 @@ public final class CborReader {
     public void skip() {
         requireMore();
         try {
-            pos = CborItems.skip(data, pos);
-        } catch (IllegalArgumentException e) {
+            pos = CborSpan.skip(data, pos, data.length);
+        } catch (CborRuntimeException e) {
             throw malformed(e.getMessage());
         }
     }

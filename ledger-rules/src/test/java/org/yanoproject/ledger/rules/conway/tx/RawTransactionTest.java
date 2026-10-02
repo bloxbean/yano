@@ -86,7 +86,7 @@ class RawTransactionTest {
         assertThat(raw.redeemers()).singleElement().satisfies(r -> {
             assertThat(List.of(r.tag(), r.index(), r.mem(), r.steps())).containsExactly(0, 0L, BigInteger.TWO,
                     BigInteger.TWO);
-            assertThat(HexUtil.encodeHexString(r.data().copy(raw.txCbor()))).isEqualTo("00");
+            assertThat(HexUtil.encodeHexString(r.data().bytes())).isEqualTo("00");
         });
     }
 
@@ -98,7 +98,7 @@ class RawTransactionTest {
         assertThat(raw.redeemers()).singleElement().satisfies(r -> {
             assertThat(List.of(r.tag(), r.index(), r.mem(), r.steps())).containsExactly(0, 0L, BigInteger.TWO,
                     BigInteger.TWO);
-            assertThat(HexUtil.encodeHexString(r.data().copy(raw.txCbor()))).isEqualTo("00");
+            assertThat(HexUtil.encodeHexString(r.data().bytes())).isEqualTo("00");
         });
     }
 
@@ -127,6 +127,21 @@ class RawTransactionTest {
         String noFee = "a200d9010280" + "0180";
         assertThatThrownBy(() -> RawTransaction.parse(HexUtil.decodeHexString("84" + noFee + "a0f5f6"), null))
                 .isInstanceOf(TxDecodingException.class).hasMessageContaining("no key 2");
+    }
+
+    /**
+     * A vkey witness is {@code [vkey, signature]}, a bootstrap witness has four fields and ex units are
+     * {@code [mem, steps]}: Haskell's record decoders refuse any other length ({@code decodeRecordNamed}).
+     */
+    @Test
+    void witnessesAndExUnitsHaveExactlyTheirFields() {
+        String vkey = "5820" + "22".repeat(32);
+        String signature = "5840" + "33".repeat(64);
+        assertThat(RawTransaction.parse(HexUtil.decodeHexString("84" + BODY + "a1008182" + vkey + signature + "f5f6"),
+                null).vkeyWitnesses()).hasSize(1);
+        assertDecodingFailure("84" + BODY + "a1008183" + vkey + signature + "00" + "f5f6", "vkey witness");
+        assertDecodingFailure("84" + BODY + "a1028183" + vkey + signature + "40" + "f5f6", "bootstrap witness");
+        assertDecodingFailure("84" + BODY + "a105" + "81" + "8400000083010100" + "f5f6", "ex_units");
     }
 
     @Test
@@ -197,10 +212,9 @@ class RawTransactionTest {
 
     @Test
     void nestedIndefiniteByteStringChunksAreRejected() {
-        CborReader reader = new CborReader(HexUtil.decodeHexString("5f5f4100ffff"));
-        assertThatThrownBy(reader::readBytes).isInstanceOf(TxDecodingException.class).hasMessageContaining("chunk");
-        assertThat(new CborReader(HexUtil.decodeHexString("5f41014102ff")).readBytes())
-                .containsExactly(1, 2);
+        assertThatThrownBy(() -> StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString("5f5f4100ffff"))))
+                .isInstanceOf(TxDecodingException.class).hasMessageContaining("chunk");
+        assertThat(StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString("5f41014102ff")))).containsExactly(1, 2);
     }
 
     @Test

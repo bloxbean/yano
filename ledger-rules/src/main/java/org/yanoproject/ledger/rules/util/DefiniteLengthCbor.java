@@ -1,5 +1,7 @@
 package org.yanoproject.ledger.rules.util;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -58,7 +60,7 @@ public final class DefiniteLengthCbor {
         long count = cursor.containerHead();
         for (long i = 0; count < 0 ? !cursor.atBreak() : i < count; i++) {
             int start = cursor.offset;
-            int end = CborItems.skip(txCbor, start);
+            int end = CborSpan.skip(txCbor, start, txCbor.length);
             byte[] item = Arrays.copyOfRange(txCbor, start, end);
             items.add(allItems || i == 0 ? normalizeItem(item, dropSetTags) : item);
             cursor.offset = end;
@@ -108,7 +110,7 @@ public final class DefiniteLengthCbor {
                 write(cursor, out, dropSetTags);
             }
             default -> {
-                int end = CborItems.skip(data, start);
+                int end = CborSpan.skip(data, start, data.length);
                 out.write(data, start, end - start);
                 cursor.offset = end;
             }

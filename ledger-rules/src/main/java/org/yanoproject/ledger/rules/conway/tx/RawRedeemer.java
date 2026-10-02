@@ -1,5 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+
 import java.math.BigInteger;
 import java.util.Objects;
 
@@ -11,9 +13,9 @@ import java.util.Objects;
  * @param index the index within its purpose
  * @param mem   declared memory units
  * @param steps declared CPU steps
- * @param data  the redeemer data's original encoding in the transaction bytes
+ * @param data  the redeemer data, as encoded in the transaction
  */
-public record RawRedeemer(int tag, long index, BigInteger mem, BigInteger steps, CborSlice data) {
+public record RawRedeemer(int tag, long index, BigInteger mem, BigInteger steps, CborSpan data) {
 
     public RawRedeemer {
         Objects.requireNonNull(mem, "mem");

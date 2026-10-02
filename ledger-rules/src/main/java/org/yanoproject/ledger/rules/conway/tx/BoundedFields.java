@@ -1,10 +1,13 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Decoders for the bounded Conway field types that certificates, proposals and votes carry, with the bounds Haskell's
@@ -35,17 +38,17 @@ final class BoundedFields {
     }
 
     /** Reads a {@code Url}. */
-    static void url(CborReader reader, String what) {
-        text(reader, what + " url");
+    static void url(CborSpan item, String what) {
+        text(item, what + " url");
     }
 
     /** Reads a {@code DnsName}. */
-    static void dnsName(CborReader reader) {
-        text(reader, "relay DNS name");
+    static void dnsName(CborSpan item) {
+        text(item, "relay DNS name");
     }
 
-    private static void text(CborReader reader, String what) {
-        byte[] text = reader.readDefiniteText();
+    private static void text(CborSpan item, String what) {
+        byte[] text = StrictCbor.definiteText(item);
         try {
             StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(text));
@@ -59,33 +62,25 @@ final class BoundedFields {
     }
 
     /** Reads an {@code Anchor}. */
-    static void anchor(CborReader reader, String what) {
-        long length = reader.readArrayHeader();
-        if (length != 2 && length != CborReader.INDEFINITE) {
-            throw new TxDecodingException(what + " anchor is a two-element array");
-        }
-        url(reader, what + " anchor");
-        byte[] hash = reader.readDefiniteBytes();
+    static void anchor(CborSpan item, String what) {
+        List<CborSpan> fields = StrictCbor.array(item, 2, what + " anchor is a two-element array");
+        url(fields.get(0), what + " anchor");
+        byte[] hash = StrictCbor.definiteBytes(fields.get(1));
         if (hash.length != ANCHOR_HASH_LENGTH) {
             throw new TxDecodingException(what + " anchor data hash of " + hash.length + " bytes");
-        }
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-            throw new TxDecodingException(what + " anchor is a two-element array");
         }
     }
 
     /** Reads {@code anchor / null}. */
-    static void anchorOrNull(CborReader reader, String what) {
-        if (reader.peekNull()) {
-            reader.readNull();
-        } else {
-            anchor(reader, what);
+    static void anchorOrNull(CborSpan item, String what) {
+        if (!item.isNull()) {
+            anchor(item, what);
         }
     }
 
     /** Reads a {@code UnitInterval}. */
-    static void unitInterval(CborReader reader, String what) {
-        boundedRational(reader, what, true);
+    static void unitInterval(CborSpan item, String what) {
+        boundedRational(item, what, true);
     }
 
     /**
@@ -95,19 +90,16 @@ final class BoundedFields {
      *
      * @return the reduced numerator and denominator
      */
-    static BigInteger[] boundedRational(CborReader reader, String what, boolean unit) {
-        if (!reader.skipTag(30)) {
+    static BigInteger[] boundedRational(CborSpan item, String what, boolean unit) {
+        if (item.tag() != 30) {
             throw new TxDecodingException(what + " is not a tag-30 rational");
         }
-        long length = reader.readArrayHeader();
-        if (length != 2 && length != CborReader.INDEFINITE) {
-            throw new TxDecodingException(what + " rational has " + length + " elements");
+        List<CborSpan> parts = StrictCbor.array(item.untag());
+        if (parts.size() != 2) {
+            throw new TxDecodingException(what + " rational has " + parts.size() + " elements");
         }
-        BigInteger n = integer(reader);
-        BigInteger d = integer(reader);
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-            throw new TxDecodingException(what + " rational has more than 2 elements");
-        }
+        BigInteger n = integer(parts.get(0));
+        BigInteger d = integer(parts.get(1));
         if (d.signum() == 0) {
             throw new TxDecodingException(what + ": denominator cannot be zero");
         }
@@ -133,60 +125,56 @@ final class BoundedFields {
      * one-byte tag head {@code c2}/{@code c3} and a definite byte string (a longer tag head is a plain tag, which
      * {@code decodeInteger} refuses).
      */
-    static BigInteger integer(CborReader reader) {
-        int initial = reader.peekInitialByte();
+    static BigInteger integer(CborSpan item) {
+        int initial = item.buffer()[item.offset()] & 0xff;
         if (initial == 0xc2 || initial == 0xc3) {
-            reader.readTag();
-            BigInteger magnitude = new BigInteger(1, reader.readDefiniteBytes());
+            BigInteger magnitude = new BigInteger(1, StrictCbor.definiteBytes(item.untag()));
             return initial == 0xc2 ? magnitude : magnitude.negate().subtract(BigInteger.ONE);
         }
-        return reader.readInteger();
+        return StrictCbor.integer(item);
     }
 
     /** Reads a {@code StakePoolRelay}. */
-    static void relay(CborReader reader) {
-        long length = reader.readArrayHeader();
-        long tag = reader.readUnsignedLong();
-        long expected;
-        switch ((int) Math.min(tag, 3)) {
+    static void relay(CborSpan item) {
+        List<CborSpan> fields = StrictCbor.array(item);
+        if (fields.isEmpty()) {
+            throw new TxDecodingException("a relay is an empty array");
+        }
+        long tag = StrictCbor.unsignedLong(fields.get(0));
+        int expected = switch ((int) Math.min(tag, 3)) {
+            case 0 -> 4;
+            case 1 -> 3;
+            case 2 -> 2;
+            default -> throw new TxDecodingException("unknown relay tag " + tag);
+        };
+        if (fields.size() != expected) {
+            throw new TxDecodingException("relay tag " + tag + " has " + expected + " elements");
+        }
+        switch ((int) tag) {
             case 0 -> {
-                portOrNull(reader);
-                ipOrNull(reader, 4);
-                ipOrNull(reader, 16);
-                expected = 4;
+                portOrNull(fields.get(1));
+                ipOrNull(fields.get(2), 4);
+                ipOrNull(fields.get(3), 16);
             }
             case 1 -> {
-                portOrNull(reader);
-                dnsName(reader);
-                expected = 3;
+                portOrNull(fields.get(1));
+                dnsName(fields.get(2));
             }
-            case 2 -> {
-                dnsName(reader);
-                expected = 2;
-            }
-            default -> throw new TxDecodingException("unknown relay tag " + tag);
-        }
-        if (length == CborReader.INDEFINITE ? reader.hasNext(length, expected) : length != expected) {
-            throw new TxDecodingException("relay tag " + tag + " has " + expected + " elements");
+            default -> dnsName(fields.get(1));
         }
     }
 
-    private static void portOrNull(CborReader reader) {
-        if (reader.peekNull()) {
-            reader.readNull();
-            return;
-        }
-        if (reader.readUnsignedLong() > 0xFFFF) {
+    private static void portOrNull(CborSpan item) {
+        if (!item.isNull() && StrictCbor.unsignedLong(item) > 0xFFFF) {
             throw new TxDecodingException("relay port exceeds Word16");
         }
     }
 
-    private static void ipOrNull(CborReader reader, int bytes) {
-        if (reader.peekNull()) {
-            reader.readNull();
+    private static void ipOrNull(CborSpan item, int bytes) {
+        if (item.isNull()) {
             return;
         }
-        int length = reader.readDefiniteBytes().length;
+        int length = StrictCbor.definiteBytes(item).length;
         if (length != bytes) {
             throw new TxDecodingException("relay IPv" + (bytes == 4 ? 4 : 6) + " address of " + length + " bytes");
         }

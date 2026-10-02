@@ -1,5 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -22,19 +24,17 @@ final class CborCanonical {
         this.pos = pos;
     }
 
-    /** @return the canonical encoding of the item {@code slice} of {@code data} */
-    static byte[] of(byte[] data, CborSlice slice) {
-        CborCanonical c = new CborCanonical(data, slice.start());
+    /** @return the canonical encoding of {@code item} */
+    static byte[] of(CborSpan item) {
+        CborCanonical c = new CborCanonical(item.buffer(), item.offset());
         byte[] out = c.item();
-        if (c.pos != slice.end()) {
-            throw new TxDecodingException("CBOR item at " + slice.start() + " has trailing bytes");
-        }
+        c.requireEnd(item);
         return out;
     }
 
     /** @return the canonical encoding of an array or set item as a set: its elements' encodings sorted */
-    static byte[] set(byte[] data, CborSlice slice) {
-        CborCanonical c = new CborCanonical(data, slice.start());
+    static byte[] set(CborSpan item) {
+        CborCanonical c = new CborCanonical(item.buffer(), item.offset());
         int head = c.peek();
         if (head >>> 5 == 6) {
             c.pos++;
@@ -44,10 +44,14 @@ final class CborCanonical {
             }
         }
         byte[] out = c.sortedArray();
-        if (c.pos != slice.end()) {
-            throw new TxDecodingException("CBOR item at " + slice.start() + " has trailing bytes");
-        }
+        c.requireEnd(item);
         return out;
+    }
+
+    private void requireEnd(CborSpan item) {
+        if (pos != item.offset() + item.length()) {
+            throw new TxDecodingException("CBOR item at " + item.offset() + " has trailing bytes");
+        }
     }
 
     private int peek() {

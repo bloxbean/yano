@@ -1743,7 +1743,7 @@ commits of the one PR. Status (2026-09-30):
     names (Mary/Value.hs:126-134), Plutus binaries (Language.hs:250-252), vkey and bootstrap witnesses
     (WitVKey.hs:76-80, Bootstrap.hs:72-84), the tag-24 wrappers of inline datums and reference scripts
     (`decodeNestedCborBytes`, Decoding.hs:238-239) and Byron address payloads (decoded at `byronProtVer`); text with
-    cborg's definite-only `decodeString`. `CborReader.readDefiniteBytes`/`readDefiniteText` now read every one of them
+    cborg's definite-only `decodeString`. `StrictCbor.definiteBytes`/`definiteText` (over CCL `CborSpan`) now read every one of them
     (inputs, outputs, datum hashes, reference scripts, policies, asset names, certificates, the pledge as a `Word64`,
     withdrawals, required signers, the auxiliary-data and script-integrity hashes, witnesses, witness and auxiliary-data
     Plutus scripts, native-script key hashes, proposals, anchors, voters, Byron payloads). Only metadata
@@ -2448,7 +2448,7 @@ each one as the chain did. `yano.validation.shadow-sync=true` (off by default) n
     total; 1 `LoggingPlugin`; 50 `NonceEvolutionListener`: the epoch nonce). A new low-priority subscriber fails
     `ValidationEngineBootstrapIntegrationTest` and the devnet gate until reviewed. The listeners run after the
     capture in any case; the guard keeps "nothing ledger-changing before 100" true for the other Phase 1 readers.
-- **Transactions** come from the block's own bytes (`SyncBlock`, `CborSlice`): each transaction is reassembled as
+- **Transactions** come from the block's own bytes (`SyncBlock`, CCL `RawBlock`): each transaction is reassembled as
   `[body, witnesses, is_valid, aux | null]` from the original segment slices (as Haskell's segwit decoder), so
   non-canonical encodings, ids, signatures and hashes are the chain's; `is_valid` is `false` exactly for the indexes
   in `invalid_transactions`. The ids are cross-checked against the applied block (`ID_MISMATCH`).

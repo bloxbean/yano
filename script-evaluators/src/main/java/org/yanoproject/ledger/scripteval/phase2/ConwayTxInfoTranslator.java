@@ -1,7 +1,9 @@
 package org.yanoproject.ledger.scripteval.phase2;
 
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
+import com.bloxbean.cardano.client.transaction.raw.RawDatum;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.util.HexUtil;
 
@@ -9,9 +11,6 @@ import org.julclang.core.PlutusData;
 import org.julclang.core.cbor.PlutusDataCborDecoder;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.conway.tx.AddressBytes;
-import org.yanoproject.ledger.rules.conway.tx.CborReader;
-import org.yanoproject.ledger.rules.conway.tx.CborSlice;
-import org.yanoproject.ledger.rules.conway.tx.Hashes;
 import org.yanoproject.ledger.rules.conway.tx.LedgerValue;
 import org.yanoproject.ledger.rules.conway.tx.RawCertificate;
 import org.yanoproject.ledger.rules.conway.tx.RawCredential;
@@ -21,6 +20,7 @@ import org.yanoproject.ledger.rules.conway.tx.RawRedeemer;
 import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.RawVoter;
+import org.yanoproject.ledger.rules.conway.tx.StrictCbor;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
 import org.yanoproject.ledger.rules.phase2.ScriptCollection;
 import org.yanoproject.ledger.rules.view.model.GovActionId;
@@ -96,11 +96,9 @@ final class ConwayTxInfoTranslator {
     record Redeemer(int tag, long index, PlutusData data, BigInteger mem, BigInteger steps) {
     }
 
-    private static final int SET_TAG = 258;
     private static final int BYRON_TYPE = 8;
 
     private final RawTransaction raw;
-    private final byte[] txCbor;
     private final Map<Outpoint, UtxoEntry> resolved;
     private final int protocolMajor;
     private final SlotConfig slotConfig;
@@ -121,7 +119,6 @@ final class ConwayTxInfoTranslator {
     ConwayTxInfoTranslator(RawTransaction raw, Map<Outpoint, UtxoEntry> resolved, int protocolMajor,
                            SlotConfig slotConfig) {
         this.raw = Objects.requireNonNull(raw, "raw");
-        this.txCbor = raw.txCbor();
         this.resolved = Objects.requireNonNull(resolved, "resolved");
         this.protocolMajor = protocolMajor;
         this.slotConfig = Objects.requireNonNull(slotConfig, "slotConfig");
@@ -526,16 +523,9 @@ final class ConwayTxInfoTranslator {
     TreeMap<String, PlutusData> witnessDatums() {
         if (witnessDatums == null) {
             TreeMap<String, PlutusData> datums = new TreeMap<>();
-            CborSlice field = raw.witnessFields().get(RawTransaction.WITNESS_DATUMS);
-            if (field != null) {
-                CborReader reader = new CborReader(txCbor, field);
-                reader.skipTag(SET_TAG);
-                long count = reader.readArrayHeader();
-                for (long i = 0; reader.hasNext(count, i); i++) {
-                    byte[] datum = reader.copy(reader.readItem());
-                    datums.putIfAbsent(HexUtil.encodeHexString(Hashes.blake2b256(datum)),
-                            PlutusDataCborDecoder.decode(datum));
-                }
+            for (RawDatum datum : raw.rawTx().witnessDatums()) {
+                datums.putIfAbsent(HexUtil.encodeHexString(datum.hash()),
+                        PlutusDataCborDecoder.decode(datum.span().bytes()));
             }
             witnessDatums = datums;
         }
@@ -567,18 +557,11 @@ final class ConwayTxInfoTranslator {
             TreeMap<Long, Redeemer> byKey = new TreeMap<>();
             for (RawRedeemer r : raw.redeemers()) {
                 byKey.put(r.key(), new Redeemer(r.tag(), r.index(),
-                        PlutusDataCborDecoder.decode(r.data().copy(txCbor)), r.mem(), r.steps()));
+                        PlutusDataCborDecoder.decode(r.data().bytes()), r.mem(), r.steps()));
             }
             redeemers = byKey;
         }
         return redeemers;
-    }
-
-    /** Consumes the break of an indefinite container after {@code read} elements. */
-    private static void endOf(CborReader reader, long length, long read) {
-        if (length == CborReader.INDEFINITE) {
-            reader.hasNext(length, read);
-        }
     }
 
     // ------------------------------------------------------------------ purposes
@@ -768,7 +751,7 @@ final class ConwayTxInfoTranslator {
         PlutusData prev = maybeActionId(proposal.prevActionId());
         return switch (proposal.actionTag()) {
             case RawProposal.PARAMETER_CHANGE -> constr(0, prev,
-                    changedParameters(new CborReader(txCbor, proposal.paramUpdateSlice())),
+                    changedParameters(proposal.paramUpdateSpan()),
                     maybeHash(proposal.policyHash()));
             case RawProposal.HARD_FORK_INITIATION -> constr(1, prev, constr(0,
                     integer(proposal.protocolVersion().major()), integer(proposal.protocolVersion().minor())));
@@ -800,53 +783,42 @@ final class ConwayTxInfoTranslator {
      * {@code ToPlutusData Rational}), {@code List} for {@code ExUnits}, prices and voting thresholds, and a
      * {@code Map} in key order for cost models.
      */
-    private static PlutusData changedParameters(CborReader reader) {
-        long count = reader.readMapHeader();
+    private static PlutusData changedParameters(CborSpan update) {
         TreeMap<BigInteger, PlutusData> byKey = new TreeMap<>();
-        for (long i = 0; reader.hasNext(count, i); i++) {
-            BigInteger key = reader.readUnsigned();
-            byKey.put(key, parameterValue(reader));
+        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(update)) {
+            byKey.put(StrictCbor.unsigned(entry.getKey()), parameterValue(entry.getValue()));
         }
         List<PlutusData.Pair> entries = new ArrayList<>();
         byKey.forEach((key, value) -> entries.add(pair(integer(key), value)));
         return map(entries);
     }
 
-    private static PlutusData parameterValue(CborReader reader) {
-        int major = reader.peekMajor();
+    private static PlutusData parameterValue(CborSpan value) {
+        int major = StrictCbor.major(value);
         switch (major) {
             case 0, 1 -> {
-                return integer(reader.readInteger());
+                return integer(StrictCbor.integer(value));
             }
             case 4 -> {
-                long length = reader.readArrayHeader();
                 List<PlutusData> items = new ArrayList<>();
-                for (long i = 0; reader.hasNext(length, i); i++) {
-                    items.add(parameterValue(reader));
-                }
+                StrictCbor.array(value).forEach(item -> items.add(parameterValue(item)));
                 return list(items);
             }
             case 5 -> {
-                long length = reader.readMapHeader();
                 List<PlutusData.Pair> entries = new ArrayList<>();
-                for (long i = 0; reader.hasNext(length, i); i++) {
-                    PlutusData key = parameterValue(reader);
-                    entries.add(pair(key, parameterValue(reader)));
-                }
+                StrictCbor.map(value).forEach(entry -> entries.add(pair(parameterValue(entry.getKey()),
+                        parameterValue(entry.getValue()))));
                 entries.sort((a, b) -> a.key() instanceof PlutusData.IntData x && b.key() instanceof PlutusData.IntData y
                         ? x.value().compareTo(y.value()) : 0);
                 return map(entries);
             }
             case 6 -> {
-                long tag = reader.readTag();
-                if (tag != 30) {
-                    throw new IllegalStateException("unexpected tag " + tag + " in a parameter update");
+                if (value.tag() != 30) {
+                    throw new IllegalStateException("unexpected tag " + value.tag() + " in a parameter update");
                 }
-                long length = reader.readArrayHeader();
-                BigInteger numerator = reader.readInteger();
-                BigInteger denominator = reader.readInteger();
-                endOf(reader, length, 2);
-                BigInteger[] reduced = DataTerms.reduce(numerator, denominator);
+                List<CborSpan> ratio = StrictCbor.array(value.untag());
+                BigInteger[] reduced = DataTerms.reduce(StrictCbor.integer(ratio.get(0)),
+                        StrictCbor.integer(ratio.get(1)));
                 return list(List.of(integer(reduced[0]), integer(reduced[1])));
             }
             default -> throw new IllegalStateException("unexpected CBOR major type " + major + " in a parameter update");
