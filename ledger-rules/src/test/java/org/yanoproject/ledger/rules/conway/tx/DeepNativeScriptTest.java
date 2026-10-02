@@ -43,7 +43,7 @@ class DeepNativeScriptTest {
 
     private static void check() throws Exception {
         byte[] txCbor = PublicNetworkTransactions.cbor(NAME);
-        Transaction decoded = CclTransactions.deserialize(txCbor);
+        Transaction decoded = Transaction.deserialize(txCbor);
         RawTransaction raw = RawTransaction.parse(txCbor, decoded);
 
         assertThat(raw.txIdHex()).isEqualTo(PublicNetworkTransactions.txId(NAME));

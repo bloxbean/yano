@@ -1,11 +1,14 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.cert.PoolRegistration;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.rules.TxIdentity;
 import org.yanoproject.ledger.rules.conway.EngineTestSupport;
+import org.yanoproject.ledger.rules.fixtures.PublicNetworkTransactions;
 import org.yanoproject.ledger.rules.fixtures.tx.BuiltTx;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
@@ -215,6 +218,32 @@ class RawTransactionTest {
         assertThatThrownBy(() -> StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString("5f5f4100ffff"))))
                 .isInstanceOf(TxDecodingException.class).hasMessageContaining("chunk");
         assertThat(StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString("5f41014102ff")))).containsExactly(1, 2);
+    }
+
+    /**
+     * Preview transaction {@code 1c09afd80edba3e530fa48fa34f1bc0b2c7999b7e0c76bda2d644444c53e1032} (slot 60896134,
+     * block 2527148, protocol version 9) registers a pool whose owners and relays are indefinite-length arrays. Haskell
+     * decodes both ({@code decodeSet} / {@code decodeSetLikeEnforceNoDuplicates}, cardano-ledger-binary
+     * Decoder.hs:952-962 and :1081-1085; {@code decodeStrictSeq}, :1156-1157; {@code StakePoolParams},
+     * cardano-ledger-core State/StakePool.hs:574-590), and the chain accepted it. CCL's decoder once failed on it (the
+     * java engine reported {@code ENGINE.DecodingFailure} in shadow sync, and Yano decoded a definite-length copy); it
+     * now reads it directly. The CBOR comes from the shadow-sync dump.
+     */
+    @Test
+    void aPoolRegistrationWithIndefiniteOwnersAndRelaysDecodes() throws Exception {
+        String name = PublicNetworkTransactions.PREVIEW_INDEFINITE_POOL_OWNERS;
+        byte[] txCbor = PublicNetworkTransactions.cbor(name);
+
+        Transaction tx = Transaction.deserialize(txCbor);
+
+        PoolRegistration registration = (PoolRegistration) tx.getBody().getCerts().get(0);
+        assertThat(registration.getPoolOwners()).containsExactly("89218aeaab042f371399f159a08168b43a23f7c3b3db5c3a4c77a18e");
+        assertThat(registration.getRelays()).hasSize(1);
+        // The id and every hash still come from the original bytes.
+        RawTransaction raw = RawTransaction.parse(txCbor, tx);
+        assertThat(raw.txIdHex()).isEqualTo(PublicNetworkTransactions.txId(name));
+        assertThat(TxIdentity.txIdHex(txCbor)).isEqualTo(PublicNetworkTransactions.txId(name));
+        assertThat(raw.certificates().getFirst().poolOwners()).hasSize(1);
     }
 
     @Test

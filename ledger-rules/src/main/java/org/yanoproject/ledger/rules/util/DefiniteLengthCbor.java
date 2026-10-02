@@ -8,17 +8,13 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Rewrites indefinite-length CBOR arrays and maps as definite-length ones, byte-for-byte otherwise.
+ * Rewrites the indefinite-length CBOR arrays and maps of a transaction's body as definite-length ones, byte-for-byte
+ * otherwise, for Scalus.
  *
- * <p>Haskell accepts indefinite-length arrays and maps wherever the body has a list, a set or a map. Two decoders
- * do not:</p>
- * <ul>
- *   <li>Scalus's transaction decoder rejects indefinite-length containers in the body and its outputs (Amaru's
- *       corpus has such transactions, for example scenarios 00019 and 00151; see {@code ScalusTransactions});</li>
- *   <li>CCL's {@code Transaction.deserialize} fails on some of them: cbor-java keeps the {@code break} marker as the
- *       last item of an indefinite array, which CCL's {@code PoolRegistration.deserialize} casts to a byte string
- *       (the pool owners, preview transaction {@code 1c09afd8…}; see {@code CclTransactions}).</li>
- * </ul>
+ * <p>Haskell accepts indefinite-length arrays and maps wherever the body has a list, a set or a map. Scalus's own
+ * transaction decoder rejects indefinite-length containers in the body and its outputs (Amaru's corpus has such
+ * transactions, for example scenarios 00019 and 00151; see {@code ScalusTransactions}), so the Scalus bridge decodes a
+ * definite-length copy of the body when the original bytes do not decode. CCL's decoder reads these shapes itself.</p>
  * <p>The copy is only decoded: the original bytes stay the source of the transaction id and every hash. Byte and text
  * strings, including chunked ones, are copied unchanged.</p>
  */
@@ -30,15 +26,6 @@ public final class DefiniteLengthCbor {
     }
 
     /**
-     * For CCL, which reads only the structure: the transaction's ids and hashes always come from the original bytes.
-     *
-     * @return the transaction with every item definite-length
-     */
-    public static byte[] normalizeTransaction(byte[] txCbor) {
-        return normalize(txCbor, true, false);
-    }
-
-    /**
      * For Scalus, which also hashes the witness set's datums and the auxiliary data from their bytes: only the body is
      * rewritten, and the caller gives the decoded body its original bytes back.
      *
@@ -47,10 +34,6 @@ public final class DefiniteLengthCbor {
      * @return the transaction with its top-level array and body definite-length; other items unchanged
      */
     public static byte[] normalizeBody(byte[] txCbor, boolean dropSetTags) {
-        return normalize(txCbor, false, dropSetTags);
-    }
-
-    private static byte[] normalize(byte[] txCbor, boolean allItems, boolean dropSetTags) {
         Cursor cursor = new Cursor(txCbor, 0);
         int initial = txCbor[0] & 0xff;
         if (initial >>> 5 != 4) {
@@ -62,7 +45,7 @@ public final class DefiniteLengthCbor {
             int start = cursor.offset;
             int end = CborSpan.skip(txCbor, start, txCbor.length);
             byte[] item = Arrays.copyOfRange(txCbor, start, end);
-            items.add(allItems || i == 0 ? normalizeItem(item, dropSetTags) : item);
+            items.add(i == 0 ? normalizeItem(item, dropSetTags) : item);
             cursor.offset = end;
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream(txCbor.length + 8);

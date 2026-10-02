@@ -3535,7 +3535,8 @@ with shadow sync on `java-julc,java-scalus`.
     - `ScalusLedgerValidationEngine`.
 
     Before, a transaction the java engine accepted was rejected by the mempool projection. The id and hashes still
-    come from the original bytes.
+    come from the original bytes. (ADR 0001 Phase 3: CCL now decodes these shapes itself, so `CclTransactions` and
+    `normalizeTransaction` are removed; every decode calls `Transaction.deserialize`.)
   - Each Scalus workaround has a canary in `ScalusWorkaroundsTest` that asserts Scalus's current behaviour and fails
     once upstream follows Haskell. The deviations are summarised in the table under §5. The upstream issue draft
     lists twelve items with reproductions, including the run-time Plutus Core version check that Scalus lacks.
@@ -3544,7 +3545,7 @@ with shadow sync on `java-julc,java-scalus`.
       evaluator's tests as `PublicNetworkTransactions.PHASE2_CASES` (ledger-rules test fixtures);
     - `ProducedInlineDatumTest` (ledger-rules) and `DefaultMemPoolTest`/`BlockBuildUtxoOverlayTest` (runtime): preprod
       `1fc4d810…` from Koios, shared as `PublicNetworkTransactions` (ledger-rules test fixtures);
-    - `CclTransactionsTest` (ledger-rules) and `DefaultMemPoolTest`: preview `1c09afd8…`;
+    - `RawTransactionTest` (ledger-rules, formerly `CclTransactionsTest`) and `DefaultMemPoolTest`: preview `1c09afd8…`;
     - `WideIntegersTest` and `ScalusWorkaroundsTest`.
   - Suites:
     - `:scalus-bridge:test` with the Amaru corpus: 125 tests, 1 skipped;
