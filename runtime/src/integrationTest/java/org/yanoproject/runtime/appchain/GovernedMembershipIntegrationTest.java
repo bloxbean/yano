@@ -2,6 +2,8 @@ package org.yanoproject.runtime.appchain;
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
@@ -229,6 +231,61 @@ class GovernedMembershipIntegrationTest {
         }
     }
 
+    /**
+     * A message from a member whose epoch is scheduled but not yet active is
+     * pooled by the existing members (gossip admits scheduled members). Before
+     * the fix the leader included it below the activation height, every
+     * follower rejected the proposal, and the chain stalled view after view
+     * until the envelope expired. The leader now keeps it pooled and includes
+     * it only once its sender is a member at the candidate height.
+     */
+    @Test
+    void scheduledMembersMessage_waitsForActivation_andChainStaysLive() throws Exception {
+        String pubA = pubHex(KEY_A);
+        String pubB = pubHex(KEY_B);
+        String pubC = pubHex(KEY_C);
+        Set<String> genesis = Set.of(pubA, pubB);
+        int portA = freePort();
+        int portB = freePort();
+        AppChainSubsystem nodeA = start("sa", KEY_A, genesis, portA, List.of(peer(portB)), 600);
+        AppChainSubsystem nodeB = start("sb", KEY_B, genesis, portB, List.of(peer(portA)), 600);
+        awaitTrue("connected", () -> connected(nodeA) && connected(nodeB));
+        List<AppChainSubsystem> members = List.of(nodeA, nodeB);
+
+        nodeA.addMember(pubC); // 2-of-2 plus one member is a valid 2-of-3
+        nodeB.addMember(pubC);
+        awaitTrue("add-C scheduled on both", () -> members.stream()
+                .allMatch(node -> node.members().contains(pubC)));
+        long activation = (long) nodeA.status().get("membershipEpochFromHeight");
+
+        // C's early message reaches both members' pools, as gossip from C would
+        AppMessage early = signedBy(KEY_C, "t", "early-from-c".getBytes(StandardCharsets.UTF_8), 1);
+        nodeA.onInboundMessages(List.of(early));
+        nodeB.onInboundMessages(List.of(early));
+
+        // The chain keeps finalizing existing members' traffic below the activation height
+        for (int i = 0; i < 3; i++) {
+            long height = awaitFinalizedTraffic(nodeA, members, "before-activation-" + i);
+            assertThat(height).isLessThan(activation);
+        }
+        assertThat(nodeA.messageHeight(early.getMessageId())).isEmpty();
+
+        // C's own node refuses local submissions until its epoch is active
+        AppChainSubsystem nodeC = start("sc", KEY_C, genesis, 0, List.of(peer(portA)), 600);
+        assertThatThrownBy(() -> nodeC.submit("t", "too-early".getBytes(StandardCharsets.UTF_8)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("not an active member");
+
+        // C's pooled message is finalized only once C is a member at that height
+        for (int i = 0; nodeA.messageHeight(early.getMessageId()).isEmpty(); i++) {
+            awaitFinalizedTraffic(nodeA, members, "toward-activation-" + i);
+        }
+        assertThat(nodeA.messageHeight(early.getMessageId())).hasValueSatisfying(height ->
+                assertThat(height).isGreaterThanOrEqualTo(activation));
+        awaitTrue("B finalized C's message", () -> nodeB.messageHeight(early.getMessageId()).isPresent());
+        assertThat(nodeB.stateRoot()).isEqualTo(nodeA.stateRoot());
+    }
+
     @Test
     void halfApprovedCommand_expiresAfterWindow() throws Exception {
         String pubA = pubHex(KEY_A);
@@ -280,6 +337,26 @@ class GovernedMembershipIntegrationTest {
         awaitTrue("cluster connected", () -> cluster.stream().allMatch(
                 GovernedMembershipIntegrationTest::connected));
         return cluster;
+    }
+
+    /** An ordinary app message signed by {@code seed}, as that member's node would gossip it. */
+    private static AppMessage signedBy(byte[] seed, String topic, byte[] body, long senderSeq) {
+        AppMessageSigner signer = new AppMessageSigner(HexUtil.encodeHexString(seed));
+        long expiresAt = System.currentTimeMillis() / 1000 + 600;
+        byte[] signedBody = AppMessage.signedBodyBytes(CHAIN_ID, topic, signer.publicKey(),
+                senderSeq, expiresAt, body);
+        return AppMessage.builder()
+                .messageId(AppMessage.computeMessageId(CHAIN_ID, topic, signer.publicKey(),
+                        senderSeq, expiresAt, body))
+                .chainId(CHAIN_ID)
+                .topic(topic)
+                .sender(signer.publicKey())
+                .senderSeq(senderSeq)
+                .expiresAt(expiresAt)
+                .body(body)
+                .authScheme(AuthScheme.ED25519.getValue())
+                .authProof(signer.sign(signedBody))
+                .build();
     }
 
     private static void assertQuorumRejected(ThrowingCallable change) {

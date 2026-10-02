@@ -205,6 +205,19 @@ class MemberGroupTest {
     }
 
     @Test
+    void containsFromCoversTheActiveAndEveryScheduledEpoch() {
+        MemberGroup group = new MemberGroup(Set.of(KEY_A, KEY_B, KEY_C), 2);
+        group.appendEpoch(21, Set.of(KEY_A, KEY_B, KEY_C, KEY_D), 3); // D joins at 21
+        group.appendEpoch(31, Set.of(KEY_A, KEY_B, KEY_D), 2);        // C leaves at 31
+
+        assertThat(group.containsAt(KEY_D, 20)).isFalse();
+        assertThat(group.containsFrom(KEY_D, 20)).isTrue();   // scheduled: keep its messages
+        assertThat(group.containsFrom(KEY_C, 30)).isTrue();   // still active until 31
+        assertThat(group.containsFrom(KEY_C, 31)).isFalse();  // never again
+        assertThat(group.containsFrom(KEY_Z, 1)).isFalse();
+    }
+
+    @Test
     void certifiableThresholdsFollowTheQuorumRules() {
         assertThat(MemberGroup.certifiableThresholds(3, 0)).isEqualTo("2..3");
         assertThat(MemberGroup.certifiableThresholds(4, 0)).isEqualTo("3..4");

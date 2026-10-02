@@ -127,6 +127,25 @@ final class MemberGroup {
         return membersAt(height).contains(publicKeyHex.toLowerCase(Locale.ROOT));
     }
 
+    /**
+     * True when the key is a member at {@code height} or in an epoch already
+     * scheduled to start after it: its messages can still become valid.
+     */
+    boolean containsFrom(String publicKeyHex, long height) {
+        String key = publicKeyHex.toLowerCase(Locale.ROOT);
+        List<Epoch> snapshot = epochs;
+        for (int i = snapshot.size() - 1; i >= 0; i--) {
+            Epoch epoch = snapshot.get(i);
+            if (epoch.members().contains(key)) {
+                return true;
+            }
+            if (epoch.fromHeight() <= height) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     // --- rotation ---
 
     /**

@@ -1121,7 +1121,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
 
         String senderHex = HexUtil.encodeHexString(sender).toLowerCase(Locale.ROOT);
-        if (!group.contains(senderHex)) {
+        // Members now or in a scheduled epoch: a joiner's early message stays
+        // pooled until it can be included, and a member scheduled for removal
+        // keeps voting until it leaves. Engine checks membership per height.
+        if (!group.containsFrom(senderHex, tipHeight() + 1)) {
             countDrop("not_member");
             return AppMsgValidator.Result.reject("sender not in app-chain member list: " + senderHex);
         }
@@ -1975,6 +1978,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private String submitPrivilegedSystemMessageWithinGeneration(String topic, byte[] body) {
         if (!running.get()) throw new IllegalStateException("App chain is not running");
         if (submissionsPaused.get()) throw new IllegalStateException("Submissions are paused (admin)");
+        requireActiveMember();
         validatePrivilegedSystemMessageWithinGeneration(topic, body);
         AppMessage message = buildSigned(topic, body, config.defaultTtlSeconds());
         AppMsgPool.AddResult added = pool.add(message);
@@ -2025,6 +2029,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (!validTopic(effectiveTopic))
             throw new IllegalArgumentException("topic must be at most "
                     + AppChainConfig.MAX_TOPIC_BYTES + " valid UTF-8 bytes without NUL");
+        requireActiveMember();
 
         // Admit locally BEFORE diffusing — a message this node cannot hold must
         // not be half-way into the network with an "accepted" id (ADR 008.1 I1.1)
@@ -2042,6 +2047,29 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         log.info("App message submitted: id={}, chain={}, topic={}, seq={}",
                 message.getMessageIdHex(), config.chainId(), effectiveTopic, message.getSenderSeq());
         return message.getMessageIdHex();
+    }
+
+    /**
+     * A sequencing node submits only as a member of the next block's epoch.
+     * A joiner whose epoch is scheduled but not active, or a non-member, gets
+     * a clear refusal (REST 503) rather than an id for a message no block can
+     * include yet. Diffusion-only nodes keep their configured membership.
+     */
+    private void requireActiveMember() {
+        AppLedgerStore currentLedger = ledger;
+        if (!config.sequencingEnabled() || currentLedger == null) {
+            return;
+        }
+        long nextHeight = currentLedger.tipHeight() + 1;
+        String self = signer.publicKeyHex();
+        if (group.containsAt(self, nextHeight)) {
+            return;
+        }
+        throw new IllegalStateException(group.containsFrom(self, nextHeight)
+                ? "This node is not an active member at height " + nextHeight + " yet: its membership "
+                        + "epoch is scheduled. Retry once status memberActiveForNextBlock is true"
+                : "This node is not an active member of app-chain '" + config.chainId()
+                        + "'; no block can include its submissions");
     }
 
     /**

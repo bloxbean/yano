@@ -62,15 +62,19 @@ machine, whose transition logic is `core-api/.../appchain/transition/OrderedLogK
 
 ```
 submit (REST / SDK / gossip)
-  → envelope auth: member Ed25519 signature, message-id integrity
+  → local submit: this node must be a member at the next height (else 503)
+  → envelope auth: Ed25519 signature by a member now or in a scheduled
+     epoch, message-id integrity
   → transport limits: size (chain max-message-bytes), TTL cap
   → local sequenced submission: validateForBlock(next height, committed snapshot)
                                  ← declared application rejection = 400
   → pool (backpressure: full pool = 429 + counted gossip drops)
   → gossip to app peers (dedup by message-id)
-  → proposer selects into a block  (drops: finalized dupes, stale
-     sender-seqs, machine-rejected; revalidates at actual candidate height/state;
-     ~system topics bypass ordinary application admission)
+  → proposer selects into a block  (applies the follower checks at the
+     candidate height; drops: finalized dupes, invalid/expired/non-member,
+     stale sender-seqs, machine-rejected; keeps pooled: senders whose epoch
+     is scheduled but not active yet; revalidates at actual candidate
+     height/state; ~system topics bypass ordinary application admission)
   → consensus round (§4)          ← the only place messages become canonical
   → finalized: indexed by id/topic/sender, applied to state, streamed to
      SSE/webhooks/Kafka, provable via MPF, eventually anchored to L1
@@ -133,9 +137,13 @@ leader from committed context on every node, so only that member proceeds:
 3. Select the mandatory durable L1 prefix, then ordinary messages: cap by
    `block.max-bytes` (primary; the
    serialized block is trimmed to fit) and `block.max-messages` (backstop);
-   drop already-finalized ids, stale per-sender seqs, and messages the state
-   machine's `validate()` rejects. Reserved `~` topics bypass application
-   admission — a state machine cannot veto governance or consensus traffic.
+   apply the follower's per-message checks (§4.2 item 10) at the candidate
+   height; drop already-finalized ids, messages that fail those checks, stale
+   per-sender seqs, and messages the state machine's `validate()` rejects.
+   A message whose sender joins in a scheduled epoch stays pooled, without
+   taking a slot, until the sender is a member at the candidate height.
+   Reserved `~` topics bypass application admission — a state machine cannot
+   veto governance or consensus traffic.
 4. Build and **apply locally** to compute the real `stateRoot`, persist the
    `(height, view, blockHash)` prepare lock, broadcast the proposal and PREPARE.
 
@@ -288,6 +296,13 @@ Activation evaluates the epoch in effect at the activating height, so a
 change approved before an earlier one takes effect is computed without it.
 That is why step 2 waits. To shrink, run the steps the other way: lower the
 threshold first when a removal would leave `t > n − f`.
+
+A joining node refuses local submissions with 503 until it is a member at
+the next height (status `memberActiveForNextBlock`). Members already admit
+gossip from it, and a message of its that reaches the pool early waits there,
+outside block selection, until its epoch is active at the candidate height.
+It still expires after its TTL, so an idle chain that does not reach the
+activation height in time drops it.
 
 ## 7. State, the MPF trie, and proofs
 
