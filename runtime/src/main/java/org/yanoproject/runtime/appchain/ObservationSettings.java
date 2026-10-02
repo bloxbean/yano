@@ -98,8 +98,7 @@ final class ObservationSettings {
             throw new IllegalArgumentException(
                     "Observation result bounds exceed the app-message or proposal profile");
         }
-        int maximumFaults = Integer.parseInt(config.pluginSettings().getOrDefault(
-                "consensus.max-byzantine-members", "0"));
+        int maximumFaults = MemberGroup.maxByzantineMembers(config);
         List<byte[]> reporterKeys = members.members().stream().sorted()
                 .map(HexUtil::decodeHexString).toList();
         byte[] reporterSetDigest = ObservationHashes.reporterSetDigest(reporterKeys);

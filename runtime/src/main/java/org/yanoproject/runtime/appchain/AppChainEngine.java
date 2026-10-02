@@ -206,10 +206,8 @@ final class AppChainEngine implements AutoCloseable {
                 .sorted()
                 .map(HexUtil::decodeHexString)
                 .toList();
-        int maximumFaults = Integer.parseInt(config.pluginSettings().getOrDefault(
-                "consensus.max-byzantine-members", "0"));
         ConsensusQuorum quorum = new ConsensusQuorum(epoch.members().size(),
-                epoch.threshold(), maximumFaults);
+                epoch.threshold(), MemberGroup.maxByzantineMembers(config));
         return new ConsensusContext(3, config.chainId(),
                 stateBackend.identity().genesisId(), height, quorum, members,
                 AppChainConsensusProfileCommitment.digest(
@@ -447,12 +445,10 @@ final class AppChainEngine implements AutoCloseable {
                 observationSettings.profile());
         observationProfileGuard.verifyRetained(ledger, config.chainId());
         if (observationSettings.profile().enabled()) {
-            int maximumFaults = Integer.parseInt(config.pluginSettings().getOrDefault(
-                    "consensus.max-byzantine-members", "0"));
             ObservationKernel observationKernel = new ObservationKernel(
                     observationSettings.profile(), stateBackend.identity().genesisId(),
                     config.chainId(), AppChainConsensusProfileCommitment.digest(
-                    consensusProfileGuard.profile()), maximumFaults,
+                    consensusProfileGuard.profile()), MemberGroup.maxByzantineMembers(config),
                     height -> {
                         MemberGroup.Epoch epoch = group.epochAt(height);
                         return new AppChainMembershipEpoch(

@@ -745,9 +745,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /**
      * Submit a membership governance command as this member (008.3). Internal
-     * path — the public submit() rejects reserved {@code ~} topics.
+     * path — the public submit() rejects reserved {@code ~} topics. Callers
+     * screen the command first; activation re-applies every guard rail.
      */
-    private String submitGovernance(byte[] commandBody) {
+    String submitGovernance(byte[] commandBody) {
         if (!running.get())
             throw new IllegalStateException("App chain is not running");
         AppMessage message = buildSigned(GovernedMembership.TOPIC, commandBody,
@@ -3615,6 +3616,38 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         ledgerStore.metaPutString(META_MEMBER_EPOCHS, group.encode());
     }
 
+    /**
+     * The epochs a governed command can activate against: the one for the next
+     * block and, when different, the newest scheduled one. Activation evaluates
+     * the epoch in effect at its own height, which may be either.
+     */
+    private List<MemberGroup.Epoch> governedBaseEpochs() {
+        MemberGroup.Epoch newest = group.history().getLast();
+        AppLedgerStore currentLedger = ledger;
+        MemberGroup.Epoch next = currentLedger != null
+                ? group.epochAt(currentLedger.tipHeight() + 1) : newest;
+        return next == newest ? List.of(newest) : List.of(next, newest);
+    }
+
+    /**
+     * Refuse a governed membership command whose result could never certify a
+     * block under {@code consensus.max-byzantine-members} (bloxbean/yano#163).
+     * Activation applies the same rule deterministically; this check only
+     * spares operators a command that would activate void.
+     */
+    private void requireCertifiable(int members, int threshold) {
+        int faults = MemberGroup.maxByzantineMembers(config);
+        String violation = MemberGroup.quorumViolation(members, threshold, faults);
+        if (violation != null) {
+            throw new MembershipChangeRejectedException(MembershipChangeRejectedException.QUORUM_INVALID,
+                    "A " + threshold + "-of-" + members + " membership breaks the consensus quorum rules for "
+                            + "consensus.max-byzantine-members=" + faults + " (" + violation + "); thresholds "
+                            + "that certify " + members + " member(s): "
+                            + MemberGroup.certifiableThresholds(members, faults)
+                            + ". Change the threshold first and wait until it is active.");
+        }
+    }
+
     @Override
     public Set<String> members() {
         return group.members();
@@ -3638,6 +3671,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // Governed mode (008.3): this call SUBMITS a governance command —
             // the change activates once threshold-many members do the same
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                if (!base.members().contains(normalized)) {
+                    requireCertifiable(base.members().size() + 1, base.threshold());
+                }
+            }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
@@ -3666,6 +3704,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void removeMemberWithinGeneration(String publicKeyHex) {
         if (governedMode()) {
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                if (base.members().contains(normalized)) {
+                    requireCertifiable(base.members().size() - 1, base.threshold());
+                }
+            }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_REMOVE,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
@@ -3705,6 +3748,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (governedMode()) {
             if (threshold < 1) {
                 throw new IllegalArgumentException("Threshold must be >= 1");
+            }
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                requireCertifiable(base.members().size(), threshold);
             }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
                     null, threshold, GovernedMembership.DEFAULT_ACTIVATION_LAG));
@@ -4824,6 +4870,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         config.proposerKeyHex(),
                         parseLongSetting("membership.approval-window-blocks",
                                 GovernedMembership.DEFAULT_APPROVAL_WINDOW_BLOCKS),
+                        MemberGroup.maxByzantineMembers(config),
                         log);
                 governed.restore(ledgerStore);
                 governed.setEpochGuard(effect -> observationSettings.admitsMembership(

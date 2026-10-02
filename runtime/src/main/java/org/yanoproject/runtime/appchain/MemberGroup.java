@@ -1,6 +1,7 @@
 package org.yanoproject.runtime.appchain;
 
 import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.consensus.ConsensusQuorum;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -33,6 +34,39 @@ final class MemberGroup {
             }
             members = Set.copyOf(members);
         }
+    }
+
+    /** {@code consensus.max-byzantine-members}: the chain's Byzantine fault bound f (default 0). */
+    static int maxByzantineMembers(AppChainConfig config) {
+        return Integer.parseInt(config.pluginSettings().getOrDefault(
+                "consensus.max-byzantine-members", "0"));
+    }
+
+    /**
+     * Why {@code threshold}-of-{@code members} cannot certify blocks under the
+     * fault bound (the {@link ConsensusQuorum} rules every block's consensus
+     * context enforces), or null when it can.
+     */
+    static String quorumViolation(int members, int threshold, int maxByzantineMembers) {
+        try {
+            new ConsensusQuorum(members, threshold, maxByzantineMembers);
+            return null;
+        } catch (IllegalArgumentException violation) {
+            return violation.getMessage();
+        }
+    }
+
+    /** The thresholds that can certify blocks for {@code members} members, as "low..high", or "none". */
+    static String certifiableThresholds(int members, int maxByzantineMembers) {
+        int low = 0;
+        int high = 0;
+        for (int threshold = 1; threshold <= members; threshold++) {
+            if (quorumViolation(members, threshold, maxByzantineMembers) == null) {
+                low = low == 0 ? threshold : low;
+                high = threshold;
+            }
+        }
+        return low == 0 ? "none" : low == high ? Integer.toString(low) : low + ".." + high;
     }
 
     /** Ordered by fromHeight ascending; never empty; volatile snapshot swap. */
