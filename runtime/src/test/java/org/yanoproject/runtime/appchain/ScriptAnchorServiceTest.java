@@ -290,6 +290,9 @@ class ScriptAnchorServiceTest {
         assertThat(leader.lastAnchoredHeight()).isEqualTo(9);
         assertThat(leader.status()).doesNotContainKey("confirmationObservedAtL1Slot");
         assertThat(submitted).hasSize(2); // the confirmed tx was never resubmitted
+        // bloxbean/yano#164: the L1_ANCHORED gate opens only once slot 200 is stable
+        assertThat(AnchorService.stableAnchoredHeight(leaderLedger, 199)).isZero();
+        assertThat(AnchorService.stableAnchoredHeight(leaderLedger, 200)).isEqualTo(9);
 
         // Raw BlockApplied callbacks precede the UTxO-store commit, so a
         // member never advances from the transaction-hash callback. The
@@ -318,12 +321,15 @@ class ScriptAnchorServiceTest {
         assertThat(follower.status())
                 .containsEntry("anchoredCount", 0L)
                 .containsEntry("observedAnchorCount", 1L);
+        assertThat(AnchorService.stableAnchoredHeight(followerLedger, 199)).isZero();
+        assertThat(AnchorService.stableAnchoredHeight(followerLedger, 250)).isEqualTo(9);
 
         // The first threshold-confirmed advance is the adopted identity's
         // trust checkpoint. Rolling it back clears both identity and frontier.
         follower.onL1Rollback(150);
         assertThat(follower.bootstrapped()).isFalse();
         assertThat(follower.lastAnchoredHeight()).isZero();
+        assertThat(AnchorService.stableAnchoredHeight(followerLedger, 1_000)).isZero();
         assertThat(followerLedger.metaBytes("anchor_script_policy_id")).isEmpty();
         assertThat(followerLedger.metaBytes("anchor_script_hash")).isEmpty();
     }
@@ -481,12 +487,17 @@ class ScriptAnchorServiceTest {
         assertThat(restarted.lastAnchoredHeight()).isEqualTo(9);
         assertThat(restarted.status()).containsEntry("lastAnchorTx", laterTx);
         assertThat(restarted.tick()).isNull();
+        // bloxbean/yano#164: each advance opens the L1_ANCHORED gate only once its slot is stable
+        assertThat(AnchorService.stableAnchoredHeight(followerLedger, 299)).isEqualTo(4);
+        assertThat(AnchorService.stableAnchoredHeight(followerLedger, 300)).isEqualTo(9);
         restarted.onL1Rollback(250);
         assertThat(restarted.bootstrapped()).isTrue();
         assertThat(restarted.lastAnchoredHeight()).isEqualTo(4);
+        assertThat(AnchorService.stableAnchoredHeight(followerLedger, 1_000)).isEqualTo(4);
         restarted.onL1Rollback(150);
         assertThat(restarted.bootstrapped()).isFalse();
         assertThat(restarted.lastAnchoredHeight()).isZero();
+        assertThat(AnchorService.stableAnchoredHeight(followerLedger, 1_000)).isZero();
         assertThat(restarted.tick()).isNull(); // stale UTxO history cannot re-establish a cleared candidate
     }
 

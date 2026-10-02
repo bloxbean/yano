@@ -308,6 +308,30 @@ class AppChainL1CallbackIsolationTest {
         }
     }
 
+    /**
+     * bloxbean/yano#164: the L1_ANCHORED gate frontier follows the node's own
+     * stable L1 point (l1.stability-depth = 1 here), not the first sighting,
+     * and a rolled-back anchor never counts as stable.
+     */
+    @Test
+    void stableAnchorFrontierWaitsForStabilityDepthAndForgetsRolledBackAnchor() throws Exception {
+        try (StartedHarness harness = startHarness("stable-frontier", new Controls(), mock(Logger.class))) {
+            harness.publish(applied(101, blockWithTx(ANCHOR_TX_HASH)));
+            assertThat(anchorHeight(harness.subsystem)).isEqualTo(1);
+            assertThat(stableAnchorHeight(harness.subsystem)).isZero(); // first sighting only
+
+            harness.publish(applied(102, emptyBlock()));
+            assertThat(stableAnchorHeight(harness.subsystem)).isEqualTo(1); // one block deep
+
+            harness.publish(new RollbackEvent(new Point(100, "64".repeat(32)), true));
+            assertThat(anchorHeight(harness.subsystem)).isZero();
+            for (long slot = 101; slot <= 104; slot++) {
+                harness.publish(applied(slot, emptyBlock()));
+            }
+            assertThat(stableAnchorHeight(harness.subsystem)).isZero();
+        }
+    }
+
     private StartedHarness startHarness(String testId, Controls controls, Logger logger)
             throws Exception {
         DirectEventBus eventBus = new DirectEventBus();
@@ -403,9 +427,17 @@ class AppChainL1CallbackIsolationTest {
     }
 
     private static long anchorHeight(AppChainSubsystem subsystem) {
+        return anchorStatusLong(subsystem, "lastAnchoredHeight");
+    }
+
+    private static long stableAnchorHeight(AppChainSubsystem subsystem) {
+        return anchorStatusLong(subsystem, "stableAnchoredHeight");
+    }
+
+    private static long anchorStatusLong(AppChainSubsystem subsystem, String key) {
         Object rawAnchor = subsystem.status().get("anchor");
         assertThat(rawAnchor).isInstanceOf(Map.class);
-        Object value = ((Map<?, ?>) rawAnchor).get("lastAnchoredHeight");
+        Object value = ((Map<?, ?>) rawAnchor).get(key);
         assertThat(value).isInstanceOf(Number.class);
         return ((Number) value).longValue();
     }

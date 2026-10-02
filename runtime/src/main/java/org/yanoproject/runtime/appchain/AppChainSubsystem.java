@@ -4072,6 +4072,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Map<String, Object> anchorStatus = currentAnchor.status();
             anchorStatus.put("lagBlocks",
                     Math.max(0, tipHeight() - currentAnchor.lastAnchoredHeight()));
+            anchorStatus.put("stableAnchoredHeight", stableAnchoredHeight());
             status.put("anchor", anchorStatus);
         } else if (currentScriptAnchor != null
                 && ((config.anchoringEnabled() && config.anchor() != null && config.anchor().scriptMode())
@@ -4081,6 +4082,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Map<String, Object> anchorStatus = currentScriptAnchor.status();
             anchorStatus.put("lagBlocks",
                     Math.max(0, tipHeight() - currentScriptAnchor.lastAnchoredHeight()));
+            anchorStatus.put("stableAnchoredHeight", stableAnchoredHeight());
             status.put("anchor", anchorStatus);
         }
         L1ObservationService currentObservations = observationService;
@@ -5661,6 +5663,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return null;
     }
 
+    /**
+     * The L1_ANCHORED effect gate frontier (ADR-010 F7): the highest app height
+     * covered by an anchor confirmed at or below {@link #stableL1Ref()}, i.e.
+     * at least {@code l1.stability-depth} blocks below this node's L1 tip.
+     * Node-local execution-plane state, never consensus input. 0 without a
+     * stable L1 point (depth 0, or too few L1 blocks seen since start).
+     */
+    private long stableAnchoredHeight() {
+        AppLedgerStore currentLedger = ledger;
+        AppChainEngine.L1Ref stable = stableL1Ref();
+        return currentLedger == null || stable == null
+                ? 0L : AnchorService.stableAnchoredHeight(currentLedger, stable.slot());
+    }
+
     private boolean l1ObservationInputsHealthy() {
         L1ObservationService blockObservations = observationService;
         L1EpochObservationCoordinator epochObservations = epochObservationCoordinator;
@@ -6062,6 +6078,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             String runtimeOwner = effectRuntimeOwner(executorIdentity, runtimeSettings.types());
             createdRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
                     executors, executorConfigs, executorSources, runtimeOwner, log);
+            createdRuntime.setStableAnchorFrontier(this::stableAnchoredHeight);
             // Publish ownership before registering the lifetime signal. If a
             // custom registry rejects registration, startup rollback sees and
             // closes the runtime instead of directly double-closing products.

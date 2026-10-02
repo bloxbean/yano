@@ -138,6 +138,32 @@ final class AnchorService {
     }
 
     /**
+     * The L1_ANCHORED effect gate frontier (ADR-010 F7): the highest app height
+     * covered by a confirmed anchor whose L1 inclusion slot is at or below
+     * {@code stableSlot}, this node's stability-depth L1 point. Metadata and
+     * script anchors keep the same confirmation journal, which L1 rollbacks
+     * rewind, so a rolled-back anchor never counts. 0 when no confirmation is
+     * that deep or the journal is unreadable.
+     */
+    static long stableAnchoredHeight(AppLedgerStore ledger, long stableSlot) {
+        byte[] encoded = ledger.metaBytes(META_ANCHOR_HISTORY);
+        if (stableSlot <= 0 || encoded == null || encoded.length == 0) {
+            return 0L;
+        }
+        try {
+            long height = 0L;
+            for (Confirmation confirmation : ConfirmationHistory.decode(encoded)) {
+                if (confirmation.l1Slot() <= stableSlot) {
+                    height = Math.max(height, confirmation.toHeight());
+                }
+            }
+            return height;
+        } catch (IllegalArgumentException unreadable) {
+            return 0L;
+        }
+    }
+
+    /**
      * Anchor the current tip now, ignoring the every-blocks/interval schedule
      * (admin force-anchor, ADR 006 E5.4). No-op if an anchor tx is already
      * pending or there is nothing new to anchor.

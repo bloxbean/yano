@@ -1174,7 +1174,9 @@ final class ScriptAnchorService {
      * Reconcile the latest confirmed script datum from this node's own L1
      * UTxO state.  This is deliberately independent of {@code pendingSubmit}:
      * followers co-sign but never submit, while status, evidence, snapshots
-     * and L1_ANCHORED effects all consume the same local durable frontier.
+     * and L1_ANCHORED effects all consume the same local durable frontier
+     * (effects only its stability-deep part, see
+     * {@link AnchorService#stableAnchoredHeight}).
      *
      * <p>The observed output is accepted only from an atomic UTxO read whose
      * committed (slot, block-hash) exactly equals this node's canonical L1
