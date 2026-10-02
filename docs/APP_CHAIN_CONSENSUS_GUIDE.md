@@ -176,9 +176,10 @@ Any member holding the round aggregates PREPARE votes. At `threshold`, it
 persists and broadcasts a `PreparedQC`; members then sign COMMIT. At a COMMIT
 quorum, the holder assembles `FinalityCert`, commits, and broadcasts `cert`.
 
-Cert verification never trusts the sender: scheme must be Ed25519, each
-signer must be a member at that height, duplicates are ignored, every
-signature is verified over the commit-domain digest, and the count must reach the
+Cert verification never trusts the sender: the scheme must be Ed25519, and a
+certificate is rejected as a whole if any signer is not a member at that
+height, any signer appears twice, or any signature fails over the
+commit-domain digest. The count of distinct valid signers must reach the
 threshold at that height.
 
 A block is **APP_FINAL** once committed with a threshold cert — via own
@@ -260,6 +261,33 @@ so blocks from before a rotation verify against the membership that was
 current then. Governance commands ride reserved `~governance/*` topics
 (which bypass state-machine admission) and their effects persist atomically
 with the block that finalizes them.
+
+Every epoch must be able to certify blocks. Each block's consensus context
+pins `ConsensusQuorum(n, t, f)`, where `f` is
+`consensus.max-byzantine-members` (default 0). It requires `2t − n > f` (any
+two quorums share an honest member) and `t ≤ n − f` (a quorum survives `f`
+silent members). A governed add, remove or set-threshold whose resulting
+`t`-of-`n` breaks either rule is **void** at activation on every member: it is
+logged and no epoch is appended, exactly like an out-of-range threshold. In
+governed mode the admin endpoints (`admin/members/add|remove`,
+`admin/threshold`) refuse such a change before submitting the command, with
+`400 {"code": "MEMBERSHIP_QUORUM_INVALID", "error": …}`. Static mode applies
+admin changes locally at the next height without this check. Order static
+steps so that every intermediate epoch is valid: while an invalid epoch is
+current, no block can be proposed and the node cannot restart.
+
+An add keeps the current threshold, so with `f = 0` a 2-of-3 chain cannot add
+a fourth member directly (2-of-4 fails `2t − n > 0`). Grow it in two governed
+steps:
+
+1. Set the threshold to 3 (3-of-3). Wait until that epoch is active: status
+   `membershipActiveThreshold` reads 3.
+2. Add the member. All three members must now approve; the result is 3-of-4.
+
+Activation evaluates the epoch in effect at the activating height, so a
+change approved before an earlier one takes effect is computed without it.
+That is why step 2 waits. To shrink, run the steps the other way: lower the
+threshold first when a removal would leave `t > n − f`.
 
 ## 7. State, the MPF trie, and proofs
 
