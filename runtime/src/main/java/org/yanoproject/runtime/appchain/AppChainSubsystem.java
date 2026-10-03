@@ -5430,7 +5430,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return;
         }
         eventSubscriptions.addAll(acquireL1Subscriptions(eventBus, event -> delivery.wake(),
-                event -> delivery.wake()));
+                event -> delivery.wakeForRollback()));
     }
 
     /** Delivery status (app-layer ADR-038, D10): cursor, intent, phase, lag and whether the fence is open. */

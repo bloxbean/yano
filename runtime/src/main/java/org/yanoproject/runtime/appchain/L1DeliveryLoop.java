@@ -100,6 +100,7 @@ final class L1DeliveryLoop implements AutoCloseable {
     private volatile Consumer<Runnable> passRunner = Runnable::run;
     private volatile ScheduledExecutorService executor;
     private volatile boolean backingOff;
+    private volatile boolean bypassBackoffOnce;
     private volatile long retryNotBeforeNanos;
     private long retryDelayMillis;
 
@@ -128,7 +129,16 @@ final class L1DeliveryLoop implements AutoCloseable {
         loopExecutor.scheduleWithFixedDelay(this::wake, 0, POLL_MILLIS, TimeUnit.MILLISECONDS);
     }
 
-    /** Coalesced wake-up from a node event; safe on the publishing thread. */
+    /**
+     * Coalesced wake-up from a node rollback event: it may have killed the intent being retried, so this wake skips
+     * a retry backoff once and the rollback is derived promptly (D6).
+     */
+    void wakeForRollback() {
+        bypassBackoffOnce = true;
+        wake();
+    }
+
+    /** Coalesced wake-up from a node event or the poll; safe on the publishing thread. Respects a retry backoff. */
     void wake() {
         ScheduledExecutorService loopExecutor = executor;
         if (loopExecutor != null && wakeQueued.compareAndSet(false, true)) {
@@ -152,7 +162,7 @@ final class L1DeliveryLoop implements AutoCloseable {
             return false;
         }
         rebaselineRequested.set(true);
-        backingOff = false;
+        bypassBackoffOnce = true;
         wake();
         return true;
     }
@@ -259,9 +269,13 @@ final class L1DeliveryLoop implements AutoCloseable {
     // The loop (ADR §7)
     // ------------------------------------------------------------------
 
-    private void runPass() {
+    /** One scheduled pass: the retry backoff, the generation lease and failure containment around {@link #pass}. */
+    // Package-private so tests can drive the scheduled path, backoff included.
+    void runPass() {
         wakeQueued.set(false);
-        if (backingOff && System.nanoTime() - retryNotBeforeNanos < 0) {
+        boolean bypassBackoff = bypassBackoffOnce;
+        bypassBackoffOnce = false;
+        if (!bypassBackoff && backingOff && System.nanoTime() - retryNotBeforeNanos < 0) {
             return;
         }
         try {

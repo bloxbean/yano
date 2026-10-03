@@ -1306,8 +1306,8 @@ the code follows this section:
 2. **D2, unfenced readers.** The rotating sequencer's slot clock, anchor TTL
    hints and the point script anchors match against the UTxO store read the
    node's newest applied L1 block from chain state, not the delivered window.
-   A depth-0 chain runs no loop, and script anchors must match the UTxO
-   store's tip. None of these is a consensus input. ADR 008.2 is amended.
+   A chain without a loop has no window, and script anchors must match the
+   UTxO store's tip. None of these is a consensus input. ADR 008.2 is amended.
 3. **D3, follower script anchors.** A follower records a confirmation only at
    or below the healthy delivered cursor, so the loop's rollback, which starts
    from recorded points, always covers it.
@@ -1327,15 +1327,24 @@ the code follows this section:
 6. **D8, upgrade detection.** Any app block, anchor confirmation, or entry in
    the epoch-observations column family (journal records, cursors and
    markers, spool jobs) counts as L1-derived state. A new chain with observers
-   therefore takes one reconciliation pass, which only records its baseline.
+   may therefore take one reconciliation pass, which only records its
+   baseline.
 7. **D4a, F2.** The metadata-mode pending anchor is durable
    (`anchor_pending_v1`), so a fact-write failure followed by a crash still
    records the confirmation exactly once. Script mode recovers from the thread
    UTxO as before.
-8. **D7a.** A chain that runs no loop releases its body-retention
-   registration, so an L1-less chain never pins pruning.
+8. **D7a and §8, which chains run a loop.** A loop runs for every chain that
+   consumes L1, which includes the script-anchor verifier every member runs
+   once the node wires L1 transaction access, so on a node every chain runs
+   one, depth-0 chains included (a follower must still reset a rolled-back
+   script identity). A chain that runs no loop releases its body-retention
+   registration. One operational consequence: a loop stopped in a terminal
+   state (for example `L1_BODY_UNAVAILABLE` after a chain-state restore) holds
+   node-wide body pruning at its cursor until an operator re-baselines it.
 9. **D4 retries.** Bounded exponential backoff (1 s doubling to 30 s), reset by
-   any success; an operator re-baseline bypasses it. The periodic poll only
+   any success; a node rollback event and an operator re-baseline skip it
+   once, so a fork that kills the retried block is handled at once. The
+   periodic poll only
    wakes the loop, so a pass that escapes with a process-fatal error cannot
    cancel it (I6).
 10. **Start-up check.** An L1 chain reader, not an event bus, is required when

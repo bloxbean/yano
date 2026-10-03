@@ -39,8 +39,6 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private static final int RECONCILIATION_BOUNDARIES = 4_096;
     private static final int MINIMUM_RETENTION_EPOCHS = 2;
     private static final String DEEP_ROLLBACK = "DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION";
-    /** How long an L1 phase waits for the coordinator's current cycle before reporting a retry. */
-    private static final long PHASE_WAIT_MILLIS = 2_000;
 
     private final List<L1EpochObserver> observers;
     private final L1EpochStateProvider stateProvider;
@@ -208,12 +206,11 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
 
     /**
      * Rollback phase (app-layer ADR-038, D4a): the spool is rolled back between the coordinator's own cycles and
-     * before the phase reports durable. A rollback below a finalized epoch attestation is terminal.
+     * before the phase reports durable. It waits for a cycle in progress; delivery cannot pass the rollback anyway,
+     * and closing the coordinator interrupts the cycle. A rollback below a finalized epoch attestation is terminal.
      */
     L1PhaseResult rollback(long rollbackToSlot) {
-        if (!lockCycle()) {
-            return L1PhaseResult.retryable("L1_EPOCH_OBSERVATION_BUSY");
-        }
+        cycle.lock();
         try {
             pendingBoundaries.entrySet().removeIf(
                     entry -> entry.getValue().boundarySlot() > rollbackToSlot);
@@ -240,9 +237,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
      * decision until {@link #reloadAfterReconciliation()}, so nothing is built on a job the commit removes.
      */
     L1ObservationJournal.ReconcileDecision reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
-        if (!lockCycle()) {
-            throw new IllegalStateException("L1_EPOCH_OBSERVATION_BUSY");
-        }
+        cycle.lock();
         try {
             l1Reconciling = true;
             return spool.reconcile(canonicalAtSlot);
@@ -268,14 +263,6 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         wake();
     }
 
-    private boolean lockCycle() {
-        try {
-            return cycle.tryLock(PHASE_WAIT_MILLIS, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
-    }
 
     void onFinalized(L1Observation observation) {
         if (observation.anchor() instanceof L1Observation.EpochAnchor) {

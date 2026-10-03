@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -236,6 +237,27 @@ class AppChainL1DeliveryTest {
         }
     }
 
+    /** A node rollback event skips the retry backoff, so a fork that kills the retried block is handled at once. */
+    @Test
+    void rollbackEventSkipsTheRetryBackoff() throws Exception {
+        Controls controls = new Controls();
+        try (StartedHarness harness = startHarness("rollback-skips-backoff", controls)) {
+            long base = harness.l1.tipNumber();
+            controls.failAgainOnRetry.set(true);
+            controls.failure.set(new IllegalStateException("observer down"));
+            harness.block(50);
+            // Attempts at about 0 s, 1 s and 3 s; the next one waits until about 7 s.
+            Thread.sleep(4_000);
+            controls.failure.set(null);
+
+            long forkedAt = System.nanoTime();
+            harness.fork(base, 55);
+            awaitDelivered(harness, harness.l1.tipNumber());
+            assertThat(System.nanoTime() - forkedAt).as("handled before the backoff deadline")
+                    .isLessThan(TimeUnit.SECONDS.toNanos(2));
+        }
+    }
+
     @Test
     void lostEventsStillDeliverEveryBlockOnThePoll() throws Exception {
         Controls controls = new Controls();
@@ -361,6 +383,24 @@ class AppChainL1DeliveryTest {
     private static Map<String, Object> journalStates(AppChainSubsystem subsystem) {
         Map<?, ?> observers = (Map<?, ?>) subsystem.status().get("observers");
         return (Map<String, Object>) ((Map<?, ?>) observers.get("journal")).get("states");
+    }
+
+    /** ADR-038 §15 item 4: bodies stripped by app-block retention do not leave an upgrade without evidence. */
+    @Test
+    void upgradeReconcilesAChainWhosePrunedBodiesHeldObservations() throws Exception {
+        try (StartedHarness harness = startHarness("upgrade-pruned", new Controls())) {
+            harness.block(50);
+            harness.block(60);
+            awaitCondition(() -> observationCommitted(harness.subsystem, 50));
+            long tip = harness.subsystem.tipHeight();
+
+            harness.subsystem.stop();
+            dropDeliveryRecordAfterDrain(harness, "upgrade-pruned",
+                    ledger -> assertThat(ledger.pruneBodiesBelow(tip)).isPositive());
+            startAfterDrain(harness.subsystem);
+
+            awaitReconciled(harness);
+        }
     }
 
     /** ADR-038 F6: retention survives a stop, so the pruner cannot remove a body the chain has not delivered. */
@@ -503,6 +543,11 @@ class AppChainL1DeliveryTest {
 
     /** Simulates a ledger written before ADR-038: its L1-derived state is there, the delivery record is not. */
     private void dropDeliveryRecordAfterDrain(StartedHarness harness, String testId) throws InterruptedException {
+        dropDeliveryRecordAfterDrain(harness, testId, ledger -> { });
+    }
+
+    private void dropDeliveryRecordAfterDrain(StartedHarness harness, String testId,
+                                              Consumer<AppLedgerStore> alsoWhileStopped) throws InterruptedException {
         String path = tempDir.resolve(testId) + "/l1-delivery-" + testId;
         var identity = harness.subsystem.stateCommitmentIdentity().orElseThrow();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -510,6 +555,7 @@ class AppChainL1DeliveryTest {
             try (AppLedgerStore ledger = new AppLedgerStore(path, mock(Logger.class), identity)) {
                 assertThat(ledger.metaBytes(L1DeliveryRecord.META_KEY)).isNotNull();
                 ledger.metaDeleteSync(L1DeliveryRecord.META_KEY);
+                alsoWhileStopped.accept(ledger);
                 return;
             } catch (RuntimeException stillOpenByTheDrainingGeneration) {
                 if (System.nanoTime() > deadline) {

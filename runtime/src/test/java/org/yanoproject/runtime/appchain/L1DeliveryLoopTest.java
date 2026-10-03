@@ -212,6 +212,31 @@ class L1DeliveryLoopTest {
         assertThat(host.applied).containsExactly(l1.point(5), l1.point(6));
     }
 
+    /** D4: a failing intent backs off; a rollback wake skips the backoff once, and a success resets it. */
+    @Test
+    void retriesBackOffAndARollbackWakeSkipsTheBackoff() {
+        L1DeliveryLoop loop = startedAtBlock4();
+        l1.append(60);
+        host.nextApply.add(L1PhaseResult.retryable("STORAGE"));
+        host.nextApply.add(L1PhaseResult.retryable("STORAGE"));
+        loop.runPass();
+        loop.runPass();
+        assertThat(host.attempts).as("the second pass is inside the backoff").hasSize(1);
+
+        loop.wakeForRollback(); // not started: only the bypass flag is set
+        loop.runPass();
+        assertThat(host.attempts).hasSize(2);
+        loop.runPass();
+        assertThat(host.attempts).as("the bypass is used once").hasSize(2);
+
+        assertThat(loop.requestRebaseline()).isTrue();
+        loop.runPass(); // reconciles and re-baselines over block 5, which resets the backoff
+        l1.append(70);
+        loop.runPass();
+        assertThat(host.attempts).hasSize(3);
+        assertThat(host.applied).containsExactly(l1.point(6));
+    }
+
     @Test
     void forkBetweenThePhasesAndTheCommitIsRolledBack() {
         L1DeliveryLoop loop = startedAtBlock4();

@@ -751,7 +751,10 @@ final class AnchorService {
         }
     }
 
-    /** Sets the pending anchor in memory first (the tx is already submitted), then persists it. */
+    /**
+     * Sets the pending anchor in memory first (the tx is already submitted), then persists it. If the write fails,
+     * a restart forgets the anchor and resubmits the range after the timeout, as before ADR-038.
+     */
     private void setPending(PendingAnchor next) {
         pending = next;
         ledger.metaPutAll(Map.of(), Map.of(META_PENDING_ANCHOR, next != null ? next.encode() : new byte[0]));
