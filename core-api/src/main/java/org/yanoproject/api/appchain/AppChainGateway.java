@@ -409,6 +409,7 @@ public interface AppChainGateway {
      * stopped by missing block bodies or a divergence deeper than its recorded history; L1 input in the gap is
      * never observed. Refused while a terminal quarantine is persisted.
      * @return true if the re-baseline was accepted
+     * @throws UnsupportedOperationException if the chain runs no L1 delivery
      */
     default boolean rebaselineL1Delivery() {
         throw new UnsupportedOperationException("L1 delivery re-baseline is not supported");

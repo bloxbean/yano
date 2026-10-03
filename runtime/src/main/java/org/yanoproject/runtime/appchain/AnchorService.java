@@ -26,6 +26,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -64,6 +65,8 @@ final class AnchorService {
     static final String META_ANCHOR_HISTORY = "anchor_confirmation_history_v1";
     /** Durable L1 fact awaiting local completion (ADR-038 D4a); empty means none. */
     private static final String META_OBSERVED_CONFIRMATION = "anchor_observed_confirmation_v1";
+    /** The submitted anchor awaiting L1 inclusion, so a restart still records it (ADR-038 D4a, F2); empty: none. */
+    private static final String META_PENDING_ANCHOR = "anchor_pending_v1";
 
     /** Linear fee parameters from the node's current protocol params (I1.5). */
     record FeeParams(long minFeeA, long minFeeB) {
@@ -131,6 +134,7 @@ final class AnchorService {
         }
         this.log = log;
         log.info("App-chain anchor wallet address: {}", anchorAddress.getAddress());
+        this.pending = loadPending();
     }
 
     void wireFees(Supplier<FeeParams> feeParams, Supplier<Long> currentSlot) {
@@ -199,24 +203,22 @@ final class AnchorService {
     }
 
     private boolean forceAnchorLocked() {
-        synchronized (anchorLock) {
-            try {
-                if (loadObservedConfirmation() != null || pending != null || submissionInProgress) {
-                    return false;
-                }
-                long tip = tipHeightSupplier.get();
-                long lastAnchored = lastAnchoredHeight();
-                if (tip <= lastAnchored) {
-                    return false;
-                }
-                logInfoSafely("Force-anchor requested: anchoring app blocks {}..{}",
-                        lastAnchored + 1, tip);
-                submitAnchor(lastAnchored + 1, tip);
-                return pending != null; // submitAnchor sets pending on success
-            } catch (Throwable failure) {
-                recordFailure("force-anchor", failure);
+        try {
+            if (loadObservedConfirmation() != null || pending != null || submissionInProgress) {
                 return false;
             }
+            long tip = tipHeightSupplier.get();
+            long lastAnchored = lastAnchoredHeight();
+            if (tip <= lastAnchored) {
+                return false;
+            }
+            logInfoSafely("Force-anchor requested: anchoring app blocks {}..{}",
+                    lastAnchored + 1, tip);
+            submitAnchor(lastAnchored + 1, tip);
+            return pending != null; // submitAnchor sets pending on success
+        } catch (Throwable failure) {
+            recordFailure("force-anchor", failure);
+            return false;
         }
     }
 
@@ -235,42 +237,40 @@ final class AnchorService {
     }
 
     private void tickLocked() {
-        synchronized (anchorLock) {
-            try {
-                // An observed fact awaiting completion means the tx is already on L1: never resubmit it.
-                if (loadObservedConfirmation() != null || submissionInProgress) {
-                    return;
-                }
-                PendingAnchor current = pending;
-                if (current != null) {
-                    if (System.currentTimeMillis() - current.submittedAt > RESUBMIT_AFTER_MS) {
-                        log.warn("Anchor tx {} not observed on L1 within {}ms — resubmitting",
-                                current.txHash, RESUBMIT_AFTER_MS);
-                        pending = null;
-                        submitAnchor(current.fromHeight, current.toHeight);
-                    }
-                    return;
-                }
-
-                long tip = tipHeightSupplier.get();
-                long lastAnchored = lastAnchoredHeight();
-                if (tip <= lastAnchored) {
-                    return;
-                }
-                boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
-                boolean dueByTime = lastAnchorAttemptAt > 0
-                        ? System.currentTimeMillis() - lastAnchorAttemptAt
-                                >= anchorConfig.maxIntervalMinutes() * 60_000
-                        : true; // first anchor: fire as soon as there is anything to anchor
-                if (dueByCount || dueByTime) {
-                    submitAnchor(lastAnchored + 1, tip);
-                }
-            } catch (Throwable failure) {
-                // A recoverable Error from a callback must not cancel every later
-                // ScheduledExecutor invocation. Only process-fatal failures leave
-                // the periodic boundary unchanged.
-                recordFailure("tick", failure);
+        try {
+            // An observed fact awaiting completion means the tx is already on L1: never resubmit it.
+            if (loadObservedConfirmation() != null || submissionInProgress) {
+                return;
             }
+            PendingAnchor current = pending;
+            if (current != null) {
+                if (System.currentTimeMillis() - current.submittedAt > RESUBMIT_AFTER_MS) {
+                    log.warn("Anchor tx {} not observed on L1 within {}ms — resubmitting",
+                            current.txHash, RESUBMIT_AFTER_MS);
+                    setPending(null);
+                    submitAnchor(current.fromHeight, current.toHeight);
+                }
+                return;
+            }
+
+            long tip = tipHeightSupplier.get();
+            long lastAnchored = lastAnchoredHeight();
+            if (tip <= lastAnchored) {
+                return;
+            }
+            boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
+            boolean dueByTime = lastAnchorAttemptAt > 0
+                    ? System.currentTimeMillis() - lastAnchorAttemptAt
+                            >= anchorConfig.maxIntervalMinutes() * 60_000
+                    : true; // first anchor: fire as soon as there is anything to anchor
+            if (dueByCount || dueByTime) {
+                submitAnchor(lastAnchored + 1, tip);
+            }
+        } catch (Throwable failure) {
+            // A recoverable Error from a callback must not cancel every later
+            // ScheduledExecutor invocation. Only process-fatal failures leave
+            // the periodic boundary unchanged.
+            recordFailure("tick", failure);
         }
     }
 
@@ -288,7 +288,7 @@ final class AnchorService {
             Transaction tx = buildAnchorTx(fromHeight, toHeight, blockHash, tipBlock.stateRoot());
             byte[] cbor = tx.serialize();
             String txHash = txSubmitter.apply(cbor);
-            pending = new PendingAnchor(fromHeight, toHeight, txHash, System.currentTimeMillis());
+            setPending(new PendingAnchor(fromHeight, toHeight, txHash, System.currentTimeMillis()));
             lastAnchorAttemptAt = System.currentTimeMillis();
             lastError = null;
             log.info("Anchor tx submitted: {} (app blocks {}..{}, stateRoot={})",
@@ -463,10 +463,10 @@ final class AnchorService {
             }
             Confirmation confirmation = new Confirmation(observed.fromHeight(), observed.toHeight(),
                     observed.txHash(), observed.l1Slot(), anchoredBlockHash, observed.l1BlockHash());
-            persistConfirmation(confirmation, historyWith(confirmation));
-
             PendingAnchor current = pending;
-            if (current != null && current.txHash.equals(observed.txHash())) {
+            boolean completesPending = current != null && current.txHash.equals(observed.txHash());
+            persistConfirmation(confirmation, historyWith(confirmation), completesPending);
+            if (completesPending) {
                 pending = null;
             }
             anchoredCount++;
@@ -500,8 +500,12 @@ final class AnchorService {
         return encoded == null || encoded.length == 0 ? null : ObservedConfirmation.decode(encoded);
     }
 
-    private void persistConfirmation(Confirmation confirmation, List<Confirmation> history) {
+    private void persistConfirmation(Confirmation confirmation, List<Confirmation> history,
+                                     boolean completesPending) {
         Map<String, byte[]> byteValues = new LinkedHashMap<>();
+        if (completesPending) {
+            byteValues.put(META_PENDING_ANCHOR, new byte[0]);
+        }
         byteValues.put(META_ANCHOR_BLOCK_HASH, confirmation.blockHash());
         byteValues.put(META_ANCHOR_TX,
                 confirmation.txHash().getBytes(StandardCharsets.UTF_8));
@@ -537,7 +541,7 @@ final class AnchorService {
                     // Any later in-flight range was derived from the now
                     // invalid confirmation frontier. Drop it so the next tick
                     // covers the full surviving-height+1..tip range.
-                    pending = null;
+                    setPending(null);
                     changed = true;
                 }
                 return changed ? L1PhaseResult.DURABLE : L1PhaseResult.NO_OP;
@@ -747,7 +751,51 @@ final class AnchorService {
         }
     }
 
+    /** Sets the pending anchor in memory first (the tx is already submitted), then persists it. */
+    private void setPending(PendingAnchor next) {
+        pending = next;
+        ledger.metaPutAll(Map.of(), Map.of(META_PENDING_ANCHOR, next != null ? next.encode() : new byte[0]));
+    }
+
+    private PendingAnchor loadPending() {
+        byte[] encoded = ledger.metaBytes(META_PENDING_ANCHOR);
+        if (encoded == null || encoded.length == 0) {
+            return null;
+        }
+        try {
+            return PendingAnchor.decode(encoded);
+        } catch (IllegalArgumentException unreadable) {
+            recordFailure("pending anchor", unreadable);
+            return null;
+        }
+    }
+
+    /** A restored pending anchor's resubmission timeout restarts from the load time. */
     private record PendingAnchor(long fromHeight, long toHeight, String txHash, long submittedAt) {
+        private static final int MAGIC = 0x59415031; // YAP1
+
+        byte[] encode() {
+            byte[] tx = txHash.getBytes(StandardCharsets.UTF_8);
+            return ByteBuffer.allocate(Integer.BYTES + 2 * Long.BYTES + Integer.BYTES + tx.length)
+                    .putInt(MAGIC).putLong(fromHeight).putLong(toHeight).putInt(tx.length).put(tx).array();
+        }
+
+        static PendingAnchor decode(byte[] encoded) {
+            ByteBuffer in = ByteBuffer.wrap(encoded);
+            if (encoded.length < Integer.BYTES + 2 * Long.BYTES + Integer.BYTES || in.getInt() != MAGIC) {
+                throw new IllegalArgumentException("Invalid pending anchor");
+            }
+            long from = in.getLong();
+            long to = in.getLong();
+            int txLength = in.getInt();
+            if (from < 0 || to < from || txLength <= 0 || txLength > ConfirmationHistory.MAX_TX_HASH_BYTES
+                    || txLength != in.remaining()) {
+                throw new IllegalArgumentException("Invalid pending anchor");
+            }
+            byte[] tx = new byte[txLength];
+            in.get(tx);
+            return new PendingAnchor(from, to, new String(tx, StandardCharsets.UTF_8), System.currentTimeMillis());
+        }
     }
 
     /**

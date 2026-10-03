@@ -29,6 +29,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
@@ -36,6 +38,9 @@ import java.util.function.Function;
 final class L1EpochObservationCoordinator implements AutoCloseable {
     private static final int RECONCILIATION_BOUNDARIES = 4_096;
     private static final int MINIMUM_RETENTION_EPOCHS = 2;
+    private static final String DEEP_ROLLBACK = "DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION";
+    /** How long an L1 phase waits for the coordinator's current cycle before reporting a retry. */
+    private static final long PHASE_WAIT_MILLIS = 2_000;
 
     private final List<L1EpochObserver> observers;
     private final L1EpochStateProvider stateProvider;
@@ -54,7 +59,10 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong lastObservedEpoch = new AtomicLong(-1);
     private final AtomicLong latestAppliedBlockNumber = new AtomicLong(-1);
-    private final AtomicLong pendingRollbackSlot = new AtomicLong(Long.MAX_VALUE);
+    /** Serializes the coordinator's cycles with the L1 delivery loop's rollback and reconciliation (ADR-038). */
+    private final ReentrantLock cycle = new ReentrantLock(true);
+    /** Generation pauses from an L1 reconciliation decision until its commit is reloaded (ADR-038, D8b). */
+    private volatile boolean l1Reconciling;
     private final Set<Long> resumedBoundaryEpochs = ConcurrentHashMap.newKeySet();
     private final ConcurrentSkipListMap<Long, L1EpochBoundary> pendingBoundaries =
             new ConcurrentSkipListMap<>();
@@ -161,11 +169,15 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     void start() {
         spool.reconcileFinalizedBlocks();
         spool.releaseOffers();
+        resumeGeneratingBoundaries();
+        wake();
+    }
+
+    private void resumeGeneratingBoundaries() {
         for (L1EpochBoundary boundary : spool.generatingBoundaries()) {
             resumedBoundaryEpochs.add(boundary.newEpoch());
             pendingBoundaries.putIfAbsent(boundary.newEpoch(), boundary);
         }
-        wake();
     }
 
     /** Publisher-thread path: arithmetic, atomics, and one coalesced wake-up only. */
@@ -194,15 +206,75 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         wake();
     }
 
-    /** Publisher-thread rollback path: record intent and wake the coordinator. */
-    void onRollback(long rollbackToSlot) {
-        pendingRollbackSlot.accumulateAndGet(rollbackToSlot, Math::min);
-        pendingBoundaries.entrySet().removeIf(
-                entry -> entry.getValue().boundarySlot() > rollbackToSlot);
-        long rollbackEpoch = stateProvider.epochAtSlot(rollbackToSlot);
-        lastObservedEpoch.set(rollbackEpoch >= firstObservableEpoch ? rollbackEpoch : -1);
-        latestAppliedBlockNumber.set(-1);
+    /**
+     * Rollback phase (app-layer ADR-038, D4a): the spool is rolled back between the coordinator's own cycles and
+     * before the phase reports durable. A rollback below a finalized epoch attestation is terminal.
+     */
+    L1PhaseResult rollback(long rollbackToSlot) {
+        if (!lockCycle()) {
+            return L1PhaseResult.retryable("L1_EPOCH_OBSERVATION_BUSY");
+        }
+        try {
+            pendingBoundaries.entrySet().removeIf(
+                    entry -> entry.getValue().boundarySlot() > rollbackToSlot);
+            long rollbackEpoch = stateProvider.epochAtSlot(rollbackToSlot);
+            lastObservedEpoch.set(rollbackEpoch >= firstObservableEpoch ? rollbackEpoch : -1);
+            latestAppliedBlockNumber.set(-1);
+            spool.rollback(rollbackToSlot);
+            return L1PhaseResult.DURABLE;
+        } catch (IllegalStateException failure) {
+            if (!DEEP_ROLLBACK.equals(failure.getMessage())) {
+                throw failure;
+            }
+            haltReason = DEEP_ROLLBACK;
+            haltHandler.accept(haltReason);
+            return L1PhaseResult.quarantined(DEEP_ROLLBACK);
+        } finally {
+            cycle.unlock();
+            wake();
+        }
+    }
+
+    /**
+     * The spool's part of an L1 evidence reconciliation (app-layer ADR-038, D8b). Generation pauses from this
+     * decision until {@link #reloadAfterReconciliation()}, so nothing is built on a job the commit removes.
+     */
+    L1ObservationJournal.ReconcileDecision reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        if (!lockCycle()) {
+            throw new IllegalStateException("L1_EPOCH_OBSERVATION_BUSY");
+        }
+        try {
+            l1Reconciling = true;
+            return spool.reconcile(canonicalAtSlot);
+        } finally {
+            cycle.unlock();
+        }
+    }
+
+    /** After a reconciliation commit: forget boundaries derived from removed jobs and resume generation. */
+    void reloadAfterReconciliation() {
+        cycle.lock();
+        try {
+            spool.reloaded();
+            pendingBoundaries.clear();
+            resumedBoundaryEpochs.clear();
+            resumeGeneratingBoundaries();
+            lastObservedEpoch.set(-1);
+            latestAppliedBlockNumber.set(-1);
+            l1Reconciling = false;
+        } finally {
+            cycle.unlock();
+        }
         wake();
+    }
+
+    private boolean lockCycle() {
+        try {
+            return cycle.tryLock(PHASE_WAIT_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     void onFinalized(L1Observation observation) {
@@ -297,6 +369,15 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     }
 
     private void reconcile() {
+        cycle.lock();
+        try {
+            reconcileLocked();
+        } finally {
+            cycle.unlock();
+        }
+    }
+
+    private void reconcileLocked() {
         if (haltReason != null) {
             throw new IllegalStateException(haltReason);
         }
@@ -304,20 +385,10 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             unhealthyReason = "OBSERVATION_UNENCODABLE";
             return;
         }
-        spool.reconcileFinalizedBlocks();
-        long rollback = pendingRollbackSlot.getAndSet(Long.MAX_VALUE);
-        if (rollback != Long.MAX_VALUE) {
-            try {
-                spool.rollback(rollback);
-            } catch (IllegalStateException failure) {
-                if ("DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION"
-                        .equals(failure.getMessage())) {
-                    haltReason = failure.getMessage();
-                    haltHandler.accept(haltReason);
-                }
-                throw failure;
-            }
+        if (l1Reconciling) {
+            return;
         }
+        spool.reconcileFinalizedBlocks();
         for (L1EpochBoundary boundary : stateProvider.completedBoundaries(
                 -1, RECONCILIATION_BOUNDARIES)) {
             pendingBoundaries.putIfAbsent(boundary.newEpoch(), boundary);

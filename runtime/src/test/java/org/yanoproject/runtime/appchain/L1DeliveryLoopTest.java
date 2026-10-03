@@ -149,6 +149,69 @@ class L1DeliveryLoopTest {
         assertThat(host.applied.getFirst().slot()).isEqualTo(55);
     }
 
+    /** A fork that lands while the next reference is read never puts a new-branch block on the dead cursor (I2). */
+    @Test
+    void forkDuringTheNextReferenceReadIsRolledBackNotStackedOnTheDeadCursor() {
+        L1DeliveryLoop loop = startedAtBlock4();
+        l1.append(60);
+        loop.pass();
+        L1Point dead = l1.point(5);
+        l1.append(70);
+        boolean[] forked = new boolean[1];
+        l1.beforeReferenceRead = number -> {
+            if (number == 6 && !forked[0]) {
+                forked[0] = true;
+                l1.fork(4, 55, 65);
+            }
+        };
+        loop.pass();
+        assertThat(host.applied).as("block 6' is never applied on dead block 5").containsExactly(dead);
+
+        loop.pass();
+        assertThat(host.rollbacks).containsExactly(l1.point(4));
+        assertThat(host.applied).containsExactly(dead, l1.point(5), l1.point(6));
+        assertThat(loop.snapshot().record().window()).containsExactly(l1.point(5), l1.point(6));
+    }
+
+    /** D9a: an ordinary APPLY in progress keeps the fence open on the committed window; a retry closes it. */
+    @Test
+    void fenceStaysOpenDuringAnOrdinaryApplyAndClosesOnRetry() {
+        L1DeliveryLoop loop = startedAtBlock4();
+        l1.append(60, 70);
+        loop.pass();
+        l1.append(80);
+        List<Object> seenDuringApply = new ArrayList<>();
+        host.duringApply = once(event -> {
+            AppChainEngine.L1Ref stable = loop.stablePoint();
+            seenDuringApply.add(loop.deliveryHealthy());
+            seenDuringApply.add(stable != null ? stable.slot() : null);
+        });
+        loop.pass();
+        assertThat(seenDuringApply).containsExactly(true, 60L);
+        assertThat(loop.healthyCursorSlot()).isEqualTo(80);
+
+        l1.append(90);
+        host.nextApply.add(L1PhaseResult.retryable("STORAGE"));
+        loop.pass();
+        assertThat(loop.deliveryHealthy()).isFalse();
+        assertThat(loop.stablePoint()).isNull();
+        assertThat(loop.healthyCursorSlot()).as("no L1 fact may be recorded outside the loop").isEqualTo(-1);
+    }
+
+    /** I10: delivery stops at the body tip even when canonical references exist above it. */
+    @Test
+    void deliveryStopsAtTheBodyTip() {
+        L1DeliveryLoop loop = startedAtBlock4();
+        l1.append(60, 70);
+        l1.bodyTipBlock = 5L;
+        loop.pass();
+        assertThat(host.applied).containsExactly(l1.point(5));
+
+        l1.bodyTipBlock = null;
+        loop.pass();
+        assertThat(host.applied).containsExactly(l1.point(5), l1.point(6));
+    }
+
     @Test
     void forkBetweenThePhasesAndTheCommitIsRolledBack() {
         L1DeliveryLoop loop = startedAtBlock4();

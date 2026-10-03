@@ -76,6 +76,11 @@ record L1DeliveryRecord(List<L1Point> baseline, List<L1Point> window, Intent pen
         return new L1DeliveryRecord(baseline, window, pending, phase, failure);
     }
 
+    /** A terminal quarantine is persisted; a re-baseline refuses to run and never clears it (D8b rule 1). */
+    boolean quarantined() {
+        return terminal != null && L1DeliveryLoop.State.QUARANTINED.name().equals(terminal.state());
+    }
+
     /** Commits the pending {@code APPLY}: the point joins the window, and the oldest points beyond capacity drop. */
     L1DeliveryRecord committed(L1Point point, int capacity) {
         List<L1Point> next = new ArrayList<>(window);

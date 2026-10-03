@@ -2481,7 +2481,11 @@ final class AppLedgerStore implements AutoCloseable {
         metaPutAll(values, Map.of());
     }
 
-    /** Package-private deterministic failure seam for ADR-038 storage-failure tests; inert in production. */
+    /**
+     * Deterministic meta-write failure for the ADR-038 storage-failure tests, inert in production. Like
+     * {@link StateCommitFaultInjector}, it exists because this final store is shared by value and RocksDB offers no
+     * other way to fail one write on demand.
+     */
     private volatile Runnable metaWriteFault = () -> { };
 
     void injectMetaWriteFault(Runnable fault) {

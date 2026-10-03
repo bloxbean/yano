@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.LongConsumer;
 
 /**
  * A small L1 for delivery tests: real Conway blocks in an in-memory chain state, with forks of any depth, and hooks
@@ -32,8 +33,12 @@ final class L1TestChain {
     private final List<CanonicalBlockReference> blocks = new ArrayList<>();
     /** Runs at the start of every body read. */
     Runnable beforeBodyRead = () -> { };
+    /** Runs at the start of every canonical-reference read, with the block number asked for. */
+    LongConsumer beforeReferenceRead = number -> { };
     /** Bodies below this block number read as pruned. */
     long earliestRetained;
+    /** When set, the body tip the reader reports, as if later blocks had headers and index entries only. */
+    Long bodyTipBlock;
     boolean sequenceSupported = true;
 
     /** Appends one empty block per slot to the canonical chain. */
@@ -120,7 +125,11 @@ final class L1TestChain {
         return new ChainBlockReader() {
             @Override
             public ChainTip getLocalTip() {
-                return chain.getTip();
+                if (bodyTipBlock == null) {
+                    return chain.getTip();
+                }
+                CanonicalBlockReference tip = block(bodyTipBlock);
+                return new ChainTip(tip.slot(), tip.blockHash(), tip.blockNumber());
             }
 
             @Override
@@ -136,14 +145,13 @@ final class L1TestChain {
 
             @Override
             public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
+                beforeReferenceRead.accept(blockNumber);
                 return chain.getCanonicalBlockReference(blockNumber);
             }
 
             @Override
             public Optional<CanonicalBlockReference> getCanonicalBlockReferenceAtSlot(long slot) {
-                Long number = chain.getBlockNumberBySlot(slot);
-                return number == null ? Optional.empty()
-                        : chain.getCanonicalBlockReference(number).filter(reference -> reference.slot() == slot);
+                return chain.getCanonicalBlockReferenceAtSlot(slot);
             }
 
             @Override

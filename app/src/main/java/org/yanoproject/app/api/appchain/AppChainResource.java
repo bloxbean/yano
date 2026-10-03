@@ -1302,7 +1302,13 @@ public class AppChainResource {
         @POST
         @Path("admin/l1/rebaseline")
         public Response rebaselineL1Delivery() {
-            boolean accepted = gateway.rebaselineL1Delivery();
+            boolean accepted;
+            try {
+                accepted = gateway.rebaselineL1Delivery();
+            } catch (UnsupportedOperationException e) {
+                throw jsonError(Response.Status.BAD_REQUEST, e.getMessage());
+            }
+            // Refused: a terminal quarantine is persisted, or the chain is not running.
             return Response.status(accepted ? Response.Status.OK : Response.Status.CONFLICT)
                     .entity(Map.of("chainId", gateway.chainId(), "rebaselineAccepted", accepted)).build();
         }

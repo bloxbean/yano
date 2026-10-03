@@ -26,6 +26,7 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -139,6 +140,42 @@ class AppChainL1RefTest {
         assertThat(deferrals(nodes[1].subsystem())).isGreaterThanOrEqualTo(1L);
     }
 
+    /** ADR-038 D9a: a follower whose L1 delivery is unhealthy defers at the voting gate, then votes on recovery. */
+    @Test
+    void followerWithUnhealthyDelivery_defersAtTheVotingGateThenVotes() throws Exception {
+        Member[] nodes = startPair();
+        nodes[0].feedL1(1, 10);
+        nodes[1].feedL1(1, 10);
+        awaitTrue("B delivered its L1", () -> deliveryHealthy(nodes[1]));
+
+        AtomicBoolean diskFailing = new AtomicBoolean(true);
+        nodes[1].l1().beforeBodyRead = () -> {
+            if (diskFailing.get()) {
+                throw new IllegalStateException("disk unavailable");
+            }
+        };
+        nodes[1].feedL1(11, 11);
+        awaitTrue("B's delivery retries", () -> !deliveryHealthy(nodes[1]));
+        nodes[0].feedL1(11, 11);
+        nodes[0].subsystem().submit("t", "gated".getBytes(StandardCharsets.UTF_8));
+        Thread.sleep(3_000);
+        assertThat(nodes[1].subsystem().tipHeight()).isZero();
+        assertThat(deferrals(nodes[1].subsystem()))
+                .as("deferred by the voting gate, before the L1 reference check").isZero();
+
+        diskFailing.set(false);
+        awaitTrue("finalized on both once B's delivery recovers",
+                () -> nodes[0].subsystem().tipHeight() >= 1 && nodes[1].subsystem().tipHeight() >= 1);
+        // Deferred, not refused: B voted in the original round once healthy. Without the gate B would refuse the
+        // view-0 proposal outright, and only a view change after the round timeout could finalize it.
+        assertThat(nodes[1].subsystem().block(1).orElseThrow().view()).isZero();
+    }
+
+    private static boolean deliveryHealthy(Member member) {
+        return member.subsystem().status().get("l1Delivery") instanceof Map<?, ?> delivery
+                && Boolean.TRUE.equals(delivery.get("deliveryHealthy"));
+    }
+
     @Test
     void l1RefsConfiguredWithoutL1Chain_failsFast() {
         AppChainConfig config = builder("ff", pubHex(KEY_A), List.of()).build();
@@ -196,6 +233,7 @@ class AppChainL1RefTest {
                 .proposerKeyHex(proposerHex)
                 .threshold(2)
                 .blockIntervalMs(500)
+                .pluginSettings(Map.of("consensus.round-timeout-ms", "30000"))
                 .l1StabilityDepth(DEPTH)
                 .stateCommitmentIdentity(TestStateCommitments.MPF);
     }

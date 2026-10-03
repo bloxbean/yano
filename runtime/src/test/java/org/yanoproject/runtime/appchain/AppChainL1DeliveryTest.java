@@ -114,7 +114,7 @@ class AppChainL1DeliveryTest {
             assertThat(controls.failureThrown.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(anchorHeight(harness.subsystem)).as("the fatal pass committed nothing").isZero();
 
-            harness.wake();
+            // No event: the poll survives the escaped error and redelivers the block (I6).
             awaitDelivered(harness, harness.l1.tipNumber());
             assertThat(anchorHeight(harness.subsystem)).isEqualTo(1);
             assertThat(harness.anchoredEvents()).hasSize(1);
@@ -313,6 +313,56 @@ class AppChainL1DeliveryTest {
         }
     }
 
+    /** ADR-038 D8: a ledger whose only L1-derived state is journaled observations is still reconciled on upgrade. */
+    @Test
+    void upgradeReconcilesAJournalOnlyLedger() throws Exception {
+        String testId = "upgrade-journal-only";
+        L1TestChain l1 = new L1TestChain();
+        l1.append(10, 20);
+        Controls controls = new Controls();
+        AppChainConfig config = AppChainConfig.builder("l1-delivery-" + testId)
+                .signingKeyHex(SIGNING_KEY_HEX)
+                .memberKeysHex(Set.of(PUBLIC_KEY))
+                .threshold(1)
+                .blockIntervalMs(25)
+                .l1StabilityDepth(3)
+                .pluginSettings(Map.of(
+                        "sequencer.mode", MODE_ID,
+                        "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE,
+                        "observation.l1-network-genesis-id", "01".repeat(32)))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppChainSubsystem subsystem = new AppChainSubsystem(config, 42, new DirectEventBus(), null,
+                tempDir.resolve(testId).toString(), null, new ControlledRegistry(controls), mock(Logger.class));
+        subsystem.wireL1Chain(l1.reader(), null);
+        StartedHarness harness = new StartedHarness(subsystem, new DirectEventBus(), l1, null);
+        try {
+            subsystem.start();
+            awaitDelivered(harness, l1.tipNumber());
+            l1.append(50);
+            awaitDelivered(harness, l1.tipNumber());
+            assertThat(journalStates(subsystem)).containsEntry("SEEN_UNSTABLE", 1L);
+            assertThat(subsystem.tipHeight()).isZero();
+
+            subsystem.stop();
+            dropDeliveryRecordAfterDrain(harness, testId);
+            l1.fork(1, 55);
+            startAfterDrain(subsystem);
+            awaitReconciled(harness);
+
+            assertThat(journalStates(subsystem)).as("the dead-fork observation is invalidated")
+                    .containsEntry("SEEN_UNSTABLE", 0L);
+        } finally {
+            subsystem.close();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> journalStates(AppChainSubsystem subsystem) {
+        Map<?, ?> observers = (Map<?, ?>) subsystem.status().get("observers");
+        return (Map<String, Object>) ((Map<?, ?>) observers.get("journal")).get("states");
+    }
+
     /** ADR-038 F6: retention survives a stop, so the pruner cannot remove a body the chain has not delivered. */
     @Test
     void retentionHoldsTheNextUndeliveredBodyAcrossStopAndStart() throws Exception {
@@ -355,6 +405,41 @@ class AppChainL1DeliveryTest {
             assertThat(subsystem.status()).doesNotContainKey("l1Delivery");
             assertThat(subsystem.status().get("sequencer")).isInstanceOfSatisfying(Map.class,
                     sequencer -> assertThat(sequencer.get("currentWindow")).isEqualTo(2L));
+        } finally {
+            subsystem.close();
+        }
+    }
+
+    /** ADR-038 F8: a depth-0 chain's consensus reads no L1, so delivery retries do not stop it finalizing. */
+    @Test
+    void depthZeroChainKeepsFinalizingWhileDeliveryRetries() throws Exception {
+        L1TestChain l1 = new L1TestChain();
+        l1.append(10, 20);
+        AppChainConfig config = AppChainConfig.builder("l1-depth-zero")
+                .signingKeyHex(SIGNING_KEY_HEX)
+                .memberKeysHex(Set.of(PUBLIC_KEY))
+                .proposerKeyHex(PUBLIC_KEY)
+                .threshold(1)
+                .blockIntervalMs(25)
+                .anchor(new AppChainConfig.AnchorConfig(true, SIGNING_KEY_HEX, 1, 60, 7014))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppChainSubsystem subsystem = new AppChainSubsystem(config, 42, new DirectEventBus(), null,
+                tempDir.resolve("depth-zero").toString(), null, mock(Logger.class));
+        subsystem.wireL1(ignored -> ANCHOR_TX_HASH, () -> new FixedUtxoState(List.of(anchorUtxo())));
+        subsystem.wireL1Chain(l1.reader(), null);
+        try {
+            subsystem.start();
+            awaitCondition(() -> deliveryStatus(subsystem).containsKey("cursorBlock"));
+            l1.beforeBodyRead = () -> {
+                throw new IllegalStateException("disk unavailable");
+            };
+            l1.append(30);
+            awaitCondition(() -> "RETRYING_BLOCK".equals(deliveryStatus(subsystem).get("state")));
+
+            subsystem.submit("test", new byte[]{1});
+            awaitTip(subsystem, 1);
+            assertThat(deliveryStatus(subsystem)).containsEntry("deliveryHealthy", false);
         } finally {
             subsystem.close();
         }

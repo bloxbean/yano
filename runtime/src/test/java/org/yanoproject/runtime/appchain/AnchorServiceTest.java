@@ -410,8 +410,8 @@ class AnchorServiceTest {
         AnchorService restarted = service(List.of(utxo(0, 50_000_000)), true, 500);
         List<AnchorService.ConfirmedAnchor> notified = new ArrayList<>();
         restarted.setConfirmationListener(notified::add);
-        // The redelivered block no longer matches a pending anchor; the durable fact still completes.
-        assertThat(restarted.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.NO_OP);
+        // The pending anchor is durable too, so the redelivered block matches it and completes the fact once.
+        assertThat(restarted.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
         restarted.tick();
 
         assertThat(restarted.lastAnchoredHeight()).isEqualTo(3);
@@ -462,6 +462,29 @@ class AnchorServiceTest {
         ledger.injectMetaWriteFault(null);
         assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isEqualTo(3);
+    }
+
+    /** ADR-038 F2: the fact write fails, then the process crashes; after restart the block records it once. */
+    @Test
+    void factWriteFailureThenCrashRecordsTheAnchorOnceAfterRestart() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        assertThat(service.forceAnchorNow()).isTrue();
+        ledger.injectMetaWriteFault(() -> {
+            throw new IllegalStateException("disk unavailable");
+        });
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1")).kind())
+                .isEqualTo(L1PhaseResult.Kind.RETRYABLE);
+        ledger.injectMetaWriteFault(null);
+
+        AnchorService restarted = service(List.of(utxo(0, 50_000_000)), true, 500);
+        assertThat(restarted.status()).containsEntry("pendingTx", "txhash-1");
+        assertThat(restarted.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(restarted.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.NO_OP);
+
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(3);
+        assertThat(restarted.confirmationHistory()).hasSize(1);
+        assertThat(service(List.of(utxo(0, 50_000_000)), true, 500).status()).doesNotContainKey("pendingTx");
+        assertThat(submitted).hasSize(1);
     }
 
     @Test

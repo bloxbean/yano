@@ -195,7 +195,10 @@ final class ScriptAnchorService {
     private volatile BooleanSupplier completionGate = () -> true;
     /** Best-effort notification after each confirmation, from any path (ADR-038 D4a). */
     private volatile Consumer<AnchorService.ConfirmedAnchor> confirmationListener = confirmed -> { };
-    /** Canonical L1 block hash at a slot, or null when unknown; records follower inclusion points. */
+    /**
+     * Canonical L1 block hash at a slot, or null when unknown or not yet delivered (ADR-038 D3); records follower
+     * inclusion points.
+     */
     private volatile LongFunction<byte[]> canonicalHashAtSlot = slot -> null;
     private volatile long lastAnchorAttemptAt;
     private volatile String lastError;
@@ -408,85 +411,83 @@ final class ScriptAnchorService {
     }
 
     private AnchorService.ConfirmedAnchor tickLocked() {
-        synchronized (anchorLock) {
-            try {
-                if (!leader) {
-                    // Every member derives the durable anchor frontier from
-                    // its OWN authenticated L1 UTxO view. Followers never
-                    // enter any construction/submission path below.
-                    return reconcileObservedAnchor();
-                }
-                if (loadObservedBootstrap() != null) {
-                    completeObservedBootstrap();
-                    return null;
-                }
-                if (loadObservedSubmit() != null) {
-                    return completeObservedSubmit();
-                }
-                // Leader recovery/restart repair when there is no in-flight
-                // confirmation to complete. Pending observations stay the
-                // authoritative path so their retry/count semantics cannot
-                // be double-applied by reconciliation.
-                AnchorService.ConfirmedAnchor repaired = reconcileObservedAnchor();
-                if (repaired != null) {
-                    return repaired;
-                }
-                PendingBootstrap bootstrap = pendingBootstrap;
-                if (bootstrap != null
-                        && System.currentTimeMillis() - bootstrap.submittedAt() > RESUBMIT_AFTER_MS) {
-                    log.warn("Script-anchor bootstrap tx {} not observed on L1 within {}ms — clearing "
-                            + "(re-run bootstrap; the seed UTxO may have been spent)",
-                            bootstrap.txHash(), RESUBMIT_AFTER_MS);
-                    pendingBootstrap = null;
-                }
-                if (!bootstrapped())
-                    return null;
+        try {
+            if (!leader) {
+                // Every member derives the durable anchor frontier from
+                // its OWN authenticated L1 UTxO view. Followers never
+                // enter any construction/submission path below.
+                return reconcileObservedAnchor();
+            }
+            if (loadObservedBootstrap() != null) {
+                completeObservedBootstrap();
+                return null;
+            }
+            if (loadObservedSubmit() != null) {
+                return completeObservedSubmit();
+            }
+            // Leader recovery/restart repair when there is no in-flight
+            // confirmation to complete. Pending observations stay the
+            // authoritative path so their retry/count semantics cannot
+            // be double-applied by reconciliation.
+            AnchorService.ConfirmedAnchor repaired = reconcileObservedAnchor();
+            if (repaired != null) {
+                return repaired;
+            }
+            PendingBootstrap bootstrap = pendingBootstrap;
+            if (bootstrap != null
+                    && System.currentTimeMillis() - bootstrap.submittedAt() > RESUBMIT_AFTER_MS) {
+                log.warn("Script-anchor bootstrap tx {} not observed on L1 within {}ms — clearing "
+                        + "(re-run bootstrap; the seed UTxO may have been spent)",
+                        bootstrap.txHash(), RESUBMIT_AFTER_MS);
+                pendingBootstrap = null;
+            }
+            if (!bootstrapped())
+                return null;
 
-                PendingSubmit submit = pendingSubmit;
-                if (submit != null) {
-                    if (System.currentTimeMillis() - submit.submittedAt() > RESUBMIT_AFTER_MS) {
-                        log.warn("Script-anchor tx {} not observed on L1 within {}ms — restarting co-sign",
-                                submit.txHash(), RESUBMIT_AFTER_MS);
-                        pendingSubmit = null;
-                        startCosignRound(null);
-                    }
-                    return null;
-                }
-
-                PendingCosign cosign = pendingCosign;
-                if (cosign != null) {
-                    if (cosignComplete(cosign)) {
-                        assembleAndSubmit(cosign);
-                    } else if (System.currentTimeMillis() - cosign.startedAt() > COSIGN_ROUND_TIMEOUT_MS) {
-                        retryWithResponsiveSubset(cosign);
-                    } else {
-                        // Nudge: re-diffuse the same request for members that missed it
-                        diffuser.accept(TOPIC_SIGN, cosign.requestBody());
-                    }
-                    return null;
-                }
-
-                long tip = tipHeightSupplier.get();
-                long lastAnchored = lastAnchoredHeight();
-                if (tip <= lastAnchored)
-                    return null;
-                boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
-                boolean dueByTime = lastAnchorAttemptAt > 0
-                        ? System.currentTimeMillis() - lastAnchorAttemptAt
-                                >= anchorConfig.maxIntervalMinutes() * 60_000
-                        : true;
-                if (dueByCount || dueByTime) {
+            PendingSubmit submit = pendingSubmit;
+            if (submit != null) {
+                if (System.currentTimeMillis() - submit.submittedAt() > RESUBMIT_AFTER_MS) {
+                    log.warn("Script-anchor tx {} not observed on L1 within {}ms — restarting co-sign",
+                            submit.txHash(), RESUBMIT_AFTER_MS);
+                    pendingSubmit = null;
                     startCosignRound(null);
                 }
                 return null;
-            } catch (Throwable failure) {
-                // ScheduledExecutor suppresses all later invocations when a
-                // periodic task lets an Error escape. Isolate every
-                // recoverable plugin/transaction failure here; only errors
-                // after which the process is unsafe may terminate the task.
-                recordFailure("tick", failure);
+            }
+
+            PendingCosign cosign = pendingCosign;
+            if (cosign != null) {
+                if (cosignComplete(cosign)) {
+                    assembleAndSubmit(cosign);
+                } else if (System.currentTimeMillis() - cosign.startedAt() > COSIGN_ROUND_TIMEOUT_MS) {
+                    retryWithResponsiveSubset(cosign);
+                } else {
+                    // Nudge: re-diffuse the same request for members that missed it
+                    diffuser.accept(TOPIC_SIGN, cosign.requestBody());
+                }
                 return null;
             }
+
+            long tip = tipHeightSupplier.get();
+            long lastAnchored = lastAnchoredHeight();
+            if (tip <= lastAnchored)
+                return null;
+            boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
+            boolean dueByTime = lastAnchorAttemptAt > 0
+                    ? System.currentTimeMillis() - lastAnchorAttemptAt
+                            >= anchorConfig.maxIntervalMinutes() * 60_000
+                    : true;
+            if (dueByCount || dueByTime) {
+                startCosignRound(null);
+            }
+            return null;
+        } catch (Throwable failure) {
+            // ScheduledExecutor suppresses all later invocations when a
+            // periodic task lets an Error escape. Isolate every
+            // recoverable plugin/transaction failure here; only errors
+            // after which the process is unsafe may terminate the task.
+            recordFailure("tick", failure);
+            return null;
         }
     }
 
@@ -1384,12 +1385,12 @@ final class ScriptAnchorService {
                     return null;
                 }
 
-                // The confirmation records its L1 inclusion block (ADR-038 D8a); without it the
-                // frontier would never count this follower's anchors, so wait until it is known.
+                // The confirmation records its L1 inclusion block (ADR-038 D8a), and only once L1 delivery
+                // has reached it, so the delivery loop's rollback covers it (D3); until then it waits.
                 byte[] inclusionHash = canonicalHashAtSlot.apply(inclusionSlot);
                 if (inclusionHash == null || inclusionHash.length != 32) {
-                    log.debug("Script-anchor: canonical L1 block at inclusion slot {} unknown; "
-                            + "observation deferred", inclusionSlot);
+                    log.debug("Script-anchor: L1 inclusion slot {} not yet delivered; observation deferred",
+                            inclusionSlot);
                     return null;
                 }
                 boolean advances = observedHeight > persistedHeight;

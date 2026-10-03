@@ -38,7 +38,8 @@ import java.util.function.Consumer;
  * anything else happens (D5a).
  */
 final class L1DeliveryLoop implements AutoCloseable {
-    static final long POLL_MILLIS = 1_000;
+    private static final long POLL_MILLIS = 1_000;
+    private static final long MAX_RETRY_DELAY_MILLIS = 30_000;
     private static final int MAX_BLOCKS_PER_PASS = 256;
 
     /** The app chain's forward and rollback phases (D3, D4a). Neither method may throw for a phase failure. */
@@ -98,6 +99,9 @@ final class L1DeliveryLoop implements AutoCloseable {
     private volatile Snapshot snapshot = new Snapshot(null, State.STARTING, false, null);
     private volatile Consumer<Runnable> passRunner = Runnable::run;
     private volatile ScheduledExecutorService executor;
+    private volatile boolean backingOff;
+    private volatile long retryNotBeforeNanos;
+    private long retryDelayMillis;
 
     L1DeliveryLoop(String chainId, int stabilityDepth, ChainBlockReader reader, AppLedgerStore ledger, Host host,
                    BlockBodyRetentionRegistry.Registration retention, Logger log) {
@@ -120,7 +124,8 @@ final class L1DeliveryLoop implements AutoCloseable {
             return thread;
         });
         this.executor = loopExecutor;
-        loopExecutor.scheduleWithFixedDelay(this::runPass, 0, POLL_MILLIS, TimeUnit.MILLISECONDS);
+        // The poll only wakes, so a pass that escapes with a process-fatal error cannot cancel it (I6).
+        loopExecutor.scheduleWithFixedDelay(this::wake, 0, POLL_MILLIS, TimeUnit.MILLISECONDS);
     }
 
     /** Coalesced wake-up from a node event; safe on the publishing thread. */
@@ -143,11 +148,11 @@ final class L1DeliveryLoop implements AutoCloseable {
      */
     boolean requestRebaseline() {
         L1DeliveryRecord record = snapshot.record();
-        if (record != null && record.terminal() != null
-                && State.QUARANTINED.name().equals(record.terminal().state())) {
+        if (record != null && record.quarantined()) {
             return false;
         }
         rebaselineRequested.set(true);
+        backingOff = false;
         wake();
         return true;
     }
@@ -192,6 +197,15 @@ final class L1DeliveryLoop implements AutoCloseable {
         return window.get(window.size() - 1 - depth).toRef();
     }
 
+    /**
+     * The effective cursor's slot when delivery is healthy, else -1. L1 facts recorded outside the loop must sit at
+     * or below it, so that the loop's rollback, which starts from recorded points, always covers them (D3).
+     */
+    long healthyCursorSlot() {
+        Snapshot current = snapshot;
+        return clean(current) && canonical(current.cursor()) ? current.cursor().slot() : -1L;
+    }
+
     /** Follower verdict on a proposed L1 reference against the delivered window (ADR 008.1 I1.3). */
     AppChainEngine.L1RefVerdict checkL1Ref(long slot, byte[] blockHash) {
         Snapshot current = snapshot;
@@ -220,10 +234,15 @@ final class L1DeliveryLoop implements AutoCloseable {
         return AppChainEngine.L1RefVerdict.MISMATCH;
     }
 
+    /**
+     * D9a checks 1 and 2. An APPLY attempt in progress keeps the fence open: readers see only the committed window,
+     * which the attempt cannot change until its commit. A pending ROLLBACK, a retry or a failure closes it.
+     */
     private static boolean clean(Snapshot current) {
         L1DeliveryRecord record = current.record();
         return record != null && current.state() == State.RUNNING && current.reconciledSinceStart()
-                && record.pending() == null && record.phase() == L1DeliveryRecord.Phase.RECONCILED;
+                && record.phase() == L1DeliveryRecord.Phase.RECONCILED
+                && (record.pending() == null || record.pending().kind() == L1DeliveryRecord.Intent.Kind.APPLY);
     }
 
     private boolean canonical(L1Point point) {
@@ -242,8 +261,12 @@ final class L1DeliveryLoop implements AutoCloseable {
 
     private void runPass() {
         wakeQueued.set(false);
+        if (backingOff && System.nanoTime() - retryNotBeforeNanos < 0) {
+            return;
+        }
         try {
             passRunner.accept(this::pass);
+            backOffWhileRetrying();
         } catch (Throwable failure) {
             LifecycleFailures.rethrowIfProcessFatal(failure);
             Snapshot current = snapshot;
@@ -254,6 +277,20 @@ final class L1DeliveryLoop implements AutoCloseable {
                     failure.getClass().getName());
             log.warn("App-chain '{}' L1 delivery pass failed (errorType={})", chainId,
                     failure.getClass().getName());
+            backOffWhileRetrying();
+        }
+    }
+
+    /** Bounded exponential backoff while the same intent keeps failing (D4, section 7); reset by any success. */
+    private void backOffWhileRetrying() {
+        State state = snapshot.state();
+        if (state == State.RETRYING_BLOCK || state == State.RETRYING_ROLLBACK) {
+            retryDelayMillis = Math.min(Math.max(retryDelayMillis * 2, POLL_MILLIS), MAX_RETRY_DELAY_MILLIS);
+            retryNotBeforeNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(retryDelayMillis);
+            backingOff = true;
+        } else {
+            retryDelayMillis = 0;
+            backingOff = false;
         }
     }
 
@@ -267,7 +304,7 @@ final class L1DeliveryLoop implements AutoCloseable {
             }
         }
         if (rebaselineRequested.getAndSet(false)) {
-            if (record.terminal() != null && State.QUARANTINED.name().equals(record.terminal().state())) {
+            if (record.quarantined()) {
                 log.warn("App-chain '{}' L1 re-baseline refused: a terminal quarantine is persisted", chainId);
             } else {
                 record = persist(new L1DeliveryRecord(record.baseline(), List.of(), null,
@@ -323,12 +360,14 @@ final class L1DeliveryLoop implements AutoCloseable {
                 if (tip == null || record.cursor().blockNumber() >= tip.getBlockNumber()) {
                     return;
                 }
+                // The reference first, then the cursor (section 7): a fork landing between the two reads makes
+                // the cursor check fail, so a new-branch block is never attempted on a dead cursor (I2).
+                Optional<CanonicalBlockReference> next =
+                        reader.getCanonicalBlockReference(record.cursor().blockNumber() + 1);
                 if (!canonical(record.cursor())) {
                     wake(); // the pre-attempt check rolls back promptly
                     return;
                 }
-                Optional<CanonicalBlockReference> next =
-                        reader.getCanonicalBlockReference(record.cursor().blockNumber() + 1);
                 if (next.isEmpty()) {
                     return; // index not written yet; the next poll retries
                 }
@@ -355,7 +394,7 @@ final class L1DeliveryLoop implements AutoCloseable {
                 }
                 return;
             }
-            if (!canonical(point)) {
+            if (!canonical(point) || !canonical(record.cursor())) {
                 // A fork landed during the attempt; the pre-attempt check turns the intent into a rollback.
                 wake();
                 return;

@@ -3885,7 +3885,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     public boolean rebaselineL1Delivery() {
         return generationUseOr(false, () -> {
             L1DeliveryLoop delivery = l1Delivery;
-            boolean accepted = delivery != null && delivery.requestRebaseline();
+            if (delivery == null) {
+                throw new UnsupportedOperationException("App-chain '" + config.chainId() + "' runs no L1 delivery");
+            }
+            boolean accepted = delivery.requestRebaseline();
             log.warn("App-chain '{}' L1 delivery re-baseline {} (admin)", config.chainId(),
                     accepted ? "accepted" : "refused");
             return accepted;
@@ -4675,15 +4678,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 config.sequencingEnabled());
         logTransitionActivations();
 
-        // Fail fast on a silently-degraded L1 linkage (ADR 008.1 I1.3): with
-        // stability-depth or anchoring configured but no L1 chain to read, every
-        // block would carry l1Slot=0 / anchors would never confirm.
-        if ((config.l1StabilityDepth() > 0 || config.anchoringEnabled()) && l1Chain == null) {
-            throw new IllegalStateException("App-chain '" + config.chainId()
-                    + "': l1.stability-depth/anchoring is configured but no L1 chain reader is wired "
-                    + "— refusing to start with a silent L1 linkage "
-                    + "(set l1.stability-depth: 0 and disable anchoring for L1-less chains)");
-        }
         if (config.sequencingEnabled()) {
             // Pre-open manifest verification (008.1 I1.7): a freshly restored
             // snapshot must carry a valid member-signed manifest and intact file
@@ -4838,10 +4832,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     epochObservers = L1EpochObservationCoordinator.observersFromConfig(
                     config.pluginSettings(), pluginProviders);
             if (!epochObservers.isEmpty()) {
-                if (eventBus == null) {
-                    throw new IllegalArgumentException(
-                            "L1 epoch observers require an L1 BlockAppliedEvent feed");
-                }
                 if (config.retentionEnabled()) {
                     throw new IllegalArgumentException(
                             "L1 epoch observers require retention.enabled=false");
@@ -5009,9 +4999,15 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 return supplier != null ? supplier.get() : null;
                             },
                             anchorPointSupplier);
+                    // A follower's confirmation must not run ahead of delivery: the loop rolls back only from
+                    // recorded points, so an L1 fact above the cursor would survive a fork there (ADR-038 D3).
                     scriptService.wireCanonicalHashAtSlot(slot -> {
                         ChainBlockReader chain = l1Chain;
-                        return chain == null ? null : chain.getCanonicalBlockReferenceAtSlot(slot)
+                        L1DeliveryLoop delivery = l1Delivery;
+                        if (chain == null || delivery == null || slot > delivery.healthyCursorSlot()) {
+                            return null;
+                        }
+                        return chain.getCanonicalBlockReferenceAtSlot(slot)
                                 .map(CanonicalBlockReference::blockHash).orElse(null);
                     });
                     scriptService.setConfirmationListener(this::publishConfirmedAnchor);
@@ -5402,9 +5398,21 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      */
     private void startL1Delivery(long generationToken, AppLedgerStore ledgerStore) {
         ChainBlockReader chain = l1Chain;
-        boolean consumesL1 = config.l1StabilityDepth() > 0 || anchorService != null || scriptAnchorService != null
+        // Fail fast on a silently degraded L1 linkage (ADR 008.1 I1.3): without a chain to read, blocks would carry
+        // l1Slot=0, anchors would never confirm and observers would never run.
+        boolean requiresL1 = config.l1StabilityDepth() > 0 || config.anchoringEnabled()
                 || observationService != null || epochObservationCoordinator != null;
-        if (chain == null || !consumesL1) {
+        if (requiresL1 && chain == null) {
+            throw new IllegalStateException("App-chain '" + config.chainId()
+                    + "': l1.stability-depth, anchoring or L1 observers are configured but no L1 chain reader is "
+                    + "wired — refusing to start with a silent L1 linkage (set l1.stability-depth: 0, disable "
+                    + "anchoring and remove observers for L1-less chains)");
+        }
+        // The script-anchor verifier every member runs also reads L1, but alone it does not require it.
+        if (chain == null || !(requiresL1 || scriptAnchorService != null)) {
+            if (l1Retention != null) {
+                l1Retention.update(OptionalLong.empty()); // no loop, so no block bodies to keep (D7a)
+            }
             return;
         }
         L1DeliveryLoop delivery = new L1DeliveryLoop(config.chainId(), config.l1StabilityDepth(), chain, ledgerStore,
@@ -5528,19 +5536,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 results.add(phase("observation rollback", () -> observations.rollback(slot)));
             }
             if (epochObservations != null) {
-                results.add(phase("epoch observation rollback", () -> {
-                    epochObservations.onRollback(Math.max(slot, 0L));
-                    return L1PhaseResult.DURABLE;
-                }));
+                results.add(phase("epoch observation rollback",
+                        () -> epochObservations.rollback(Math.max(slot, 0L))));
             }
             return results;
         }
 
+        /**
+         * Any app block, anchor confirmation, or entry in the epoch-observations column family (observation journal
+         * records, cursors and markers, and epoch-spool jobs) is L1-derived state an upgrade must reconcile (D8). A
+         * new chain with observers also takes one reconciliation pass, which only records its baseline.
+         */
         @Override
         public boolean hasL1DerivedState() {
             byte[] anchorHistory = ledgerStore.metaBytes(AnchorService.META_ANCHOR_HISTORY);
             return ledgerStore.tipHeight() > 0 || (anchorHistory != null && anchorHistory.length > 0)
-                    || (observations != null && observations.callbackFailureSlot() >= 0);
+                    || !ledgerStore.epochSpoolScan(new byte[0], 1).isEmpty();
         }
 
         @Override
@@ -5553,6 +5564,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     return quarantine(journal.quarantine());
                 }
                 stagers.add(batch -> ledgerStore.stageEpochSpoolMutations(batch, journal.invalidations()));
+            }
+            // Epoch-spool jobs record their boundary block (rule 3, "everything else L1-derived").
+            if (epochObservations != null) {
+                L1ObservationJournal.ReconcileDecision epochs = epochObservations.reconcile(canonicalAtSlot);
+                if (epochs.quarantine() != null) {
+                    return quarantine(epochs.quarantine());
+                }
+                stagers.add(batch -> ledgerStore.stageEpochSpoolMutations(batch, epochs.invalidations()));
             }
             // Finalized evidence older than the cursors: the L1 observations in committed app blocks (rule 4).
             CommittedEvidence evidence = scanCommittedObservations(canonicalAtSlot);
@@ -5594,6 +5613,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             if (observations != null) {
                 observations.reloadAfterReconciliation();
             }
+            if (epochObservations != null) {
+                epochObservations.reloadAfterReconciliation();
+            }
             if (scriptAnchor != null) {
                 scriptAnchor.reloadAfterReconciliation();
             }
@@ -5606,12 +5628,15 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
 
         /**
-         * Checks every L1 observation in committed app blocks (D8b rule 4). Read-only. A body stripped by app-block
-         * pruning cannot be checked, so it makes the evidence unavailable.
+         * Checks every L1 observation in committed app blocks (D8b rule 4). Read-only. Blocks at or below the
+         * retention prune cursor had their bodies stripped by configuration, below an L1 anchor, and are treated as
+         * settled (Q8(b) with the prune cursor as the horizon); otherwise a retention-enabled chain could never
+         * reconcile. The journal's finalized cursors are still checked. Any other missing body makes the evidence
+         * unavailable (rule 6).
          */
         private CommittedEvidence scanCommittedObservations(BiPredicate<Long, byte[]> canonicalAtSlot) {
             boolean unavailable = false;
-            for (long height = 1; height <= ledgerStore.tipHeight(); height++) {
+            for (long height = ledgerStore.pruneCursor() + 1; height <= ledgerStore.tipHeight(); height++) {
                 AppBlock block = ledgerStore.block(height).orElse(null);
                 if (block == null) {
                     unavailable = true;
