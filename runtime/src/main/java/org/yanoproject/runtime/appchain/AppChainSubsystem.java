@@ -176,6 +176,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private volatile java.util.function.Function<byte[], String> txSubmitter;
     private volatile java.util.function.Supplier<org.yanoproject.api.utxo.UtxoState> utxoStateSupplier;
     private volatile LongFunction<BlockAppliedEvent> l1BlockReplay;
+    /** Oldest..newest observed L1 points. Every multi-step read or update (append and trim, rollback, depth
+     *  lookups) holds this deque's monitor, so no reader sees a half-applied update; a single peek needs none. */
     private final java.util.concurrent.ConcurrentLinkedDeque<AppChainEngine.L1Ref> recentL1Points =
             new java.util.concurrent.ConcurrentLinkedDeque<>();
     private final List<com.bloxbean.cardano.yaci.events.api.SubscriptionHandle> eventSubscriptions =
@@ -5463,10 +5465,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 retryFailedL1Observation(services.observations(),
                         services.blockReplay(), event.slot()));
         runL1Phase("reference tracking", () -> {
-            recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
-                    HexUtil.decodeHexString(event.blockHash())));
-            while (recentL1Points.size() > Math.max(config.l1StabilityDepth(), 1) + 64) {
-                recentL1Points.pollFirst();
+            synchronized (recentL1Points) {
+                recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
+                        HexUtil.decodeHexString(event.blockHash())));
+                while (recentL1Points.size() > Math.max(config.l1StabilityDepth(), 1) + 64) {
+                    recentL1Points.pollFirst();
+                }
             }
         });
 
@@ -5573,8 +5577,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             reportL1PhaseFailure("rollback target", failure);
             return;
         }
-        runL1Phase("reference rollback", () ->
-                recentL1Points.removeIf(ref -> ref.slot() > targetSlot));
+        runL1Phase("reference rollback", () -> {
+            synchronized (recentL1Points) {
+                recentL1Points.removeIf(ref -> ref.slot() > targetSlot);
+            }
+        });
         runL1Phase("metadata-anchor rollback", () -> {
             AnchorService currentAnchor = services.anchor();
             if (currentAnchor != null) {
@@ -5636,59 +5643,69 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * not exist on our chain — fabricated or rolled back — a hard MISMATCH.
      */
     private AppChainEngine.L1RefVerdict checkL1Ref(long slot, byte[] blockHash) {
-        AppChainEngine.L1Ref newest = recentL1Points.peekLast();
-        AppChainEngine.L1Ref oldest = recentL1Points.peekFirst();
-        if (newest == null) {
-            return AppChainEngine.L1RefVerdict.UNKNOWN; // no local view yet (restart)
-        }
-        if (slot > newest.slot()) {
-            l1RefDeferrals.incrementAndGet();
-            return AppChainEngine.L1RefVerdict.AHEAD;
-        }
-        if (slot < oldest.slot()) {
-            return AppChainEngine.L1RefVerdict.UNKNOWN; // older than our window
-        }
-        int fromEnd = 0;
-        AppChainEngine.L1Ref match = null;
-        for (var iterator = recentL1Points.descendingIterator(); iterator.hasNext(); ) {
-            AppChainEngine.L1Ref ref = iterator.next();
-            if (ref.slot() == slot) {
-                match = ref;
-                break;
+        synchronized (recentL1Points) {
+            AppChainEngine.L1Ref newest = recentL1Points.peekLast();
+            AppChainEngine.L1Ref oldest = recentL1Points.peekFirst();
+            if (newest == null) {
+                return AppChainEngine.L1RefVerdict.UNKNOWN; // no local view yet (restart)
             }
-            fromEnd++;
+            if (slot > newest.slot()) {
+                l1RefDeferrals.incrementAndGet();
+                return AppChainEngine.L1RefVerdict.AHEAD;
+            }
+            if (slot < oldest.slot()) {
+                return AppChainEngine.L1RefVerdict.UNKNOWN; // older than our window
+            }
+            int fromEnd = 0;
+            AppChainEngine.L1Ref match = null;
+            for (var iterator = recentL1Points.descendingIterator(); iterator.hasNext(); ) {
+                AppChainEngine.L1Ref ref = iterator.next();
+                if (ref.slot() == slot) {
+                    match = ref;
+                    break;
+                }
+                fromEnd++;
+            }
+            if (match == null) {
+                return AppChainEngine.L1RefVerdict.MISMATCH; // in-window slot we never saw
+            }
+            if (!java.util.Arrays.equals(match.blockHash(), blockHash)) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+            if (fromEnd < config.l1StabilityDepth()) {
+                l1RefDeferrals.incrementAndGet();
+                return AppChainEngine.L1RefVerdict.AHEAD; // not deep enough yet in OUR view
+            }
+            return AppChainEngine.L1RefVerdict.OK;
         }
-        if (match == null) {
-            return AppChainEngine.L1RefVerdict.MISMATCH; // in-window slot we never saw
-        }
-        if (!java.util.Arrays.equals(match.blockHash(), blockHash)) {
-            return AppChainEngine.L1RefVerdict.MISMATCH;
-        }
-        if (fromEnd < config.l1StabilityDepth()) {
-            l1RefDeferrals.incrementAndGet();
-            return AppChainEngine.L1RefVerdict.AHEAD; // not deep enough yet in OUR view
-        }
-        return AppChainEngine.L1RefVerdict.OK;
     }
 
     /**
      * L1 point at least l1StabilityDepth blocks below the observed tip, from the
-     * subsystem's own view of applied blocks. Null when depth is 0/unknown.
+     * subsystem's own view of applied blocks. Null when depth is 0/unknown. The
+     * size and the walk share the window's monitor: an append and trim landing
+     * between them would shift the index onto the tip.
      */
     private AppChainEngine.L1Ref stableL1Ref() {
         int depth = config.l1StabilityDepth();
-        if (depth <= 0 || recentL1Points.size() <= depth) {
+        if (depth <= 0) {
             return null;
         }
-        // deque: oldest..newest; pick the element depth-from-the-end
-        int index = recentL1Points.size() - 1 - depth;
-        int i = 0;
-        for (AppChainEngine.L1Ref ref : recentL1Points) {
-            if (i++ == index) {
-                return ref;
+        synchronized (recentL1Points) {
+            int size = recentL1Points.size();
+            if (size <= depth) {
+                return null;
             }
+            // deque: oldest..newest; pick the element depth-from-the-end
+            int index = size - 1 - depth;
+            int i = 0;
+            for (AppChainEngine.L1Ref ref : recentL1Points) {
+                if (i++ == index) {
+                    return ref;
+                }
+            }
+            return null;
         }
-        return null;
     }
 
     /**
