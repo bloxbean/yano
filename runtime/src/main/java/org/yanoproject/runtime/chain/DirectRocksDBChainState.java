@@ -74,6 +74,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             Long.getLong(YanoPropertyKeys.Chain.RECOVERY_HEADER_SCAN_BLOCKS, 100_000L);
 
     private RocksDB db;
+    private final CanonicalMutationSequence mutationSequence = new CanonicalMutationSequence();
     private Cache sharedBlockCache;
     private WriteBufferManager sharedWriteBufferManager;
     private long sharedBlockCacheCapacityBytes;
@@ -662,8 +663,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     }
                 }
 
-                // Write batch atomically
-                db.write(writeOptions, batch);
+                // Write batch atomically; replacing a different canonical entry is a mutation.
+                writeHeaderBatch(writeOptions, batch, blockNumber, slot, blockHash);
 
                 log.debug("Stored header: hash={}, extracted slot={}, blockNumber={}",
                         HexUtil.encodeHexString(blockHash), slot, blockNumber);
@@ -699,7 +700,18 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 batch.put(ebbBySlot0Handle, longToBytes(slot), blockHash);
             }
 
-            db.write(writeOptions, batch);
+            byte[] existingEbb = slot != null ? db.get(ebbBySlot0Handle, longToBytes(slot)) : null;
+            boolean replaces = existingEbb != null && !Arrays.equals(existingEbb, blockHash);
+            if (replaces) {
+                mutationSequence.begin();
+            }
+            try {
+                db.write(writeOptions, batch);
+            } finally {
+                if (replaces) {
+                    mutationSequence.end();
+                }
+            }
             log.debug("Stored Byron EBB header (ebb_by_slot0 only): slot={}, blockNumber={}", slot, blockNumber);
         } catch (Exception e) {
             throw new RuntimeException("Failed to store Byron EBB header", e);
@@ -722,7 +734,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 batch.put(slotByNumberHandle, longToBytes(blockNumber), longToBytes(slot));
             }
 
-            db.write(writeOptions, batch);
+            writeHeaderBatch(writeOptions, batch, blockNumber, slot, blockHash);
             log.info("Bootstrap: stored header #{}, slot={}, hash={}",
                     blockNumber, slot, HexUtil.encodeHexString(blockHash));
         } catch (Exception e) {
@@ -907,6 +919,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
     @Override
     public synchronized void rollbackTo(Point target) {
+        mutationSequence.begin();
+        try {
+            rollbackToUnsequenced(target);
+        } finally {
+            mutationSequence.end();
+        }
+    }
+
+    private void rollbackToUnsequenced(Point target) {
         if (target == null) throw new IllegalArgumentException("Rollback target is required");
         if (target.getHash() == null) {
             rollbackToOrigin();
@@ -951,6 +972,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     }
 
     public void rollbackToOrigin() {
+        mutationSequence.begin();
+        try {
+            rollbackToOriginUnsequenced();
+        } finally {
+            mutationSequence.end();
+        }
+    }
+
+    private void rollbackToOriginUnsequenced() {
         WriteBatch batch = new WriteBatch();
         int slotsDeleted = 0;
         int blocksDeleted = 0;
@@ -1825,6 +1855,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
      * @param snapshotPath directory containing the checkpoint to restore from
      */
     public void restoreFromSnapshot(String snapshotPath) {
+        mutationSequence.begin();
+        try {
+            restoreFromSnapshotUnsequenced(snapshotPath);
+        } finally {
+            mutationSequence.end();
+        }
+    }
+
+    private void restoreFromSnapshotUnsequenced(String snapshotPath) {
         Path snapshotDir = Path.of(snapshotPath);
         if (!Files.isDirectory(snapshotDir)) {
             throw new IllegalArgumentException("Snapshot directory does not exist: " + snapshotPath);
@@ -2280,6 +2319,37 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             }
         }
         closeNativeMemoryBudgets();
+    }
+
+    @Override
+    public OptionalLong canonicalMutationSequence() {
+        return OptionalLong.of(mutationSequence.current());
+    }
+
+    /** Writes a header batch, bracketing it as a canonical mutation when it replaces a different canonical entry. */
+    private void writeHeaderBatch(WriteOptions writeOptions, WriteBatch batch, Long blockNumber, Long slot,
+                                  byte[] blockHash) throws RocksDBException {
+        boolean replaces = slot != null && blockNumber != null
+                && replacesCanonicalEntry(blockNumber, slot, blockHash);
+        if (replaces) {
+            mutationSequence.begin();
+        }
+        try {
+            db.write(writeOptions, batch);
+        } finally {
+            if (replaces) {
+                mutationSequence.end();
+            }
+        }
+    }
+
+    private boolean replacesCanonicalEntry(long blockNumber, long slot, byte[] blockHash) throws RocksDBException {
+        byte[] slotAtNumber = db.get(slotByNumberHandle, longToBytes(blockNumber));
+        if (slotAtNumber != null && bytesToLong(slotAtNumber) != slot) {
+            return true;
+        }
+        byte[] hashAtSlot = db.get(slotToHashHandle, longToBytes(slot));
+        return hashAtSlot != null && !Arrays.equals(hashAtSlot, blockHash);
     }
 
     // Helper methods

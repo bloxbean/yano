@@ -18,6 +18,7 @@ import org.yanoproject.api.appchain.codec.AppBlockCodec;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
+import org.rocksdb.WriteBatch;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -25,12 +26,17 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.function.BiPredicate;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongFunction;
 import java.util.function.Supplier;
@@ -57,6 +63,10 @@ final class AnchorService {
     private static final String META_ANCHOR_SLOT = "anchor_last_slot";
     private static final String META_ANCHOR_FROM = "anchor_last_from_height";
     static final String META_ANCHOR_HISTORY = "anchor_confirmation_history_v1";
+    /** Durable L1 fact awaiting local completion (ADR-038 D4a); empty means none. */
+    private static final String META_OBSERVED_CONFIRMATION = "anchor_observed_confirmation_v1";
+    /** The submitted anchor awaiting L1 inclusion, so a restart still records it (ADR-038 D4a, F2); empty: none. */
+    private static final String META_PENDING_ANCHOR = "anchor_pending_v1";
 
     /** Linear fee parameters from the node's current protocol params (I1.5). */
     record FeeParams(long minFeeA, long minFeeB) {
@@ -80,8 +90,10 @@ final class AnchorService {
 
     // Pending anchor awaiting L1 confirmation
     private volatile PendingAnchor pending;
-    /** L1 inclusion was observed; local block resolution/atomic persistence may still need retrying. */
-    private volatile ObservedConfirmation observedConfirmation;
+    /** Local completion runs only while this holds (ADR-038 D8b rule 9: not while reconciling). */
+    private volatile BooleanSupplier completionGate = () -> true;
+    /** Best-effort notification after each local completion, from any path (ADR-038 D4a). */
+    private volatile Consumer<ConfirmedAnchor> confirmationListener = confirmed -> { };
     private volatile boolean submissionInProgress;
     private volatile long lastAnchorAttemptAt;
     private volatile String lastError;
@@ -122,11 +134,20 @@ final class AnchorService {
         }
         this.log = log;
         log.info("App-chain anchor wallet address: {}", anchorAddress.getAddress());
+        this.pending = loadPending();
     }
 
     void wireFees(Supplier<FeeParams> feeParams, Supplier<Long> currentSlot) {
         this.feeParamsSupplier = feeParams;
         this.currentSlotSupplier = currentSlot;
+    }
+
+    void setCompletionGate(BooleanSupplier gate) {
+        this.completionGate = Objects.requireNonNull(gate, "gate");
+    }
+
+    void setConfirmationListener(Consumer<ConfirmedAnchor> listener) {
+        this.confirmationListener = Objects.requireNonNull(listener, "listener");
     }
 
     String anchorAddress() {
@@ -142,8 +163,9 @@ final class AnchorService {
      * covered by a confirmed anchor whose L1 inclusion slot is at or below
      * {@code stableSlot}, this node's stability-depth L1 point. Metadata and
      * script anchors keep the same confirmation journal, which L1 rollbacks
-     * rewind, so a rolled-back anchor never counts. 0 when no confirmation is
-     * that deep or the journal is unreadable.
+     * rewind, so a rolled-back anchor never counts. Legacy entries that record
+     * no L1 inclusion block never count either (ADR-038 D8a). 0 when no
+     * confirmation is that deep or the journal is unreadable.
      */
     static long stableAnchoredHeight(AppLedgerStore ledger, long stableSlot) {
         byte[] encoded = ledger.metaBytes(META_ANCHOR_HISTORY);
@@ -153,7 +175,7 @@ final class AnchorService {
         try {
             long height = 0L;
             for (Confirmation confirmation : ConfirmationHistory.decode(encoded)) {
-                if (confirmation.l1Slot() <= stableSlot) {
+                if (confirmation.l1BlockHash() != null && confirmation.l1Slot() <= stableSlot) {
                     height = Math.max(height, confirmation.toHeight());
                 }
             }
@@ -170,28 +192,33 @@ final class AnchorService {
      * @return true if an anchor submission was triggered
      */
     boolean forceAnchorNow() {
+        ConfirmedAnchor confirmed;
+        boolean submitted;
         synchronized (anchorLock) {
-            try {
-                if (observedConfirmation != null) {
-                    completeObservedConfirmation();
-                    return false;
-                }
-                if (pending != null || submissionInProgress) {
-                    return false;
-                }
-                long tip = tipHeightSupplier.get();
-                long lastAnchored = lastAnchoredHeight();
-                if (tip <= lastAnchored) {
-                    return false;
-                }
-                logInfoSafely("Force-anchor requested: anchoring app blocks {}..{}",
-                        lastAnchored + 1, tip);
-                submitAnchor(lastAnchored + 1, tip);
-                return pending != null; // submitAnchor sets pending on success
-            } catch (Throwable failure) {
-                recordFailure("force-anchor", failure);
+            confirmed = completeIfObserved();
+            submitted = confirmed == null && forceAnchorLocked();
+        }
+        notifyConfirmed(confirmed);
+        return submitted;
+    }
+
+    private boolean forceAnchorLocked() {
+        try {
+            if (loadObservedConfirmation() != null || pending != null || submissionInProgress) {
                 return false;
             }
+            long tip = tipHeightSupplier.get();
+            long lastAnchored = lastAnchoredHeight();
+            if (tip <= lastAnchored) {
+                return false;
+            }
+            logInfoSafely("Force-anchor requested: anchoring app blocks {}..{}",
+                    lastAnchored + 1, tip);
+            submitAnchor(lastAnchored + 1, tip);
+            return pending != null; // submitAnchor sets pending on success
+        } catch (Throwable failure) {
+            recordFailure("force-anchor", failure);
+            return false;
         }
     }
 
@@ -199,45 +226,51 @@ final class AnchorService {
 
     /** Periodic tick from the subsystem scheduler. */
     void tick() {
+        ConfirmedAnchor confirmed;
         synchronized (anchorLock) {
-            try {
-                if (observedConfirmation != null) {
-                    completeObservedConfirmation();
-                    return;
-                }
-                if (submissionInProgress) {
-                    return;
-                }
-                PendingAnchor current = pending;
-                if (current != null) {
-                    if (System.currentTimeMillis() - current.submittedAt > RESUBMIT_AFTER_MS) {
-                        log.warn("Anchor tx {} not observed on L1 within {}ms — resubmitting",
-                                current.txHash, RESUBMIT_AFTER_MS);
-                        pending = null;
-                        submitAnchor(current.fromHeight, current.toHeight);
-                    }
-                    return;
-                }
-
-                long tip = tipHeightSupplier.get();
-                long lastAnchored = lastAnchoredHeight();
-                if (tip <= lastAnchored) {
-                    return;
-                }
-                boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
-                boolean dueByTime = lastAnchorAttemptAt > 0
-                        ? System.currentTimeMillis() - lastAnchorAttemptAt
-                                >= anchorConfig.maxIntervalMinutes() * 60_000
-                        : true; // first anchor: fire as soon as there is anything to anchor
-                if (dueByCount || dueByTime) {
-                    submitAnchor(lastAnchored + 1, tip);
-                }
-            } catch (Throwable failure) {
-                // A recoverable Error from a callback must not cancel every later
-                // ScheduledExecutor invocation. Only process-fatal failures leave
-                // the periodic boundary unchanged.
-                recordFailure("tick", failure);
+            confirmed = completeIfObserved();
+            if (confirmed == null) {
+                tickLocked();
             }
+        }
+        notifyConfirmed(confirmed);
+    }
+
+    private void tickLocked() {
+        try {
+            // An observed fact awaiting completion means the tx is already on L1: never resubmit it.
+            if (loadObservedConfirmation() != null || submissionInProgress) {
+                return;
+            }
+            PendingAnchor current = pending;
+            if (current != null) {
+                if (System.currentTimeMillis() - current.submittedAt > RESUBMIT_AFTER_MS) {
+                    log.warn("Anchor tx {} not observed on L1 within {}ms — resubmitting",
+                            current.txHash, RESUBMIT_AFTER_MS);
+                    setPending(null);
+                    submitAnchor(current.fromHeight, current.toHeight);
+                }
+                return;
+            }
+
+            long tip = tipHeightSupplier.get();
+            long lastAnchored = lastAnchoredHeight();
+            if (tip <= lastAnchored) {
+                return;
+            }
+            boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
+            boolean dueByTime = lastAnchorAttemptAt > 0
+                    ? System.currentTimeMillis() - lastAnchorAttemptAt
+                            >= anchorConfig.maxIntervalMinutes() * 60_000
+                    : true; // first anchor: fire as soon as there is anything to anchor
+            if (dueByCount || dueByTime) {
+                submitAnchor(lastAnchored + 1, tip);
+            }
+        } catch (Throwable failure) {
+            // A recoverable Error from a callback must not cancel every later
+            // ScheduledExecutor invocation. Only process-fatal failures leave
+            // the periodic boundary unchanged.
+            recordFailure("tick", failure);
         }
     }
 
@@ -255,7 +288,7 @@ final class AnchorService {
             Transaction tx = buildAnchorTx(fromHeight, toHeight, blockHash, tipBlock.stateRoot());
             byte[] cbor = tx.serialize();
             String txHash = txSubmitter.apply(cbor);
-            pending = new PendingAnchor(fromHeight, toHeight, txHash, System.currentTimeMillis());
+            setPending(new PendingAnchor(fromHeight, toHeight, txHash, System.currentTimeMillis()));
             lastAnchorAttemptAt = System.currentTimeMillis();
             lastError = null;
             log.info("Anchor tx submitted: {} (app blocks {}..{}, stateRoot={})",
@@ -371,71 +404,78 @@ final class AnchorService {
     }
 
     /**
-     * Called for every applied L1 block; marks the pending anchor confirmed
-     * when its tx hash appears.
-     * @return the confirmed anchor, or null
+     * L1 delivery phase for one block (ADR-038 D4a). When the pending anchor tx is among the block's valid
+     * transactions, the L1 fact is written durably before local completion is attempted; a completion that cannot
+     * finish yet is retried by {@link #tick()} without an L1 replay. Redelivering the same block is a no-op.
+     *
+     * @return {@code DURABLE} once the fact is written, {@code NO_OP} when the block does not concern the pending
+     *         anchor, or {@code RETRYABLE} when the fact could not be written
      */
-    ConfirmedAnchor onL1Block(long slot, List<String> txHashes) {
+    L1PhaseResult onL1Block(long slot, byte[] l1BlockHash, List<String> txHashes) {
+        requireBlockHash(l1BlockHash);
+        ConfirmedAnchor confirmed;
         synchronized (anchorLock) {
+            PendingAnchor current = pending;
+            if (current == null || txHashes == null || !txHashes.contains(current.txHash)) {
+                return L1PhaseResult.NO_OP;
+            }
+            ObservedConfirmation fact = new ObservedConfirmation(current.fromHeight, current.toHeight,
+                    current.txHash, slot, l1BlockHash.clone());
             try {
-                if (observedConfirmation != null) {
-                    return completeObservedConfirmation();
+                if (!fact.sameAs(loadObservedConfirmation())) {
+                    ledger.metaPutAll(Map.of(), Map.of(META_OBSERVED_CONFIRMATION, fact.encode()));
                 }
-                PendingAnchor current = pending;
-                if (current == null || txHashes == null || !txHashes.contains(current.txHash)) {
-                    return null;
-                }
-                if (pending != current || observedConfirmation != null) {
-                    return null;
-                }
-                // Remember the L1 fact BEFORE resolving local callbacks. If
-                // block lookup/storage is transiently unavailable, tick/force
-                // reconciles this exact observation without an L1 replay and
-                // without timing out/resubmitting an already-confirmed tx.
-                observedConfirmation = new ObservedConfirmation(current, slot);
-                return completeObservedConfirmation();
             } catch (Throwable failure) {
                 recordFailure("L1 observation", failure);
-                return null;
+                return L1PhaseResult.retryable("ANCHOR_OBSERVATION_WRITE_FAILED");
             }
+            confirmed = completeIfObserved();
         }
+        notifyConfirmed(confirmed);
+        return L1PhaseResult.DURABLE;
     }
 
-    private ConfirmedAnchor completeObservedConfirmation() {
-        ObservedConfirmation observed = observedConfirmation;
-        if (observed == null) {
-            return null;
-        }
-        PendingAnchor current = observed.anchor();
+    /**
+     * Local completion of a durable observed fact: resolve the anchored app block and append the confirmation,
+     * clearing the fact in the same write. Idempotent, keyed by the fact rather than by the in-memory pending anchor,
+     * so it also completes after a restart. Callers hold {@link #anchorLock}.
+     *
+     * @return the completed anchor, or null when there is nothing to complete or completion must wait
+     */
+    private ConfirmedAnchor completeIfObserved() {
         try {
-            AppBlock anchoredBlock = blockByHeight.apply(current.toHeight);
+            if (!completionGate.getAsBoolean()) {
+                return null;
+            }
+            ObservedConfirmation observed = loadObservedConfirmation();
+            if (observed == null) {
+                return null;
+            }
+            AppBlock anchoredBlock = blockByHeight.apply(observed.toHeight());
             if (anchoredBlock == null) {
                 throw new IllegalStateException("Confirmed app block is not locally available");
             }
             byte[] anchoredBlockHash = AppBlockCodec.blockHash(anchoredBlock);
-
-            // Callback code may re-enter this service even while the monitor
-            // is held. Never let a stale resolution clear a replacement tx.
-            if (observedConfirmation != observed || pending != current) {
+            // Callback code may re-enter this service while the monitor is held.
+            // Never let a stale resolution complete a replaced or rolled-back fact.
+            if (!observed.sameAs(loadObservedConfirmation())) {
                 return null;
             }
-            Confirmation confirmation = new Confirmation(current.fromHeight, current.toHeight,
-                    current.txHash, observed.l1Slot(), anchoredBlockHash);
-            List<Confirmation> history = historyWith(confirmation);
-            if (observedConfirmation != observed || pending != current) {
-                return null;
+            Confirmation confirmation = new Confirmation(observed.fromHeight(), observed.toHeight(),
+                    observed.txHash(), observed.l1Slot(), anchoredBlockHash, observed.l1BlockHash());
+            PendingAnchor current = pending;
+            boolean completesPending = current != null && current.txHash.equals(observed.txHash());
+            persistConfirmation(confirmation, historyWith(confirmation), completesPending);
+            if (completesPending) {
+                pending = null;
             }
-            persistConfirmation(confirmation, history);
-
-            pending = null;
-            observedConfirmation = null;
             anchoredCount++;
             lastAnchoredL1Slot = observed.l1Slot();
-            lastAnchorTxHash = current.txHash;
+            lastAnchorTxHash = observed.txHash();
             lastError = null;
             logInfoSafely("Anchor CONFIRMED on L1: tx={}, app blocks {}..{}, l1Slot={}",
-                    current.txHash, current.fromHeight, current.toHeight, observed.l1Slot());
-            return new ConfirmedAnchor(current.fromHeight, current.toHeight, current.txHash,
+                    observed.txHash(), observed.fromHeight(), observed.toHeight(), observed.l1Slot());
+            return new ConfirmedAnchor(observed.fromHeight(), observed.toHeight(), observed.txHash(),
                     observed.l1Slot());
         } catch (Throwable failure) {
             recordFailure("L1 confirmation", failure);
@@ -443,12 +483,34 @@ final class AnchorService {
         }
     }
 
-    private void persistConfirmation(Confirmation confirmation, List<Confirmation> history) {
+    /** Publishes a completion outside {@link #anchorLock}; the notification is best-effort. */
+    private void notifyConfirmed(ConfirmedAnchor confirmed) {
+        if (confirmed == null) {
+            return;
+        }
+        try {
+            confirmationListener.accept(confirmed);
+        } catch (Throwable failure) {
+            recordFailure("confirmation notification", failure);
+        }
+    }
+
+    private ObservedConfirmation loadObservedConfirmation() {
+        byte[] encoded = ledger.metaBytes(META_OBSERVED_CONFIRMATION);
+        return encoded == null || encoded.length == 0 ? null : ObservedConfirmation.decode(encoded);
+    }
+
+    private void persistConfirmation(Confirmation confirmation, List<Confirmation> history,
+                                     boolean completesPending) {
         Map<String, byte[]> byteValues = new LinkedHashMap<>();
+        if (completesPending) {
+            byteValues.put(META_PENDING_ANCHOR, new byte[0]);
+        }
         byteValues.put(META_ANCHOR_BLOCK_HASH, confirmation.blockHash());
         byteValues.put(META_ANCHOR_TX,
                 confirmation.txHash().getBytes(StandardCharsets.UTF_8));
         byteValues.put(META_ANCHOR_HISTORY, ConfirmationHistory.encode(history));
+        byteValues.put(META_OBSERVED_CONFIRMATION, new byte[0]);
         ledger.metaPutAll(
                 Map.of(
                         META_LAST_ANCHORED, confirmation.toHeight(),
@@ -459,30 +521,95 @@ final class AnchorService {
                 byteValues);
     }
 
-    /** Called on L1 rollback: a confirmed-but-now-rolled-back anchor goes back to pending. */
-    void onL1Rollback(long rollbackToSlot) {
+    /**
+     * L1 rollback phase (ADR-038 D4a): a durable fact or confirmation above {@code rollbackToSlot} is removed, so a
+     * rolled-back anchor goes back to pending. {@code -1} rolls back to ORIGIN. Idempotent.
+     *
+     * @return {@code DURABLE} when state changed, {@code NO_OP} when nothing was above the target, or
+     *         {@code RETRYABLE} when the rewind could not be written
+     */
+    L1PhaseResult onL1Rollback(long rollbackToSlot) {
         synchronized (anchorLock) {
             try {
-                ObservedConfirmation observed = observedConfirmation;
+                boolean changed = false;
+                ObservedConfirmation observed = loadObservedConfirmation();
                 if (observed != null && observed.l1Slot() > rollbackToSlot) {
-                    observedConfirmation = null;
+                    ledger.metaPutAll(Map.of(), Map.of(META_OBSERVED_CONFIRMATION, new byte[0]));
+                    changed = true;
                 }
                 if (rollbackConfirmedHistory(rollbackToSlot)) {
                     // Any later in-flight range was derived from the now
                     // invalid confirmation frontier. Drop it so the next tick
                     // covers the full surviving-height+1..tip range.
-                    pending = null;
-                    observedConfirmation = null;
+                    setPending(null);
+                    changed = true;
                 }
+                return changed ? L1PhaseResult.DURABLE : L1PhaseResult.NO_OP;
             } catch (Throwable failure) {
                 recordFailure("L1 rollback", failure);
+                return L1PhaseResult.retryable("ANCHOR_ROLLBACK_WRITE_FAILED");
             }
+        }
+    }
+
+    /** The decoded confirmation journal, oldest first; empty when absent. */
+    List<Confirmation> confirmationHistory() {
+        return loadHistory();
+    }
+
+    /**
+     * L1 evidence reconciliation (app-layer ADR-038, D8b): a dead observed fact is deleted. Read-only; the returned
+     * stager joins the caller's single commit. Completion is gated off meanwhile.
+     */
+    Consumer<WriteBatch> reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        synchronized (anchorLock) {
+            ObservedConfirmation observed = loadObservedConfirmation();
+            if (observed == null || canonicalAtSlot.test(observed.l1Slot(), observed.l1BlockHash())) {
+                return batch -> { };
+            }
+            return batch -> ledger.stageMetaBytes(batch, META_OBSERVED_CONFIRMATION, new byte[0]);
+        }
+    }
+
+    /**
+     * The confirmation journal's part of an L1 evidence reconciliation (D8b): a confirmation whose recorded L1 point
+     * is no longer canonical is excluded from the frontier individually, by dropping its L1 hash. Metadata and script
+     * anchors share the journal, so it is judged once. Read-only. An unreadable journal is left as it is: the
+     * frontier already fails closed on it.
+     */
+    static Consumer<WriteBatch> reconcileHistory(AppLedgerStore ledger, BiPredicate<Long, byte[]> canonicalAtSlot) {
+        byte[] encoded = ledger.metaBytes(META_ANCHOR_HISTORY);
+        List<Confirmation> history;
+        try {
+            history = encoded == null || encoded.length == 0 ? List.of() : ConfirmationHistory.decode(encoded);
+        } catch (IllegalArgumentException unreadable) {
+            return batch -> { };
+        }
+        List<Confirmation> judged = new ArrayList<>(history.size());
+        boolean changed = false;
+        for (Confirmation confirmation : history) {
+            boolean dead = confirmation.l1BlockHash() != null
+                    && !canonicalAtSlot.test(confirmation.l1Slot(), confirmation.l1BlockHash());
+            judged.add(dead ? new Confirmation(confirmation.fromHeight(), confirmation.toHeight(),
+                    confirmation.txHash(), confirmation.l1Slot(), confirmation.blockHash(), null) : confirmation);
+            changed |= dead;
+        }
+        if (!changed) {
+            return batch -> { };
+        }
+        byte[] reconciled = ConfirmationHistory.encode(judged);
+        return batch -> ledger.stageMetaBytes(batch, META_ANCHOR_HISTORY, reconciled);
+    }
+
+    private static void requireBlockHash(byte[] l1BlockHash) {
+        if (l1BlockHash == null || l1BlockHash.length != 32) {
+            throw new IllegalArgumentException("L1 block hash must be 32 bytes");
         }
     }
 
     private boolean rollbackConfirmedHistory(long rollbackToSlot) {
         long persistedSlot = ledger.metaLong(META_ANCHOR_SLOT, 0L);
-        if (persistedSlot <= rollbackToSlot) {
+        if (persistedSlot <= 0L || persistedSlot <= rollbackToSlot) {
             return false;
         }
         String rolledBackTx = ledger.metaString(META_ANCHOR_TX);
@@ -550,7 +677,7 @@ final class AnchorService {
         if (slot <= 0 || tx == null || tx.isBlank() || hash == null || hash.length != 32) {
             return null;
         }
-        return new Confirmation(ledger.metaLong(META_ANCHOR_FROM, 0L), to, tx, slot, hash);
+        return new Confirmation(ledger.metaLong(META_ANCHOR_FROM, 0L), to, tx, slot, hash, null);
     }
 
     Map<String, Object> status() {
@@ -564,9 +691,13 @@ final class AnchorService {
             status.put("pendingTx", current.txHash);
             status.put("pendingRange", current.fromHeight + ".." + current.toHeight);
         }
-        ObservedConfirmation observed = observedConfirmation;
-        if (observed != null) {
-            status.put("confirmationObservedAtL1Slot", observed.l1Slot());
+        try {
+            ObservedConfirmation observed = loadObservedConfirmation();
+            if (observed != null) {
+                status.put("confirmationObservedAtL1Slot", observed.l1Slot());
+            }
+        } catch (IllegalArgumentException unreadable) {
+            status.put("confirmationObservedAtL1Slot", "unreadable");
         }
         // Prefer the in-memory copy; fall back to the PERSISTED meta so a
         // restart does not blank the last confirmed anchor in status/UI.
@@ -620,20 +751,134 @@ final class AnchorService {
         }
     }
 
+    /**
+     * Sets the pending anchor in memory first (the tx is already submitted), then persists it. If the write fails,
+     * a restart forgets the anchor and resubmits the range after the timeout, as before ADR-038.
+     */
+    private void setPending(PendingAnchor next) {
+        pending = next;
+        ledger.metaPutAll(Map.of(), Map.of(META_PENDING_ANCHOR, next != null ? next.encode() : new byte[0]));
+    }
+
+    private PendingAnchor loadPending() {
+        byte[] encoded = ledger.metaBytes(META_PENDING_ANCHOR);
+        if (encoded == null || encoded.length == 0) {
+            return null;
+        }
+        try {
+            return PendingAnchor.decode(encoded);
+        } catch (IllegalArgumentException unreadable) {
+            recordFailure("pending anchor", unreadable);
+            return null;
+        }
+    }
+
+    /** A restored pending anchor's resubmission timeout restarts from the load time. */
     private record PendingAnchor(long fromHeight, long toHeight, String txHash, long submittedAt) {
+        private static final int MAGIC = 0x59415031; // YAP1
+
+        byte[] encode() {
+            byte[] tx = txHash.getBytes(StandardCharsets.UTF_8);
+            return ByteBuffer.allocate(Integer.BYTES + 2 * Long.BYTES + Integer.BYTES + tx.length)
+                    .putInt(MAGIC).putLong(fromHeight).putLong(toHeight).putInt(tx.length).put(tx).array();
+        }
+
+        static PendingAnchor decode(byte[] encoded) {
+            ByteBuffer in = ByteBuffer.wrap(encoded);
+            if (encoded.length < Integer.BYTES + 2 * Long.BYTES + Integer.BYTES || in.getInt() != MAGIC) {
+                throw new IllegalArgumentException("Invalid pending anchor");
+            }
+            long from = in.getLong();
+            long to = in.getLong();
+            int txLength = in.getInt();
+            if (from < 0 || to < from || txLength <= 0 || txLength > ConfirmationHistory.MAX_TX_HASH_BYTES
+                    || txLength != in.remaining()) {
+                throw new IllegalArgumentException("Invalid pending anchor");
+            }
+            byte[] tx = new byte[txLength];
+            in.get(tx);
+            return new PendingAnchor(from, to, new String(tx, StandardCharsets.UTF_8), System.currentTimeMillis());
+        }
     }
 
-    private record ObservedConfirmation(PendingAnchor anchor, long l1Slot) {
+    /**
+     * Durable L1 fact: anchor tx {@code txHash} for app heights {@code fromHeight..toHeight} was seen as a valid
+     * transaction in L1 block {@code (l1Slot, l1BlockHash)}. Script mode records observed submits the same way.
+     */
+    record ObservedConfirmation(long fromHeight, long toHeight, String txHash, long l1Slot, byte[] l1BlockHash) {
+        private static final int MAGIC = 0x59414f31; // YAO1
+
+        ObservedConfirmation {
+            Objects.requireNonNull(txHash, "txHash");
+            requireBlockHash(l1BlockHash);
+        }
+
+        boolean sameAs(ObservedConfirmation other) {
+            return other != null && fromHeight == other.fromHeight && toHeight == other.toHeight
+                    && l1Slot == other.l1Slot && txHash.equals(other.txHash)
+                    && Arrays.equals(l1BlockHash, other.l1BlockHash);
+        }
+
+        byte[] encode() {
+            try {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                try (DataOutputStream out = new DataOutputStream(bytes)) {
+                    byte[] tx = txHash.getBytes(StandardCharsets.UTF_8);
+                    out.writeInt(MAGIC);
+                    out.writeLong(fromHeight);
+                    out.writeLong(toHeight);
+                    out.writeLong(l1Slot);
+                    out.write(l1BlockHash);
+                    out.writeInt(tx.length);
+                    out.write(tx);
+                }
+                return bytes.toByteArray();
+            } catch (IOException impossible) {
+                throw new IllegalStateException("Observed anchor encoding failed", impossible);
+            }
+        }
+
+        static ObservedConfirmation decode(byte[] encoded) {
+            try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(encoded))) {
+                if (in.readInt() != MAGIC) {
+                    throw new IllegalArgumentException("Invalid observed anchor magic");
+                }
+                long from = in.readLong();
+                long to = in.readLong();
+                long slot = in.readLong();
+                byte[] hash = in.readNBytes(32);
+                int txLength = in.readInt();
+                if (hash.length != 32 || from < 0 || to < from || slot < 0
+                        || txLength <= 0 || txLength > ConfirmationHistory.MAX_TX_HASH_BYTES) {
+                    throw new IllegalArgumentException("Invalid observed anchor");
+                }
+                byte[] tx = in.readNBytes(txLength);
+                if (tx.length != txLength || in.read() != -1) {
+                    throw new IllegalArgumentException("Invalid observed anchor");
+                }
+                return new ObservedConfirmation(from, to, new String(tx, StandardCharsets.UTF_8), slot, hash);
+            } catch (IOException failure) {
+                throw new IllegalArgumentException("Invalid observed anchor", failure);
+            }
+        }
     }
 
+    /**
+     * One confirmed anchor. {@code blockHash} is the anchored app block's hash; {@code l1BlockHash} is the L1
+     * inclusion block's hash, or null for a legacy entry that recorded only the inclusion slot.
+     */
     static record Confirmation(long fromHeight, long toHeight, String txHash, long l1Slot,
-                               byte[] blockHash) {
+                               byte[] blockHash, byte[] l1BlockHash) {
     }
 
-    /** Bounded restart-safe journal used to rewind every anchor above an L1 rollback point. */
+    /**
+     * Bounded restart-safe journal used to rewind every anchor above an L1 rollback point. Version 2 also records
+     * each entry's L1 inclusion block hash (ADR-038 D8a); version 1 journals still decode, as legacy entries.
+     */
     static final class ConfirmationHistory {
         static final int MAX_ENTRIES = 256;
-        private static final int MAGIC = 0x59414831; // YAH1
+        private static final int MAGIC_V1 = 0x59414831; // YAH1
+        private static final int MAGIC = 0x59414832; // YAH2
         private static final int MAX_TX_HASH_BYTES = 1_024;
         private static final int MAX_ENCODED_BYTES = 512 * 1_024;
 
@@ -657,12 +902,20 @@ final class AnchorService {
                                 || hash == null || hash.length != 32) {
                             throw new IllegalArgumentException("Invalid anchor confirmation history entry");
                         }
+                        byte[] l1Hash = entry.l1BlockHash();
+                        if (l1Hash != null && l1Hash.length != 32) {
+                            throw new IllegalArgumentException("Invalid anchor confirmation history entry");
+                        }
                         out.writeLong(entry.fromHeight());
                         out.writeLong(entry.toHeight());
                         out.writeLong(entry.l1Slot());
                         out.writeInt(tx.length);
                         out.write(tx);
                         out.write(hash);
+                        out.writeBoolean(l1Hash != null);
+                        if (l1Hash != null) {
+                            out.write(l1Hash);
+                        }
                     }
                 }
                 byte[] encoded = bytes.toByteArray();
@@ -681,7 +934,8 @@ final class AnchorService {
                 throw new IllegalArgumentException("Anchor confirmation history encoding is too large");
             }
             try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(encoded))) {
-                if (in.readInt() != MAGIC) {
+                int magic = in.readInt();
+                if (magic != MAGIC && magic != MAGIC_V1) {
                     throw new IllegalArgumentException("Invalid anchor confirmation history magic");
                 }
                 int count = in.readInt();
@@ -704,8 +958,15 @@ final class AnchorService {
                     if (tx.length != txLength || hash.length != 32) {
                         throw new IllegalArgumentException("Truncated anchor confirmation history");
                     }
+                    byte[] l1Hash = null;
+                    if (magic == MAGIC && in.readBoolean()) {
+                        l1Hash = in.readNBytes(32);
+                        if (l1Hash.length != 32) {
+                            throw new IllegalArgumentException("Truncated anchor confirmation history");
+                        }
+                    }
                     history.add(new Confirmation(from, to,
-                            new String(tx, StandardCharsets.UTF_8), slot, hash));
+                            new String(tx, StandardCharsets.UTF_8), slot, hash, l1Hash));
                     previousSlot = slot;
                 }
                 if (in.read() != -1) {

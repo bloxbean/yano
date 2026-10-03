@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BiPredicate;
 
 /** Durable, bounded, node-local delivery journal for block-scoped L1 observations. */
 final class L1ObservationJournal {
@@ -407,6 +408,86 @@ final class L1ObservationJournal {
                 .map(AppLedgerStore.EpochSpoolEntry::value)
                 .map(L1ObservationJournal::decodeRecord)
                 .noneMatch(record -> record.state() == State.QUARANTINED);
+    }
+
+    /**
+     * The journal's part of an L1 evidence reconciliation (app-layer ADR-038, D8b): per-record invalidations, or the
+     * terminal quarantine reason that replaces them.
+     */
+    record ReconcileDecision(List<AppLedgerStore.EpochSpoolMutation> invalidations, String quarantine) {
+        ReconcileDecision {
+            invalidations = List.copyOf(invalidations);
+        }
+    }
+
+    /**
+     * Judges every retained record and every finalized cursor against chain state (D8b rule 3). Read-only; the caller
+     * commits the result in one batch. A dead record that is not prepared or finalized is invalidated individually
+     * (record and source mapping). A dead prepared or finalized observation, or an existing quarantine, yields the
+     * terminal ADR-036 quarantine instead.
+     */
+    synchronized ReconcileDecision reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        if (quarantined()) {
+            return new ReconcileDecision(List.of(), "L1_OBSERVATION_JOURNAL_QUARANTINED");
+        }
+        List<AppLedgerStore.EpochSpoolMutation> invalidations = new ArrayList<>();
+        for (AppLedgerStore.EpochSpoolEntry entry : ledger.epochSpoolScan(RECORD_PREFIX, MAX_SCAN)) {
+            Record record = decodeRecord(entry.value());
+            L1Observation observation = L1Observation.decode(record.observationBytes());
+            if (observation == null) {
+                return new ReconcileDecision(List.of(), "L1_OBSERVATION_JOURNAL_UNREADABLE");
+            }
+            if (canonicalAtSlot.test(observation.slot(), observation.blockHash())) {
+                continue;
+            }
+            switch (record.state()) {
+                case FINALIZED -> {
+                    return new ReconcileDecision(List.of(), "DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
+                }
+                case QC_PREPARED -> {
+                    return new ReconcileDecision(List.of(), "L1_INVALIDATED_PREPARED_VALUE");
+                }
+                default -> {
+                    invalidations.add(AppLedgerStore.EpochSpoolMutation.delete(entry.key()));
+                    invalidations.add(AppLedgerStore.EpochSpoolMutation.delete(sourceKey(observation)));
+                }
+            }
+        }
+        for (AppLedgerStore.EpochSpoolEntry entry : ledger.epochSpoolScan(CURSOR_PREFIX, MAX_SCAN)) {
+            byte[] recordKey = cursorRecordKey(entry.value());
+            long slot = ByteBuffer.wrap(recordKey, 1, Long.BYTES).getLong();
+            byte[] blockHash = Arrays.copyOfRange(recordKey, 1 + Long.BYTES, 1 + Long.BYTES + 32);
+            if (!canonicalAtSlot.test(slot, blockHash)) {
+                return new ReconcileDecision(List.of(), "DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
+            }
+        }
+        return new ReconcileDecision(invalidations, null);
+    }
+
+    /** Persists a quarantine reason, as part of a reconciliation commit. */
+    static AppLedgerStore.EpochSpoolMutation quarantineMutation(String reason) {
+        return AppLedgerStore.EpochSpoolMutation.put(QUARANTINE_KEY, reason.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Deletes the failed-callback marker, as part of a reconciliation commit (D8a). */
+    static AppLedgerStore.EpochSpoolMutation clearCallbackFailureMutation() {
+        return AppLedgerStore.EpochSpoolMutation.delete(CALLBACK_FAILURE_KEY);
+    }
+
+    /** Recomputes cached sizes after a reconciliation commit changed the journal underneath it. */
+    synchronized void reloaded() {
+        usedBytes = calculateUsedBytes();
+    }
+
+    /** A terminal quarantine (not the retryable callback-failure marker) is persisted. */
+    synchronized boolean quarantined() {
+        if (ledger.epochSpoolGet(QUARANTINE_KEY) != null) {
+            return true;
+        }
+        return ledger.epochSpoolScan(RECORD_PREFIX, MAX_SCAN).stream()
+                .map(AppLedgerStore.EpochSpoolEntry::value)
+                .map(L1ObservationJournal::decodeRecord)
+                .anyMatch(record -> record.state() == State.QUARANTINED);
     }
 
     synchronized long callbackFailureSlot() {

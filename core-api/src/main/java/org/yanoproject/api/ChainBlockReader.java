@@ -43,4 +43,22 @@ public interface ChainBlockReader {
     default OptionalLong getEarliestRetainedBodyBlockNumber() {
         return OptionalLong.empty();
     }
+
+    /**
+     * Canonical coordinate of the block at {@code slot}: the block number for the slot, then the canonical reference
+     * for that number, which must carry the same slot. Empty when no canonical block has that slot or the capability
+     * is unsupported.
+     */
+    default Optional<CanonicalBlockReference> getCanonicalBlockReferenceAtSlot(long slot) {
+        return Optional.empty();
+    }
+
+    /**
+     * Sequence lock over canonical index mutations (rollback, header replacement, restore): odd while one is in
+     * flight, even otherwise. A reader that observes the same even value before and after a pass knows that no such
+     * mutation overlapped it. Empty means unsupported; callers that depend on it must fail closed.
+     */
+    default OptionalLong canonicalMutationSequence() {
+        return OptionalLong.empty();
+    }
 }

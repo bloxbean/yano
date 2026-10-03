@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.BiPredicate;
 
 /** Durable, byte-bounded ADR-028 epoch-observation spool and local outbox. */
 final class EpochObservationSpool {
@@ -475,6 +476,32 @@ final class EpochObservationSpool {
         }
     }
 
+    /**
+     * The spool's part of an L1 evidence reconciliation (app-layer ADR-038, D8b): a job whose boundary block is no
+     * longer canonical is removed with everything it owns, unless it is finalized, which is the same terminal
+     * quarantine a live rollback raises. Read-only; the caller commits the result in one batch.
+     */
+    synchronized L1ObservationJournal.ReconcileDecision reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        List<AppLedgerStore.EpochSpoolMutation> invalidations = new ArrayList<>();
+        for (JobEntry entry : jobs()) {
+            L1EpochBoundary boundary = entry.job().boundary();
+            if (canonicalAtSlot.test(boundary.boundarySlot(), boundary.boundaryBlockHash())) {
+                continue;
+            }
+            if (entry.job().state() == State.FINALIZED) {
+                return new L1ObservationJournal.ReconcileDecision(List.of(),
+                        "DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION");
+            }
+            invalidations.addAll(jobRemoval(entry.key(), digest(entry.key())));
+        }
+        return new L1ObservationJournal.ReconcileDecision(invalidations, null);
+    }
+
+    /** Recomputes the cached size after a reconciliation commit changed the spool underneath it. */
+    synchronized void reloaded() {
+        usedBytes = calculateUsedBytes();
+    }
+
     synchronized List<L1EpochBoundary> generatingBoundaries() {
         return jobs().stream()
                 .filter(entry -> entry.job().state() == State.GENERATING)
@@ -546,10 +573,13 @@ final class EpochObservationSpool {
     }
 
     private void removeJobIfPresent(byte[] key, byte[] digest) {
-        byte[] encodedJob = ledger.epochSpoolGet(key);
-        if (encodedJob == null) {
-            return;
+        if (ledger.epochSpoolGet(key) != null) {
+            writeChecked(jobRemoval(key, digest));
         }
+    }
+
+    /** Deletes a job, its digest mapping, and every record and verification index entry it owns. */
+    private List<AppLedgerStore.EpochSpoolMutation> jobRemoval(byte[] key, byte[] digest) {
         List<AppLedgerStore.EpochSpoolMutation> mutations = new ArrayList<>();
         for (AppLedgerStore.EpochSpoolEntry encoded : ledger.epochSpoolScan(
                 recordPrefix(digest), MAX_RECORDS_PER_SCAN)) {
@@ -560,7 +590,7 @@ final class EpochObservationSpool {
         }
         mutations.add(AppLedgerStore.EpochSpoolMutation.delete(digestKey(digest)));
         mutations.add(AppLedgerStore.EpochSpoolMutation.delete(key));
-        writeChecked(mutations);
+        return mutations;
     }
 
     private long calculateUsedBytes() {

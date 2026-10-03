@@ -6,8 +6,6 @@ import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.config.YaciConfig;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.Block;
-import com.bloxbean.cardano.yaci.core.model.HeaderBody;
-import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
@@ -73,9 +71,7 @@ import org.yanoproject.runtime.chain.NearestPointLookup;
 import org.yanoproject.runtime.chronology.ChronologyService;
 import org.yanoproject.runtime.chronology.ChronologySubsystem;
 import org.yanoproject.api.events.NodeStartedEvent;
-import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.api.events.RollbackEvent;
-import org.yanoproject.api.util.StoredBlockUtil;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.yanoproject.p2p.peer.PeerRecoveryFailureTracker;
@@ -889,41 +885,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     appChainConfig, protocolMagic, eventBus, null, appChainStoragePath.toString(),
                     pluginEnvironment.classLoader(), pluginEnvironment.providers(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
-            subsystem.wireL1BlockReplay(this::retainedL1Block);
+            subsystem.wireL1Chain(this, chainStorage.registerBlockBodyRetention(java.util.OptionalLong.of(0)));
             subsystem.wireTxEvaluation(this);
             subsystem.wireAnchorFees(this::anchorFeeParams);
             subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
             subsystems.add(subsystem);
         }
         return new org.yanoproject.runtime.appchain.AppChainManager(subsystems, log);
-    }
-
-    private BlockAppliedEvent retainedL1Block(long slot) {
-        Long blockNumber = chainState.getBlockNumberBySlot(slot);
-        if (blockNumber == null || !Objects.equals(
-                chainState.getSlotByBlockNumber(blockNumber), slot)) {
-            return null;
-        }
-        byte[] blockBytes = chainState.getBlockByNumber(blockNumber);
-        Era storedEra = chainState.getBlockEra(blockNumber);
-        if (blockBytes == null || StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
-            return null;
-        }
-        try {
-            Block block = BlockSerializer.INSTANCE.deserialize(blockBytes);
-            HeaderBody header = block.getHeader() != null
-                    ? block.getHeader().getHeaderBody() : null;
-            if (header == null || header.getSlot() != slot
-                    || header.getBlockNumber() != blockNumber
-                    || header.getBlockHash() == null) {
-                return null;
-            }
-            Era era = block.getEra() != null ? block.getEra() : storedEra;
-            return new BlockAppliedEvent(
-                    era, slot, blockNumber, header.getBlockHash(), block);
-        } catch (RuntimeException malformedRetainedBlock) {
-            return null;
-        }
     }
 
     private String runtimeNetwork() {
@@ -4171,6 +4139,22 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     public java.util.OptionalLong getEarliestRetainedBodyBlockNumber() {
         if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
             return capabilities.getEarliestRetainedBodyBlockNumber();
+        }
+        return java.util.OptionalLong.empty();
+    }
+
+    @Override
+    public Optional<org.yanoproject.api.CanonicalBlockReference> getCanonicalBlockReferenceAtSlot(long slot) {
+        if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getCanonicalBlockReferenceAtSlot(slot);
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public java.util.OptionalLong canonicalMutationSequence() {
+        if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.canonicalMutationSequence();
         }
         return java.util.OptionalLong.empty();
     }

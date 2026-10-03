@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,12 +29,14 @@ import java.math.BigInteger;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -129,6 +132,7 @@ class ScriptAnchorServiceTest {
                 true, 42, log);
         leader.wireTxPricing(() -> DEVNET_PARAMS,
                 () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+        leader.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
         wallet = leader.anchorAddress(); // pre-bootstrap: the wallet address
 
         follower = new ScriptAnchorService(
@@ -143,6 +147,7 @@ class ScriptAnchorServiceTest {
                 false, 42, log);
         follower.wireTxPricing(() -> DEVNET_PARAMS,
                 () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+        follower.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
     }
 
     private String wallet;
@@ -177,6 +182,23 @@ class ScriptAnchorServiceTest {
         byte[] bytes = new byte[len];
         java.util.Arrays.fill(bytes, (byte) b);
         return bytes;
+    }
+
+    /** Deterministic canonical L1 block hash at a slot. */
+    private static byte[] l1Hash(long slot) {
+        return fill(32, (int) (slot % 251) + 1);
+    }
+
+    /** One tick, returning the confirmation it published (ADR-038: completions publish via the listener). */
+    private static AnchorService.ConfirmedAnchor tickConfirmed(ScriptAnchorService service) {
+        List<AnchorService.ConfirmedAnchor> confirmed = new ArrayList<>();
+        service.setConfirmationListener(confirmed::add);
+        try {
+            service.tick();
+        } finally {
+            service.setConfirmationListener(anchor -> { });
+        }
+        return confirmed.isEmpty() ? null : confirmed.getLast();
     }
 
     private static String txHash(byte[] txCbor) {
@@ -221,7 +243,7 @@ class ScriptAnchorServiceTest {
         assertThat(submitted).hasSize(1);
 
         // --- L1 confirms bootstrap: identity persists; anchor UTxO appears
-        leader.onL1Block(100, List.of(bootstrapHash));
+        leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash));
         assertThat(leader.bootstrapped()).isTrue();
         assertThat(leader.anchorAddress()).isEqualTo(scriptAddress);
 
@@ -277,8 +299,16 @@ class ScriptAnchorServiceTest {
         int nextOutIndex = advanceTx.getBody().getOutputs().indexOf(nextOut);
         utxoState.put(scriptAddress, List.of(
                 anchorUtxo(advanceHash, nextOutIndex, nextOut, policyIdHex, 200)));
+        // ADR-038 D4a: a storage failure is retryable, never a silent "no match"
+        leaderLedger.injectMetaWriteFault(() -> {
+            throw new IllegalStateException("disk unavailable");
+        });
+        assertThat(leader.onL1Block(200, l1Hash(200), List.of(advanceHash)).kind())
+                .isEqualTo(L1PhaseResult.Kind.RETRYABLE);
+        assertThat(leader.status()).doesNotContainKey("confirmationObservedAtL1Slot");
+        leaderLedger.injectMetaWriteFault(null);
         failBlockLookup[0] = true;
-        assertThat(leader.onL1Block(200, List.of(advanceHash))).isNull();
+        assertThat(leader.onL1Block(200, l1Hash(200), List.of(advanceHash))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(leader.lastAnchoredHeight()).isZero();
         assertThat(leader.status()).containsEntry("confirmationObservedAtL1Slot", 200L);
         assertThat(leader.status().get("lastError").toString())
@@ -297,9 +327,14 @@ class ScriptAnchorServiceTest {
         // Raw BlockApplied callbacks precede the UTxO-store commit, so a
         // member never advances from the transaction-hash callback. The
         // guarded periodic pass reads the committed thread UTxO instead.
-        assertThat(follower.onL1Block(200, List.of(advanceHash))).isNull();
+        assertThat(follower.onL1Block(200, l1Hash(200), List.of(advanceHash))).isEqualTo(L1PhaseResult.NO_OP);
         assertThat(follower.lastAnchoredHeight()).isZero();
-        AnchorService.ConfirmedAnchor observed = follower.tick();
+        // Without the canonical L1 inclusion block the follower defers rather than record a legacy entry
+        follower.wireCanonicalHashAtSlot(slot -> null);
+        assertThat(tickConfirmed(follower)).isNull();
+        assertThat(follower.lastAnchoredHeight()).isZero();
+        follower.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
+        AnchorService.ConfirmedAnchor observed = tickConfirmed(follower);
         assertThat(observed).isNotNull();
         assertThat(observed.fromHeight()).isEqualTo(1);
         assertThat(observed.toHeight()).isEqualTo(9);
@@ -315,9 +350,12 @@ class ScriptAnchorServiceTest {
                 .containsEntry("observedAnchorCount", 1L);
         assertThat(AnchorService.ConfirmationHistory.decode(
                 followerLedger.metaBytes("anchor_confirmation_history_v1")))
-                .extracting(AnchorService.Confirmation::toHeight)
-                .containsExactly(9L);
-        assertThat(follower.tick()).isNull();
+                .singleElement()
+                .satisfies(entry -> {
+                    assertThat(entry.toHeight()).isEqualTo(9L);
+                    assertThat(entry.l1BlockHash()).isEqualTo(l1Hash(200));
+                });
+        assertThat(tickConfirmed(follower)).isNull();
         assertThat(follower.status())
                 .containsEntry("anchoredCount", 0L)
                 .containsEntry("observedAnchorCount", 1L);
@@ -349,6 +387,7 @@ class ScriptAnchorServiceTest {
                     observerSigner, () -> members, () -> 2,
                     (topic, body) -> observerDiffusions.incrementAndGet(), false, 42, log);
             observer.wireTxPricing(() -> DEVNET_PARAMS, () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+            observer.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
             utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
             Map<String, Object> boot = leader.bootstrap();
             Transaction bootstrapTx = Transaction.deserialize(submitted.getFirst());
@@ -356,7 +395,7 @@ class ScriptAnchorServiceTest {
             String scriptAddress = (String) boot.get("scriptAddress");
             String policy = (String) boot.get("threadPolicyId");
             String script = (String) boot.get("scriptHash");
-            leader.onL1Block(100, List.of(bootstrapHash));
+            leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash));
             TransactionOutput bootstrapOut = outputTo(bootstrapTx, scriptAddress);
             utxoState.put(scriptAddress, List.of(anchorUtxo(bootstrapHash,
                     bootstrapTx.getBody().getOutputs().indexOf(bootstrapOut), bootstrapOut, policy, 100)));
@@ -386,13 +425,13 @@ class ScriptAnchorServiceTest {
             assertThat(observerDiffusions).hasValue(0);
             assertThat(observer.status()).containsEntry("identityCandidatePending", true);
             assertThat(observer.bootstrapped()).isFalse();
-            assertThat(observer.tick()).isNull();
+            assertThat(tickConfirmed(observer)).isNull();
 
             TransactionOutput next = outputTo(advance, scriptAddress);
             String advanceHash = txHash(submitted.get(1));
             utxoState.put(scriptAddress, List.of(anchorUtxo(advanceHash,
                     advance.getBody().getOutputs().indexOf(next), next, policy, 200)));
-            assertThat(observer.tick()).isNotNull();
+            assertThat(tickConfirmed(observer)).isNotNull();
             assertThat(observer.bootstrapped()).isTrue();
             assertThat(observer.lastAnchoredHeight()).isEqualTo(9);
             assertThat(observer.status()).containsEntry("lastAnchorTx", advanceHash);
@@ -411,7 +450,7 @@ class ScriptAnchorServiceTest {
         String bootstrapHash = (String) boot.get("txHash");
         String address = (String) boot.get("scriptAddress");
         String policy = (String) boot.get("threadPolicyId");
-        leader.onL1Block(100, List.of(bootstrapHash));
+        leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash));
         TransactionOutput initial = outputTo(bootstrap, address);
         utxoState.put(address, List.of(anchorUtxo(bootstrapHash,
                 bootstrap.getBody().getOutputs().indexOf(initial), initial, policy, 100)));
@@ -440,10 +479,10 @@ class ScriptAnchorServiceTest {
         utxoState.put(address, List.of(new Utxo(new Outpoint(laterTx, 0), address,
                 verified.lovelace(), verified.assets(), null, AnchorDatumCodec.encode(later).serializeToBytes(),
                 null, null, false, 300, 0, null)));
-        assertThat(follower.tick()).isNull();
+        assertThat(tickConfirmed(follower)).isNull();
         assertThat(follower.bootstrapped()).isFalse();
-        assertThat(follower.onL1Block(200, List.of(verifiedTx))).isNull();
-        assertThat(follower.tick()).isNull(); // raw callback is not committed authority
+        assertThat(follower.onL1Block(200, l1Hash(200), List.of(verifiedTx))).isEqualTo(L1PhaseResult.NO_OP);
+        assertThat(tickConfirmed(follower)).isNull(); // raw callback is not committed authority
 
         // Restore only persisted candidate metadata, not callback-local state.
         ScriptAnchorService restarted = new ScriptAnchorService(CHAIN_ID, "ordered-log",
@@ -453,6 +492,7 @@ class ScriptAnchorServiceTest {
                 new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
                 followerSigner, () -> members, () -> 2, (topic, body) -> { }, false, 42, log);
         restarted.wireTxPricing(() -> DEVNET_PARAMS, () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+        restarted.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
         AnchorDatumCodec.AnchorDatum forged = new AnchorDatumCodec.AnchorDatum(
                 first.version(), first.chainId(), first.chainGenesisId(), first.applicationId(),
                 first.commitmentProfileId(), first.formatFingerprint(), first.height(), first.blockHash(),
@@ -460,22 +500,22 @@ class ScriptAnchorServiceTest {
         utxoState.historicalByTransaction.put(verifiedTx, List.of(new Utxo(verified.outpoint(), address,
                 verified.lovelace(), verified.assets(), null, AnchorDatumCodec.encode(forged).serializeToBytes(),
                 null, null, false, 200, 0, null)));
-        assertThat(restarted.tick()).isNull(); // retained output still requires exact local app history
+        assertThat(tickConfirmed(restarted)).isNull(); // retained output still requires exact local app history
         assertThat(restarted.bootstrapped()).isFalse();
         utxoState.historicalByTransaction.put(verifiedTx, List.of(new Utxo(verified.outpoint(), address,
                 verified.lovelace(), verified.assets(), null, verified.inlineDatum(),
                 null, null, true, 200, 0, null)));
-        assertThat(restarted.tick()).isNull(); // collateral return is not successful script acceptance
+        assertThat(tickConfirmed(restarted)).isNull(); // collateral return is not successful script acceptance
         utxoState.historicalByTransaction.put(verifiedTx, List.of(new Utxo(verified.outpoint(), address,
                 verified.lovelace(), verified.assets(), null, verified.inlineDatum(),
                 null, null, false, 600, 0, null)));
-        assertThat(restarted.tick()).isNull(); // acceptance cannot be ahead of the committed point
+        assertThat(tickConfirmed(restarted)).isNull(); // acceptance cannot be ahead of the committed point
         utxoState.historicalByTransaction.put(verifiedTx, List.of(verified));
         utxoState.setAppliedPoint(500, fill(32, 0x66));
-        assertThat(restarted.tick()).isNull(); // same slot on a different fork is insufficient
+        assertThat(tickConfirmed(restarted)).isNull(); // same slot on a different fork is insufficient
         assertThat(restarted.bootstrapped()).isFalse();
         utxoState.setAppliedPoint(500, L1_TIP_HASH);
-        assertThat(restarted.tick()).isNotNull();
+        assertThat(tickConfirmed(restarted)).isNotNull();
         assertThat(restarted.bootstrapped()).isTrue();
         assertThat(restarted.lastAnchoredHeight()).isEqualTo(4);
         assertThat(restarted.status()).containsEntry("lastAnchorTx", verifiedTx);
@@ -483,10 +523,10 @@ class ScriptAnchorServiceTest {
 
         // Only after exact historical acceptance establishes identity may the
         // ordinary reconciliation path follow the current thread output.
-        assertThat(restarted.tick()).isNotNull();
+        assertThat(tickConfirmed(restarted)).isNotNull();
         assertThat(restarted.lastAnchoredHeight()).isEqualTo(9);
         assertThat(restarted.status()).containsEntry("lastAnchorTx", laterTx);
-        assertThat(restarted.tick()).isNull();
+        assertThat(tickConfirmed(restarted)).isNull();
         // bloxbean/yano#164: each advance opens the L1_ANCHORED gate only once its slot is stable
         assertThat(AnchorService.stableAnchoredHeight(followerLedger, 299)).isEqualTo(4);
         assertThat(AnchorService.stableAnchoredHeight(followerLedger, 300)).isEqualTo(9);
@@ -498,7 +538,7 @@ class ScriptAnchorServiceTest {
         assertThat(restarted.bootstrapped()).isFalse();
         assertThat(restarted.lastAnchoredHeight()).isZero();
         assertThat(AnchorService.stableAnchoredHeight(followerLedger, 1_000)).isZero();
-        assertThat(restarted.tick()).isNull(); // stale UTxO history cannot re-establish a cleared candidate
+        assertThat(tickConfirmed(restarted)).isNull(); // stale UTxO history cannot re-establish a cleared candidate
     }
 
     @Test
@@ -511,7 +551,7 @@ class ScriptAnchorServiceTest {
         String bootstrapHash = (String) boot.get("txHash");
         String scriptAddress = (String) boot.get("scriptAddress");
         String policyIdHex = (String) boot.get("threadPolicyId");
-        leader.onL1Block(100, List.of(bootstrapHash));
+        leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash));
 
         TransactionOutput bootstrapOut = outputTo(bootstrapTx, scriptAddress);
         int bootstrapIndex = bootstrapTx.getBody().getOutputs().indexOf(bootstrapOut);
@@ -561,7 +601,7 @@ class ScriptAnchorServiceTest {
 
         // If the leader's raw callback was missed, the same committed-view
         // repair completes its matching pending submission exactly once.
-        assertThat(leader.tick()).isNotNull();
+        assertThat(tickConfirmed(leader)).isNotNull();
         assertThat(leader.lastAnchoredHeight()).isEqualTo(9);
         assertThat(leader.status())
                 .doesNotContainKey("pendingTx")
@@ -583,6 +623,7 @@ class ScriptAnchorServiceTest {
                 followerSigner, () -> members, () -> 2, (topic, body) -> { },
                 false, 42, log);
         restarted.wireTxPricing(() -> DEVNET_PARAMS, () -> visibleL1Point[0]);
+        restarted.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
 
         restarted.tick();
         assertThat(restarted.lastAnchoredHeight()).isEqualTo(9);
@@ -656,7 +697,7 @@ class ScriptAnchorServiceTest {
                 walletUtxo("cc".repeat(32), 0, 100_000_000)));
         Map<String, Object> boot = leader.bootstrap();
         String bootstrapHash = (String) boot.get("txHash");
-        leader.onL1Block(100, List.of(bootstrapHash));
+        leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash));
 
         assertThat(leader.bootstrapped()).isTrue();
         assertThat(leaderLedger.metaLong("anchor_last_height", -1)).isZero();
@@ -673,6 +714,73 @@ class ScriptAnchorServiceTest {
 
         assertThat(leader.bootstrap()).containsKeys("txHash", "threadPolicyId", "scriptHash");
         assertThat(submitted).hasSize(2);
+    }
+
+    /** ADR-038 D4a: the observed bootstrap is a durable fact; completion survives a restart and waits for the gate. */
+    @Test
+    void observedBootstrapSurvivesRestartAndRollbackFailureIsRetryable() {
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+        String bootstrapHash = (String) leader.bootstrap().get("txHash");
+        leader.setCompletionGate(() -> false);
+        assertThat(leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(leader.bootstrapped()).isFalse();
+        assertThat(leader.status()).containsEntry("bootstrapConfirmationObservedAtL1Slot", 100L);
+
+        ScriptAnchorService restarted = new ScriptAnchorService(
+                CHAIN_ID, "ordered-log", new AppChainConfig.AnchorConfig(
+                        true, "aa".repeat(32), 10, 60, 7014,
+                        AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS,
+                        AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE,
+                        AppChainConfig.AnchorConfig.MODE_SCRIPT, null),
+                leaderLedger, cbor -> {
+                    throw new AssertionError("A durable observation is completed, never resubmitted");
+                },
+                () -> utxoState, this::blockAt, () -> tip[0],
+                new AnchorScriptArtifacts(AppChainConfig.AnchorScriptConfig.defaults()),
+                leaderSigner, () -> members, () -> 2, (topic, body) -> { }, true, 42, log);
+        restarted.wireTxPricing(() -> DEVNET_PARAMS, () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+        restarted.tick();
+        assertThat(restarted.bootstrapped()).isTrue();
+        assertThat(restarted.status()).doesNotContainKey("bootstrapConfirmationObservedAtL1Slot");
+        assertThat(AnchorService.ConfirmationHistory.decode(
+                leaderLedger.metaBytes("anchor_confirmation_history_v1")))
+                .singleElement()
+                .satisfies(entry -> assertThat(entry.l1BlockHash()).isEqualTo(l1Hash(100)));
+
+        leaderLedger.injectMetaWriteFault(() -> {
+            throw new IllegalStateException("disk unavailable");
+        });
+        assertThat(restarted.onL1Rollback(99).kind()).isEqualTo(L1PhaseResult.Kind.RETRYABLE);
+        assertThat(restarted.bootstrapped()).isTrue();
+        leaderLedger.injectMetaWriteFault(null);
+        assertThat(restarted.onL1Rollback(99)).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(restarted.bootstrapped()).isFalse();
+        assertThat(restarted.onL1Rollback(99)).isEqualTo(L1PhaseResult.NO_OP);
+    }
+
+    /** ADR-038 D8b: a dead bootstrap confirmation resets the identity exactly as an L1 rollback would. */
+    @Test
+    void reconcileResetsTheIdentityOnlyWhenTheBootstrapConfirmationIsDead() {
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+        String bootstrapHash = (String) leader.bootstrap().get("txHash");
+        assertThat(leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(leader.bootstrapped()).isTrue();
+
+        leaderLedger.writeAtomically(leader.reconcile(
+                (slot, hash) -> slot == 100 && Arrays.equals(hash, l1Hash(100))));
+        leader.reloadAfterReconciliation();
+        assertThat(leader.bootstrapped()).as("a canonical bootstrap is kept").isTrue();
+
+        Consumer<WriteBatch> stager = leader.reconcile((slot, hash) -> false);
+        assertThat(leader.bootstrapped()).as("read-only").isTrue();
+        leaderLedger.writeAtomically(stager);
+        leader.reloadAfterReconciliation();
+
+        assertThat(leader.bootstrapped()).isFalse();
+        assertThat(leaderLedger.metaBytes("anchor_script_policy_id")).isEmpty();
+        assertThat(leaderLedger.metaLong("anchor_last_height", -1)).isZero();
+        assertThat(leader.bootstrap()).containsKeys("txHash", "threadPolicyId", "scriptHash");
     }
 
     @Test
@@ -693,7 +801,7 @@ class ScriptAnchorServiceTest {
         String bootstrapHash = (String) boot.get("txHash");
         String scriptAddress = (String) boot.get("scriptAddress");
         String policyIdHex = (String) boot.get("threadPolicyId");
-        leader.onL1Block(100, List.of(bootstrapHash));
+        leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash));
         TransactionOutput anchorOut = outputTo(bootstrapTx, scriptAddress);
         int anchorOutIndex = bootstrapTx.getBody().getOutputs().indexOf(anchorOut);
         utxoState.put(scriptAddress, List.of(
@@ -740,6 +848,7 @@ class ScriptAnchorServiceTest {
         // = wrong script-integrity hash). It fails closed with a clear message.
         leader.wireTxPricing(() -> null,
                 () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+        leader.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
         utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
 
         assertThatThrownBy(leader::bootstrap)
@@ -835,6 +944,7 @@ class ScriptAnchorServiceTest {
                     (topic, body) -> { }, true, 42, safeLog);
             service.wireTxPricing(() -> DEVNET_PARAMS,
                     () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
+            service.wireCanonicalHashAtSlot(ScriptAnchorServiceTest::l1Hash);
             String localWallet = service.anchorAddress();
             utxoState.put(localWallet, List.of(
                     new Utxo(new Outpoint("dd".repeat(32), 0), localWallet,
@@ -846,7 +956,7 @@ class ScriptAnchorServiceTest {
             String bootstrapHash = (String) boot.get("txHash");
             String scriptAddress = (String) boot.get("scriptAddress");
             String policyIdHex = (String) boot.get("threadPolicyId");
-            service.onL1Block(100, List.of(bootstrapHash));
+            service.onL1Block(100, l1Hash(100), List.of(bootstrapHash));
             TransactionOutput anchorOut = outputTo(bootstrapTx, scriptAddress);
             int anchorIndex = bootstrapTx.getBody().getOutputs().indexOf(anchorOut);
             utxoState.put(scriptAddress, List.of(

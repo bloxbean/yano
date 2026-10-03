@@ -1,18 +1,15 @@
 package org.yanoproject.runtime.appchain;
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yaci.events.api.EventBus;
-import com.bloxbean.cardano.yaci.events.api.EventMetadata;
-import com.bloxbean.cardano.yaci.events.api.PublishOptions;
-import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
+import org.yanoproject.api.ChainBlockReader;
 import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.events.BlockAppliedEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -85,30 +82,24 @@ class AppChainRotationIntegrationTest {
         int portB = freePort();
         int portC = freePort();
 
-        Map<String, EventBus> buses = new ConcurrentHashMap<>();
-        buses.put("a", new SimpleEventBus());
-        buses.put("b", new SimpleEventBus());
-        buses.put("c", new SimpleEventBus());
+        // Shared L1 clock: every node reads the same L1 tip, which advances one slot every 300ms
+        AtomicLong slot = new AtomicLong();
+        ChainBlockReader l1 = l1Clock(slot);
 
         // Full mesh, rotating mode, threshold 2-of-3
         startRotating("a", KEY_A, members, portA, List.of(peer(portB), peer(portC)),
-                buses.get("a"), tempDir.resolve("rot-a"));
+                l1, tempDir.resolve("rot-a"));
         startRotating("b", KEY_B, members, portB, List.of(peer(portA), peer(portC)),
-                buses.get("b"), tempDir.resolve("rot-b"));
+                l1, tempDir.resolve("rot-b"));
         startRotating("c", KEY_C, members, portC, List.of(peer(portA), peer(portB)),
-                buses.get("c"), tempDir.resolve("rot-c"));
+                l1, tempDir.resolve("rot-c"));
 
         awaitTrue("all connected", () -> nodes.values().stream().allMatch(this::connected));
 
-        // Shared L1 clock: advance one slot every 300ms on every live node's bus
-        AtomicLong slot = new AtomicLong();
         feeding.set(true);
         Thread feeder = new Thread(() -> {
             while (feeding.get()) {
-                long s = slot.incrementAndGet();
-                for (EventBus bus : buses.values()) {
-                    feedSlot(bus, s);
-                }
+                slot.incrementAndGet();
                 try {
                     Thread.sleep(300);
                 } catch (InterruptedException e) {
@@ -129,7 +120,6 @@ class AppChainRotationIntegrationTest {
         String victim = keyOf(proposer1, pubA, pubB, pubC);
         log.info("Killing block-1 proposer: node {}", victim);
         nodes.remove(victim).stop();
-        buses.remove(victim);
 
         List<AppChainSubsystem> survivors = new ArrayList<>(nodes.values());
         assertThat(survivors).hasSize(2); // threshold 2-of-3 still reachable
@@ -182,7 +172,7 @@ class AppChainRotationIntegrationTest {
 
     private AppChainSubsystem startRotating(String name, byte[] key, Set<String> members,
                                             int serverPort, List<AppChainConfig.AppPeer> peers,
-                                            EventBus bus, Path ledgerDir) throws Exception {
+                                            ChainBlockReader l1, Path ledgerDir) throws Exception {
         AppChainConfig config = AppChainConfig.builder("rot-chain")
                 .signingKeyHex(HexUtil.encodeHexString(key))
                 .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
@@ -194,7 +184,7 @@ class AppChainRotationIntegrationTest {
                         "sequencer.mode", "rotating",
                         "sequencer.window-slots", "5"))
                 .build();
-        return start(name, config, serverPort, bus, ledgerDir);
+        return start(name, config, serverPort, l1, ledgerDir);
     }
 
     private AppChainSubsystem startFixed(String name, byte[] key, Set<String> members,
@@ -214,7 +204,7 @@ class AppChainRotationIntegrationTest {
     }
 
     private AppChainSubsystem start(String name, AppChainConfig config, int serverPort,
-                                    EventBus bus, Path ledgerDir) throws Exception {
+                                    ChainBlockReader l1, Path ledgerDir) throws Exception {
         // Restart case: release the port before binding a fresh server
         NodeServer previous = serversByName.remove(name);
         if (previous != null) {
@@ -224,8 +214,11 @@ class AppChainRotationIntegrationTest {
             }
             Thread.sleep(500);
         }
-        AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, bus, null,
+        AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 ledgerDir.toString(), null, log);
+        if (l1 != null) {
+            subsystem.wireL1Chain(l1, null);
+        }
         nodes.put(name, subsystem);
         NodeServer server = new NodeServer(serverPort,
                 N2NVersionTableConstant.v11AndAboveWithAppLayer(MAGIC, false, 0, false),
@@ -242,15 +235,31 @@ class AppChainRotationIntegrationTest {
         return subsystem;
     }
 
-    private static void feedSlot(EventBus bus, long slot) {
-        byte[] hash = new byte[32];
-        Arrays.fill(hash, (byte) (slot % 251));
-        hash[0] = (byte) (slot >> 8);
-        try {
-            bus.publish(new BlockAppliedEvent(null, slot, slot, HexUtil.encodeHexString(hash), null),
-                    EventMetadata.builder().build(), PublishOptions.builder().build());
-        } catch (Exception ignored) {
-        }
+    /** An L1 whose tip is block {@code slot} at that slot: the rotating sequencer's slot clock reads only the tip. */
+    private static ChainBlockReader l1Clock(AtomicLong slot) {
+        return new ChainBlockReader() {
+            @Override
+            public ChainTip getLocalTip() {
+                long current = slot.get();
+                if (current == 0) {
+                    return null;
+                }
+                byte[] hash = new byte[32];
+                Arrays.fill(hash, (byte) (current % 251));
+                hash[0] = (byte) (current >> 8);
+                return new ChainTip(current, hash, current);
+            }
+
+            @Override
+            public byte[] getBlockByNumber(long blockNumber) {
+                return null;
+            }
+
+            @Override
+            public Era getBlockEra(long blockNumber) {
+                return null;
+            }
+        };
     }
 
     private boolean connected(AppChainSubsystem subsystem) {

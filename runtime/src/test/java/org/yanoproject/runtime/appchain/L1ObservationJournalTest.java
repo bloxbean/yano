@@ -19,6 +19,7 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiPredicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -317,6 +318,72 @@ class L1ObservationJournalTest {
                     LoggerFactory.getLogger(L1ObservationJournalTest.class));
             assertThat(restarted.healthy()).isFalse();
             assertThat(service.healthy()).isFalse();
+        }
+    }
+
+    /** App-layer ADR-038, D8b rule 3: a dead unfinalized record is invalidated with its source mapping. */
+    @Test
+    void reconcileInvalidatesDeadUnfinalizedRecordsWithoutWriting() {
+        L1Observation dead = observation(10, 0, 7);
+        L1Observation live = L1Observation.transaction("observer", filled(4), 0, 20, filled(3), new byte[]{8});
+        BiPredicate<Long, byte[]> onlyLive = (slot, hash) -> slot == 20 && Arrays.equals(hash, filled(3));
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            journal.observe(List.of(dead, live));
+
+            L1ObservationJournal.ReconcileDecision decision = journal.reconcile(onlyLive);
+
+            assertThat(decision.quarantine()).isNull();
+            assertThat(decision.invalidations()).hasSize(2);
+            assertThat(journal.pending(20, 10, 1_000_000)).as("read-only").containsExactly(dead, live);
+            ledger.epochSpoolWrite(decision.invalidations());
+            journal.reloaded();
+            assertThat(journal.pending(20, 10, 1_000_000)).containsExactly(live);
+            L1Observation replacement = L1Observation.transaction("observer", filled(4), 0, 10, filled(2),
+                    new byte[]{9});
+            journal.observe(List.of(replacement)); // the source mapping went with the record
+            assertThat(journal.pending(20, 10, 1_000_000)).containsExactly(replacement, live);
+        }
+    }
+
+    @Test
+    void reconcileQuarantinesADeadPreparedObservation() {
+        L1Observation observation = observation(10, 0, 7);
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            journal.observe(List.of(observation));
+            AppBlock block = blockWith(observation);
+            journal.markInFlight(block);
+            journal.markPrepared(block);
+
+            L1ObservationJournal.ReconcileDecision decision = journal.reconcile((slot, hash) -> false);
+
+            assertThat(decision.quarantine()).isEqualTo("L1_INVALIDATED_PREPARED_VALUE");
+            assertThat(decision.invalidations()).isEmpty();
+            assertThat(journal.status().toString()).contains("QC_PREPARED=1");
+        }
+    }
+
+    @Test
+    void reconcileQuarantinesADeadFinalizedRecordAndADeadCursor() {
+        L1Observation observation = observation(10, 0, 7);
+        try (AppLedgerStore ledger = store()) {
+            L1ObservationJournal journal = new L1ObservationJournal(ledger, 1_000_000);
+            journal.observe(List.of(observation));
+            journal.acknowledge(observation);
+            assertThat(journal.reconcile((slot, hash) -> false).quarantine())
+                    .isEqualTo("DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
+
+            AppBlock block = blockWith(observation);
+            try (WriteBatch batch = new WriteBatch()) {
+                journal.stageFinalized(block, batch);
+                ledger.commitBlock(block, AppBlockCodec.blockHash(block), block.stateRoot(), batch);
+            }
+            assertThat(journal.acknowledge(observation)).isTrue(); // only the cursor remains
+            assertThat(journal.status().toString()).contains("FINALIZED=0");
+            assertThat(journal.reconcile((slot, hash) -> false).quarantine())
+                    .isEqualTo("DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
+            assertThat(journal.reconcile((slot, hash) -> slot == 10).quarantine()).isNull();
         }
     }
 
