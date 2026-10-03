@@ -290,6 +290,43 @@ class AnchorServiceTest {
         assertThat(ledger.metaBytes("anchor_last_block_hash")).hasSize(32);
     }
 
+    /** bloxbean/yano#164: the L1_ANCHORED gate counts only stability-deep, surviving anchors. */
+    @Test
+    void stableAnchoredHeight_waitsForStabilityDepthAndForgetsRolledBackAnchors() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 1_000)).isZero();
+
+        tip[0] = 3;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(100, List.of("txhash-1"))).isNotNull();
+        tip[0] = 8;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(200, List.of("txhash-2"))).isNotNull();
+        assertThat(service.lastAnchoredHeight()).isEqualTo(8); // first sighting
+
+        // Stable L1 point below the inclusion slot: not yet deep enough
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 0)).isZero();
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 99)).isZero();
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 100)).isEqualTo(3);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 199)).isEqualTo(3);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 200)).isEqualTo(8);
+
+        // A rolled-back anchor never counts, however deep the stable point gets
+        service.onL1Rollback(150);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 1_000)).isEqualTo(3);
+
+        // Its re-inclusion counts again only once that new slot is stable
+        tip[0] = 10;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(300, List.of("txhash-3"))).isNotNull();
+        assertThat(service.lastAnchoredHeight()).isEqualTo(10);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 299)).isEqualTo(3);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 300)).isEqualTo(10);
+
+        ledger.metaPutBytes(AnchorService.META_ANCHOR_HISTORY, new byte[]{1, 2, 3});
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 1_000)).isZero(); // unreadable: fail closed
+    }
+
     @Test
     void rollbackDropsPendingRangeDerivedFromInvalidatedFrontier() {
         AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);

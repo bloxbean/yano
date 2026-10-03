@@ -33,6 +33,10 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 
+import java.lang.management.LockInfo;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.reflect.Field;
 import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -41,6 +45,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -51,6 +56,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -308,8 +314,78 @@ class AppChainL1CallbackIsolationTest {
         }
     }
 
+    /**
+     * bloxbean/yano#164: the L1_ANCHORED gate frontier follows the node's own
+     * stable L1 point (l1.stability-depth = 1 here), not the first sighting,
+     * and a rolled-back anchor never counts as stable.
+     */
+    @Test
+    void stableAnchorFrontierWaitsForStabilityDepthAndForgetsRolledBackAnchor() throws Exception {
+        try (StartedHarness harness = startHarness("stable-frontier", new Controls(), mock(Logger.class))) {
+            harness.publish(applied(101, blockWithTx(ANCHOR_TX_HASH)));
+            assertThat(anchorHeight(harness.subsystem)).isEqualTo(1);
+            assertThat(stableAnchorHeight(harness.subsystem)).isZero(); // first sighting only
+
+            harness.publish(applied(102, emptyBlock()));
+            assertThat(stableAnchorHeight(harness.subsystem)).isEqualTo(1); // one block deep
+
+            harness.publish(new RollbackEvent(new Point(100, "64".repeat(32)), true));
+            assertThat(anchorHeight(harness.subsystem)).isZero();
+            for (long slot = 101; slot <= 104; slot++) {
+                harness.publish(applied(slot, emptyBlock()));
+            }
+            assertThat(stableAnchorHeight(harness.subsystem)).isZero();
+        }
+    }
+
+    /**
+     * A frontier read racing the L1 callback waits for its append and trim. Reading the window's size before the
+     * trim and walking it after shifted the stable index onto the tip, so an anchor in the tip block, with no
+     * successor yet, counted as stable.
+     */
+    @Test
+    void stableAnchorFrontierWaitsForAnInFlightL1WindowUpdate() throws Exception {
+        PausingL1Window window = new PausingL1Window();
+        ExecutorService publisher = Executors.newSingleThreadExecutor();
+        AtomicLong frontier = new AtomicLong(-1);
+        StartedHarness harness = startHarness("frontier-race", new Controls(), mock(Logger.class), window::install);
+        try {
+            // The window is full (stability depth 1 + 64), so the next block's append is followed by a trim.
+            long slot = 2;
+            while (window.size() < 65) {
+                harness.publish(applied(++slot, emptyBlock()));
+            }
+            long anchorSlot = slot + 1;
+            window.pauseNextAppend.set(true);
+            Future<?> callback = publisher.submit(() ->
+                    harness.publish(applied(anchorSlot, blockWithTx(ANCHOR_TX_HASH))));
+            assertThat(window.appended.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Thread reader = new Thread(() -> frontier.set(stableAnchorHeight(harness.subsystem)));
+            reader.start();
+            assertThat(awaitBlockedOn(reader, window)).as("frontier read waits for the window update").isTrue();
+
+            window.release.countDown();
+            callback.get(5, TimeUnit.SECONDS);
+            reader.join(TimeUnit.SECONDS.toMillis(5));
+            assertThat(anchorHeight(harness.subsystem)).isEqualTo(1);
+            assertThat(frontier).hasValue(0); // the anchor's block is the tip
+            harness.publish(applied(anchorSlot + 1, emptyBlock()));
+            assertThat(stableAnchorHeight(harness.subsystem)).isEqualTo(1);
+        } finally {
+            window.release.countDown(); // before close, which drains the held callback
+            harness.close();
+            publisher.shutdownNow();
+        }
+    }
+
     private StartedHarness startHarness(String testId, Controls controls, Logger logger)
             throws Exception {
+        return startHarness(testId, controls, logger, ignored -> { });
+    }
+
+    private StartedHarness startHarness(String testId, Controls controls, Logger logger,
+                                        Consumer<AppChainSubsystem> beforeStart) throws Exception {
         DirectEventBus eventBus = new DirectEventBus();
         AppChainConfig config = AppChainConfig.builder("l1-callback-" + testId)
                 .signingKeyHex(SIGNING_KEY_HEX)
@@ -328,6 +404,7 @@ class AppChainL1CallbackIsolationTest {
         AppChainSubsystem subsystem = new AppChainSubsystem(
                 config, 42, eventBus, null, tempDir.resolve(testId).toString(),
                 null, new ControlledRegistry(controls), logger);
+        beforeStart.accept(subsystem);
         Map<Long, BlockAppliedEvent> retainedBlocks = new ConcurrentHashMap<>();
         subsystem.wireL1(ignored -> ANCHOR_TX_HASH,
                 () -> new FixedUtxoState(List.of(anchorUtxo())));
@@ -403,9 +480,17 @@ class AppChainL1CallbackIsolationTest {
     }
 
     private static long anchorHeight(AppChainSubsystem subsystem) {
+        return anchorStatusLong(subsystem, "lastAnchoredHeight");
+    }
+
+    private static long stableAnchorHeight(AppChainSubsystem subsystem) {
+        return anchorStatusLong(subsystem, "stableAnchoredHeight");
+    }
+
+    private static long anchorStatusLong(AppChainSubsystem subsystem, String key) {
         Object rawAnchor = subsystem.status().get("anchor");
         assertThat(rawAnchor).isInstanceOf(Map.class);
-        Object value = ((Map<?, ?>) rawAnchor).get("lastAnchoredHeight");
+        Object value = ((Map<?, ?>) rawAnchor).get(key);
         assertThat(value).isInstanceOf(Number.class);
         return ((Number) value).longValue();
     }
@@ -444,6 +529,21 @@ class AppChainL1CallbackIsolationTest {
         byte[] bytes = new byte[length];
         Arrays.fill(bytes, (byte) value);
         return bytes;
+    }
+
+    /** Whether the thread comes to wait for the monitor; one that finishes first never waited for it. */
+    private static boolean awaitBlockedOn(Thread thread, Object monitor) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (thread.isAlive() && System.nanoTime() < deadline) {
+            ThreadInfo info = ManagementFactory.getThreadMXBean().getThreadInfo(thread.threadId());
+            LockInfo lock = info == null ? null : info.getLockInfo();
+            if (info != null && info.getThreadState() == Thread.State.BLOCKED && lock != null
+                    && lock.getIdentityHashCode() == System.identityHashCode(monitor)) {
+                return true;
+            }
+            Thread.sleep(1);
+        }
+        return false;
     }
 
     private static void awaitUninterruptibly(CountDownLatch latch) {
@@ -600,6 +700,32 @@ class AppChainL1CallbackIsolationTest {
         @Override public Optional<Utxo> getUtxo(Outpoint outpoint) { return Optional.empty(); }
 
         @Override public boolean isEnabled() { return true; }
+    }
+
+    /** The subsystem's L1 point window, able to hold the L1 callback right after its next append. */
+    private static final class PausingL1Window extends ConcurrentLinkedDeque<AppChainEngine.L1Ref> {
+        private final AtomicBoolean pauseNextAppend = new AtomicBoolean();
+        private final CountDownLatch appended = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+
+        private void install(AppChainSubsystem subsystem) {
+            try {
+                Field field = AppChainSubsystem.class.getDeclaredField("recentL1Points");
+                field.setAccessible(true);
+                field.set(subsystem, this);
+            } catch (ReflectiveOperationException failure) {
+                throw new IllegalStateException(failure);
+            }
+        }
+
+        @Override
+        public void addLast(AppChainEngine.L1Ref ref) {
+            super.addLast(ref);
+            if (pauseNextAppend.compareAndSet(true, false)) {
+                appended.countDown();
+                awaitUninterruptibly(release);
+            }
+        }
     }
 
     private static final class DirectEventBus implements EventBus {

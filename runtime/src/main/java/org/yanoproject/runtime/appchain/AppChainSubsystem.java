@@ -176,6 +176,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private volatile java.util.function.Function<byte[], String> txSubmitter;
     private volatile java.util.function.Supplier<org.yanoproject.api.utxo.UtxoState> utxoStateSupplier;
     private volatile LongFunction<BlockAppliedEvent> l1BlockReplay;
+    /** Oldest..newest observed L1 points. Every multi-step read or update (append and trim, rollback, depth
+     *  lookups) holds this deque's monitor, so no reader sees a half-applied update; a single peek needs none. */
     private final java.util.concurrent.ConcurrentLinkedDeque<AppChainEngine.L1Ref> recentL1Points =
             new java.util.concurrent.ConcurrentLinkedDeque<>();
     private final List<com.bloxbean.cardano.yaci.events.api.SubscriptionHandle> eventSubscriptions =
@@ -745,9 +747,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /**
      * Submit a membership governance command as this member (008.3). Internal
-     * path — the public submit() rejects reserved {@code ~} topics.
+     * path — the public submit() rejects reserved {@code ~} topics. Callers
+     * screen the command first; activation re-applies every guard rail.
      */
-    private String submitGovernance(byte[] commandBody) {
+    String submitGovernance(byte[] commandBody) {
         if (!running.get())
             throw new IllegalStateException("App chain is not running");
         AppMessage message = buildSigned(GovernedMembership.TOPIC, commandBody,
@@ -1120,7 +1123,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
 
         String senderHex = HexUtil.encodeHexString(sender).toLowerCase(Locale.ROOT);
-        if (!group.contains(senderHex)) {
+        // Members now or in a scheduled epoch: a joiner's early message stays
+        // pooled until it can be included, and a member scheduled for removal
+        // keeps voting until it leaves. Engine checks membership per height.
+        if (!group.containsFrom(senderHex, tipHeight() + 1)) {
             countDrop("not_member");
             return AppMsgValidator.Result.reject("sender not in app-chain member list: " + senderHex);
         }
@@ -1974,6 +1980,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private String submitPrivilegedSystemMessageWithinGeneration(String topic, byte[] body) {
         if (!running.get()) throw new IllegalStateException("App chain is not running");
         if (submissionsPaused.get()) throw new IllegalStateException("Submissions are paused (admin)");
+        requireActiveMember();
         validatePrivilegedSystemMessageWithinGeneration(topic, body);
         AppMessage message = buildSigned(topic, body, config.defaultTtlSeconds());
         AppMsgPool.AddResult added = pool.add(message);
@@ -2024,6 +2031,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (!validTopic(effectiveTopic))
             throw new IllegalArgumentException("topic must be at most "
                     + AppChainConfig.MAX_TOPIC_BYTES + " valid UTF-8 bytes without NUL");
+        requireActiveMember();
 
         // Admit locally BEFORE diffusing — a message this node cannot hold must
         // not be half-way into the network with an "accepted" id (ADR 008.1 I1.1)
@@ -2041,6 +2049,29 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         log.info("App message submitted: id={}, chain={}, topic={}, seq={}",
                 message.getMessageIdHex(), config.chainId(), effectiveTopic, message.getSenderSeq());
         return message.getMessageIdHex();
+    }
+
+    /**
+     * A sequencing node submits only as a member of the next block's epoch.
+     * A joiner whose epoch is scheduled but not active, or a non-member, gets
+     * a clear refusal (REST 503) rather than an id for a message no block can
+     * include yet. Diffusion-only nodes keep their configured membership.
+     */
+    private void requireActiveMember() {
+        AppLedgerStore currentLedger = ledger;
+        if (!config.sequencingEnabled() || currentLedger == null) {
+            return;
+        }
+        long nextHeight = currentLedger.tipHeight() + 1;
+        String self = signer.publicKeyHex();
+        if (group.containsAt(self, nextHeight)) {
+            return;
+        }
+        throw new IllegalStateException(group.containsFrom(self, nextHeight)
+                ? "This node is not an active member at height " + nextHeight + " yet: its membership "
+                        + "epoch is scheduled. Retry once status memberActiveForNextBlock is true"
+                : "This node is not an active member of app-chain '" + config.chainId()
+                        + "'; no block can include its submissions");
     }
 
     /**
@@ -3615,6 +3646,38 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         ledgerStore.metaPutString(META_MEMBER_EPOCHS, group.encode());
     }
 
+    /**
+     * The epochs a governed command can activate against: the one for the next
+     * block and, when different, the newest scheduled one. Activation evaluates
+     * the epoch in effect at its own height, which may be either.
+     */
+    private List<MemberGroup.Epoch> governedBaseEpochs() {
+        MemberGroup.Epoch newest = group.history().getLast();
+        AppLedgerStore currentLedger = ledger;
+        MemberGroup.Epoch next = currentLedger != null
+                ? group.epochAt(currentLedger.tipHeight() + 1) : newest;
+        return next == newest ? List.of(newest) : List.of(next, newest);
+    }
+
+    /**
+     * Refuse a governed membership command whose result could never certify a
+     * block under {@code consensus.max-byzantine-members} (bloxbean/yano#163).
+     * Activation applies the same rule deterministically; this check only
+     * spares operators a command that would activate void.
+     */
+    private void requireCertifiable(int members, int threshold) {
+        int faults = MemberGroup.maxByzantineMembers(config);
+        String violation = MemberGroup.quorumViolation(members, threshold, faults);
+        if (violation != null) {
+            throw new MembershipChangeRejectedException(MembershipChangeRejectedException.QUORUM_INVALID,
+                    "A " + threshold + "-of-" + members + " membership breaks the consensus quorum rules for "
+                            + "consensus.max-byzantine-members=" + faults + " (" + violation + "); thresholds "
+                            + "that certify " + members + " member(s): "
+                            + MemberGroup.certifiableThresholds(members, faults)
+                            + ". Change the threshold first and wait until it is active.");
+        }
+    }
+
     @Override
     public Set<String> members() {
         return group.members();
@@ -3638,6 +3701,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // Governed mode (008.3): this call SUBMITS a governance command —
             // the change activates once threshold-many members do the same
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                if (!base.members().contains(normalized)) {
+                    requireCertifiable(base.members().size() + 1, base.threshold());
+                }
+            }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
@@ -3666,6 +3734,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void removeMemberWithinGeneration(String publicKeyHex) {
         if (governedMode()) {
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                if (base.members().contains(normalized)) {
+                    requireCertifiable(base.members().size() - 1, base.threshold());
+                }
+            }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_REMOVE,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
@@ -3705,6 +3778,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (governedMode()) {
             if (threshold < 1) {
                 throw new IllegalArgumentException("Threshold must be >= 1");
+            }
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                requireCertifiable(base.members().size(), threshold);
             }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
                     null, threshold, GovernedMembership.DEFAULT_ACTIVATION_LAG));
@@ -4026,6 +4102,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Map<String, Object> anchorStatus = currentAnchor.status();
             anchorStatus.put("lagBlocks",
                     Math.max(0, tipHeight() - currentAnchor.lastAnchoredHeight()));
+            anchorStatus.put("stableAnchoredHeight", stableAnchoredHeight());
             status.put("anchor", anchorStatus);
         } else if (currentScriptAnchor != null
                 && ((config.anchoringEnabled() && config.anchor() != null && config.anchor().scriptMode())
@@ -4035,6 +4112,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Map<String, Object> anchorStatus = currentScriptAnchor.status();
             anchorStatus.put("lagBlocks",
                     Math.max(0, tipHeight() - currentScriptAnchor.lastAnchoredHeight()));
+            anchorStatus.put("stableAnchoredHeight", stableAnchoredHeight());
             status.put("anchor", anchorStatus);
         }
         L1ObservationService currentObservations = observationService;
@@ -4824,6 +4902,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         config.proposerKeyHex(),
                         parseLongSetting("membership.approval-window-blocks",
                                 GovernedMembership.DEFAULT_APPROVAL_WINDOW_BLOCKS),
+                        MemberGroup.maxByzantineMembers(config),
                         log);
                 governed.restore(ledgerStore);
                 governed.setEpochGuard(effect -> observationSettings.admitsMembership(
@@ -5386,10 +5465,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 retryFailedL1Observation(services.observations(),
                         services.blockReplay(), event.slot()));
         runL1Phase("reference tracking", () -> {
-            recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
-                    HexUtil.decodeHexString(event.blockHash())));
-            while (recentL1Points.size() > Math.max(config.l1StabilityDepth(), 1) + 64) {
-                recentL1Points.pollFirst();
+            synchronized (recentL1Points) {
+                recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
+                        HexUtil.decodeHexString(event.blockHash())));
+                while (recentL1Points.size() > Math.max(config.l1StabilityDepth(), 1) + 64) {
+                    recentL1Points.pollFirst();
+                }
             }
         });
 
@@ -5496,8 +5577,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             reportL1PhaseFailure("rollback target", failure);
             return;
         }
-        runL1Phase("reference rollback", () ->
-                recentL1Points.removeIf(ref -> ref.slot() > targetSlot));
+        runL1Phase("reference rollback", () -> {
+            synchronized (recentL1Points) {
+                recentL1Points.removeIf(ref -> ref.slot() > targetSlot);
+            }
+        });
         runL1Phase("metadata-anchor rollback", () -> {
             AnchorService currentAnchor = services.anchor();
             if (currentAnchor != null) {
@@ -5559,59 +5643,83 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * not exist on our chain — fabricated or rolled back — a hard MISMATCH.
      */
     private AppChainEngine.L1RefVerdict checkL1Ref(long slot, byte[] blockHash) {
-        AppChainEngine.L1Ref newest = recentL1Points.peekLast();
-        AppChainEngine.L1Ref oldest = recentL1Points.peekFirst();
-        if (newest == null) {
-            return AppChainEngine.L1RefVerdict.UNKNOWN; // no local view yet (restart)
-        }
-        if (slot > newest.slot()) {
-            l1RefDeferrals.incrementAndGet();
-            return AppChainEngine.L1RefVerdict.AHEAD;
-        }
-        if (slot < oldest.slot()) {
-            return AppChainEngine.L1RefVerdict.UNKNOWN; // older than our window
-        }
-        int fromEnd = 0;
-        AppChainEngine.L1Ref match = null;
-        for (var iterator = recentL1Points.descendingIterator(); iterator.hasNext(); ) {
-            AppChainEngine.L1Ref ref = iterator.next();
-            if (ref.slot() == slot) {
-                match = ref;
-                break;
+        synchronized (recentL1Points) {
+            AppChainEngine.L1Ref newest = recentL1Points.peekLast();
+            AppChainEngine.L1Ref oldest = recentL1Points.peekFirst();
+            if (newest == null) {
+                return AppChainEngine.L1RefVerdict.UNKNOWN; // no local view yet (restart)
             }
-            fromEnd++;
+            if (slot > newest.slot()) {
+                l1RefDeferrals.incrementAndGet();
+                return AppChainEngine.L1RefVerdict.AHEAD;
+            }
+            if (slot < oldest.slot()) {
+                return AppChainEngine.L1RefVerdict.UNKNOWN; // older than our window
+            }
+            int fromEnd = 0;
+            AppChainEngine.L1Ref match = null;
+            for (var iterator = recentL1Points.descendingIterator(); iterator.hasNext(); ) {
+                AppChainEngine.L1Ref ref = iterator.next();
+                if (ref.slot() == slot) {
+                    match = ref;
+                    break;
+                }
+                fromEnd++;
+            }
+            if (match == null) {
+                return AppChainEngine.L1RefVerdict.MISMATCH; // in-window slot we never saw
+            }
+            if (!java.util.Arrays.equals(match.blockHash(), blockHash)) {
+                return AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+            if (fromEnd < config.l1StabilityDepth()) {
+                l1RefDeferrals.incrementAndGet();
+                return AppChainEngine.L1RefVerdict.AHEAD; // not deep enough yet in OUR view
+            }
+            return AppChainEngine.L1RefVerdict.OK;
         }
-        if (match == null) {
-            return AppChainEngine.L1RefVerdict.MISMATCH; // in-window slot we never saw
-        }
-        if (!java.util.Arrays.equals(match.blockHash(), blockHash)) {
-            return AppChainEngine.L1RefVerdict.MISMATCH;
-        }
-        if (fromEnd < config.l1StabilityDepth()) {
-            l1RefDeferrals.incrementAndGet();
-            return AppChainEngine.L1RefVerdict.AHEAD; // not deep enough yet in OUR view
-        }
-        return AppChainEngine.L1RefVerdict.OK;
     }
 
     /**
      * L1 point at least l1StabilityDepth blocks below the observed tip, from the
-     * subsystem's own view of applied blocks. Null when depth is 0/unknown.
+     * subsystem's own view of applied blocks. Null when depth is 0/unknown. The
+     * size and the walk share the window's monitor: an append and trim landing
+     * between them would shift the index onto the tip.
      */
     private AppChainEngine.L1Ref stableL1Ref() {
         int depth = config.l1StabilityDepth();
-        if (depth <= 0 || recentL1Points.size() <= depth) {
+        if (depth <= 0) {
             return null;
         }
-        // deque: oldest..newest; pick the element depth-from-the-end
-        int index = recentL1Points.size() - 1 - depth;
-        int i = 0;
-        for (AppChainEngine.L1Ref ref : recentL1Points) {
-            if (i++ == index) {
-                return ref;
+        synchronized (recentL1Points) {
+            int size = recentL1Points.size();
+            if (size <= depth) {
+                return null;
             }
+            // deque: oldest..newest; pick the element depth-from-the-end
+            int index = size - 1 - depth;
+            int i = 0;
+            for (AppChainEngine.L1Ref ref : recentL1Points) {
+                if (i++ == index) {
+                    return ref;
+                }
+            }
+            return null;
         }
-        return null;
+    }
+
+    /**
+     * The L1_ANCHORED effect gate frontier (ADR-010 F7): the highest app height
+     * covered by an anchor confirmed at or below {@link #stableL1Ref()}, i.e.
+     * at least {@code l1.stability-depth} blocks below this node's L1 tip.
+     * Node-local execution-plane state, never consensus input. 0 without a
+     * stable L1 point (depth 0, or too few L1 blocks seen since start).
+     */
+    private long stableAnchoredHeight() {
+        AppLedgerStore currentLedger = ledger;
+        AppChainEngine.L1Ref stable = stableL1Ref();
+        return currentLedger == null || stable == null
+                ? 0L : AnchorService.stableAnchoredHeight(currentLedger, stable.slot());
     }
 
     private boolean l1ObservationInputsHealthy() {
@@ -6015,6 +6123,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             String runtimeOwner = effectRuntimeOwner(executorIdentity, runtimeSettings.types());
             createdRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
                     executors, executorConfigs, executorSources, runtimeOwner, log);
+            createdRuntime.setStableAnchorFrontier(this::stableAnchoredHeight);
             // Publish ownership before registering the lifetime signal. If a
             // custom registry rejects registration, startup rollback sees and
             // closes the runtime instead of directly double-closing products.

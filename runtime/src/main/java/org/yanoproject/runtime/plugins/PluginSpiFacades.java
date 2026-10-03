@@ -1492,11 +1492,13 @@ final class PluginSpiFacades {
 
     /**
      * Copies a plugin's fact values into host-owned objects without interpreting them. Every plugin read happens
-     * inside one callback, traversal is bounded by iterations (not distinct keys), and the result keeps at most one
-     * entry beyond each bound so the caller can detect overflow. Nothing here throws for a data shape: a null or
-     * foreign entry, a non-text key, or a value that is not a conforming scalar or text list becomes a marker the
-     * caller rejects as a violation. Only {@code Long}, {@code String}, {@code Boolean}, copied {@code byte[]}, and
-     * copied lists of text survive, so no plugin object escapes the class-loader boundary.
+     * inside one callback and traversal is bounded by iterations (not distinct keys). A map with more entries than
+     * its bound becomes the marker alone, since which entries a salted or identity map yields first differs between
+     * nodes; a byte array or text list keeps one element beyond its bound so the caller can detect overflow. Nothing
+     * here throws for a data shape: a null entry set, a null or foreign entry, a non-text or repeated key, or a value
+     * that is not a conforming scalar or text list becomes a marker the caller rejects as a violation. Only
+     * {@code Long}, {@code String}, {@code Boolean}, copied {@code byte[]}, and copied lists of text survive, so no
+     * plugin object escapes the class-loader boundary.
      */
     private static Map<String, Object> snapshotRuleFactValues(Map<String, Object> values, ClassLoader loader,
                                                               CallbackTracker callbacks) {
@@ -1504,19 +1506,22 @@ final class PluginSpiFacades {
     }
 
     /**
-     * {@link #snapshotRuleFactValues} with an explicit entry bound: the snapshot keeps at most one entry beyond
-     * {@code maximumEntries} so the caller can detect overflow.
+     * {@link #snapshotRuleFactValues} with an explicit entry bound: a map with more than {@code maximumEntries}
+     * entries becomes the marker alone.
      */
     private static Map<String, Object> snapshotRuleValues(Map<String, Object> values, int maximumEntries,
                                                           ClassLoader loader, CallbackTracker callbacks) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
-        Iterator<?> entries = pluginCall(callbacks, loader, () -> ((Map<?, ?>) values).entrySet().iterator());
+        Iterator<?> entries = pluginCall(callbacks, loader, () -> {
+            Set<?> entrySet = ((Map<?, ?>) values).entrySet();
+            return entrySet == null ? null : entrySet.iterator();
+        });
         if (entries == null) {
             snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
             return Collections.unmodifiableMap(snapshot);
         }
-        for (int visited = 0; visited <= maximumEntries && pluginCall(callbacks, loader, entries::hasNext);
-                visited++) {
+        for (int visited = 0; pluginCall(callbacks, loader, entries::hasNext); visited++) {
+            if (visited == maximumEntries) return Map.of(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
             Object[] pair = pluginCall(callbacks, loader, () -> {
                 Object element = entries.next();
                 if (!(element instanceof Map.Entry<?, ?> entry)) return null;
@@ -1525,7 +1530,9 @@ final class PluginSpiFacades {
             if (pair == null || !(pair[0] instanceof String name)) {
                 snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
             } else {
-                snapshot.put(name, pair[1]);
+                // A repeated key keeps the marker, never the value that iterated last: an identity map orders equal
+                // keys differently on each node.
+                snapshot.put(name, snapshot.containsKey(name) ? NON_CONFORMING_FACT : pair[1]);
             }
         }
         return Collections.unmodifiableMap(snapshot);

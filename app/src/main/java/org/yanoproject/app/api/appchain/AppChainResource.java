@@ -7,6 +7,7 @@ import org.yanoproject.api.appchain.AppChainGateway;
 import org.yanoproject.api.appchain.AppChainGateways;
 import org.yanoproject.api.appchain.AppQueryPath;
 import org.yanoproject.api.appchain.AppSubmissionRejectedException;
+import org.yanoproject.api.appchain.MembershipChangeRejectedException;
 import org.yanoproject.api.appchain.ReceivedAppMessage;
 import org.yanoproject.api.appchain.PoolFullException;
 import org.yanoproject.api.appchain.observation.ObservationReport;
@@ -1207,6 +1208,8 @@ public class AppChainResource {
             try {
                 gateway.addMember(request.publicKey());
                 return listMembers();
+            } catch (MembershipChangeRejectedException e) {
+                return membershipRejected(e);
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
             }
@@ -1221,6 +1224,8 @@ public class AppChainResource {
             try {
                 gateway.removeMember(request.publicKey());
                 return listMembers();
+            } catch (MembershipChangeRejectedException e) {
+                return membershipRejected(e);
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
             }
@@ -1246,6 +1251,8 @@ public class AppChainResource {
             try {
                 gateway.setThreshold(request.threshold());
                 return listMembers();
+            } catch (MembershipChangeRejectedException e) {
+                return membershipRejected(e);
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
             }
@@ -2405,6 +2412,11 @@ public class AppChainResource {
         private static Response badRequest(String message) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", message)).build();
+        }
+
+        private static Response membershipRejected(MembershipChangeRejectedException rejected) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("code", rejected.code(), "error", rejected.getMessage())).build();
         }
     }
 

@@ -331,23 +331,47 @@ class FxEffectsM2Test {
         }
     }
 
+    /**
+     * ADR-010 F7 / bloxbean/yano#164: an L1_ANCHORED effect waits for a
+     * stability-deep covering anchor, not for the first L1 sighting that
+     * advances {@code anchor_last_height}; a rewound frontier holds new ones.
+     */
     @Test
-    void gatesL1AnchoredEffects_onAnchorHighWaterMark(@TempDir Path dir) throws Exception {
+    void gatesL1AnchoredEffects_onStabilityDeepAnchorFrontier(@TempDir Path dir) throws Exception {
         RecordingExecutor executor = new RecordingExecutor("test.action",
                 effect -> EffectExecution.confirmed(new byte[0]));
+        AtomicLong frontier = new AtomicLong();
         try (Pipeline pipeline = new Pipeline(dir,
                 emitting("test.action", ResultPolicy.NONE, FinalityGate.L1_ANCHORED), FX_SETTINGS);
              EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
                      runtimeSettings(3), List.of(executor), Map.of(), LoggerFactory.getLogger("fx"))) {
             pipeline.applyNext(1);
+            pipeline.store.metaPutLong("anchor_last_height", 1); // seen once on L1, not yet deep
             runtime.tick();
             Thread.sleep(100);
-            assertThat(executor.invocations).isEmpty(); // anchor HWM = 0 < height 1
+            assertThat(executor.invocations).isEmpty(); // unwired frontier = nothing stable
 
-            pipeline.store.metaPutLong("anchor_last_height", 1);
+            runtime.setStableAnchorFrontier(frontier::get);
+            runtime.tick();
+            Thread.sleep(100);
+            assertThat(executor.invocations).isEmpty(); // frontier 0 < height 1
+            assertThat(runtime.claim("worker-1", Set.of(), 10, 60)).isEmpty();
+
+            frontier.set(1);
             runtime.tick();
             awaitStatus(pipeline.store, 1, 0, FxStatusRecord.DONE);
             assertThat(executor.invocations).hasSize(1);
+
+            // An L1 rollback rewinds the frontier: the next effect waits again
+            frontier.set(0);
+            pipeline.applyNext(1);
+            runtime.tick();
+            Thread.sleep(100);
+            assertThat(executor.invocations).hasSize(1);
+            frontier.set(2);
+            runtime.tick();
+            awaitStatus(pipeline.store, 2, 0, FxStatusRecord.DONE);
+            assertThat(executor.invocations).hasSize(2);
         }
     }
 
@@ -1429,7 +1453,7 @@ class FxEffectsM2Test {
         boolean ledgerClosed = false;
         try {
             pipeline.applyNext(1);
-            pipeline.store.metaPutLong("anchor_last_height", 1);
+            runtime.setStableAnchorFrontier(() -> 1);
             runtime.tick();
             assertThat(executionStarted.await(5, TimeUnit.SECONDS)).isTrue();
 

@@ -10,7 +10,7 @@ Authentication and topic permissions still apply.
 | **202** with `messageId` | Locally admitted, retained, and offered for diffusion | Wait for inclusion and inspect the application's result; this is not finality or business success |
 | **400** with `code` (and sometimes `details`) | The selected application rejected local admission before pool retention or relay | Correct the command or applicable configuration before submitting again |
 | **429** | The local pending pool is full; the message was not relayed | Retry after backpressure clears |
-| **503** | Application admission is unavailable, or the chain is stopped/paused | Investigate node health and operator diagnostics before retrying |
+| **503** | Application admission is unavailable, the chain is stopped/paused, or this node is not a member at the next height (for example a joiner whose membership epoch is scheduled but not yet active) | Investigate node health and operator diagnostics before retrying; a joiner can submit once status `memberActiveForNextBlock` is `true` |
 
 Malformed HTTP input and envelope limits can also produce **400** through the
 existing request validation path; these responses need not carry an application

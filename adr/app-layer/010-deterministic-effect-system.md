@@ -706,6 +706,51 @@ dividend of the append-only ledger. A reorg deeper than the stability depth
 after execution is a documented accepted risk, identical to the chain's
 existing anchor trust assumption.
 
+**Amendment 2026-10-02: stability gate implemented (bloxbean/yano#164).**
+Until this date `EffectRuntime` checked only `createdHeight ≤
+anchor_last_height − anchor-margin-blocks`. Both anchor services advance
+`anchor_last_height` on the first L1 sighting of an anchor, so an effect
+could fire on an anchor that a shallow L1 rollback then removed. The
+implemented rule:
+
+- **Frontier.** The gate frontier is the highest `toHeight` among the node's
+  anchor confirmations whose L1 inclusion slot is at or below the node's
+  stable L1 point. The confirmations are the bounded
+  `anchor_confirmation_history_v1` journal that metadata and script modes
+  share. The stable point is the block `l1.stability-depth` blocks below
+  the node's observed L1 tip, the same `stableL1Ref` that selects block L1
+  references and drains L1 observations. An L1_ANCHORED effect at height
+  `h` is eligible when `h ≤ frontier − anchor-margin-blocks`. Dispatch,
+  external claims and the pre-execution recheck all use this frontier.
+  `EffectExecutionContext.anchoredHeight()` and the node status
+  (`anchor.stableAnchoredHeight`) report it.
+- **Rollback.** Both anchor services rewind the journal on an L1 rollback,
+  and the stable point is recomputed from the rolled-back L1 view. A
+  rolled-back anchor therefore never counts. Its re-inclusion counts once
+  the new slot is stable.
+- **Node-local.** This is execution-plane state only. Nothing is written to
+  consensus state: the frontier is derived from local meta and the
+  in-memory L1 window. After a restart it stays 0 until the node has seen
+  `l1.stability-depth + 1` L1 blocks (fail closed).
+- **Depth 0 or no anchors.** Without a stability depth there is no stable
+  L1 point, so the frontier stays 0. The gate fails closed, like
+  `ZK_SETTLED` on a non-ZK chain. `effects.default-gate=l1-anchored`
+  therefore requires `l1.stability-depth > 0` at config validation, the
+  same rule L1 observers enforce. An effect that requests `L1_ANCHORED`
+  explicitly on such a chain waits until expiry. A node that keeps no
+  confirmation journal also has frontier 0. In metadata mode only the
+  anchor leader observes anchors, so run L1_ANCHORED executors there; in
+  script mode any member can.
+- **Journal bound.** The journal keeps the newest 256 confirmations, and
+  each anchor waits for the previous one to confirm, so at most one
+  confirms per L1 block. Any `l1.stability-depth` below 256 therefore
+  always retains a stable entry. A deeper setting with sustained per-block
+  anchoring can hold the gate back (fail closed); raise
+  `anchor.every-blocks` in that case.
+- `effects.gate.anchor-margin-blocks` stays node-local. Members may release
+  the same effect at different times, which matters only on the executor
+  node.
+
 ### F8 — Result feedback: `~fx/result`
 
 Terminal outcomes that the application depends on re-enter the chain as
@@ -938,7 +983,7 @@ yano:
       max-payload-bytes: 16384          # consensus parameter
       max-expiry-blocks: 100000         # consensus parameter; also the height-overflow guard
       result-window-blocks: 100000       # consensus result-incorporation horizon
-      default-gate: app-final           # app-final | l1-anchored | zk-settled
+      default-gate: app-final           # app-final | l1-anchored (needs l1.stability-depth > 0) | zk-settled
       outcome-commitment: per-effect    # per-effect | per-block (CONSENSUS-AFFECTING; F8)
       strict-reserved-prefix: true      # CONSENSUS-AFFECTING; active even when enabled=false
       result:

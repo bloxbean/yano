@@ -298,7 +298,7 @@ class ObservationRuntimeTest {
         MemberGroup members = new MemberGroup(Set.of(signer.publicKeyHex()), 1);
         ObservationSettings settings = ObservationSettings.from(config(signer,
                 profile(definition(signer.publicKey()))), members);
-        GovernedMembership governance = new GovernedMembership(members, null, 600,
+        GovernedMembership governance = new GovernedMembership(members, null, 600, 0,
                 LoggerFactory.getLogger(ObservationRuntimeTest.class));
         governance.setEpochGuard(effect -> settings.admitsMembership(effect.members(), effect.threshold()));
         byte[] body = GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,

@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 
 /**
  * Pending verified app messages awaiting sequencing (FIFO by arrival).
@@ -101,15 +102,20 @@ final class AppMsgPool {
     /**
      * Oldest-first snapshot of up to {@code maxMessages} messages whose estimated
      * serialized size (body + envelope overhead) stays within {@code maxBytes},
-     * skipping expired.
+     * skipping expired ones and, without removing them, those {@code selectable}
+     * rejects (so a message that is not yet includable cannot block the queue).
      */
-    synchronized List<AppMessage> drainCandidates(int maxMessages, long maxBytes) {
+    synchronized List<AppMessage> drainCandidates(int maxMessages, long maxBytes,
+                                                  Predicate<AppMessage> selectable) {
         sweepExpired();
         List<AppMessage> selected = new ArrayList<>();
         long bytes = 0;
         for (AppMessage message : pending.values()) {
             if (selected.size() >= maxMessages) {
                 break;
+            }
+            if (!selectable.test(message)) {
+                continue;
             }
             long cost = message.getSize() + ENVELOPE_OVERHEAD_BYTES;
             if (bytes + cost > maxBytes && !selected.isEmpty()) {

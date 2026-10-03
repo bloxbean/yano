@@ -419,6 +419,10 @@ public interface AppChainGateway {
     // Operator-coordinated: apply the SAME steps on EVERY node, in the runbook
     // order (add everywhere → switch signer → re-threshold → retire everywhere).
     // Rotated state persists and overrides the static config across restarts.
+    // In governed membership mode, add/remove/threshold submit the matching
+    // governance command instead, and throw MembershipChangeRejectedException
+    // (QUORUM_INVALID) when the resulting threshold-of-members pair could not
+    // certify blocks under consensus.max-byzantine-members.
     // ------------------------------------------------------------------
 
     /** The effective member set (config or rotated override). */
