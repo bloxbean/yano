@@ -36,11 +36,13 @@ public record SlotClock(long systemStartMillis, long byronSlotMillis, long slotM
             return -1;
         }
         long shelleyStart = firstShelleySlot.getAsLong();
-        long byronSpan = shelleyStart * byronSlotMillis;
-        if (elapsed < byronSpan) {
-            return elapsed / byronSlotMillis;
+        // Compared as slots, not as the Byron span in milliseconds, which overflows while the first Shelley
+        // slot is unknown (Long.MAX_VALUE in SlotTimeCalculator: every slot is a Byron slot).
+        long byronSlot = elapsed / byronSlotMillis;
+        if (byronSlot < shelleyStart) {
+            return byronSlot;
         }
-        return shelleyStart + (elapsed - byronSpan) / slotMillis;
+        return shelleyStart + (elapsed - shelleyStart * byronSlotMillis) / slotMillis;
     }
 
     /** @return the wall-clock time at which {@code slot} starts */

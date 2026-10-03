@@ -38,6 +38,15 @@ class SlotClockTest {
     }
 
     @Test
+    void anUnknownFirstShelleySlotMakesEverySlotAByronSlot() {
+        SlotClock unknown = new SlotClock(PREPROD_START, 20_000, 1_000, () -> Long.MAX_VALUE);
+
+        assertThat(unknown.slotAt(PREPROD_START + 86_400L * 20_000 + 5_500)).isEqualTo(86_400);
+        assertThat(unknown.slotAt(1_790_985_600_000L)).isEqualTo((1_790_985_600_000L - PREPROD_START) / 20_000);
+        assertThat(unknown.slotAt(Long.MAX_VALUE)).isEqualTo((Long.MAX_VALUE - PREPROD_START) / 20_000);
+    }
+
+    @Test
     void withoutAByronPrefixItIsElapsedOverSlotLength() {
         SlotClock devnet = SlotClock.shelleyOnly(1_000, 200);
 
