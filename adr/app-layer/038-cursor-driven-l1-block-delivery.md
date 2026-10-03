@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed. Design only; nothing in this ADR is implemented.
+Accepted (design approved at `3ab767f1b`, 2026-10-03). Implemented in PR #167
+(M0–M3; M4 partly), 2026-10-04. Section 15 records the decisions settled
+during implementation.
 
 The number is local to the `adr/app-layer` series. Root-level and
 `adr/in-progress` ADR numbers are separate series; in particular, this is not
