@@ -13,11 +13,13 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 import java.util.function.Supplier;
 
 /**
@@ -26,7 +28,9 @@ import java.util.function.Supplier;
  *
  * <p>Safety rules: it checks only once the chain is caught up ({@link ForgingReadiness}), never forges a slot at or
  * before the chain tip, and never forges a slot at or before the last slot it forged, which is persisted
- * ({@link ForgedSlotStore}) so that neither a restart nor a rollback can produce a second block for a slot.</p>
+ * ({@link ForgedSlotStore}) so that neither a restart nor a rollback can produce a second block for a slot. It
+ * stores a block only if the tip it was built on is still the tip; an upstream block that competes with a stored
+ * forged block wins and rolls it back ({@code HeaderSyncManager}).</p>
  */
 @Slf4j
 public class SlotLeaderBlockProducer implements BlockProducerService {
@@ -240,8 +244,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
 
             try (var section = BlockProducerHelper.enterCanonicalWrite(chainState)) {
                 BlockProducerHelper.requireCurrentSelection(transactions, section, blockBuilder, slot);
-                recordForgedSlot(section, slot);
-                BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
+                storeOnUnchangedTip(section, slot, tip, result);
 
                 log.info("Block #{} produced: slot={}, txs={}, hash={}",
                         blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
@@ -265,6 +268,32 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         } catch (RuntimeException | Error e) {
             transactions.blockSelectionFailed();
             throw e;
+        }
+    }
+
+    /**
+     * Stores the forged block if the chain has not moved since {@code tip} was read and is still caught up. An
+     * upstream header stored meanwhile would otherwise sit beside the forged block at the same height. The re-check
+     * and the store hold the chain-extension lock, which the header store holds while it checks, rolls back and
+     * stores; it is only tried here, so a header store waiting for a rollback (which enters this write section)
+     * never waits on this producer ({@link CanonicalStateGate#chainExtensionLock()}).
+     */
+    private void storeOnUnchangedTip(CanonicalStateGate.WriteSection section, long slot, ChainTip tip,
+                                     DevnetBlockBuilder.BlockBuildResult result) {
+        Lock extension = CanonicalStateGate.of(chainState).chainExtensionLock();
+        if (!extension.tryLock()) {
+            throw BlockProducerHelper.discardBuiltBlock(section, blockBuilder, slot);
+        }
+        try {
+            ChainTip current = chainState.getTip();
+            if (current == null || !Arrays.equals(current.getBlockHash(), tip.getBlockHash())
+                    || !readiness.isCaughtUp(current)) {
+                throw BlockProducerHelper.discardBuiltBlock(section, blockBuilder, slot);
+            }
+            recordForgedSlot(section, slot);
+            BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
+        } finally {
+            extension.unlock();
         }
     }
 

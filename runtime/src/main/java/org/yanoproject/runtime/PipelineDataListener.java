@@ -98,6 +98,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         this.peerHealth = peerHealth;
         this.ledgerApplyProcessor = ledgerApplyProcessor;
         this.ledgerGeneration = ledgerGeneration;
+        // An upstream header that competes with a local block rolls back through the RollBackward path.
+        if (headerSyncManager != null) {
+            headerSyncManager.setForkRollback(this::onRollback);
+        }
 
         log.info("PipelineDataListener initialized for parallel header/body processing");
     }

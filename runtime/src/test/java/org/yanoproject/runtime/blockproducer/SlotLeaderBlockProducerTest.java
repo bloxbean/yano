@@ -109,6 +109,18 @@ class SlotLeaderBlockProducerTest {
     }
 
     @Test
+    void aRollbackToAForgedBlockRestoresTheNonceStateAfterIt() {
+        SlotLeaderBlockProducer producer = startedProducer();
+        producer.checkSlot(5);
+        byte[] afterSlot5 = nonceState.serialize();
+        producer.checkSlot(6);
+        assertThat(nonceState.serialize()).isNotEqualTo(afterSlot5);
+
+        assertThat(nonceState.rollbackTo(5)).as("the forged block left a rollback checkpoint").isTrue();
+        assertThat(nonceState.serialize()).isEqualTo(afterSlot5);
+    }
+
+    @Test
     void aMissingStakeDistributionIsZeroStakeNotTheLastEpochsStake() {
         SlotLeaderBlockProducer producer = startedProducer();
         producer.checkSlot(1);

@@ -19,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.IntSupplier;
 import java.util.function.Consumer;
@@ -44,6 +46,15 @@ import java.util.function.Supplier;
  * {@link #addPublicationListener publication listeners} run after those hooks, once per published
  * generation (ADR-056 §6: forward blocks, rollbacks and producer boundary sections all notify the
  * mempool after the gate is released).</p>
+ *
+ * <h2>Chain extension</h2>
+ * <p>Two writers extend the local chain at its tip without one serializing the other through a write
+ * section: the upstream header store and a slot-leader producer. {@link #chainExtensionLock()} orders them.
+ * The header store holds it while it checks that a header extends the header tip and, when it does not,
+ * rolls the competing local block back and stores the header; the producer only <em>tries</em> it, inside
+ * its write section, before it re-checks its tip and stores a forged block. A producer therefore never
+ * stores a block beside an upstream header of the same height, and never waits on a header store that is
+ * itself waiting for a rollback to enter the write section.</p>
  *
  * <h2>Readers</h2>
  * <p>{@link #acquireSnapshot(SnapshotPurpose)} takes the read lock, so it waits while a writer is
@@ -72,6 +83,7 @@ public final class CanonicalStateGate {
             Collections.synchronizedMap(new WeakHashMap<>());
 
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+    private final ReentrantLock chainExtensionLock = new ReentrantLock();
     private final Supplier<ChainTip> tipReader;
     private final Set<CanonicalSnapshot> liveSnapshots = ConcurrentHashMap.newKeySet();
     private final AtomicLong shadowRefusals = new AtomicLong();
@@ -237,6 +249,14 @@ public final class CanonicalStateGate {
         try (WriteSection ignored = enterWrite()) {
             return body.get();
         }
+    }
+
+    /**
+     * @return the lock that orders the upstream header store and a slot-leader producer when either extends
+     *         the chain tip (see "Chain extension" above)
+     */
+    public Lock chainExtensionLock() {
+        return chainExtensionLock;
     }
 
     /** @return true when the calling thread is inside a write section of this gate */
