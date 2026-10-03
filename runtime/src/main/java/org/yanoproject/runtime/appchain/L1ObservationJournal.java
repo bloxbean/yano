@@ -409,6 +409,17 @@ final class L1ObservationJournal {
                 .noneMatch(record -> record.state() == State.QUARANTINED);
     }
 
+    /** A terminal quarantine (not the retryable callback-failure marker) is persisted. */
+    synchronized boolean quarantined() {
+        if (ledger.epochSpoolGet(QUARANTINE_KEY) != null) {
+            return true;
+        }
+        return ledger.epochSpoolScan(RECORD_PREFIX, MAX_SCAN).stream()
+                .map(AppLedgerStore.EpochSpoolEntry::value)
+                .map(L1ObservationJournal::decodeRecord)
+                .anyMatch(record -> record.state() == State.QUARANTINED);
+    }
+
     synchronized long callbackFailureSlot() {
         byte[] encoded = ledger.epochSpoolGet(CALLBACK_FAILURE_KEY);
         return encoded == null ? -1 : ByteBuffer.wrap(encoded).getLong();

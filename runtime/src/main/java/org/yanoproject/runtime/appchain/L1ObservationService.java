@@ -425,6 +425,41 @@ final class L1ObservationService {
         return AppChainEngine.L1RefVerdict.OK;
     }
 
+    /**
+     * One delivery phase (app-layer ADR-038, D4a): runs the observers over the block. An observer or journal failure
+     * is retryable, and the loop retries this same block (the replay barrier accepts it); a journal quarantine is
+     * terminal.
+     */
+    L1PhaseResult deliver(long slot, byte[] blockHash, Block block) {
+        try {
+            onL1Block(slot, blockHash, block);
+            return L1PhaseResult.DURABLE;
+        } catch (RuntimeException failure) {
+            return failureResult("L1_OBSERVER_CALLBACK_FAILED");
+        }
+    }
+
+    /** One rollback phase (D4a): forgets observations above the target; a deep rollback quarantines. */
+    L1PhaseResult rollback(long rollbackToSlot) {
+        try {
+            onL1Rollback(rollbackToSlot);
+            return L1PhaseResult.DURABLE;
+        } catch (RuntimeException failure) {
+            return failureResult("L1_OBSERVATION_ROLLBACK_FAILED");
+        }
+    }
+
+    private L1PhaseResult failureResult(String retryReason) {
+        try {
+            if (journal != null && journal.quarantined()) {
+                return L1PhaseResult.quarantined("L1_OBSERVATION_JOURNAL_QUARANTINED");
+            }
+        } catch (RuntimeException unreadable) {
+            return L1PhaseResult.retryable("L1_OBSERVATION_JOURNAL_UNREADABLE");
+        }
+        return L1PhaseResult.retryable(retryReason);
+    }
+
     /** L1 rollback: forget observations above the rollback point. */
     synchronized void onL1Rollback(long rollbackToSlot) {
         window.tailMap(rollbackToSlot, false).clear();
