@@ -9,16 +9,24 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.n2n.ChainSyncAgentListener;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import org.yanoproject.runtime.chain.ByronEbHeaderStore;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.sync.validation.HeaderValidationException;
 import org.yanoproject.runtime.sync.validation.HeaderValidationResult;
 import org.yanoproject.runtime.sync.validation.HeaderValidator;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * HeaderSyncManager handles header-only synchronization using ChainSyncAgent with intelligent backpressure.
@@ -67,6 +75,19 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     private volatile BooleanSupplier ingestHold = () -> false;
     private volatile String ingestHoldReason = null;
     private volatile BooleanSupplier epochBoundaryHold = () -> false;
+    /**
+     * Rolls the local chain back to a point through the upstream RollBackward path. Without it, a header that
+     * competes with a local block fails the session (peer recovery) instead.
+     */
+    private volatile Consumer<Point> forkRollback;
+    /**
+     * Sends chain-sync FindIntersect again at an older local point after IntersectNotFound. Without it,
+     * IntersectNotFound is only logged.
+     */
+    private volatile Consumer<Point> intersectRestart;
+    private volatile long securityParam;
+    /** The older local points not yet offered since the last IntersectNotFound; null after an intersection. */
+    private Iterator<Point> olderIntersectPoints;
 
     // Progress logging
     private static final int PROGRESS_LOG_INTERVAL = 1000;
@@ -138,13 +159,10 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
             String blockHash = blockHeader.getHeaderBody().getBlockHash();
 
             // Store header immediately when received from ChainSync
-            chainState.storeBlockHeader(
-                HexUtil.decodeHexString(blockHash),
-                blockNumber,
-                slot,
-                originalHeaderBytes
-            );
-            afterHeaderStored(slot, blockNumber, blockHash);
+            if (storeShelleyHeader(blockHeader.getHeaderBody().getPrevHash(), slot, blockNumber, blockHash,
+                    originalHeaderBytes)) {
+                afterHeaderStored(slot, blockNumber, blockHash);
+            }
 
             // Update metrics
             headersReceived++;
@@ -297,16 +315,64 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     public void intersactFound(Tip tip, Point point) {
         log.info("📄 Header intersection found at: {} (tip: {})", point, tip);
         if (syncTipContext != null) syncTipContext.update(tip);
+        synchronized (this) {
+            olderIntersectPoints = null;
+        }
         // ChainSyncAgent automatically resumes from this point on reconnection
         // No manual state management needed
     }
 
+    /**
+     * Offers the upstream the next older local point after IntersectNotFound, as the Haskell chain-sync client
+     * offers several ({@link IntersectPoints}). Yaci's FindIntersect carries one point, so they go one at a time,
+     * newest first, which finds the same intersection. On an intersection below the local tip, the upstream's
+     * RollBackward rolls the blocks it does not have back through the normal rollback path. The points are taken
+     * back from the body tip, the durable restart point of both sync modes, which is offered first when a
+     * header-only cache lay above it (the pipelined start point is the header tip).
+     *
+     * <p>An upstream whose tip is below the body tip's height is behind, not on a longer fork: nothing is offered,
+     * so the local chain is kept, and no-progress recovery retries the session later.</p>
+     *
+     * @throws IllegalStateException when the upstream has none of the points (its chain forks off more than k
+     *                               back): the session fails for peer recovery
+     */
     @Override
     public void intersactNotFound(Tip tip) {
         log.warn("📄 Header intersection not found. Tip: {}", tip);
         if (syncTipContext != null) syncTipContext.update(tip);
-        // ChainSyncAgent will handle this scenario
-        // This typically results in a rollback to find a common point
+        Consumer<Point> restart = intersectRestart;
+        if (restart == null) {
+            return;
+        }
+        ChainTip bodyTip = chainState.getTip();
+        ChainTip localTip = bodyTip != null ? bodyTip : chainState.getHeaderTip();
+        if (localTip != null && tip != null && tip.getBlock() < localTip.getBlockNumber()) {
+            log.warn("📄 The upstream tip #{} is below the local tip #{}: keeping the local chain and waiting for "
+                    + "the upstream to catch up", tip.getBlock(), localTip.getBlockNumber());
+            return;
+        }
+        Point next;
+        synchronized (this) {
+            if (olderIntersectPoints == null) {
+                List<Point> points = new ArrayList<>();
+                ChainTip headerTip = chainState.getHeaderTip();
+                if (bodyTip != null && headerTip != null && headerTip.getSlot() > bodyTip.getSlot()) {
+                    points.add(new Point(bodyTip.getSlot(), HexUtil.encodeHexString(bodyTip.getBlockHash())));
+                }
+                points.addAll(IntersectPoints.olderThan(chainState, localTip, securityParam));
+                olderIntersectPoints = points.iterator();
+            }
+            next = olderIntersectPoints.hasNext() ? olderIntersectPoints.next() : null;
+            if (next == null) {
+                olderIntersectPoints = null;
+            }
+        }
+        if (next == null) {
+            throw new IllegalStateException("No intersection with the upstream (tip " + tip + ") within k="
+                    + securityParam + " blocks of the local tip " + localTip);
+        }
+        log.warn("📄 Offering the upstream an older local point for intersection: {}", next);
+        restart.accept(next);
     }
 
     @Override
@@ -325,6 +391,97 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
         // No action needed here - ChainSyncAgent handles reconnection automatically
         // using its internal currentPoint tracking for robust resumption
         log.debug("📄 ChainSyncAgent will automatically resume headers from last confirmed point");
+    }
+
+    /**
+     * Sets the rollback used when an upstream header competes with a local block: the same path as an upstream
+     * RollBackward, so that ledger state, nonce, mempool and downstream peers unwind as for any rollback.
+     */
+    public void setForkRollback(Consumer<Point> forkRollback) {
+        this.forkRollback = forkRollback;
+    }
+
+    /**
+     * Sets how FindIntersect is sent again at an older local point after IntersectNotFound.
+     *
+     * @param securityParam k, the deepest rollback: no point further back is offered
+     * @param restart       starts chain sync again from the given point on the current connection
+     */
+    public void setIntersectRestart(long securityParam, Consumer<Point> restart) {
+        this.securityParam = securityParam;
+        this.intersectRestart = restart;
+    }
+
+    /**
+     * Stores a Shelley+ header, first rolling back a local block it competes with.
+     *
+     * <p>The chain store is linear by block number, so a header must extend the header tip. During sync it always
+     * does: an upstream RollBackward moves the tip before the next header arrives. It does not when this node
+     * forged a block the upstream does not have: the upstream's next header then follows an earlier local block.
+     * The upstream wins, as the node follows a single trusted upstream: the local chain is rolled back to the
+     * header's parent through {@link #forkRollback}, then the header is stored. A parent that is not on the local
+     * chain fails the session for peer recovery, and nothing is stored. A header that is already on the local
+     * chain (a forged block the upstream adopted) is not stored again.</p>
+     *
+     * <p>All of it holds the chain-extension lock, which a slot-leader producer only tries, so no block is forged
+     * on a tip that an upstream header is replacing ({@link CanonicalStateGate#chainExtensionLock()}).</p>
+     *
+     * @return whether the header was stored
+     */
+    private boolean storeShelleyHeader(String prevHash, long slot, long blockNumber, String blockHash,
+                                       byte[] headerBytes) {
+        Lock extension = CanonicalStateGate.of(chainState).chainExtensionLock();
+        extension.lock();
+        try {
+            ChainTip headerTip = chainState.getHeaderTip();
+            if (extendsHeaderTip(headerTip, prevHash)) {
+                chainState.storeBlockHeader(HexUtil.decodeHexString(blockHash), blockNumber, slot, headerBytes);
+                return true;
+            }
+            if (localPoint(blockNumber, blockHash) != null) {
+                return false;
+            }
+            Point parent = localPoint(blockNumber - 1, prevHash);
+            Consumer<Point> rollback = forkRollback;
+            if (parent == null || rollback == null) {
+                throw new IllegalStateException(String.format(
+                        "Upstream header #%d at slot %d (%s) follows %s, which is %s; header tip is #%d at slot %d",
+                        blockNumber, slot, blockHash, prevHash,
+                        parent == null ? "not on the local chain" : "a local block that cannot be rolled back here",
+                        headerTip.getBlockNumber(), headerTip.getSlot()));
+            }
+            log.warn("Upstream header #{} at slot {} competes with local block #{} at slot {}: rolling back to its "
+                            + "parent at slot {}", blockNumber, slot, headerTip.getBlockNumber(), headerTip.getSlot(),
+                    parent.getSlot());
+            rollback.accept(parent);
+            ChainTip rolledBack = chainState.getHeaderTip();
+            if (!extendsHeaderTip(rolledBack, prevHash)) {
+                throw new IllegalStateException("Rollback to " + parent + " for upstream header #" + blockNumber
+                        + " left the header tip at " + rolledBack);
+            }
+            chainState.storeBlockHeader(HexUtil.decodeHexString(blockHash), blockNumber, slot, headerBytes);
+            return true;
+        } finally {
+            extension.unlock();
+        }
+    }
+
+    private static boolean extendsHeaderTip(ChainTip headerTip, String prevHash) {
+        return headerTip == null || prevHash == null
+                || prevHash.equalsIgnoreCase(HexUtil.encodeHexString(headerTip.getBlockHash()));
+    }
+
+    /** @return the point of the header {@code hash} when it is the local chain's header at {@code blockNumber} */
+    private Point localPoint(long blockNumber, String hash) {
+        if (blockNumber < 0 || hash == null) {
+            return null;
+        }
+        byte[] header = chainState.getBlockHeader(HexUtil.decodeHexString(hash));
+        if (header == null || !Arrays.equals(header, chainState.getBlockHeaderByNumber(blockNumber))) {
+            return null;
+        }
+        Long slot = chainState.getSlotByBlockNumber(blockNumber);
+        return slot != null ? new Point(slot, hash) : null;
     }
 
     private void afterHeaderStored(long slot, long blockNumber, String blockHash) {

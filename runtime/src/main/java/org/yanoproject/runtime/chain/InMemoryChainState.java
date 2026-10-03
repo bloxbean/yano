@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.CanonicalBlockReference;
+import org.yanoproject.runtime.blockproducer.ForgedSlotStore;
 import org.yanoproject.runtime.blockproducer.NonceStateStore;
 import org.yanoproject.runtime.blockproducer.NonceStateSnapshot;
 import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
@@ -18,6 +19,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * In-memory implementation of chain-state capabilities for tests, devnet, and
@@ -26,7 +28,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 @Slf4j
 public class InMemoryChainState implements ChainState, NonceStateStore,
         ByronEbHeaderStore, OriginRollbackCapable, PointRollbackCapable,
-        NearestPointLookup, ArchiveChainStateCapabilities, CanonicalStateGateOwner {
+        NearestPointLookup, ArchiveChainStateCapabilities, CanonicalStateGateOwner, ForgedSlotStore {
     private final CanonicalStateGate canonicalStateGate = new CanonicalStateGate(this::getTip);
     // Use hex string keys instead of byte[] to ensure proper equals/hashCode behavior
     private Map<String, byte[]> blockStore = new ConcurrentHashMap<>();
@@ -46,6 +48,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
     private ChainTip tip;
     private ChainTip headerTip;
     private volatile byte[] epochNonceState;
+    private final AtomicLong lastForgedSlot = new AtomicLong(-1);
     private final Map<Integer, byte[]> epochNonces = new ConcurrentHashMap<>();
     private final Map<Integer, NonceStateSnapshot> epochNonceCheckpoints = new ConcurrentHashMap<>();
 
@@ -205,6 +208,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
         epochNonceState = null;
         epochNonces.clear();
         epochNonceCheckpoints.clear();
+        lastForgedSlot.set(-1);
     }
 
     @Override
@@ -588,6 +592,18 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
         String blockHashHex() {
             return HexUtil.encodeHexString(hash);
         }
+    }
+
+    // --- ForgedSlotStore implementation ---
+
+    @Override
+    public long getLastForgedSlot() {
+        return lastForgedSlot.get();
+    }
+
+    @Override
+    public void storeLastForgedSlot(long slot) {
+        lastForgedSlot.accumulateAndGet(slot, Math::max);
     }
 
     // --- NonceStateStore implementation ---

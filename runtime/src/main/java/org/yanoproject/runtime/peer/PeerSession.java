@@ -142,6 +142,7 @@ public class PeerSession {
                     peerHealth,
                     ledgerApplyProcessor,
                     ledgerGeneration);
+            headerSyncManager.setIntersectRestart(securityParam(), point -> peerClient.startHeaderSync(point, true));
             peerClient.connect(pipelineDataListener, null);
             peerClient.enableTxSubmission();
             peerClient.startHeaderSync(startPoint, true);
@@ -174,6 +175,7 @@ public class PeerSession {
                     peerHealth,
                     ledgerApplyProcessor,
                     ledgerGeneration);
+            headerSyncManager.setIntersectRestart(securityParam(), point -> peerClient.startSync(point));
             peerClient.connect(pipelineDataListener, null);
             peerClient.enableTxSubmission();
             peerClient.startSync(startPoint);
@@ -312,6 +314,11 @@ public class PeerSession {
     public PeerSessionStatus getStatus() {
         refreshKeepAliveHealth();
         return peerHealth.snapshot(System.currentTimeMillis());
+    }
+
+    /** k, from genesis; unknown without an epoch-parameter provider, so intersection points reach the first block. */
+    private long securityParam() {
+        return epochParamProvider != null ? epochParamProvider.getSecurityParam() : Long.MAX_VALUE;
     }
 
     private void ensurePeerClient(Point startPoint) {

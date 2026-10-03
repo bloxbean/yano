@@ -2401,13 +2401,15 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     }
 
     private boolean isRealRollback(Point rollbackPoint) {
-        if (syncPhase == SyncPhase.INTERSECT_PHASE || syncPhase == SyncPhase.INITIAL_SYNC) {
-            log.info("Rollback during {} phase - skipping server notification", syncPhase);
-            return false;
-        }
         ChainTip bodyTipBeforeRollback = chainState.getTip();
         boolean earlierSlot = bodyTipBeforeRollback != null
                 && rollbackPoint.getSlot() < bodyTipBeforeRollback.getSlot();
+        // An intersection at the restart point is no reorganization, but one at an older local point (the
+        // upstream does not have the local tip) rolls applied blocks back.
+        if ((syncPhase == SyncPhase.INTERSECT_PHASE || syncPhase == SyncPhase.INITIAL_SYNC) && !earlierSlot) {
+            log.info("Rollback during {} phase - skipping server notification", syncPhase);
+            return false;
+        }
         boolean differentSameSlotPoint = bodyTipBeforeRollback != null
                 && rollbackPoint.getSlot() == bodyTipBeforeRollback.getSlot()
                 && (rollbackPoint.getHash() == null || !rollbackPoint.getHash().equalsIgnoreCase(

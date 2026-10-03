@@ -12,7 +12,6 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.MathContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
@@ -27,7 +26,6 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
-    private static final MathContext MC = new MathContext(40);
 
     private final ChainState chainState;
     private final BlockTransactionSelector transactions;
@@ -359,7 +357,7 @@ public class SlotLeaderTimeTravelBlockProducer implements BlockProducerService {
             return;
         }
 
-        sigma = new BigDecimal(poolStake).divide(new BigDecimal(totalStake), MC);
+        sigma = SlotLeaderCheck.relativeStake(poolStake, totalStake);
         lastStakeEpoch = epoch;
         log.info("Time-travel stake data refreshed for epoch {}: poolStake={}, totalStake={}, sigma={}",
                 epoch, poolStake, totalStake, sigma);
