@@ -51,24 +51,38 @@ dropped, and nothing replays it.
 This ADR makes the node's chain state the source of truth for app-chain L1
 input:
 
-1. **Own position.** Each app chain persists its own L1 position: the bounded
-   window of recent L1 points it has fully processed. The newest point is the
-   cursor. (D2)
+1. **Own position.** Each app chain persists a delivery record: a baseline
+   point, the bounded window of L1 points it has fully delivered (the newest is
+   the cursor), and at most one pending intent. (D2, D5a, D8)
 2. **Pull, in order.** A single delivery loop per chain reads the next
    canonical block from chain state with the existing `ChainBlockReader`, up to
-   the node's body tip. It hands the block to the **existing** per-block
-   handler, and advances the cursor only after every phase succeeded. (D1, D3,
-   D4, D5)
-3. **Rollbacks from chain state.** The loop detects that a recorded point left
-   the canonical chain, and runs the **existing** rollback handler to the newest
-   recorded point that is still canonical. It does not depend on receiving a
-   `RollbackEvent`. A divergence deeper than the window fails closed. (D6)
-4. **Events become wake-ups.** The app chain keeps subscribing to the node's
+   the node's body tip. Before running any phase it records an `APPLY` intent;
+   it commits the block to the window and clears the intent in one write only
+   after every phase reported durable success. (D1, D3, D4, D4a, D5, D5a)
+3. **Rollbacks from chain state, with a crash boundary.** The loop detects that
+   a delivered or partly applied point is no longer canonical, records a
+   `ROLLBACK` intent, and runs the **existing** rollback phases until all of
+   them succeed. Only then does it shorten the window. It does not depend on
+   receiving a `RollbackEvent`. A divergence deeper than the window fails
+   closed. (D5a, D6)
+4. **Explicit phase outcomes.** Every forward and rollback phase, through both
+   anchor services, reports no-op, durable success, retryable failure or
+   quarantine. A swallowed failure can no longer advance the cursor. (D4a)
+5. **Fenced readers.** Every safety-sensitive reader of the stable L1 point gets
+   "unavailable" unless the delivery record is clean and its newest point is
+   still canonical at read time. A stale cached view cannot release work. (D9a)
+6. **Events become wake-ups.** The app chain keeps subscribing to the node's
    events, but only to wake the loop. A periodic poll backs them up. Losing an
    event costs latency, never correctness. (D3)
-5. **Bodies stay until processed.** The chain registers its cursor as a
-   `BlockBodyRetentionBoundary`. Chain storage changes from one boundary slot to
-   the minimum across registered consumers. A missing body fails closed. (D7)
+7. **Bodies stay until processed, across stop and start.** Each configured
+   chain owns a `BlockBodyRetentionBoundary` from node construction until it is
+   removed from configuration. Chain storage keeps the minimum across
+   consumers, and the pruner and registrations share one lock. A missing body
+   fails closed. (D7, D7a)
+8. **Legacy state is not trusted.** An upgraded chain starts from a baseline
+   with no delivered points, does not count legacy anchor confirmations toward
+   the F7 frontier, and checks journaled observations against chain state.
+   (D8, D8a)
 
 No new event type is added and nothing is re-published on the event bus. The
 loop calls the handlers that already exist. The mechanism is written so that it
@@ -132,8 +146,21 @@ slot with `L1_OBSERVER_REPLAY_REQUIRED_AT_SLOT_<n>`
 - The block producer catches a publish failure at debug level and continues,
   except for block 0 (`BlockProducerHelper.java:139-149`).
 - A phase failure swallowed by `runL1Phase` loses that block for that phase.
-  For example, a transient failure in anchor confirmation loses that
-  confirmation for good. Only block observations have a retry barrier.
+  Only block observations have a retry barrier.
+- The anchor services also swallow their own failures.
+  `AnchorService.onL1Block` and `completeObservedConfirmation`
+  (`AnchorService.java:378-443`) catch every `Throwable` and return `null`,
+  which also means "no matching anchor". The observed-but-uncompleted
+  confirmation lives only in memory (`observedConfirmation`), and
+  `onL1Rollback` (`:463-480`) swallows failures too. `ScriptAnchorService` has
+  the same pattern (`onL1Block`, `:1010-1043`; confirmation writes, `:1088`,
+  `:1170`). A failed `metaPutAll` therefore looks like "nothing to do", and a
+  crash loses the in-memory retry state. `tick()` (`:201-205`) and
+  `forceAnchorNow()` (`:172-176`) also complete observed confirmations.
+- `AnchorService.Confirmation.blockHash` is the **app** block hash
+  (`completeObservedConfirmation`, `:411-423`), not the L1 inclusion block's
+  hash. Only the inclusion slot is recorded, so a confirmation cannot be
+  checked against chain state by `(slot, hash)` today.
 
 ### 1.3 Probable defect: process-restart ordering
 
@@ -157,9 +184,11 @@ the app chain's L1 input has no durable position of its own.
 
 ### 2.1 Goals
 
-- Every canonical L1 block between the chain's starting point and the node's
-  body tip is delivered to the app chain's per-block handler, in canonical
-  order.
+- While a chain stays configured, every canonical L1 block between the chain's
+  baseline and the node's body tip is delivered to the app chain's per-block
+  handler, in canonical order. Removing a chain from configuration, restoring a
+  snapshot or a bootstrap start can break that guarantee; D7a defines the
+  operator recovery for those cases.
 - Every L1 rollback that removes a delivered block is applied before any block
   of the new branch is delivered.
 - Correctness does not depend on any event being delivered, on start order, on
@@ -174,7 +203,7 @@ the app chain's L1 input has no durable position of its own.
 - No shared node-wide follower framework yet (D11).
 - No change to how the node itself syncs, stores or prunes, beyond making the
   body-retention boundary composable (D7).
-- No historical backfill before the chain's starting point. Late observer
+- No historical backfill before the chain's baseline (D8). Late observer
   activation and bounded backfill are separate topics.
 
 ## 3. Existing building blocks (reuse)
@@ -202,8 +231,10 @@ invisible to such a check. The loop in this ADR compares hashes.
   blocks itself.
 - **Faults covered:** process crash at any instruction; in-process stop and
   start; events lost, delayed, duplicated or reordered; events disabled; a
-  plugin observer or anchor phase that throws; concurrent node rollbacks and
-  pruning; several app chains in one node.
+  plugin observer or anchor phase that throws; a storage write that fails
+  inside a phase or a rollback phase; a reader running while the cached view is
+  stale; concurrent node rollbacks and pruning; several app chains in one node;
+  an upgrade from code that may have missed rollbacks.
 - **Not covered:** corruption of chain state or the app ledger; an L1 rollback
   deeper than the recorded window (detected, fails closed; see D6); a
   nondeterministic observer (already a consensus halt under ADR-036 §5.6).
@@ -214,36 +245,66 @@ invisible to such a check. The loop in this ADR compares hashes.
 Each invariant names the decisions it constrains and is testable (§11).
 
 - **I1 Completeness (D1, D3, D5).** For every canonical block `B` with
-  `cursor₀ < B.number ≤ bodyTip`, where `cursor₀` is the chain's starting
-  point, the app chain runs every per-block phase for `B` before running any
-  phase for `B`'s canonical successor.
+  `baseline.number < B.number ≤ bodyTip`, the app chain runs every per-block
+  phase for `B` before running any phase for `B`'s canonical successor.
 - **I2 Order and continuity (D1, D6).** Blocks are delivered in strictly
   increasing block number. Before delivering block `n`, the canonical reference
   of `n - 1` equals the cursor (number, slot and hash).
-- **I3 Rollback before new branch (D6).** If any recorded point is no longer
-  canonical, the rollback handler runs with the newest recorded point that is
-  still canonical as its target, before any block of the new branch is
-  delivered.
-- **I4 No skip on failure (D4).** The cursor never moves past a block whose
-  phases did not all succeed. The loop retries that block.
-- **I5 Durable after effects (D5).** The cursor is advanced only after every
-  phase for the block has succeeded and made its own writes durable. After a
-  crash, the block is delivered again, and every phase handles a repeated
+- **I3 Rollback before new branch (D5a, D6).** If any delivered point, or the
+  block named by a pending `APPLY` intent, is no longer canonical, every
+  rollback phase completes with the newest delivered point that is still
+  canonical as its target, before any block of the new branch is delivered.
+  (r2: also covers partly applied blocks.)
+- **I4 No skip on failure (D4, D4a).** The cursor never moves past a block
+  whose phases did not all report durable success or no-op. The loop retries
+  that block.
+- **I5 Durable after effects (D5, D5a).** The window gains a block, and its
+  `APPLY` intent is cleared, in one write that happens only after every phase
+  for the block reported durable success or no-op. After a failure or a crash,
+  the same block is delivered again, and every phase handles a repeated
   `(slot, hash)` without changing its result.
 - **I6 Events are hints (D3).** With a `NoopEventBus`, or with every event
   dropped, the app chain still delivers every block, within the poll interval.
-- **I7 Retention (D7).** While a chain is registered, no body with
-  `number > cursor.number` is pruned. If a needed body is missing, the chain
+- **I7 Retention (D7, D7a).** From node construction until a chain is removed
+  from configuration, and whether or not the chain is running, no body with
+  `number > cursor.number` is pruned (or above the rollback target while a
+  `ROLLBACK` intent is pending). If a needed body is missing anyway, the chain
   reports `L1_BODY_UNAVAILABLE` and delivers nothing further; it never skips.
-- **I8 Deep divergence fails closed (D6).** If no recorded point is canonical,
-  the chain reports `L1_DIVERGENCE_BEYOND_WINDOW`, stops delivering, and the
-  stable L1 point is unavailable (so the F7 frontier is 0).
-- **I9 Window reflects delivery (D2, D9).** The stable L1 point and
-  `checkL1Ref` read only points that have been delivered. After a restart they
-  are loaded from the durable window, and are used only after the I3 check has
-  run.
+- **I8 Deep divergence fails closed (D6, D8).** If the window is not empty and
+  neither any window point nor the baseline is canonical, the chain reports
+  `L1_DIVERGENCE_BEYOND_WINDOW`, stops delivering, and the stable L1 point is
+  unavailable (so the F7 frontier is 0). With an empty window, a non-canonical
+  baseline is re-chosen under D8 instead.
+- **I9 Window reflects delivery (D2, D5a, D8, D9).** The published window
+  contains only committed, delivered points: never a baseline point, a block
+  with a pending `APPLY` intent, or a point a pending `ROLLBACK` would remove.
+  The stable L1 point needs at least `depth + 1` delivered points.
 - **I10 Body-tip bound (D1).** The loop never delivers a block above
   `getLocalTip()`.
+- **I11 Rollback intent blocks progress (D5a, D6).** While a `ROLLBACK` intent
+  is pending, the loop delivers no forward block, publishes no shortened
+  window, and fenced readers get "unavailable". The intent survives restart and
+  is replayed before anything else. A terminal quarantine outcome is persisted
+  and is never cleared by a restart.
+- **I12 Partial apply is rolled back before a replacement (D5a).** If a pending
+  `APPLY(p)` names a block that is not the canonical block at `p.number`, or
+  the cursor is no longer canonical, the loop replaces the intent with
+  `ROLLBACK(target)` and completes it before delivering any block at
+  `p.number`. This holds after a phase failure without a crash, after a
+  restart, and whether the replacement has the same slot or a different one.
+- **I13 Freshness fence (D9a).** A safety-sensitive reader (the F7 frontier
+  for dispatch, claims and the pre-execution recheck; `checkL1Ref`; the
+  proposer's L1 reference; the observation drain; the ADR-037 heartbeat) gets
+  a stable point only if the delivery state is `RUNNING`, no intent is
+  pending, the record has been reconciled since start, and the window's newest
+  point equals `getCanonicalBlockReference(newest.number)` at read time.
+  Otherwise it gets "unavailable".
+- **I14 Legacy state is not trusted (D8a).** After an upgrade, the F7 frontier
+  counts only anchor confirmations that record an L1 inclusion point, and every
+  non-finalized journaled observation has been checked against chain state
+  before the first delivery.
+- **I15 One-lock prune handshake (D7a).** Once a boundary registration or a
+  lowering returns, no prune batch deletes a body below it.
 
 ## 6. Decisions
 
@@ -268,13 +329,23 @@ the body tip: not needed, because observers and anchor confirmation read only
 the block (`L1Observer.observe(slot, blockHash, block)` is documented as
 "deterministic and side-effect free").
 
-### D2. A durable per-chain L1 window; its newest point is the cursor
+### D2. A durable per-chain delivery record; the window's newest point is the cursor
 
-The existing `recentL1Points` window (capacity `max(depth, 1) + 64`) becomes
-durable. Each chain stores it in its own `AppLedgerStore` meta as an ordered
-list of `(blockNumber, slot, blockHash)`, and keeps the in-memory copy as a
-cache under the existing monitor. The newest entry is the cursor. The window
-also provides the history needed to find a fork point after a restart (D6).
+Each chain stores one delivery record in its own `AppLedgerStore` meta,
+written atomically as a unit:
+
+- `baseline`: the canonical `(blockNumber, slot, blockHash)` where delivery
+  starts (D8). It is not a delivered point.
+- `window`: the existing `recentL1Points` contents (capacity
+  `max(depth, 1) + 64`), now durable: an ordered list of delivered
+  `(blockNumber, slot, blockHash)` points. The newest is the cursor; with an
+  empty window, the baseline is the cursor.
+- `pending`: none, `APPLY(point)` or `ROLLBACK(target)` (D5a).
+
+The in-memory `recentL1Points` becomes a published copy of the committed
+window. It is replaced only after the record is durably written (r2, F4). The
+window also provides the history needed to find a fork point after a restart
+(D6).
 
 *Alternatives.* Persist only the cursor and walk parent hashes back through
 headers: possible, but it needs header decoding and adds a code path. The
@@ -287,9 +358,19 @@ Each chain owns one delivery loop on a dedicated worker, started and stopped
 with the subsystem's generation. The `BlockAppliedEvent` and `RollbackEvent`
 subscriptions remain, but their callbacks only signal the loop with a coalesced
 wake-up, following `L1EpochObservationCoordinator.onBlockApplied`. A periodic
-poll (default 1 s, node-local) also wakes the loop. The loop is the only writer
-of L1-derived state. Readers of the window keep using the monitor introduced in
-`0dfdd48af`.
+poll (default 1 s, node-local) also wakes the loop. Readers of the window keep
+using the monitor introduced in `0dfdd48af`, behind the freshness fence (D9a).
+
+The loop is the only writer of **L1-derived facts**: the delivery record, the
+observation journal's L1 inputs, and anchor confirmation facts (an anchor tx
+seen in an L1 block at a given point). Other paths may write only local state
+keyed by those facts. For example, `tick()` and `forceAnchorNow()` may finish
+the local part of a confirmation the loop recorded (D4a). They take the same
+`anchorLock` as the rollback phase, so a rollback cannot race a completion.
+
+The per-block handler no longer appends to the window. Its "reference
+tracking" phase moves into the loop's commit step (D5a), so the published
+window holds only blocks whose every phase succeeded (r2, F4).
 
 The loop calls the existing `onL1BlockAppliedWithinGeneration` and
 `onL1RollbackWithinGeneration` directly. No `AppChainL1BlockEvent` type is
@@ -318,35 +399,120 @@ availability that the chain has today.
 cursor: open question Q1. The lean is a single cursor (KISS), because the phases
 have no independent consumers.
 
+### D4a. Explicit phase outcomes (r2, F2)
+
+Every forward phase and every rollback phase returns one of:
+
+| Outcome | Meaning | Loop action |
+|---|---|---|
+| `NO_OP` | Nothing in this block (or rollback) concerns the phase. | Counts as success. |
+| `DURABLE` | The phase's writes for this block are durable. | Counts as success. |
+| `RETRYABLE` | A failure that may succeed later (for example storage unavailable). | Keep the intent and retry with backoff. |
+| `QUARANTINED(reason)` | A terminal safety state (for example ADR-036 `DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION` or `L1_INVALIDATED_PREPARED_VALUE`). | Persist it; the loop enters a fail-closed state (I11). |
+
+The contract runs through the anchor services themselves, not only through
+`runL1Phase`. On the loop's path, `AnchorService` and `ScriptAnchorService` stop
+returning `null` for failures. A storage failure becomes `RETRYABLE`, and "no
+matching anchor" becomes `NO_OP`. The same applies to their `onL1Rollback`.
+
+Anchor confirmation splits into two steps:
+
+1. **L1 fact (the loop's phase).** "Anchor tx `T` appears as a valid
+   transaction in L1 block `(number, slot, hash)`" is written durably, keyed by
+   the pending anchor. This replaces the in-memory `observedConfirmation`. The
+   phase reports `DURABLE` only after that write.
+2. **Local completion (any path).** Resolving the anchored app block and
+   appending the `Confirmation` (now also recording the L1 inclusion point,
+   D8a) can be done by the loop or by `tick()`/`forceAnchorNow()`. It is
+   idempotent and keyed by the durable fact. If the app block is temporarily
+   unavailable, completion waits without stalling L1 delivery.
+
+The rollback phase removes both the durable facts and the completed
+confirmations above the target, under `anchorLock`.
+
+`AppChainAnchoredEvent` stays a best-effort notification. It is published after
+local completion, can be lost on a crash or a delivery failure, and is not
+implied by the cursor advancing. Consumers that need completeness read the
+status or the confirmation journal.
+
 ### D5. Crash boundary: effects first, cursor second
 
 Each phase writes its own durable state (the observation journal, the anchor
-confirmation journal, the epoch spool). The loop then writes the new window and
-cursor. A crash between the two delivers the block again on restart (I5). This
+confirmation facts, the epoch spool). The loop then commits the block (D5a). A
+failure or crash between the two delivers the same block again (I5). This
 requires every phase to be idempotent for a repeated `(slot, hash)`:
 
 | Phase | Required behaviour on redelivery |
 |---|---|
-| Window append | No duplicate entry for an equal point. |
+| Window commit (in the loop, D5a) | One record write; committing an equal point again is a no-op. |
 | Block observation | ADR-036 §5.5 already requires idempotent journaling. |
 | Epoch-observation wake-up | A repeated wake-up is harmless (atomics and a coalesced wake-up). |
-| Metadata and script anchor confirmation | Confirming an already-confirmed anchor must not add a journal entry or publish a second `AppChainAnchoredEvent`. To be verified in M2. |
+| Metadata and script anchor confirmation | Recording an already-recorded `(anchor, L1 point)` fact is a no-op, and completion is idempotent (D4a). No second `Confirmation` entry; a repeated best-effort `AppChainAnchoredEvent` is tolerated. To be verified in M2. |
 
 One atomic batch across all phases is not proposed. The phases write to
 different column families and services; idempotent redelivery is the smaller
-change.
+change. Same-block idempotence does not cover a *different* block at the same
+height after a fork. D5a handles that case.
+
+### D5a. Durable delivery intent (r2, F1, F3)
+
+The delivery record (D2) holds at most one pending intent. It is the crash
+boundary for both directions.
+
+**Forward.** Before running any phase for block `n`, the loop writes
+`pending = APPLY(n, slot, hash)`. When every phase reports `DURABLE` or
+`NO_OP`, one atomic write appends the point to the window and clears
+`pending`. Only then is the published window replaced.
+
+**Retry or restart with `APPLY(p)` pending.** Before each attempt, including the
+first after a restart, the loop checks two things: the cursor is still
+canonical, and `getCanonicalBlockReference(p.number)` equals `p`.
+
+- If both hold, it delivers `p` again (D5 idempotence).
+- If either fails, it atomically replaces the intent with `ROLLBACK(target)`,
+  where `target` is the newest delivered point that is still canonical (the
+  cursor itself when only `p` changed). It runs that rollback before
+  delivering any block at `p.number` (I12).
+
+This covers a phase failure without a crash, a crash, and a replacement block
+with the same slot or a different one. A failed-callback marker left at `p`'s
+slot is removed by the observation rollback, because its slot is above the
+target: the journal deletes the durable marker (`L1ObservationJournal.java:391-392`)
+and the service resets its copy (`L1ObservationService.java:443-444`). So the
+replacement block is not rejected forever.
+
+**Rollback.** The loop writes `pending = ROLLBACK(target)`, leaving the
+committed window unchanged, and runs every rollback phase with `target`. Each
+phase is idempotent ("remove everything above `target`"). The loop repeats the
+whole rollback until every phase reports `DURABLE` or `NO_OP`. Only then does
+one atomic write truncate the window to `target` and clear `pending`. A crash
+anywhere in between replays the same rollback on restart. A `QUARANTINED`
+outcome is persisted with the intent and is terminal (I11).
+
+**Why a partly applied block cannot be finalized.** The stable L1 point is
+computed only from the committed window (I9). The block named by `APPLY` is
+above the cursor, so its observations cannot become stable, be proposed,
+prepared or finalized before the block commits. A rollback to the cursor
+therefore orphans only `SEEN_UNSTABLE` entries. If the journal reports a
+quarantine anyway, it is preserved as a terminal outcome.
 
 ### D6. Rollbacks are derived from chain state
 
 Before reading block `cursor.number + 1`, the loop checks that the cursor is
 still canonical, with the same comparison as
-`WalletQueryService.requireCanonicalPoint`. If it is not, the loop walks the
+`WalletQueryService.requireCanonicalPoint`. With an `APPLY` intent pending, it
+also checks the intent's block (D5a). If a check fails, the loop walks the
 durable window from newest to oldest. The first point whose canonical reference
-matches becomes the rollback target, and the loop runs the existing rollback
-handler with it before reading forward (I3).
+matches becomes the rollback target. The loop records `ROLLBACK(target)` and
+completes the existing rollback phases under the D5a rules before reading
+forward (I3, I11). The handler's "reference rollback" phase becomes the window
+truncation in D5a's final write, so the published window never shrinks before
+the other phases succeed.
 
-If no window point matches, the divergence is deeper than the window. The chain
-fails closed with `L1_DIVERGENCE_BEYOND_WINDOW` (I8). When finalized
+If no window point matches, the baseline is tried next. If neither matches and
+the window is empty, D8's re-baseline applies. Otherwise the divergence is
+deeper than anything recorded, and the chain fails closed with
+`L1_DIVERGENCE_BEYOND_WINDOW` (I8). When finalized
 observations are affected, this maps onto ADR-036's `DEEP_L1_ROLLBACK`
 quarantine. Leaving the state requires operator action; it is not cleared by a
 restart.
@@ -362,38 +528,146 @@ rejected, because it cannot be proven sufficient.
 `ChainStorageSubsystem`'s single delegate becomes a registry of boundaries, and
 the pruner uses the minimum of their `oldestRequiredBlockNumber()`. An empty
 value from one consumer means "no requirement" from that consumer.
-Registration returns a handle that unregisters on close. Each app chain
-registers `cursor.number + 1` while it is running.
+Registration returns a handle that unregisters on close. Each configured app
+chain owns one registration (D7a). Its value is `cursor.number + 1`, or
+`target.number + 1` while a `ROLLBACK` intent is pending.
 
-If the loop needs a body that is missing (for example after a snapshot or
-bootstrap start, or because pruning ran before registration), it reports
+If the loop needs a body that is missing anyway, it reports
 `L1_BODY_UNAVAILABLE` with the gap from `getEarliestRetainedBodyBlockNumber()`
 and stops (I7). A stuck chain then holds bodies back; readiness reports that
 lag so operators can act.
 
+### D7a. Retention ownership and the prune handshake (r2, F6)
+
+**Ownership.** The boundary belongs to the chain's durable delivery record, not
+to its running state:
+
+- The app-chain manager is built during `RuntimeNode` construction
+  (`RuntimeNode.java:468`), before the kernel starts the prune stage. It
+  registers one boundary per configured chain at that point.
+- Until a chain's record is loaded, its boundary reports `0`. The pruner treats
+  `0` as "retain everything" (`BlockPruner.java:76`), so startup pruning cannot
+  run ahead of a stopped or not-yet-started chain.
+- The registration survives `stop()` and `start()`. It is removed only when
+  the chain is permanently closed or removed from configuration.
+
+**Handshake.** `BlockPruner.pruneOnce` reads the boundary once and then deletes
+a batch (`BlockPruner.java:73-126`), so a consumer that registers mid-pass is
+not honoured. The registry therefore owns one lock:
+
+- The pruner takes it to read the composite boundary and holds it while it
+  computes and writes each batch.
+- Registration, unregistration and lowering take the same lock.
+
+Once `register` or a lowering returns, no later batch deletes below it (I15).
+Lowering happens before the loop records a `ROLLBACK` intent. Any remaining
+race costs availability, never correctness, because a missing body fails closed
+(I7).
+
+**Operator recovery.** Removing a chain from configuration, restoring a
+snapshot, or a bootstrap start can leave the record's next body missing. Then
+the chain stays in `L1_BODY_UNAVAILABLE` until an operator runs an explicit
+re-baseline. That action moves the baseline to the current body tip and
+applies D8a's distrust rules. L1 input in the gap is never observed. A chain
+that needs those observations must reconcile them through ADR-036 §6
+historical verification. The completeness goal (§2.1) is scoped accordingly.
+
 ### D8. Starting position
 
-A chain without a durable window starts at the node's body tip. This matches
-today's behaviour, where a fresh window fills from live blocks. An existing
-chain upgraded to this design seeds its window from the last `capacity`
-canonical points at the body tip, without running handlers for them, because
-the previous code delivered those blocks through events. See Q3.
+The record separates a **baseline** from **delivered** points (D2):
+
+- **New chain:** the baseline is the node's body tip at first start, or the
+  origin when chain state holds no block (for example a fresh devnet, where
+  delivery then starts at block 0). The window is empty, so the stable point
+  is unavailable until `depth + 1` blocks have been delivered (I9). This
+  matches today's behaviour after a restart.
+- **Upgraded chain** (journals exist, no delivery record): the same baseline,
+  plus D8a. The window is **not** seeded with canonical points. Seeding would
+  claim delivery without evidence that legacy journals match it (r2, F5).
+- **Baseline orphaned before anything was delivered:** a baseline at the tip
+  can easily be rolled back. If the window is empty and the baseline is no
+  longer canonical, this is not a divergence failure. Let `c` be
+  `getCanonicalBlockReference(baseline.number - 1)`. The loop runs
+  `ROLLBACK(c)`, which removes any partly applied block (D5a), and then makes
+  `c` the new baseline in the same commit. Nothing delivered is lost, because
+  nothing was delivered. The origin baseline is always canonical.
+
+### D8a. Legacy reconciliation on upgrade (r2, F5)
+
+Existing L1-derived state may come from a fork the old code never rolled back
+(#166). On the first start with this design:
+
+- **Anchor confirmations.** Legacy `Confirmation` entries record only the
+  inclusion slot; `blockHash` is the app block hash. They stay in the history
+  for anchoring bookkeeping (the next range start), but the F7 frontier does
+  not count them. Only confirmations completed under D4a, which record the L1
+  inclusion point, count. The frontier therefore stays 0 until the first new
+  anchor confirms and becomes stable. See Q3 for the alternative of
+  re-verifying legacy entries against retained bodies.
+- **Observations.** Journaled `L1Observation`s carry `(slot, blockHash)`. Every
+  non-finalized entry is checked with `getCanonicalBlockReference`. If any
+  fails, the loop records `ROLLBACK` to just below the lowest failing entry and
+  completes it (D5a). The existing journal quarantine applies when finalized
+  or prepared entries are affected.
+- **Failed-callback marker.** If the marker's slot is canonical, the baseline
+  moves to the canonical block just before it, so the loop delivers from the
+  failed block forward. If the bodies are missing, it fails closed (I7). If
+  the slot is not canonical, the marker is deleted as orphaned (ADR-036 §5.5).
+
+The upgrade counterexample (the #166 old-fork anchor at slot 101, the rollback
+missed, the upgrade at new-fork tip 103) must leave the frontier at 0 (M3).
 
 ### D9. The window and frontier after a restart
 
 Because the window is durable, the stable L1 point is available after a restart
-once D6's check has run. This replaces ADR-010 F7's "after a restart it stays 0
-until the node has seen `l1.stability-depth + 1` L1 blocks" with "after a
-restart it is available once the durable window has been checked against chain
-state". The F7 text is amended when M3 lands. The fail-closed cases (depth 0, no
-journal, I7, I8) are unchanged.
+once pending intents are recovered (D5a) and D6's check has run, subject to the
+D9a fence. This replaces ADR-010 F7's "after a restart it stays 0 until the node
+has seen `l1.stability-depth + 1` L1 blocks" with "after a restart it is
+available once the durable delivery record has been recovered and checked
+against chain state". An upgraded chain still waits for `depth + 1` delivered
+blocks (D8). The F7 text is amended when M3 lands. The fail-closed cases (depth
+0, no journal, I7, I8, I11) are unchanged.
+
+### D9a. Freshness fence for safety-sensitive readers (r2, F4)
+
+The monitor makes the window internally consistent. It does not make it
+fresh: between a node rollback and the loop's next reconcile, a reader could
+use a cached stable point that is no longer safe. Every safety-sensitive
+reader therefore uses one accessor (I13), which returns "unavailable" unless:
+
+1. the loop state is `RUNNING` and no intent is pending;
+2. the record has been recovered and checked at least once since start; and
+3. at read time, `getCanonicalBlockReference(newest.number)` equals the
+   window's newest point.
+
+The readers are the F7 frontier (effect dispatch, external claims and the
+pre-execution recheck), `checkL1Ref`, the proposer's L1 reference, the
+observation drain's stable slot, and the ADR-037 heartbeat.
+
+Check 3 needs no event. Chain state rewrites its indexes during a rollback,
+before any `RollbackEvent` is published (`SyncSubsystem.java:1058-1063`;
+`DirectRocksDBChainState` `stageDeletesAfter`). So once a delivered block is
+rolled back, the next read fails the check, even with every event dropped
+(I6).
+
+If the newest delivered point is still canonical, the canonical chain extends
+it. The stable point, `depth` blocks below it, then has at least `depth`
+canonical successors.
+
+A rollback that lands after the check is the same as a reorg just after the
+decision, which ADR-010 F7 already accepts. On "unavailable", the effect gate
+reads 0 and `checkL1Ref` returns `UNKNOWN`, which for a live proposal means
+defer and never vote (ADR-036 §6).
 
 ### D10. Observability
 
-Status adds, per chain: the cursor (number, slot, hash), the body tip, lag in
-blocks, the loop state (`RUNNING`, `RETRYING_BLOCK`, `L1_BODY_UNAVAILABLE`,
-`L1_DIVERGENCE_BEYOND_WINDOW`), and the last failure's phase. Readiness degrades
-when the loop is not `RUNNING` or the lag exceeds a node-local threshold.
+Status adds, per chain: the baseline and cursor (number, slot, hash), the
+pending intent, the body tip, lag in blocks, the loop state (`RUNNING`,
+`RETRYING_BLOCK`, `RETRYING_ROLLBACK`, `L1_BODY_UNAVAILABLE`,
+`L1_DIVERGENCE_BEYOND_WINDOW`, `QUARANTINED`), the last failure's phase and
+outcome, and whether the D9a fence is open. Readiness degrades when the loop is
+not `RUNNING` or the lag exceeds a node-local threshold. Readiness is a signal
+only; safety comes from D9a.
 
 ### D11. Scope: app chains first, extract later
 
@@ -406,44 +680,66 @@ the repository's simplicity rules.
 
 ## 7. Delivery loop (illustrative)
 
-Illustrative pseudocode only; not an implementation.
+Illustrative pseudocode only; not an implementation. `commit(...)` is one atomic
+write of the delivery record (D2), followed by replacing the published window.
 
 ```text
 loop until stopped:
     wait for a wake-up or the poll interval
-    if state is a fail-closed state: continue
-    if window not empty and window.newest is not canonical:
-        target = newest window point that is still canonical
-        if none: state = L1_DIVERGENCE_BEYOND_WINDOW; continue
-        rollbackHandler(target)                // existing handler, all phases
-        window.truncateAfter(target); persist(window)
+    if state is fail-closed (L1_BODY_UNAVAILABLE, L1_DIVERGENCE_BEYOND_WINDOW,
+                             QUARANTINED): continue
+    # recover or derive a rollback (D5a, D6)
+    if pending is APPLY(p) and (cursor not canonical or canonical(p.number) != p)
+       or pending is none and cursor not canonical:
+        target = newest window point, else the baseline, that is still canonical
+        if target is none and window is empty:
+            target = canonical(baseline.number - 1)   # D8 re-baseline at the commit
+        if target is none: state = L1_DIVERGENCE_BEYOND_WINDOW; continue
+        boundary.lower(target.number + 1)       # D7a, before the intent
+        commit(pending = ROLLBACK(target))
+    if pending is ROLLBACK(t):
+        outcomes = every rollback phase(t)       # D4a outcomes, idempotent
+        if any QUARANTINED: persist; state = QUARANTINED; continue
+        if any RETRYABLE: state = RETRYING_ROLLBACK; backoff; continue
+        commit(window = window.truncateAfter(t), pending = none)
+    # forward delivery (D1, D4, D5, D5a)
     while cursor.number < bodyTip.number and not stopped:
         n = cursor.number + 1
-        ref = canonicalReference(n)            // index only
-        if ref is empty or (n - 1) is no longer the cursor: break   // re-check divergence
+        ref = canonicalReference(n)              # index only
+        if ref is empty or canonical(cursor.number) != cursor: break   # back to the top
         body = blockByNumber(n)
         if body missing: state = L1_BODY_UNAVAILABLE; break
-        event = BlockAppliedEvent(era, ref.slot, n, ref.hash, decoded body)
-        if not blockHandler(event):            // existing handler; true only if all phases succeeded
-            state = RETRYING_BLOCK; backoff; break
-        window.append(ref); persist(window)    // cursor advances after the effects
-        retentionBoundary = n + 1
+        if pending is none: commit(pending = APPLY(ref))
+        outcomes = every forward phase(BlockAppliedEvent(era, ref.slot, n, ref.hash, body))
+        if any QUARANTINED: persist; state = QUARANTINED; break
+        if any RETRYABLE: state = RETRYING_BLOCK; backoff; break   # APPLY stays pending
+        commit(window = window + ref, pending = none)
+        boundary.set(n + 1)
 ```
 
 ## 8. Compatibility and migration
 
 - **Consensus and wire:** unchanged. L1 references, observations and anchors
   carry the same values. Only the timing of local processing changes.
-- **Storage:** new node-local `AppLedgerStore` meta for the durable window.
-  There is no change to replicated state.
-- **Upgrade:** D8 seeds the window for existing chains. Blocks applied while the
-  old code was not subscribed remain missed, as they are today; the design
-  prevents new gaps.
+- **Storage:** node-local only, with no change to replicated state:
+  - the per-chain delivery record (D2) in `AppLedgerStore` meta;
+  - durable anchor confirmation facts that replace the in-memory
+    `observedConfirmation` (D4a);
+  - new `Confirmation` entries that also record the L1 inclusion point. Legacy
+    entries without it still decode, and are excluded from the F7 frontier
+    (D8a).
+- **Upgrade:** D8 and D8a. The window is not seeded; the frontier waits for a
+  new-schema confirmation; journaled observations are checked against chain
+  state. Blocks applied while the old code was not subscribed remain missed, as
+  they are today; the design prevents new gaps.
 - **API:** `BlockBodyRetentionBoundary` keeps its contract. The single
   `setBlockBodyRetentionBoundary` either becomes a registration call or is
-  implemented through one. It has no production caller on `main`.
+  implemented through one. It has no production caller on `main`. The anchor
+  services' L1 methods change their result types (D4a); they are internal to
+  `runtime/appchain`.
 - **Events:** the node's events and their subscribers are unchanged. The app
-  chain still subscribes; its callbacks only signal.
+  chain still subscribes; its callbacks only signal. `AppChainAnchoredEvent`
+  stays best-effort (D4a).
 
 ## 9. Alternatives considered
 
@@ -461,16 +757,39 @@ loop until stopped:
   has.
 - **A shared follower framework now:** deferred by D11 until a second consumer
   exists.
+- **Rollback through the existing handler with no intent** (r1): withdrawn in
+  r2. A failed or interrupted rollback phase was lost (F3).
+- **Seeding the window from chain state on upgrade** (r1 D8): withdrawn in r2.
+  A canonical seed says nothing about legacy journals and can make a dead-fork
+  anchor stable (F5).
+- **One atomic batch for all phases plus the record:** not proposed. The phases
+  span several stores; the single intent plus idempotent phases gives the same
+  guarantees with less coupling.
 
 ## 10. Consequences
 
-- **Positive:** no missed blocks or rollbacks from any cause in §1.2–§1.3; P2 is
-  fixed by construction; app-chain work leaves the sync thread; the frontier is
-  available after a restart; a reusable pattern for other derived processing.
-- **Negative:** each block body is read and decoded once more per chain (today
-  the node hands over the parsed block). This is negligible at L1 block rates,
-  and catch-up after a long stop is the main cost. A stuck chain holds body
-  pruning back (visible through D10). Every phase must be idempotent (D5).
+- **Positive:**
+  - No missed blocks or rollbacks from any cause in §1.2–§1.3 while the chain
+    stays configured.
+  - A partly applied block or rollback is always finished or undone before
+    anything else happens (D5a).
+  - P2 is fixed by construction.
+  - Anchor storage failures can no longer be mistaken for "nothing to do"
+    (D4a).
+  - Readers cannot act on a rolled-back stable point (D9a).
+  - App-chain work leaves the sync thread.
+  - The frontier is available after an ordinary restart.
+  - A reusable pattern for other derived processing.
+- **Negative:**
+  - Each block body is read and decoded once more per chain (today the node
+    hands over the parsed block). This is negligible at L1 block rates; catch-up
+    after a long stop is the main cost.
+  - Each safety-sensitive read adds one index lookup (D9a).
+  - A stuck chain holds body pruning back (visible through D10).
+  - Every phase must be idempotent (D5), and the anchor services need the D4a
+    outcome contract.
+  - After an upgrade, `L1_ANCHORED` effects wait for the next anchor
+    confirmation to become stable.
 
 ## 11. Milestones, gates and verification
 
@@ -484,29 +803,52 @@ Failing tests on `main` that pass at the end of M3:
 - every event dropped (`NoopEventBus`): blocks still delivered (I6);
 - an observer failing at slot 10 while slot 11 arrives: slot 11 is observed
   after recovery (P2);
-- an anchor-confirmation phase failing once: the confirmation is recorded on
-  retry.
+- an anchor-confirmation storage failure (`metaPutAll` throws), followed by a
+  crash, in metadata mode and in script mode: the confirmation is recorded
+  exactly once after restart, and the cursor never passes the block (F2);
+- **F1:** old-fork block 101 partly applied (one phase fails, and separately a
+  crash before the commit). L1 replaces 101, once at the same slot and once at
+  a different slot. No old-fork effect survives, and the replacement is
+  delivered.
+- **F3:** a rollback phase fails, and separately a crash between rollback
+  phases and before the window write. No new-branch block is delivered and the
+  window does not shrink until every phase succeeds. A repeated failure keeps
+  retrying across restarts.
+- **F4:** an anchor stable in the cached window; L1 rolls it back with every
+  event dropped; an effect tick runs before the next poll. The frontier is 0.
+- **F5:** the #166 old-fork anchor at slot 101, the rollback missed, then the
+  upgrade at new-fork tip 103: the frontier stays 0.
+- **F6:** cursor 100; stop the chain; let the pruner pass 101; restart: the
+  bodies are still present.
 
 Exit: the tests exist and fail for the stated reason.
 
-### M1. Composable retention boundary (D7)
+### M1. Composable retention boundary (D7, D7a)
 
-Entry: M0. Registry with minimum semantics, registration handles, and tests for
-several consumers, an empty requirement, unregistering, and `0` meaning
-"retain everything". Exit: `BlockPrunerTest` and the new tests pass.
+Entry: M0. Registry with minimum semantics, registration handles, `0` meaning
+"retain everything", registration at construction, survival across stop and
+start, and the one-lock handshake. Tests: several consumers, an empty
+requirement, unregistering, stop/prune/restart, and a deterministic
+interleaving of registration or lowering against an in-flight prune batch (I7,
+I15). Exit: `BlockPrunerTest` and the new tests pass.
 
-### M2. Durable window and idempotent phases (D2, D5)
+### M2. Delivery record, outcomes and idempotent phases (D2, D4a, D5, D5a)
 
-Entry: M1. Persist and load the window; audit and test each phase in the D5
-table for redelivery of the same `(slot, hash)`. Exit: one redelivery test per
-phase passes, and the existing app-chain tests are unchanged.
+Entry: M1. The delivery record with its intent; the D4a outcome contract through
+`runL1Phase`, both anchor services and every rollback phase; durable anchor
+facts with split completion; the L1 inclusion point in new confirmations. Audit
+and test each phase in the D5 table for redelivery of the same `(slot, hash)`,
+and each rollback phase for repetition. Exit: one redelivery test per phase and
+per rollback phase passes; the F2 tests pass; the existing app-chain tests are
+unchanged.
 
-### M3. Delivery loop (D1, D3, D4, D6, D8, D9)
+### M3. Delivery loop, fence and upgrade (D1, D3, D4, D6, D8, D8a, D9, D9a)
 
-Entry: M2. The loop, the wake-up and poll, divergence detection, fail-closed
-states, starting position and upgrade seeding. Event callbacks only signal. The
-single-slot observation replay is removed. Exit: I1–I10 tests and the M0 tests
-pass, and the ADR-010 F7 text is amended.
+Entry: M2. The loop, the wake-up and poll, intent recovery, divergence
+detection, fail-closed states, the baseline, legacy reconciliation and the D9a
+fence for every listed reader. Event callbacks only signal. The single-slot
+observation replay is removed. Exit: the I1–I15 tests and every M0 test pass,
+and the ADR-010 F7 text is amended.
 
 ### M4. Observability and qualification (D10)
 
@@ -516,26 +858,39 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
 ### Verification strategy
 
 - **Differential model test:** generate random schedules of block applies,
-  rollbacks of random depth, restarts, crashes between phases and the cursor
-  write, dropped events and pruning against an in-memory chain state. After
-  each step, compare the sequence of blocks delivered to the handler with the
-  canonical chain read independently from chain state. The expected values come
-  from chain state, not from the loop under test.
-- **Crash points:** a kill switch before and after each phase, and before and
-  after the window write. Each must end with I1 and I5 holding after restart.
+  rollbacks of random depth, replacements at the same and different slots,
+  restarts, phase failures and storage failures, crashes at every crash point,
+  dropped events and pruning against an in-memory chain state. After each step,
+  compare the sequence of blocks delivered to the handler, and the surviving
+  L1-derived state, with the canonical chain read independently from chain
+  state. The expected values come from chain state, not from the loop under
+  test.
+- **Crash points:** a kill switch before and after each forward phase, each
+  rollback phase, each intent write and each commit. Each must end with I1,
+  I3, I5, I11 and I12 holding after restart.
+- **Interleavings:** deterministic schedules in which a fenced reader (the
+  effect gate, `checkL1Ref`, the proposer, the heartbeat) runs before, during
+  and after reconciliation, with a pending `APPLY`, a pending `ROLLBACK`, a
+  retry and a terminal state, with every event dropped (I13).
 - **Negative cases:** a missing body (I7), divergence beyond the window (I8), a
-  body tip below the header tip (I10), Byron blocks, several chains with
-  different cursors sharing one pruner (D7).
+  body tip below the header tip (I10), Byron blocks, quarantine outcomes from
+  the observation journal (I11), several chains with different cursors sharing
+  one pruner (D7).
 - **End-to-end:** the existing two-node script-anchor and rotation release-QA
   runs, plus a restart of one node during an L1 rollback on devnet.
 
 ## 12. Risks
 
-- **A phase that cannot become idempotent** would make crash recovery
-  double-apply. M2 audits every phase before the loop lands.
-- **Lag under load:** the loop runs behind the node by design. The stable point
-  then moves more slowly, which delays proposals and the frontier but is safe.
-  D10 surfaces it.
+- **A phase that cannot become idempotent** would make recovery double-apply.
+  M2 audits every forward and rollback phase before the loop lands.
+- **Anchor-service refactor:** D4a changes code that gates effects. The F2
+  crash tests in metadata and script modes are the gate.
+- **Lag under load:** the loop runs behind the node by design. Lag delays
+  proposals, observations and the frontier. It is safe only because of the
+  D9a fence (r2: the r1 claim that lag alone is safe was wrong). D10 surfaces
+  lag.
+- **A rollback that keeps failing** stops all delivery for the chain
+  (`RETRYING_ROLLBACK`). This is visible, and fail-closed by design.
 - **Retention held by a stuck chain:** disk use grows until the chain recovers
   or an operator acts. This is visible, never silent.
 - **Window size versus rollback depth:** a rollback deeper than
@@ -551,14 +906,30 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
 - **Q2. Window size.** (a) Keep `max(depth, 1) + 64`. (b) Make it configurable
   for chains that want to survive deeper rollbacks without operator action.
   Lean (a), adding (b) only on demand.
-- **Q3. Upgrade seeding.** (a) Seed the window from chain state at the body tip
-  (D8). (b) Start empty, as a fresh chain does. Lean (a): the frontier stays
-  available across the upgrade restart.
+- **Q3. Legacy anchor confirmations on upgrade** (r2, replaces r1's seeding
+  question).
+  - (a) Keep them for bookkeeping but exclude them from the F7 frontier until a
+    new-schema confirmation exists (D8a).
+  - (b) Re-verify each legacy entry: the canonical block at its slot must have a
+    retained body containing its tx as a valid transaction. Keep it, with the
+    L1 point backfilled, if so; drop it from the frontier otherwise.
+  - (c) Seed the window as in r1 (withdrawn).
+
+  Lean (a): no new verification code, and the cost is waiting for one anchor
+  after the upgrade. (b) is a later improvement if that wait matters.
 - **Q4. Using the event's parsed block.** (a) Always read from storage. (b) Use
   the event's `Block` when its number, slot and hash equal the next canonical
   reference. Lean (a) first, then (b) only if profiling shows decode cost.
 - **Q5. Shared facility.** Whether to place the loop in a shared module now so
   that archive or history work can adopt it. Lean: not now (D11).
+- **Q6. Anchor completion paths** (r2). (a) The loop records the L1 fact; the
+  loop, `tick()` or `forceAnchorNow()` may complete it locally (D4a). (b) Only
+  the loop completes, retrying the L1 block until the app block is available.
+  Lean (a): (b) would stall all L1 delivery while a lagging member catches up
+  on app blocks.
+- **Q7. Operator re-baseline** (r2). (a) An admin endpoint, like the existing
+  app-chain admin operations. (b) A one-shot configuration flag. Lean (a): it
+  is explicit, audited and needs no restart.
 
 ## 14. Related findings (out of scope)
 
@@ -572,7 +943,31 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
 - The block producer swallows non-genesis publish failures at debug level
   (`BlockProducerHelper.java:144-149`). Subscribers other than the app chain
   can still miss a produced block.
+- Issue #166's "possible directions" suggests dropping confirmations whose
+  `(l1Slot, blockHash)` is no longer on the chain. That cannot work as written,
+  because `blockHash` is the app block hash (§1.2). D4a and D8a replace that
+  suggestion.
 
 ## Revision history
 
 - **r1** (2026-10-03): initial proposal.
+- **r2** (2026-10-03; responds to the review of `4555ea681`):
+  - F1 → new D5a (a durable `APPLY`/`ROLLBACK` intent) and I12; partly applied
+    blocks are rolled back to the cursor before a replacement, at the same or
+    a different slot; an orphaned failed-callback marker is cleared by that
+    rollback.
+  - F2 → new D4a: explicit outcomes through both anchor services and every
+    rollback phase; durable anchor facts with split completion;
+    `AppChainAnchoredEvent` stated as best-effort.
+  - F3 → D5a and D6 now commit a shortened window only after every rollback
+    phase succeeds, and replay a pending rollback after restart; new I11.
+  - F4 → new D9a freshness fence and I13; the per-block handler no longer
+    appends to the window; the §12 lag claim corrected.
+  - F5 → D8 rewritten (baseline separate from delivered points, no seeding) and
+    new D8a and I14; Q3 replaced; the #166 suggestion corrected in §14.
+  - F6 → new D7a and I15: retention owned by configured chains from node
+    construction, across stop and start; a one-lock prune handshake; operator
+    re-baseline; §2.1 completeness scoped; new Q7.
+  - M0–M3 and the verification strategy extended with every counterexample.
+  - Author-found: D8 now re-chooses a baseline that is orphaned before anything
+    was delivered, instead of failing closed; I8, D6 and §7 updated.
