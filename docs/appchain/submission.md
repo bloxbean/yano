@@ -8,7 +8,7 @@ Authentication and topic permissions still apply.
 | Response | Meaning | Next step |
 |---|---|---|
 | **202** with `messageId` | Locally admitted, retained, and offered for diffusion | Wait for inclusion and inspect the application's result; this is not finality or business success |
-| **400** with `code` | The selected application rejected local admission before pool retention or relay | Correct the command or applicable configuration before submitting again |
+| **400** with `code` (and sometimes `details`) | The selected application rejected local admission before pool retention or relay | Correct the command or applicable configuration before submitting again |
 | **429** | The local pending pool is full; the message was not relayed | Retry after backpressure clears |
 | **503** | Application admission is unavailable, or the chain is stopped/paused | Investigate node health and operator diagnostics before retrying |
 
@@ -18,6 +18,24 @@ existing request validation path; these responses need not carry an application
 underscores. Other reason text is replaced with `APPLICATION_REJECTED`; the
 response never includes arbitrary plugin rejection prose or callback exception
 text. Symbolic reasons must be public diagnostics, not secrets encoded as codes.
+
+A rejection can also carry structured `details` that name what refused it, for
+example a declarative admission rule:
+
+```json
+{"code": "ADMISSION_RULE_DENIED",
+ "details": {"rule": "transfer-limit", "deny": "TRANSFER_LIMIT_EXCEEDED"}}
+```
+
+Only three detail keys exist, each with a fixed grammar: `rule`
+(`[a-z][a-z0-9-]{0,62}`), `deny` (`[A-Z][A-Z0-9_]{0,62}`) and `write` (an
+integer 0..65535, the index of a refused write in a batch). Unknown keys and
+values that fail their grammar are dropped, never echoed, and a reason replaced
+by `APPLICATION_REJECTED` keeps no details. The body has no `details` member
+when none survived, so it keeps its historical `{"code": ...}` shape. Plugins
+supply details with `AdmissionResult.reject(code, details)`; the host never
+parses them from the reason text. Details describe local admission only; they
+are not a finalized receipt.
 
 ## What local admission checks
 

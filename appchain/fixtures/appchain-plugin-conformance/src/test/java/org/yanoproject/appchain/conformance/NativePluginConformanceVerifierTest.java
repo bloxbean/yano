@@ -7,6 +7,11 @@ import org.yanoproject.api.appchain.AppQueryResult;
 import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import org.yanoproject.api.appchain.authmap.ValidatorInitContext;
 import org.yanoproject.api.appchain.authmap.ValidatorVerdict;
+import org.yanoproject.api.appchain.transition.RuleFact;
+import org.yanoproject.api.appchain.transition.RuleValueView;
+import org.yanoproject.api.appchain.transition.TransitionContext;
+import org.yanoproject.api.appchain.transition.TransitionDecision;
+import org.yanoproject.api.appchain.transition.TransitionKernel;
 import org.yanoproject.api.appchain.effects.AppEffectExecutor;
 import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
 import org.yanoproject.api.appchain.observation.ObservationProviderFactory;
@@ -231,11 +236,32 @@ class NativePluginConformanceVerifierTest {
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 
+    /** The catalog facade forwards a third-party kernel's declared rule facts and their values. */
+    private static <C, F> void exerciseRuleFacts(TransitionKernel<C, F> kernel) {
+        assertThat(kernel.ruleFacts()).containsExactly(new RuleFact("nonEmpty", RuleFact.Type.BOOLEAN));
+        var context = new TransitionContext(1, 0, 0, new byte[32], "conformance", new byte[32]);
+        C command = kernel.codec().decode(new byte[]{1});
+        F facts = kernel.facts(command, context, null);
+        assertThat(kernel.decide(command, context, facts)).isInstanceOf(TransitionDecision.Approved.class);
+        assertThat(kernel.ruleFactValues(command, context, facts)).containsExactly(Map.entry("nonEmpty", true));
+        // ADR-031.4 typed views cross the same facade, as bounded host-owned copies.
+        var length = new RuleFact("length", RuleFact.Type.INTEGER);
+        assertThat(kernel.ruleValueViews()).containsExactly(new RuleValueView("", List.of(length), List.of()));
+        assertThat(kernel.ruleValueKey("", new byte[]{7})).containsExactly(7);
+        assertThat(kernel.ruleValueFields("", new byte[]{7}, new byte[]{1, 2, 3}))
+                .containsExactly(Map.entry("length", 3L));
+        assertThat(kernel.ruleWriteFields()).containsExactly(length);
+        assertThat(kernel.ruleWriteCoverageFields()).containsExactly(new RuleFact("nonEmpty", RuleFact.Type.BOOLEAN));
+        assertThat(kernel.ruleWrites(command)).containsExactly(Map.of("length", 1L));
+        assertThat(kernel.ruleWriteCoverage(command, context, facts)).containsExactly(Map.of("nonEmpty", true));
+    }
+
     private static void exerciseCatalogFacades(PluginRuntimeEnvironment environment)
             throws Exception {
         AppStateMachine machine = environment.providers().require(
                 AppStateMachineProvider.class, ConformanceStateMachineProvider.ID).create();
         assertThat(machine.id()).isEqualTo(ConformanceStateMachineProvider.ID);
+        exerciseRuleFacts(machine.transitionKernel().orElseThrow());
 
         var validator = environment.providers().require(
                         AuthenticatedMapValueValidatorFactory.class,

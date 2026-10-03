@@ -15,6 +15,8 @@ import org.yanoproject.api.appchain.codec.MessageCodec;
 import org.yanoproject.api.appchain.transition.CommandDescriptor;
 import org.yanoproject.api.appchain.transition.ConfigurationDescriptor;
 import org.yanoproject.api.appchain.transition.EventDescriptor;
+import org.yanoproject.api.appchain.transition.RuleFact;
+import org.yanoproject.api.appchain.transition.RuleValueView;
 import org.yanoproject.api.appchain.transition.TransitionContext;
 import org.yanoproject.api.appchain.transition.TransitionDecision;
 import org.yanoproject.api.appchain.transition.TransitionKernel;
@@ -95,6 +97,7 @@ import org.yanoproject.runtime.util.LifecycleFailures;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -1396,6 +1399,182 @@ final class PluginSpiFacades {
             return Objects.requireNonNull(pluginCall(callbacks, loader,
                     () -> delegate.lookupKey(input)), "kernel lookup key must not be null").clone();
         }
+        @Override public List<RuleFact> ruleFacts() {
+            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleFacts), RuleFact.class, loader,
+                    callbacks, RuleFact.MAX_FACTS, "too many kernel rule facts");
+        }
+        /**
+         * Forwards verified fact values without interpreting them. The caller validates names, types and
+         * bounds and turns a violation into a deterministic rejection, so this snapshot never throws for a
+         * data shape (see {@link #snapshotRuleFactValues}). A null result passes through: the caller treats it
+         * as a violation too. An exception thrown by the plugin itself propagates like one from decide.
+         */
+        @Override public Map<String, Object> ruleFactValues(C command, TransitionContext context, F facts) {
+            Map<String, Object> values = pluginCall(callbacks, loader,
+                    () -> delegate.ruleFactValues(command, context, facts));
+            return values == null ? null : snapshotRuleFactValues(values, loader, callbacks);
+        }
+        @Override public List<RuleValueView> ruleValueViews() {
+            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleValueViews), RuleValueView.class,
+                    loader, callbacks, RuleValueView.MAX_VIEWS, "too many kernel rule value views");
+        }
+        /**
+         * Forwards a value key. A plugin's {@link IllegalArgumentException} reaches the caller unchanged, which turns
+         * it into a deterministic rule error; a {@code null} key passes through as a data shape the caller rejects.
+         */
+        @Override public byte[] ruleValueKey(String namespace, byte[] key) {
+            String space = Objects.requireNonNull(namespace, "namespace");
+            byte[] input = Objects.requireNonNull(key, "key").clone();
+            byte[] local = pluginCall(callbacks, loader, () -> delegate.ruleValueKey(space, input));
+            return local == null ? null : local.clone();
+        }
+        /** Forwards decoded values like {@link #ruleFactValues}: a bounded, host-owned snapshot, never interpreted. */
+        @Override public Map<String, Object> ruleValueFields(String namespace, byte[] key, byte[] stored) {
+            String space = Objects.requireNonNull(namespace, "namespace");
+            byte[] keyInput = Objects.requireNonNull(key, "key").clone();
+            byte[] storedInput = Objects.requireNonNull(stored, "stored").clone();
+            Map<String, Object> values = pluginCall(callbacks, loader,
+                    () -> delegate.ruleValueFields(space, keyInput, storedInput));
+            return values == null ? null : snapshotRuleValues(values, RULE_ELEMENT_ENTRIES, loader, callbacks);
+        }
+        @Override public List<RuleFact> ruleWriteFields() {
+            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleWriteFields), RuleFact.class,
+                    loader, callbacks, RuleValueView.MAX_FIELDS, "too many kernel rule write fields");
+        }
+        @Override public List<RuleFact> ruleWriteCoverageFields() {
+            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleWriteCoverageFields),
+                    RuleFact.class, loader, callbacks, RuleValueView.MAX_FIELDS,
+                    "too many kernel rule write coverage fields");
+        }
+        @Override public List<Map<String, Object>> ruleWrites(C command) {
+            List<Map<String, Object>> writes = pluginCall(callbacks, loader, () -> delegate.ruleWrites(command));
+            return writes == null ? null : snapshotRuleElements(writes, loader, callbacks);
+        }
+        @Override public List<Map<String, Object>> ruleWriteCoverage(C command, TransitionContext context,
+                                                                    F facts) {
+            List<Map<String, Object>> coverage = pluginCall(callbacks, loader,
+                    () -> delegate.ruleWriteCoverage(command, context, facts));
+            return coverage == null ? null : snapshotRuleElements(coverage, loader, callbacks);
+        }
+    }
+
+    /**
+     * Declaration lists of final host records ({@link RuleFact}, {@link RuleValueView}): {@link #snapshotList} with an
+     * element check, so a raw-cast plugin list cannot put a null or a plugin object in front of the engine. A
+     * violation fails construction, like an overflow.
+     */
+    private static <T> List<T> snapshotDeclarations(List<T> values, Class<T> type, ClassLoader loader,
+                                                   CallbackTracker callbacks, int maximumSize,
+                                                   String overflowMessage) {
+        List<T> snapshot = snapshotList(values, loader, callbacks, maximumSize, overflowMessage);
+        if (snapshot != null && snapshot.stream().anyMatch(value -> !type.isInstance(value))) {
+            throw new IllegalStateException("kernel rule declarations must be non-null " + type.getSimpleName()
+                    + " records");
+        }
+        return snapshot;
+    }
+
+    /**
+     * Entries one decoded value or write-view element may carry: declared fields plus value fields
+     * ({@link RuleValueView}), each list bounded by {@link RuleValueView#MAX_FIELDS}.
+     */
+    private static final int RULE_ELEMENT_ENTRIES = 2 * RuleValueView.MAX_FIELDS;
+
+    /**
+     * Host-owned stand-in for a fact, decoded value or write-element entry that is not a conforming scalar or text
+     * list.
+     */
+    private static final Object NON_CONFORMING_FACT = new Object() {
+        @Override public String toString() { return "non-conforming rule fact"; }
+    };
+    /** A key no declared fact can have ({@link RuleFact} names are non-empty identifiers). */
+    private static final String NON_CONFORMING_FACT_NAME = "";
+
+    /**
+     * Copies a plugin's fact values into host-owned objects without interpreting them. Every plugin read happens
+     * inside one callback, traversal is bounded by iterations (not distinct keys), and the result keeps at most one
+     * entry beyond each bound so the caller can detect overflow. Nothing here throws for a data shape: a null or
+     * foreign entry, a non-text key, or a value that is not a conforming scalar or text list becomes a marker the
+     * caller rejects as a violation. Only {@code Long}, {@code String}, {@code Boolean}, copied {@code byte[]}, and
+     * copied lists of text survive, so no plugin object escapes the class-loader boundary.
+     */
+    private static Map<String, Object> snapshotRuleFactValues(Map<String, Object> values, ClassLoader loader,
+                                                              CallbackTracker callbacks) {
+        return snapshotRuleValues(values, RuleFact.MAX_FACTS, loader, callbacks);
+    }
+
+    /**
+     * {@link #snapshotRuleFactValues} with an explicit entry bound: the snapshot keeps at most one entry beyond
+     * {@code maximumEntries} so the caller can detect overflow.
+     */
+    private static Map<String, Object> snapshotRuleValues(Map<String, Object> values, int maximumEntries,
+                                                          ClassLoader loader, CallbackTracker callbacks) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        Iterator<?> entries = pluginCall(callbacks, loader, () -> ((Map<?, ?>) values).entrySet().iterator());
+        if (entries == null) {
+            snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
+            return Collections.unmodifiableMap(snapshot);
+        }
+        for (int visited = 0; visited <= maximumEntries && pluginCall(callbacks, loader, entries::hasNext);
+                visited++) {
+            Object[] pair = pluginCall(callbacks, loader, () -> {
+                Object element = entries.next();
+                if (!(element instanceof Map.Entry<?, ?> entry)) return null;
+                return new Object[]{entry.getKey(), snapshotRuleFactValue(entry.getValue())};
+            });
+            if (pair == null || !(pair[0] instanceof String name)) {
+                snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
+            } else {
+                snapshot.put(name, pair[1]);
+            }
+        }
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    /**
+     * Copies a write view or its coverage (Yano X ADR-031.4) like {@link #snapshotRuleValues}: at most one element
+     * beyond {@link RuleValueView#MAX_WRITES}, each element a bounded snapshot. An element that is not a map becomes
+     * a map holding only the non-conforming marker, which the caller rejects; nothing here throws for a data shape.
+     */
+    private static List<Map<String, Object>> snapshotRuleElements(List<Map<String, Object>> elements,
+                                                                  ClassLoader loader, CallbackTracker callbacks) {
+        Iterator<?> items = pluginCall(callbacks, loader, () -> ((List<?>) elements).iterator());
+        List<Map<String, Object>> snapshot = new ArrayList<>();
+        if (items == null) {
+            snapshot.add(Map.of(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT));
+            return Collections.unmodifiableList(snapshot);
+        }
+        for (int visited = 0; visited <= RuleValueView.MAX_WRITES && pluginCall(callbacks, loader, items::hasNext);
+                visited++) {
+            Object item = pluginCall(callbacks, loader, items::next);
+            if (item instanceof Map<?, ?> element) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> values = (Map<String, Object>) element;
+                snapshot.add(snapshotRuleValues(values, RULE_ELEMENT_ENTRIES, loader, callbacks));
+            } else {
+                snapshot.add(Map.of(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT));
+            }
+        }
+        return Collections.unmodifiableList(snapshot);
+    }
+
+    /** Runs inside the plugin callback; returns a host-owned copy or the non-conforming marker. */
+    private static Object snapshotRuleFactValue(Object value) {
+        if (value == null || value instanceof Long || value instanceof String || value instanceof Boolean) {
+            return value;
+        }
+        if (value instanceof byte[] bytes) {
+            return Arrays.copyOf(bytes, Math.min(bytes.length, RuleFact.MAX_VALUE_BYTES + 1));
+        }
+        if (!(value instanceof List<?> list)) return NON_CONFORMING_FACT;
+        Iterator<?> items = list.iterator();
+        if (items == null) return NON_CONFORMING_FACT;
+        List<Object> copy = new ArrayList<>();
+        for (int visited = 0; visited <= RuleFact.MAX_SET_ENTRIES && items.hasNext(); visited++) {
+            Object item = items.next();
+            copy.add(item == null || item instanceof String ? item : NON_CONFORMING_FACT);
+        }
+        return Collections.unmodifiableList(copy);
     }
 
     private record StateMachineFacade(

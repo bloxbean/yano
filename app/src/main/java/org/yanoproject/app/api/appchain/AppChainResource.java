@@ -614,8 +614,12 @@ public class AppChainResource {
                 result.put("topic", request.topic() != null ? request.topic() : "");
                 return Response.accepted(result).build();
             } catch (AppSubmissionRejectedException e) {
-                return Response.status(Response.Status.BAD_REQUEST)
-                        .entity(Map.of("code", e.code())).build();
+                // Structured details (bloxbean/yano#153) are allowlisted and grammar-checked by the exception;
+                // the body keeps its historical shape when none survived.
+                Map<String, Object> rejection = new LinkedHashMap<>();
+                rejection.put("code", e.code());
+                if (!e.details().isEmpty()) rejection.put("details", e.details());
+                return Response.status(Response.Status.BAD_REQUEST).entity(rejection).build();
             } catch (org.yanoproject.api.appchain.PoolFullException e) {
                 // Backpressure (ADR 008.1 I1.1): the message was NOT retained/relayed
                 return Response.status(429)

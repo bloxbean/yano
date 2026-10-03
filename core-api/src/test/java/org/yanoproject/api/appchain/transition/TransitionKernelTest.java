@@ -37,7 +37,71 @@ class TransitionKernelTest {
         assertThat(kernel.admit(new byte[]{1}).isAccepted()).isTrue();
     }
 
-    /** Minimal kernel fixture: only admission behavior varies between the tests. */
+    @Test
+    void kernelsBuiltBeforeApiLevelTwelveDeclareAndEstablishNoRuleFacts() {
+        TransitionKernel<byte[], Boolean> kernel = new TestKernel() { };
+        var context = new TransitionContext(7, 0, 0, new byte[32], "test", new byte[32]);
+        assertThat(kernel.ruleFacts()).isEmpty();
+        assertThat(kernel.ruleFactValues(new byte[]{1}, context, true)).isEmpty();
+    }
+
+    @Test
+    void kernelsWithoutTypedViewsDeclareNoneAndResolveOnlyTheDefaultNamespace() {
+        var kernel = new OrderedLogKernel();
+        var context = new TransitionContext(1, 0, 0, new byte[32], "log", new byte[32]);
+        assertThat(kernel.ruleValueViews()).isEmpty();
+        assertThat(kernel.ruleValueKey("", new byte[]{4})).containsExactly(kernel.lookupKey(new byte[]{4}));
+        assertThatThrownBy(() -> kernel.ruleValueKey("items", new byte[]{4}))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(kernel.ruleValueFields("", new byte[]{4}, new byte[]{1})).isEmpty();
+        assertThat(kernel.ruleWriteFields()).isEmpty();
+        assertThat(kernel.ruleWriteCoverageFields()).isEmpty();
+        assertThat(kernel.ruleWrites(new byte[]{1})).isEmpty();
+        assertThat(kernel.ruleWriteCoverage(new byte[]{1}, context, true)).isEmpty();
+    }
+
+    @Test
+    void theDefaultValueKeyUsesTheKernelsOwnLookupKey() {
+        var delegate = new OrderedLogKernel();
+        TransitionKernel<byte[], Boolean> kernel = new TransitionKernel<>() {
+            @Override public MessageCodec<byte[]> codec() { return delegate.codec(); }
+            @Override public Boolean facts(byte[] command, TransitionContext context, AppStateReader state) {
+                return true;
+            }
+            @Override public TransitionDecision decide(byte[] command, TransitionContext context, Boolean facts) {
+                return delegate.decide(command, context, facts);
+            }
+            @Override public List<CommandDescriptor> commands() { return delegate.commands(); }
+            @Override public List<EventDescriptor> events() { return delegate.events(); }
+            @Override public ConfigurationDescriptor configuration() { return delegate.configuration(); }
+            @Override public byte[] lookupKey(byte[] logicalKey) {
+                byte[] local = logicalKey.clone();
+                local[0]++;
+                return local;
+            }
+        };
+        assertThat(kernel.ruleValueKey("", new byte[]{4})).containsExactly(5);
+    }
+
+    @Test
+    void overridingKernelDeclaresAndReturnsOneVerifiedFact() {
+        TransitionKernel<byte[], Boolean> kernel = new TestKernel() {
+            @Override public List<RuleFact> ruleFacts() {
+                return List.of(new RuleFact("verified", RuleFact.Type.BOOLEAN));
+            }
+            @Override public Map<String, Object> ruleFactValues(byte[] command, TransitionContext context,
+                                                                Boolean facts) {
+                return Map.of("verified", facts);
+            }
+        };
+        var context = new TransitionContext(7, 0, 0, new byte[32], "test", new byte[32]);
+        Boolean facts = kernel.facts(new byte[]{1}, context, null);
+        assertThat(kernel.decide(new byte[]{1}, context, facts)).isInstanceOf(TransitionDecision.Approved.class);
+        assertThat(kernel.ruleFacts()).containsExactly(new RuleFact("verified", RuleFact.Type.BOOLEAN));
+        assertThat(kernel.ruleFactValues(new byte[]{1}, context, facts)).containsExactly(Map.entry("verified", true));
+    }
+
+    /** Minimal kernel fixture: tests vary admission and rule-fact behavior by overriding it. */
     private abstract static class TestKernel implements TransitionKernel<byte[], Boolean> {
         private final OrderedLogKernel delegate = new OrderedLogKernel();
         @Override public MessageCodec<byte[]> codec() { return delegate.codec(); }
