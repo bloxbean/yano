@@ -53,6 +53,14 @@ public final class BlockPruner implements Prunable {
 
     @Override
     public void pruneOnce() {
+        // The boundary read and the batch write share the boundary's monitor, so a registration or an update
+        // that returns before a batch starts is honoured by it (app-layer ADR-038, I15).
+        synchronized (retentionBoundary) {
+            pruneOnceLocked();
+        }
+    }
+
+    private void pruneOnceLocked() {
         try {
             var ctx = rocksDbSupplier.rocks();
             RocksDB db = ctx.db();

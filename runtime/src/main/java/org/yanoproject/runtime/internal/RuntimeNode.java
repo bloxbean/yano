@@ -4175,6 +4175,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return java.util.OptionalLong.empty();
     }
 
+    @Override
+    public Optional<org.yanoproject.api.CanonicalBlockReference> getCanonicalBlockReferenceAtSlot(long slot) {
+        Long blockNumber = chainState.getBlockNumberBySlot(slot);
+        if (blockNumber == null) {
+            return Optional.empty();
+        }
+        return getCanonicalBlockReference(blockNumber).filter(reference -> reference.slot() == slot);
+    }
+
+    @Override
+    public java.util.OptionalLong canonicalMutationSequence() {
+        if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.canonicalMutationSequence();
+        }
+        return java.util.OptionalLong.empty();
+    }
+
     public RuntimeMaintenanceGate getMaintenanceGate() {
         return chainStorage.maintenanceGate();
     }

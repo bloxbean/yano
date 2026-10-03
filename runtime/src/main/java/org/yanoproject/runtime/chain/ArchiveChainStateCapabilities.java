@@ -15,4 +15,12 @@ public interface ArchiveChainStateCapabilities {
     }
 
     OptionalLong getEarliestRetainedBodyBlockNumber();
+
+    /**
+     * The canonical mutation sequence (app-layer ADR-038, D8b rule 7): odd while a mutation that removes or replaces a
+     * canonical index entry is in flight, even otherwise. Empty means unsupported, and callers must fail closed.
+     */
+    default OptionalLong canonicalMutationSequence() {
+        return OptionalLong.empty();
+    }
 }
