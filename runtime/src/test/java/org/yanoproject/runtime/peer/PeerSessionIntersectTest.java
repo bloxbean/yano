@@ -61,14 +61,42 @@ class PeerSessionIntersectTest {
         }
     }
 
+    @Test
+    void aHeaderOnlyCacheAboveTheBodyTipOffersTheBodyTipFirst() {
+        RecordingPeerClient client = new RecordingPeerClient();
+        InMemoryChainState chain = chain();
+        chain.storeBlockHeader(hash(4), 4L, 40L, new byte[] {1});
+        PeerSession session = session(client, new RecordingCallbacks(), chain);
+        try {
+            session.startPipelined(point(4), PipelineConfig.defaultClientConfig());
+
+            client.listener.intersactNotFound(UPSTREAM_TIP);
+            client.listener.intersactNotFound(UPSTREAM_TIP);
+
+            assertThat(client.syncStarts)
+                    .containsExactly("headers " + point(4), "headers " + point(3), "headers " + point(2));
+        } finally {
+            session.stop();
+        }
+    }
+
     private static PeerSession session(PeerClient client, PeerSessionCallbacks callbacks) {
+        return session(client, callbacks, chain());
+    }
+
+    private static PeerSession session(PeerClient client, PeerSessionCallbacks callbacks, InMemoryChainState chain) {
+        return new PeerSession(new PeerEndpoint("upstream", 3001, 42L), chain, new SimpleEventBus(), callbacks,
+                null, (endpoint, startPoint) -> client);
+    }
+
+    /** Blocks 0..3, block n at slot 10n. */
+    private static InMemoryChainState chain() {
         InMemoryChainState chain = new InMemoryChainState();
         for (long n = 0; n <= 3; n++) {
             chain.storeBlockHeader(hash(n), n, n * 10, new byte[] {1});
             chain.storeBlock(hash(n), n, n * 10, new byte[] {1});
         }
-        return new PeerSession(new PeerEndpoint("upstream", 3001, 42L), chain, new SimpleEventBus(), callbacks,
-                null, (endpoint, startPoint) -> client);
+        return chain;
     }
 
     private static Point point(long n) {

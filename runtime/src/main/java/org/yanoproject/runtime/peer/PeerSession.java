@@ -42,9 +42,6 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class PeerSession {
-    /** The {@link EpochParamProvider#getSecurityParam()} default. */
-    private static final long DEFAULT_SECURITY_PARAM = 2160L;
-
     private final ChainState chainState;
     private final EventBus eventBus;
     private final PeerSessionCallbacks callbacks;
@@ -319,9 +316,9 @@ public class PeerSession {
         return peerHealth.snapshot(System.currentTimeMillis());
     }
 
-    /** k, from genesis. */
+    /** k, from genesis; unknown without an epoch-parameter provider, so intersection points reach the first block. */
     private long securityParam() {
-        return epochParamProvider != null ? epochParamProvider.getSecurityParam() : DEFAULT_SECURITY_PARAM;
+        return epochParamProvider != null ? epochParamProvider.getSecurityParam() : Long.MAX_VALUE;
     }
 
     private void ensurePeerClient(Point startPoint) {

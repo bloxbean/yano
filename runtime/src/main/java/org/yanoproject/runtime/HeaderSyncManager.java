@@ -19,8 +19,10 @@ import org.yanoproject.runtime.sync.validation.HeaderValidationResult;
 import org.yanoproject.runtime.sync.validation.HeaderValidator;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.function.BooleanSupplier;
@@ -325,10 +327,14 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      * offers several ({@link IntersectPoints}). Yaci's FindIntersect carries one point, so they go one at a time,
      * newest first, which finds the same intersection. On an intersection below the local tip, the upstream's
      * RollBackward rolls the blocks it does not have back through the normal rollback path. The points are taken
-     * back from the body tip, the durable restart point of both sync modes.
+     * back from the body tip, the durable restart point of both sync modes, which is offered first when a
+     * header-only cache lay above it (the pipelined start point is the header tip).
+     *
+     * <p>An upstream whose tip is below the body tip's height is behind, not on a longer fork: nothing is offered,
+     * so the local chain is kept, and no-progress recovery retries the session later.</p>
      *
      * @throws IllegalStateException when the upstream has none of the points (its chain forks off more than k
-     *                               back, or has not reached them yet): the session fails for peer recovery
+     *                               back): the session fails for peer recovery
      */
     @Override
     public void intersactNotFound(Tip tip) {
@@ -338,11 +344,23 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
         if (restart == null) {
             return;
         }
+        ChainTip bodyTip = chainState.getTip();
+        ChainTip localTip = bodyTip != null ? bodyTip : chainState.getHeaderTip();
+        if (localTip != null && tip != null && tip.getBlock() < localTip.getBlockNumber()) {
+            log.warn("📄 The upstream tip #{} is below the local tip #{}: keeping the local chain and waiting for "
+                    + "the upstream to catch up", tip.getBlock(), localTip.getBlockNumber());
+            return;
+        }
         Point next;
         synchronized (this) {
             if (olderIntersectPoints == null) {
-                ChainTip localTip = chainState.getTip() != null ? chainState.getTip() : chainState.getHeaderTip();
-                olderIntersectPoints = IntersectPoints.olderThan(chainState, localTip, securityParam).iterator();
+                List<Point> points = new ArrayList<>();
+                ChainTip headerTip = chainState.getHeaderTip();
+                if (bodyTip != null && headerTip != null && headerTip.getSlot() > bodyTip.getSlot()) {
+                    points.add(new Point(bodyTip.getSlot(), HexUtil.encodeHexString(bodyTip.getBlockHash())));
+                }
+                points.addAll(IntersectPoints.olderThan(chainState, localTip, securityParam));
+                olderIntersectPoints = points.iterator();
             }
             next = olderIntersectPoints.hasNext() ? olderIntersectPoints.next() : null;
             if (next == null) {
@@ -351,7 +369,7 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
         }
         if (next == null) {
             throw new IllegalStateException("No intersection with the upstream (tip " + tip + ") within k="
-                    + securityParam + " blocks of the local tip " + chainState.getTip());
+                    + securityParam + " blocks of the local tip " + localTip);
         }
         log.warn("📄 Offering the upstream an older local point for intersection: {}", next);
         restart.accept(next);

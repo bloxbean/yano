@@ -296,6 +296,8 @@ class ForgedBlockForkTest {
         var genesis = upstream.block(0, 0, null, List.of());
         var block1 = upstream.block(1, 1, genesis.blockHash(), List.of());
         var otherGenesis = upstream.block(0, 5, null, List.of());
+        var other1 = upstream.block(1, 6, otherGenesis.blockHash(), List.of());
+        var other2 = upstream.block(2, 7, other1.blockHash(), List.of());
         RecordingCallbacks callbacks = new RecordingCallbacks();
         Node node = new Node(tempDir.resolve("node"), callbacks);
         node.storeGenesis(genesis);
@@ -304,7 +306,7 @@ class ForgedBlockForkTest {
         ChainTip forged = node.chainState.getTip();
 
         List<Point> offered = new ArrayList<>();
-        Point intersection = node.intersect(List.of(otherGenesis), offered);
+        Point intersection = node.intersect(List.of(otherGenesis, other1, other2), offered);
 
         assertThat(intersection).isNull();
         assertThat(offered).as("every older point back to the first block")
@@ -312,6 +314,30 @@ class ForgedBlockForkTest {
         assertThat(callbacks.recoveries).containsExactly(PeerRecoveryReason.APPLY_FAILED);
         assertThat(callbacks.rollbacks).isEmpty();
         assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(forged.getBlockHash());
+    }
+
+    @Test
+    void anUpstreamBehindTheLocalTipKeepsTheLocalChain() throws Exception {
+        Upstream upstream = new Upstream();
+        var genesis = upstream.block(0, 0, null, List.of());
+        var block1 = upstream.block(1, 1, genesis.blockHash(), List.of());
+        RecordingCallbacks callbacks = new RecordingCallbacks();
+        Node node = new Node(tempDir.resolve("node"), callbacks);
+        node.storeGenesis(genesis);
+        node.receive(block1);
+        node.producer(List.of()).checkSlot(2);
+        ChainTip forged = node.chainState.getTip();
+
+        // The upstream has not received the forged block yet: its tip is block 1.
+        List<Point> offered = new ArrayList<>();
+        Point intersection = node.intersect(List.of(genesis, block1), offered);
+
+        assertThat(intersection).isNull();
+        assertThat(offered).isEmpty();
+        assertThat(callbacks.rollbacks).isEmpty();
+        assertThat(callbacks.recoveries).isEmpty();
+        assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(forged.getBlockHash());
+        assertThat(node.chainState.getHeaderTip().getBlockHash()).isEqualTo(forged.getBlockHash());
     }
 
     // ---------------------------------------------------------------- fixture
