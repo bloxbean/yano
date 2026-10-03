@@ -1287,6 +1287,66 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
   because `blockHash` is the app block hash (§1.2). D4a and D8a replace that
   suggestion.
 
+## 15. Implementation notes (r6)
+
+Implemented in PR #167 (M0–M3; M4 partly). Code map: `L1DeliveryLoop`,
+`L1DeliveryRecord`, `L1Point` and `L1PhaseResult` in `runtime/appchain`; the
+`L1Phases` host inside `AppChainSubsystem`; `CanonicalMutationSequence` and
+`BlockBodyRetentionRegistry` in `runtime/chain`; the `admin/l1/rebaseline`
+route in the app module.
+
+The implementation review settled these points. Where they refine a decision,
+the code follows this section:
+
+1. **D9a check 1.** An `APPLY` attempt in progress keeps the fence open.
+   Readers see only the committed window, which the attempt cannot change
+   before its commit. A pending `ROLLBACK`, a retry or a failure closes it.
+   Closing it for every attempt made the fence and the voting gate flap on
+   every block.
+2. **D2, unfenced readers.** The rotating sequencer's slot clock, anchor TTL
+   hints and the point script anchors match against the UTxO store read the
+   node's newest applied L1 block from chain state, not the delivered window.
+   A depth-0 chain runs no loop, and script anchors must match the UTxO
+   store's tip. None of these is a consensus input. ADR 008.2 is amended.
+3. **D3, follower script anchors.** A follower records a confirmation only at
+   or below the healthy delivered cursor, so the loop's rollback, which starts
+   from recorded points, always covers it.
+4. **D8b rule 4 and Q8.** App-block heights at or below the retention prune
+   cursor had their bodies stripped by configuration, below an L1 anchor. They
+   are treated as settled, which is Q8 (b) with the prune cursor as the
+   horizon; the journal's finalized cursors are still checked. Without this,
+   every retention-enabled chain would reach `L1_EVIDENCE_UNAVAILABLE` on
+   upgrade with no exit. **Maintainer decision**: accept this horizon, or
+   declare retention and upgrade reconciliation incompatible.
+5. **D8b scope.** Epoch-observation spool jobs record their boundary block, so
+   D8b judges them too: a dead unfinalized job is removed, and a dead finalized
+   one raises `DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION`. Generation
+   pauses from the decision until the commit is reloaded. The epoch rollback
+   phase applies the spool rollback before it reports `DURABLE` (it was
+   asynchronous), between the coordinator's own cycles.
+6. **D8, upgrade detection.** Any app block, anchor confirmation, or entry in
+   the epoch-observations column family (journal records, cursors and
+   markers, spool jobs) counts as L1-derived state. A new chain with observers
+   therefore takes one reconciliation pass, which only records its baseline.
+7. **D4a, F2.** The metadata-mode pending anchor is durable
+   (`anchor_pending_v1`), so a fact-write failure followed by a crash still
+   records the confirmation exactly once. Script mode recovers from the thread
+   UTxO as before.
+8. **D7a.** A chain that runs no loop releases its body-retention
+   registration, so an L1-less chain never pins pruning.
+9. **D4 retries.** Bounded exponential backoff (1 s doubling to 30 s), reset by
+   any success; an operator re-baseline bypasses it. The periodic poll only
+   wakes the loop, so a pass that escapes with a process-fatal error cannot
+   cancel it (I6).
+10. **Start-up check.** An L1 chain reader, not an event bus, is required when
+    `l1.stability-depth > 0`, anchoring or L1 observers are configured.
+11. **D10.** Status `l1Delivery` reports state, delivery health, phase, cursor,
+    delivered points, the pending intent, body tip, lag and the last failure.
+    Readiness, the cursor hash, the baseline and the retention value remain
+    for M4.
+12. **Plugin API.** The new `ChainBlockReader` and `AppChainGateway` defaults
+    ship at plugin API level 12, which no release has yet used.
+
 ## Revision history
 
 - **r1** (2026-10-03): initial proposal.
@@ -1357,3 +1417,10 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
     effective cursor (window newest, else baseline-history newest; `ORIGIN`
     always canonical); an empty window no longer bypasses freshness. New M0
     case with a non-origin baseline and a prepared live proposal.
+- **r6** (2026-10-04; implementation): §15 records the decisions settled in
+  the implementation review — the fence during an `APPLY` attempt, unfenced
+  tip readers, follower script-anchor bound, the prune-cursor horizon for
+  D8b rule 4 (maintainer decision), epoch-spool reconciliation and a
+  synchronous epoch rollback phase, upgrade detection, the durable pending
+  anchor, retention release, retry backoff, the start-up check, D10 scope and
+  the plugin API level.

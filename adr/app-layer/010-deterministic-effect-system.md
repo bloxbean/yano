@@ -720,8 +720,9 @@ implemented rule:
   share. The stable point is the block `l1.stability-depth` blocks below
   the newest L1 block the app chain has delivered, the same `stableL1Ref`
   that selects block L1 references and drains L1 observations. It is read
-  through the ADR-038 D9a freshness fence (amended by ADR-038). An L1_ANCHORED effect at height
-  `h` is eligible when `h ≤ frontier − anchor-margin-blocks`. Dispatch,
+  through the ADR-038 D9a freshness fence (amended by ADR-038). An
+  L1_ANCHORED effect at height `h` is eligible when
+  `h ≤ frontier − anchor-margin-blocks`. Dispatch,
   external claims and the pre-execution recheck all use this frontier.
   `EffectExecutionContext.anchoredHeight()` and the node status
   (`anchor.stableAnchoredHeight`) report it.
