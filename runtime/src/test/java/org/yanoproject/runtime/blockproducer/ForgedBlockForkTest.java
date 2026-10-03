@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import org.junit.jupiter.api.AfterEach;
@@ -106,12 +107,15 @@ class ForgedBlockForkTest {
         Node node = new Node(tempDir.resolve("node"), null);
         node.storeGenesis(genesis);
         node.receive(block1);
+        byte[] nonceBeforeForging = node.nonceState.serialize();
         SlotLeaderBlockProducer producer = node.producer(List.of(forgedTx));
         producer.checkSlot(3);
         ChainTip forged = node.chainState.getTip();
         assertThat(forged.getBlockNumber()).isEqualTo(2);
         assertThat(forged.getSlot()).isEqualTo(3);
         assertThat(node.utxos()).as("the forged block was applied").contains(txHash(forgedTx) + "#0:4800000");
+        assertThat(node.nonceState.serialize()).as("the forged block evolved the nonce")
+                .isNotEqualTo(nonceBeforeForging);
 
         // The upstream does not have the forged block: its next block follows block 1, at the forged height.
         node.receive(block2);
@@ -135,6 +139,7 @@ class ForgedBlockForkTest {
         assertThat(node.accounts.getEpochFees(0)).isEqualTo(reference.accounts.getEpochFees(0));
         assertThat(node.accounts.getOpCertCounterState(upstream.issuerHash()))
                 .isEqualTo(reference.accounts.getOpCertCounterState(upstream.issuerHash()));
+        assertThat(node.nonceState.serialize()).isEqualTo(reference.nonceState.serialize());
 
         // The slot stays forged, and the producer goes on from the upstream block.
         producer.checkSlot(3);
@@ -210,6 +215,105 @@ class ForgedBlockForkTest {
         assertThat(node.chainState.getLastForgedSlot()).as("nothing was forged").isEqualTo(-1);
     }
 
+    @Test
+    void aRestartOnAForgedTipTheUpstreamNeverAdoptedResumesFromItsParent() throws Exception {
+        Upstream upstream = new Upstream();
+        byte[] tx1 = tx("00".repeat(32), 0, 5_000_000, 3_000_000);
+        var genesis = upstream.block(0, 0, null, List.of());
+        var block1 = upstream.block(1, 1, genesis.blockHash(), List.of(tx1));
+        byte[] forgedTx = tx(txHash(tx1), 0, 4_800_000);
+        byte[] upstreamTx = tx(txHash(tx1), 1, 2_800_000);
+        var block2 = upstream.block(2, 2, block1.blockHash(), List.of(upstreamTx));
+        var block3 = upstream.block(3, 4, block2.blockHash(), List.of());
+
+        Node node = new Node(tempDir.resolve("node"), null);
+        node.storeGenesis(genesis);
+        node.receive(block1);
+        node.producer(List.of(forgedTx)).checkSlot(3);
+        ChainTip forged = node.chainState.getTip();
+        assertThat(forged.getBlockNumber()).isEqualTo(2);
+
+        // The node restarts while the upstream, which never adopted the forged block, went on with block 2 and 3.
+        List<Point> offered = new ArrayList<>();
+        Point intersection = node.intersect(List.of(genesis, block1, block2, block3), offered);
+
+        Point parent = new Point(1, hex(block1.blockHash()));
+        assertThat(offered).as("the forged tip, then its parent").containsExactly(parent);
+        assertThat(intersection).isEqualTo(parent);
+        assertThat(node.rollbacks).containsExactly(parent);
+        assertThat(node.realReorgs).as("applied blocks were rolled back").containsExactly(true);
+        assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(block1.blockHash());
+        assertThat(node.chainState.getBlock(forged.getBlockHash())).isNull();
+
+        node.receive(block2);
+        node.receive(block3);
+
+        Node reference = new Node(tempDir.resolve("reference"), null);
+        reference.storeGenesis(genesis);
+        reference.receive(block1);
+        reference.receive(block2);
+        reference.receive(block3);
+        assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(block3.blockHash());
+        assertThat(node.utxos()).isEqualTo(reference.utxos())
+                .containsExactlyInAnyOrder(txHash(tx1) + "#0:5000000", txHash(upstreamTx) + "#0:2800000");
+        assertThat(node.accounts.getPoolBlockCounts(0)).isEqualTo(reference.accounts.getPoolBlockCounts(0));
+        assertThat(node.accounts.getEpochFees(0)).isEqualTo(reference.accounts.getEpochFees(0));
+        assertThat(node.accounts.getOpCertCounterState(upstream.issuerHash()))
+                .isEqualTo(reference.accounts.getOpCertCounterState(upstream.issuerHash()));
+        assertThat(node.nonceState.serialize()).isEqualTo(reference.nonceState.serialize());
+    }
+
+    @Test
+    void aRestartOnATipTheUpstreamHasIntersectsAtTheTip() throws Exception {
+        Upstream upstream = new Upstream();
+        byte[] tx1 = tx("00".repeat(32), 0, 5_000_000, 3_000_000);
+        var genesis = upstream.block(0, 0, null, List.of());
+        var block1 = upstream.block(1, 1, genesis.blockHash(), List.of(tx1));
+        var block2 = upstream.block(2, 2, block1.blockHash(), List.of());
+        Node node = new Node(tempDir.resolve("node"), null);
+        node.storeGenesis(genesis);
+        node.receive(block1);
+        node.receive(block2);
+        SortedSet<String> utxos = node.utxos();
+        byte[] nonce = node.nonceState.serialize();
+
+        List<Point> offered = new ArrayList<>();
+        Point intersection = node.intersect(List.of(genesis, block1, block2), offered);
+
+        Point tip = new Point(2, hex(block2.blockHash()));
+        assertThat(offered).isEmpty();
+        assertThat(intersection).isEqualTo(tip);
+        assertThat(node.rollbacks).containsExactly(tip);
+        assertThat(node.realReorgs).containsExactly(false);
+        assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(block2.blockHash());
+        assertThat(node.utxos()).isEqualTo(utxos);
+        assertThat(node.nonceState.serialize()).isEqualTo(nonce);
+    }
+
+    @Test
+    void anUpstreamWithoutACommonPointFailsTheSessionForPeerRecovery() throws Exception {
+        Upstream upstream = new Upstream();
+        var genesis = upstream.block(0, 0, null, List.of());
+        var block1 = upstream.block(1, 1, genesis.blockHash(), List.of());
+        var otherGenesis = upstream.block(0, 5, null, List.of());
+        RecordingCallbacks callbacks = new RecordingCallbacks();
+        Node node = new Node(tempDir.resolve("node"), callbacks);
+        node.storeGenesis(genesis);
+        node.receive(block1);
+        node.producer(List.of()).checkSlot(2);
+        ChainTip forged = node.chainState.getTip();
+
+        List<Point> offered = new ArrayList<>();
+        Point intersection = node.intersect(List.of(otherGenesis), offered);
+
+        assertThat(intersection).isNull();
+        assertThat(offered).as("every older point back to the first block")
+                .containsExactly(new Point(1, hex(block1.blockHash())), new Point(0, hex(genesis.blockHash())));
+        assertThat(callbacks.recoveries).containsExactly(PeerRecoveryReason.APPLY_FAILED);
+        assertThat(callbacks.rollbacks).isEmpty();
+        assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(forged.getBlockHash());
+    }
+
     // ---------------------------------------------------------------- fixture
 
     /** Builds the upstream's blocks with the devnet keys, independent of any node's nonce state. */
@@ -238,8 +342,10 @@ class ForgedBlockForkTest {
         final PropagatingEventBus bus = new PropagatingEventBus();
         final DefaultUtxoStore utxoStore;
         final DefaultAccountStateStore accounts;
+        final HeaderSyncManager headers;
         final PipelineDataListener listener;
         final List<Point> rollbacks = new CopyOnWriteArrayList<>();
+        final List<Boolean> realReorgs = new CopyOnWriteArrayList<>();
         final EpochNonceState nonceState = newNonceState();
         final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
@@ -258,12 +364,19 @@ class ForgedBlockForkTest {
             var rocks = chainState.rocks();
             accounts = new DefaultAccountStateStore(rocks.db(), rocks::handle, LOG, true);
             new AccountStateEventHandler(bus, accounts);
-            bus.subscribe(RollbackEvent.class, ctx -> rollbacks.add(ctx.event().target()),
+            bus.subscribe(RollbackEvent.class, ctx -> {
+                rollbacks.add(ctx.event().target());
+                realReorgs.add(ctx.event().realReorg());
+            }, SubscriptionOptions.builder().build());
+            // The upstream signs with this node's devnet keys, so the nonce listener cannot skip this node's own
+            // blocks by issuer as in production: it evolves a forged block a second time, which is rolled back
+            // with the block.
+            AnnotationListenerRegistrar.register(bus, new NonceEvolutionListener(nonceState, null, null),
                     SubscriptionOptions.builder().build());
 
             PeerClient peerClient = new PeerClient("upstream", 3001, 42, Point.ORIGIN);
-            listener = new PipelineDataListener(new HeaderSyncManager(peerClient, chainState),
-                    new BodyFetchManager(peerClient, chainState, bus),
+            headers = new HeaderSyncManager(peerClient, chainState);
+            listener = new PipelineDataListener(headers, new BodyFetchManager(peerClient, chainState, bus),
                     callbacks != null ? callbacks : syncSubsystem(config, storage));
         }
 
@@ -297,6 +410,38 @@ class ForgedBlockForkTest {
         void receiveHeader(DevnetBlockBuilder.BlockBuildResult result) {
             Tip tip = new Tip(new Point(result.slot(), hex(result.blockHash())), result.blockNumber());
             listener.rollforward(tip, decode(result).getHeader(), result.wrappedHeaderCbor());
+        }
+
+        /**
+         * Chain-sync intersection after a restart with an upstream that has {@code upstreamChain}: the node offers
+         * its tip, then each older point it offers on IntersectNotFound, until the upstream has one. The upstream
+         * replies IntersectFound and RollBackward to it.
+         *
+         * @param offered receives the older points offered
+         * @return the intersection, or null when the node offered no further point
+         */
+        Point intersect(List<DevnetBlockBuilder.BlockBuildResult> upstreamChain, List<Point> offered) {
+            var upstreamTip = upstreamChain.getLast();
+            Tip tip = new Tip(new Point(upstreamTip.slot(), hex(upstreamTip.blockHash())), upstreamTip.blockNumber());
+            headers.setIntersectRestart(100, offered::add);
+            ChainTip localTip = chainState.getTip();
+            Point point = new Point(localTip.getSlot(), hex(localTip.getBlockHash()));
+            while (!hasPoint(upstreamChain, point)) {
+                int before = offered.size();
+                listener.intersactNotFound(tip);
+                if (offered.size() == before) {
+                    return null;
+                }
+                point = offered.getLast();
+            }
+            listener.intersactFound(tip, point);
+            listener.onRollback(point);
+            return point;
+        }
+
+        private static boolean hasPoint(List<DevnetBlockBuilder.BlockBuildResult> chain, Point point) {
+            return chain.stream()
+                    .anyMatch(b -> b.slot() == point.getSlot() && hex(b.blockHash()).equals(point.getHash()));
         }
 
         SlotLeaderBlockProducer producer(List<byte[]> txs) throws Exception {

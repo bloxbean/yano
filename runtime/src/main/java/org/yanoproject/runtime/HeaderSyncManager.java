@@ -20,6 +20,7 @@ import org.yanoproject.runtime.sync.validation.HeaderValidator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.function.BooleanSupplier;
@@ -77,6 +78,14 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      * competes with a local block fails the session (peer recovery) instead.
      */
     private volatile Consumer<Point> forkRollback;
+    /**
+     * Sends chain-sync FindIntersect again at an older local point after IntersectNotFound. Without it,
+     * IntersectNotFound is only logged.
+     */
+    private volatile Consumer<Point> intersectRestart;
+    private volatile long securityParam;
+    /** The older local points not yet offered since the last IntersectNotFound; null after an intersection. */
+    private Iterator<Point> olderIntersectPoints;
 
     // Progress logging
     private static final int PROGRESS_LOG_INTERVAL = 1000;
@@ -304,16 +313,48 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     public void intersactFound(Tip tip, Point point) {
         log.info("📄 Header intersection found at: {} (tip: {})", point, tip);
         if (syncTipContext != null) syncTipContext.update(tip);
+        synchronized (this) {
+            olderIntersectPoints = null;
+        }
         // ChainSyncAgent automatically resumes from this point on reconnection
         // No manual state management needed
     }
 
+    /**
+     * Offers the upstream the next older local point after IntersectNotFound, as the Haskell chain-sync client
+     * offers several ({@link IntersectPoints}). Yaci's FindIntersect carries one point, so they go one at a time,
+     * newest first, which finds the same intersection. On an intersection below the local tip, the upstream's
+     * RollBackward rolls the blocks it does not have back through the normal rollback path. The points are taken
+     * back from the body tip, the durable restart point of both sync modes.
+     *
+     * @throws IllegalStateException when the upstream has none of the points (its chain forks off more than k
+     *                               back, or has not reached them yet): the session fails for peer recovery
+     */
     @Override
     public void intersactNotFound(Tip tip) {
         log.warn("📄 Header intersection not found. Tip: {}", tip);
         if (syncTipContext != null) syncTipContext.update(tip);
-        // ChainSyncAgent will handle this scenario
-        // This typically results in a rollback to find a common point
+        Consumer<Point> restart = intersectRestart;
+        if (restart == null) {
+            return;
+        }
+        Point next;
+        synchronized (this) {
+            if (olderIntersectPoints == null) {
+                ChainTip localTip = chainState.getTip() != null ? chainState.getTip() : chainState.getHeaderTip();
+                olderIntersectPoints = IntersectPoints.olderThan(chainState, localTip, securityParam).iterator();
+            }
+            next = olderIntersectPoints.hasNext() ? olderIntersectPoints.next() : null;
+            if (next == null) {
+                olderIntersectPoints = null;
+            }
+        }
+        if (next == null) {
+            throw new IllegalStateException("No intersection with the upstream (tip " + tip + ") within k="
+                    + securityParam + " blocks of the local tip " + chainState.getTip());
+        }
+        log.warn("📄 Offering the upstream an older local point for intersection: {}", next);
+        restart.accept(next);
     }
 
     @Override
@@ -340,6 +381,17 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      */
     public void setForkRollback(Consumer<Point> forkRollback) {
         this.forkRollback = forkRollback;
+    }
+
+    /**
+     * Sets how FindIntersect is sent again at an older local point after IntersectNotFound.
+     *
+     * @param securityParam k, the deepest rollback: no point further back is offered
+     * @param restart       starts chain sync again from the given point on the current connection
+     */
+    public void setIntersectRestart(long securityParam, Consumer<Point> restart) {
+        this.securityParam = securityParam;
+        this.intersectRestart = restart;
     }
 
     /**

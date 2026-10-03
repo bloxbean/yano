@@ -42,6 +42,9 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class PeerSession {
+    /** The {@link EpochParamProvider#getSecurityParam()} default. */
+    private static final long DEFAULT_SECURITY_PARAM = 2160L;
+
     private final ChainState chainState;
     private final EventBus eventBus;
     private final PeerSessionCallbacks callbacks;
@@ -142,6 +145,7 @@ public class PeerSession {
                     peerHealth,
                     ledgerApplyProcessor,
                     ledgerGeneration);
+            headerSyncManager.setIntersectRestart(securityParam(), point -> peerClient.startHeaderSync(point, true));
             peerClient.connect(pipelineDataListener, null);
             peerClient.enableTxSubmission();
             peerClient.startHeaderSync(startPoint, true);
@@ -174,6 +178,7 @@ public class PeerSession {
                     peerHealth,
                     ledgerApplyProcessor,
                     ledgerGeneration);
+            headerSyncManager.setIntersectRestart(securityParam(), point -> peerClient.startSync(point));
             peerClient.connect(pipelineDataListener, null);
             peerClient.enableTxSubmission();
             peerClient.startSync(startPoint);
@@ -312,6 +317,11 @@ public class PeerSession {
     public PeerSessionStatus getStatus() {
         refreshKeepAliveHealth();
         return peerHealth.snapshot(System.currentTimeMillis());
+    }
+
+    /** k, from genesis. */
+    private long securityParam() {
+        return epochParamProvider != null ? epochParamProvider.getSecurityParam() : DEFAULT_SECURITY_PARAM;
     }
 
     private void ensurePeerClient(Point startPoint) {

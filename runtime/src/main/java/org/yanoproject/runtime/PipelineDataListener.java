@@ -405,10 +405,13 @@ public class PipelineDataListener implements BlockChainDataListener {
         if (!acceptsCurrentGeneration("intersection not found")) {
             return;
         }
-        // Notify HeaderSyncManager about intersection not found
-        headerSyncManager.intersactNotFound(tip);
-
-        log.warn("Intersection not found for tip: {} - notified header manager", tip);
+        log.warn("Intersection not found for tip: {} - notifying header manager", tip);
+        // HeaderSyncManager offers an older local point, or fails the session when none is left
+        try {
+            headerSyncManager.intersactNotFound(tip);
+        } catch (RuntimeException e) {
+            handleHeaderApplyFailure("intersection not found", e);
+        }
     }
 
     @Override
