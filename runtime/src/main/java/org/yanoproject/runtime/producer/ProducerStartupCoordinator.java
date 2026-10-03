@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.api.account.AccountStateReadStore;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.ledgerstate.EpochParamTracker;
 import org.yanoproject.runtime.blockproducer.BlockProducerHelper;
@@ -20,6 +21,7 @@ import org.yanoproject.runtime.blockproducer.NonceEvolutionListener;
 import org.yanoproject.runtime.blockproducer.NonceReplayService;
 import org.yanoproject.runtime.blockproducer.NonceStateStore;
 import org.yanoproject.runtime.blockproducer.ProtocolVersionSupplier;
+import org.yanoproject.runtime.blockproducer.SlotClock;
 import org.yanoproject.runtime.blockproducer.BlockBodySizeLimitSupplier;
 import lombok.extern.slf4j.Slf4j;
 
@@ -195,7 +197,8 @@ public final class ProducerStartupCoordinator {
                     replayService);
             actions.replaceNonceListenerSubscriptions(nonceRegistration.subscriptionHandles());
 
-            var stakeDataProvider = StakeDataProviderFactory.createLiveSlotLeaderProvider(config);
+            var stakeDataProvider = StakeDataProviderFactory.createLiveSlotLeaderProvider(
+                    config, actions.accountStateReadStoreOrNull());
 
             if (config.isDevMode() && freshStart) {
                 // ADR-056: genesis UTxOs, bootstrap, block store and apply form one canonical write section.
@@ -286,8 +289,10 @@ public final class ProducerStartupCoordinator {
                     slotLeaderCheck,
                     stakeDataProvider,
                     poolHash,
-                    actions.resolvedGenesisTimestamp(),
-                    config.getSlotLengthMillis());
+                    new SlotClock(actions.resolvedGenesisTimestamp(),
+                            genesisConfig.getByronSlotDurationSeconds() * 1000L,
+                            config.getSlotLengthMillis(),
+                            epochNonceState::getShelleyStartSlot));
         } catch (Exception e) {
             throw new RuntimeException("Failed to start slot-leader block producer", e);
         }
@@ -414,6 +419,11 @@ public final class ProducerStartupCoordinator {
         }
 
         default SlotLeaderProducerFactory slotLeaderProducerFactory() {
+            throw unsupported();
+        }
+
+        /** @return the account-state read store, or {@code null} when account state is disabled */
+        default AccountStateReadStore accountStateReadStoreOrNull() {
             throw unsupported();
         }
 

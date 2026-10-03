@@ -1,9 +1,11 @@
 package org.yanoproject.runtime.producer;
 
 import com.bloxbean.cardano.client.crypto.BlockProducerKeys;
+import org.yanoproject.api.account.AccountStateReadStore;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.runtime.blockproducer.FixedStakeDataProvider;
 import org.yanoproject.runtime.blockproducer.GenesisStakeDataProvider;
+import org.yanoproject.runtime.blockproducer.LedgerStakeDataProvider;
 import org.yanoproject.runtime.blockproducer.SlotLeaderBlockProducer;
 import org.yanoproject.runtime.blockproducer.StakeDataProvider;
 import org.yanoproject.runtime.blockproducer.YaciStoreStakeDataProvider;
@@ -22,7 +24,7 @@ class StakeDataProviderFactoryTest {
         StakeDataProvider provider = StakeDataProviderFactory.createLiveSlotLeaderProvider(
                 YanoConfig.builder()
                         .stakeDataProviderUrl("http://localhost:8080/")
-                        .build());
+                        .build(), accountState());
 
         try {
             assertThat(provider).isInstanceOf(YaciStoreStakeDataProvider.class);
@@ -35,11 +37,12 @@ class StakeDataProviderFactoryTest {
     }
 
     @Test
-    void liveSlotLeaderUsesFixedProviderWhenUrlIsBlank() {
+    void liveSlotLeaderUsesFixedProviderInDevModeWhenUrlIsBlank() {
         StakeDataProvider provider = StakeDataProviderFactory.createLiveSlotLeaderProvider(
                 YanoConfig.builder()
+                        .devMode(true)
                         .stakeDataProviderUrl(" ")
-                        .build());
+                        .build(), accountState());
 
         assertThat(provider).isInstanceOf(FixedStakeDataProvider.class);
         assertThat(provider.getPoolStake("pool", 0))
@@ -47,6 +50,22 @@ class StakeDataProviderFactoryTest {
         assertThat(StakeDataProviderFactory.hasStakeDataProviderUrl(
                 YanoConfig.builder().stakeDataProviderUrl(" ").build()))
                 .isFalse();
+    }
+
+    @Test
+    void liveSlotLeaderDefaultsToAccountStateWithoutUrl() {
+        StakeDataProvider provider = StakeDataProviderFactory.createLiveSlotLeaderProvider(
+                YanoConfig.builder().build(), accountState());
+
+        assertThat(provider).isInstanceOf(LedgerStakeDataProvider.class);
+    }
+
+    @Test
+    void liveSlotLeaderWithoutAnyStakeSourceIsRejected() {
+        assertThatThrownBy(() -> StakeDataProviderFactory.createLiveSlotLeaderProvider(
+                YanoConfig.builder().build(), null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("needs a stake source");
     }
 
     @Test
@@ -71,6 +90,11 @@ class StakeDataProviderFactoryTest {
                 missingPool))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("has no active genesis stake");
+    }
+
+    private static AccountStateReadStore accountState() {
+        return new AccountStateReadStore() {
+        };
     }
 
     private static String fixturePoolHash() throws Exception {

@@ -15,6 +15,7 @@ import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.db.RocksDbAccess;
 import org.yanoproject.api.rollback.PointRollbackCapableStore;
 import org.yanoproject.api.rollback.RollbackCapableStore;
+import org.yanoproject.runtime.blockproducer.ForgedSlotStore;
 import org.yanoproject.runtime.blockproducer.NonceStateStore;
 import org.yanoproject.runtime.blockproducer.NonceStateSnapshot;
 import org.yanoproject.ledgerstate.AccountStateCfNames;
@@ -61,12 +62,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         OriginRollbackCapable, PointRollbackCapable, ChainStateRecovery, ChainStateSnapshots,
         NearestSlotLookup, NearestPointLookup,
         BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore,
-        ArchiveChainStateCapabilities, CanonicalStateGateOwner {
+        ArchiveChainStateCapabilities, CanonicalStateGateOwner, ForgedSlotStore {
 
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] EPOCH_NONCE_STATE_KEY = "epoch_nonce_state".getBytes(StandardCharsets.UTF_8);
+    // Not chain data: no rollback or rollback-to-origin touches it (see ForgedSlotStore).
+    private static final byte[] LAST_FORGED_SLOT_KEY = "last_forged_slot".getBytes(StandardCharsets.UTF_8);
     private static final String LEGACY_PROJ_BYRON_UTXO = "proj_byron_utxo";
+    private final Object lastForgedSlotLock = new Object();
 
     //For read apis
     private static final byte[] EPOCH_NONCE_KEY_PREFIX = "epoch_nonce_by_epoch_".getBytes(StandardCharsets.UTF_8);
@@ -1914,6 +1918,34 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     }
 
     // --- Era start slot tracking ---
+
+    // --- ForgedSlotStore implementation ---
+
+    @Override
+    public long getLastForgedSlot() {
+        try {
+            byte[] value = db.get(metadataHandle, LAST_FORGED_SLOT_KEY);
+            return value != null ? ByteBuffer.wrap(value).getLong() : -1L;
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read the last forged slot", e);
+        }
+    }
+
+    @Override
+    public void storeLastForgedSlot(long slot) {
+        // Own lock, not the chain-state monitor: the producer calls this inside the canonical write section.
+        synchronized (lastForgedSlotLock) {
+            if (slot <= getLastForgedSlot()) {
+                return;
+            }
+            try (WriteOptions sync = new WriteOptions().setSync(true)) {
+                db.put(metadataHandle, sync, LAST_FORGED_SLOT_KEY,
+                        ByteBuffer.allocate(Long.BYTES).putLong(slot).array());
+            } catch (RocksDBException e) {
+                throw new IllegalStateException("Failed to record forged slot " + slot, e);
+            }
+        }
+    }
 
     // --- NonceStateStore implementation ---
 

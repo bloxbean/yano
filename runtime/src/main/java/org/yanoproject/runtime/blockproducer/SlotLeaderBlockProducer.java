@@ -7,14 +7,12 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
-import org.yanoproject.api.utxo.UtxoState;
-import org.yanoproject.runtime.chain.MemPool;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.tx.BlockTransactionSelector;
 import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.MathContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ScheduledExecutorService;
@@ -23,15 +21,18 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * Slot leader block producer for public networks (preview, preprod, mainnet).
- * Checks each slot for Ouroboros Praos leader eligibility based on the pool's relative stake,
- * and produces a block only when elected.
+ * Slot-leader block producer: on each slot it checks Ouroboros Praos leader eligibility from the pool's relative
+ * stake and forges a block only when elected.
+ *
+ * <p>Safety rules: it checks only once the chain is caught up ({@link ForgingReadiness}), never forges a slot at or
+ * before the chain tip, and never forges a slot at or before the last slot it forged, which is persisted
+ * ({@link ForgedSlotStore}) so that neither a restart nor a rollback can produce a second block for a slot.</p>
  */
 @Slf4j
 public class SlotLeaderBlockProducer implements BlockProducerService {
 
-    private static final MathContext MC = new MathContext(40);
-    private static final long SYNC_TOLERANCE_SLOTS = 10;
+    /** Slots to wait before asking the stake source again after it had no data for the epoch. */
+    static final long STAKE_RETRY_SLOTS = 100;
 
     private final ChainState chainState;
     private final BlockTransactionSelector transactions;
@@ -43,79 +44,26 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
     private final SlotLeaderCheck slotLeaderCheck;
     private final StakeDataProvider stakeDataProvider;
     private final String poolHash;
-    private final long genesisTimestamp;
-    private final int slotLengthMillis;
+    private final SlotClock slotClock;
+    private final ForgingReadiness readiness;
+    private final ForgedSlotStore forgedSlotStore;
 
     // Runtime state
     private ScheduledFuture<?> scheduledTask;
     private volatile boolean running;
+    private long run; // incremented by each start(), so a tick of an earlier run never reschedules
     private long lastCheckedSlot = -1;
+    private long lastForgedSlot = -1;
     private int lastStakeEpoch = -1;
-    private int lastStakeAttemptEpoch = -1; // tracks failed attempts to avoid per-slot retries
+    private long nextStakeAttemptSlot = -1;
     private BigDecimal sigma = BigDecimal.ZERO;
 
     public SlotLeaderBlockProducer(
-            ChainState chainState, MemPool memPool, NodeServer nodeServer,
-            EventBus eventBus, ScheduledExecutorService scheduler,
-            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
-            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
-            String poolHash, long genesisTimestamp, int slotLengthMillis,
-            TransactionValidationService transactionValidatorService, UtxoState utxoState) {
-        this(chainState, memPool, () -> nodeServer, eventBus, scheduler, blockBuilder, epochNonceState,
-                slotLeaderCheck, stakeDataProvider, poolHash, genesisTimestamp, slotLengthMillis,
-                transactionValidatorService, utxoState);
-    }
-
-    public static SlotLeaderBlockProducer withServerSupplier(
-            ChainState chainState, MemPool memPool, Supplier<NodeServer> nodeServerSupplier,
-            EventBus eventBus, ScheduledExecutorService scheduler,
-            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
-            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
-            String poolHash, long genesisTimestamp, int slotLengthMillis,
-            TransactionValidationService transactionValidatorService, UtxoState utxoState) {
-        return new SlotLeaderBlockProducer(chainState, memPool, nodeServerSupplier, eventBus, scheduler, blockBuilder,
-                epochNonceState, slotLeaderCheck, stakeDataProvider, poolHash, genesisTimestamp, slotLengthMillis,
-                transactionValidatorService, utxoState);
-    }
-
-    public static SlotLeaderBlockProducer withTransactionSelector(
             ChainState chainState, BlockTransactionSelector transactions, Supplier<NodeServer> nodeServerSupplier,
             EventBus eventBus, ScheduledExecutorService scheduler,
             SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
             SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
-            String poolHash, long genesisTimestamp, int slotLengthMillis) {
-        return new SlotLeaderBlockProducer(chainState, transactions, nodeServerSupplier, eventBus, scheduler,
-                blockBuilder, epochNonceState, slotLeaderCheck, stakeDataProvider, poolHash, genesisTimestamp,
-                slotLengthMillis);
-    }
-
-    private SlotLeaderBlockProducer(
-            ChainState chainState, MemPool memPool, Supplier<NodeServer> nodeServerSupplier,
-            EventBus eventBus, ScheduledExecutorService scheduler,
-            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
-            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
-            String poolHash, long genesisTimestamp, int slotLengthMillis,
-            TransactionValidationService transactionValidatorService, UtxoState utxoState) {
-        this(chainState,
-                BlockProducerHelper.transactionSelector(memPool, transactionValidatorService, utxoState),
-                nodeServerSupplier,
-                eventBus,
-                scheduler,
-                blockBuilder,
-                epochNonceState,
-                slotLeaderCheck,
-                stakeDataProvider,
-                poolHash,
-                genesisTimestamp,
-                slotLengthMillis);
-    }
-
-    private SlotLeaderBlockProducer(
-            ChainState chainState, BlockTransactionSelector transactions, Supplier<NodeServer> nodeServerSupplier,
-            EventBus eventBus, ScheduledExecutorService scheduler,
-            SignedBlockBuilder blockBuilder, EpochNonceState epochNonceState,
-            SlotLeaderCheck slotLeaderCheck, StakeDataProvider stakeDataProvider,
-            String poolHash, long genesisTimestamp, int slotLengthMillis) {
+            String poolHash, SlotClock slotClock, ForgingReadiness readiness) {
         this.chainState = chainState;
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.nodeServerSupplier = nodeServerSupplier != null ? nodeServerSupplier : () -> null;
@@ -126,8 +74,9 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         this.slotLeaderCheck = slotLeaderCheck;
         this.stakeDataProvider = stakeDataProvider;
         this.poolHash = poolHash;
-        this.genesisTimestamp = genesisTimestamp;
-        this.slotLengthMillis = slotLengthMillis;
+        this.slotClock = Objects.requireNonNull(slotClock, "slotClock");
+        this.readiness = Objects.requireNonNull(readiness, "readiness");
+        this.forgedSlotStore = chainState instanceof ForgedSlotStore store ? store : null;
     }
 
     @Override
@@ -137,20 +86,17 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
             return;
         }
         ChainTip tip = chainState.getTip();
-        BlockProducerHelper.resetEpochTrackingToSlot(tip != null ? tip.getSlot() : -1);
+        long tipSlot = tip != null ? tip.getSlot() : -1;
+        if (forgedSlotStore != null) {
+            lastForgedSlot = Math.max(lastForgedSlot, forgedSlotStore.getLastForgedSlot());
+        }
+        lastCheckedSlot = Math.max(lastCheckedSlot, Math.max(lastForgedSlot, tipSlot));
+        BlockProducerHelper.resetEpochTrackingToSlot(tipSlot);
         running = true;
+        scheduleNextSlot(++run);
 
-        // Schedule at slot-length interval (derived from genesis, not hardcoded)
-        scheduledTask = scheduler.scheduleAtFixedRate(() -> {
-            try {
-                checkAndProduceBlock();
-            } catch (Exception e) {
-                log.error("Error in slot leader check", e);
-            }
-        }, slotLengthMillis, slotLengthMillis, TimeUnit.MILLISECONDS);
-
-        log.info("SlotLeaderBlockProducer started: poolHash={}, slotLength={}ms",
-                poolHash, slotLengthMillis);
+        log.info("SlotLeaderBlockProducer started: poolHash={}, slotLength={}ms, lastForgedSlot={}, tipSlot={}",
+                poolHash, slotClock.slotMillis(), lastForgedSlot, tipSlot);
     }
 
     @Override
@@ -180,45 +126,60 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         }
     }
 
-    synchronized void checkAndProduceBlock() {
-        if (!running) {
-            return;
+    /** Runs the check for the current slot, then waits for the start of the next slot. */
+    private void onSlotTick(long tickRun) {
+        try {
+            checkAndProduceBlock();
+        } catch (Exception e) {
+            log.error("Error in slot leader check", e);
+        } finally {
+            synchronized (this) {
+                if (running && tickRun == run) {
+                    scheduleNextSlot(tickRun);
+                }
+            }
         }
+    }
 
-        // 1. Calculate current wall-clock slot
-        long currentSlot = (System.currentTimeMillis() - genesisTimestamp) / slotLengthMillis;
+    private void scheduleNextSlot(long tickRun) {
+        long now = System.currentTimeMillis();
+        long delay = Math.max(1, slotClock.slotStartMillis(slotClock.slotAt(now) + 1) - now);
+        scheduledTask = scheduler.schedule(() -> onSlotTick(tickRun), delay, TimeUnit.MILLISECONDS);
+    }
 
-        // 2. Skip if already checked this slot
-        if (currentSlot <= lastCheckedSlot) {
+    synchronized void checkAndProduceBlock() {
+        checkSlot(slotClock.slotAt(System.currentTimeMillis()));
+    }
+
+    /** The leader check for {@code currentSlot}, the wall-clock slot. */
+    synchronized void checkSlot(long currentSlot) {
+        if (!running || currentSlot <= lastCheckedSlot) {
             return;
         }
         lastCheckedSlot = currentSlot;
 
-        // 3. Check sync readiness: are we close enough to tip?
         ChainTip tip = chainState.getTip();
-        if (tip == null) {
-            return; // No chain state yet
-        }
-        long slotsBehind = currentSlot - tip.getSlot();
-        if (slotsBehind > SYNC_TOLERANCE_SLOTS) {
+        if (!readiness.isCaughtUp(tip)) {
             if (currentSlot % 100 == 0) { // Log periodically, not every slot
-                log.debug("Not synced to tip (behind by {} slots), skipping leader check", slotsBehind);
+                log.info("Not caught up with upstream (tip slot {}), skipping leader check for slot {}",
+                        tip != null ? tip.getSlot() : null, currentSlot);
             }
             return;
         }
+        if (tip == null || currentSlot <= tip.getSlot() || currentSlot <= lastForgedSlot) {
+            return;
+        }
 
-        // 4. Refresh stake data on epoch boundary
         int currentEpoch = epochNonceState.epochForSlot(currentSlot);
-        refreshStakeData(currentEpoch);
-
+        refreshStakeData(currentEpoch, currentSlot);
         if (sigma.signum() == 0) {
             if (currentSlot % 100 == 0) {
-                log.debug("No stake data available for epoch {}, skipping leader check", currentEpoch);
+                log.debug("No stake for pool {} in epoch {}, skipping leader check", poolHash, currentEpoch);
             }
             return;
         }
 
-        // 5. Preview epoch nonce without mutating shared nonce state. The block builder applies
+        // Preview epoch nonce without mutating shared nonce state. The block builder applies
         // the epoch transition only if this slot actually produces a block.
         byte[] epochNonce = epochNonceState.previewEpochNonceForSlot(currentSlot);
         if (epochNonce == null) {
@@ -226,15 +187,12 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
             return;
         }
 
-        // 6. Check leader eligibility
         BlockSigner.VrfSignResult vrfResult = slotLeaderCheck.checkAndProve(currentSlot, epochNonce, sigma);
         if (vrfResult == null) {
             return; // Not a leader for this slot
         }
 
         log.info("SLOT LEADER! Elected for slot {} (epoch {})", currentSlot, currentEpoch);
-
-        // 7. Produce block
         try {
             produceBlock(currentSlot, vrfResult, tip);
         } catch (Exception e) {
@@ -242,31 +200,28 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         }
     }
 
-    private void refreshStakeData(int epoch) {
-        if (epoch == lastStakeEpoch) {
-            return; // Already have fresh data for this epoch
-        }
-        if (epoch == lastStakeAttemptEpoch) {
-            return; // Already attempted this epoch and failed — wait for next epoch
-        }
-
-        lastStakeAttemptEpoch = epoch;
-
-        BigInteger poolStake = stakeDataProvider.getPoolStake(poolHash, epoch);
-        BigInteger totalStake = stakeDataProvider.getTotalStake(epoch);
-
-        if (poolStake == null || totalStake == null || totalStake.signum() == 0) {
-            log.info("Stake data not available for pool {} in epoch {} (poolStake={}, totalStake={})",
-                    poolHash, epoch, poolStake, totalStake);
-            if (lastStakeEpoch >= 0 && lastStakeEpoch != epoch) {
-                log.warn("Using stale sigma from epoch {} for epoch {}", lastStakeEpoch, epoch);
-            }
+    /**
+     * Loads the epoch's relative stake. When the stake source has nothing for the epoch the stake is zero (a stale
+     * value from another epoch would claim leadership the network rejects) and the source is asked again after
+     * {@link #STAKE_RETRY_SLOTS}.
+     */
+    private void refreshStakeData(int epoch, long slot) {
+        if (epoch == lastStakeEpoch || slot < nextStakeAttemptSlot) {
             return;
         }
 
-        sigma = new BigDecimal(poolStake).divide(new BigDecimal(totalStake), MC);
-        lastStakeEpoch = epoch;
+        BigInteger poolStake = stakeDataProvider.getPoolStake(poolHash, epoch);
+        BigInteger totalStake = stakeDataProvider.getTotalStake(epoch);
+        if (poolStake == null || totalStake == null || totalStake.signum() == 0) {
+            sigma = BigDecimal.ZERO;
+            nextStakeAttemptSlot = slot + STAKE_RETRY_SLOTS;
+            log.info("Stake data not available for pool {} in epoch {} (poolStake={}, totalStake={})",
+                    poolHash, epoch, poolStake, totalStake);
+            return;
+        }
 
+        sigma = SlotLeaderCheck.relativeStake(poolStake, totalStake);
+        lastStakeEpoch = epoch;
         log.info("Stake data refreshed for epoch {}: poolStake={}, totalStake={}, sigma={}",
                 epoch, poolStake, totalStake, sigma);
     }
@@ -285,6 +240,7 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
 
             try (var section = BlockProducerHelper.enterCanonicalWrite(chainState)) {
                 BlockProducerHelper.requireCurrentSelection(transactions, section, blockBuilder, slot);
+                recordForgedSlot(section, slot);
                 BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
                 log.info("Block #{} produced: slot={}, txs={}, hash={}",
@@ -310,6 +266,20 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
             transactions.blockSelectionFailed();
             throw e;
         }
+    }
+
+    /** Persists {@code slot} as forged before its block is stored, so it is durable before it can be served. */
+    private void recordForgedSlot(CanonicalStateGate.WriteSection section, long slot) {
+        if (forgedSlotStore != null) {
+            try {
+                forgedSlotStore.storeLastForgedSlot(slot);
+            } catch (RuntimeException e) {
+                section.markUnchanged();
+                blockBuilder.rollbackPendingNonceState();
+                throw e;
+            }
+        }
+        lastForgedSlot = slot;
     }
 
     /**

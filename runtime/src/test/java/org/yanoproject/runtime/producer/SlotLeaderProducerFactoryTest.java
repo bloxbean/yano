@@ -4,7 +4,9 @@ import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import org.yanoproject.runtime.blockproducer.BlockProducerHelper;
 import org.yanoproject.runtime.blockproducer.EpochNonceState;
+import org.yanoproject.runtime.blockproducer.ForgingReadiness;
 import org.yanoproject.runtime.blockproducer.ProtocolVersionSupplier;
+import org.yanoproject.runtime.blockproducer.SlotClock;
 import org.yanoproject.runtime.blockproducer.StakeDataProvider;
 import org.yanoproject.runtime.chain.InMemoryChainState;
 import org.yanoproject.runtime.tx.BlockTransactionSelector;
@@ -42,8 +44,7 @@ class SlotLeaderProducerFactoryTest {
                 signingComponents.slotLeaderCheck(),
                 fixedStake(),
                 "pool",
-                System.currentTimeMillis(),
-                60_000);
+                SlotClock.shelleyOnly(System.currentTimeMillis(), 60_000));
 
         assertThat(producer.isRunning()).isTrue();
         assertThat(producerSubsystem.modeOrNull()).isEqualTo(ProducerMode.SLOT_LEADER);
@@ -82,7 +83,8 @@ class SlotLeaderProducerFactoryTest {
                         () -> null,
                         new NoopEventBus(),
                         scheduler,
-                        producerSubsystem));
+                        producerSubsystem,
+                        ForgingReadiness.STANDALONE));
     }
 
     private static SlotLeaderSigningComponents signingComponents(EpochNonceState nonceState) throws Exception {

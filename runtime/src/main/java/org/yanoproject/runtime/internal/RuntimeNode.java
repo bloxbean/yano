@@ -2089,6 +2089,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             }
 
             @Override
+            public AccountStateReadStore accountStateReadStoreOrNull() {
+                return getAccountStateStore() instanceof AccountStateReadStore readStore ? readStore : null;
+            }
+
+            @Override
             public void deferPastTimeTravelBlockProducer() {
                 RuntimeNode.this.deferPastTimeTravelBlockProducer();
             }
@@ -2569,7 +2574,19 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                         serveSubsystem::server,
                         eventBus,
                         scheduler,
-                        producerSubsystem));
+                        producerSubsystem,
+                        forgingReadiness()));
+    }
+
+    /** Live forging waits for the upstream sync when this node follows one. */
+    private ForgingReadiness forgingReadiness() {
+        if (!config.isEnableClient()) {
+            return ForgingReadiness.STANDALONE;
+        }
+        return ForgingReadiness.upstream(syncSubsystem::isInitialSyncComplete, chainState::getHeaderTip, () -> {
+            Tip remoteTip = syncSubsystem.remoteTip();
+            return remoteTip != null && remoteTip.getPoint() != null ? remoteTip.getPoint().getSlot() : -1L;
+        });
     }
 
     private void configureGenesisProducerPoolHash(DevnetBlockBuilder blockBuilder) {
