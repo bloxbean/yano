@@ -63,7 +63,7 @@ input:
 3. **Rollbacks from chain state, with a crash boundary.** The loop detects that
    a delivered or partly applied point is no longer canonical, records a
    `ROLLBACK` intent, and runs the **existing** rollback phases until all of
-   them succeed. Only then does it shorten the window. It does not depend on
+   them succeed. Only then does it move the cursor back to the target. It does not depend on
    receiving a `RollbackEvent`. A divergence deeper than the window fails
    closed. (D5a, D6)
 4. **Explicit phase outcomes.** Every forward and rollback phase, through both
@@ -305,9 +305,10 @@ Each invariant names the decisions it constrains and is testable (§11).
   `RUNNING`, no intent is pending, and the record has been reconciled since
   start, and if the window's newest point equals
   `getCanonicalBlockReference(newest.number)` at read time. Otherwise it gets
-  "unavailable". While the fence is closed, the voting-health supplier is
-  false, so the node proposes nothing and votes on no live proposal at any view
-  (r3).
+  "unavailable". When `l1.stability-depth > 0` and delivery health (D9a) is
+  false, the voting-health supplier is false, so the node proposes nothing and
+  votes on no live proposal at any view (r3). At depth 0 voting is not gated by
+  delivery (r4, F8).
 - **I14 Unverified L1 state is not trusted (D8a, D8b).** After an upgrade or
   an operator re-baseline, and before the first delivery:
   - the F7 frontier counts only confirmations that record an L1 inclusion
@@ -319,7 +320,8 @@ Each invariant names the decisions it constrains and is testable (§11).
     prepared observation has produced the terminal ADR-036 quarantine;
   - missing evidence has produced `L1_EVIDENCE_UNAVAILABLE`.
 
-  Neither path clears a quarantine (r3).
+  Neither path clears a quarantine (r3). The checks, the invalidations and the
+  baseline history describe the same chain (I18; r4).
 - **I15 One-lock prune handshake (D7a).** Once a registration or a lowering to
   boundary `b` returns, no prune batch deletes any body with block number
   `≥ b`, including `b` itself (r3: r2 stated the inequality backwards).
@@ -327,6 +329,16 @@ Each invariant names the decisions it constrains and is testable (§11).
   `ROLLBACK` target is `ORIGIN`, or a window or baseline-history point that is
   canonical when the intent is written. No target is synthesized from the new
   branch.
+- **I17 A completed rollback moves the cursor (D2, D5a; r4, F7).** The write
+  that completes `ROLLBACK(target)` leaves the effective cursor equal to
+  `target`, truncating the baseline history when `target` lies in it (`ORIGIN`
+  → `[ORIGIN]`). The next forward delivery is at `target.number + 1`, including
+  after a crash at that write.
+- **I18 Reconciliation is bound to one chain history (D8, D8b; r4, F5).**
+  D8b's decisions, invalidations, quarantine markers and baseline history, and
+  the baseline history of a fresh chain, are committed in one write, and only
+  if no chain-state rollback happened since the pass began. A record in
+  `RECONCILING` never delivers, and reruns the procedure at startup.
 
 ## 6. Decisions
 
@@ -365,6 +377,12 @@ written atomically as a unit:
   `(blockNumber, slot, blockHash)` points. The newest is the cursor; with an
   empty window, the baseline is the cursor.
 - `pending`: none, `APPLY(point)` or `ROLLBACK(target)` (D5a).
+- `phase`: `RECONCILING` or `RECONCILED` (D8b, r4). Delivery and anchor
+  completion run only in `RECONCILED`.
+
+The **effective cursor** is the window's newest point, or the baseline
+history's newest point when the window is empty. A completed rollback makes
+its target the effective cursor (D5a, I17).
 
 The in-memory `recentL1Points` becomes a published copy of the committed
 window. It is replaced only after the record is durably written (r2, F4). The
@@ -530,9 +548,20 @@ safe because `target` is always a point the loop recorded on the branch it
 delivered (I16): every effect written after `target` on that branch belongs
 to a later block and so has a higher slot. A point merely found on the new
 branch would carry no such guarantee (r3, F7). The loop repeats the whole
-rollback until every phase reports `DURABLE` or `NO_OP`. Only then does
-one atomic write truncate the window to `target` and clear `pending`. A crash
-anywhere in between replays the same rollback on restart. A `QUARANTINED`
+rollback until every phase reports `DURABLE` or `NO_OP`. Only then does one
+atomic write clear `pending` and make `target` the effective cursor (r4, F7):
+
+- if `target` is in the window, the window is truncated after it;
+- if `target` is in the baseline history, the window becomes empty and the
+  baseline history is truncated after `target`, so `target` becomes its newest
+  point;
+- if `target` is `ORIGIN`, the window is empty and the baseline history is
+  `[ORIGIN]`, so delivery restarts at block 0.
+
+Baseline-history points stay non-delivered, so stability is unaffected (I9).
+Without this rule, a shallow fork of the baseline's newest point would leave
+the cursor on the dead point, and the same rollback would repeat forever. A
+crash anywhere before that write replays the same rollback on restart. A `QUARANTINED`
 outcome is persisted with the intent and is terminal (I11).
 
 **Why a partly applied block cannot be finalized.** The stable L1 point is
@@ -640,6 +669,10 @@ The record separates a **baseline history** from **delivered** points (D2):
   block 0). These points are recorded, not delivered (I9). They serve two
   purposes: delivery starts after the newest of them, and they are proven
   rollback targets for anything written later (I16).
+  - They form one coherent chain history (r4, F5). The loop captures the body
+    tip `A`, walks down from `A` by block number, and commits the points only
+    if the chain-state rollback generation (D8b rule 7) did not change during
+    collection; otherwise it collects again.
   - Recording them is one atomic write that happens before any `APPLY`. A
     crash before it leaves nothing recorded and nothing processed, so the next
     start records afresh.
@@ -723,8 +756,47 @@ its schema version:
    explicit operator or governance decision outside this ADR, as for ADR-036's
    deep-rollback quarantine.
 
+7. **One canonical history (r4, F5).** The procedure's decisions and the
+   baseline history it records must describe the same chain. A rollback
+   between checking a record and recording the baseline could otherwise certify
+   an old-fork record under a baseline from the new branch.
+   - Chain state gains a **rollback generation**: a monotonic counter that it
+     increments in the same code path as every operation that removes or
+     replaces a canonical index entry. That covers full and header-only
+     rollback (`stageDeletesAfter`), rollback to origin, and snapshot restore,
+     each before any `RollbackEvent` is published. It is exposed through
+     `ChainBlockReader`, and `RuntimeNode` delegates. Appending new blocks never
+     changes an existing canonical entry, so it does not change the generation.
+     The wallet scan's generation (`UtxoIndexes`) is not reused: it follows UTXO
+     apply, not chain state.
+   - A pass captures the generation `g` and the body tip `A`, then makes every
+     decision read-only.
+   - The invalidations, the quarantine markers, the baseline history (collected
+     from `A`) and `phase = RECONCILED` are committed in **one** `AppLedgerStore`
+     batch, written only if the generation still equals `g` immediately before
+     the write. The journal already stages into a caller's batch
+     (`stageEpochSpoolMutations`, `AppLedgerStore.java:2669`); meta writes gain
+     the same staged form beside `metaPutAll` (`:2484`).
+   - If the generation changed, the pass's decisions are discarded and the pass
+     runs again. Nothing decided against a chain that later changed is applied.
+   - A rollback after the write is consistent with what was committed. Every
+     verified record and every baseline point lies on `A`'s chain, so D6
+     handles it with recorded targets (I16).
+8. **Durable boundary (r4, F5).** `phase = RECONCILING` is written durably
+   before the first pass: on the first start after an upgrade, or when the
+   operator starts a re-baseline. Only rule 7's final batch sets
+   `RECONCILED`. A record found in `RECONCILING` at startup reruns the procedure
+   from scratch; delivery never starts from it. Ordinary restarts in
+   `RECONCILED` do not rerun the scan. A fresh chain with no L1-derived state
+   is created directly in `RECONCILED`, with a baseline collected under rule 7.
+9. **Fenced and frozen while reconciling (r4, F5).** In `RECONCILING`:
+   - the loop delivers nothing;
+   - the D9a fence is closed, and voting is gated as D9a describes;
+   - local anchor completion is disabled (checked under `anchorLock`), so no
+     confirmation can be created from a fact the procedure has not yet judged.
+
 Cost (estimate): about two index reads per checked observation, once per
-upgrade or re-baseline.
+upgrade or re-baseline, repeated only if a rollback lands during a pass.
 
 ### D9. The window and frontier after a restart
 
@@ -790,10 +862,37 @@ proposals.
 certified historical and catch-up rules for already finalized blocks are
 unchanged.
 
+**Two predicates, and when the voting gate applies (r4, F8).**
+
+- **Delivery health** (for the voting gate): the snapshot is `RUNNING` with
+  no intent and `phase = RECONCILED`, and either the window is empty or its
+  newest point passes check 3.
+- **Stable point** (for readers): delivery health, plus at least `depth + 1`
+  delivered points.
+
+A chain that is still filling its window after start is healthy for voting
+but has no stable point yet. Its proposer then waits for an L1 reference, as
+it does today.
+
+The voting gate applies only when `l1.stability-depth > 0`. That is the only
+configuration whose consensus reads L1:
+
+- `verifyProposalL1Ref` skips the L1 check at depth ≤ 0 (`AppChainEngine.java:2424`);
+- L1 observers require depth > 0 (`AppChainSubsystem.java:4799-4803`).
+
+Other configurations:
+
+- **L1-less chains** (depth 0 and anchoring off, allowed by
+  `AppChainSubsystem.java:4651-4657`; the builder defaults depth to 0) run no
+  delivery loop. Proposing and voting are unchanged.
+- **Depth-0 chains with anchoring** run the loop for anchor confirmations, but
+  are not voting-gated. `L1_ANCHORED` effects stay fail-closed at depth 0,
+  as ADR-010 F7 already requires.
+
 ### D10. Observability
 
-Status adds, per chain: the baseline and cursor (number, slot, hash), the
-pending intent, the body tip, lag in blocks, the loop state (`RUNNING`,
+Status adds, per chain: the baseline history and the effective cursor (number,
+slot, hash), the pending intent, the reconciliation phase, the body tip, lag in blocks, the loop state (`RUNNING`,
 `RETRYING_BLOCK`, `RETRYING_ROLLBACK`, `L1_BODY_UNAVAILABLE`,
 `L1_DIVERGENCE_BEYOND_WINDOW`, `L1_EVIDENCE_UNAVAILABLE`, `QUARANTINED`), the
 last failure's phase and
@@ -820,6 +919,9 @@ loop until stopped:
     wait for a wake-up or the poll interval
     if state is fail-closed (L1_BODY_UNAVAILABLE, L1_DIVERGENCE_BEYOND_WINDOW,
                              L1_EVIDENCE_UNAVAILABLE, QUARANTINED): continue
+    if phase is RECONCILING:
+        run a D8b pass                           # commits RECONCILED only if the
+        continue                                 # rollback generation is unchanged
     # pre-attempt check: recover or derive a rollback (D5a, D6)
     if (pending is APPLY(p) and (cursor not canonical or canonical(p.number) != p))
        or (pending is none and cursor not canonical):
@@ -831,7 +933,7 @@ loop until stopped:
         outcomes = every rollback phase(t)       # D4a outcomes, idempotent
         if any QUARANTINED: persist; state = QUARANTINED; continue
         if any RETRYABLE: state = RETRYING_ROLLBACK; backoff; continue
-        commit(window = window.truncateAfter(t), pending = none)
+        commit(recordTruncatedAfter(t), pending = none)  # window, else baseline history (I17)
     # forward delivery, bound to the intent (D1, D4, D5, D5a)
     while cursor.number < bodyTip.number and not stopped:
         if pending is none:
@@ -870,6 +972,13 @@ loop until stopped:
   implemented through one. It has no production caller on `main`. The anchor
   services' L1 methods change their result types (D4a); they are internal to
   `runtime/appchain`.
+- **`ChainBlockReader` additions** (default methods, so existing implementers
+  compile): the slot-based canonical lookup (D8b rule 2) and the chain-state
+  rollback generation (D8b rule 7). Chain state increments the generation in
+  its own rollback and restore paths. `AppLedgerStore` gains staged meta
+  writes into a caller's batch (D8b rule 7).
+- **L1-less chains:** unchanged. No delivery loop runs and voting is not gated
+  (D9a, r4).
 - **Events:** the node's events and their subscribers are unchanged. The app
   chain still subscribes; its callbacks only signal. `AppChainAnchoredEvent`
   stays best-effort (D4a).
@@ -975,6 +1084,21 @@ Failing tests on `main` that pass at the end of M3:
     raised and committed app state is untouched;
   - a new-schema confirmation from a dead fork, kept across a
     removed-configuration interval: the operator re-baseline invalidates it.
+- **F5 (r4):**
+  - a finalized old-fork observation at 101 passes its check, then L1
+    replaces 101–103 before the baseline is recorded: the pass is discarded and
+    rerun, and the old evidence produces the quarantine. The same schedule
+    with a retained new-schema anchor fact invalidates the fact.
+  - crashes before and after the reconciliation-complete write: startup
+    reruns the procedure, or delivers normally, respectively.
+  - local anchor completion attempted during reconciliation: refused.
+- **F7 (r4):** baseline history `[98, 99, old100]`, an empty window, and a
+  replacement of only block 100: the rollback to 99 completes once, and
+  delivery resumes at `new100`, including after a crash at the completing
+  write.
+- **F8 (r4):** a no-L1-feed chain at depth 0 with anchoring off, and a depth-0
+  chain with anchoring: proposing and voting continue; an explicitly requested
+  `L1_ANCHORED` effect stays fail-closed.
 - **F7 (r3):**
   - baseline old100 at slot 100 with `APPLY(old101)` having written a fact at
     slot 105, then a fork below 99 where new99 is at slot 108 and new100 at
@@ -1008,10 +1132,12 @@ unchanged.
 
 Entry: M2. The loop, the wake-up and poll, intent recovery and binding,
 divergence detection over recorded points, fail-closed states, the baseline
-history, legacy and re-baseline reconciliation (D8b, including the slot-based
-lookup and the committed-app-block evidence scan), and the D9a fence for every
-listed reader and the voting-health supplier. Event callbacks only signal. The single-slot
-observation replay is removed. Exit: the I1–I16 tests and every M0 test pass,
+history and its cursor-moving rollback completion (I17), legacy and re-baseline
+reconciliation (D8b, including the slot-based lookup, the committed-app-block
+evidence scan, the rollback generation, the one-batch commit and the
+`RECONCILING` boundary), and the D9a fence for every listed reader and the
+depth-scoped voting-health supplier. Event callbacks only signal. The single-slot
+observation replay is removed. Exit: the I1–I18 tests and every M0 test pass,
 and the ADR-010 F7 text is amended.
 
 ### M4. Observability and qualification (D10)
@@ -1160,3 +1286,20 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
     only); D6, I8 and §7 updated.
   - M0, M3 and the interleaving strategy extended with the round-2
     counterexamples (F1, F4, F5, F7).
+- **r4** (2026-10-04; responds to the review of `a68731a3e`):
+  - F5 → D8b rules 7–9 and new I18. A chain-state rollback generation binds
+    each reconciliation pass to one canonical history; decisions are made
+    read-only and committed with the baseline in one batch, only if no rollback
+    intervened; otherwise they are discarded and the pass reruns. A durable
+    `RECONCILING`/`RECONCILED` phase means a crash never skips unfinished work.
+    Delivery, the fence and anchor completion are frozen while reconciling.
+    Baseline-history collection uses the same rule (D8).
+  - F7 → D2 (effective cursor), D5a and §7: the completing rollback write
+    truncates the baseline history when the target lies in it (`ORIGIN` →
+    `[ORIGIN]`), so the cursor equals the target; new I17; M0 adds the shallow
+    startup-fork case with a crash at the commit.
+  - F8 → D9a and I13: the voting gate applies only when
+    `l1.stability-depth > 0`; delivery health (voting) is separated from the
+    stable point (readers); L1-less and depth-0 anchoring chains are unchanged;
+    `L1_ANCHORED` stays fail-closed at depth 0; M0 adds the depth-0
+    regressions; §8 updated.
