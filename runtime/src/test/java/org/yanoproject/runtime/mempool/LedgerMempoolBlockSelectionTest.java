@@ -20,6 +20,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
+import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
+import org.yanoproject.ledger.rules.conway.utxo.MinFee;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
@@ -32,6 +34,7 @@ import org.yanoproject.runtime.tx.BlockTransactionSelectors;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -192,6 +195,31 @@ class LedgerMempoolBlockSelectionTest {
         assertThat(selector.selectionCurrent()).isTrue();
         assertThat(mempool.ledgerStatus().blockSelections()).isEqualTo(1);
         assertThat(mempool.ledgerStatus().blockSelectionReapplications()).isEqualTo(6);
+        selector.blockSelectionCompleted();
+    }
+
+    @Test
+    void selectionStopsBeforeTheBlockReferenceScriptsExceedTheLimit() {
+        // Each payment references the same 180,000-byte script: five fit 1 MiB, the sixth would not.
+        List<byte[]> txs = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            TxSpec spec = payment(extraInput(i), ADA.multiply(BigInteger.TWO));
+            spec.referenceInputs.add(MempoolTestWorld.REFERENCE_SCRIPT_INPUT);
+            spec.feeAdjust = MinFee.tierRefScriptFee(ConwayLedgerConstants.HASKELL,
+                    MutationWorld.protocolParams().getMinFeeRefScriptCostPerByte(),
+                    MempoolTestWorld.REFERENCE_SCRIPT_SIZE);
+            byte[] tx = build(spec, world);
+            accept(tx);
+            txs.add(tx);
+        }
+
+        List<byte[]> selected = selector.drainForBlock(SLOT + 5);
+
+        assertThat(hashes(selected)).containsExactlyElementsOf(hashes(txs.subList(0, 5)));
+        assertThat(5L * MempoolTestWorld.REFERENCE_SCRIPT_SIZE)
+                .isLessThanOrEqualTo(LedgerMempool.MAX_REF_SCRIPT_SIZE_PER_BLOCK)
+                .isLessThan(6L * MempoolTestWorld.REFERENCE_SCRIPT_SIZE);
+        assertThat(ids()).as("the sixth stays in the mempool for the next block").hasSize(6);
         selector.blockSelectionCompleted();
     }
 

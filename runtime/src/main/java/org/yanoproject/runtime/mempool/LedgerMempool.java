@@ -1,6 +1,8 @@
 package org.yanoproject.runtime.mempool;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.exception.CborDeserializationException;
+import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -17,6 +19,9 @@ import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.ValidationError;
+import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
+import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
+import org.yanoproject.ledger.rules.conway.utxo.BlockRefScriptSize;
 import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
 import org.yanoproject.ledger.rules.view.Lookup;
 import org.yanoproject.ledger.rules.view.OverlayLedgerView;
@@ -924,6 +929,9 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
     /** Attempts before a selection whose canonical generation keeps moving gives up (and selects nothing). */
     private static final int BLOCK_SELECTION_ATTEMPTS = 3;
 
+    /** {@code maxRefScriptSizePerBlock} (Conway/Rules/Bbody.hs), the bound of a block's reference scripts. */
+    static final long MAX_REF_SCRIPT_SIZE_PER_BLOCK = ConwayLedgerConstants.HASKELL.maxRefScriptSizePerBlock();
+
     /**
      * Consecutive block selections a candidate may fail transiently before it is removed as invalid: a failure
      * that persists this long (for example an engine that cannot derive a transaction's effects) is not transient.
@@ -1060,6 +1068,8 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
             // twice that size can never be forged in this block.
             long byteCap = selectionByteCap(base);
             OverlayLedgerView overlay = OverlayLedgerView.over(base.view());
+            // BBODY.BodyRefScriptsSizeTooBig: stop before the block's reference scripts exceed the limit.
+            BlockRefScriptSize refScripts = BlockRefScriptSize.over(base.view(), env.protocolMajor());
             List<byte[]> selected = new ArrayList<>();
             List<String> rejected = new ArrayList<>();
             List<String> skipped = new ArrayList<>();
@@ -1079,6 +1089,22 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                     rejected.add(e.txHash());
                     continue;
                 }
+                TransactionBody body;
+                Lookup<Long> refScriptSize;
+                try {
+                    body = CclTransactions.deserialize(e.txBytes()).getBody();
+                    refScriptSize = refScripts.measure(body);
+                } catch (CborDeserializationException | RuntimeException ex) {
+                    body = null;
+                    refScriptSize = Lookup.unavailable(ex.toString());
+                }
+                if (refScriptSize instanceof Lookup.Unavailable<Long> u) {
+                    skipped.add(e.txHash());
+                    transientFailures.put(e.txHash(), "reference scripts not measurable: " + u.reason());
+                    tainted = true;
+                    continue;
+                }
+                long txRefScriptSize = ((Lookup.Present<Long>) refScriptSize).value();
                 ValidatedTx previous = e.validated().origin() == TxValidationRequest.Origin.SYNC ? null
                         : e.validated();
                 TxValidationRequest request = new TxValidationRequest(e.txBytes(), overlay, env,
@@ -1097,6 +1123,13 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                     continue;
                 }
                 if (outcome instanceof TxValidationOutcome.Valid valid) {
+                    // Checked once valid, so an invalid candidate is still rejected rather than holding the queue.
+                    if (refScripts.total() + txRefScriptSize > MAX_REF_SCRIPT_SIZE_PER_BLOCK) {
+                        log.debug("Block selection for slot {} stops at {}: reference scripts {} + {} bytes exceed {}",
+                                forgeSlot, e.txHash(), refScripts.total(), txRefScriptSize,
+                                MAX_REF_SCRIPT_SIZE_PER_BLOCK);
+                        break;
+                    }
                     try {
                         overlay = overlay.apply(valid.effects());
                     } catch (RuntimeException ex) {
@@ -1107,6 +1140,7 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                     }
                     selected.add(e.txBytes());
                     bytes += e.size();
+                    refScripts.add(e.txHash(), body, true, txRefScriptSize);
                     if (valid.reapplied()) {
                         reapplied++;
                         blockSelectionReapplications.incrementAndGet();
