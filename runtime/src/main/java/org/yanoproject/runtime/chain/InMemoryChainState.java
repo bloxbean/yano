@@ -208,6 +208,7 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
         epochNonceState = null;
         epochNonces.clear();
         epochNonceCheckpoints.clear();
+        lastForgedSlot.set(-1);
     }
 
     @Override

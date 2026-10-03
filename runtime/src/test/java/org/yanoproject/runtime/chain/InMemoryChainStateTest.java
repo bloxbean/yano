@@ -82,6 +82,20 @@ class InMemoryChainStateTest {
         assertArrayEquals(genesisEbb, chainState.getTip().getBlockHash());
     }
 
+    @Test
+    void lastForgedSlotSurvivesRollbacksButNotARollbackToOrigin() {
+        InMemoryChainState chainState = new InMemoryChainState();
+        storeMain(chainState, hash(1), 1L, 5L);
+        storeMain(chainState, hash(2), 2L, 10L);
+        chainState.storeLastForgedSlot(10L);
+
+        chainState.rollbackTo(5L);
+        assertEquals(10L, chainState.getLastForgedSlot());
+
+        chainState.rollbackToOrigin();
+        assertEquals(-1L, chainState.getLastForgedSlot());
+    }
+
     private static void storeMain(InMemoryChainState state, byte[] hash, long number, long slot) {
         state.storeBlockHeader(hash, number, slot, new byte[]{hash[31]});
         state.storeBlock(hash, number, slot, new byte[]{hash[31]});

@@ -109,6 +109,18 @@ class SlotTimeCalculatorTest {
     }
 
     @Test
+    void devnet_subSecondSlotsRoundToTheNearestSecondAsBefore() {
+        var calc = new DevnetCalculator(1700000000L, 0.2);
+        assertThat(calc.slotToUnixTime(2)).isEqualTo(1700000000L);  // 0.4 s
+        assertThat(calc.slotToUnixTime(3)).isEqualTo(1700000001L);  // 0.6 s
+        assertThat(calc.slotToUnixTime(8)).isEqualTo(1700000002L);  // 1.6 s
+        for (long slot = 0; slot < 100_000; slot++) {
+            assertThat(calc.slotToUnixTime(slot)).as("slot %d", slot)
+                    .isEqualTo(1700000000L + Math.round(slot * 0.2));
+        }
+    }
+
+    @Test
     void devnet_slotLength_1sec() {
         var calc = new DevnetCalculator(1700000000L, 1.0);
         long time = calc.slotToUnixTime(500);

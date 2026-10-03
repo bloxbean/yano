@@ -121,6 +121,19 @@ class SlotLeaderBlockProducerTest {
     }
 
     @Test
+    void aSlotCheckedBeforeCatchingUpDoesNotAdvanceTheCursor() {
+        SlotLeaderBlockProducer producer = startedProducer();
+        caughtUp.set(false);
+
+        // A wall-clock slot computed before the first Shelley slot is known can lie far ahead.
+        producer.checkSlot(1_000_000);
+
+        caughtUp.set(true);
+        producer.checkSlot(4);
+        assertThat(chainState.getTip().getSlot()).isEqualTo(4);
+    }
+
+    @Test
     void aMissingStakeDistributionIsZeroStakeNotTheLastEpochsStake() {
         SlotLeaderBlockProducer producer = startedProducer();
         producer.checkSlot(1);

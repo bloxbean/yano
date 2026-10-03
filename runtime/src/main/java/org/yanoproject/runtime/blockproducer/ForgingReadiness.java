@@ -28,6 +28,12 @@ public interface ForgingReadiness {
      * waiting for its body, and the local tip has reached the tip upstream last announced. It never forges during
      * initial sync, whatever the distance to the wall clock.
      *
+     * <p>No header may wait for its body because the local store is linear by block number: a forged block stored
+     * beside a pending upstream header of the same height would corrupt the chain. Together with the producer's own
+     * rules (the slot is after the tip and after the last forged slot) this is the minimal safe condition. The
+     * upstream-tip term is redundant in steady state, where the announced tip's header arrives with it; it keeps
+     * the producer off while the upstream has announced a tip whose header is not stored yet.</p>
+     *
      * @param initialSyncComplete whether initial sync has completed
      * @param headerTip           the best header received, or {@code null}
      * @param upstreamTipSlot     the slot of the tip upstream last announced, or a negative value when none is known

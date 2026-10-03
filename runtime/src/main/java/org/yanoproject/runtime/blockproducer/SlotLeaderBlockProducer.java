@@ -160,7 +160,6 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         if (!running || currentSlot <= lastCheckedSlot) {
             return;
         }
-        lastCheckedSlot = currentSlot;
 
         ChainTip tip = chainState.getTip();
         if (!readiness.isCaughtUp(tip)) {
@@ -170,6 +169,13 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
             }
             return;
         }
+        // Advanced only once caught up: before that the wall-clock slot can be wrong (the first Shelley slot of a
+        // network with a Byron prefix is known only once sync has reached it), and a cursor advanced to a wrong
+        // future slot would silence every later check.
+        lastCheckedSlot = currentSlot;
+        // The tip in the current slot: forge only on a strictly earlier tip. Haskell would forge an alternative
+        // block on the tip's predecessor and let chain selection decide; the local store is linear by block
+        // number and cannot hold two blocks of one height, so the slot is skipped.
         if (tip == null || currentSlot <= tip.getSlot() || currentSlot <= lastForgedSlot) {
             return;
         }

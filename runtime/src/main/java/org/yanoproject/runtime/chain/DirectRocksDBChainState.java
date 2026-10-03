@@ -67,7 +67,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] EPOCH_NONCE_STATE_KEY = "epoch_nonce_state".getBytes(StandardCharsets.UTF_8);
-    // Not chain data: no rollback or rollback-to-origin touches it (see ForgedSlotStore).
+    // Not chain data: a rollback leaves it alone, a rollback to origin clears it (see ForgedSlotStore).
     private static final byte[] LAST_FORGED_SLOT_KEY = "last_forged_slot".getBytes(StandardCharsets.UTF_8);
     private static final String LEGACY_PROJ_BYRON_UTXO = "proj_byron_utxo";
     private final Object lastForgedSlotLock = new Object();
@@ -1014,7 +1014,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             batch.delete(metadataHandle, TIP_KEY);
             batch.delete(metadataHandle, HEADER_TIP_KEY);
             batch.delete(metadataHandle, EPOCH_NONCE_STATE_KEY);
-            metadataDeleted += 3;
+            batch.delete(metadataHandle, LAST_FORGED_SLOT_KEY);
+            metadataDeleted += 4;
 
             try (RocksIterator iterator = db.newIterator(metadataHandle)) {
                 for (iterator.seek(EPOCH_NONCE_KEY_PREFIX); iterator.isValid(); iterator.next()) {

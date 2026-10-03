@@ -1089,22 +1089,6 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                     rejected.add(e.txHash());
                     continue;
                 }
-                TransactionBody body;
-                Lookup<Long> refScriptSize;
-                try {
-                    body = CclTransactions.deserialize(e.txBytes()).getBody();
-                    refScriptSize = refScripts.measure(body);
-                } catch (CborDeserializationException | RuntimeException ex) {
-                    body = null;
-                    refScriptSize = Lookup.unavailable(ex.toString());
-                }
-                if (refScriptSize instanceof Lookup.Unavailable<Long> u) {
-                    skipped.add(e.txHash());
-                    transientFailures.put(e.txHash(), "reference scripts not measurable: " + u.reason());
-                    tainted = true;
-                    continue;
-                }
-                long txRefScriptSize = ((Lookup.Present<Long>) refScriptSize).value();
                 ValidatedTx previous = e.validated().origin() == TxValidationRequest.Origin.SYNC ? null
                         : e.validated();
                 TxValidationRequest request = new TxValidationRequest(e.txBytes(), overlay, env,
@@ -1123,7 +1107,24 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                     continue;
                 }
                 if (outcome instanceof TxValidationOutcome.Valid valid) {
-                    // Checked once valid, so an invalid candidate is still rejected rather than holding the queue.
+                    // Measured once valid: an invalid candidate is rejected without decoding it again, and never
+                    // holds the queue.
+                    TransactionBody body;
+                    Lookup<Long> refScriptSize;
+                    try {
+                        body = CclTransactions.deserialize(e.txBytes()).getBody();
+                        refScriptSize = refScripts.measure(body);
+                    } catch (CborDeserializationException | RuntimeException ex) {
+                        body = null;
+                        refScriptSize = Lookup.unavailable(ex.toString());
+                    }
+                    if (refScriptSize instanceof Lookup.Unavailable<Long> u) {
+                        skipped.add(e.txHash());
+                        transientFailures.put(e.txHash(), "reference scripts not measurable: " + u.reason());
+                        tainted = true;
+                        continue;
+                    }
+                    long txRefScriptSize = ((Lookup.Present<Long>) refScriptSize).value();
                     if (refScripts.total() + txRefScriptSize > MAX_REF_SCRIPT_SIZE_PER_BLOCK) {
                         log.debug("Block selection for slot {} stops at {}: reference scripts {} + {} bytes exceed {}",
                                 forgeSlot, e.txHash(), refScripts.total(), txRefScriptSize,

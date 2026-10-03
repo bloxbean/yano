@@ -6,9 +6,8 @@ import java.util.function.LongSupplier;
 /**
  * Wall-clock slot arithmetic for forging, in milliseconds and aware of a Byron prefix: Byron slots of
  * {@code byronSlotMillis} run from {@code systemStartMillis} up to the first Shelley slot, then slots of
- * {@code slotMillis}. This is the formula of {@link org.yanoproject.runtime.SlotTimeCalculator}, which works in
- * whole seconds and is too coarse for sub-second devnet slots. Without a Byron prefix (first Shelley slot 0) it is
- * {@code (now - systemStart) / slotMillis}.
+ * {@code slotMillis}. {@link org.yanoproject.runtime.SlotTimeCalculator} rounds it to whole seconds. Without a Byron
+ * prefix (first Shelley slot 0) it is {@code (now - systemStart) / slotMillis}.
  *
  * @param systemStartMillis the network start (Shelley genesis {@code systemStart}, which equals the Byron start)
  * @param byronSlotMillis   the Byron slot length

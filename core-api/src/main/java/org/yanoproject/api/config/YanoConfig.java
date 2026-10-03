@@ -75,7 +75,7 @@ public class YanoConfig implements NodeConfig {
     private String kesSkeyFile;            // Path to KES secret key file (TextEnvelope JSON)
     private String opCertFile;             // Path to operational certificate file (TextEnvelope JSON)
 
-    // Slot leader mode (public network block production)
+    // Slot leader mode (slot-leader block production)
     private boolean slotLeaderMode;                // Enable Praos slot leader selection instead of devnet fixed-interval
     private String stakeDataProviderUrl;            // optional yaci-store base URL for stake data; default: account state
     private String initialEpochNonce;               // Hex-encoded 32-byte nonce for bootstrap seeding

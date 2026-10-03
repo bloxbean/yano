@@ -75,12 +75,26 @@ class DirectRocksDBChainStateRollbackTest {
         chainState.rollbackTo(5L);
         assertThat(chainState.getTip().getSlot()).isEqualTo(5);
         assertThat(chainState.getLastForgedSlot()).isEqualTo(10);
+        chainState.close();
+        chainState = new DirectRocksDBChainState(tempDir.resolve("testdb").toString());
+
+        assertThat(chainState.getTip().getSlot()).isEqualTo(5);
+        assertThat(chainState.getLastForgedSlot()).isEqualTo(10);
+    }
+
+    @Test
+    void aRollbackToOriginClearsTheLastForgedSlot() {
+        storeMain(hash(1), 1L, 5L);
+        chainState.storeLastForgedSlot(5L);
+
         chainState.rollbackToOrigin();
         chainState.close();
         chainState = new DirectRocksDBChainState(tempDir.resolve("testdb").toString());
 
         assertThat(chainState.getTip()).isNull();
-        assertThat(chainState.getLastForgedSlot()).isEqualTo(10);
+        assertThat(chainState.getLastForgedSlot()).isEqualTo(-1);
+        chainState.storeLastForgedSlot(3L);
+        assertThat(chainState.getLastForgedSlot()).as("a new chain forges from its own slots").isEqualTo(3);
     }
 
     @Test
