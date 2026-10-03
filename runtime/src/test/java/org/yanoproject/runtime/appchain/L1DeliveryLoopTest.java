@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.OptionalLong;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.stream.LongStream;
 
@@ -325,6 +326,112 @@ class L1DeliveryLoopTest {
         assertThat(loop.checkL1Ref(50, l1.point(4).blockHash())).isEqualTo(AppChainEngine.L1RefVerdict.UNKNOWN);
     }
 
+    @Test
+    void upgradeReconcilesBeforeAnyDeliveryAndBindsTheBaselineToTheSameChain() {
+        l1.append(10, 20, 30, 40, 50);
+        host.legacyState = true;
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+
+        assertThat(host.reconcileCalls).isEqualTo(1);
+        assertThat(host.reloads).isEqualTo(1);
+        assertThat(loop.snapshot().record().phase()).isEqualTo(L1DeliveryRecord.Phase.RECONCILED);
+        assertThat(loop.snapshot().cursor()).isEqualTo(l1.point(4));
+        assertThat(loop.snapshot().record().window()).as("the baseline is never delivered").isEmpty();
+        l1.append(60);
+        loop.pass();
+        assertThat(host.applied).containsExactly(l1.point(5));
+    }
+
+    @Test
+    void reconciliationPassOverlappingARollbackIsDiscardedAndRerun() {
+        l1.append(10, 20, 30, 40, 50);
+        host.legacyState = true;
+        host.duringReconcile = once(() -> l1.fork(3, 45));
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+        assertThat(loop.snapshot().record().phase()).as("the mutation sequence moved: nothing committed")
+                .isEqualTo(L1DeliveryRecord.Phase.RECONCILING);
+
+        loop.pass();
+        assertThat(host.reconcileCalls).isEqualTo(2);
+        assertThat(loop.snapshot().record().phase()).isEqualTo(L1DeliveryRecord.Phase.RECONCILED);
+        assertThat(loop.snapshot().cursor()).as("the baseline comes from the chain the decisions saw")
+                .isEqualTo(l1.point(4));
+        assertThat(l1.point(4).slot()).isEqualTo(45);
+    }
+
+    @Test
+    void crashBeforeTheReconciliationCommitRerunsTheProcedure() {
+        l1.append(10, 20, 30);
+        host.legacyState = true;
+        host.duringReconcile = once(() -> l1.fork(1, 25));
+        loop().pass();
+
+        L1DeliveryLoop restarted = loop();
+        restarted.pass();
+        assertThat(host.reconcileCalls).isEqualTo(2);
+        assertThat(restarted.snapshot().record().phase()).isEqualTo(L1DeliveryRecord.Phase.RECONCILED);
+    }
+
+    @Test
+    void reconciliationQuarantineCommitsItsMarkersAndIsTerminal() {
+        l1.append(10, 20);
+        host.legacyState = true;
+        host.decision = new L1DeliveryLoop.Reconciliation(
+                batch -> ledger.stageMetaBytes(batch, "test_marker", new byte[]{1}),
+                "DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION", false, OptionalLong.empty());
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+
+        assertThat(loop.snapshot().state()).isEqualTo(L1DeliveryLoop.State.QUARANTINED);
+        assertThat(ledger.metaBytes("test_marker")).containsExactly(1);
+        assertThat(loop.requestRebaseline()).as("re-baseline never clears a quarantine").isFalse();
+    }
+
+    @Test
+    void missingEvidenceFailsClosedWithoutApplyingAnything() {
+        l1.append(10, 20);
+        host.legacyState = true;
+        host.decision = new L1DeliveryLoop.Reconciliation(
+                batch -> ledger.stageMetaBytes(batch, "test_marker", new byte[]{1}), null, true,
+                OptionalLong.empty());
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+
+        assertThat(loop.snapshot().state()).isEqualTo(L1DeliveryLoop.State.L1_EVIDENCE_UNAVAILABLE);
+        assertThat(ledger.metaBytes("test_marker")).isNull();
+    }
+
+    @Test
+    void failedCallbackSlotMovesTheBaselineSoTheFailedBlockIsDelivered() {
+        l1.append(10, 20, 30, 40, 50);
+        host.legacyState = true;
+        host.decision = new L1DeliveryLoop.Reconciliation(batch -> { }, null, false, OptionalLong.of(2));
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+        loop.pass();
+
+        assertThat(host.applied).containsExactly(l1.point(3), l1.point(4));
+    }
+
+    @Test
+    void operatorRebaselineLeavesADivergenceStateAndReconciles() {
+        l1.append(LongStream.rangeClosed(1, 70).map(i -> i * 10).toArray());
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+        l1.fork(2, 25, 35);
+        loop.pass();
+        assertThat(loop.snapshot().state()).isEqualTo(L1DeliveryLoop.State.L1_DIVERGENCE_BEYOND_WINDOW);
+
+        assertThat(loop.requestRebaseline()).isTrue();
+        loop.pass();
+        assertThat(host.reconcileCalls).isEqualTo(1);
+        assertThat(loop.snapshot().record().phase()).isEqualTo(L1DeliveryRecord.Phase.RECONCILED);
+        assertThat(loop.snapshot().cursor()).isEqualTo(l1.point(l1.tipNumber()));
+        assertThat(loop.snapshot().record().terminal()).isNull();
+    }
+
     private static Runnable once(Runnable action) {
         boolean[] done = new boolean[1];
         return () -> {
@@ -353,6 +460,12 @@ class L1DeliveryLoopTest {
         final Deque<L1PhaseResult> nextApply = new ArrayDeque<>();
         final Deque<L1PhaseResult> nextRollback = new ArrayDeque<>();
         Consumer<BlockAppliedEvent> duringApply = event -> { };
+        boolean legacyState;
+        Runnable duringReconcile = () -> { };
+        L1DeliveryLoop.Reconciliation decision =
+                new L1DeliveryLoop.Reconciliation(batch -> { }, null, false, OptionalLong.empty());
+        int reconcileCalls;
+        int reloads;
 
         @Override
         public List<L1PhaseResult> applyBlock(BlockAppliedEvent event) {
@@ -366,6 +479,23 @@ class L1DeliveryLoopTest {
                 events.add("apply " + event.blockNumber());
             }
             return List.of(result);
+        }
+
+        @Override
+        public boolean hasL1DerivedState() {
+            return legacyState;
+        }
+
+        @Override
+        public L1DeliveryLoop.Reconciliation reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+            reconcileCalls++;
+            duringReconcile.run();
+            return decision;
+        }
+
+        @Override
+        public void reconciled() {
+            reloads++;
         }
 
         @Override

@@ -13,6 +13,7 @@ import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.api.util.StoredBlockUtil;
 import org.yanoproject.runtime.chain.BlockBodyRetentionRegistry;
 import org.yanoproject.runtime.util.LifecycleFailures;
+import org.rocksdb.WriteBatch;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,6 +27,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 
 /**
@@ -45,6 +47,31 @@ final class L1DeliveryLoop implements AutoCloseable {
         List<L1PhaseResult> applyBlock(BlockAppliedEvent event);
 
         List<L1PhaseResult> rollbackTo(L1Point target);
+
+        /** Whether the app ledger already holds L1-derived state, so a missing record means an upgrade (D8a). */
+        boolean hasL1DerivedState();
+
+        /** Judges every retained L1-derived record against chain state, read-only (D8b rules 1-6). */
+        Reconciliation reconcile(BiPredicate<Long, byte[]> canonicalAtSlot);
+
+        /** Called after a reconciliation commit so in-memory caches reread durable state. */
+        void reconciled();
+    }
+
+    /**
+     * The host's reconciliation decision (D8b).
+     *
+     * @param stager              stages the invalidations, or the quarantine markers, into the commit batch
+     * @param quarantine          a terminal quarantine reason, or null
+     * @param evidenceUnavailable needed evidence is missing: fail closed without applying anything
+     * @param baselineTop         block number the baseline history must end at, or empty for the body tip
+     */
+    record Reconciliation(Consumer<WriteBatch> stager, String quarantine, boolean evidenceUnavailable,
+                          OptionalLong baselineTop) {
+        Reconciliation {
+            Objects.requireNonNull(stager, "stager");
+            Objects.requireNonNull(baselineTop, "baselineTop");
+        }
     }
 
     enum State {
@@ -68,6 +95,7 @@ final class L1DeliveryLoop implements AutoCloseable {
     private final BlockBodyRetentionRegistry.Registration retention;
     private final Logger log;
     private final AtomicBoolean wakeQueued = new AtomicBoolean();
+    private final AtomicBoolean rebaselineRequested = new AtomicBoolean();
     private volatile Snapshot snapshot = new Snapshot(null, State.STARTING, false, null);
     private volatile Consumer<Runnable> passRunner = Runnable::run;
     private volatile ScheduledExecutorService executor;
@@ -106,6 +134,23 @@ final class L1DeliveryLoop implements AutoCloseable {
                 wakeQueued.set(false);
             }
         }
+    }
+
+    /**
+     * Requests an operator re-baseline (D7a): the next pass reconciles every retained L1-derived record (D8b) and
+     * records a fresh baseline history at the body tip. Refused while a terminal quarantine is persisted.
+     *
+     * @return false when refused
+     */
+    boolean requestRebaseline() {
+        L1DeliveryRecord record = snapshot.record();
+        if (record != null && record.terminal() != null
+                && State.QUARANTINED.name().equals(record.terminal().state())) {
+            return false;
+        }
+        rebaselineRequested.set(true);
+        wake();
+        return true;
     }
 
     @Override
@@ -233,8 +278,21 @@ final class L1DeliveryLoop implements AutoCloseable {
                 return;
             }
         }
+        if (rebaselineRequested.getAndSet(false)) {
+            if (record.terminal() != null && State.QUARANTINED.name().equals(record.terminal().state())) {
+                log.warn("App-chain '{}' L1 re-baseline refused: a terminal quarantine is persisted", chainId);
+            } else {
+                record = persist(new L1DeliveryRecord(record.baseline(), List.of(), null,
+                        L1DeliveryRecord.Phase.RECONCILING, null));
+                log.warn("App-chain '{}' L1 re-baseline started by operator", chainId);
+            }
+        }
         if (record.terminal() != null) {
             publish(record, State.valueOf(record.terminal().state()), false, record.terminal().reason());
+            return;
+        }
+        if (record.phase() == L1DeliveryRecord.Phase.RECONCILING) {
+            reconcilePass(record);
             return;
         }
 
@@ -331,6 +389,14 @@ final class L1DeliveryLoop implements AutoCloseable {
             publish(record, State.STARTING, false, null);
             return record;
         }
+        if (host.hasL1DerivedState()) {
+            // An upgrade: legacy L1-derived state is reconciled before any delivery (D8a, D8b rule 8).
+            L1DeliveryRecord record = persist(L1DeliveryRecord.fresh(List.of(L1Point.ORIGIN),
+                    L1DeliveryRecord.Phase.RECONCILING));
+            publish(record, State.STARTING, false, null);
+            log.warn("App-chain '{}' reconciles existing L1-derived state before delivering", chainId);
+            return record;
+        }
         List<L1Point> baseline = collectBaseline();
         if (baseline == null) {
             return null;
@@ -356,26 +422,91 @@ final class L1DeliveryLoop implements AutoCloseable {
         if ((before.getAsLong() & 1L) != 0) {
             return null;
         }
-        ChainTip tip = reader.getLocalTip();
-        List<L1Point> points = new ArrayList<>();
-        if (tip == null) {
-            points.add(L1Point.ORIGIN);
-        } else {
-            long top = tip.getBlockNumber();
-            long bottom = Math.max(0L, top - capacity + 1);
-            if (bottom == 0L) {
-                points.add(L1Point.ORIGIN);
-            }
-            for (long blockNumber = bottom; blockNumber <= top; blockNumber++) {
-                Optional<CanonicalBlockReference> reference = reader.getCanonicalBlockReference(blockNumber);
-                if (reference.isEmpty()) {
-                    return null;
-                }
-                points.add(L1Point.of(reference.get()));
-            }
-        }
+        List<L1Point> points = readBaseline(OptionalLong.empty());
         OptionalLong after = reader.canonicalMutationSequence();
-        return after.isPresent() && after.getAsLong() == before.getAsLong() ? points : null;
+        return points != null && after.isPresent() && after.getAsLong() == before.getAsLong() ? points : null;
+    }
+
+    /** The last {@code capacity} canonical points ending at {@code top} (default the body tip); null on a gap. */
+    private List<L1Point> readBaseline(OptionalLong top) {
+        ChainTip tip = reader.getLocalTip();
+        long newest = top.isPresent() ? top.getAsLong() : tip == null ? -1L : tip.getBlockNumber();
+        List<L1Point> points = new ArrayList<>();
+        if (newest < 0) {
+            points.add(L1Point.ORIGIN);
+            return points;
+        }
+        long bottom = Math.max(0L, newest - capacity + 1);
+        if (bottom == 0L) {
+            points.add(L1Point.ORIGIN);
+        }
+        for (long blockNumber = bottom; blockNumber <= newest; blockNumber++) {
+            Optional<CanonicalBlockReference> reference = reader.getCanonicalBlockReference(blockNumber);
+            if (reference.isEmpty()) {
+                return null;
+            }
+            points.add(L1Point.of(reference.get()));
+        }
+        return points;
+    }
+
+    /**
+     * One reconciliation pass (D8b rules 7-9): the host decides read-only, the baseline history is collected from
+     * the same chain, and both are committed in one batch only if the canonical mutation sequence stayed even and
+     * unchanged. Otherwise everything is discarded and the next pass reruns.
+     */
+    private void reconcilePass(L1DeliveryRecord record) {
+        OptionalLong before = reader.canonicalMutationSequence();
+        if (before.isEmpty()) {
+            publish(record, State.L1_EVIDENCE_UNAVAILABLE, false, "CANONICAL_MUTATION_SEQUENCE_UNSUPPORTED");
+            return;
+        }
+        publish(record, State.STARTING, false, null);
+        if ((before.getAsLong() & 1L) != 0) {
+            return;
+        }
+        Reconciliation decision = host.reconcile(this::canonicalAtSlot);
+        List<L1Point> baseline = readBaseline(decision.baselineTop());
+        OptionalLong after = reader.canonicalMutationSequence();
+        if (baseline == null || after.isEmpty() || after.getAsLong() != before.getAsLong()) {
+            return;
+        }
+        L1DeliveryRecord next;
+        Consumer<WriteBatch> stager;
+        if (decision.evidenceUnavailable()) {
+            next = record.withTerminal(new L1DeliveryRecord.Terminal(State.L1_EVIDENCE_UNAVAILABLE.name(),
+                    "L1_EVIDENCE_UNAVAILABLE"));
+            stager = batch -> { };
+        } else if (decision.quarantine() != null) {
+            next = record.withTerminal(new L1DeliveryRecord.Terminal(State.QUARANTINED.name(),
+                    decision.quarantine()));
+            stager = decision.stager();
+        } else {
+            next = L1DeliveryRecord.fresh(baseline, L1DeliveryRecord.Phase.RECONCILED);
+            stager = decision.stager();
+        }
+        L1DeliveryRecord committed = next;
+        ledger.writeAtomically(batch -> {
+            stager.accept(batch);
+            ledger.stageMetaBytes(batch, L1DeliveryRecord.META_KEY, committed.encode());
+        });
+        host.reconciled();
+        if (committed.terminal() != null) {
+            publish(committed, State.valueOf(committed.terminal().state()), false, committed.terminal().reason());
+            log.error("App-chain '{}' L1 reconciliation stopped: {}; operator action required", chainId,
+                    committed.terminal().reason());
+            return;
+        }
+        updateRetention(committed.cursor());
+        publish(committed, State.STARTING, false, null);
+        log.info("App-chain '{}' L1 reconciliation complete; delivery starts after {}", chainId,
+                committed.cursor());
+        wake();
+    }
+
+    private boolean canonicalAtSlot(long slot, byte[] blockHash) {
+        return reader.getCanonicalBlockReferenceAtSlot(slot)
+                .map(reference -> Arrays.equals(reference.blockHash(), blockHash)).orElse(false);
     }
 
     /** The newest recorded point that is still canonical: the window, then the baseline history (I16). */

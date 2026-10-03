@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.function.BiPredicate;
 
 /**
  * L1 observations (ADR app-layer/008.4 §3.1): EVERY member runs the
@@ -446,6 +447,25 @@ final class L1ObservationService {
             return L1PhaseResult.DURABLE;
         } catch (RuntimeException failure) {
             return failureResult("L1_OBSERVATION_ROLLBACK_FAILED");
+        }
+    }
+
+    /** The journal's part of an L1 evidence reconciliation (app-layer ADR-038, D8b); empty without a journal. */
+    L1ObservationJournal.ReconcileDecision reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        return journal == null ? new L1ObservationJournal.ReconcileDecision(List.of(), null)
+                : journal.reconcile(canonicalAtSlot);
+    }
+
+    /** After a reconciliation commit: forget in-memory observations and reread the journal's markers. */
+    synchronized void reloadAfterReconciliation() {
+        window.clear();
+        blockHashes.clear();
+        pendingInjection.clear();
+        newestSlot = 0;
+        if (journal != null) {
+            journal.reloaded();
+            callbackFailureSlot = journal.callbackFailureSlot();
+            healthy = journal.healthy();
         }
     }
 

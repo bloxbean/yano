@@ -35,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /**
  * Durable app-chain ledger: hash-linked blocks, tip metadata, per-height vote
@@ -2663,6 +2664,28 @@ final class AppLedgerStore implements AutoCloseable {
             db.write(options, batch);
         } catch (RocksDBException failure) {
             throw new RuntimeException("Failed to update epoch-observation spool", failure);
+        }
+    }
+
+    /** Stages one metadata value into a caller's batch (app-layer ADR-038, D8b rule 7). */
+    void stageMetaBytes(WriteBatch batch, String key, byte[] value) {
+        Objects.requireNonNull(batch, "batch");
+        try {
+            batch.put(metaCf, key.getBytes(StandardCharsets.UTF_8), Objects.requireNonNull(value, "value"));
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to stage app ledger metadata", failure);
+        }
+    }
+
+    /** Writes everything {@code stager} puts into one batch atomically and durably. */
+    void writeAtomically(Consumer<WriteBatch> stager) {
+        Objects.requireNonNull(stager, "stager");
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions options = new WriteOptions().setSync(true)) {
+            stager.accept(batch);
+            db.write(options, batch);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to write app ledger batch", failure);
         }
     }
 
