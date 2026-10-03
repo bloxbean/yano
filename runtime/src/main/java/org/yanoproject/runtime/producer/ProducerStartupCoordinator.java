@@ -201,6 +201,9 @@ public final class ProducerStartupCoordinator {
                 // ADR-056: genesis UTxOs, bootstrap, block store and apply form one canonical write section.
                 try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
                     actions.storeGenesisUtxosIfNeeded(freshStart);
+                    // Before the first build: the genesis protocol parameters are materialized per era (as in
+                    // devnet mode), so the era must be known when the genesis block bootstraps them.
+                    actions.setConwayEraStartIfFreshStart(freshStart);
                     var genesisResult = signedBlockBuilder.buildBlock(0, 0, null, List.of());
                     try {
                         BlockProducerHelper.publishGenesisBlockEvent(
@@ -212,8 +215,6 @@ public final class ProducerStartupCoordinator {
                     BlockProducerHelper.storeProducedBlock(chainState, signedBlockBuilder, genesisResult);
                     log.info("Genesis block produced (slot-leader devnet): hash={}",
                             HexUtil.encodeHexString(genesisResult.blockHash()));
-
-                    actions.setConwayEraStartIfFreshStart(freshStart);
 
                     BlockProducerHelper.publishEvent(
                             actions.eventBus(), genesisResult, 0, "slot-leader-genesis", false);
