@@ -2481,6 +2481,13 @@ final class AppLedgerStore implements AutoCloseable {
         metaPutAll(values, Map.of());
     }
 
+    /** Package-private deterministic failure seam for ADR-038 storage-failure tests; inert in production. */
+    private volatile Runnable metaWriteFault = () -> { };
+
+    void injectMetaWriteFault(Runnable fault) {
+        this.metaWriteFault = fault != null ? fault : () -> { };
+    }
+
     /** Atomically write a mixed group of long and byte-valued metadata. */
     void metaPutAll(Map<String, Long> longValues, Map<String, byte[]> byteValues) {
         Objects.requireNonNull(longValues, "longValues");
@@ -2488,6 +2495,7 @@ final class AppLedgerStore implements AutoCloseable {
         if (longValues.isEmpty() && byteValues.isEmpty()) {
             return;
         }
+        metaWriteFault.run();
         try (WriteBatch batch = new WriteBatch();
              WriteOptions writeOptions = new WriteOptions()) {
             for (var entry : longValues.entrySet()) {

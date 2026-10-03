@@ -17,11 +17,17 @@ import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongFunction;
 
@@ -90,6 +96,13 @@ class AnchorServiceTest {
     private Utxo utxo(int index, long lovelace) {
         return new Utxo(new Outpoint("cc".repeat(32), index), "addr_test", BigInteger.valueOf(lovelace),
                 List.of(), null, null, null, null, false, 0, 0, null);
+    }
+
+    /** Deterministic L1 block hash at a slot. */
+    private static byte[] l1Hash(long slot) {
+        byte[] hash = new byte[32];
+        Arrays.fill(hash, (byte) (slot % 251 + 1));
+        return hash;
     }
 
     @Test
@@ -245,7 +258,7 @@ class AnchorServiceTest {
         service.wireFees(() -> new AnchorService.FeeParams(MIN_FEE_A, MIN_FEE_B), () -> 500L);
 
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(100, List.of("txhash-1"))).isNull();
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isZero();
         assertThat(service.status()).containsEntry("confirmationObservedAtL1Slot", 100L);
 
@@ -264,20 +277,20 @@ class AnchorServiceTest {
         // Anchor 1..3, confirm at slot 100
         tip[0] = 3;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(100, List.of("txhash-1"))).isNotNull();
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isEqualTo(3);
 
         // Anchor 4..8 (spans what would be multiple every-blocks intervals), confirm at slot 200
         tip[0] = 8;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(200, List.of("txhash-2"))).isNotNull();
+        assertThat(service.onL1Block(200, l1Hash(200), List.of("txhash-2"))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isEqualTo(8);
 
         // A third confirmation means a rollback to 150 must unwind TWO
         // anchors, not merely rewind the latest range start.
         tip[0] = 10;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(300, List.of("txhash-3"))).isNotNull();
+        assertThat(service.onL1Block(300, l1Hash(300), List.of("txhash-3"))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isEqualTo(10);
 
         // Simulate a service restart: rollback correctness comes from the
@@ -298,10 +311,10 @@ class AnchorServiceTest {
 
         tip[0] = 3;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(100, List.of("txhash-1"))).isNotNull();
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
         tip[0] = 8;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(200, List.of("txhash-2"))).isNotNull();
+        assertThat(service.onL1Block(200, l1Hash(200), List.of("txhash-2"))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isEqualTo(8); // first sighting
 
         // Stable L1 point below the inclusion slot: not yet deep enough
@@ -318,7 +331,7 @@ class AnchorServiceTest {
         // Its re-inclusion counts again only once that new slot is stable
         tip[0] = 10;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(300, List.of("txhash-3"))).isNotNull();
+        assertThat(service.onL1Block(300, l1Hash(300), List.of("txhash-3"))).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isEqualTo(10);
         assertThat(AnchorService.stableAnchoredHeight(ledger, 299)).isEqualTo(3);
         assertThat(AnchorService.stableAnchoredHeight(ledger, 300)).isEqualTo(10);
@@ -332,10 +345,10 @@ class AnchorServiceTest {
         AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
         tip[0] = 3;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(100, List.of("txhash-1"))).isNotNull();
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
         tip[0] = 8;
         assertThat(service.forceAnchorNow()).isTrue();
-        assertThat(service.onL1Block(200, List.of("txhash-2"))).isNotNull();
+        assertThat(service.onL1Block(200, l1Hash(200), List.of("txhash-2"))).isEqualTo(L1PhaseResult.DURABLE);
 
         tip[0] = 12;
         assertThat(service.forceAnchorNow()).isTrue();
@@ -355,7 +368,7 @@ class AnchorServiceTest {
         for (int i = 0; i < AnchorService.ConfirmationHistory.MAX_ENTRIES; i++) {
             long height = i + 1L;
             retained.add(new AnchorService.Confirmation(
-                    height, height, "tx-" + height, 100L + i, new byte[32]));
+                    height, height, "tx-" + height, 100L + i, new byte[32], l1Hash(100L + i)));
         }
         AnchorService.Confirmation latest = retained.getLast();
         ledger.metaPutAll(
@@ -379,6 +392,138 @@ class AnchorServiceTest {
         assertThat(ledger.metaBytes("anchor_last_block_hash")).isEmpty();
         assertThat(AnchorService.ConfirmationHistory.decode(
                 ledger.metaBytes("anchor_confirmation_history_v1"))).isEmpty();
+    }
+
+    /** ADR-038 D4a: the L1 fact is durable, so a restart (pending anchor lost) still completes it once. */
+    @Test
+    void observedFactSurvivesRestartAndCompletesLaterWithoutResubmit() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        service.setCompletionGate(() -> false);
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(service.lastAnchoredHeight()).isZero();
+        assertThat(service.status()).containsEntry("confirmationObservedAtL1Slot", 100L);
+
+        AnchorService restarted = service(List.of(utxo(0, 50_000_000)), true, 500);
+        List<AnchorService.ConfirmedAnchor> notified = new ArrayList<>();
+        restarted.setConfirmationListener(notified::add);
+        // The redelivered block no longer matches a pending anchor; the durable fact still completes.
+        assertThat(restarted.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.NO_OP);
+        restarted.tick();
+
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(3);
+        assertThat(restarted.status()).doesNotContainKey("confirmationObservedAtL1Slot");
+        assertThat(notified).extracting(AnchorService.ConfirmedAnchor::txHash).containsExactly("txhash-1");
+        assertThat(restarted.confirmationHistory()).singleElement()
+                .satisfies(entry -> assertThat(entry.l1BlockHash()).isEqualTo(l1Hash(100)));
+        assertThat(submitted).hasSize(1);
+    }
+
+    @Test
+    void completionWaitsForTheGateAndRedeliveryIsIdempotent() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        AtomicBoolean open = new AtomicBoolean(false);
+        service.setCompletionGate(open::get);
+        List<AnchorService.ConfirmedAnchor> notified = new ArrayList<>();
+        service.setConfirmationListener(notified::add);
+        assertThat(service.forceAnchorNow()).isTrue();
+
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        service.tick();
+        assertThat(service.lastAnchoredHeight()).isZero();
+        assertThat(service.forceAnchorNow()).as("an observed fact is never resubmitted").isFalse();
+        assertThat(submitted).hasSize(1);
+
+        open.set(true);
+        service.tick();
+        service.tick();
+        assertThat(service.lastAnchoredHeight()).isEqualTo(3);
+        assertThat(service.confirmationHistory()).hasSize(1);
+        assertThat(notified).hasSize(1);
+    }
+
+    @Test
+    void factWriteFailureIsRetryableAndTheRetrySucceeds() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        assertThat(service.forceAnchorNow()).isTrue();
+        ledger.injectMetaWriteFault(() -> {
+            throw new IllegalStateException("disk unavailable");
+        });
+
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1")).kind())
+                .isEqualTo(L1PhaseResult.Kind.RETRYABLE);
+        assertThat(service.status()).doesNotContainKey("confirmationObservedAtL1Slot");
+        assertThat(service.lastAnchoredHeight()).isZero();
+
+        ledger.injectMetaWriteFault(null);
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(service.lastAnchoredHeight()).isEqualTo(3);
+    }
+
+    @Test
+    void rollbackFailureIsRetryableAndRepeatedRollbackIsANoOp() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        ledger.injectMetaWriteFault(() -> {
+            throw new IllegalStateException("disk unavailable");
+        });
+
+        assertThat(service.onL1Rollback(50).kind()).isEqualTo(L1PhaseResult.Kind.RETRYABLE);
+        assertThat(service.lastAnchoredHeight()).isEqualTo(3);
+
+        ledger.injectMetaWriteFault(null);
+        assertThat(service.onL1Rollback(50)).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(service.lastAnchoredHeight()).isZero();
+        assertThat(service.onL1Rollback(50)).isEqualTo(L1PhaseResult.NO_OP);
+    }
+
+    @Test
+    void rollbackToOriginKeepsAPendingAnchorWhenNothingWasConfirmed() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Rollback(-1)).isEqualTo(L1PhaseResult.NO_OP);
+        assertThat(service.status()).containsEntry("pendingTx", "txhash-1");
+
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(service.onL1Rollback(-1)).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(service.lastAnchoredHeight()).isZero();
+        assertThat(service.confirmationHistory()).isEmpty();
+    }
+
+    /** ADR-038 D8a: v1 journals decode as legacy entries, which never count toward the F7 frontier. */
+    @Test
+    void legacyHistoryEntriesAreDecodedButExcludedFromTheFrontier() throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.writeInt(0x59414831); // YAH1
+            out.writeInt(1);
+            out.writeLong(1);
+            out.writeLong(3);
+            out.writeLong(100);
+            byte[] tx = "legacy-tx".getBytes(StandardCharsets.UTF_8);
+            out.writeInt(tx.length);
+            out.write(tx);
+            out.write(new byte[32]);
+        }
+        List<AnchorService.Confirmation> legacy = AnchorService.ConfirmationHistory.decode(bytes.toByteArray());
+        assertThat(legacy).singleElement().satisfies(entry -> {
+            assertThat(entry.toHeight()).isEqualTo(3);
+            assertThat(entry.l1BlockHash()).isNull();
+        });
+        ledger.metaPutBytes(AnchorService.META_ANCHOR_HISTORY, bytes.toByteArray());
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 1_000)).isZero();
+
+        List<AnchorService.Confirmation> mixed = new ArrayList<>(legacy);
+        mixed.add(new AnchorService.Confirmation(4, 8, "new-tx", 200, new byte[32], l1Hash(200)));
+        byte[] reencoded = AnchorService.ConfirmationHistory.encode(mixed);
+        assertThat(AnchorService.ConfirmationHistory.decode(reencoded))
+                .extracting(entry -> entry.l1BlockHash() != null)
+                .containsExactly(false, true);
+        ledger.metaPutAll(Map.of(), Map.of(AnchorService.META_ANCHOR_HISTORY, reencoded));
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 1_000)).isEqualTo(8);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 150)).isZero();
     }
 
     private record FixedUtxoState(List<Utxo> utxos) implements UtxoState {

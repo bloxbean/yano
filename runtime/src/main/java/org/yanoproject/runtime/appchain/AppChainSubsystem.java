@@ -4942,6 +4942,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                         : null;
                             },
                             anchorSlotSupplier);
+                    this.anchorService.setConfirmationListener(this::publishConfirmedAnchor);
                 }
             }
             // Script anchors (008.4): EVERY ledger member runs the co-sign
@@ -4980,6 +4981,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 return supplier != null ? supplier.get() : null;
                             },
                             anchorPointSupplier);
+                    scriptService.wireCanonicalHashAtSlot(slot -> {
+                        LongFunction<BlockAppliedEvent> replay = l1BlockReplay;
+                        BlockAppliedEvent retained = replay != null ? replay.apply(slot) : null;
+                        return retained != null ? HexUtil.decodeHexString(retained.blockHash()) : null;
+                    });
+                    scriptService.setConfirmationListener(this::publishConfirmedAnchor);
                     this.scriptAnchorService = scriptService;
                 } catch (Exception e) {
                     log.warn("Script-anchor service unavailable (errorType={})",
@@ -5113,8 +5120,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // ordering and restart. ScriptAnchorService.tick() keeps all tx
             // construction/submission leader-only.
             exec.scheduleWithFixedDelay(
-                    () -> generationUseOrNoop(() ->
-                            publishConfirmedAnchor(currentScriptAnchor.tick())),
+                    () -> generationUseOrNoop(currentScriptAnchor::tick),
                     10, 10, TimeUnit.SECONDS);
             if (config.anchoringEnabled()
                     && config.anchor() != null && config.anchor().scriptMode()) {
@@ -5516,12 +5522,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         txHashes.add(transactionBodies.get(index).getTxHash());
                     }
                 }
-                AnchorService.ConfirmedAnchor confirmed = currentAnchor != null
-                        ? currentAnchor.onL1Block(event.slot(), txHashes) : null;
-                if (confirmed == null && currentScriptAnchor != null) {
-                    confirmed = currentScriptAnchor.onL1Block(event.slot(), txHashes);
-                }
-                publishConfirmedAnchor(confirmed);
+                byte[] l1BlockHash = HexUtil.decodeHexString(event.blockHash());
+                L1PhaseResult metadataResult = currentAnchor != null
+                        ? currentAnchor.onL1Block(event.slot(), l1BlockHash, txHashes) : L1PhaseResult.NO_OP;
+                L1PhaseResult scriptResult = currentScriptAnchor != null
+                        ? currentScriptAnchor.onL1Block(event.slot(), l1BlockHash, txHashes) : L1PhaseResult.NO_OP;
+                requireSucceeded(metadataResult);
+                requireSucceeded(scriptResult);
             }
         });
     }
@@ -5547,6 +5554,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         observations.onL1Block(retained.slot(),
                 HexUtil.decodeHexString(retained.blockHash()), retained.block());
+    }
+
+    /** Surfaces a failed phase outcome through {@link #runL1Phase}'s failure reporting. */
+    private static void requireSucceeded(L1PhaseResult result) {
+        if (!result.succeeded()) {
+            throw new IllegalStateException(result.kind() + ": " + result.reason());
+        }
     }
 
     private void publishConfirmedAnchor(AnchorService.ConfirmedAnchor confirmed) {
@@ -5585,13 +5599,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         runL1Phase("metadata-anchor rollback", () -> {
             AnchorService currentAnchor = services.anchor();
             if (currentAnchor != null) {
-                currentAnchor.onL1Rollback(targetSlot);
+                requireSucceeded(currentAnchor.onL1Rollback(targetSlot));
             }
         });
         runL1Phase("script-anchor rollback", () -> {
             ScriptAnchorService currentScriptAnchor = services.scriptAnchor();
             if (currentScriptAnchor != null) {
-                currentScriptAnchor.onL1Rollback(targetSlot);
+                requireSucceeded(currentScriptAnchor.onL1Rollback(targetSlot));
             }
         });
         runL1Phase("observation rollback", () -> {
