@@ -22,11 +22,14 @@ import org.yanoproject.catalog.ContributionKind;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigInteger;
+import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -167,8 +170,33 @@ class RuleViewFacadeTest {
                     .isNotNull().isNotEqualTo(decoded.get(name));
         }
         Map<String, Object> wide = new LinkedHashMap<>();
-        for (int index = 0; index < 100; index++) wide.put("f" + index, (long) index);
+        for (int index = 0; index < 2 * RuleValueView.MAX_FIELDS; index++) wide.put("f" + index, (long) index);
         raw.writes = List.of(wide);
-        assertThat(facade(raw).ruleWrites(new byte[]{1}).getFirst()).hasSize(2 * RuleValueView.MAX_FIELDS + 1);
+        assertThat(facade(raw).ruleWrites(new byte[]{1}).getFirst()).hasSize(2 * RuleValueView.MAX_FIELDS);
+        // One entry more: which entries a salted map yields first differs between nodes, so only the marker is kept.
+        wide.put("extra", 0L);
+        assertThat(facade(raw).ruleWrites(new byte[]{1}).getFirst()).containsOnlyKeys("");
+    }
+
+    @Test
+    void repeatedKeysAndANullEntrySetBecomeTheMarkerInsteadOfCollapsingOrThrowing() {
+        var raw = new ViewKernel();
+        // Two equal keys in an identity map: whichever value iterates last must not win, since identity order
+        // differs between nodes. The key keeps the host marker, so every node rejects alike.
+        Map<String, Object> repeated = new IdentityHashMap<>();
+        repeated.put(new String("status"), null);
+        repeated.put(new String("status"), "ACTIVE");
+        raw.decoded = repeated;
+        Map<String, Object> snapshot = facade(raw).ruleValueFields("", new byte[]{1}, new byte[]{2});
+        assertThat(snapshot).containsOnlyKeys("status");
+        assertThat(snapshot.get("status")).isNotNull().isNotEqualTo("ACTIVE");
+        // A map whose entry set is null is a data shape, not a host failure.
+        Map<String, Object> hollow = new AbstractMap<>() {
+            @Override public Set<Entry<String, Object>> entrySet() { return null; }
+        };
+        raw.decoded = hollow;
+        assertThat(facade(raw).ruleValueFields("", new byte[]{1}, new byte[]{2})).containsOnlyKeys("");
+        raw.writes = List.of(hollow);
+        assertThat(facade(raw).ruleWrites(new byte[]{1}).getFirst()).containsOnlyKeys("");
     }
 }

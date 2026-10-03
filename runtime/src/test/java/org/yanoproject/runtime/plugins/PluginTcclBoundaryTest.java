@@ -2793,15 +2793,16 @@ class PluginTcclBoundaryTest {
         digest[0] = 99;
         assertThat((byte[]) kernel.ruleFactValues(command, context, facts).get("digest")).containsExactly(7);
         assertThatThrownBy(() -> values.put("forged", true)).isInstanceOf(UnsupportedOperationException.class);
-        // Oversized values are truncated one entry past each bound, never rejected here: the engine rejects them.
+        // Oversized values are truncated one element past their bound, never rejected here: the engine rejects them.
         C oversized = kernel.codec().decode(new byte[]{2});
         Map<String, Object> overflow = kernel.ruleFactValues(oversized, context, facts);
-        assertThat(overflow).hasSize(RuleFact.MAX_FACTS + 1);
+        assertThat(overflow).hasSize(RuleFact.MAX_FACTS);
         assertThat((List<?>) overflow.get("roles")).hasSize(RuleFact.MAX_SET_ENTRIES + 1);
         assertThat((byte[]) overflow.get("blob")).hasSize(RuleFact.MAX_VALUE_BYTES + 1);
         assertThat(kernel.ruleFactValues(kernel.codec().decode(new byte[]{3}), context, facts)).isNull();
         Map<String, Object> repeated = kernel.ruleFactValues(kernel.codec().decode(new byte[]{4}), context, facts);
-        assertThat(repeated).containsOnlyKeys("verified");
+        // Overflowing its bound, the map becomes the marker alone rather than a collapsed, valid-looking entry.
+        assertThat(repeated).containsOnlyKeys("");
         Map<String, Object> malformed = kernel.ruleFactValues(kernel.codec().decode(new byte[]{5}), context, facts);
         assertThat(malformed).containsOnlyKeys("", "roles");
         assertThat(malformed.get("roles")).isNotInstanceOf(java.util.TreeSet.class);
@@ -2826,8 +2827,8 @@ class PluginTcclBoundaryTest {
         ((byte[]) decoded.get("value.tag"))[0] = 99;
         assertThat((byte[]) kernel.ruleValueFields("items", key, new byte[]{1}).get("value.tag")).containsExactly(7);
         assertThatThrownBy(() -> decoded.put("forged", true)).isInstanceOf(UnsupportedOperationException.class);
-        // Declared fields plus value fields, kept one entry past their bound for the engine to reject.
-        assertThat(kernel.ruleValueFields("items", key, new byte[]{2})).hasSize(2 * RuleValueView.MAX_FIELDS + 1);
+        // More than declared fields plus value fields: the marker alone, for the engine to reject.
+        assertThat(kernel.ruleValueFields("items", key, new byte[]{2})).containsOnlyKeys("");
         assertThat(kernel.ruleValueFields("items", key, new byte[]{3})).isNull();
 
         assertThat(kernel.ruleWriteFields()).containsExactly(new RuleFact("op", RuleFact.Type.TEXT));
@@ -2920,7 +2921,7 @@ class PluginTcclBoundaryTest {
                             oversized.add(Map.entry("roles", IntStream.range(0, 100)
                                     .mapToObj(index -> "role" + index).toList()));
                             oversized.add(Map.entry("blob", new byte[1_000_000]));
-                            for (int index = 0; index < 100; index++) {
+                            for (int index = 0; index < RuleFact.MAX_FACTS - 2; index++) {
                                 oversized.add(Map.entry("fact" + index, true));
                             }
                             yield new ProbeEntries(probe, oversized, false);
