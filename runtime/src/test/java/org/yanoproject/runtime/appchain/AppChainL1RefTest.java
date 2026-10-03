@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
+import org.yanoproject.api.CanonicalBlockReference;
 import org.yanoproject.api.appchain.AppChainConfig;
 import org.yanoproject.api.events.BlockAppliedEvent;
 import org.junit.jupiter.api.AfterEach;
@@ -34,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * ADR app-layer/008.1 I1.3: followers verify a proposal's L1 reference against
  * their OWN L1 view — matching views finalize, a fabricated ref is rejected
  * fail-closed, a briefly-lagging follower defers and then votes, and a chain
- * configured for L1 refs without an L1 feed refuses to start.
+ * configured for L1 refs without an L1 chain to read refuses to start.
  */
 @Timeout(120)
 class AppChainL1RefTest {
@@ -71,88 +72,82 @@ class AppChainL1RefTest {
 
     @Test
     void matchingL1Views_blockCarriesVerifiedRef() throws Exception {
-        EventBus busA = new SimpleEventBus();
-        EventBus busB = new SimpleEventBus();
-        AppChainSubsystem[] nodes = startPair(busA, busB);
+        Member[] nodes = startPair();
 
         // Identical L1 views on both nodes: slots 1..10
-        feedL1(busA, 1, 10, 0);
-        feedL1(busB, 1, 10, 0);
+        nodes[0].feedL1(1, 10);
+        nodes[1].feedL1(1, 10);
 
-        nodes[0].submit("t", "hello".getBytes(StandardCharsets.UTF_8));
+        nodes[0].subsystem().submit("t", "hello".getBytes(StandardCharsets.UTF_8));
         awaitTrue("block finalized on both",
-                () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
+                () -> nodes[0].subsystem().tipHeight() >= 1 && nodes[1].subsystem().tipHeight() >= 1);
 
-        long l1Slot = nodes[1].block(1).orElseThrow().l1Slot();
+        long l1Slot = nodes[1].subsystem().block(1).orElseThrow().l1Slot();
         assertThat(l1Slot).isGreaterThan(0);
         assertThat(l1Slot).isLessThanOrEqualTo(10 - DEPTH); // stable-depth rule
     }
 
     @Test
     void messageBeforeStableView_waitsWithoutCreatingAnInvalidVoteLock() throws Exception {
-        EventBus busA = new SimpleEventBus();
-        EventBus busB = new SimpleEventBus();
-        AppChainSubsystem[] nodes = startPair(busA, busB);
+        Member[] nodes = startPair();
 
-        nodes[0].submit("t", "restored-history".getBytes(StandardCharsets.UTF_8));
+        nodes[0].subsystem().submit("t", "restored-history".getBytes(StandardCharsets.UTF_8));
         Thread.sleep(1_500);
-        assertThat(nodes[0].tipHeight()).isZero();
-        assertThat(nodes[1].tipHeight()).isZero();
+        assertThat(nodes[0].subsystem().tipHeight()).isZero();
+        assertThat(nodes[1].subsystem().tipHeight()).isZero();
 
-        feedL1(busA, 1, 10, 0);
-        feedL1(busB, 1, 10, 0);
+        nodes[0].feedL1(1, 10);
+        nodes[1].feedL1(1, 10);
         awaitTrue("deferred message finalized after stable L1 view became available",
-                () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
-        assertThat(nodes[0].block(1).orElseThrow().l1Slot()).isGreaterThan(0);
+                () -> nodes[0].subsystem().tipHeight() >= 1 && nodes[1].subsystem().tipHeight() >= 1);
+        assertThat(nodes[0].subsystem().block(1).orElseThrow().l1Slot()).isGreaterThan(0);
     }
 
     @Test
     void fabricatedL1Ref_rejectedByFollower() throws Exception {
-        EventBus busA = new SimpleEventBus();
-        EventBus busB = new SimpleEventBus();
-        AppChainSubsystem[] nodes = startPair(busA, busB);
+        Member[] nodes = startPair();
 
-        // Same slots, DIFFERENT hashes: the proposer's refs don't exist on B's chain
-        feedL1(busA, 1, 10, 0);
-        feedL1(busB, 1, 10, 100);
+        // Same slots, DIFFERENT hashes: B's first block carries a transaction, so the proposer's refs don't exist
+        // on B's chain
+        nodes[0].feedL1(1, 10);
+        nodes[1].l1().appendWithTransactions(1, List.of(L1TestChain.sampleTransaction(99)), Set.of());
+        nodes[1].feedL1(2, 10);
 
-        nodes[0].submit("t", "poison".getBytes(StandardCharsets.UTF_8));
+        nodes[0].subsystem().submit("t", "poison".getBytes(StandardCharsets.UTF_8));
         Thread.sleep(6_000);
-        assertThat(nodes[0].tipHeight()).isEqualTo(0);
-        assertThat(nodes[1].tipHeight()).isEqualTo(0);
+        assertThat(nodes[0].subsystem().tipHeight()).isEqualTo(0);
+        assertThat(nodes[1].subsystem().tipHeight()).isEqualTo(0);
     }
 
     @Test
     void laggingFollower_defersThenVotes() throws Exception {
-        EventBus busA = new SimpleEventBus();
-        EventBus busB = new SimpleEventBus();
-        AppChainSubsystem[] nodes = startPair(busA, busB);
+        Member[] nodes = startPair();
 
         // A is ahead (1..10 → stable ref slot 8); B has only 1..6 → ref is AHEAD for B
-        feedL1(busA, 1, 10, 0);
-        feedL1(busB, 1, 6, 0);
+        nodes[0].feedL1(1, 10);
+        nodes[1].feedL1(1, 6);
 
-        nodes[0].submit("t", "patience".getBytes(StandardCharsets.UTF_8));
+        nodes[0].subsystem().submit("t", "patience".getBytes(StandardCharsets.UTF_8));
         // B cannot verify a ref at slot 8 while it has only observed 1..6 — the
         // proposal MUST defer, whenever it arrives. Wait for the evidence.
         awaitTrue("B deferred the ahead-of-view proposal",
-                () -> deferrals(nodes[1]) >= 1);
+                () -> deferrals(nodes[1].subsystem()) >= 1);
 
-        feedL1(busB, 7, 10, 0); // B's L1 catches up; the deferred retry now votes
+        nodes[1].feedL1(7, 10); // B's L1 catches up; the deferred retry now votes
         awaitTrue("deferred proposal finalized on both",
-                () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
-        assertThat(deferrals(nodes[1])).isGreaterThanOrEqualTo(1L);
+                () -> nodes[0].subsystem().tipHeight() >= 1 && nodes[1].subsystem().tipHeight() >= 1);
+        assertThat(deferrals(nodes[1].subsystem())).isGreaterThanOrEqualTo(1L);
     }
 
     @Test
-    void l1RefsConfiguredWithoutEventBus_failsFast() {
+    void l1RefsConfiguredWithoutL1Chain_failsFast() {
         AppChainConfig config = builder("ff", pubHex(KEY_A), List.of()).build();
-        AppChainSubsystem node = new AppChainSubsystem(config, MAGIC, null, null,
+        AppChainSubsystem node = new AppChainSubsystem(config, MAGIC, new SimpleEventBus(), null,
                 tempDir.resolve("ledger-ff").toString(), null, log);
         subsystems.add(node);
         assertThatThrownBy(node::start)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("no L1 event feed");
+                .hasMessageContaining("no L1 chain reader");
     }
 
     // ------------------------------------------------------------------
@@ -162,23 +157,34 @@ class AppChainL1RefTest {
         return value instanceof Number n ? n.longValue() : 0L;
     }
 
-    /** Publish synthetic applied L1 blocks; hash = f(slot + hashOffset). */
-    private static void feedL1(EventBus bus, long fromSlot, long toSlot, int hashOffset) {
-        for (long slot = fromSlot; slot <= toSlot; slot++) {
-            byte[] hash = new byte[32];
-            Arrays.fill(hash, (byte) (slot + hashOffset));
-            bus.publish(new BlockAppliedEvent(null, slot, slot, HexUtil.encodeHexString(hash), null),
+    /** One member: its app chain, its node's event bus (wake-ups only) and its own L1. */
+    private record Member(AppChainSubsystem subsystem, EventBus bus, L1TestChain l1) {
+        /** Appends one empty L1 block per slot, then wakes the delivery loop as the node's applied event would. */
+        void feedL1(long fromSlot, long toSlot) {
+            for (long slot = fromSlot; slot <= toSlot; slot++) {
+                l1.append(slot);
+            }
+            CanonicalBlockReference tip = l1.block(l1.tipNumber());
+            bus.publish(new BlockAppliedEvent(null, tip.slot(), tip.blockNumber(),
+                            HexUtil.encodeHexString(tip.blockHash()), null),
                     EventMetadata.builder().build(), PublishOptions.builder().build());
+        }
+
+        /** Blocks appended before the loop records its baseline would be history, not delivered blocks. */
+        boolean baselineRecorded() {
+            return subsystem.status().get("l1Delivery") instanceof Map<?, ?> delivery
+                    && delivery.containsKey("cursorBlock");
         }
     }
 
-    private AppChainSubsystem[] startPair(EventBus busA, EventBus busB) throws Exception {
+    private Member[] startPair() throws Exception {
         int portA = freePort();
         int portB = freePort();
-        AppChainSubsystem nodeA = startNode("a", KEY_A, busA, portA, List.of(peer(portB)));
-        AppChainSubsystem nodeB = startNode("b", KEY_B, busB, portB, List.of(peer(portA)));
-        awaitTrue("A/B connected", () -> connected(nodeA) && connected(nodeB));
-        return new AppChainSubsystem[]{nodeA, nodeB};
+        Member nodeA = startNode("a", KEY_A, portA, List.of(peer(portB)));
+        Member nodeB = startNode("b", KEY_B, portB, List.of(peer(portA)));
+        awaitTrue("A/B connected", () -> connected(nodeA.subsystem()) && connected(nodeB.subsystem()));
+        awaitTrue("A/B L1 baselines recorded", () -> nodeA.baselineRecorded() && nodeB.baselineRecorded());
+        return new Member[]{nodeA, nodeB};
     }
 
     private AppChainConfig.Builder builder(String name, String proposerHex,
@@ -194,14 +200,16 @@ class AppChainL1RefTest {
                 .stateCommitmentIdentity(TestStateCommitments.MPF);
     }
 
-    private AppChainSubsystem startNode(String name, byte[] signingKey, EventBus eventBus,
-                                        int serverPort, List<AppChainConfig.AppPeer> peers)
+    private Member startNode(String name, byte[] signingKey, int serverPort, List<AppChainConfig.AppPeer> peers)
             throws Exception {
         AppChainConfig config = builder(name, pubHex(KEY_A), peers)
                 .signingKeyHex(HexUtil.encodeHexString(signingKey))
                 .build();
+        EventBus eventBus = new SimpleEventBus();
+        L1TestChain l1 = new L1TestChain();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, eventBus, null,
                 tempDir.resolve("ledger-" + name).toString(), null, log);
+        subsystem.wireL1Chain(l1.reader(), null);
         subsystems.add(subsystem);
 
         if (serverPort > 0) {
@@ -218,7 +226,7 @@ class AppChainL1RefTest {
         }
 
         subsystem.start();
-        return subsystem;
+        return new Member(subsystem, eventBus, l1);
     }
 
     private static boolean connected(AppChainSubsystem subsystem) {

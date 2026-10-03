@@ -2685,6 +2685,11 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
+    /** Stages one long metadata value into a caller's batch (app-layer ADR-038, D8b rule 7). */
+    void stageMetaLong(WriteBatch batch, String key, long value) {
+        stageMetaBytes(batch, key, longBytes(value));
+    }
+
     /** Writes everything {@code stager} puts into one batch atomically and durably. */
     void writeAtomically(Consumer<WriteBatch> stager) {
         Objects.requireNonNull(stager, "stager");

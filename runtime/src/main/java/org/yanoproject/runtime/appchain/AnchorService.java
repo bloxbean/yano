@@ -18,6 +18,7 @@ import org.yanoproject.api.appchain.codec.AppBlockCodec;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
+import org.rocksdb.WriteBatch;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -549,6 +551,50 @@ final class AnchorService {
     /** The decoded confirmation journal, oldest first; empty when absent. */
     List<Confirmation> confirmationHistory() {
         return loadHistory();
+    }
+
+    /**
+     * L1 evidence reconciliation (app-layer ADR-038, D8b): a dead observed fact is deleted. Read-only; the returned
+     * stager joins the caller's single commit. Completion is gated off meanwhile.
+     */
+    Consumer<WriteBatch> reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        synchronized (anchorLock) {
+            ObservedConfirmation observed = loadObservedConfirmation();
+            if (observed == null || canonicalAtSlot.test(observed.l1Slot(), observed.l1BlockHash())) {
+                return batch -> { };
+            }
+            return batch -> ledger.stageMetaBytes(batch, META_OBSERVED_CONFIRMATION, new byte[0]);
+        }
+    }
+
+    /**
+     * The confirmation journal's part of an L1 evidence reconciliation (D8b): a confirmation whose recorded L1 point
+     * is no longer canonical is excluded from the frontier individually, by dropping its L1 hash. Metadata and script
+     * anchors share the journal, so it is judged once. Read-only. An unreadable journal is left as it is: the
+     * frontier already fails closed on it.
+     */
+    static Consumer<WriteBatch> reconcileHistory(AppLedgerStore ledger, BiPredicate<Long, byte[]> canonicalAtSlot) {
+        byte[] encoded = ledger.metaBytes(META_ANCHOR_HISTORY);
+        List<Confirmation> history;
+        try {
+            history = encoded == null || encoded.length == 0 ? List.of() : ConfirmationHistory.decode(encoded);
+        } catch (IllegalArgumentException unreadable) {
+            return batch -> { };
+        }
+        List<Confirmation> judged = new ArrayList<>(history.size());
+        boolean changed = false;
+        for (Confirmation confirmation : history) {
+            boolean dead = confirmation.l1BlockHash() != null
+                    && !canonicalAtSlot.test(confirmation.l1Slot(), confirmation.l1BlockHash());
+            judged.add(dead ? new Confirmation(confirmation.fromHeight(), confirmation.toHeight(),
+                    confirmation.txHash(), confirmation.l1Slot(), confirmation.blockHash(), null) : confirmation);
+            changed |= dead;
+        }
+        if (!changed) {
+            return batch -> { };
+        }
+        byte[] reconciled = ConfirmationHistory.encode(judged);
+        return batch -> ledger.stageMetaBytes(batch, META_ANCHOR_HISTORY, reconciled);
     }
 
     private static void requireBlockHash(byte[] l1BlockHash) {

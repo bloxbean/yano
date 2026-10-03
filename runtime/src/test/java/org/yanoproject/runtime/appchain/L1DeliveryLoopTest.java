@@ -11,6 +11,7 @@ import org.yanoproject.runtime.chain.BlockBodyRetentionRegistry;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.Random;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -430,6 +431,120 @@ class L1DeliveryLoopTest {
         assertThat(loop.snapshot().record().phase()).isEqualTo(L1DeliveryRecord.Phase.RECONCILED);
         assertThat(loop.snapshot().cursor()).isEqualTo(l1.point(l1.tipNumber()));
         assertThat(loop.snapshot().record().terminal()).isNull();
+    }
+
+    /**
+     * Differential model test (ADR verification strategy): random schedules of appends, forks of random depth, phase
+     * failures and restarts. After each schedule, the host's surviving derived state must equal the canonical chain
+     * read independently from the fixture: no dead-fork effect survives and no canonical block is missing.
+     */
+    @Test
+    void randomSchedulesAlwaysConvergeOnTheCanonicalChain() {
+        for (int seed = 1; seed <= 25; seed++) {
+            Random random = new Random(seed);
+            L1TestChain chain = new L1TestChain();
+            DerivedStateHost derived = new DerivedStateHost();
+            try (AppLedgerStore seedLedger = new AppLedgerStore(dir.resolve("seed-" + seed).toString(), log)) {
+                long[] slot = {0};
+                for (int i = 0; i < 5; i++) {
+                    chain.append(slot[0] += 10);
+                }
+                L1DeliveryLoop loop = seededLoop(chain, seedLedger, derived);
+                settle(loop);
+                for (int step = 0; step < 40; step++) {
+                    int op = random.nextInt(10);
+                    if (op < 5) {
+                        for (int n = 1 + random.nextInt(3); n > 0; n--) {
+                            chain.append(slot[0] += 10);
+                        }
+                    } else if (op < 7 && chain.tipNumber() > 0) {
+                        long keep = Math.max(0, chain.tipNumber() - 1 - random.nextInt(4));
+                        long[] branch = new long[1 + random.nextInt(3)];
+                        for (int b = 0; b < branch.length; b++) {
+                            branch[b] = slot[0] += 7;
+                        }
+                        chain.fork(keep, branch);
+                    } else if (op < 8) {
+                        derived.nextApply.add(L1PhaseResult.retryable("INJECTED"));
+                    } else if (op < 9) {
+                        derived.nextRollback.add(L1PhaseResult.retryable("INJECTED"));
+                    } else {
+                        loop = seededLoop(chain, seedLedger, derived); // restart from the durable record
+                    }
+                    loop.pass();
+                }
+                derived.nextApply.clear();
+                derived.nextRollback.clear();
+                settle(loop);
+
+                assertThat(loop.snapshot().cursor()).as("seed %d: caught up", seed)
+                        .isEqualTo(chain.point(chain.tipNumber()));
+                List<L1Point> canonical = new ArrayList<>();
+                for (L1Point point : derived.state) {
+                    canonical.add(chain.point(point.blockNumber()));
+                }
+                assertThat(derived.state).as("seed %d: every surviving effect is canonical", seed)
+                        .isEqualTo(canonical);
+                assertThat(derived.state.getLast()).as("seed %d: nothing canonical is missing", seed)
+                        .isEqualTo(chain.point(chain.tipNumber()));
+                for (int index = 1; index < derived.state.size(); index++) {
+                    assertThat(derived.state.get(index).blockNumber())
+                            .isEqualTo(derived.state.get(index - 1).blockNumber() + 1);
+                }
+            }
+        }
+    }
+
+    private L1DeliveryLoop seededLoop(L1TestChain chain, AppLedgerStore seedLedger, DerivedStateHost derived) {
+        return new L1DeliveryLoop("model", 1, chain.reader(), seedLedger, derived, null, log);
+    }
+
+    private static void settle(L1DeliveryLoop loop) {
+        for (int pass = 0; pass < 20; pass++) {
+            loop.pass();
+            L1DeliveryLoop.Snapshot snapshot = loop.snapshot();
+            if (snapshot.state() == L1DeliveryLoop.State.RUNNING && snapshot.record().pending() == null) {
+                return;
+            }
+        }
+    }
+
+    /** A host whose effects are a list of applied points, truncated by slot on rollback like the real phases. */
+    private static final class DerivedStateHost implements L1DeliveryLoop.Host {
+        final List<L1Point> state = new ArrayList<>();
+        final Deque<L1PhaseResult> nextApply = new ArrayDeque<>();
+        final Deque<L1PhaseResult> nextRollback = new ArrayDeque<>();
+
+        @Override
+        public List<L1PhaseResult> applyBlock(BlockAppliedEvent event) {
+            L1PhaseResult result = nextApply.isEmpty() ? L1PhaseResult.DURABLE : nextApply.poll();
+            L1Point point = new L1Point(event.blockNumber(), event.slot(), HexUtil.decodeHexString(event.blockHash()));
+            // Effects land even when the attempt fails, as a partly applied block's would (F1).
+            if (!state.contains(point)) {
+                state.add(point);
+            }
+            return List.of(result);
+        }
+
+        @Override
+        public List<L1PhaseResult> rollbackTo(L1Point target) {
+            state.removeIf(point -> point.slot() > target.slot());
+            return List.of(nextRollback.isEmpty() ? L1PhaseResult.DURABLE : nextRollback.poll());
+        }
+
+        @Override
+        public boolean hasL1DerivedState() {
+            return false;
+        }
+
+        @Override
+        public L1DeliveryLoop.Reconciliation reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+            throw new AssertionError("not an upgrade");
+        }
+
+        @Override
+        public void reconciled() {
+        }
     }
 
     private static Runnable once(Runnable action) {

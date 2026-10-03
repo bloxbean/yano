@@ -578,6 +578,7 @@ class AppChainProviderRegistryTest {
         AppChainSubsystem failed = new AppChainSubsystem(
                 config, 42, new SimpleEventBus(), null,
                 base.toString(), null, registry, LOG);
+        failed.wireL1Chain(new L1TestChain().reader(), null);
 
         assertThatThrownBy(failed::start)
                 .isInstanceOf(PluginActivationException.class)
@@ -1119,8 +1120,10 @@ class AppChainProviderRegistryTest {
                 .pluginSettings(settings)
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
-        return new AppChainSubsystem(config, 42, new SimpleEventBus(), null,
+        AppChainSubsystem subsystem = new AppChainSubsystem(config, 42, new SimpleEventBus(), null,
                 base.toString(), null, registry, LOG);
+        subsystem.wireL1Chain(new L1TestChain().reader(), null);
+        return subsystem;
     }
 
     private AppChainSubsystem subsystem(

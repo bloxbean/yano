@@ -14,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +30,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiPredicate;
+import java.util.function.Consumer;
 import java.util.function.LongFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -490,6 +493,37 @@ class AnchorServiceTest {
         assertThat(service.onL1Rollback(-1)).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(service.lastAnchoredHeight()).isZero();
         assertThat(service.confirmationHistory()).isEmpty();
+    }
+
+    /** ADR-038 D8b: a dead confirmation leaves the frontier individually, and a dead observed fact is deleted. */
+    @Test
+    void reconcileExcludesDeadConfirmationsAndDeletesADeadObservedFact() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        tip[0] = 3;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(100, l1Hash(100), List.of("txhash-1"))).isEqualTo(L1PhaseResult.DURABLE);
+        tip[0] = 8;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(200, l1Hash(200), List.of("txhash-2"))).isEqualTo(L1PhaseResult.DURABLE);
+        tip[0] = 10;
+        service.setCompletionGate(() -> false);
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.onL1Block(300, l1Hash(300), List.of("txhash-3"))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(service.status()).containsEntry("confirmationObservedAtL1Slot", 300L);
+        byte[] history = ledger.metaBytes(AnchorService.META_ANCHOR_HISTORY);
+
+        BiPredicate<Long, byte[]> onlyFirst = (slot, hash) -> slot == 100 && Arrays.equals(hash, l1Hash(100));
+        Consumer<WriteBatch> historyStager = AnchorService.reconcileHistory(ledger, onlyFirst);
+        Consumer<WriteBatch> factStager = service.reconcile(onlyFirst);
+
+        assertThat(ledger.metaBytes(AnchorService.META_ANCHOR_HISTORY)).as("read-only").isEqualTo(history);
+        assertThat(service.status()).containsEntry("confirmationObservedAtL1Slot", 300L);
+        ledger.writeAtomically(historyStager.andThen(factStager));
+        assertThat(service.confirmationHistory()).extracting(entry -> entry.l1BlockHash() != null)
+                .containsExactly(true, false);
+        assertThat(AnchorService.stableAnchoredHeight(ledger, 1_000)).isEqualTo(3);
+        assertThat(service.status()).doesNotContainKey("confirmationObservedAtL1Slot");
+        assertThat(service.lastAnchoredHeight()).as("only the frontier changes").isEqualTo(8);
     }
 
     /** ADR-038 D8a: v1 journals decode as legacy entries, which never count toward the F7 frontier. */

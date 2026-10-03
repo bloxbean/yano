@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,12 +29,14 @@ import java.math.BigInteger;
 import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -754,6 +757,30 @@ class ScriptAnchorServiceTest {
         assertThat(restarted.onL1Rollback(99)).isEqualTo(L1PhaseResult.DURABLE);
         assertThat(restarted.bootstrapped()).isFalse();
         assertThat(restarted.onL1Rollback(99)).isEqualTo(L1PhaseResult.NO_OP);
+    }
+
+    /** ADR-038 D8b: a dead bootstrap confirmation resets the identity exactly as an L1 rollback would. */
+    @Test
+    void reconcileResetsTheIdentityOnlyWhenTheBootstrapConfirmationIsDead() {
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+        String bootstrapHash = (String) leader.bootstrap().get("txHash");
+        assertThat(leader.onL1Block(100, l1Hash(100), List.of(bootstrapHash))).isEqualTo(L1PhaseResult.DURABLE);
+        assertThat(leader.bootstrapped()).isTrue();
+
+        leaderLedger.writeAtomically(leader.reconcile(
+                (slot, hash) -> slot == 100 && Arrays.equals(hash, l1Hash(100))));
+        leader.reloadAfterReconciliation();
+        assertThat(leader.bootstrapped()).as("a canonical bootstrap is kept").isTrue();
+
+        Consumer<WriteBatch> stager = leader.reconcile((slot, hash) -> false);
+        assertThat(leader.bootstrapped()).as("read-only").isTrue();
+        leaderLedger.writeAtomically(stager);
+        leader.reloadAfterReconciliation();
+
+        assertThat(leader.bootstrapped()).isFalse();
+        assertThat(leaderLedger.metaBytes("anchor_script_policy_id")).isEmpty();
+        assertThat(leaderLedger.metaLong("anchor_last_height", -1)).isZero();
+        assertThat(leader.bootstrap()).containsKeys("txHash", "threadPolicyId", "scriptHash");
     }
 
     @Test

@@ -1,8 +1,15 @@
 package org.yanoproject.runtime.appchain;
 
+import co.nstant.in.cbor.model.Array;
+import co.nstant.in.cbor.model.ByteString;
+import co.nstant.in.cbor.model.Map;
+import co.nstant.in.cbor.model.SimpleValue;
+import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.CanonicalBlockReference;
 import org.yanoproject.api.ChainBlockReader;
@@ -13,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 
 /**
  * A small L1 for delivery tests: real Conway blocks in an in-memory chain state, with forks of any depth, and hooks
@@ -20,7 +28,7 @@ import java.util.OptionalLong;
  */
 final class L1TestChain {
     private final InMemoryChainState chain = new InMemoryChainState();
-    private final DevnetBlockBuilder builder = new DevnetBlockBuilder();
+    private final InvalidMarkingBuilder builder = new InvalidMarkingBuilder();
     private final List<CanonicalBlockReference> blocks = new ArrayList<>();
     /** Runs at the start of every body read. */
     Runnable beforeBodyRead = () -> { };
@@ -28,16 +36,55 @@ final class L1TestChain {
     long earliestRetained;
     boolean sequenceSupported = true;
 
-    /** Appends one block per slot to the canonical chain. */
+    /** Appends one empty block per slot to the canonical chain. */
     void append(long... slots) {
         for (long slot : slots) {
-            long number = blocks.size();
-            byte[] previous = blocks.isEmpty() ? null : blocks.getLast().blockHash();
-            var built = builder.buildBlock(number, slot, previous, List.of());
-            chain.storeBlockHeader(built.blockHash(), number, slot, built.wrappedHeaderCbor());
-            chain.storeBlock(built.blockHash(), number, slot, built.blockCbor());
-            blocks.add(new CanonicalBlockReference(number, slot, built.blockHash()));
+            appendWithTransactions(slot, List.of(), Set.of());
         }
+    }
+
+    /** Appends one block with the given transactions; indexes in {@code invalid} are phase-2 invalid. */
+    CanonicalBlockReference appendWithTransactions(long slot, List<byte[]> transactions, Set<Integer> invalid) {
+        long number = blocks.size();
+        byte[] previous = blocks.isEmpty() ? null : blocks.getLast().blockHash();
+        builder.invalid = invalid;
+        var built = builder.buildBlock(number, slot, previous, transactions);
+        chain.storeBlockHeader(built.blockHash(), number, slot, built.wrappedHeaderCbor());
+        chain.storeBlock(built.blockHash(), number, slot, built.blockCbor());
+        CanonicalBlockReference reference = new CanonicalBlockReference(number, slot, built.blockHash());
+        blocks.add(reference);
+        return reference;
+    }
+
+    /** A minimal transaction ({@code [body, witnesses, true, null]}); {@code nonce} makes its hash unique. */
+    static byte[] sampleTransaction(int nonce) {
+        Map body = new Map();
+        Array inputs = new Array();
+        Array input = new Array();
+        input.add(new ByteString(new byte[32]));
+        input.add(new UnsignedInteger(nonce));
+        inputs.add(input);
+        body.put(new UnsignedInteger(0), inputs);
+        Array outputs = new Array();
+        Map output = new Map();
+        output.put(new UnsignedInteger(0), new ByteString(new byte[28]));
+        output.put(new UnsignedInteger(1), new UnsignedInteger(1_000_000));
+        outputs.add(output);
+        body.put(new UnsignedInteger(1), outputs);
+        body.put(new UnsignedInteger(2), new UnsignedInteger(200_000));
+        Array transaction = new Array();
+        transaction.add(body);
+        transaction.add(new Map());
+        transaction.add(SimpleValue.TRUE);
+        transaction.add(SimpleValue.NULL);
+        return CborSerializationUtil.serialize(transaction);
+    }
+
+    /** The Cardano transaction id: Blake2b-256 of the body CBOR. */
+    static String transactionHash(byte[] transaction) {
+        Array decoded = (Array) CborSerializationUtil.deserializeOne(transaction);
+        return HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(
+                CborSerializationUtil.serialize(decoded.getDataItems().getFirst())));
     }
 
     /** Rolls the chain back to block {@code keep}, then appends a new branch at the given slots. */
@@ -109,5 +156,22 @@ final class L1TestChain {
                 return OptionalLong.of(earliestRetained);
             }
         };
+    }
+
+    /** Marks chosen transaction indexes phase-2 invalid, as a real block's invalid_transactions list would. */
+    private static final class InvalidMarkingBuilder extends DevnetBlockBuilder {
+        private Set<Integer> invalid = Set.of();
+
+        @Override
+        protected BlockBodyResult computeBlockBody(List<byte[]> transactions) {
+            BlockBodyResult body = super.computeBlockBody(transactions);
+            if (invalid.isEmpty()) {
+                return body;
+            }
+            Array invalidTransactions = new Array();
+            invalid.stream().sorted().forEach(index -> invalidTransactions.add(new UnsignedInteger(index)));
+            return new BlockBodyResult(body.txBodiesArray(), body.txWitnessesArray(), body.auxDataMap(),
+                    invalidTransactions, body.bodySize(), body.bodyHash());
+        }
     }
 }

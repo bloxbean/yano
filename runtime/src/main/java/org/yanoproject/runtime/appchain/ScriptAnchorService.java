@@ -44,6 +44,7 @@ import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
+import org.rocksdb.WriteBatch;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -64,6 +65,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiPredicate;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -1601,6 +1603,71 @@ final class ScriptAnchorService {
     private void resetRolledBackIdentity(long rollbackToSlot, long identitySlot,
                                          boolean adoptedIdentity) {
         Map<String, Long> longs = new LinkedHashMap<>();
+        Map<String, byte[]> bytes = new LinkedHashMap<>();
+        identityResetValues(longs, bytes);
+        ledger.metaPutAll(longs, bytes);
+        clearVolatileAnchorState();
+        logWarnSafely("L1 rollback to slot {} invalidated script-anchor {} identity checkpoint "
+                        + "at slot {} — identity reset for safe re-adoption/bootstrap",
+                rollbackToSlot, adoptedIdentity ? "adopted" : "bootstrap", identitySlot);
+    }
+
+    /**
+     * L1 evidence reconciliation (app-layer ADR-038, D8b): dead observed facts are deleted, and a dead bootstrap
+     * confirmation resets the identity as an L1 rollback would. The shared confirmation journal is judged by
+     * {@link AnchorService#reconcileHistory}; an identity reset replaces it, so its stager must run after that one.
+     * Read-only; the stager joins the caller's commit.
+     */
+    Consumer<WriteBatch> reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        synchronized (anchorLock) {
+            List<AnchorService.Confirmation> history = loadHistory();
+            String bootstrapTx = ledger.metaString(META_SCRIPT_BOOTSTRAP_TX);
+            boolean deadIdentity = history.stream().anyMatch(confirmation -> confirmation.txHash().equals(bootstrapTx)
+                    && confirmation.l1BlockHash() != null
+                    && !canonicalAtSlot.test(confirmation.l1Slot(), confirmation.l1BlockHash()));
+            if (deadIdentity) {
+                Map<String, Long> longs = new LinkedHashMap<>();
+                Map<String, byte[]> bytes = new LinkedHashMap<>();
+                identityResetValues(longs, bytes);
+                return batch -> {
+                    longs.forEach((key, value) -> ledger.stageMetaLong(batch, key, value));
+                    bytes.forEach((key, value) -> ledger.stageMetaBytes(batch, key, value));
+                };
+            }
+            AnchorService.ObservedConfirmation submit = loadObservedSubmit();
+            boolean deadSubmit = submit != null && !canonicalAtSlot.test(submit.l1Slot(), submit.l1BlockHash());
+            ObservedBootstrap bootstrap = loadObservedBootstrap();
+            boolean deadBootstrap = bootstrap != null
+                    && !canonicalAtSlot.test(bootstrap.l1Slot(), bootstrap.l1BlockHash());
+            return batch -> {
+                if (deadSubmit) {
+                    ledger.stageMetaBytes(batch, META_SCRIPT_OBSERVED_SUBMIT, new byte[0]);
+                }
+                if (deadBootstrap) {
+                    ledger.stageMetaBytes(batch, META_SCRIPT_OBSERVED_BOOTSTRAP, new byte[0]);
+                }
+            };
+        }
+    }
+
+    /** After a reconciliation commit: drop in-flight state that may have been built on reset or dead facts. */
+    void reloadAfterReconciliation() {
+        synchronized (anchorLock) {
+            if (!bootstrapped()) {
+                clearVolatileAnchorState();
+            }
+        }
+    }
+
+    private void clearVolatileAnchorState() {
+        pendingBootstrap = null;
+        pendingCosign = null;
+        pendingSubmit = null;
+        lastAnchorTxHash = null;
+        lastAnchoredL1Slot = 0L;
+    }
+
+    private static void identityResetValues(Map<String, Long> longs, Map<String, byte[]> bytes) {
         longs.put(META_SCRIPT_BOOTSTRAP_SLOT, 0L);
         longs.put(META_SCRIPT_IDENTITY_ADOPTED, 0L);
         longs.put(META_SCRIPT_CANDIDATE_SLOT, 0L);
@@ -1609,7 +1676,6 @@ final class ScriptAnchorService {
         longs.put(META_LAST_ANCHORED, 0L);
         longs.put(META_ANCHOR_FROM, 0L);
         longs.put(META_ANCHOR_SLOT, 0L);
-        Map<String, byte[]> bytes = new LinkedHashMap<>();
         bytes.put(META_SCRIPT_POLICY_ID, new byte[0]);
         bytes.put(META_SCRIPT_HASH, new byte[0]);
         bytes.put(META_SCRIPT_BOOTSTRAP_TX, new byte[0]);
@@ -1623,15 +1689,6 @@ final class ScriptAnchorService {
                 AnchorService.ConfirmationHistory.encode(List.of()));
         bytes.put(META_SCRIPT_OBSERVED_BOOTSTRAP, new byte[0]);
         bytes.put(META_SCRIPT_OBSERVED_SUBMIT, new byte[0]);
-        ledger.metaPutAll(longs, bytes);
-        pendingBootstrap = null;
-        pendingCosign = null;
-        pendingSubmit = null;
-        lastAnchorTxHash = null;
-        lastAnchoredL1Slot = 0L;
-        logWarnSafely("L1 rollback to slot {} invalidated script-anchor {} identity checkpoint "
-                        + "at slot {} — identity reset for safe re-adoption/bootstrap",
-                rollbackToSlot, adoptedIdentity ? "adopted" : "bootstrap", identitySlot);
     }
 
     private boolean rollbackConfirmedHistory(long rollbackToSlot) {

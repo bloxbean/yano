@@ -40,7 +40,6 @@ import java.util.function.Consumer;
 final class L1DeliveryLoop implements AutoCloseable {
     static final long POLL_MILLIS = 1_000;
     private static final int MAX_BLOCKS_PER_PASS = 256;
-    private static final long CLOSE_WAIT_SECONDS = 30;
 
     /** The app chain's forward and rollback phases (D3, D4a). Neither method may throw for a phase failure. */
     interface Host {
@@ -153,21 +152,16 @@ final class L1DeliveryLoop implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Stops scheduling passes without waiting. A pass already running holds the subsystem's generation lease, and
+     * the ledger closes only after that lease drains, so nothing touches a closed ledger.
+     */
     @Override
     public void close() {
         ScheduledExecutorService loopExecutor = executor;
         executor = null;
-        if (loopExecutor == null) {
-            return;
-        }
-        loopExecutor.shutdown();
-        try {
-            if (!loopExecutor.awaitTermination(CLOSE_WAIT_SECONDS, TimeUnit.SECONDS)) {
-                loopExecutor.shutdownNow();
-            }
-        } catch (InterruptedException interrupted) {
-            loopExecutor.shutdownNow();
-            Thread.currentThread().interrupt();
+        if (loopExecutor != null) {
+            loopExecutor.shutdown();
         }
     }
 
@@ -196,12 +190,6 @@ final class L1DeliveryLoop implements AutoCloseable {
             return null;
         }
         return window.get(window.size() - 1 - depth).toRef();
-    }
-
-    /** The effective cursor, unfenced: for TTL hints and the sequencer's current slot only. */
-    AppChainEngine.L1Ref newestPoint() {
-        L1Point cursor = snapshot.cursor();
-        return cursor != null ? cursor.toRef() : null;
     }
 
     /** Follower verdict on a proposed L1 reference against the delivered window (ADR 008.1 I1.3). */
