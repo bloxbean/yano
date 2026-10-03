@@ -303,8 +303,9 @@ Each invariant names the decisions it constrains and is testable (§11).
   proposer's L1 reference; the observation drain; the ADR-037 heartbeat) gets
   a stable point only if, in one published snapshot, the delivery state is
   `RUNNING`, no intent is pending, and the record has been reconciled since
-  start, and if the window's newest point equals
-  `getCanonicalBlockReference(newest.number)` at read time. Otherwise it gets
+  start, and if the effective cursor (the window's newest point, else the
+  baseline history's newest point; `ORIGIN` always passes) equals
+  `getCanonicalBlockReference(cursor.number)` at read time (r5). Otherwise it gets
   "unavailable". When `l1.stability-depth > 0` and delivery health (D9a) is
   false, the voting-health supplier is false, so the node proposes nothing and
   votes on no live proposal at any view (r3). At depth 0 voting is not gated by
@@ -337,8 +338,11 @@ Each invariant names the decisions it constrains and is testable (§11).
 - **I18 Reconciliation is bound to one chain history (D8, D8b; r4, F5).**
   D8b's decisions, invalidations, quarantine markers and baseline history, and
   the baseline history of a fresh chain, are committed in one write, and only
-  if no chain-state rollback happened since the pass began. A record in
-  `RECONCILING` never delivers, and reruns the procedure at startup.
+  if the canonical mutation sequence was even at the start of the pass and
+  unchanged at its end. The committed baseline is exactly the history collected
+  in that pass. A record in `RECONCILING` never delivers, and reruns the
+  procedure at startup. Without sequence support, the procedure fails closed
+  (r5).
 
 ## 6. Decisions
 
@@ -669,10 +673,11 @@ The record separates a **baseline history** from **delivered** points (D2):
   block 0). These points are recorded, not delivered (I9). They serve two
   purposes: delivery starts after the newest of them, and they are proven
   rollback targets for anything written later (I16).
-  - They form one coherent chain history (r4, F5). The loop captures the body
-    tip `A`, walks down from `A` by block number, and commits the points only
-    if the chain-state rollback generation (D8b rule 7) did not change during
-    collection; otherwise it collects again.
+  - They form one coherent chain history (r4, F5; r5). Collection follows the
+    D8b rule 7 pass protocol: start on an even canonical mutation sequence,
+    capture the body tip `A`, walk down from `A` by block number, and commit
+    the points exactly as collected only if the sequence is unchanged;
+    otherwise collect again. A reader without the sequence fails closed.
   - Recording them is one atomic write that happens before any `APPLY`. A
     crash before it leaves nothing recorded and nothing processed, so the next
     start records afresh.
@@ -760,28 +765,45 @@ its schema version:
    baseline history it records must describe the same chain. A rollback
    between checking a record and recording the baseline could otherwise certify
    an old-fork record under a baseline from the new branch.
-   - Chain state gains a **rollback generation**: a monotonic counter that it
-     increments in the same code path as every operation that removes or
-     replaces a canonical index entry. That covers full and header-only
+   - Chain state gains a **canonical mutation sequence** (r5, F5): a counter
+     used as a sequence lock. Every operation that removes or replaces a
+     canonical index entry increments it to an **odd** value before staging
+     its index changes, and to the next **even** value after the chain-state
+     write is durable (in a `finally`). That covers full and header-only
      rollback (`stageDeletesAfter`), rollback to origin, and snapshot restore,
-     each before any `RollbackEvent` is published. It is exposed through
-     `ChainBlockReader`, and `RuntimeNode` delegates. Appending new blocks never
-     changes an existing canonical entry, so it does not change the generation.
-     The wallet scan's generation (`UtxoIndexes`) is not reused: it follows UTXO
-     apply, not chain state.
-   - A pass captures the generation `g` and the body tip `A`, then makes every
-     decision read-only.
-   - The invalidations, the quarantine markers, the baseline history (collected
-     from `A`) and `phase = RECONCILED` are committed in **one** `AppLedgerStore`
-     batch, written only if the generation still equals `g` immediately before
-     the write. The journal already stages into a caller's batch
-     (`stageEpochSpoolMutations`, `AppLedgerStore.java:2669`); meta writes gain
-     the same staged form beside `metaPutAll` (`:2484`).
-   - If the generation changed, the pass's decisions are discarded and the pass
-     runs again. Nothing decided against a chain that later changed is applied.
-   - A rollback after the write is consistent with what was committed. Every
-     verified record and every baseline point lies on `A`'s chain, so D6
-     handles it with recorded targets (I16).
+     each before any `RollbackEvent` is published. Appending new blocks never
+     changes an existing canonical entry, so it does not touch the sequence.
+     The counter is in memory, so it restarts even (zero); a chain-state write
+     batch is atomic, so a crash cannot leave a half-applied mutation behind.
+   - `ChainBlockReader` exposes it as an optional value whose default is
+     **empty**, meaning unsupported. With no sequence, D8b and baseline
+     collection fail closed (`L1_EVIDENCE_UNAVAILABLE`); a constant that
+     would validate every pass is never assumed. `DirectRocksDBChainState` and
+     `InMemoryChainState` implement it, and `RuntimeNode` delegates. The wallet
+     scan's generation (`UtxoIndexes`) is not reused: it follows UTXO apply,
+     not chain state.
+   - **Pass protocol.** Read the sequence `g`; if it is odd, wait and retry.
+     Capture the body tip `A`, collect the baseline history by walking down
+     from `A`, and make every record decision read-only. Then read the
+     sequence again. Only if it still equals `g`, and is therefore even and
+     unchanged, is the pass valid. Otherwise all its decisions are discarded
+     and the pass reruns. A pass that overlapped any part of a mutation,
+     including the interval between the odd increment and the index write,
+     sees a different or odd value and fails validation.
+   - **Commit.** A valid pass commits its invalidations, quarantine markers,
+     the baseline history **exactly as collected**, and
+     `phase = RECONCILED`, in **one** `AppLedgerStore` batch. The journal
+     already stages into a caller's batch (`stageEpochSpoolMutations`,
+     `AppLedgerStore.java:2669`); meta writes gain the same staged form beside
+     `metaPutAll` (`:2484`). The batch is never re-collected at commit time.
+   - **A rollback after validation.** The two stores are separate databases, so
+     a rollback can start after the final sequence read and before the batch
+     lands. What is committed is still the captured history of chain `g`: the
+     checked records and the baseline describe the same chain, never a mixed
+     or newer baseline. D6 then finds the baseline points no longer canonical
+     and rolls back to a recorded target (I16), exactly as for any later
+     rollback. The expensive scan stays outside any lock; only the short
+     validate-then-commit step depends on the sequence.
 8. **Durable boundary (r4, F5).** `phase = RECONCILING` is written durably
    before the first pass: on the first start after an upgrade, or when the
    operator starts a re-baseline. Only rule 7's final batch sets
@@ -818,8 +840,10 @@ reader therefore uses one accessor (I13), which returns "unavailable" unless:
 
 1. the loop state is `RUNNING` and no intent is pending;
 2. the record has been recovered and checked at least once since start; and
-3. at read time, `getCanonicalBlockReference(newest.number)` equals the
-   window's newest point.
+3. at read time, `getCanonicalBlockReference(cursor.number)` equals the
+   **effective cursor** (D2): the window's newest point, or the
+   baseline history's newest point when the window is empty. `ORIGIN` is the
+   one always-canonical cursor (r5, F4).
 
 The readers are the F7 frontier (effect dispatch, external claims and the
 pre-execution recheck), `checkL1Ref`, the proposer's L1 reference, the
@@ -865,8 +889,10 @@ unchanged.
 **Two predicates, and when the voting gate applies (r4, F8).**
 
 - **Delivery health** (for the voting gate): the snapshot is `RUNNING` with
-  no intent and `phase = RECONCILED`, and either the window is empty or its
-  newest point passes check 3.
+  no intent and `phase = RECONCILED`, and the **effective cursor** passes
+  check 3. An empty window does not skip the check: its effective cursor is the
+  baseline history's newest point, which a rollback can orphan as well (r5,
+  F4).
 - **Stable point** (for readers): delivery health, plus at least `depth + 1`
   delivered points.
 
@@ -891,14 +917,18 @@ Other configurations:
 
 ### D10. Observability
 
-Status adds, per chain: the baseline history and the effective cursor (number,
-slot, hash), the pending intent, the reconciliation phase, the body tip, lag in blocks, the loop state (`RUNNING`,
-`RETRYING_BLOCK`, `RETRYING_ROLLBACK`, `L1_BODY_UNAVAILABLE`,
-`L1_DIVERGENCE_BEYOND_WINDOW`, `L1_EVIDENCE_UNAVAILABLE`, `QUARANTINED`), the
-last failure's phase and
-outcome, and whether the D9a fence is open. Readiness degrades when the loop is
-not `RUNNING` or the lag exceeds a node-local threshold. Readiness is a signal
-only; safety comes from D9a.
+Status adds, per chain:
+
+- the baseline history and the effective cursor (number, slot, hash);
+- the pending intent and the reconciliation phase;
+- the body tip and the lag in blocks;
+- the loop state: `RUNNING`, `RETRYING_BLOCK`, `RETRYING_ROLLBACK`,
+  `L1_BODY_UNAVAILABLE`, `L1_DIVERGENCE_BEYOND_WINDOW`,
+  `L1_EVIDENCE_UNAVAILABLE` or `QUARANTINED`;
+- the last failure's phase and outcome, and whether the D9a fence is open.
+
+Readiness degrades when the loop is not `RUNNING` or the lag exceeds a
+node-local threshold. Readiness is a signal only; safety comes from D9a.
 
 ### D11. Scope: app chains first, extract later
 
@@ -920,8 +950,8 @@ loop until stopped:
     if state is fail-closed (L1_BODY_UNAVAILABLE, L1_DIVERGENCE_BEYOND_WINDOW,
                              L1_EVIDENCE_UNAVAILABLE, QUARANTINED): continue
     if phase is RECONCILING:
-        run a D8b pass                           # commits RECONCILED only if the
-        continue                                 # rollback generation is unchanged
+        run a D8b pass                           # commits RECONCILED only if the canonical
+        continue                                 # mutation sequence stayed even and unchanged
     # pre-attempt check: recover or derive a rollback (D5a, D6)
     if (pending is APPLY(p) and (cursor not canonical or canonical(p.number) != p))
        or (pending is none and cursor not canonical):
@@ -974,9 +1004,11 @@ loop until stopped:
   `runtime/appchain`.
 - **`ChainBlockReader` additions** (default methods, so existing implementers
   compile): the slot-based canonical lookup (D8b rule 2) and the chain-state
-  rollback generation (D8b rule 7). Chain state increments the generation in
-  its own rollback and restore paths. `AppLedgerStore` gains staged meta
-  writes into a caller's batch (D8b rule 7).
+  canonical mutation sequence (D8b rule 7). Both default to empty, meaning
+  unsupported, which fails closed. Chain state brackets its own rollback and
+  restore paths with the sequence (odd during a mutation, even after).
+  `AppLedgerStore` gains staged meta writes into a caller's batch (D8b
+  rule 7).
 - **L1-less chains:** unchanged. No delivery loop runs and voting is not gated
   (D9a, r4).
 - **Events:** the node's events and their subscribers are unchanged. The app
@@ -1092,6 +1124,16 @@ Failing tests on `main` that pass at the end of M3:
   - crashes before and after the reconciliation-complete write: startup
     reruns the procedure, or delivers normally, respectively.
   - local anchor completion attempted during reconciliation: refused.
+- **F5 (r5):** deterministic schedules in which a reconciliation pass, or a
+  baseline collection, starts while a rollback sits between its odd increment
+  and its index write, and in which a rollback starts at the final validation
+  boundary and before the batch lands. The pass is rejected or reruns in the
+  first case; in the second, the committed baseline is the captured old history
+  and D6 then rolls it back to a recorded target. A reader without sequence
+  support fails closed.
+- **F4 (r5):** positive depth, an empty window, a non-origin baseline ending at
+  old103, a rollback that orphans it with every event dropped, and a prepared
+  higher-view live proposal before the loop reconciles: the node does not vote.
 - **F7 (r4):** baseline history `[98, 99, old100]`, an empty window, and a
   replacement of only block 100: the rollback to 99 completes once, and
   delivery resumes at `new100`, including after a crash at the completing
@@ -1134,7 +1176,7 @@ Entry: M2. The loop, the wake-up and poll, intent recovery and binding,
 divergence detection over recorded points, fail-closed states, the baseline
 history and its cursor-moving rollback completion (I17), legacy and re-baseline
 reconciliation (D8b, including the slot-based lookup, the committed-app-block
-evidence scan, the rollback generation, the one-batch commit and the
+evidence scan, the canonical mutation sequence, the one-batch commit and the
 `RECONCILING` boundary), and the D9a fence for every listed reader and the
 depth-scoped voting-health supplier. Event callbacks only signal. The single-slot
 observation replay is removed. Exit: the I1–I18 tests and every M0 test pass,
@@ -1303,3 +1345,15 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
     stable point (readers); L1-less and depth-0 anchoring chains are unchanged;
     `L1_ANCHORED` stays fail-closed at depth 0; M0 adds the depth-0
     regressions; §8 updated.
+- **r5** (2026-10-04; responds to the review of `cf0ffd7bc`):
+  - F5 → D8b rule 7, D8, I18 and §8. The bare counter is replaced by a
+    sequence-lock canonical mutation sequence (odd during a canonical index
+    mutation, even after it is durable). A pass starts only on an even value
+    and validates only if the value is unchanged at its end. The commit writes
+    exactly the collected history. A rollback after validation leaves a
+    consistent old baseline that D6 then rolls back. The `ChainBlockReader`
+    default is empty and fails closed. New M0 interleavings.
+  - F4 → D9a check 3, the delivery-health predicate and I13 now use the
+    effective cursor (window newest, else baseline-history newest; `ORIGIN`
+    always canonical); an empty window no longer bypasses freshness. New M0
+    case with a non-origin baseline and a prepared live proposal.
