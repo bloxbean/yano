@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks a staged snapshot Maven repository before r2-snapshot.yml uploads it.
+"""Checks a staged snapshot Maven repository before bloxbean-snapshot.yml uploads it.
 
 Usage: verify-maven-staging.py <repository-dir> <seed-dir> <group-path> <version> <artifactId>...
 
