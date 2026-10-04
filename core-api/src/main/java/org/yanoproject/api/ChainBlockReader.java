@@ -61,4 +61,12 @@ public interface ChainBlockReader {
     default OptionalLong canonicalMutationSequence() {
         return OptionalLong.empty();
     }
+
+    /**
+     * Slot of the oldest block in this node's canonical index, or empty when unknown. A point older than it cannot
+     * be judged here: its history was never indexed or was restored away.
+     */
+    default OptionalLong getEarliestIndexedSlot() {
+        return OptionalLong.empty();
+    }
 }

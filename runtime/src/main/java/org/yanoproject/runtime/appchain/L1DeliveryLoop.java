@@ -506,7 +506,16 @@ final class L1DeliveryLoop implements AutoCloseable {
         if ((before.getAsLong() & 1L) != 0) {
             return;
         }
-        Reconciliation decision = host.reconcile(this::canonicalAtSlot);
+        // A record older than the chain index cannot be judged dead: its history is missing (D8b rule 6).
+        OptionalLong horizon = reader.getEarliestIndexedSlot();
+        boolean[] unjudgeable = new boolean[1];
+        Reconciliation decision = host.reconcile((slot, blockHash) -> {
+            if (canonicalAtSlot(slot, blockHash)) {
+                return true;
+            }
+            unjudgeable[0] |= horizon.isPresent() && slot < horizon.getAsLong();
+            return false;
+        });
         List<L1Point> baseline = readBaseline(decision.baselineTop());
         OptionalLong after = reader.canonicalMutationSequence();
         if (baseline == null || after.isEmpty() || after.getAsLong() != before.getAsLong()) {
@@ -514,7 +523,7 @@ final class L1DeliveryLoop implements AutoCloseable {
         }
         L1DeliveryRecord next;
         Consumer<WriteBatch> stager;
-        if (decision.evidenceUnavailable()) {
+        if (decision.evidenceUnavailable() || unjudgeable[0]) {
             next = record.withTerminal(new L1DeliveryRecord.Terminal(State.L1_EVIDENCE_UNAVAILABLE.name(),
                     "L1_EVIDENCE_UNAVAILABLE"));
             stager = batch -> { };

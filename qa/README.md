@@ -22,7 +22,7 @@ qa/release-qa.sh --render qa/results/<run-id> # re-render after adding triage no
 | | `haskell-sync-{jvm,native}` | A Haskell cardano-node follows Yano for 2 epochs with matching hashes |
 | | `past-time-travel-{jvm,native}` | Epoch shift, catch-up to wall clock, Haskell sync from slot 0 |
 | | `sparse-backfill` | Backfill interval matrix; Haskell syncs the history and follows live blocks |
-| `appchain` | `appchain-cluster` | Two-node cluster: sequencing, proofs, finality, L1 anchor |
+| `appchain` | `appchain-cluster` | Two-node cluster: sequencing, proofs, finality, L1 anchor, an L1 rollback while one member is down |
 | | `appchain-extensions` | Multi-chain, query, SSE, webhooks, admin API, evidence, snapshot, metrics |
 | | `appchain-rotation-governance` | Rotating sequencer and governed membership |
 | | `appchain-script-anchor` | Script anchors, follower identity adoption, L1 deposit observations |

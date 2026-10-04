@@ -4152,6 +4152,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     @Override
+    public java.util.OptionalLong getEarliestIndexedSlot() {
+        Point first = chainState.getFirstBlock();
+        return first != null ? java.util.OptionalLong.of(first.getSlot()) : java.util.OptionalLong.empty();
+    }
+
+    @Override
     public java.util.OptionalLong canonicalMutationSequence() {
         if (chainState instanceof org.yanoproject.runtime.chain.ArchiveChainStateCapabilities capabilities) {
             return capabilities.canonicalMutationSequence();

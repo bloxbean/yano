@@ -163,6 +163,58 @@ class AppChainSenderSeqTest {
                         assertThat(message.getTopic()).startsWith(L1Observation.TOPIC_PREFIX));
     }
 
+    /**
+     * ADR-038: a member that stops after journaling an observation, and restarts with an empty in-memory window,
+     * still verifies and votes on that observation; in a 2-of-2 chain its vote is required.
+     */
+    @Test
+    void restartedMemberVotesOnAnObservationJournaledBeforeItsRestart() throws Exception {
+        EventBus busA = new SimpleEventBus();
+        EventBus busB = new SimpleEventBus();
+        L1TestChain l1A = new L1TestChain();
+        L1TestChain l1B = new L1TestChain();
+        AppChainSubsystem[] nodes = startObservationPair(busA, l1A, busB, l1B);
+
+        feedObservedL1(l1B, busB, 1, 1);
+        awaitTrue("B delivered and journaled slot 1", () -> l1CursorSlot(nodes[1]) == 1);
+        nodes[1].stop();
+
+        feedObservedL1(l1A, busA, 1, 2);
+        Thread.sleep(1_000);
+        assertThat(nodes[0].tipHeight()).as("nothing finalizes without B").isZero();
+
+        startAfterDrain(nodes[1]);
+        feedObservedL1(l1B, busB, 2, 2);
+        awaitTrue("the pre-restart observation finalizes on both members",
+                () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
+        assertThat(nodes[1].block(1).orElseThrow().messages())
+                .anySatisfy(message -> assertThat(message.getTopic()).startsWith(L1Observation.TOPIC_PREFIX));
+        // B verified the observation from its journal and voted in the original round; without that it would refuse
+        // ("outside the live window") and only a view change, with B leading, could finalize it.
+        assertThat(nodes[1].block(1).orElseThrow().view()).isZero();
+    }
+
+    private static long l1CursorSlot(AppChainSubsystem subsystem) {
+        return subsystem.status().get("l1Delivery") instanceof Map<?, ?> delivery
+                && delivery.get("cursorSlot") instanceof Number slot ? slot.longValue() : -1L;
+    }
+
+    private static void startAfterDrain(AppChainSubsystem subsystem) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (true) {
+            try {
+                subsystem.start();
+                return;
+            } catch (IllegalStateException draining) {
+                if (!String.valueOf(draining.getMessage()).contains("still draining")
+                        || System.currentTimeMillis() > deadline) {
+                    throw draining;
+                }
+                Thread.sleep(10);
+            }
+        }
+    }
+
     @Test
     void duplicateSeqInOneBlock_rejectedByEnforcingFollower() throws Exception {
         AppChainSubsystem[] nodes = startPair(true);

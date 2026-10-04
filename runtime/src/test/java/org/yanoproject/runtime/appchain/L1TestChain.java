@@ -39,6 +39,8 @@ final class L1TestChain {
     long earliestRetained;
     /** When set, the body tip the reader reports, as if later blocks had headers and index entries only. */
     Long bodyTipBlock;
+    /** When set, the oldest indexed slot the reader reports, as if older history had been restored away. */
+    Long earliestIndexedSlot;
     boolean sequenceSupported = true;
 
     /** Appends one empty block per slot to the canonical chain. */
@@ -59,6 +61,24 @@ final class L1TestChain {
         CanonicalBlockReference reference = new CanonicalBlockReference(number, slot, built.blockHash());
         blocks.add(reference);
         return reference;
+    }
+
+    /** Appends one Byron main block per slot: a {@code [1, ...]} envelope, which the node never parses for phases. */
+    void appendByron(long... slots) {
+        for (long slot : slots) {
+            long number = blocks.size();
+            Array header = new Array();
+            header.add(new UnsignedInteger(number));
+            header.add(new UnsignedInteger(slot));
+            Array envelope = new Array();
+            envelope.add(new UnsignedInteger(1));
+            envelope.add(header);
+            byte[] body = CborSerializationUtil.serialize(envelope);
+            byte[] hash = Blake2bUtil.blake2bHash256(body);
+            chain.storeBlockHeader(hash, number, slot, body);
+            chain.storeBlock(hash, number, slot, body);
+            blocks.add(new CanonicalBlockReference(number, slot, hash));
+        }
     }
 
     /** A minimal transaction ({@code [body, witnesses, true, null]}); {@code nonce} makes its hash unique. */
@@ -100,6 +120,17 @@ final class L1TestChain {
             blocks.removeLast();
         }
         append(slots);
+    }
+
+    /**
+     * Rolls back to block {@code keep} and replaces block {@code keep + 1} at its own slot with a different block
+     * (it carries a transaction, so its hash differs), then appends {@code laterSlots}.
+     */
+    void forkAtSameSlot(long keep, long... laterSlots) {
+        long slot = block(keep + 1).slot();
+        fork(keep);
+        appendWithTransactions(slot, List.of(sampleTransaction(1_000 + blocks.size())), Set.of());
+        append(laterSlots);
     }
 
     /** Replaces the whole chain, genesis included, with a new branch at the given slots. */
@@ -162,6 +193,11 @@ final class L1TestChain {
             @Override
             public OptionalLong getEarliestRetainedBodyBlockNumber() {
                 return OptionalLong.of(earliestRetained);
+            }
+
+            @Override
+            public OptionalLong getEarliestIndexedSlot() {
+                return earliestIndexedSlot != null ? OptionalLong.of(earliestIndexedSlot) : OptionalLong.empty();
             }
         };
     }

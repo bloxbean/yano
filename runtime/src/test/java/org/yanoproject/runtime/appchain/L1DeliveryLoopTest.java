@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.appchain;
 
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -235,6 +236,80 @@ class L1DeliveryLoopTest {
         loop.runPass();
         assertThat(host.attempts).hasSize(3);
         assertThat(host.applied).containsExactly(l1.point(6));
+    }
+
+    /** I13 interleavings: every fenced reader is closed during a pending rollback, a reconciliation and a stop. */
+    @Test
+    void fencedReadersAreClosedDuringARollbackAReconciliationAndATerminalState() {
+        L1DeliveryLoop loop = startedAtBlock4();
+        l1.append(60, 70, 80);
+        loop.pass();
+        L1Point stable = l1.point(6);
+        assertThat(fencedReaders(loop, stable)).as("open").containsExactly(true, true, AppChainEngine.L1RefVerdict.OK, true);
+
+        List<List<Object>> closed = new ArrayList<>();
+        host.duringRollback = once(() -> closed.add(fencedReaders(loop, stable)));
+        l1.fork(6, 85);
+        loop.pass();
+        host.duringReconcile = once(() -> closed.add(fencedReaders(loop, stable)));
+        assertThat(loop.requestRebaseline()).isTrue();
+        loop.pass();
+        l1.append(90);
+        l1.earliestRetained = l1.tipNumber() + 1;
+        loop.pass();
+        assertThat(loop.snapshot().state()).isEqualTo(L1DeliveryLoop.State.L1_BODY_UNAVAILABLE);
+        closed.add(fencedReaders(loop, stable));
+
+        assertThat(closed).hasSize(3).allSatisfy(readers ->
+                assertThat(readers).containsExactly(false, false, AppChainEngine.L1RefVerdict.UNKNOWN, false));
+    }
+
+    private static List<Object> fencedReaders(L1DeliveryLoop loop, L1Point point) {
+        return List.of(loop.deliveryHealthy(), loop.stablePoint() != null,
+                loop.checkL1Ref(point.slot(), point.blockHash()), loop.healthyCursorSlot() >= 0);
+    }
+
+    /** Negative case (ADR verification): Byron blocks reach the phases unparsed, and a fork rolls back onto one. */
+    @Test
+    void byronBlocksAreDeliveredUnparsedAndCanBeRollbackTargets() {
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+        l1.appendByron(10, 20);
+        l1.append(30);
+        List<Boolean> unparsedByron = new ArrayList<>();
+        host.duringApply = event -> unparsedByron.add(event.era() == Era.Byron && event.block() == null);
+        loop.pass();
+        assertThat(host.applied).containsExactly(l1.point(0), l1.point(1), l1.point(2));
+        assertThat(unparsedByron).containsExactly(true, true, false);
+
+        l1.fork(0, 25);
+        loop.pass();
+        assertThat(host.rollbacks).containsExactly(l1.point(0));
+        assertThat(loop.snapshot().record().window()).containsExactly(l1.point(0), l1.point(1));
+    }
+
+    /** D8b rule 6: a record older than the chain index cannot be judged, so the evidence is unavailable. */
+    @Test
+    void aDeadRecordOlderThanTheChainIndexMakesTheEvidenceUnavailable() {
+        assertThat(reconcileLegacyRecordAtSlot(50)).isEqualTo(L1DeliveryLoop.State.L1_EVIDENCE_UNAVAILABLE);
+    }
+
+    @Test
+    void aDeadRecordInsideTheChainIndexKeepsTheQuarantine() {
+        assertThat(reconcileLegacyRecordAtSlot(150)).isEqualTo(L1DeliveryLoop.State.QUARANTINED);
+    }
+
+    /** A legacy ledger whose one dead record sits at {@code slot}; the chain index starts at slot 100. */
+    private L1DeliveryLoop.State reconcileLegacyRecordAtSlot(long slot) {
+        l1.append(100, 110, 120, 130, 140);
+        l1.earliestIndexedSlot = 100L;
+        host.legacyState = true;
+        host.probes.add(new L1Point(9, slot, new byte[32]));
+        host.decision = new L1DeliveryLoop.Reconciliation(batch -> { },
+                "DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION", false, OptionalLong.empty());
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+        return loop.snapshot().state();
     }
 
     @Test
@@ -547,11 +622,22 @@ class L1DeliveryLoopTest {
                         }
                     } else if (op < 7 && chain.tipNumber() > 0) {
                         long keep = Math.max(0, chain.tipNumber() - 1 - random.nextInt(4));
-                        long[] branch = new long[1 + random.nextInt(3)];
-                        for (int b = 0; b < branch.length; b++) {
-                            branch[b] = slot[0] += 7;
+                        if (random.nextBoolean()) {
+                            chain.forkAtSameSlot(keep); // the replaced block keeps its slot
+                        } else {
+                            chain.fork(keep, slot[0] += 7);
                         }
-                        chain.fork(keep, branch);
+                        for (int b = random.nextInt(3); b > 0; b--) {
+                            chain.append(slot[0] += 7);
+                        }
+                    } else if (op < 8 && random.nextBoolean()) {
+                        boolean[] fired = new boolean[1];
+                        seedLedger.injectMetaWriteFault(() -> {
+                            if (!fired[0]) {
+                                fired[0] = true;
+                                throw new IllegalStateException("disk unavailable"); // the next record write
+                            }
+                        });
                     } else if (op < 8) {
                         derived.nextApply.add(L1PhaseResult.retryable("INJECTED"));
                     } else if (op < 9) {
@@ -559,10 +645,15 @@ class L1DeliveryLoopTest {
                     } else {
                         loop = seededLoop(chain, seedLedger, derived); // restart from the durable record
                     }
-                    loop.pass();
+                    try {
+                        loop.pass();
+                    } catch (IllegalStateException storageFailure) {
+                        // A failed record write escapes the pass; the scheduled runner contains it and retries.
+                    }
                 }
                 derived.nextApply.clear();
                 derived.nextRollback.clear();
+                seedLedger.injectMetaWriteFault(null);
                 settle(loop);
 
                 assertThat(loop.snapshot().cursor()).as("seed %d: caught up", seed)
@@ -581,6 +672,71 @@ class L1DeliveryLoopTest {
                 }
             }
         }
+    }
+
+    /**
+     * Crash points (ADR verification): a process crash before every record write (intents and commits) and before
+     * and after every apply and rollback effect, each followed by a restart from the durable record, still ends with
+     * the derived state equal to the canonical chain (I1, I3, I5, I11, I12).
+     */
+    @Test
+    void everyCrashPointRecoversToTheCanonicalChain() {
+        int crashPoints = 0;
+        for (int crashAt = 1; ; crashAt++) {
+            CrashSchedule crashes = new CrashSchedule(crashAt);
+            L1TestChain chain = new L1TestChain();
+            DerivedStateHost derived = new DerivedStateHost();
+            derived.crashPoint = crashes::point;
+            try (AppLedgerStore crashLedger = new AppLedgerStore(dir.resolve("crash-" + crashAt).toString(), log)) {
+                crashLedger.injectMetaWriteFault(crashes::point);
+                chain.append(10, 20, 30, 40, 50);
+                L1DeliveryLoop loop = seededLoop(chain, crashLedger, derived);
+                List<Runnable> steps = List.of(() -> { }, () -> chain.append(60, 70), () -> chain.fork(5, 75),
+                        () -> chain.append(85), () -> chain.forkAtSameSlot(4, 95));
+                for (Runnable step : steps) {
+                    step.run();
+                    while (true) {
+                        try {
+                            settle(loop);
+                            break;
+                        } catch (SimulatedCrash crash) {
+                            loop = seededLoop(chain, crashLedger, derived); // restart from the durable record
+                        }
+                    }
+                }
+                assertThat(loop.snapshot().cursor()).as("crash point %d: caught up", crashAt)
+                        .isEqualTo(chain.point(chain.tipNumber()));
+                assertThat(derived.state).as("crash point %d: exactly the canonical blocks", crashAt)
+                        .containsExactly(chain.point(5), chain.point(6));
+            }
+            if (!crashes.fired) {
+                break;
+            }
+            crashPoints++;
+        }
+        assertThat(crashPoints).as("the scenario passes many crash points").isGreaterThan(20);
+    }
+
+    /** A one-shot process crash at the n-th crash point reached. */
+    private static final class CrashSchedule {
+        private final int crashAt;
+        private int reached;
+        private boolean fired;
+
+        private CrashSchedule(int crashAt) {
+            this.crashAt = crashAt;
+        }
+
+        void point() {
+            if (++reached == crashAt) {
+                fired = true;
+                throw new SimulatedCrash();
+            }
+        }
+    }
+
+    /** Escapes the pass like a process death: it is neither a phase outcome nor a contained failure. */
+    private static final class SimulatedCrash extends Error {
     }
 
     private L1DeliveryLoop seededLoop(L1TestChain chain, AppLedgerStore seedLedger, DerivedStateHost derived) {
@@ -602,21 +758,26 @@ class L1DeliveryLoopTest {
         final List<L1Point> state = new ArrayList<>();
         final Deque<L1PhaseResult> nextApply = new ArrayDeque<>();
         final Deque<L1PhaseResult> nextRollback = new ArrayDeque<>();
+        Runnable crashPoint = () -> { };
 
         @Override
         public List<L1PhaseResult> applyBlock(BlockAppliedEvent event) {
+            crashPoint.run();
             L1PhaseResult result = nextApply.isEmpty() ? L1PhaseResult.DURABLE : nextApply.poll();
             L1Point point = new L1Point(event.blockNumber(), event.slot(), HexUtil.decodeHexString(event.blockHash()));
             // Effects land even when the attempt fails, as a partly applied block's would (F1).
             if (!state.contains(point)) {
                 state.add(point);
             }
+            crashPoint.run();
             return List.of(result);
         }
 
         @Override
         public List<L1PhaseResult> rollbackTo(L1Point target) {
+            crashPoint.run();
             state.removeIf(point -> point.slot() > target.slot());
+            crashPoint.run();
             return List.of(nextRollback.isEmpty() ? L1PhaseResult.DURABLE : nextRollback.poll());
         }
 
@@ -665,6 +826,9 @@ class L1DeliveryLoopTest {
         Consumer<BlockAppliedEvent> duringApply = event -> { };
         boolean legacyState;
         Runnable duringReconcile = () -> { };
+        Runnable duringRollback = () -> { };
+        /** Points the reconciliation judges through the loop's predicate, as the real phases' records would be. */
+        final List<L1Point> probes = new ArrayList<>();
         L1DeliveryLoop.Reconciliation decision =
                 new L1DeliveryLoop.Reconciliation(batch -> { }, null, false, OptionalLong.empty());
         int reconcileCalls;
@@ -693,6 +857,7 @@ class L1DeliveryLoopTest {
         public L1DeliveryLoop.Reconciliation reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
             reconcileCalls++;
             duringReconcile.run();
+            probes.forEach(point -> canonicalAtSlot.test(point.slot(), point.blockHash()));
             return decision;
         }
 
@@ -704,6 +869,7 @@ class L1DeliveryLoopTest {
         @Override
         public List<L1PhaseResult> rollbackTo(L1Point target) {
             rollbacks.add(target);
+            duringRollback.run();
             L1PhaseResult result = nextRollback.isEmpty() ? L1PhaseResult.DURABLE : nextRollback.poll();
             if (result.succeeded()) {
                 events.add("rollback " + target.blockNumber());

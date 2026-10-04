@@ -1489,15 +1489,19 @@ final class ScriptAnchorService {
     }
 
     private void clearIdentityCandidate() {
-        ledger.metaPutAll(
-                Map.of(
-                        META_SCRIPT_CANDIDATE_SLOT, 0L,
-                        META_SCRIPT_CANDIDATE_BASE_INDEX, -1L),
-                Map.of(
-                        META_SCRIPT_CANDIDATE_POLICY, new byte[0],
-                        META_SCRIPT_CANDIDATE_HASH, new byte[0],
-                        META_SCRIPT_CANDIDATE_BASE_TX, new byte[0],
-                        META_SCRIPT_ADOPTION_TX, new byte[0]));
+        Map<String, Long> longs = new LinkedHashMap<>();
+        Map<String, byte[]> bytes = new LinkedHashMap<>();
+        candidateResetValues(longs, bytes);
+        ledger.metaPutAll(longs, bytes);
+    }
+
+    private static void candidateResetValues(Map<String, Long> longs, Map<String, byte[]> bytes) {
+        longs.put(META_SCRIPT_CANDIDATE_SLOT, 0L);
+        longs.put(META_SCRIPT_CANDIDATE_BASE_INDEX, -1L);
+        bytes.put(META_SCRIPT_CANDIDATE_POLICY, new byte[0]);
+        bytes.put(META_SCRIPT_CANDIDATE_HASH, new byte[0]);
+        bytes.put(META_SCRIPT_CANDIDATE_BASE_TX, new byte[0]);
+        bytes.put(META_SCRIPT_ADOPTION_TX, new byte[0]);
     }
 
     private List<AnchorService.Confirmation> canonicalHistoryThrough(
@@ -1640,7 +1644,17 @@ final class ScriptAnchorService {
             ObservedBootstrap bootstrap = loadObservedBootstrap();
             boolean deadBootstrap = bootstrap != null
                     && !canonicalAtSlot.test(bootstrap.l1Slot(), bootstrap.l1BlockHash());
+            // An unpromoted identity candidate records no L1 block, so it cannot be judged; it is dropped and
+            // learned again from the next verified sign request.
+            byte[] candidate = ledger.metaBytes(META_SCRIPT_CANDIDATE_POLICY);
+            Map<String, Long> candidateLongs = new LinkedHashMap<>();
+            Map<String, byte[]> candidateBytes = new LinkedHashMap<>();
+            if (candidate != null && candidate.length > 0) {
+                candidateResetValues(candidateLongs, candidateBytes);
+            }
             return batch -> {
+                candidateLongs.forEach((key, value) -> ledger.stageMetaLong(batch, key, value));
+                candidateBytes.forEach((key, value) -> ledger.stageMetaBytes(batch, key, value));
                 if (deadSubmit) {
                     ledger.stageMetaBytes(batch, META_SCRIPT_OBSERVED_SUBMIT, new byte[0]);
                 }
@@ -1669,21 +1683,16 @@ final class ScriptAnchorService {
     }
 
     private static void identityResetValues(Map<String, Long> longs, Map<String, byte[]> bytes) {
+        candidateResetValues(longs, bytes);
         longs.put(META_SCRIPT_BOOTSTRAP_SLOT, 0L);
         longs.put(META_SCRIPT_IDENTITY_ADOPTED, 0L);
-        longs.put(META_SCRIPT_CANDIDATE_SLOT, 0L);
         longs.put(META_SCRIPT_OUT_INDEX, -1L);
-        longs.put(META_SCRIPT_CANDIDATE_BASE_INDEX, -1L);
         longs.put(META_LAST_ANCHORED, 0L);
         longs.put(META_ANCHOR_FROM, 0L);
         longs.put(META_ANCHOR_SLOT, 0L);
         bytes.put(META_SCRIPT_POLICY_ID, new byte[0]);
         bytes.put(META_SCRIPT_HASH, new byte[0]);
         bytes.put(META_SCRIPT_BOOTSTRAP_TX, new byte[0]);
-        bytes.put(META_SCRIPT_ADOPTION_TX, new byte[0]);
-        bytes.put(META_SCRIPT_CANDIDATE_POLICY, new byte[0]);
-        bytes.put(META_SCRIPT_CANDIDATE_HASH, new byte[0]);
-        bytes.put(META_SCRIPT_CANDIDATE_BASE_TX, new byte[0]);
         bytes.put(META_ANCHOR_BLOCK_HASH, new byte[0]);
         bytes.put(META_ANCHOR_TX, new byte[0]);
         bytes.put(META_ANCHOR_HISTORY,

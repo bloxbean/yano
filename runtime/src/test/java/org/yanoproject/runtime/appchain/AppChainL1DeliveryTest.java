@@ -32,11 +32,13 @@ import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.runtime.chain.BlockBodyRetentionRegistry;
+import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 
 import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -409,6 +411,35 @@ class AppChainL1DeliveryTest {
         }
     }
 
+    /** ADR-038 D10: readiness degrades while delivery lags or retries and recovers with it; safety is D9a's job. */
+    @Test
+    void readinessFollowsDeliveryLagAndRetries() throws Exception {
+        Controls controls = new Controls();
+        try (StartedHarness harness = startHarness("readiness", controls,
+                Map.of("l1.delivery.readiness-max-lag-blocks", "2"))) {
+            assertThat(harness.subsystem.health().status()).isEqualTo(SubsystemHealth.Status.UP);
+
+            controls.blockingSlot.set(50);
+            harness.block(50);
+            assertThat(controls.observationEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            harness.l1.append(60, 70, 80);
+            awaitCondition(() -> harness.subsystem.health().status() == SubsystemHealth.Status.DEGRADED);
+            assertThat(harness.subsystem.health().message()).isEqualTo("L1 delivery lags 4 blocks");
+            assertThat(deliveryStatus(harness.subsystem)).containsKey("notReady");
+            controls.releaseObservation.countDown();
+            awaitDelivered(harness, harness.l1.tipNumber());
+            assertThat(harness.subsystem.health().status()).isEqualTo(SubsystemHealth.Status.UP);
+
+            controls.failAgainOnRetry.set(true);
+            controls.failure.set(new IllegalStateException("observer down"));
+            harness.block(90);
+            awaitCondition(() -> harness.subsystem.health().status() == SubsystemHealth.Status.DEGRADED);
+            assertThat(harness.subsystem.health().message()).isEqualTo("L1 delivery RETRYING_BLOCK");
+            controls.failure.set(null);
+            awaitCondition(() -> harness.subsystem.health().status() == SubsystemHealth.Status.UP);
+        }
+    }
+
     /** ADR-038 F6: retention survives a stop, so the pruner cannot remove a body the chain has not delivered. */
     @Test
     void retentionHoldsTheNextUndeliveredBodyAcrossStopAndStart() throws Exception {
@@ -492,6 +523,11 @@ class AppChainL1DeliveryTest {
     }
 
     private StartedHarness startHarness(String testId, Controls controls) throws Exception {
+        return startHarness(testId, controls, Map.of());
+    }
+
+    private StartedHarness startHarness(String testId, Controls controls, Map<String, String> extraSettings)
+            throws Exception {
         L1TestChain l1 = new L1TestChain();
         l1.append(10, 20);
         DirectEventBus eventBus = new DirectEventBus();
@@ -502,10 +538,7 @@ class AppChainL1DeliveryTest {
                 .blockIntervalMs(25)
                 .l1StabilityDepth(1)
                 .anchor(new AppChainConfig.AnchorConfig(true, SIGNING_KEY_HEX, 1, 60, 7014))
-                .pluginSettings(Map.of(
-                        "sequencer.mode", MODE_ID,
-                        "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE,
-                        "observation.l1-network-genesis-id", "01".repeat(32)))
+                .pluginSettings(harnessSettings(extraSettings))
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(
@@ -534,6 +567,15 @@ class AppChainL1DeliveryTest {
             subsystem.close();
             throw failure;
         }
+    }
+
+    private static Map<String, String> harnessSettings(Map<String, String> extraSettings) {
+        Map<String, String> settings = new HashMap<>(Map.of(
+                "sequencer.mode", MODE_ID,
+                "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE,
+                "observation.l1-network-genesis-id", "01".repeat(32)));
+        settings.putAll(extraSettings);
+        return settings;
     }
 
     private static void awaitReconciled(StartedHarness harness) throws InterruptedException {

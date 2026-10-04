@@ -783,6 +783,23 @@ class ScriptAnchorServiceTest {
         assertThat(leader.bootstrap()).containsKeys("txHash", "threadPolicyId", "scriptHash");
     }
 
+    /** ADR-038 D8b: an unpromoted identity candidate records no L1 block, so reconciliation drops it. */
+    @Test
+    void reconcileDropsAnUnpromotedIdentityCandidate() {
+        followerLedger.metaPutBytes("anchor_script_candidate_policy_id", new byte[28]);
+        followerLedger.metaPutBytes("anchor_script_candidate_hash", new byte[28]);
+        followerLedger.metaPutLong("anchor_script_candidate_slot", 120);
+
+        Consumer<WriteBatch> stager = follower.reconcile((slot, hash) -> true);
+        assertThat(followerLedger.metaBytes("anchor_script_candidate_policy_id")).as("read-only").hasSize(28);
+        followerLedger.writeAtomically(stager);
+
+        assertThat(followerLedger.metaBytes("anchor_script_candidate_policy_id")).isEmpty();
+        assertThat(followerLedger.metaBytes("anchor_script_candidate_hash")).isEmpty();
+        assertThat(followerLedger.metaLong("anchor_script_candidate_slot", -1)).isZero();
+        assertThat(follower.bootstrapped()).isFalse();
+    }
+
     @Test
     void bootstrappedRequiresCompletePersistedIdentity() {
         followerLedger.metaPutBytes("anchor_script_policy_id", new byte[28]);

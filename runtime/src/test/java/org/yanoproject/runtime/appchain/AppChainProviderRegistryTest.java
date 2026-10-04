@@ -46,6 +46,7 @@ import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -76,8 +77,8 @@ class AppChainProviderRegistryTest {
             first.start();
             second.start();
 
-            assertThat(first.health().status()).isEqualTo(SubsystemHealth.Status.UP);
-            assertThat(second.health().status()).isEqualTo(SubsystemHealth.Status.UP);
+            awaitUp(first);
+            awaitUp(second);
             assertThat(fixtures.signers.get()).isEqualTo(2);
             assertThat(fixtures.stateMachines.get()).isEqualTo(2);
             assertThat(fixtures.sequencerModes.get()).isEqualTo(2);
@@ -1105,6 +1106,15 @@ class AppChainProviderRegistryTest {
         } finally {
             replacement.stop();
         }
+    }
+
+    /** A chain that reads L1 is ready once its delivery loop has checked its cursor (ADR-038, D10). */
+    private static void awaitUp(AppChainSubsystem subsystem) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (subsystem.health().status() != SubsystemHealth.Status.UP && System.nanoTime() < deadline) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+        }
+        assertThat(subsystem.health().status()).isEqualTo(SubsystemHealth.Status.UP);
     }
 
     private AppChainSubsystem subsystem(String chainId, Path base,

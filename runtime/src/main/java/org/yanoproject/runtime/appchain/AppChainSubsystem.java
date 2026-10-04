@@ -154,6 +154,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /** Consensus mode (008.2): fixed | rotating | plugin-provided; null = diffusion-only. */
     private final org.yanoproject.api.appchain.sequencer.SequencerMode sequencerMode;
     private final String ledgerPath;
+    /** Node-local readiness threshold for L1 delivery lag (ADR-038, D10); readiness only, never safety. */
+    private final long l1ReadinessMaxLagBlocks;
 
     // M3: L1 anchoring + stable L1 reference tracking
     private volatile AnchorService anchorService;
@@ -663,6 +665,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             this.ledgerPath = (ledgerPath != null
                     ? ledgerPath : YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
                     + "/" + config.chainId();
+            this.l1ReadinessMaxLagBlocks = parseLongSetting("l1.delivery.readiness-max-lag-blocks", 100);
 
             if (!group.contains(signer.publicKeyHex())) {
                 if (governedMode()) {
@@ -5445,7 +5448,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             status.put("phase", record.phase().name());
             status.put("cursorBlock", cursor.blockNumber());
             status.put("cursorSlot", cursor.slot());
+            status.put("cursorHash", cursor.isOrigin() ? "origin" : HexUtil.encodeHexString(cursor.blockHash()));
             status.put("deliveredPoints", record.window().size());
+            status.put("baselinePoints", record.baseline().size());
+            status.put("baselineFromBlock", record.baseline().getFirst().blockNumber());
             if (record.pending() != null) {
                 status.put("pending", record.pending().kind().name() + " " + record.pending().point());
             }
@@ -5459,7 +5465,31 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (snapshot.lastFailure() != null) {
             status.put("lastFailure", snapshot.lastFailure());
         }
+        BlockBodyRetentionRegistry.Registration retention = l1Retention;
+        if (retention != null) {
+            retention.oldestRequiredBlockNumber().ifPresent(block -> status.put("retainedFromBlock", block));
+        }
+        String readiness = l1DeliveryReadinessProblem(delivery);
+        if (readiness != null) {
+            status.put("notReady", readiness);
+        }
         return status;
+    }
+
+    /**
+     * Readiness signal (ADR-038, D10): degraded while delivery is not {@code RUNNING} or lags the body tip by more
+     * than {@code l1.delivery.readiness-max-lag-blocks}. Safety never depends on it; the D9a fence does that.
+     */
+    private String l1DeliveryReadinessProblem(L1DeliveryLoop delivery) {
+        L1DeliveryLoop.Snapshot snapshot = delivery.snapshot();
+        if (snapshot.state() != L1DeliveryLoop.State.RUNNING) {
+            return "L1 delivery " + snapshot.state();
+        }
+        ChainBlockReader chain = l1Chain;
+        ChainTip tip = chain != null ? chain.getLocalTip() : null;
+        long lag = tip != null && snapshot.record() != null
+                ? tip.getBlockNumber() - snapshot.record().cursor().blockNumber() : 0L;
+        return lag > l1ReadinessMaxLagBlocks ? "L1 delivery lags " + lag + " blocks" : null;
     }
 
     /** Anchor completion runs only once L1 state is reconciled (ADR-038, D8b rule 9). */
@@ -7141,9 +7171,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // Peer connectivity is intentionally NOT a readiness gate: in a two-node
         // group the first node would never become ready while waiting for the
         // second (bootstrap deadlock). Connectivity is reported via status().
-        return running.get()
-                ? SubsystemHealth.up(name())
-                : SubsystemHealth.down(name(), "stopped");
+        if (!running.get()) {
+            return SubsystemHealth.down(name(), "stopped");
+        }
+        L1DeliveryLoop delivery = l1Delivery;
+        String l1Readiness = delivery != null ? l1DeliveryReadinessProblem(delivery) : null;
+        return l1Readiness == null ? SubsystemHealth.up(name()) : SubsystemHealth.degraded(name(), l1Readiness);
     }
 
 }
