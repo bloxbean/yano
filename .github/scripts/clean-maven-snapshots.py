@@ -100,15 +100,13 @@ def delete(artifacts, metadata, drop):
         if staged.is_dir():
             aws('s3', 'cp', '--recursive', '--only-show-errors', '--cache-control', 'no-cache', str(staged),
                 f's3://{BUCKET}/{ROOT}')
-        keys = [key for versions in artifacts.values() for v in drop for key, _, _ in versions.get(v, [])]
-        for start in range(0, len(keys), 1000):
-            batch = Path(tmp) / 'batch.json'
-            batch.write_text(json.dumps({'Objects': [{'Key': k} for k in keys[start:start + 1000]], 'Quiet': True}))
-            result = json.loads(aws('s3api', 'delete-objects', '--bucket', BUCKET, '--delete', f'file://{batch}',
-                                    '--output', 'json') or '{}')
-            if result.get('Errors'):
-                sys.exit(f"::error::Delete failed for {len(result['Errors'])} objects: {result['Errors'][:3]}")
-        return len(keys)
+    # `s3 rm` deletes object by object. The batch DeleteObjects call is avoided on purpose: AWS CLI 2.23+ always
+    # attaches a CRC32 checksum to it, which R2 has rejected. Each filter is one exact <artifact>/<version>/ prefix.
+    targets = [(artifact, v) for artifact, versions in artifacts.items() for v in drop if v in versions]
+    filters = [arg for artifact, v in targets for arg in ('--include', f'{artifact}/{v}/*')]
+    if filters:
+        aws('s3', 'rm', f's3://{BUCKET}/{ROOT}', '--recursive', '--only-show-errors', '--exclude', '*', *filters)
+    return sum(len(artifacts[artifact][v]) for artifact, v in targets)
 
 
 def report(published, drop, artifacts, heading):

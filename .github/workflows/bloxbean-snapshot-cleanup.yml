@@ -6,7 +6,8 @@ name: Clean up old snapshots in the BloxBean Maven repository
 # A run always plans first and reports what it would remove. With dry_run off it then waits for a release owner's
 # approval in the `release` environment, the same gate as publish-central.yml, and removes only the versions that
 # plan listed. The approval wait holds no lock; the removal runs in the publish workflow's concurrency group, so it
-# never interleaves with a publication.
+# never interleaves with a publication. An approved removal still pending behind a publication is cancelled if
+# another publication is queued (GitHub keeps one pending job per group); dispatch and approve it again.
 
 on:
   workflow_dispatch:

@@ -16,7 +16,7 @@ on:
 
 permissions:
   contents: read
-  # Reads the commit's CI runs (Require green CI for this commit).
+  # Reads the commit's CI runs (require-green-ci.sh).
   actions: read
 
 # Seed, publish and upload are a read-modify-write of every artifact's maven-metadata.xml: two concurrent runs
@@ -51,6 +51,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # Publish only a commit whose push CI passed, rather than repeat ~40 minutes of the same tests here.
+      - name: Require green CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/require-green-ci.sh
       - name: Set up JDK 25
         uses: actions/setup-java@v4
         with:
@@ -74,25 +79,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Publishing $VERSION"
 
-      # The commit's push CI already ran `build` (build.yml) and `extendedTest`, `distributionCheck` and the native
-      # build (integration.yml): everything `fullBuild` runs, in parallel jobs. Publish only a commit that passed
-      # it rather than repeat ~40 minutes of tests here. Dispatched before CI finishes, the run stops; run it again
-      # once CI is green.
-      - name: Require green CI for this commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for workflow in build.yml integration.yml; do
-            runs="repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs"
-            passed=$(gh api "$runs?head_sha=$GITHUB_SHA&event=push&status=success" --jq '.total_count')
-            if [[ "$passed" == 0 ]]; then
-              echo "::error::$workflow has no successful push run for $GITHUB_SHA. Run this again once CI is green." >&2
-              exit 1
-            fi
-          done
-          echo "build.yml and integration.yml passed for $GITHUB_SHA"
 
       # Stages every publication once to learn which artifactIds this build owns: those, and only those, are
       # seeded and uploaded. The scope check ties that set to the Maven Central deployment scope.

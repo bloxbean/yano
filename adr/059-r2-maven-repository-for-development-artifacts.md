@@ -105,7 +105,7 @@ A dedicated workflow, separate from `snapshot_manual.yml` and the release workfl
 |---|---|---|
 | Trigger | — | `workflow_dispatch` only. The job runs only on `main` or `release/**` and uses the `release-staging` environment. |
 | Resolve the snapshot version | none | Reads the effective version through Gradle and fails unless it ends in `-SNAPSHOT`. |
-| Require green CI for this commit | GitHub token, `actions: read` | Requires a successful push run of `build.yml` and `integration.yml` for the exact commit. Together they run `build`, `extendedTest`, `distributionCheck` and the native build, everything `fullBuild` runs, in parallel jobs. The publication is therefore gated on the same tests without spending about 40 minutes repeating them on one runner. Dispatched before CI finishes, the run stops and is run again later. |
+| Require green CI for this commit | GitHub token, `actions: read` | Requires a successful push run of `build.yml` and `integration.yml` for the exact commit. Together they run `build`, `extendedTest`, `distributionCheck` and the native build, everything `fullBuild` runs, in parallel jobs. The publication is therefore gated on the same tests without spending about 40 minutes repeating them on one runner. Dispatched before CI finishes, the run stops and is run again later. The check is `.github/scripts/require-green-ci.sh`, shared with the distribution workflow, and runs before any setup. `build.yml` and `integration.yml` now trigger on `release**`: GitHub's `*` does not match `/`, so `release/**` branches previously ran no CI and could never pass this check. |
 | Discover the Maven publications | none | Runs `verifyMavenReleasePublicationScope` and stages every publication into `build/bloxbean-maven`. Records the artifactIds this build owns and requires their count to equal the Central deployment scope. |
 | Seed metadata from the repository | bucket | Empties `build/bloxbean-maven`, then for each of those artifactIds copies its current `maven-metadata.xml` from R2 through the S3 API into it, keeping a copy of each seed. A 404 means a first publication. Any other error fails the run. |
 | Stage the Maven publications | none | `publishAllPublicationsToStagingRepository -PstagingRepository=build/bloxbean-maven`. Gradle appends the new version to the seeded metadata, sets `<latest>`, and regenerates the checksums. |
@@ -292,10 +292,14 @@ the same way.
   reviewers and the same gate as `publish-central.yml`. The requester can't approve their own run.
 - **Removal:** only the versions the approver saw are removed, and only those still eligible. Each artifact's
   `maven-metadata.xml` is rewritten first without them, with fresh checksums and `Cache-Control: no-cache`, so it
-  never lists a deleted version. The version directories are deleted after that.
+  never lists a deleted version. The version directories are deleted after that, with `aws s3 rm`, one exact
+  `<artifact>/<version>/` filter per pair. That command deletes object by object. The batch `DeleteObjects` call is
+  avoided because AWS CLI 2.23+ always attaches a CRC32 checksum to it, which R2 has rejected.
 - **Concurrency:** the removal job holds the publish workflow's `bloxbean-maven-snapshots` concurrency group.
   The approval wait holds nothing, so a pending approval never blocks a publication.
-- **Recovery:** a run that fails part-way is repaired by running it again.
+- **Recovery:** a run that fails part-way is repaired by running it again. GitHub keeps at most one pending job
+  per concurrency group. An approved removal still waiting behind a publication is therefore cancelled if another
+  publication is queued, and has to be dispatched and approved again.
 
 **Scope.** It touches only artifact directories directly under `maven/snapshots/org/yanoproject/` that carry a
 `maven-metadata.xml`. yano-x's `org/yanoproject/x/`, other groups in the bucket, and `maven/releases/` are never
@@ -327,8 +331,9 @@ keeps its zips as Actions artifacts for only 3 days, behind a GitHub login.
 
 `bloxbean-snapshot-dist.yml` publishes them:
 
-- **When it runs:** manually, only on `main` or `release/**`, and only for a `-SNAPSHOT` version. A release version
-  is rejected before the build starts.
+- **When it runs:** manually, only on `main` or `release/**`, and only for a `-SNAPSHOT` commit whose push CI
+  passed. That is the same `require-green-ci.sh` rule as the Maven snapshots. A release version or a commit without
+  green CI is rejected before the build starts.
 - **Build:** it calls `dist-dev.yml`, which has a `workflow_call` trigger for this. That is the same build and the
   same packaged-catalog smoke tests as the existing dev distribution build, for the JVM zip and four native zips.
   `release-dist.yml` (GitHub releases) is untouched.
@@ -344,7 +349,7 @@ keeps its zips as Actions artifacts for only 3 days, behind a GitHub login.
   be served at its exact size.
 
 ```text
-https://dist.bloxbean.org/yano/snapshots/latest.json            newest build: copy of its manifest.json, no-cache
+https://dist.bloxbean.org/yano/snapshots/latest.json            most recently published build's manifest.json, no-cache
 https://dist.bloxbean.org/yano/snapshots/builds/0.1.0-pre18-<sha7>/
     yano-0.1.0-pre18-<sha7>.zip
     yano-native-0.1.0-pre18-<sha7>-{linux-x64,linux-arm64,macos-arm64,windows-x64}.zip

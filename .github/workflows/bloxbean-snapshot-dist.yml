@@ -5,7 +5,8 @@ name: Publish snapshot distributions
 # https://dist.bloxbean.org/yano/snapshots/. Independent of release-dist.yml (GitHub releases) and of the Maven
 # snapshot repository. See adr/059-r2-maven-repository-for-development-artifacts.md, Snapshot distributions.
 #
-# Each commit gets builds/<version>/ with its zips, SHA256SUMS and manifest.json; latest.json points at the newest.
+# Each commit gets builds/<version>/ with its zips, SHA256SUMS and manifest.json; latest.json points at the most
+# recently published one.
 # A build directory is never overwritten: manifest.json, uploaded last, marks it as published. Old builds expire by
 # the bucket's lifecycle rule on yano/snapshots/builds/, which latest.json is outside of.
 
@@ -15,17 +16,23 @@ on:
 permissions: {}
 
 jobs:
-  # Fails a release version before the 40-minute build: only -SNAPSHOT versions are snapshot distributions.
+  # Fails before the 40-minute build: only a -SNAPSHOT commit whose push CI passed, the same rule as the Maven
+  # snapshots (bloxbean-snapshot.yml), is published.
   check:
     if: >-
       github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Require green CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/require-green-ci.sh
       - name: Require a SNAPSHOT version
         shell: bash
         run: |
@@ -60,9 +67,7 @@ jobs:
     environment: release-staging
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    permissions:
-      contents: read
-    # Only latest.json is shared between runs; serialize so it always ends on the run that finished last.
+    # Only latest.json is shared between runs; serialize the uploads so it names the most recently published build.
     concurrency:
       group: bloxbean-snapshot-dist
       cancel-in-progress: false
@@ -175,8 +180,7 @@ jobs:
               echo "::error::$url serves $served bytes, expected $size." >&2
               exit 1
             fi
-          done < <(python3 -c 'import json, sys
-          for f in json.load(open(sys.argv[1]))["files"]: print(f["url"], f["size"])' dist/manifest.json)
+          done < <(jq -r '.files[] | "\(.url) \(.size)"' dist/manifest.json)
           echo "latest.json and every zip are served for $VERSION."
 
       - name: Record the publication
@@ -193,8 +197,5 @@ jobs:
             echo
             echo '| File | Size |'
             echo '|---|---|'
-            python3 -c 'import json, sys
-          for f in json.load(open(sys.argv[1]))["files"]:
-              print("| [{name}]({url}) | {mb:.0f} MB |".format(name=f["name"], url=f["url"], mb=f["size"] / 1e6))' \
-              dist/manifest.json
+            jq -r '.files[] | "| [\(.name)](\(.url)) | \(.size / 1e6 | round) MB |"' dist/manifest.json
           } >> "$GITHUB_STEP_SUMMARY"
