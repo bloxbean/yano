@@ -1,7 +1,8 @@
 # ADR-059: Cloudflare R2 Maven Repository for Development Artifacts
 
 **Status:** Phase 1 (snapshots) implemented and in use since 2026-10-04 (`0.1.0-pre18-de81cc5-SNAPSHOT`), with
-approval-gated retention and snapshot distribution zips. Phase 2 (release mirror) proposed.
+approval-gated retention and snapshot distribution zips. Phase 2 (releases to Central and the BloxBean
+repository, chosen per release) implemented.
 **Date:** 2026-10-04
 **Authors:** Claude Code (Opus 5.5)
 **Related:** `.github/workflows/bloxbean-snapshot.yml`, `bloxbean-snapshot-cleanup.yml`,
@@ -363,7 +364,7 @@ mirroring `maven/`:
 ```text
 bloxbean-maven  (https://repo.bloxbean.org)
     maven/snapshots/<group path>/...     Maven snapshots: no lifecycle rule, approval-gated cleanup
-    maven/releases/<group path>/...      Maven releases (Phase 2)
+    maven/releases/<group path>/...      Maven releases (release.yml)
     dist/snapshots/<project>/...         snapshot distributions of every project: one 30-day lifecycle rule
     dist/releases/<project>/...          release distributions, if ever mirrored: permanent
 ```
@@ -398,55 +399,76 @@ version directory is self-contained and nothing else references it. Every public
 - the served zip, `SHA256SUMS` and `manifest.json` agreed on every SHA-256;
 - the version gate rejected `0.1.0-pre17`.
 
-## Phase 2: mirroring official releases (proposal)
+## Phase 2: releases to Maven Central and the BloxBean repository
 
-Target:
+Implemented in `release.yml`. Two flags in `gradle.properties` choose where a release's Maven artifacts go:
 
-```text
-v* tag ──► release.yml: clean fullBuild, sign once, stage once
-                │
-                ├──► staged Maven files kept as a workflow artifact (the immutable record)
-                ├──► R2 maven/releases/  (same files; gated by a new r2_publish flag)
-                └──► Maven Central USER_MANAGED deployment (unchanged), then publish-central.yml (unchanged)
-
-release-dist.yml / release-docker.yml: JVM and native zips, npm, GitHub release, images (unchanged)
+```properties
+maven_central_publish = true   # USER_MANAGED Central deployment; publish-central.yml (approval) publishes it
+bloxbean_repo_publish = true   # https://repo.bloxbean.org/maven/releases, public and permanent at once
 ```
 
-Design rules:
+Both must be set explicitly to `true` or `false`; a missing or misspelled value fails the release before the
+build. With both off, a tag only builds and validates, like the other flags' rehearsal mode.
 
-1. **Build and sign once.** In the existing upload step, the same Gradle invocation that runs
-   `publishAggregationToCentralPortal` also runs `publishAllPublicationsToStagingRepository` (seeded from
-   `maven/releases`). Both consume the same jar and signature task outputs. The step then asserts that every
-   file in the nmcp Central bundle is byte-identical to its staged counterpart. That makes "same artifacts" a
-   checked property, not an assumption. Releases carry `.asc` signatures on R2 too, made by the same key as on
-   Central. `verify-maven-staging.py` gains the release layout at that point: no version-level metadata,
-   non-timestamped file names, and a required `.asc` for every file with its checksums.
-2. **R2 first, independent of Central.** The R2 upload runs before the Central upload, so a Central outage or
-   quota rejection leaves the R2 copy in place and the run fails visibly on Central.
-3. **Releases are immutable on R2.** Before uploading, the step lists `maven/releases/org/yanoproject/<a>/<version>/`
-   for every artifact. If any object exists, it fails unless every staged file is byte-identical, which makes it
-   idempotent for a re-run of the same job. A re-run of `release.yml` rebuilds: Gradle jars are not
-   byte-reproducible and signatures carry timestamps. It must therefore never upload a rebuilt set to Central
-   after R2 already holds the version. Central retries go through rule 4 instead.
-4. **Central retry without a rebuild.** This is the requirement that Central eventually receives the same
-   artifacts after it failed, without rebuilding the release. A small approval-gated workflow downloads the
-   version's files from R2, zips them as the Portal bundle (every file except `maven-metadata.xml*`), and uploads
-   that with one Portal API call (`POST /api/v1/publisher/upload?publishingType=USER_MANAGED`). From there
-   `publish-central.yml` works as today. Central receives exactly the bytes R2 serves.
-5. **What "released" means does not change.** A release is official when Maven Central publishes it. R2 is an
-   additional, independent copy. Like a pushed Docker image, a version that has reached R2 is permanent. A release
-   abandoned after its tag burns its version number, which is already true when `docker_publish` or `npm_publish`
-   is on. Gate the mirror with an `r2_publish` flag in `gradle.properties`, consistent with the existing release
-   side-effect flags.
+```text
+v* tag ─► validate tag and flags ─► clean fullBuild
+       ─► [bloxbean] discover publications, seed maven/releases metadata
+       ─► stage and sign once: one Gradle run builds the staged repository AND the Central bundle
+       ─► [bloxbean] verify: staged tree + every Central bundle file byte-identical ─► upload ─► verify public
+                     + Gradle consumer
+       ─► [central]  upload that same bundle (-x nmcpZipAggregation) as a USER_MANAGED deployment
+release-dist.yml / release-docker.yml: unchanged
+```
 
-**Recommendation:** the tag-time mirror above (rules 1-5). R2's purpose is to publish when Central cannot.
-Tying R2's visibility to Central's approval would also tie it to Central's availability.
+Rules:
 
-**Open question for release owners, to settle before Phase 2 is built.** An alternative is to stage under a
-non-public prefix at tag time and promote with a byte-identical server-side copy (`CopyObject`) when
-`publish-central.yml` is approved. R2 visibility would then match Central, and an abandoned tag would burn no
-version on R2. The cost is a second promotion path, needed exactly when Central cannot take the deployment at all.
-This ADR recommends against it, but it is the release owners' call.
+1. **Same artifacts in both places.** One Gradle run produces the staged repository and nmcp's Central bundle
+   from the same jar and signature outputs. `verify-maven-staging.py --central-bundle` then requires two things:
+   every file in the bundle is byte-identical to the staged one, and every staged jar, POM, module and signature is
+   in the bundle. The Central upload runs `publishAggregationToCentralPortal -x nmcpZipAggregation`. Its task graph
+   is the scope check, the upload and its alias: nothing compiles, signs or zips again, so Central receives the
+   checked bundle.
+2. **BloxBean repository first.** It is uploaded before Central. A Central failure, for example its quota, leaves
+   the release in the BloxBean repository, and the run fails visibly at the Central step.
+3. **Releases are immutable.** The artifact metadata is seeded from `maven/releases` as for snapshots. If the
+   seed already lists the version, the validator refuses it: a release is never replaced. Releases carry the same
+   `.asc` signatures as on Central, and every jar, POM and module must be signed.
+4. **Visibility.** The BloxBean copy is public as soon as the tag's run uploads it, while Central waits for a
+   human. The tag itself already required a release owner's approval (`tag-release.yml`). Like a pushed Docker
+   image, a version that reached the BloxBean repository is permanent. Accepted by the release owners on
+   2026-10-04.
+5. **Central quota.** When Central cannot take a release, set `maven_central_publish = false` and release the
+   patch to the BloxBean repository only. Such a release stays BloxBean-only; the next version goes to Central
+   once the quota resets. There is no workflow to copy a BloxBean-only release to Central later (decided
+   2026-10-04).
+6. **Serialization.** Seeding, staging and uploading is a read-modify-write of each artifact's version list.
+   The publish job therefore holds the `bloxbean-maven-releases` concurrency group, and releases of different tags
+   run one at a time. A pending release run has uploaded nothing. If GitHub cancels it because a third release
+   queued, run it again.
+
+**Release layout.** The validator checks releases differently from snapshots:
+
+- There is no version-level metadata, and file names are not timestamped.
+- The artifact metadata must name the version as `<release>`.
+- Classifiers beyond `sources` and `javadoc` are allowed: `yano-archive-core` publishes a `test-fixtures` jar. The
+  bundle check ties that set to Central's.
+
+**Testing.** Before merging, the release job's step scripts ran in a JDK 25 container against MinIO, signing with a
+throwaway key. `fullBuild` and the Central upload were skipped:
+
+- **First release:** 1,260 files staged, all 570 Central bundle files byte-identical, the public metadata and POMs
+  matched, and a consumer resolved 9 identical jars.
+- **The same version again:** refused for all 24 artifacts.
+- **The next version:** appended, with `<latest>` and `<release>` moving to it.
+- **`bloxbean_repo_publish=false`:** every BloxBean step skipped, and nothing reached the bucket.
+- **`maven_central_publish=false`:** BloxBean-only, and the summary says so.
+- **An invalid flag value:** failed before the build.
+- **The snapshot workflow on the shared script:** still published and resolved.
+
+The validator also rejected an unsigned jar and a jar that differed from the bundle. The Central upload with
+`-x nmcpZipAggregation` was checked with `--dry-run` only: it runs nothing but the scope check, the upload and its
+alias.
 
 ## Reuse by other BloxBean projects
 
@@ -512,5 +534,5 @@ own build staged, because group paths such as `com/bloxbean/cardano` are shared 
 | Snapshot distributions (`bloxbean-snapshot-dist.yml`) | Implemented, dry-run against MinIO; needs the `dist/snapshots/` lifecycle rule |
 | `push: main` trigger | After the manual run is proven |
 | Maven-aware retention | Implemented: `bloxbean-snapshot-cleanup.yml`, manual and approval-gated |
-| Release mirror (Phase 2) | Proposed |
+| Releases to Central and the BloxBean repository (Phase 2) | Implemented: `maven_central_publish` / `bloxbean_repo_publish` in `release.yml` |
 | Shared reusable workflow | After two or three projects use it |

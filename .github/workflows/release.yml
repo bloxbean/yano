@@ -1,14 +1,19 @@
 # From the release-ops standard (templates/workflows/release.yml, 2026-09-14), adapted for Yano: no release
 # assets and no `github-release` job here (release-dist.yml owns the GitHub release, the distribution zips and
-# npm), plus the Docker release gated by docker_publish.
-name: Stage release to Maven Central
+# npm), plus the BloxBean Maven repository and the Docker release, each gated by a flag.
+name: Release Maven artifacts
 
-# A v* tag, created by tag-release.yml after a code-owner-approved version bump merges, builds and signs
-# every module and uploads a USER_MANAGED Central Portal deployment. It stops there: nothing is on Maven
-# Central until a human publishes the deployment, via publish-central.yml or the portal.
+# A v* tag, created by tag-release.yml after a code-owner-approved version bump merges, builds and signs every
+# module once and publishes the Maven artifacts where gradle.properties says (ADR-059):
+#   maven_central_publish  uploads a USER_MANAGED Central Portal deployment. It stops there: nothing is on Maven
+#                          Central until a human publishes the deployment, via publish-central.yml or the portal.
+#   bloxbean_repo_publish  publishes to https://repo.bloxbean.org/maven/releases, public and permanent at once.
+# With both on, both receive the same signed files: one Gradle run builds the staged repository and the Central
+# bundle, which are checked byte for byte, and the Central upload reuses that bundle. The BloxBean repository goes
+# first, so a Central failure (e.g. its quota) leaves the release there.
 #
-# Release side effects are gated by flags in gradle.properties: docker_publish (this workflow, after the
-# deployment is staged), npm_publish and github_release (release-dist.yml, which runs on the same tag).
+# Other release side effects are gated by flags in gradle.properties too: docker_publish (this workflow, after the
+# Maven artifacts), npm_publish and github_release (release-dist.yml, which runs on the same tag).
 
 on:
   push:
@@ -25,16 +30,34 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-24.04
-    # The signing subkey and Central Portal token are secrets of this environment, which only accepts
-    # v* tags (plus the default branch and release/** for the other release workflows). Only the release
+    # The signing subkey, Central Portal token and bucket credentials are secrets of this environment, which only
+    # accepts v* tags (plus the default branch and release/** for the other release workflows). Only the release
     # App and org admins can create v* tags.
     environment: release-staging
     permissions:
       contents: read
+    # Seeding, staging and uploading to the BloxBean repository is a read-modify-write of each artifact's version
+    # list, so releases of different tags run one at a time. A pending run has uploaded nothing; if GitHub cancels
+    # it because a third release queued behind it, run it again.
+    concurrency:
+      group: bloxbean-maven-releases
+      cancel-in-progress: false
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_final: ${{ steps.version.outputs.is_final }}
       docker_publish: ${{ steps.version.outputs.docker_publish }}
+    env:
+      GROUP_PATH: org/yanoproject
+      BUCKET: ${{ vars.R2_BUCKET }}
+      REPOSITORY_PREFIX: maven/releases
+      PUBLIC_REPOSITORY_URL: https://repo.bloxbean.org/maven/releases
+      # Absolute, because build.gradle resolves stagingRepository against each project's own directory.
+      STAGING_DIR: ${{ github.workspace }}/build/bloxbean-maven
+      AWS_ENDPOINT_URL: ${{ vars.R2_ENDPOINT }}
+      AWS_DEFAULT_REGION: auto
+      # AWS CLI 2.23+ sends request checksums R2 does not accept by default; send them only when an API needs one.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +91,15 @@ jobs:
           if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             IS_FINAL=true
           fi
+          # Where the Maven artifacts go must be stated, not defaulted: a missing line is an error.
+          MAVEN_CENTRAL_PUBLISH=$(awk '/^maven_central_publish:/ { print $2; exit }' <<< "$PROPS")
+          BLOXBEAN_REPO_PUBLISH=$(awk '/^bloxbean_repo_publish:/ { print $2; exit }' <<< "$PROPS")
+          for flag in "maven_central_publish=$MAVEN_CENTRAL_PUBLISH" "bloxbean_repo_publish=$BLOXBEAN_REPO_PUBLISH"; do
+            if [[ "${flag#*=}" != true && "${flag#*=}" != false ]]; then
+              echo "::error::gradle.properties must set ${flag%%=*} to true or false." >&2
+              exit 1
+            fi
+          done
           # A Docker image is public the moment it is pushed and can never be replaced under the same
           # tag, so it is opt-in per release rather than an automatic consequence of tagging.
           DOCKER_PUBLISH=$(awk '/^docker_publish:/ { print $2; exit }' <<< "$PROPS")
@@ -77,34 +109,99 @@ jobs:
           {
             echo "version=$VERSION"
             echo "is_final=$IS_FINAL"
+            echo "maven_central_publish=$MAVEN_CENTRAL_PUBLISH"
+            echo "bloxbean_repo_publish=$BLOXBEAN_REPO_PUBLISH"
             echo "docker_publish=${DOCKER_PUBLISH:-false}"
             echo "npm_publish=${NPM_PUBLISH:-false}"
             echo "github_release=${GITHUB_RELEASE:-false}"
           } >> "$GITHUB_OUTPUT"
-          echo "Version $VERSION (final: $IS_FINAL), Docker: ${DOCKER_PUBLISH:-false}," \
+          echo "Version $VERSION (final: $IS_FINAL), Maven Central: $MAVEN_CENTRAL_PUBLISH," \
+            "BloxBean repository: $BLOXBEAN_REPO_PUBLISH, Docker: ${DOCKER_PUBLISH:-false}," \
             "npm: ${NPM_PUBLISH:-false}, GitHub release: ${GITHUB_RELEASE:-false}"
 
       - name: Build with Gradle
         run: ./gradlew clean fullBuild --stacktrace
 
-      # Uploads a USER_MANAGED deployment and waits for Sonatype validation. It stops there: nothing is
-      # on Maven Central until a human publishes it. See nmcpAggregation in build.gradle.
-      - name: Upload deployment to Maven Central staging
-        id: upload
+      # Signing subkey passed to Gradle in memory (see configureReleaseSigning in build.gradle) in the two steps
+      # that sign: nothing is written to disk and nothing appears on the command line. Discovery's staged files are
+      # discarded; what is published comes from the single run of "Stage and sign the Maven publications".
+      - name: Discover the Maven publications
+        id: discover
+        if: steps.version.outputs.bloxbean_repo_publish == 'true'
         env:
-          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
-          # Signing subkey passed to Gradle in memory (see configureReleaseSigning in build.gradle):
-          # nothing is written to disk and nothing appears on the command line.
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY_ASC }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: bash .github/scripts/bloxbean-maven.sh discover
+
+      - name: Seed metadata from the BloxBean repository
+        if: steps.version.outputs.bloxbean_repo_publish == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
+        run: bash .github/scripts/bloxbean-maven.sh seed
+
+      # One Gradle run builds both destinations' files: the staged repository and the Central bundle.
+      - name: Stage and sign the Maven publications
+        env:
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY_ASC }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: >-
+          ./gradlew publishAllPublicationsToStagingRepository nmcpZipAggregation
+          -PstagingRepository="$STAGING_DIR" --stacktrace
+
+      # Also proves the two destinations get the same release: every file of the Central bundle must be
+      # byte-identical to the staged one, and every staged artifact and signature must be in the bundle. A version
+      # the BloxBean repository already lists is refused: a release is never replaced.
+      - name: Verify the staged repository and the Central bundle
+        if: steps.version.outputs.bloxbean_repo_publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # one argument per artifactId
+          python3 .github/scripts/verify-maven-staging.py --central-bundle build/nmcp/zip/aggregation.zip \
+            "$STAGING_DIR" "$RUNNER_TEMP/maven-seed" "$GROUP_PATH" "$VERSION" $ARTIFACTS
+
+      - name: Upload to the BloxBean repository
+        if: steps.version.outputs.bloxbean_repo_publish == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: bash .github/scripts/bloxbean-maven.sh upload
+
+      - name: Verify the BloxBean repository
+        if: steps.version.outputs.bloxbean_repo_publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
+        run: bash .github/scripts/bloxbean-maven.sh verify-public
+
+      - name: Resolve from the BloxBean repository with a Gradle consumer
+        if: steps.version.outputs.bloxbean_repo_publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash .github/scripts/bloxbean-maven.sh consume
+
+      # Uploads a USER_MANAGED deployment and waits for Sonatype validation. It stops there: nothing is
+      # on Maven Central until a human publishes it. See nmcpAggregation in build.gradle. `-x nmcpZipAggregation`
+      # uploads the bundle built and checked above instead of rebuilding it: nothing compiles or signs here.
+      - name: Upload deployment to Maven Central staging
+        id: upload
+        if: steps.version.outputs.maven_central_publish == 'true'
+        env:
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           # Do not add --warn here. It lowers Gradle below LIFECYCLE, which is the level nmcp reports the
           # deployment id at, and the grep below would then fail every release after a successful upload.
-          ./gradlew publishAggregationToCentralPortal --stacktrace 2>&1 | tee upload.log
+          ./gradlew publishAggregationToCentralPortal -x nmcpZipAggregation --stacktrace 2>&1 | tee upload.log
           # The deployment id exists only in nmcp's output. Fail loudly if the log format changes rather
           # than reporting a release with no id.
           id=$(grep -oE "deployment bundle '[0-9a-f-]{36}'" upload.log \
@@ -115,10 +212,12 @@ jobs:
           fi
           echo "deployment-id=$id" >> "$GITHUB_OUTPUT"
 
-      - name: Record the pending deployment
+      - name: Record the release
         env:
           DEPLOYMENT_ID: ${{ steps.upload.outputs.deployment-id }}
           VERSION: ${{ steps.version.outputs.version }}
+          MAVEN_CENTRAL_PUBLISH: ${{ steps.version.outputs.maven_central_publish }}
+          BLOXBEAN_REPO_PUBLISH: ${{ steps.version.outputs.bloxbean_repo_publish }}
           DOCKER_PUBLISH: ${{ steps.version.outputs.docker_publish }}
           NPM_PUBLISH: ${{ steps.version.outputs.npm_publish }}
           GITHUB_RELEASE: ${{ steps.version.outputs.github_release }}
@@ -126,23 +225,31 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## Maven Central deployment staged - NOT published"
+            echo "## Maven artifacts of \`yano:$VERSION\`"
             echo
-            echo "Deployment \`$DEPLOYMENT_ID\` (\`yano:$VERSION\`) passed validation"
-            echo "and is waiting for a human."
+            if [[ "$BLOXBEAN_REPO_PUBLISH" == true ]]; then
+              echo "**BloxBean repository: published** at $PUBLIC_REPOSITORY_URL (public and permanent)."
+            else
+              echo "BloxBean repository: not published (bloxbean_repo_publish=false)."
+            fi
             echo
-            echo "Publish it through the approval-gated workflow:"
-            echo "https://github.com/$GITHUB_REPOSITORY/actions/workflows/publish-central.yml"
-            echo
-            echo "Or from the portal: https://central.sonatype.com/publishing/deployments"
+            if [[ "$MAVEN_CENTRAL_PUBLISH" == true ]]; then
+              echo "**Maven Central: deployment \`$DEPLOYMENT_ID\` staged - NOT published.** It passed"
+              echo "validation and is waiting for a human. Publish it through the approval-gated workflow:"
+              echo "https://github.com/$GITHUB_REPOSITORY/actions/workflows/publish-central.yml"
+              echo
+              echo "Or from the portal: https://central.sonatype.com/publishing/deployments"
+            else
+              echo "Maven Central: not published (maven_central_publish=false)."
+            fi
             echo
             echo "Release side effects of this tag, which do not wait for the Central deployment:"
             echo "- Docker images (docker_publish, next job): $DOCKER_PUBLISH"
             echo "- npm packages (npm_publish, release-dist.yml): $NPM_PUBLISH"
             echo "- GitHub release (github_release, release-dist.yml): $GITHUB_RELEASE"
-            if [[ "$DOCKER_PUBLISH$NPM_PUBLISH$GITHUB_RELEASE" != *true* ]]; then
+            if [[ "$BLOXBEAN_REPO_PUBLISH$DOCKER_PUBLISH$NPM_PUBLISH$GITHUB_RELEASE" != *true* ]]; then
               echo
-              echo "Nothing public for this tag. If this was a rehearsal, drop the deployment in the portal."
+              echo "Nothing public for this tag. If this was a rehearsal, drop any Central deployment in the portal."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
