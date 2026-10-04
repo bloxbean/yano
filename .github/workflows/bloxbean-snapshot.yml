@@ -6,10 +6,11 @@ name: Publish snapshot to the BloxBean Maven repository
 # snapshots) and of the release workflows; it publishes no distribution, image or npm package.
 #
 # Gradle only publishes to a local directory, through the `stagingRepository` hook in build.gradle; it knows nothing
-# about the storage. This workflow owns the transfer. It seeds each artifact's maven-metadata.xml from the bucket so
-# that Gradle appends the new version instead of replacing the version list, checks the staged tree, uploads it with
-# the AWS CLI, and verifies the result through the public URL with a real Gradle consumer. It never deletes and
-# never writes outside maven/snapshots/org/yanoproject/, which other BloxBean projects share a bucket with.
+# about the storage. .github/scripts/bloxbean-maven.sh, shared with release.yml, owns the transfer: it seeds each
+# artifact's maven-metadata.xml from the bucket so that Gradle appends the new version instead of replacing the
+# version list, uploads the checked tree with the AWS CLI, and verifies the result through the public URL with a
+# real Gradle consumer. It never deletes and never writes outside maven/snapshots/org/yanoproject/, which other
+# BloxBean projects share a bucket with.
 
 on:
   workflow_dispatch:
@@ -80,54 +81,16 @@ jobs:
           echo "Publishing $VERSION"
 
 
-      # Stages every publication once to learn which artifactIds this build owns: those, and only those, are
-      # seeded and uploaded. The scope check ties that set to the Maven Central deployment scope.
       - name: Discover the Maven publications
         id: discover
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./gradlew verifyMavenReleasePublicationScope publishAllPublicationsToStagingRepository \
-            -PstagingRepository="$STAGING_DIR" -PskipSigning=true --stacktrace | tee "$RUNNER_TEMP/discover.log"
-          SCOPE=$(grep -oE 'Central deployment scope: [0-9]+ projects' "$RUNNER_TEMP/discover.log" | grep -oE '[0-9]+')
-          ARTIFACTS=$(find "$STAGING_DIR/$GROUP_PATH" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
-          COUNT=$(wc -l <<< "$ARTIFACTS")
-          if [[ "$COUNT" != "$SCOPE" ]]; then
-            echo "::error::Staged $COUNT artifacts, but the Central deployment scope has $SCOPE projects." >&2
-            exit 1
-          fi
-          echo "artifacts=$(tr '\n' ' ' <<< "$ARTIFACTS")" >> "$GITHUB_OUTPUT"
-          echo "$COUNT artifacts: $(tr '\n' ' ' <<< "$ARTIFACTS")"
+        run: bash .github/scripts/bloxbean-maven.sh discover -PskipSigning=true
 
-      # Gradle appends its version to an existing maven-metadata.xml in the target repository, so the staging
-      # directory is emptied and seeded with each artifact's published metadata. Read through the S3 API, not the
-      # public URL, so the copy is the stored object rather than an edge-cached one. A missing object is an
-      # artifact's first publication; any other error stops the run instead of silently replacing the published
-      # version list. A copy of every seed lets the verification prove that no published version was dropped.
       - name: Seed metadata from the repository
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "$STAGING_DIR"
-          mkdir -p "$RUNNER_TEMP/maven-seed"
-          for artifact in $ARTIFACTS; do
-            key="$REPOSITORY_PREFIX/$GROUP_PATH/$artifact/maven-metadata.xml"
-            if aws s3api head-object --bucket "$BUCKET" --key "$key" > /dev/null 2> "$RUNNER_TEMP/head.err"; then
-              aws s3 cp --only-show-errors "s3://$BUCKET/$key" "$RUNNER_TEMP/maven-seed/$artifact.xml"
-              install -D -m 644 "$RUNNER_TEMP/maven-seed/$artifact.xml" \
-                "$STAGING_DIR/$GROUP_PATH/$artifact/maven-metadata.xml"
-              echo "$artifact: appending to the published metadata"
-            elif grep -q '(404)' "$RUNNER_TEMP/head.err"; then
-              echo "$artifact: first publication"
-            else
-              cat "$RUNNER_TEMP/head.err" >&2
-              exit 1
-            fi
-          done
+        run: bash .github/scripts/bloxbean-maven.sh seed
 
       - name: Stage the Maven publications
         run: >-
@@ -145,116 +108,22 @@ jobs:
           python3 .github/scripts/verify-maven-staging.py "$STAGING_DIR" "$RUNNER_TEMP/maven-seed" "$GROUP_PATH" \
             "$VERSION" $ARTIFACTS
 
-      # Artifacts, then each version's metadata, then each artifact's version list, so a reader never sees
-      # metadata naming something that is not there yet. A filter pattern's `*` also matches `/`, and the last
-      # matching filter wins: `*/*/maven-metadata.xml*` is the version level only. `cp` without --delete only adds
-      # or replaces the staged keys. Metadata is marked no-cache so an edge cache rule on the domain can never
-      # serve a stale version list. A run stopped part-way is repaired by running the workflow again.
       - name: Upload to the repository
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          source="$STAGING_DIR/$GROUP_PATH/"
-          target="s3://$BUCKET/$REPOSITORY_PREFIX/$GROUP_PATH/"
-          aws s3 cp "$source" "$target" --recursive --only-show-errors \
-            --exclude '*maven-metadata.xml*'
-          aws s3 cp "$source" "$target" --recursive --only-show-errors --cache-control no-cache \
-            --exclude '*' --include '*/*/maven-metadata.xml*'
-          aws s3 cp "$source" "$target" --recursive --only-show-errors --cache-control no-cache \
-            --exclude '*' --include '*maven-metadata.xml*' --exclude '*/*/maven-metadata.xml*'
-          echo "Uploaded $(find "$source" -type f | wc -l) files to $REPOSITORY_PREFIX/$GROUP_PATH/"
+        run: bash .github/scripts/bloxbean-maven.sh upload
 
       - name: Verify the public repository
         env:
           VERSION: ${{ steps.version.outputs.version }}
           ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for artifact in $ARTIFACTS; do
-            for path in "$GROUP_PATH/$artifact/maven-metadata.xml" \
-                "$GROUP_PATH/$artifact/$VERSION/maven-metadata.xml"; do
-              served=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$PUBLIC_REPOSITORY_URL/$path" \
-                | sha256sum | cut -d' ' -f1)
-              if [[ "$served" != "$(sha256sum < "$STAGING_DIR/$path" | cut -d' ' -f1)" ]]; then
-                echo "::error::$PUBLIC_REPOSITORY_URL/$path does not serve the uploaded file." >&2
-                exit 1
-              fi
-            done
-          done
-          echo "Public metadata matches for every artifact."
+        run: bash .github/scripts/bloxbean-maven.sh verify-public
 
-      # Resolves the starter and the BOM the way a consumer would: org.yanoproject only from the public URL,
-      # everything else from Maven Central. Every Yano jar Gradle downloads must be byte-identical to the staged one.
       - name: Resolve with a Gradle consumer
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          consumer="$RUNNER_TEMP/maven-consumer"
-          mkdir -p "$consumer"
-          echo "rootProject.name = 'maven-consumer'" > "$consumer/settings.gradle"
-          cat > "$consumer/build.gradle" <<'EOF'
-          plugins {
-              id 'java-library'
-          }
-          repositories {
-              exclusiveContent {
-                  forRepository {
-                      maven {
-                          url = uri(providers.gradleProperty('repositoryUrl').get())
-                          mavenContent {
-                              snapshotsOnly()
-                          }
-                      }
-                  }
-                  filter {
-                      includeGroup 'org.yanoproject'
-                  }
-              }
-              mavenCentral()
-          }
-          dependencies {
-              implementation platform("org.yanoproject:yano-bom:${yanoVersion}")
-              implementation "org.yanoproject:yano:${yanoVersion}"
-          }
-          tasks.register('resolveYano') {
-              def runtimeClasspath = configurations.runtimeClasspath
-              doLast {
-                  runtimeClasspath.files.each { println "resolved ${it}" }
-              }
-          }
-          EOF
-          ./gradlew -p "$consumer" resolveYano --refresh-dependencies -q \
-            -PyanoVersion="$VERSION" -PrepositoryUrl="$PUBLIC_REPOSITORY_URL" | tee "$RUNNER_TEMP/resolved.txt"
-          # Gradle caches a snapshot jar under its base version; the staged file carries the timestamped value
-          # that the version-level metadata names.
-          matched=0
-          while read -r resolved; do
-            artifact=$(basename "$resolved" "-$VERSION.jar")
-            [[ "$artifact" != "$(basename "$resolved")" ]] || continue
-            staged="$STAGING_DIR/$GROUP_PATH/$artifact/$VERSION"
-            value=""
-            if [[ -f "$staged/maven-metadata.xml" ]]; then
-              value=$(sed -n '/<value>/{s:.*<value>\(.*\)</value>.*:\1:p;q}' "$staged/maven-metadata.xml")
-            fi
-            if [[ -z "$value" ]] || ! cmp -s "$resolved" "$staged/$artifact-$value.jar"; then
-              echo "::error::Resolved $artifact does not match the staged artifact." >&2
-              exit 1
-            fi
-            matched=$((matched + 1))
-          done < <(sed -n 's/^resolved //p' "$RUNNER_TEMP/resolved.txt")
-          for required in yano-core-api yano-runtime; do
-            if ! grep -qF "/$required-$VERSION.jar" "$RUNNER_TEMP/resolved.txt"; then
-              echo "::error::The consumer did not resolve $required." >&2
-              exit 1
-            fi
-          done
-          echo "Resolved $matched Yano jars from $PUBLIC_REPOSITORY_URL, all identical to the staged ones."
+        run: bash .github/scripts/bloxbean-maven.sh consume
 
       - name: Record the publication
         env:
