@@ -31,6 +31,7 @@ jobs:
       - name: Require green CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_WORKFLOWS: build.yml integration.yml
         run: bash .github/scripts/require-green-ci.sh
       - name: Require a SNAPSHOT version
         shell: bash
@@ -66,6 +67,8 @@ jobs:
     environment: release-staging
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     # Only latest.json is shared between runs; serialize the uploads so it names the most recently published build.
     concurrency:
       group: bloxbean-snapshot-dist
@@ -74,12 +77,16 @@ jobs:
       BUCKET: ${{ vars.R2_BUCKET }}
       PREFIX: dist/snapshots/yano
       PUBLIC_URL: https://repo.bloxbean.org
+      DIST_DIR: dist
       AWS_ENDPOINT_URL: ${{ vars.R2_ENDPOINT }}
       AWS_DEFAULT_REGION: auto
       # AWS CLI 2.23+ sends request checksums R2 does not accept by default; send them only when an API needs one.
       AWS_REQUEST_CHECKSUM_CALCULATION: when_required
       AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Download the built distributions
         uses: actions/download-artifact@v4
         with:
@@ -87,10 +94,10 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # The zip names carry the version, which build.gradle derives with the short commit id: exactly one JVM zip
-      # and the four native zips of this commit, nothing else.
-      - name: Verify the distributions and write the manifest
-        id: manifest
+      # Yano-specific: the zip names carry the version, which build.gradle derives with the short commit id. Exactly
+      # one JVM zip and the four native zips of this commit, nothing else.
+      - name: Verify the distributions
+        id: dist
         shell: bash
         run: |
           set -euo pipefail
@@ -111,90 +118,49 @@ jobs:
             echo "::error::Unexpected distribution set: $(tr '\n' ' ' <<< "$found")" >&2
             exit 1
           fi
-          sha256sum -- *.zip > SHA256SUMS
-          BASE="$PUBLIC_URL/$PREFIX/$VERSION"
-          RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          python3 - "$VERSION" "$BASE" "$RUN" > manifest.json <<'EOF'
-          import hashlib, json, os, sys
-          from datetime import datetime, timezone
-          version, base, run = sys.argv[1:]
-          files = []
-          for name in sorted(n for n in os.listdir('.') if n.endswith('.zip')):
-              digest = hashlib.sha256()
-              with open(name, 'rb') as f:
-                  for chunk in iter(lambda: f.read(1 << 20), b''):
-                      digest.update(chunk)
-              files.append({'name': name, 'url': f'{base}/{name}', 'size': os.path.getsize(name),
-                            'sha256': digest.hexdigest()})
-          print(json.dumps({'version': version, 'commit': os.environ['GITHUB_SHA'],
-                            'branch': os.environ['GITHUB_REF_NAME'],
-                            'published': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-                            'run': run, 'files': files}, indent=2))
-          EOF
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          cat manifest.json
 
-      # Zips and SHA256SUMS first, then manifest.json, which marks the build as published, then latest.json. A
+      - name: Write the manifest
+        env:
+          VERSION: ${{ steps.dist.outputs.version }}
+        run: bash .github/scripts/bloxbean-dist.sh manifest
+
+      # Files and SHA256SUMS first, then manifest.json, which marks the build as published, then latest.json. A
       # published build is never overwritten, so its URLs and checksums stay valid until it expires; a run that
       # stopped before the manifest is completed by running again.
       - name: Upload to the bucket
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          VERSION: ${{ steps.manifest.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          target="s3://$BUCKET/$PREFIX/$VERSION"
-          if aws s3api head-object --bucket "$BUCKET" --key "$PREFIX/$VERSION/manifest.json" \
-              > /dev/null 2> "$RUNNER_TEMP/head.err"; then
-            echo "::error::$VERSION is already published at $PUBLIC_URL/$PREFIX/$VERSION/." >&2
-            exit 1
-          elif ! grep -q '(404)' "$RUNNER_TEMP/head.err"; then
-            cat "$RUNNER_TEMP/head.err" >&2
-            exit 1
-          fi
-          aws s3 cp dist/ "$target/" --recursive --only-show-errors --exclude manifest.json
-          aws s3 cp dist/manifest.json "$target/manifest.json" --only-show-errors \
-            --content-type application/json
-          aws s3 cp dist/manifest.json "s3://$BUCKET/$PREFIX/latest.json" --only-show-errors \
-            --content-type application/json --cache-control no-cache
+          VERSION: ${{ steps.dist.outputs.version }}
+        run: bash .github/scripts/bloxbean-dist.sh upload
 
       - name: Verify the public files
         env:
-          VERSION: ${{ steps.manifest.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$PUBLIC_URL/$PREFIX/latest.json" \
-            -o "$RUNNER_TEMP/latest.json"
-          if ! cmp -s "$RUNNER_TEMP/latest.json" dist/manifest.json; then
-            echo "::error::$PUBLIC_URL/$PREFIX/latest.json does not serve this build's manifest." >&2
-            exit 1
-          fi
-          while read -r url size; do
-            served=$(curl -fsSIL --retry 5 --retry-delay 5 --retry-all-errors "$url" \
-              | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')
-            if [[ "$served" != "$size" ]]; then
-              echo "::error::$url serves $served bytes, expected $size." >&2
-              exit 1
-            fi
-          done < <(jq -r '.files[] | "\(.url) \(.size)"' dist/manifest.json)
-          echo "latest.json and every zip are served for $VERSION."
+          VERSION: ${{ steps.dist.outputs.version }}
+        run: bash .github/scripts/bloxbean-dist.sh verify
 
       - name: Record the publication
         env:
-          VERSION: ${{ steps.manifest.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo "## Published snapshot distributions \`$VERSION\`"
-            echo
-            echo "- Build: $PUBLIC_URL/$PREFIX/$VERSION/ (\`SHA256SUMS\`, \`manifest.json\`)"
-            echo "- Newest build pointer: $PUBLIC_URL/$PREFIX/latest.json"
-            echo
-            echo '| File | Size |'
-            echo '|---|---|'
-            jq -r '.files[] | "| [\(.name)](\(.url)) | \(.size / 1e6 | round) MB |"' dist/manifest.json
-          } >> "$GITHUB_STEP_SUMMARY"
+          VERSION: ${{ steps.dist.outputs.version }}
+        run: bash .github/scripts/bloxbean-dist.sh summary
+
+  # Updates the "Development snapshot" pre-release (tag `snapshot`) on the Releases page, so users find the newest
+  # snapshot. Its own job: the only one with a write token, and it never sees the bucket credentials.
+  github-snapshot:
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Update the Development snapshot release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAVEN_METADATA_URL: https://repo.bloxbean.org/maven/snapshots/org/yanoproject/yano/maven-metadata.xml
+          MAVEN_COORDINATE: org.yanoproject:yano
+          MAVEN_REPOSITORY_URL: https://repo.bloxbean.org/maven/snapshots
+          DIST_LATEST_URL: https://repo.bloxbean.org/dist/snapshots/yano/latest.json
+        run: bash .github/scripts/update-snapshot-release.sh

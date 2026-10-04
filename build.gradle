@@ -29,6 +29,11 @@ repositories {
     maven {
         url "https://central.sonatype.com/repository/maven-snapshots/"
     }
+    // BloxBean Maven repository: development snapshots of BloxBean projects (release-ops docs/12).
+    maven {
+        url "https://repo.bloxbean.org/maven/snapshots"
+        mavenContent { snapshotsOnly() }
+    }
 }
 
 def aggregateSbomJson = layout.buildDirectory.file(
@@ -485,6 +490,11 @@ subprojects {
         mavenCentral()
         maven {
             url "https://central.sonatype.com/repository/maven-snapshots/"
+        }
+        // BloxBean Maven repository: development snapshots of BloxBean projects (release-ops docs/12).
+        maven {
+            url "https://repo.bloxbean.org/maven/snapshots"
+            mavenContent { snapshotsOnly() }
         }
     }
 

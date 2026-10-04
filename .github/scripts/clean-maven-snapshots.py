@@ -4,8 +4,10 @@
 Usage: clean-maven-snapshots.py plan
        clean-maven-snapshots.py delete <version>...
 
-Environment: BUCKET, REPOSITORY_PREFIX (maven/snapshots), GROUP_PATH (org/yanoproject), KEEP_VERSIONS, KEEP_DAYS,
-and the AWS CLI's endpoint and credentials.
+Environment: BUCKET, REPOSITORY_PREFIX (maven/snapshots), GROUP_PATH (org/yanoproject), ARTIFACTS (this build's
+artifact paths, from `bloxbean-maven.sh discover`), KEEP_VERSIONS, KEEP_DAYS, and the AWS CLI's endpoint and
+credentials. Standard: bloxbean/release-ops docs/12-bloxbean-maven-repository.md and templates/scripts/; keep it
+identical across repositories.
 
 Every publication uploads all artifacts under one commit version, so versions are chosen once and dropped from
 every artifact. A version is kept if it is among the KEEP_VERSIONS most recently published, was published within
@@ -13,8 +15,9 @@ KEEP_DAYS, or is any artifact's <latest>. `plan` reports the rest. `delete` take
 the plan, drops only those still eligible, first rewrites each artifact's maven-metadata.xml without them, and
 then deletes their directories, so the metadata never lists a deleted version.
 
-Only artifact directories directly under GROUP_PATH that carry a maven-metadata.xml are touched: other groups and
-projects in the bucket, and maven/releases, are never listed or written.
+Only this build's artifactIds under GROUP_PATH are touched. A group can be shared by several repositories
+(com/bloxbean/cardano), so the artifact set comes from the build, never from the bucket; other projects, other
+groups and maven/releases are never written.
 """
 import hashlib
 import json
@@ -31,6 +34,7 @@ BUCKET = os.environ['BUCKET']
 ROOT = f"{os.environ['REPOSITORY_PREFIX']}/{os.environ['GROUP_PATH']}/"
 KEEP_VERSIONS = int(os.environ['KEEP_VERSIONS'])
 KEEP_DAYS = int(os.environ['KEEP_DAYS'])
+ARTIFACTS = set(os.environ['ARTIFACTS'].split())
 METADATA = 'maven-metadata.xml'
 
 
@@ -42,19 +46,27 @@ def aws(*args):
 
 
 def scan():
-    """Returns {artifact: {version: [(key, size, modified)]}} for the artifacts this group owns."""
+    """Returns {artifact: {version: [(key, size, modified)]}} for this build's artifacts.
+
+    An artifact is a path under GROUP_PATH: usually the artifactId, nested for a Gradle plugin marker. Keys are matched
+    to the longest artifact path they start with.
+    """
     listing = json.loads(aws('s3api', 'list-objects-v2', '--bucket', BUCKET, '--prefix', ROOT, '--output', 'json',
                              '--query', 'Contents[].[Key, Size, LastModified]') or 'null') or []
-    owned = {key[len(ROOT):].split('/')[0] for key, _, _ in listing if key[len(ROOT):].count('/') == 1
-             and key.endswith('/' + METADATA)}
+    longest_first = sorted(ARTIFACTS, key=len, reverse=True)
+    owned = set()
     artifacts = defaultdict(lambda: defaultdict(list))
     for key, size, modified in listing:
-        parts = key[len(ROOT):].split('/')
-        if parts[0] in owned and len(parts) == 3:
-            artifacts[parts[0]][parts[1]].append(
-                (key, size, datetime.fromisoformat(modified.replace('Z', '+00:00'))))
-    return {artifact: dict(versions) for artifact, versions in artifacts.items()} | {
-        artifact: {} for artifact in owned - artifacts.keys()}
+        rel = key[len(ROOT):]
+        artifact = next((a for a in longest_first if rel.startswith(a + '/')), None)
+        if artifact is None:
+            continue
+        rest = rel[len(artifact) + 1:].split('/')
+        if rest == [METADATA]:
+            owned.add(artifact)
+        elif len(rest) == 2:
+            artifacts[artifact][rest[0]].append((key, size, datetime.fromisoformat(modified.replace('Z', '+00:00'))))
+    return {artifact: dict(artifacts.get(artifact, {})) for artifact in owned}
 
 
 def read_metadata(artifact):

@@ -1,4 +1,4 @@
-# From the release-ops standard (templates/workflows/release.yml, 2026-09-14), adapted for Yano: no release
+# From the release-ops standard (templates/workflows/release.yml, 2026-10-04), adapted for Yano: no release
 # assets and no `github-release` job here (release-dist.yml owns the GitHub release, the distribution zips and
 # npm), plus the BloxBean Maven repository and the Docker release, each gated by a flag.
 name: Release Maven artifacts
@@ -51,6 +51,9 @@ jobs:
       BUCKET: ${{ vars.R2_BUCKET }}
       REPOSITORY_PREFIX: maven/releases
       PUBLIC_REPOSITORY_URL: https://repo.bloxbean.org/maven/releases
+      CONSUMER_PLATFORM: org.yanoproject:yano-bom
+      CONSUMER_DEPENDENCIES: org.yanoproject:yano
+      CONSUMER_REQUIRED: yano-core-api yano-runtime
       # Absolute, because build.gradle resolves stagingRepository against each project's own directory.
       STAGING_DIR: ${{ github.workspace }}/build/bloxbean-maven
       AWS_ENDPOINT_URL: ${{ vars.R2_ENDPOINT }}
@@ -182,6 +185,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: bash .github/scripts/bloxbean-maven.sh upload
 
       # Uploads a USER_MANAGED deployment and waits for Sonatype validation. It stops there: nothing is
@@ -221,6 +225,7 @@ jobs:
         if: ${{ !cancelled() && steps.bloxbean.outcome == 'success' }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
         run: bash .github/scripts/bloxbean-maven.sh consume
 
       # Reports what actually happened, including on failure, so a partly published release is never mistaken for

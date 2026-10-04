@@ -6,6 +6,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/java-25-orange.svg" alt="Java 25">
   <a href="https://central.sonatype.com/namespace/org.yanoproject"><img src="https://img.shields.io/maven-central/v/org.yanoproject/yano-runtime?label=maven%20central" alt="Maven Central"></a>
+  <a href="https://github.com/bloxbean/yano/releases/tag/snapshot"><img src="https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2F%2Frepo.bloxbean.org%2Fmaven%2Fsnapshots%2Forg%2Fyanoproject%2Fyano%2Fmaven-metadata.xml&strategy=latestProperty&label=snapshot" alt="Latest development snapshot"></a>
   <a href=".github/workflows/build.yml"><img src="https://github.com/bloxbean/yano/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 </p>
 
@@ -115,23 +116,25 @@ curl -X POST http://localhost:7070/api/v1/devnet/epochs/catch-up
 
 ## Use as a library
 
-Yano publishes individual modules to Maven Central (release coming — until then SNAPSHOT
-artifacts are available on Sonatype's snapshot repo).
+Yano publishes its modules to [Maven Central](https://central.sonatype.com/namespace/org.yanoproject)
+and, from the next release on, to the BloxBean Maven repository (`https://repo.bloxbean.org/maven/releases`).
 
-Pick the latest version from
-[Maven Central](https://central.sonatype.com/namespace/org.yanoproject)
-(or, while pre-release, the
-[Sonatype snapshots repo](https://central.sonatype.com/repository/maven-snapshots/org/yanoproject/)).
+Development snapshots are in `https://repo.bloxbean.org/maven/snapshots`, one version per commit, for example
+`0.1.0-pre18-de81cc5-SNAPSHOT`. The newest version, a ready-to-paste snippet and the snapshot distribution zips
+are on the [Development snapshot](https://github.com/bloxbean/yano/releases/tag/snapshot) release page.
 
 ```gradle
 repositories {
     mavenCentral()
-    // While Yano is pre-release:
-    maven { url 'https://central.sonatype.com/repository/maven-snapshots/' }
+    // Development snapshots (pin the exact version from the Development snapshot release):
+    maven {
+        url = uri('https://repo.bloxbean.org/maven/snapshots')
+        mavenContent { snapshotsOnly() }
+    }
 }
 
 ext {
-    yanoVersion = '<latest>'  // see Maven Central link above
+    yanoVersion = '<latest>'  // a release from Maven Central, or a snapshot version
 }
 
 dependencies {

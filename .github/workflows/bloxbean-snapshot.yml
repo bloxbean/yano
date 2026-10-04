@@ -40,6 +40,10 @@ jobs:
       BUCKET: ${{ vars.R2_BUCKET }}
       REPOSITORY_PREFIX: maven/snapshots
       PUBLIC_REPOSITORY_URL: https://repo.bloxbean.org/maven/snapshots
+      # What the Gradle consumer check resolves, and which of this build's jars it must get.
+      CONSUMER_PLATFORM: org.yanoproject:yano-bom
+      CONSUMER_DEPENDENCIES: org.yanoproject:yano
+      CONSUMER_REQUIRED: yano-core-api yano-runtime
       # Absolute, because build.gradle resolves stagingRepository against each project's own directory.
       STAGING_DIR: ${{ github.workspace }}/build/bloxbean-maven
       AWS_ENDPOINT_URL: ${{ vars.R2_ENDPOINT }}
@@ -56,6 +60,7 @@ jobs:
       - name: Require green CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_WORKFLOWS: build.yml integration.yml
         run: bash .github/scripts/require-green-ci.sh
       - name: Set up JDK 25
         uses: actions/setup-java@v4
@@ -113,6 +118,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: bash .github/scripts/bloxbean-maven.sh upload
 
       - name: Verify the public repository
@@ -124,6 +130,7 @@ jobs:
       - name: Resolve with a Gradle consumer
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
         run: bash .github/scripts/bloxbean-maven.sh consume
 
       - name: Record the publication
@@ -151,3 +158,23 @@ jobs:
             echo '}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Updates the "Development snapshot" pre-release (tag `snapshot`) on the Releases page, so users find the newest
+  # snapshot. Its own job: the only one with a write token, and it never sees the bucket credentials.
+  github-snapshot:
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Update the Development snapshot release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAVEN_METADATA_URL: https://repo.bloxbean.org/maven/snapshots/org/yanoproject/yano/maven-metadata.xml
+          MAVEN_COORDINATE: org.yanoproject:yano
+          MAVEN_REPOSITORY_URL: https://repo.bloxbean.org/maven/snapshots
+          DIST_LATEST_URL: https://repo.bloxbean.org/dist/snapshots/yano/latest.json
+        run: bash .github/scripts/update-snapshot-release.sh
