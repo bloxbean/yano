@@ -7,14 +7,14 @@ on:
       - main
       - develop
       - develop*
-      - release*
+      - release**
       - next
   pull_request:
     branches:
       - main
       - develop
       - develop*
-      - release*
+      - release**
       - next
 
 permissions:
