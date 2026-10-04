@@ -1318,8 +1318,8 @@ the code follows this section:
    are treated as settled, which is Q8 (b) with the prune cursor as the
    horizon; the journal's finalized cursors are still checked. Without this,
    every retention-enabled chain would reach `L1_EVIDENCE_UNAVAILABLE` on
-   upgrade with no exit. **Maintainer decision**: accept this horizon, or
-   declare retention and upgrade reconciliation incompatible.
+   upgrade with no exit. **Maintainer decision (2026-10-04): accepted.** The
+   prune cursor is the settled-history horizon for this scan.
 5. **D8b scope.** Epoch-observation spool jobs record their boundary block, so
    D8b judges them too: a dead unfinalized job is removed, and a dead finalized
    one raises `DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION`. Generation
@@ -1333,8 +1333,10 @@ the code follows this section:
    baseline.
 7. **D4a, F2.** The metadata-mode pending anchor is durable
    (`anchor_pending_v1`), so a fact-write failure followed by a crash still
-   records the confirmation exactly once. Script mode recovers from the thread
-   UTxO as before.
+   records the confirmation exactly once. A rollback clears it in the same
+   write as the frontier rewind, so a retry can never find the frontier
+   rewound but a stale range still persisted. Script mode recovers from the
+   thread UTxO as before.
 8. **D7a and §8, which chains run a loop.** A loop runs for every chain that
    consumes L1, which includes the script-anchor verifier every member runs
    once the node wires L1 transaction access, so on a node every chain runs
@@ -1382,8 +1384,21 @@ the code follows this section:
     app-chain QA tests pass. A rollback while the follower is down cannot be
     driven end to end yet: the L1 client restarts ChainSync from its tip
     alone, so it finds no intersection once the upstream has dropped that
-    block (a separate L1 issue). The subsystem test covers the app-chain side
-    of that case.
+    block (a separate L1 issue, #169). The subsystem test covers the
+    app-chain side of that case.
+17. **D8b rule 7, overlapping writers.** Chain-state writers do not share
+    one lock, so the canonical mutation sequence counts active writers across
+    threads: it turns odd when the first one starts and even only when the
+    last one ends. Same-thread nesting still counts once.
+18. **D8, baseline at the indexed horizon.** The baseline history is at most
+    `max(depth, 1) + 64` points and stops early at the oldest indexed block
+    (a node bootstrapped from a recent point), without inventing an `ORIGIN`
+    ancestor. A missing reference inside the indexed history is a gap, and
+    the pass retries.
+19. **D8b commit, cache reload.** The reconciled record is published as soon
+    as it is durable. If the hosts' cache reload then fails, the loop retries
+    the reload on the committed record, with the fence closed, and never
+    re-runs reconciliation over a newer tip.
 
 ## Revision history
 
@@ -1466,3 +1481,8 @@ the code follows this section:
   readiness and status, the chain-index horizon for D8b rule 6, dropping
   script-anchor identity candidates, observation verification after a restart,
   and the verification added for M4.
+- **r8** (2026-10-04; responds to the implementation review of `9be40be25`):
+  I1 → §15 item 19 (reload failure keeps the committed baseline); I2 → item 17
+  (multi-writer sequence lock); I3 → item 7 (pending range cleared with the
+  rewind); I4 → item 18 (baseline stops at the indexed horizon). The
+  maintainer accepted the prune-cursor horizon of item 4.
