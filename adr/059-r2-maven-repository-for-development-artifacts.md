@@ -1,9 +1,11 @@
 # ADR-059: Cloudflare R2 Maven Repository for Development Artifacts
 
-**Status:** Phase 1 (snapshots) implemented, pending its first run on `main`. Phase 2 (release mirror) proposed.
+**Status:** Phase 1 (snapshots) implemented and in use since 2026-10-04 (`0.1.0-pre18-de81cc5-SNAPSHOT`), with
+approval-gated retention and snapshot distribution zips. Phase 2 (release mirror) proposed.
 **Date:** 2026-10-04
 **Authors:** Claude Code (Opus 5.5)
-**Related:** `.github/workflows/r2-snapshot.yml`, `.github/scripts/verify-maven-staging.py`,
+**Related:** `.github/workflows/bloxbean-snapshot.yml`, `bloxbean-snapshot-cleanup.yml`,
+`bloxbean-snapshot-dist.yml`, `dist-dev.yml`, `.github/scripts/verify-maven-staging.py`, `clean-maven-snapshots.py`,
 `.github/workflows/snapshot_manual.yml`, `.github/workflows/release.yml`, `build.gradle` (`stagingRepository`),
 ADR-023 (Docker release)
 
@@ -54,7 +56,7 @@ bucket, credential, S3 logic or Cloudflare dependency, and no publication is dup
 reached by any S3-compatible client, can replace R2 without touching the build.
 
 ```text
-existing MavenPublications ──► publishAllPublicationsToStagingRepository ──► build/r2-maven/  (Gradle)
+existing MavenPublications ──► publishAllPublicationsToStagingRepository ──► build/bloxbean-maven/  (Gradle)
                                                                                    │
                                                                      AWS CLI over the S3 API     (CI)
                                                                                    ▼
@@ -95,7 +97,7 @@ Yano's existing convention publishes one Maven version per commit. R2 keeps it r
 A moving `x.y.z-SNAPSHOT` would have let consumers float on the newest build, but it would change Yano's version
 semantics for every existing consumer and lose the per-commit pinning above. It is not adopted.
 
-### 4. The workflow: `.github/workflows/r2-snapshot.yml`
+### 4. The workflow: `.github/workflows/bloxbean-snapshot.yml`
 
 A dedicated workflow, separate from `snapshot_manual.yml` and the release workflows.
 
@@ -103,12 +105,12 @@ A dedicated workflow, separate from `snapshot_manual.yml` and the release workfl
 |---|---|---|
 | Trigger | — | `workflow_dispatch` only. The job runs only on `main` or `release/**` and uses the `release-staging` environment. |
 | Resolve the snapshot version | none | Reads the effective version through Gradle and fails unless it ends in `-SNAPSHOT`. |
-| Build with Gradle | none | `clean fullBuild -PskipSigning=true`, the same gate as `snapshot_manual.yml`. |
-| Discover the Maven publications | none | Runs `verifyMavenReleasePublicationScope` and stages every publication into `build/r2-maven`. Records the artifactIds this build owns and requires their count to equal the Central deployment scope. |
-| Seed metadata from R2 | R2 | Empties `build/r2-maven`, then for each of those artifactIds copies its current `maven-metadata.xml` from R2 through the S3 API into it, keeping a copy of each seed. A 404 means a first publication. Any other error fails the run. |
-| Stage the Maven publications | none | `publishAllPublicationsToStagingRepository -PstagingRepository=build/r2-maven`. Gradle appends the new version to the seeded metadata, sets `<latest>`, and regenerates the checksums. |
+| Require green CI for this commit | GitHub token, `actions: read` | Requires a successful push run of `build.yml` and `integration.yml` for the exact commit. Together they run `build`, `extendedTest`, `distributionCheck` and the native build, everything `fullBuild` runs, in parallel jobs. The publication is therefore gated on the same tests without spending about 40 minutes repeating them on one runner. Dispatched before CI finishes, the run stops and is run again later. |
+| Discover the Maven publications | none | Runs `verifyMavenReleasePublicationScope` and stages every publication into `build/bloxbean-maven`. Records the artifactIds this build owns and requires their count to equal the Central deployment scope. |
+| Seed metadata from the repository | bucket | Empties `build/bloxbean-maven`, then for each of those artifactIds copies its current `maven-metadata.xml` from R2 through the S3 API into it, keeping a copy of each seed. A 404 means a first publication. Any other error fails the run. |
+| Stage the Maven publications | none | `publishAllPublicationsToStagingRepository -PstagingRepository=build/bloxbean-maven`. Gradle appends the new version to the seeded metadata, sets `<latest>`, and regenerates the checksums. |
 | Verify the staged repository | none | `.github/scripts/verify-maven-staging.py`: exactly the discovered artifactIds, only under `org/yanoproject/`, only Maven file types, a checksum for every file, one version per artifact, metadata naming that version, every version of the seed still listed, every file the version metadata names present and nothing else, and jar + sources + javadoc + module for every jar-packaged artifact. |
-| Upload to R2 | R2 | `aws s3 cp --recursive` from `build/r2-maven/org/yanoproject/` to `maven/snapshots/org/yanoproject/` in three passes: artifacts, then version-level metadata, then artifact-level metadata, both metadata passes with `Cache-Control: no-cache`. No `--delete`, no `sync` of a parent prefix. |
+| Upload to the repository | bucket | `aws s3 cp --recursive` from `build/bloxbean-maven/org/yanoproject/` to `maven/snapshots/org/yanoproject/` in three passes: artifacts, then version-level metadata, then artifact-level metadata, both metadata passes with `Cache-Control: no-cache`. No `--delete`, no `sync` of a parent prefix. |
 | Verify the public repository | none | For every artifact, the artifact-level and version-level `maven-metadata.xml` served anonymously by `repo.bloxbean.org` must be byte-identical to the uploaded files. |
 | Resolve with a Gradle consumer | none | A throwaway Gradle project resolves `org.yanoproject:yano` and `yano-bom` with `org.yanoproject` restricted (`exclusiveContent`) to the public R2 URL and everything else from Maven Central. Every Yano jar Gradle downloads must be byte-identical to the staged one, and `yano-core-api` and `yano-runtime` must be among them. |
 
@@ -137,7 +139,7 @@ timestamped files stay as unreferenced objects for retention to remove.
 
 #### Concurrency
 
-Seed → publish → upload is a read-modify-write of each artifact's metadata. `concurrency: r2-maven-snapshots`
+Seed → publish → upload is a read-modify-write of each artifact's metadata. `concurrency: bloxbean-maven-snapshots`
 with `cancel-in-progress: false` serializes Yano's runs and never cancels one that may be uploading. GitHub
 concurrency groups are per repository. No cross-repository serialization is needed because Maven metadata is per
 artifactId: as long as no two repositories publish the same artifactId, no two workflows ever write the same
@@ -165,13 +167,13 @@ merges and uploads idempotently. No manual object surgery is needed.
   keeps them away from any other ref, and the job's `if:` skips other branches instead of failing on the policy.
 - No `pull_request` or `pull_request_target` trigger: fork and PR code never runs in this workflow. Dispatch
   requires write access, and the workflow and script are under CODEOWNERS (`@bloxbean/release-owners`).
-- `permissions: contents: read`, `persist-credentials: false`, and no Gradle or setup-java cache in the
-  credentialed job, matching the other release workflows.
+- `permissions: contents: read` plus `actions: read` for the CI gate, `persist-credentials: false`, and no
+  Gradle or setup-java cache in the credentialed job, matching the other release workflows.
 - R2 credentials are injected only into the AWS CLI steps. GitHub masks them, and nothing echoes them.
 - Anonymous users get read-only HTTP access through the custom domain. Writes need the S3 API with a token.
-- Residual risk: R2 API tokens can be scoped to a bucket but not to a key prefix (as of 2026-10), so any BloxBean repository's
-  token can write anywhere in the shared bucket. Mitigations: an Object Read & Write token scoped to the one
-  bucket, environment branch policies and CODEOWNERS in every publishing repository, and workflows that only
+- Residual risk: R2 API tokens can be scoped to a bucket but not to a key prefix (as of 2026-10), so any BloxBean
+  repository's token can write anywhere in the shared bucket. Mitigations: an Object Read & Write token scoped to
+  the one bucket, environment branch policies and CODEOWNERS in every publishing repository, and workflows that only
   write the artifactIds they staged. Separate buckets per project would allow per-project tokens, but a single
   domain would then need a routing Worker. Not adopted for now.
 
@@ -212,8 +214,9 @@ connection.
 1. `main` must carry a `-SNAPSHOT` version. The PR that adds this workflow also moves `main` from the released
    `0.1.0-pre17` to `0.1.0-pre18-SNAPSHOT`. The workflow file must be on `main` too, because GitHub only
    dispatches workflows that exist on the default branch.
-2. Actions → "Publish snapshot to the R2 Maven repository" → Run workflow on `main`, or
-   `gh workflow run r2-snapshot.yml --ref main`.
+2. Wait until the commit's "Clean, Build" and "Integration, Distribution, Native" runs are green. Then
+   Actions → "Publish snapshot to the BloxBean Maven repository" → Run workflow on `main`, or
+   `gh workflow run bloxbean-snapshot.yml --ref main`.
 3. The run verifies the local tree, the public metadata and a Gradle consumer by itself. Its summary prints the
    version and a ready-to-paste consumer block.
 4. Independently, from any machine:
@@ -236,9 +239,9 @@ connection.
 5. Running the workflow twice on different commits must leave both versions in
    `.../yano-core-api/maven-metadata.xml`, with `<latest>` naming the second.
 
-Before merging, the step scripts of `r2-snapshot.yml` ran in an Ubuntu JDK 25 container against MinIO, with
-MinIO's anonymous path standing in for `repo.bloxbean.org`. Two deviations from the real run: the `fullBuild` gate
-was skipped, and the consumer allowed MinIO's plain-`http` URL. Results:
+Before merging, the step scripts of the workflow (then `r2-snapshot.yml`) ran in an Ubuntu JDK 25 container against
+MinIO, with MinIO's anonymous path standing in for `repo.bloxbean.org`. Two deviations from the real run: the build
+gate was skipped, and the consumer allowed MinIO's plain-`http` URL. Results:
 
 - **Release version on `main`:** `0.1.0-pre17` was rejected before any build.
 - **First publication:** 24 × "first publication", 810 files validated, uploaded and verified.
@@ -251,18 +254,18 @@ was skipped, and the consumer allowed MinIO's plain-`http` URL. Results:
 - **Validator:** it rejected a stray zip, a missing sources jar, missing version metadata, a foreign group path,
   a wrong artifact set, a wrong version, and a staged list that dropped a seeded version.
 
-## Snapshot retention (proposal, not implemented)
+## Snapshot retention
 
 Storage is about 36 MB per published commit. At about five `main` pushes a day, once publishing follows `main`,
 that is about 5 GB a month. R2 charges no egress, so storage and Class A writes (about 810 PUTs per run) are the
 cost.
 
-Proposed policy:
+Policy:
 
 | Content | Retention |
 |---|---|
-| Commit snapshot versions (`x.y.z-<sha>-SNAPSHOT`) | Delete after 60 days, but always keep the newest 20 and the `<latest>` version |
-| Superseded timestamped builds inside a kept version (same-commit re-runs) | Delete files the version-level metadata no longer names |
+| Commit snapshot versions (`x.y.z-<sha>-SNAPSHOT`) | Delete after 60 days, but always keep the newest 20 and every `<latest>` version |
+| Superseded timestamped builds inside a kept version (same-commit re-runs) | Kept for now: at about 36 MB per re-run they are not worth the extra deletion logic |
 | Pre-release and RC versions under `maven/releases` | Permanent, like Maven Central |
 | GA releases | Permanent |
 
@@ -273,15 +276,114 @@ Proposed policy:
 - delete even the newest version when publishing pauses for longer than the rule's age;
 - be unable to express "keep the newest N".
 
-Cleanup must be Maven-aware. It belongs in a scheduled workflow in the same `r2-maven-snapshots` concurrency
-group, so it never interleaves with a publication. For each artifact it:
+Cleanup must be Maven-aware. It is `.github/workflows/bloxbean-snapshot-cleanup.yml`, running
+`.github/scripts/clean-maven-snapshots.py`.
 
-1. reads the metadata and selects versions to drop;
-2. rewrites and uploads the artifact-level metadata without those versions, with fresh checksums;
-3. only then deletes the version directories.
+**Choosing what to drop.** Every publication uploads all artifacts under one commit version, so versions are
+chosen once and dropped from every artifact. Choosing per artifact could leave `yano-runtime` at a version whose
+`yano-core-api` is gone. A version's age is the newest object time in any of its directories, so a same-commit
+re-run counts as recent. Version directories that no metadata lists (an interrupted upload) are aged and dropped
+the same way.
 
-Metadata goes first so that it never lists a deleted version. The cleanup deletes only keys under the artifactIds
-it owns, and never anything under `maven/releases/`.
+**Running it.**
+
+- **Plan:** every run plans first and writes the versions it would drop, with sizes, to the run summary.
+- **Approval:** with `dry_run` off, removal then waits for a release owner in the `release` environment, the same
+  reviewers and the same gate as `publish-central.yml`. The requester can't approve their own run.
+- **Removal:** only the versions the approver saw are removed, and only those still eligible. Each artifact's
+  `maven-metadata.xml` is rewritten first without them, with fresh checksums and `Cache-Control: no-cache`, so it
+  never lists a deleted version. The version directories are deleted after that.
+- **Concurrency:** the removal job holds the publish workflow's `bloxbean-maven-snapshots` concurrency group.
+  The approval wait holds nothing, so a pending approval never blocks a publication.
+- **Recovery:** a run that fails part-way is repaired by running it again.
+
+**Scope.** It touches only artifact directories directly under `maven/snapshots/org/yanoproject/` that carry a
+`maven-metadata.xml`. yano-x's `org/yanoproject/x/`, other groups in the bucket, and `maven/releases/` are never
+listed or written.
+
+**Who can run it.** Anyone with write access can start it. Removal needs a release owner, and the policy is in
+CODEOWNERS-reviewed code, not in run inputs.
+
+**Trigger.** It runs manually only. Every removal needs an approval, so a schedule would just open an approval
+request every week. Storage grows slowly: about 36 MB per publication is roughly 1.5 GB a month at ten
+publications a week. Revisit this if publishing follows every `main` push.
+
+**Testing.** It was tested against MinIO with:
+
+- seven versions, one of them a same-commit re-run and one an orphan directory;
+- decoys under `org/yanoproject/x/`, `com/bloxbean/` and `maven/releases/`;
+- an approver-trimmed removal list;
+- requests for the latest version and for an unknown version, both refused with a warning;
+- bad credentials.
+
+The version lists, checksums, deleted and kept directories and untouched decoys were all checked.
+
+## Snapshot distributions
+
+The node's JVM and native zips are not Maven publications, so they never go to the Maven repository. They are for
+people and tools that want to run a commit without building it: testers, the wallet's managed node, scripted
+installers. Building native images locally needs GraalVM and takes 10+ minutes per platform, and `dist-dev.yml`
+keeps its zips as Actions artifacts for only 3 days, behind a GitHub login.
+
+`bloxbean-snapshot-dist.yml` publishes them:
+
+- **When it runs:** manually, only on `main` or `release/**`, and only for a `-SNAPSHOT` version. A release version
+  is rejected before the build starts.
+- **Build:** it calls `dist-dev.yml`, which has a `workflow_call` trigger for this. That is the same build and the
+  same packaged-catalog smoke tests as the existing dev distribution build, for the JVM zip and four native zips.
+  `release-dist.yml` (GitHub releases) is untouched.
+- **Approval:** after the build, a release owner approves in the `release` environment, so the reviewer approves
+  zips that already built and passed their smoke tests. Then the upload job, with the `release-staging`
+  credentials, publishes exactly those files.
+- **Checks before upload:** the job requires exactly one JVM zip and the four native zips, all named with this
+  commit's version.
+- **Upload order:** zips and `SHA256SUMS` first, then `manifest.json`, then `latest.json`.
+- **Immutable builds:** `manifest.json` marks a build as published, and a published build is never overwritten. A
+  re-run of the same commit is refused, and a run that stopped before the manifest is completed by running again.
+- **Check after upload:** `latest.json` served publicly must be byte-identical to the manifest, and every zip must
+  be served at its exact size.
+
+```text
+https://dist.bloxbean.org/yano/snapshots/latest.json            newest build: copy of its manifest.json, no-cache
+https://dist.bloxbean.org/yano/snapshots/builds/0.1.0-pre18-<sha7>/
+    yano-0.1.0-pre18-<sha7>.zip
+    yano-native-0.1.0-pre18-<sha7>-{linux-x64,linux-arm64,macos-arm64,windows-x64}.zip
+    SHA256SUMS
+    manifest.json        version, commit, branch, publication time, run URL; per file: url, size, sha256
+```
+
+**Why a separate bucket.** About 1 GB per build: the JVM zip alone is about 317 MB. A separate bucket means:
+
+- a plain lifecycle rule can expire builds without any risk to the Maven repository;
+- its token can't write the Maven repository, since R2 tokens are scoped per bucket;
+- the domain describes what it serves.
+
+**Retention.** A bucket lifecycle rule deletes `yano/snapshots/builds/` objects after 30 days. That is safe here,
+unlike for the Maven repository, because a build directory is self-contained and nothing else references it.
+`latest.json` sits outside that prefix and is never expired. If nothing is published for 30 days, it names an
+expired build and its URLs answer 404; publishing again fixes it.
+
+**Setup.**
+
+- Cloudflare:
+  - create the bucket (proposed `bloxbean-dist`);
+  - create an Object Read & Write token scoped to it;
+  - connect the custom domain `dist.bloxbean.org`;
+  - add the 30-day lifecycle rule on `yano/snapshots/builds/` and abort incomplete multipart uploads after 1 day.
+- GitHub `release-staging`:
+  - variable `DIST_BUCKET`;
+  - secrets `DIST_ACCESS_KEY_ID` and `DIST_SECRET_ACCESS_KEY`.
+
+  `R2_ENDPOINT` is shared, because it is the same Cloudflare account.
+
+**Testing.** The upload job's step scripts ran against MinIO with generated zips. Results:
+
+- a publication passed the public checks;
+- a re-publication of the same commit was refused;
+- a second commit moved `latest.json` and left the first build in place;
+- a missing native zip and zips of another commit both failed before upload;
+- the served zip, `SHA256SUMS` and `manifest.json` agreed on every SHA-256;
+- the version gate rejected `0.1.0-pre17`.
 
 ## Phase 2: mirroring official releases (proposal)
 
@@ -341,11 +443,11 @@ are already visible:
 | Input | Yano value |
 |---|---|
 | Gradle staging command | `publishAllPublicationsToStagingRepository -PstagingRepository=<dir>` |
-| Local repository path | `build/r2-maven` |
+| Local repository path | `build/bloxbean-maven` |
 | Group path owned | `org/yanoproject` |
 | Prefix | `maven/snapshots` or `maven/releases` |
 | Public repository URL | `https://repo.bloxbean.org/maven/<prefix>` |
-| Concurrency group | `r2-maven-snapshots` (one per repository and prefix) |
+| Concurrency group | `bloxbean-maven-snapshots` (one per repository and prefix) |
 
 What another project needs:
 
@@ -380,9 +482,9 @@ own build staged, because group paths such as `com/bloxbean/cardano` are shared 
 - `snapshot_manual.yml` (Central snapshots) is unchanged and can run alongside. Retiring it, and pointing
   README's snapshot section at R2, is a separate decision once R2 has proven itself.
 - The release flow, signing, Central deployment, distributions, Docker and npm are untouched.
-- Snapshot storage grows until Maven-aware retention exists.
-- Turning on `push: branches: [main]` later costs one `fullBuild` (about 40 minutes) per push. Consider
-  `workflow_run` after `build.yml` with a lighter gate at that point.
+- Snapshot storage grows until someone runs the approval-gated cleanup.
+- A run takes minutes, not a second `fullBuild`, because it reuses the commit's CI result. Publishing on every
+  `main` push later would be a `workflow_run` trigger on the CI workflows completing, with the same gate.
 
 ## Implementation status
 
@@ -390,10 +492,12 @@ own build staged, because group paths such as `com/bloxbean/cardano` are shared 
 |---|---|
 | Analysis of current publishing | Done (this ADR) |
 | Local staging | Existing `stagingRepository` hook, no Gradle change |
-| `r2-snapshot.yml` + `verify-maven-staging.py` | Implemented, dry-run against MinIO |
+| `bloxbean-snapshot.yml` + `verify-maven-staging.py` | Implemented, dry-run against MinIO |
 | R2 secrets, variables, bucket | Configured in `release-staging` |
-| First run on `main` | Pending: after the PR (workflow + `0.1.0-pre18-SNAPSHOT`) merges |
+| First run on `main` | Done 2026-10-04: `0.1.0-pre18-de81cc5-SNAPSHOT`, all checks green |
+| Gate on the commit's CI instead of `fullBuild` | Implemented |
+| Snapshot distributions (`bloxbean-snapshot-dist.yml`) | Implemented, dry-run against MinIO; needs the distribution bucket, domain and token |
 | `push: main` trigger | After the manual run is proven |
-| Maven-aware retention | Proposed |
+| Maven-aware retention | Implemented: `bloxbean-snapshot-cleanup.yml`, manual and approval-gated |
 | Release mirror (Phase 2) | Proposed |
 | Shared reusable workflow | After two or three projects use it |
