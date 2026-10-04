@@ -237,7 +237,10 @@ class WalletIndexRuntimeTest {
             assertThat(chain.getBlock(HexFormat.of().parseHex(hash(1)))).isNull();
             assertThat(chain.getBlock(HexFormat.of().parseHex(hash(3)))).isNotNull();
             assertThat(chain.rocks().db().get(chain.rocks().handle(WalletIndexCf.UNDO),
-                    ByteBuffer.allocate(9).put(WalletIndexStore.FIRST_SEEN).putLong(2).array())).isNull();
+                    ByteBuffer.allocate(9).put(WalletIndexStore.FIRST_SEEN).putLong(1).array())).isNull();
+            // Block 2 sits at the prune cutoff (slot 40 - 20): its delta and undo stay as the rollback floor
+            assertThat(chain.rocks().db().get(chain.rocks().handle(WalletIndexCf.UNDO),
+                    ByteBuffer.allocate(9).put(WalletIndexStore.FIRST_SEEN).putLong(2).array())).isNotNull();
             assertThat(chain.rocks().db().get(chain.rocks().handle(WalletIndexCf.FILTERS), number(1))).isNotNull();
             assertThat(store.getAddressFirstSeen(A).firstSeenSlot()).isEqualTo(10);
             assertThat(store.getAddressFirstSeen(B).firstSeenSlot()).isEqualTo(20);

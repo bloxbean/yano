@@ -5314,7 +5314,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         if (epochParamProvider == null || epochParamProvider == ZERO_PROVIDER) {
             return 0;
         }
+        long epochReplayFloor = epochReplayFloorSlot();
+        long latestAppliedSlot = getLatestAppliedSlot();
+        if (latestAppliedSlot < 0) {
+            return epochReplayFloor;
+        }
+        // A rollback within the current epoch only undoes block deltas, which are never pruned. The
+        // retained-history floors below apply only to a rollback that re-crosses an epoch boundary.
+        return Math.min(epochReplayFloor, slotForEpochStart(epochForSlot(latestAppliedSlot)));
+    }
 
+    /** Earliest slot from which re-crossing every later epoch boundary finds its retained inputs. */
+    private long epochReplayFloorSlot() {
         // Floor 1: per-block reward-input facts (PREFIX_BLOCK_ISSUER / PREFIX_BLOCK_FEE).
         // Reward calc for epoch N reads stakeEpoch = N-2. If earliest retained is E,
         // earliest replayable boundary is newEpoch = E+2, rollback target = end of E+1.

@@ -71,6 +71,7 @@ class UtxoContributionTest {
             }, IndexRequirements.NONE), Map.of());
             genesis(store, chain);
             apply(store, 1, List.of());
+            apply(store, 2, List.of()); // the tip's own delta is never pruned
             store.pruneOnce();
             assertThat(chain.rocks().db().get(chain.rocks().handle(UtxoCfNames.UTXO_BLOCK_DELTA), number(1))).isNotNull();
             assertThat(chain.rocks().db().get(chain.rocks().handle(UtxoCfNames.UTXO_META), "prune.delta.cursor".getBytes(StandardCharsets.UTF_8))).isNull();

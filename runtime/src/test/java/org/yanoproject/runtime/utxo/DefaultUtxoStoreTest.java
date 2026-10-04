@@ -1199,6 +1199,25 @@ class DefaultUtxoStoreTest {
         assertEquals(11, store.getLastAppliedBlock());
     }
 
+    /** A point accepted by the floor stays eligible when pruning runs before the rollback (PR #170 review). */
+    @Test
+    void rollbackFloorStaysEligibleWhilePruningRunsWithoutNewBlocks() {
+        for (int i = 0; i <= 10; i++) {
+            Block block = Block.builder().era(Era.Babbage)
+                    .transactionBodies(Collections.emptyList())
+                    .invalidTransactions(Collections.emptyList()).build();
+            publishBlock(10 + i, 1 + i, String.format("%064x", i + 40), block);
+        }
+        long floor = store.getRollbackFloorSlot();
+        assertEquals(16L, floor); // latest applied slot 20 - rollbackWindow 4; block 7 sits there
+
+        store.pruneOnce();
+
+        store.rollbackToSlot(floor);
+        assertEquals(16, store.getLatestAppliedSlot());
+        assertEquals(7, store.getLastAppliedBlock());
+    }
+
     @Test
     void rollbackFailsClosedWhenSpentRecordWasPruned() throws Exception {
         TransactionBody tx1 = TransactionBody.builder()

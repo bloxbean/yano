@@ -41,6 +41,20 @@ class PeerRecoveryFailureTrackerTest {
     }
 
     @Test
+    void recordTerminalStopsRecoveryWithoutCountingFailures() {
+        PeerRecoveryFailureTracker tracker = new PeerRecoveryFailureTracker(10);
+
+        PeerRecoveryFailureTracker.Snapshot snapshot = tracker.recordTerminal(
+                PeerRecoveryReason.INTERSECTION_FAILED, "no common point");
+
+        assertTrue(snapshot.terminal());
+        assertTrue(tracker.isTerminal());
+        assertEquals(0, snapshot.consecutiveFailures());
+        assertEquals(PeerRecoveryReason.INTERSECTION_FAILED, snapshot.lastReason());
+        assertTrue(snapshot.message().contains("no common point"));
+    }
+
+    @Test
     void rejectsInvalidMaxFailures() {
         assertThrows(IllegalArgumentException.class, () -> new PeerRecoveryFailureTracker(0));
     }

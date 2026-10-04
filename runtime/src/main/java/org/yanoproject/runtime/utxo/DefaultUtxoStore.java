@@ -2632,13 +2632,13 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (!enabled) return 0;
         long latestAppliedSlot = getLatestAppliedSlot();
 
-        // Deltas alone are not enough for a safe rollback. Restoring a spent UTXO also
-        // needs the original record from cfSpent, and cfSpent is pruned by slot using
-        // max(pruneDepth, rollbackWindow). If delta pruning lags behind spent pruning,
-        // the earliest delta can advertise an unsafe rollback point.
-        long spentRetentionWindow = Math.max(pruneDepth, rollbackWindow);
-        long spentRetentionFloor = latestAppliedSlot >= 0
-                ? Math.max(0L, latestAppliedSlot - spentRetentionWindow)
+        // A rollback target needs its own delta and the cfSpent records of later spends.
+        // Pruning removes deltas below latestAppliedSlot - rollbackWindow and spent records below
+        // latestAppliedSlot - max(pruneDepth, rollbackWindow), even while no block is applied.
+        // Neither reaches anything a target at or above the delta cutoff needs, so such a target
+        // stays eligible while pruning runs, and every retained delta keeps its spent records.
+        long pruneCutoff = latestAppliedSlot >= 0
+                ? Math.max(0L, latestAppliedSlot - rollbackWindow)
                 : 0L;
 
         long deltaFloor = latestAppliedSlot >= 0 ? latestAppliedSlot : 0L;
@@ -2651,7 +2651,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         } catch (Exception e) {
             throw new RuntimeException("Failed to read UTXO rollback floor", e);
         }
-        return Math.max(deltaFloor, spentRetentionFloor);
+        return Math.max(deltaFloor, pruneCutoff);
     }
 
     @Override
@@ -3288,7 +3288,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 byte[] k = it.key();
                 byte[] v = it.value();
                 var dec = UtxoDeltaCodec.decode(v);
-                if (dec.slot() <= deltaCutoff) {
+                if (dec.slot() < deltaCutoff) { // the delta at the cutoff is the rollback floor's own
                     batch.delete(cfDelta, k);
                     indexes.registry().stagePruneUndo(batch, new ChainPoint(dec.blockNumber(), dec.slot(), dec.blockHash()));
                     lastProcessed = k;
@@ -3342,7 +3342,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     Map m = (Map) CborSerializationUtil.deserializeOne(v);
                     co.nstant.in.cbor.model.DataItem d = m.get(new UnsignedInteger(1));
                     long s = d != null ? CborSerializationUtil.toLong(d) : 0L;
-                    if (s > 0 && s <= spentCutoff) {
+                    if (s > 0 && s < spentCutoff) { // like deltas: a retained delta keeps its spends
                         batch.delete(cfSpent, k);
                         remaining--;
                         deleted++;
