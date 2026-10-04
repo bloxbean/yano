@@ -199,7 +199,10 @@ class AppChainL1DeliveryTest {
 
     @Test
     void stableAnchorFrontierFollowsDeliveryAndForgetsARolledBackAnchor() throws Exception {
-        try (StartedHarness harness = startHarness("stable-frontier", new Controls())) {
+        Controls controls = new Controls();
+        try (StartedHarness harness = startHarness("stable-frontier", controls)) {
+            // No observations: a finalized one below the fork would rightly quarantine the chain (ADR-036).
+            controls.suppressObservations.set(true);
             long base = harness.l1.tipNumber();
             harness.anchorBlock(50);
             awaitDelivered(harness, harness.l1.tipNumber());
@@ -220,7 +223,10 @@ class AppChainL1DeliveryTest {
     /** bloxbean/yano#166: a rollback published while the chain is stopped is still applied after restart. */
     @Test
     void rollbackMissedWhileStoppedIsAppliedAfterRestart() throws Exception {
-        try (StartedHarness harness = startHarness("missed-rollback", new Controls())) {
+        Controls controls = new Controls();
+        try (StartedHarness harness = startHarness("missed-rollback", controls)) {
+            // No observations: a finalized one below the fork would rightly quarantine the chain (ADR-036).
+            controls.suppressObservations.set(true);
             long base = harness.l1.tipNumber();
             harness.anchorBlock(50);
             harness.block(60);
