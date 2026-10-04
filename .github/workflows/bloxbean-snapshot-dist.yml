@@ -1,0 +1,200 @@
+name: Publish snapshot distributions
+
+# Builds the JVM and native distribution zips of a snapshot commit with dist-dev.yml and, once a release owner
+# approves, publishes exactly those files to the BloxBean distribution bucket, read anonymously at
+# https://dist.bloxbean.org/yano/snapshots/. Independent of release-dist.yml (GitHub releases) and of the Maven
+# snapshot repository. See adr/059-r2-maven-repository-for-development-artifacts.md, Snapshot distributions.
+#
+# Each commit gets builds/<version>/ with its zips, SHA256SUMS and manifest.json; latest.json points at the newest.
+# A build directory is never overwritten: manifest.json, uploaded last, marks it as published. Old builds expire by
+# the bucket's lifecycle rule on yano/snapshots/builds/, which latest.json is outside of.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  # Fails a release version before the 40-minute build: only -SNAPSHOT versions are snapshot distributions.
+  check:
+    if: >-
+      github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require a SNAPSHOT version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*//p' gradle.properties \
+            | head -1 | tr -d '[:space:]')
+          if [[ "$VERSION" != *-SNAPSHOT ]]; then
+            echo "::error::Snapshot distributions require a -SNAPSHOT version. Got: $VERSION" >&2
+            exit 1
+          fi
+
+  build:
+    needs: check
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dist-dev.yml
+
+  # The approval gate, after the build so the reviewer approves zips that were built and smoke-tested. The
+  # `release` environment holds no secrets; its reviewers are the release-owners team, and the person who started
+  # the run can't approve it. Waiting for approval costs no runner time.
+  approve:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - name: Approved
+        run: echo "Publishing the snapshot distributions of $GITHUB_SHA approved."
+
+  publish:
+    needs: approve
+    # The bucket credentials are secrets of this environment, which only accepts main, release/** and v* tags.
+    environment: release-staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # Only latest.json is shared between runs; serialize so it always ends on the run that finished last.
+    concurrency:
+      group: bloxbean-snapshot-dist
+      cancel-in-progress: false
+    env:
+      BUCKET: ${{ vars.DIST_BUCKET }}
+      PREFIX: yano/snapshots
+      PUBLIC_URL: https://dist.bloxbean.org
+      AWS_ENDPOINT_URL: ${{ vars.R2_ENDPOINT }}
+      AWS_DEFAULT_REGION: auto
+      # AWS CLI 2.23+ sends request checksums R2 does not accept by default; send them only when an API needs one.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    steps:
+      - name: Download the built distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*dist*'
+          path: dist
+          merge-multiple: true
+
+      # The zip names carry the version, which build.gradle derives with the short commit id: exactly one JVM zip
+      # and the four native zips of this commit, nothing else.
+      - name: Verify the distributions and write the manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          jvm=(yano-[0-9]*.zip)
+          VERSION=${jvm[0]#yano-}
+          VERSION=${VERSION%.zip}
+          if [[ ${#jvm[@]} != 1 || "$VERSION" != *"-${GITHUB_SHA:0:7}" ]]; then
+            echo "::error::Expected one JVM zip of commit ${GITHUB_SHA:0:7}; found: ${jvm[*]}" >&2
+            exit 1
+          fi
+          expected="yano-$VERSION.zip"
+          for platform in linux-arm64 linux-x64 macos-arm64 windows-x64; do
+            expected+=$'\n'"yano-native-$VERSION-$platform.zip"
+          done
+          found=$(find . -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [[ "$found" != "$(sort <<< "$expected")" ]]; then
+            echo "::error::Unexpected distribution set: $(tr '\n' ' ' <<< "$found")" >&2
+            exit 1
+          fi
+          sha256sum -- *.zip > SHA256SUMS
+          BASE="$PUBLIC_URL/$PREFIX/builds/$VERSION"
+          RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          python3 - "$VERSION" "$BASE" "$RUN" > manifest.json <<'EOF'
+          import hashlib, json, os, sys
+          from datetime import datetime, timezone
+          version, base, run = sys.argv[1:]
+          files = []
+          for name in sorted(n for n in os.listdir('.') if n.endswith('.zip')):
+              digest = hashlib.sha256()
+              with open(name, 'rb') as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b''):
+                      digest.update(chunk)
+              files.append({'name': name, 'url': f'{base}/{name}', 'size': os.path.getsize(name),
+                            'sha256': digest.hexdigest()})
+          print(json.dumps({'version': version, 'commit': os.environ['GITHUB_SHA'],
+                            'branch': os.environ['GITHUB_REF_NAME'],
+                            'published': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            'run': run, 'files': files}, indent=2))
+          EOF
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          cat manifest.json
+
+      # Zips and SHA256SUMS first, then manifest.json, which marks the build as published, then latest.json. A
+      # published build is never overwritten, so its URLs and checksums stay valid until it expires; a run that
+      # stopped before the manifest is completed by running again.
+      - name: Upload to the bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DIST_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DIST_SECRET_ACCESS_KEY }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="s3://$BUCKET/$PREFIX/builds/$VERSION"
+          if aws s3api head-object --bucket "$BUCKET" --key "$PREFIX/builds/$VERSION/manifest.json" \
+              > /dev/null 2> "$RUNNER_TEMP/head.err"; then
+            echo "::error::$VERSION is already published at $PUBLIC_URL/$PREFIX/builds/$VERSION/." >&2
+            exit 1
+          elif ! grep -q '(404)' "$RUNNER_TEMP/head.err"; then
+            cat "$RUNNER_TEMP/head.err" >&2
+            exit 1
+          fi
+          aws s3 cp dist/ "$target/" --recursive --only-show-errors --exclude manifest.json
+          aws s3 cp dist/manifest.json "$target/manifest.json" --only-show-errors \
+            --content-type application/json
+          aws s3 cp dist/manifest.json "s3://$BUCKET/$PREFIX/latest.json" --only-show-errors \
+            --content-type application/json --cache-control no-cache
+
+      - name: Verify the public files
+        env:
+          VERSION: ${{ steps.manifest.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$PUBLIC_URL/$PREFIX/latest.json" \
+            -o "$RUNNER_TEMP/latest.json"
+          if ! cmp -s "$RUNNER_TEMP/latest.json" dist/manifest.json; then
+            echo "::error::$PUBLIC_URL/$PREFIX/latest.json does not serve this build's manifest." >&2
+            exit 1
+          fi
+          while read -r url size; do
+            served=$(curl -fsSIL --retry 5 --retry-delay 5 --retry-all-errors "$url" \
+              | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')
+            if [[ "$served" != "$size" ]]; then
+              echo "::error::$url serves $served bytes, expected $size." >&2
+              exit 1
+            fi
+          done < <(python3 -c 'import json, sys
+          for f in json.load(open(sys.argv[1]))["files"]: print(f["url"], f["size"])' dist/manifest.json)
+          echo "latest.json and every zip are served for $VERSION."
+
+      - name: Record the publication
+        env:
+          VERSION: ${{ steps.manifest.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Published snapshot distributions \`$VERSION\`"
+            echo
+            echo "- Build: $PUBLIC_URL/$PREFIX/builds/$VERSION/ (\`SHA256SUMS\`, \`manifest.json\`)"
+            echo "- Newest build pointer: $PUBLIC_URL/$PREFIX/latest.json"
+            echo
+            echo '| File | Size |'
+            echo '|---|---|'
+            python3 -c 'import json, sys
+          for f in json.load(open(sys.argv[1]))["files"]:
+              print("| [{name}]({url}) | {mb:.0f} MB |".format(name=f["name"], url=f["url"], mb=f["size"] / 1e6))' \
+              dist/manifest.json
+          } >> "$GITHUB_STEP_SUMMARY"
