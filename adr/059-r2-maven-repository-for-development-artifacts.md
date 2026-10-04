@@ -482,6 +482,39 @@ The validator also rejected an unsigned jar and a jar that differed from the bun
 `-x nmcpZipAggregation` was checked with `--dry-run` only: it runs nothing but the scope check, the upload and its
 alias.
 
+## Discoverability and the release-ops standard (2026-10-04)
+
+**Users find snapshots in three places.** None of them commits to the repository:
+
+- **Development snapshot release.** A GitHub pre-release with tag `snapshot`, kept current by
+  `.github/scripts/update-snapshot-release.sh`. It runs in a `github-snapshot` job after both snapshot workflows;
+  that job is the only one with a write token and never sees the bucket credentials. The page shows:
+  - the latest Maven snapshot version and a Gradle snippet;
+  - the latest distribution zips with sizes and SHA-256, linked to the bucket.
+
+  It is created once, then edited, and never marked Latest. Its tag moves to the newest published commit, and only
+  `v*` tags are protected or trigger release workflows.
+- **README badge.** A shields.io `maven-metadata` badge with `strategy=latestProperty`, read from
+  `repo.bloxbean.org`.
+- **README section** on using the snapshot repository. `build.gradle` also resolves BloxBean snapshots from it,
+  next to the Central snapshot repository.
+
+**The scripts are now the release-ops standard.** They live in `bloxbean/release-ops` as
+`docs/12-bloxbean-maven-repository.md` and `templates/scripts/`, identical in every repository and configured by
+environment:
+
+| Setting | Purpose |
+|---|---|
+| `CI_WORKFLOWS` | which push CI workflows gate publishing |
+| `CONSUMER_PLATFORM`, `CONSUMER_DEPENDENCIES`, `CONSUMER_REQUIRED` | what the Gradle consumer check resolves |
+
+Two rules follow from groups shared between repositories, such as `com.bloxbean.cardano`:
+
+- the consumer check takes only this build's artifactIds from the BloxBean repository (`includeModule`);
+- the cleanup discovers the build's artifactIds and touches nothing else.
+
+`bloxbean-dist.sh` holds the generic distribution steps; only the expected-files check stays in the workflow.
+
 ## Reuse by other BloxBean projects
 
 No shared workflow yet. It will be extracted once two or three projects run their own copy. The stable inputs
