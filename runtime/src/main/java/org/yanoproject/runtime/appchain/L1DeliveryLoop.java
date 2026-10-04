@@ -103,6 +103,8 @@ final class L1DeliveryLoop implements AutoCloseable {
     private volatile boolean bypassBackoffOnce;
     private volatile long retryNotBeforeNanos;
     private long retryDelayMillis;
+    /** A reconciliation committed but the hosts' cache reload has not completed yet (loop thread only). */
+    private boolean reloadPending;
 
     L1DeliveryLoop(String chainId, int stabilityDepth, ChainBlockReader reader, AppLedgerStore ledger, Host host,
                    BlockBodyRetentionRegistry.Registration retention, Logger log) {
@@ -310,6 +312,10 @@ final class L1DeliveryLoop implements AutoCloseable {
 
     // Package-private so tests can drive one deterministic pass.
     void pass() {
+        if (reloadPending) {
+            host.reconciled(); // a reload that failed after a reconciliation commit; retried until it succeeds
+            reloadPending = false;
+        }
         L1DeliveryRecord record = snapshot.record();
         if (record == null) {
             record = load();
@@ -468,25 +474,34 @@ final class L1DeliveryLoop implements AutoCloseable {
         return points != null && after.isPresent() && after.getAsLong() == before.getAsLong() ? points : null;
     }
 
-    /** The last {@code capacity} canonical points ending at {@code top} (default the body tip); null on a gap. */
+    /**
+     * Up to {@code capacity} canonical points ending at {@code top} (default the body tip), oldest first. The walk
+     * stops early at the oldest indexed block, since a node bootstrapped from a recent point has no older history
+     * (no ORIGIN ancestor is invented); a gap inside the indexed history returns null, to retry later.
+     */
     private List<L1Point> readBaseline(OptionalLong top) {
         ChainTip tip = reader.getLocalTip();
         long newest = top.isPresent() ? top.getAsLong() : tip == null ? -1L : tip.getBlockNumber();
-        List<L1Point> points = new ArrayList<>();
         if (newest < 0) {
-            points.add(L1Point.ORIGIN);
-            return points;
+            return new ArrayList<>(List.of(L1Point.ORIGIN));
         }
-        long bottom = Math.max(0L, newest - capacity + 1);
-        if (bottom == 0L) {
-            points.add(L1Point.ORIGIN);
-        }
-        for (long blockNumber = bottom; blockNumber <= newest; blockNumber++) {
+        OptionalLong horizon = reader.getEarliestIndexedSlot();
+        List<L1Point> newestFirst = new ArrayList<>();
+        for (long blockNumber = newest; blockNumber >= 0 && newestFirst.size() < capacity; blockNumber--) {
             Optional<CanonicalBlockReference> reference = reader.getCanonicalBlockReference(blockNumber);
             if (reference.isEmpty()) {
+                boolean belowHorizon = !newestFirst.isEmpty() && horizon.isPresent()
+                        && newestFirst.getLast().slot() == horizon.getAsLong();
+                if (belowHorizon) {
+                    break;
+                }
                 return null;
             }
-            points.add(L1Point.of(reference.get()));
+            newestFirst.add(L1Point.of(reference.get()));
+        }
+        List<L1Point> points = new ArrayList<>(newestFirst.reversed());
+        if (points.getFirst().blockNumber() == 0) {
+            points.addFirst(L1Point.ORIGIN);
         }
         return points;
     }
@@ -540,18 +555,24 @@ final class L1DeliveryLoop implements AutoCloseable {
             stager.accept(batch);
             ledger.stageMetaBytes(batch, L1DeliveryRecord.META_KEY, committed.encode());
         });
-        host.reconciled();
+        // The commit is durable: publish it before the hosts reload their caches, so a failed reload is retried on
+        // the committed record (fence closed) and never re-runs reconciliation over a newer tip.
+        reloadPending = true;
         if (committed.terminal() != null) {
             publish(committed, State.valueOf(committed.terminal().state()), false, committed.terminal().reason());
             log.error("App-chain '{}' L1 reconciliation stopped: {}; operator action required", chainId,
                     committed.terminal().reason());
-            return;
+        } else {
+            updateRetention(committed.cursor());
+            publish(committed, State.STARTING, false, null);
         }
-        updateRetention(committed.cursor());
-        publish(committed, State.STARTING, false, null);
-        log.info("App-chain '{}' L1 reconciliation complete; delivery starts after {}", chainId,
-                committed.cursor());
-        wake();
+        host.reconciled();
+        reloadPending = false;
+        if (committed.terminal() == null) {
+            log.info("App-chain '{}' L1 reconciliation complete; delivery starts after {}", chainId,
+                    committed.cursor());
+            wake();
+        }
     }
 
     private boolean canonicalAtSlot(long slot, byte[] blockHash) {

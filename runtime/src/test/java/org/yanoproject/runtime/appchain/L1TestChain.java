@@ -41,6 +41,8 @@ final class L1TestChain {
     Long bodyTipBlock;
     /** When set, the oldest indexed slot the reader reports, as if older history had been restored away. */
     Long earliestIndexedSlot;
+    /** Canonical references below this block number read as absent, as on a node bootstrapped at a recent block. */
+    long earliestIndexedNumber;
     boolean sequenceSupported = true;
 
     /** Appends one empty block per slot to the canonical chain. */
@@ -177,7 +179,8 @@ final class L1TestChain {
             @Override
             public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
                 beforeReferenceRead.accept(blockNumber);
-                return chain.getCanonicalBlockReference(blockNumber);
+                return blockNumber < earliestIndexedNumber ? Optional.empty()
+                        : chain.getCanonicalBlockReference(blockNumber);
             }
 
             @Override

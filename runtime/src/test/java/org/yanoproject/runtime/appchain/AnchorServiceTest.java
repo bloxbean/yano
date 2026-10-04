@@ -343,6 +343,35 @@ class AnchorServiceTest {
         assertThat(AnchorService.stableAnchoredHeight(ledger, 1_000)).isZero(); // unreadable: fail closed
     }
 
+    /** PR #167 review (I3): the rollback clears the durable pending range in the same write as the rewind. */
+    @Test
+    void rollbackClearsTheDurablePendingRangeInTheSameWriteAsTheRewind() {
+        AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);
+        tip[0] = 3;
+        assertThat(service.forceAnchorNow()).isTrue();
+        service.onL1Block(100, l1Hash(100), List.of("txhash-1"));
+        tip[0] = 8;
+        assertThat(service.forceAnchorNow()).isTrue();
+        service.onL1Block(200, l1Hash(200), List.of("txhash-2"));
+        tip[0] = 12;
+        assertThat(service.forceAnchorNow()).isTrue();
+        assertThat(service.status()).containsEntry("pendingRange", "9..12");
+        int[] writes = {0};
+        ledger.injectMetaWriteFault(() -> {
+            if (++writes[0] == 2) {
+                throw new IllegalStateException("the second rollback write fails");
+            }
+        });
+        assertThat(service.onL1Rollback(150).succeeded()).isTrue();
+        ledger.injectMetaWriteFault(null);
+
+        AnchorService restarted = service(List.of(utxo(0, 50_000_000)), true, 500);
+        assertThat(restarted.lastAnchoredHeight()).isEqualTo(3);
+        assertThat(restarted.status()).doesNotContainKey("pendingTx");
+        assertThat(restarted.forceAnchorNow()).isTrue();
+        assertThat(restarted.status()).containsEntry("pendingRange", "4..12");
+    }
+
     @Test
     void rollbackDropsPendingRangeDerivedFromInvalidatedFrontier() {
         AnchorService service = service(List.of(utxo(0, 50_000_000)), true, 500);

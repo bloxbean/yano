@@ -538,10 +538,6 @@ final class AnchorService {
                     changed = true;
                 }
                 if (rollbackConfirmedHistory(rollbackToSlot)) {
-                    // Any later in-flight range was derived from the now
-                    // invalid confirmation frontier. Drop it so the next tick
-                    // covers the full surviving-height+1..tip range.
-                    setPending(null);
                     changed = true;
                 }
                 return changed ? L1PhaseResult.DURABLE : L1PhaseResult.NO_OP;
@@ -630,7 +626,11 @@ final class AnchorService {
         bytes.put(META_ANCHOR_TX, (survivor != null ? survivor.txHash() : "")
                 .getBytes(StandardCharsets.UTF_8));
         bytes.put(META_ANCHOR_HISTORY, ConfirmationHistory.encode(retained));
+        // Any in-flight range was derived from the now invalid frontier: drop it in the same write, so a retry can
+        // never find the frontier rewound but the stale range still persisted.
+        bytes.put(META_PENDING_ANCHOR, new byte[0]);
         ledger.metaPutAll(longs, bytes);
+        pending = null;
         lastAnchorTxHash = survivor != null ? survivor.txHash() : null;
         lastAnchoredL1Slot = survivor != null ? survivor.l1Slot() : 0L;
         logWarnSafely("L1 rollback to slot {} un-confirmed anchor tx {} — rewound to app height {}",

@@ -312,6 +312,56 @@ class L1DeliveryLoopTest {
         return loop.snapshot().state();
     }
 
+    /** PR #167 review (I4): a node bootstrapped with ten indexed blocks starts at once and misses no later block. */
+    @Test
+    void aBootstrappedNodeStartsAtItsIndexedHorizonAndDeliversEveryLaterBlock() {
+        l1.append(LongStream.rangeClosed(1, 100).map(i -> i * 10).toArray());
+        l1.earliestIndexedNumber = 90;
+        l1.earliestIndexedSlot = 910L;
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+        assertThat(loop.snapshot().record().baseline()).first().isEqualTo(l1.point(90));
+        assertThat(loop.snapshot().cursor()).isEqualTo(l1.point(99));
+
+        for (long slot = 1010; slot <= 1550; slot += 10) {
+            l1.append(slot);
+            loop.pass();
+        }
+        assertThat(host.applied).containsExactlyElementsOf(
+                LongStream.rangeClosed(100, 154).mapToObj(l1::point).toList());
+    }
+
+    @Test
+    void aGapInsideTheIndexedHistoryStillWaits() {
+        l1.append(LongStream.rangeClosed(1, 100).map(i -> i * 10).toArray());
+        l1.earliestIndexedNumber = 90;
+        l1.earliestIndexedSlot = 500L; // the index claims older history, so block 89 missing is a gap
+        L1DeliveryLoop loop = loop();
+        loop.pass();
+        assertThat(loop.snapshot().record()).isNull();
+    }
+
+    /** PR #167 review (I1): a cache reload failing after a reconciliation commit keeps the committed baseline. */
+    @Test
+    void aReloadFailureAfterAReconciliationCommitKeepsTheCommittedBaseline() {
+        l1.append(10, 20, 30, 40, 50);
+        host.legacyState = true;
+        host.duringReload = once(() -> {
+            throw new IllegalStateException("transient read failure");
+        });
+        L1DeliveryLoop loop = loop();
+        loop.runPass();
+        assertThat(L1DeliveryRecord.decode(ledger.metaBytes(L1DeliveryRecord.META_KEY)).cursor())
+                .isEqualTo(l1.point(4));
+        assertThat(loop.deliveryHealthy()).as("the fence stays closed until the reload succeeds").isFalse();
+
+        l1.append(60);
+        loop.pass();
+        assertThat(host.reconcileCalls).as("the reload is retried, not the reconciliation").isEqualTo(1);
+        assertThat(host.reloads).isEqualTo(2);
+        assertThat(host.applied).containsExactly(l1.point(5));
+    }
+
     @Test
     void forkBetweenThePhasesAndTheCommitIsRolledBack() {
         L1DeliveryLoop loop = startedAtBlock4();
@@ -833,6 +883,7 @@ class L1DeliveryLoopTest {
                 new L1DeliveryLoop.Reconciliation(batch -> { }, null, false, OptionalLong.empty());
         int reconcileCalls;
         int reloads;
+        Runnable duringReload = () -> { };
 
         @Override
         public List<L1PhaseResult> applyBlock(BlockAppliedEvent event) {
@@ -864,6 +915,7 @@ class L1DeliveryLoopTest {
         @Override
         public void reconciled() {
             reloads++;
+            duringReload.run();
         }
 
         @Override
