@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Checks a staged Maven repository before it is uploaded to the BloxBean Maven repository.
+"""Checks a staged Maven repository before it is uploaded to the BloxBean Maven repository. Standard:
+bloxbean/release-ops docs/12-bloxbean-maven-repository.md and templates/scripts/; keep it identical across
+repositories.
 
 Usage: verify-maven-staging.py [--central-bundle <zip>] <repository-dir> <seed-dir> <group-path> <version>
            <artifactId>...
