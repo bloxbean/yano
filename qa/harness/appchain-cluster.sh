@@ -53,17 +53,21 @@ grep -m1 'Anchor CONFIRMED on L1' "$RUN/node-a.log" | cut -c1-220
 SA=$(curl -s $A/app-chain/status); echo "anchor: $(echo "$SA" | jq -c '.anchor')"
 check "anchor confirmed (anchoredCount>=1)" $(echo "$SA" | jq -e '.anchor.anchoredCount>=1 and .anchor.lastAnchorTx!=null' >/dev/null; echo $?)
 
-echo "== L1 rollback while node B is down (app-layer ADR-038)"
+echo "== L1 rollback under a follower, then a follower restart (app-layer ADR-038)"
 for i in $(seq 1 30); do
   BT=$(yano_tip $HTTP_B | jq -r '.blockNumber // 0'); BC=$(curl -s $B/app-chain/status | jq -r '.l1Delivery.cursorBlock // -1')
   [ "$BC" -ge "$BT" ] && break; sleep 1
 done
 H0=$(curl -s $A/app-chain/tip | jq -r .height)
-echo "B before stop: L1 tip=$BT, delivery cursor=$BC, app height=$H0"
+echo "B: L1 tip=$BT, delivery cursor=$BC, app height=$H0"
+# Roll A back below B's delivered cursor: B's chain state follows the fork, so the blocks B delivered last die.
+TARGET=$(( BC - 2 ))
+RB=$(post $A/devnet/rollback "$(jq -nc --argjson b $TARGET '{block_number:$b}')"); echo "A rollback: $RB"
+check "A rolled back below B's delivered cursor" $(echo "$RB" | jq -e --argjson b $TARGET '.block_number==$b' >/dev/null; echo $?)
+for i in $(seq 1 30); do grep -q 'L1 delivery rolled back to' "$RUN/node-b.log" && break; sleep 2; done
+grep -m1 'L1 delivery rolled back to' "$RUN/node-b.log" | cut -c1-200
+check "B's delivery rolled back the dead blocks from its recorded points" $(grep -q 'L1 delivery rolled back to' "$RUN/node-b.log"; echo $?)
 kill -TERM $B_PID; for i in $(seq 1 30); do kill -0 $B_PID 2>/dev/null || break; sleep 1; done
-RB=$(post $A/devnet/rollback '{"count":3}'); echo "A rollback: $RB"
-check "A rolled back three L1 blocks" $(echo "$RB" | jq -e '.blockNumber != null' >/dev/null; echo $?)
-sleep 5 # A produces the replacement branch while B is down
 start_node_b "$RUN" "${COMMON[@]}" -Dyano.app-chain.signing-key=$SEED_B -Dyano.app-chain.peers=localhost:$N2N_A
 wait_ready $HTTP_B 90 || { tail -30 "$RUN/node-b.log"; kill_tracked; echo "VERDICT: FAIL (node B not ready after restart)"; exit 1; }
 wait_l1_sync_b
@@ -71,10 +75,8 @@ for i in $(seq 1 30); do
   DB=$(curl -s $B/app-chain/status | jq -c .l1Delivery)
   echo "$DB" | jq -e '.state=="RUNNING" and .deliveryHealthy==true and .lagBlocks<=2' >/dev/null && break; sleep 2
 done
-echo "B delivery: $DB"
-check "B delivery RUNNING, fenced open and caught up" $(echo "$DB" | jq -e '.state=="RUNNING" and .deliveryHealthy==true and .lagBlocks<=2' >/dev/null; echo $?)
-grep -m1 'L1 delivery rolled back to' "$RUN/node-b.log" | cut -c1-200
-check "B rolled back the L1 blocks it missed while down" $(grep -q 'L1 delivery rolled back to' "$RUN/node-b.log"; echo $?)
+echo "B delivery after restart: $DB"
+check "B resumes delivery from its durable record after the restart" $(echo "$DB" | jq -e '.state=="RUNNING" and .deliveryHealthy==true and .lagBlocks<=2 and .deliveredPoints>0' >/dev/null; echo $?)
 submit $A/app-chain/messages orders "after rollback A" >/dev/null; submit $B/app-chain/messages orders "after rollback B" >/dev/null
 for i in $(seq 1 20); do
   TA=$(curl -s $A/app-chain/tip); TB=$(curl -s $B/app-chain/tip)
