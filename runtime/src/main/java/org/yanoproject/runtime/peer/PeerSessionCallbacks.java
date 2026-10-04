@@ -19,6 +19,10 @@ public interface PeerSessionCallbacks {
 
     void onIntersectionFound();
 
+    /** The upstream has none of the points offered in FindIntersect. */
+    default void onIntersectionNotFound() {
+    }
+
     void maybeFastTransitionToSteadyState(Tip remoteTip);
 
     void handleChainSyncRollback(Point point);

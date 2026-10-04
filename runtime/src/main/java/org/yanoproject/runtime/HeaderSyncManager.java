@@ -305,8 +305,8 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     public void intersactNotFound(Tip tip) {
         log.warn("📄 Header intersection not found. Tip: {}", tip);
         if (syncTipContext != null) syncTipContext.update(tip);
-        // ChainSyncAgent will handle this scenario
-        // This typically results in a rollback to find a common point
+        // SyncSubsystem restarts the session from an older local point; the server's
+        // RollBackward to the intersection it then finds is handled by Yano.onRollback()
     }
 
     @Override

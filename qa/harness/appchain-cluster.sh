@@ -84,6 +84,29 @@ for i in $(seq 1 20); do
 done
 check "both members finalize past the pre-rollback height" $(jq -en --argjson a "$TA" --argjson b "$TB" --argjson h "$H0" '$a.height>$h and $a.height==$b.height and $a.stateRoot==$b.stateRoot' >/dev/null; echo $?)
 
+echo "== L1 fork while the follower is down, then a follower restart (issue #169)"
+BT=$(yano_tip $HTTP_B | jq -r '.blockNumber // 0'); H1=$(curl -s $A/app-chain/tip | jq -r .height)
+kill -TERM $B_PID; for i in $(seq 1 30); do kill -0 $B_PID 2>/dev/null || break; sleep 1; done
+# Fork A below B's saved tip and let it grow past it: B restarts on a tip A no longer has.
+TARGET=$(( BT - 2 ))
+RB=$(post $A/devnet/rollback "$(jq -nc --argjson b $TARGET '{block_number:$b}')"); echo "A rollback: $RB"
+check "A forked below B's saved tip while B was down" $(echo "$RB" | jq -e --argjson b $TARGET '.block_number==$b' >/dev/null; echo $?)
+for i in $(seq 1 30); do [ "$(yano_tip $HTTP_A | jq -r '.blockNumber // 0')" -gt "$BT" ] && break; sleep 1; done
+start_node_b "$RUN" "${COMMON[@]}" -Dyano.app-chain.signing-key=$SEED_B -Dyano.app-chain.peers=localhost:$N2N_A
+wait_ready $HTTP_B 90 || { tail -30 "$RUN/node-b.log"; kill_tracked; echo "VERDICT: FAIL (node B not ready after offline fork)"; exit 1; }
+wait_l1_sync_b
+grep -m1 'Upstream has no intersection' "$RUN/node-b.log" | cut -c1-200
+check "B stepped back from its orphaned tip to an older intersection" $(grep -q 'Upstream has no intersection' "$RUN/node-b.log"; echo $?)
+HA=$(curl -s $A/blocks/$(( TARGET + 1 )) | jq -r .hash); HB=$(curl -s $B/blocks/$(( TARGET + 1 )) | jq -r .hash)
+echo "block $(( TARGET + 1 )): A=$HA B=$HB"
+check "B replaced its dead blocks with A's new branch" $([ -n "$HA" ] && [ "$HA" != null ] && [ "$HA" = "$HB" ]; echo $?)
+submit $A/app-chain/messages orders "after offline fork A" >/dev/null
+for i in $(seq 1 20); do
+  TA=$(curl -s $A/app-chain/tip); TB=$(curl -s $B/app-chain/tip)
+  jq -en --argjson a "$TA" --argjson b "$TB" --argjson h "$H1" '$a.height>$h and $a.height==$b.height' >/dev/null && break; sleep 2
+done
+check "both members finalize after the offline fork" $(jq -en --argjson a "$TA" --argjson b "$TB" --argjson h "$H1" '$a.height>$h and $a.height==$b.height and $a.stateRoot==$b.stateRoot' >/dev/null; echo $?)
+
 echo "== final consistency"
 sleep 3; TA=$(curl -s $A/app-chain/tip); TB=$(curl -s $B/app-chain/tip)
 echo "tipA=$(echo $TA | jq -c '{height,stateRoot}') tipB=$(echo $TB | jq -c '{height,stateRoot}')"

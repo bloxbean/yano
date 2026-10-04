@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.helper.PipelineConfig;
+import org.yanoproject.api.CanonicalBlockReference;
 import org.yanoproject.api.EpochParamProvider;
 import org.yanoproject.api.SyncPhase;
 import org.yanoproject.api.config.UpstreamConfig;
@@ -24,6 +25,7 @@ import org.yanoproject.api.genesis.GenesisBootstrapData;
 import org.yanoproject.runtime.BodyFetchManager;
 import org.yanoproject.runtime.HeaderSyncManager;
 import org.yanoproject.runtime.apply.LedgerApplyProcessor;
+import org.yanoproject.runtime.chain.ArchiveChainStateCapabilities;
 import org.yanoproject.runtime.chain.ChainStateRecovery;
 import org.yanoproject.runtime.chain.ChainStateRollback;
 import org.yanoproject.runtime.chain.OriginRollbackCapable;
@@ -81,7 +83,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -167,6 +171,13 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private volatile String pendingSelectedUpstreamPeerId;
     private volatile String pendingSelectedUpstreamReason;
     private volatile long lastSelectedUpstreamSwitchAtMillis;
+    // Intersection search (issue #169): how many blocks behind the local tip the offered point is, the
+    // upstreams with no common point within recoverable history, the last rejected session, and whether
+    // the current session's intersection is below the local tip.
+    private volatile long intersectionBacktrack;
+    private final Set<String> upstreamsWithoutIntersection = ConcurrentHashMap.newKeySet();
+    private final AtomicLong rejectedSyncGeneration = new AtomicLong(-1);
+    private volatile boolean steppedBackIntersection;
     private PipelineConfig pipelineConfig;
     private long blocksProcessed;
     private long lastProcessedSlot;
@@ -539,6 +550,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         try {
             syncGeneration.incrementAndGet();
             cancelIntersectionTransition();
+            resetIntersectionSearch();
             isSyncing.set(true);
             pipelinedMode = usePipeline;
             if (!ensureInitialUpstreamPeer()) {
@@ -897,6 +909,8 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
 
     @Override
     public void onIntersectionFound() {
+        steppedBackIntersection = intersectionBacktrack > 0;
+        resetIntersectionSearch();
         syncPhase = SyncPhase.INTERSECT_PHASE;
         log.info("Transitioned to INTERSECT_PHASE - expect rollback to intersection");
 
@@ -971,6 +985,19 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             }
         } catch (Exception e) {
             log.debug("Fast transition near-tip check failed: {}", e.toString());
+        }
+    }
+
+    @Override
+    public void onIntersectionNotFound() {
+        long generation = syncGeneration.get();
+        if (rejectedSyncGeneration.getAndSet(generation) == generation) {
+            return; // the session repeated its FindIntersect
+        }
+        try {
+            peerRecoveryExecutor.execute(() -> stepBackAfterIntersectionNotFound(generation));
+        } catch (RejectedExecutionException e) {
+            log.warn("Intersection search step submission rejected", e);
         }
     }
 
@@ -1608,13 +1635,13 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     }
 
     private long deriveSelectionRollbackWindowSlots() {
-        long securityParam = DEFAULT_SECURITY_PARAM;
+        long securityParam;
         double activeSlotsCoeff = DEFAULT_ACTIVE_SLOTS_COEFF;
 
         try {
+            securityParam = securityParam();
             EpochParamProvider provider = epochParamProviderSupplier.get();
             if (provider != null) {
-                securityParam = provider.getSecurityParam();
                 activeSlotsCoeff = provider.getActiveSlotsCoeff();
             }
         } catch (Exception e) {
@@ -1623,9 +1650,6 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             return DEFAULT_SELECTION_ROLLBACK_WINDOW_SLOTS;
         }
 
-        if (securityParam <= 0) {
-            securityParam = DEFAULT_SECURITY_PARAM;
-        }
         if (!Double.isFinite(activeSlotsCoeff) || activeSlotsCoeff <= 0) {
             activeSlotsCoeff = DEFAULT_ACTIVE_SLOTS_COEFF;
         }
@@ -2242,8 +2266,111 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             return Point.ORIGIN;
         }
 
+        long backtrack = intersectionBacktrack;
+        Optional<CanonicalBlockReference> ancestor = backtrack > 0
+                ? recoverableAncestor(localTip, backtrack)
+                : Optional.empty();
+        if (ancestor.isPresent()) {
+            log.info("Upstream rejected newer local points; starting sync from the ancestor {} blocks behind "
+                    + "the local tip, at slot {}", backtrack, ancestor.get().slot());
+            return new Point(ancestor.get().slot(), HexUtil.encodeHexString(ancestor.get().blockHash()));
+        }
         log.info("Local tip found at slot {}, starting sync from there", localTip.getSlot());
         return new Point(localTip.getSlot(), HexUtil.encodeHexString(localTip.getBlockHash()));
+    }
+
+    /**
+     * Restarts the session from an older local point after the upstream rejected the offered one (issue #169).
+     * The distance behind the local tip doubles on each rejection, up to the security parameter k: the deepest
+     * rollback an upstream could have sent while this node was online. Doubling may roll back up to twice as
+     * far as the fork point; blocks above it are fetched again. The server's RollBackward to the intersection it
+     * finds rolls local state back before any replacement block arrives. With no older point left, the next
+     * upstream is tried; once every upstream has rejected, sync stops with an explicit terminal failure instead
+     * of retrying the same point.
+     */
+    private void stepBackAfterIntersectionNotFound(long generation) {
+        if (generation != syncGeneration.get() || !runtimeRunning.getAsBoolean() || !config.isEnableClient()) {
+            return; // the session was already replaced
+        }
+        ChainTip localTip = selectClientSyncStartTip(pipelinedMode, chainState.getHeaderTip(), chainState.getTip());
+        long offered = intersectionBacktrack;
+        long next = localTip != null ? recoverableBacktrack(localTip, offered) : offered;
+        if (next > offered) {
+            intersectionBacktrack = next;
+            log.warn("Upstream has no intersection {} blocks behind the local tip; retrying {} blocks behind",
+                    offered, next);
+            recoverPeerSession(PeerRecoveryReason.INTERSECTION_FAILED);
+            return;
+        }
+
+        intersectionBacktrack = 0;
+        String detail = "NO_INTERSECTION_WITHIN_RECOVERABLE_HISTORY: upstream "
+                + activeUpstreamPeer().endpoint().displayName() + " has none of the local points from the tip back "
+                + offered + " blocks; older points are not indexed locally or are deeper than the security parameter "
+                + securityParam();
+        IllegalStateException failure = new IllegalStateException(detail);
+        boolean switched;
+        PeerSession rejected = null;
+        synchronized (peerSessionLock) {
+            upstreamsWithoutIntersection.add(activeUpstreamPeer().endpoint().displayName());
+            switched = advanceActiveUpstreamAfterFailure(PeerRecoveryReason.INTERSECTION_FAILED, failure)
+                    && upstreamPeers.stream().anyMatch(
+                            peer -> !upstreamsWithoutIntersection.contains(peer.endpoint().displayName()));
+            if (!switched) {
+                rejected = peerSession;
+                peerSession = null;
+                PeerRecoveryFailureTracker.Snapshot terminal =
+                        peerRecoveryFailureTracker.recordTerminal(PeerRecoveryReason.INTERSECTION_FAILED, detail);
+                log.error("Upstream sync stopped: {}", terminal.message());
+                markPeerRecoveryFailure(PeerRecoveryReason.INTERSECTION_FAILED, failure, terminal);
+                isSyncing.set(false);
+            }
+        }
+        if (switched) {
+            recoverPeerSession(PeerRecoveryReason.INTERSECTION_FAILED);
+        } else if (rejected != null) {
+            stopPeerSessionForShutdown(rejected, "rejected upstream");
+        }
+    }
+
+    /**
+     * The next distance behind the local tip to offer: twice {@code offered} capped at k, or else the largest
+     * distance beyond it whose ancestor is still indexed. Returns {@code offered} when there is none.
+     */
+    private long recoverableBacktrack(ChainTip localTip, long offered) {
+        long low = offered;
+        long high = Math.min(Math.min(offered == 0 ? 1 : offered * 2, securityParam()), localTip.getBlockNumber());
+        if (recoverableAncestor(localTip, high).isPresent()) {
+            return high;
+        }
+        while (high - low > 1) { // the index keeps the blocks nearest the tip
+            long mid = low + (high - low) / 2;
+            if (recoverableAncestor(localTip, mid).isPresent()) {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        return low;
+    }
+
+    private Optional<CanonicalBlockReference> recoverableAncestor(ChainTip localTip, long backtrack) {
+        if (!(chainState instanceof ArchiveChainStateCapabilities index)) {
+            return Optional.empty();
+        }
+        return index.getCanonicalBlockReference(localTip.getBlockNumber() - backtrack);
+    }
+
+    /** The security parameter k from genesis, or the mainnet value when genesis has none. */
+    private long securityParam() {
+        EpochParamProvider provider = epochParamProviderSupplier.get();
+        long securityParam = provider != null ? provider.getSecurityParam() : 0L;
+        return securityParam > 0 ? securityParam : DEFAULT_SECURITY_PARAM;
+    }
+
+    private void resetIntersectionSearch() {
+        intersectionBacktrack = 0;
+        upstreamsWithoutIntersection.clear();
     }
 
     private ClientSyncTips prepareClientSyncTips(boolean usePipeline,
@@ -2395,7 +2522,9 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     }
 
     private boolean isRealRollback(Point rollbackPoint) {
-        if (syncPhase == SyncPhase.INTERSECT_PHASE || syncPhase == SyncPhase.INITIAL_SYNC) {
+        // An intersection below the local tip discards blocks the upstream no longer has: a real reorg
+        if (!steppedBackIntersection
+                && (syncPhase == SyncPhase.INTERSECT_PHASE || syncPhase == SyncPhase.INITIAL_SYNC)) {
             log.info("Rollback during {} phase - skipping server notification", syncPhase);
             return false;
         }

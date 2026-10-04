@@ -1,6 +1,8 @@
 package org.yanoproject.runtime.sync;
 
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
+import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
@@ -20,6 +22,7 @@ import org.yanoproject.api.config.UpstreamPreset;
 import org.yanoproject.api.config.UpstreamSyncConfig;
 import org.yanoproject.api.config.UpstreamTxConfig;
 import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.events.RollbackEvent;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.ledger.LedgerStateSubsystem;
 import org.yanoproject.p2p.peer.PeerEndpoint;
@@ -42,8 +45,13 @@ import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -258,6 +266,220 @@ class SyncSubsystemTest {
             assertThat(sync.health().status()).isEqualTo(SubsystemHealth.Status.DOWN);
             assertThat(sync.currentPeerSessionStatus().lastRecoveryReason())
                     .isEqualTo(PeerRecoveryReason.STARTUP_FAILED);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void pipelinedSyncStepsBackFromAnOrphanedTipUntilTheUpstreamFindsAnIntersection() {
+        assertStepsBackFromOrphanedTip(true);
+    }
+
+    @Test
+    void sequentialSyncStepsBackFromAnOrphanedTipUntilTheUpstreamFindsAnIntersection() {
+        assertStepsBackFromOrphanedTip(false);
+    }
+
+    private static void assertStepsBackFromOrphanedTip(boolean pipelined) {
+        YanoConfig config = clientConfig().toBuilder().enablePipelinedSync(pipelined).build();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            storeChain(runtime, 1, 20);
+
+            sync.startClientSync();
+            rejectIntersection(clients, 1);
+            rejectIntersection(clients, 2);
+            rejectIntersection(clients, 3);
+
+            waitForClients(clients, 4);
+            assertThat(startSlots(clients)).containsExactly(200L, 190L, 180L, 160L);
+
+            // Found at block 16: the search resets, so a later rejection starts next to the tip again
+            clients.get(3).listener().intersactFound(new Tip(clients.get(3).startPoint, 16), clients.get(3).startPoint);
+            rejectIntersection(clients, 4);
+            waitForClients(clients, 5);
+            assertThat(clients.get(4).startPoint.getSlot()).isEqualTo(190L);
+            assertThat(sync.peerRecoverySnapshot().terminal()).isFalse();
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void intersectionSearchStopsAtTheSecurityParameterWithAnExplicitTerminalFailure() {
+        YanoConfig config = clientConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients),
+                () -> epochParams(3L, 1.0D));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            storeChain(runtime, 1, 20);
+
+            sync.startClientSync();
+            for (int attempt = 1; attempt <= 4; attempt++) {
+                rejectIntersection(clients, attempt);
+            }
+
+            waitForTerminal(sync);
+            // Doubling would reach 4 blocks back, deeper than k = 3; block 17 is offered once instead
+            assertThat(startSlots(clients)).containsExactly(200L, 190L, 180L, 170L);
+            waitUntil(() -> !clients.get(3).isRunning());
+            assertThat(clients.get(3).isRunning()).as("the rejected session is closed").isFalse();
+            assertThat(sync.isSyncing()).isFalse();
+            assertThat(sync.health().status()).isEqualTo(SubsystemHealth.Status.DOWN);
+            assertThat(sync.health().message()).contains("NO_INTERSECTION_WITHIN_RECOVERABLE_HISTORY");
+            assertThat(sync.currentPeerSessionStatus().lastRecoveryReason())
+                    .isEqualTo(PeerRecoveryReason.INTERSECTION_FAILED);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void intersectionSearchOffersTheOldestIndexedAncestorBeforeStopping() {
+        YanoConfig config = clientConfig().toBuilder().enablePipelinedSync(false).build();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            storeChain(runtime, 15, 20); // the local index starts at block 15
+
+            sync.startClientSync();
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                rejectIntersection(clients, attempt);
+            }
+
+            waitForTerminal(sync);
+            assertThat(startSlots(clients)).containsExactly(200L, 190L, 180L, 160L, 150L);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void rollbackToASteppedBackIntersectionIsARealReorg() {
+        YanoConfig config = clientConfig().toBuilder().enablePipelinedSync(false).build();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        List<RollbackEvent> rollbacks = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            runtime.events.subscribe(RollbackEvent.class, ctx -> rollbacks.add(ctx.event()),
+                    SubscriptionOptions.builder().build());
+            storeChain(runtime, 1, 20);
+
+            sync.startClientSync();
+            rejectIntersection(clients, 1);
+            waitForClients(clients, 2);
+            Point ancestor = clients.get(1).startPoint;
+            clients.get(1).listener().intersactFound(new Tip(ancestor, 19), ancestor);
+            sync.handleChainSyncRollback(ancestor);
+
+            // Still in INTERSECT_PHASE, yet block 20 is gone: consumers must see the rollback
+            assertThat(rollbacks).singleElement().satisfies(event -> assertThat(event.realReorg()).isTrue());
+            assertThat(runtime.owned.chainStorage().chainState().getTip().getBlockNumber()).isEqualTo(19L);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void intersectionSearchKeepsItsProgressAcrossAReconnect() {
+        YanoConfig config = clientConfig().toBuilder().enablePipelinedSync(false).build();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            storeChain(runtime, 1, 20);
+
+            sync.startClientSync();
+            rejectIntersection(clients, 1);
+            waitForClients(clients, 2);
+            sync.requestPeerRecovery(PeerRecoveryReason.DISCONNECT_STALE); // a timeout, not a rejection
+
+            waitForClients(clients, 3);
+            assertThat(startSlots(clients)).containsExactly(200L, 190L, 190L);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void repeatedIntersectNotFoundInOneSessionIsHandledOnce() {
+        YanoConfig config = clientConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        AtomicInteger submissions = new AtomicInteger();
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, null);
+        runtime.peerRecoveryExecutor.shutdownNow();
+        runtime.peerRecoveryExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>()) {
+            @Override
+            public void execute(Runnable command) {
+                submissions.incrementAndGet();
+                super.execute(command);
+            }
+        };
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+
+            sync.onIntersectionNotFound();
+            sync.onIntersectionNotFound();
+
+            assertThat(submissions).hasValue(1);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void intersectionSearchTriesTheNextUpstreamBeforeStopping() {
+        YanoConfig config = clientConfig().toBuilder()
+                .remoteHost(null)
+                .remotePort(0)
+                .upstream(UpstreamConfig.builder()
+                        .mode(UpstreamPreset.TRUSTED_FAILOVER)
+                        .peers(List.of(
+                                upstreamPeer("a", "relay-a", 3001, 0),
+                                upstreamPeer("b", "relay-b", 3002, 1)))
+                        .build())
+                .build();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(null);
+            storeChain(runtime, 1, 1); // nothing older than the tip to offer
+
+            sync.startClientSync();
+            rejectIntersection(clients, 1);
+            rejectIntersection(clients, 2);
+
+            waitForTerminal(sync);
+            assertThat(clients).extracting(client -> client.endpoint.displayName())
+                    .containsExactly("relay-a:3001", "relay-b:3002");
+            assertThat(startSlots(clients)).containsExactly(10L, 10L);
         } finally {
             runtime.close();
             scheduler.shutdownNow();
@@ -898,6 +1120,68 @@ class SyncSubsystemTest {
         };
     }
 
+    private static org.yanoproject.p2p.peer.PeerClientFactory recordingClients(List<RecordingPeerClient> clients) {
+        return (endpoint, point) -> {
+            RecordingPeerClient client = new RecordingPeerClient(endpoint, point,
+                    Collections.synchronizedList(new ArrayList<>()));
+            clients.add(client);
+            return client;
+        };
+    }
+
+    /** Blocks first..last at slot 10 * number. */
+    private static void storeChain(TestRuntime runtime, long first, long last) {
+        for (long number = first; number <= last; number++) {
+            byte[] hash = new byte[32];
+            java.util.Arrays.fill(hash, (byte) number);
+            runtime.owned.chainStorage().chainState().storeBlock(hash, number, number * 10, new byte[]{1});
+        }
+    }
+
+    /** The upstream answers the n-th session's FindIntersect with IntersectNotFound, twice as yaci may. */
+    private static void rejectIntersection(List<RecordingPeerClient> clients, int session) {
+        waitForClients(clients, session);
+        RecordingPeerClient client = clients.get(session - 1);
+        client.listener().intersactNotFound(new Tip(new Point(500, "ff"), 50));
+        client.listener().intersactNotFound(new Tip(new Point(500, "ff"), 50));
+    }
+
+    private static List<Long> startSlots(List<RecordingPeerClient> clients) {
+        synchronized (clients) {
+            return clients.stream().map(client -> client.startPoint.getSlot()).toList();
+        }
+    }
+
+    private static void waitForClients(List<RecordingPeerClient> clients, int count) {
+        long deadline = System.currentTimeMillis() + 5_000L;
+        while (System.currentTimeMillis() < deadline
+                && (clients.size() < count || clients.get(count - 1).listener() == null)) {
+            sleepBriefly();
+        }
+        assertThat(clients).hasSizeGreaterThanOrEqualTo(count);
+    }
+
+    /** Waits for sync to stop, the last state change of the terminal outcome. */
+    private static void waitForTerminal(SyncSubsystem sync) {
+        waitUntil(() -> !sync.isSyncing());
+        assertThat(sync.peerRecoverySnapshot().terminal()).isTrue();
+    }
+
+    private static void waitUntil(java.util.function.BooleanSupplier condition) {
+        long deadline = System.currentTimeMillis() + 5_000L;
+        while (System.currentTimeMillis() < deadline && !condition.getAsBoolean()) {
+            sleepBriefly();
+        }
+    }
+
+    private static void sleepBriefly() {
+        try {
+            Thread.sleep(10L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static void waitForAttempt(List<String> attempts, String expected) {
         long deadline = System.currentTimeMillis() + 2_000L;
         while (System.currentTimeMillis() < deadline && !attempts.contains(expected)) {
@@ -932,6 +1216,8 @@ class SyncSubsystemTest {
         private final org.yanoproject.p2p.peer.PeerClientFactory peerClientFactory;
         private final Supplier<EpochParamProvider> epochParamProviderSupplier;
         private final Supplier<TxDiffusion> txDiffusionSupplier;
+        private final SimpleEventBus events = new SimpleEventBus();
+        private ExecutorService peerRecoveryExecutor = Executors.newSingleThreadExecutor();
         private Owned owned;
 
         private TestRuntime(YanoConfig config,
@@ -992,8 +1278,9 @@ class SyncSubsystemTest {
             SyncSubsystem sync = new SyncSubsystem(
                     config,
                     chainStorage.chainState(),
-                    new NoopEventBus(),
+                    events,
                     scheduler,
+                    peerRecoveryExecutor,
                     serve,
                     ledgerState,
                     chainStorage,
@@ -1004,10 +1291,11 @@ class SyncSubsystemTest {
                     config.getRemotePort(),
                     config.getProtocolMagic(),
                     LoggerFactory.getLogger(SyncSubsystemTest.class),
+                    null,
+                    txDiffusionSupplier,
                     peerClientFactory != null ? peerClientFactory
                             : (endpoint, point) -> new com.bloxbean.cardano.yaci.helper.PeerClient(
-                            endpoint.host(), endpoint.port(), endpoint.protocolMagic(), point),
-                    txDiffusionSupplier);
+                            endpoint.host(), endpoint.port(), endpoint.protocolMagic(), point));
             owned = new Owned(sync, ledgerState, serve, chainStorage);
             return sync;
         }
@@ -1018,11 +1306,13 @@ class SyncSubsystemTest {
                 owned.close();
                 owned = null;
             }
+            peerRecoveryExecutor.shutdownNow();
         }
     }
 
     private static final class RecordingPeerClient extends PeerClient {
         private final PeerEndpoint endpoint;
+        private final Point startPoint;
         private final List<String> headerSyncStarts;
         private final List<String> txForwards;
         private final boolean failOnStart;
@@ -1047,6 +1337,7 @@ class SyncSubsystemTest {
                                     boolean failOnStart) {
             super(endpoint.host(), endpoint.port(), endpoint.protocolMagic(), startPoint);
             this.endpoint = endpoint;
+            this.startPoint = startPoint;
             this.headerSyncStarts = headerSyncStarts;
             this.txForwards = txForwards;
             this.failOnStart = failOnStart;
@@ -1116,7 +1407,6 @@ class SyncSubsystemTest {
         public void resumeBlockFetch() {
         }
 
-        @SuppressWarnings("unused")
         BlockChainDataListener listener() {
             return listener;
         }
