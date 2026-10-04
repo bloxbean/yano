@@ -349,37 +349,45 @@ keeps its zips as Actions artifacts for only 3 days, behind a GitHub login.
   be served at its exact size.
 
 ```text
-https://dist.bloxbean.org/yano/snapshots/latest.json            most recently published build's manifest.json, no-cache
-https://dist.bloxbean.org/yano/snapshots/builds/0.1.0-pre18-<sha7>/
+https://repo.bloxbean.org/dist/snapshots/yano/latest.json        most recently published build's manifest.json, no-cache
+https://repo.bloxbean.org/dist/snapshots/yano/0.1.0-pre18-<sha7>/
     yano-0.1.0-pre18-<sha7>.zip
     yano-native-0.1.0-pre18-<sha7>-{linux-x64,linux-arm64,macos-arm64,windows-x64}.zip
     SHA256SUMS
     manifest.json        version, commit, branch, publication time, run URL; per file: url, size, sha256
 ```
 
-**Why a separate bucket.** About 1 GB per build: the JVM zip alone is about 317 MB. A separate bucket means:
+**One bucket for every project.** Distributions share the Maven repository's bucket and domain, under `dist/`,
+mirroring `maven/`:
 
-- a plain lifecycle rule can expire builds without any risk to the Maven repository;
-- its token can't write the Maven repository, since R2 tokens are scoped per bucket;
-- the domain describes what it serves.
+```text
+bloxbean-maven  (https://repo.bloxbean.org)
+    maven/snapshots/<group path>/...     Maven snapshots: no lifecycle rule, approval-gated cleanup
+    maven/releases/<group path>/...      Maven releases (Phase 2)
+    dist/snapshots/<project>/...         snapshot distributions of every project: one 30-day lifecycle rule
+    dist/releases/<project>/...          release distributions, if ever mirrored: permanent
+```
 
-**Retention.** A bucket lifecycle rule deletes `yano/snapshots/builds/` objects after 30 days. That is safe here,
-unlike for the Maven repository, because a build directory is self-contained and nothing else references it.
-`latest.json` sits outside that prefix and is never expired. If nothing is published for 30 days, it names an
-expired build and its URLs answer 404; publishing again fixes it.
+Each project writes only `dist/snapshots/<project>/`, including its own `latest.json`. No object is shared between
+projects, so their workflows need no common serialization, and a new project needs no Cloudflare setup.
+
+A separate bucket was considered. Its only real gain is that a mistyped lifecycle rule could not reach the Maven
+repository. Its token isolation is nominal: both workflows run in `release-staging`, behind the same reviewers. It
+would also cost a bucket, a token, a domain and three more GitHub settings. Instead, the one lifecycle rule must be
+created on exactly `dist/snapshots/`. An empty prefix applies to the whole bucket.
+
+**Retention.** A build is about 1 GB; the JVM zip alone is about 317 MB. A lifecycle rule deletes objects under
+`dist/snapshots/` 30 days after they were written. That is safe here, unlike for the Maven repository, because a
+version directory is self-contained and nothing else references it. Every publication rewrites the project's
+`latest.json`, which resets its age, so it outlives every build it could name. If a project publishes nothing for
+30 days, its pointer and its builds expire together and the URLs answer 404 until the next publication.
 
 **Setup.**
 
-- Cloudflare:
-  - create the bucket (proposed `bloxbean-dist`);
-  - create an Object Read & Write token scoped to it;
-  - connect the custom domain `dist.bloxbean.org`;
-  - add the 30-day lifecycle rule on `yano/snapshots/builds/` and abort incomplete multipart uploads after 1 day.
-- GitHub `release-staging`:
-  - variable `DIST_BUCKET`;
-  - secrets `DIST_ACCESS_KEY_ID` and `DIST_SECRET_ACCESS_KEY`.
-
-  `R2_ENDPOINT` is shared, because it is the same Cloudflare account.
+- Cloudflare: on `bloxbean-maven`, add one lifecycle rule that deletes objects with prefix `dist/snapshots/`
+  after 30 days. Check the prefix before saving.
+- Nothing else is needed. The workflow uses the existing `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`
+  and `R2_ENDPOINT` of `release-staging`, and the existing `repo.bloxbean.org` domain.
 
 **Testing.** The upload job's step scripts ran against MinIO with generated zips. Results:
 
@@ -501,7 +509,7 @@ own build staged, because group paths such as `com/bloxbean/cardano` are shared 
 | R2 secrets, variables, bucket | Configured in `release-staging` |
 | First run on `main` | Done 2026-10-04: `0.1.0-pre18-de81cc5-SNAPSHOT`, all checks green |
 | Gate on the commit's CI instead of `fullBuild` | Implemented |
-| Snapshot distributions (`bloxbean-snapshot-dist.yml`) | Implemented, dry-run against MinIO; needs the distribution bucket, domain and token |
+| Snapshot distributions (`bloxbean-snapshot-dist.yml`) | Implemented, dry-run against MinIO; needs the `dist/snapshots/` lifecycle rule |
 | `push: main` trigger | After the manual run is proven |
 | Maven-aware retention | Implemented: `bloxbean-snapshot-cleanup.yml`, manual and approval-gated |
 | Release mirror (Phase 2) | Proposed |

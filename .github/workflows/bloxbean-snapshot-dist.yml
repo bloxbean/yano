@@ -1,14 +1,13 @@
 name: Publish snapshot distributions
 
 # Builds the JVM and native distribution zips of a snapshot commit with dist-dev.yml and, once a release owner
-# approves, publishes exactly those files to the BloxBean distribution bucket, read anonymously at
-# https://dist.bloxbean.org/yano/snapshots/. Independent of release-dist.yml (GitHub releases) and of the Maven
+# approves, publishes exactly those files to the BloxBean repository bucket, read anonymously at
+# https://repo.bloxbean.org/dist/snapshots/yano/. Independent of release-dist.yml (GitHub releases) and of the Maven
 # snapshot repository. See adr/059-r2-maven-repository-for-development-artifacts.md, Snapshot distributions.
 #
-# Each commit gets builds/<version>/ with its zips, SHA256SUMS and manifest.json; latest.json points at the most
-# recently published one.
-# A build directory is never overwritten: manifest.json, uploaded last, marks it as published. Old builds expire by
-# the bucket's lifecycle rule on yano/snapshots/builds/, which latest.json is outside of.
+# Each commit gets <version>/ with its zips, SHA256SUMS and manifest.json; latest.json names the most recently
+# published one. A version directory is never overwritten: manifest.json, uploaded last, marks it as published.
+# Every project writes only dist/snapshots/<project>/; one bucket lifecycle rule on dist/snapshots/ expires them.
 
 on:
   workflow_dispatch:
@@ -72,9 +71,9 @@ jobs:
       group: bloxbean-snapshot-dist
       cancel-in-progress: false
     env:
-      BUCKET: ${{ vars.DIST_BUCKET }}
-      PREFIX: yano/snapshots
-      PUBLIC_URL: https://dist.bloxbean.org
+      BUCKET: ${{ vars.R2_BUCKET }}
+      PREFIX: dist/snapshots/yano
+      PUBLIC_URL: https://repo.bloxbean.org
       AWS_ENDPOINT_URL: ${{ vars.R2_ENDPOINT }}
       AWS_DEFAULT_REGION: auto
       # AWS CLI 2.23+ sends request checksums R2 does not accept by default; send them only when an API needs one.
@@ -113,7 +112,7 @@ jobs:
             exit 1
           fi
           sha256sum -- *.zip > SHA256SUMS
-          BASE="$PUBLIC_URL/$PREFIX/builds/$VERSION"
+          BASE="$PUBLIC_URL/$PREFIX/$VERSION"
           RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           python3 - "$VERSION" "$BASE" "$RUN" > manifest.json <<'EOF'
           import hashlib, json, os, sys
@@ -140,16 +139,16 @@ jobs:
       # stopped before the manifest is completed by running again.
       - name: Upload to the bucket
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.DIST_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.DIST_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           VERSION: ${{ steps.manifest.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          target="s3://$BUCKET/$PREFIX/builds/$VERSION"
-          if aws s3api head-object --bucket "$BUCKET" --key "$PREFIX/builds/$VERSION/manifest.json" \
+          target="s3://$BUCKET/$PREFIX/$VERSION"
+          if aws s3api head-object --bucket "$BUCKET" --key "$PREFIX/$VERSION/manifest.json" \
               > /dev/null 2> "$RUNNER_TEMP/head.err"; then
-            echo "::error::$VERSION is already published at $PUBLIC_URL/$PREFIX/builds/$VERSION/." >&2
+            echo "::error::$VERSION is already published at $PUBLIC_URL/$PREFIX/$VERSION/." >&2
             exit 1
           elif ! grep -q '(404)' "$RUNNER_TEMP/head.err"; then
             cat "$RUNNER_TEMP/head.err" >&2
@@ -192,7 +191,7 @@ jobs:
           {
             echo "## Published snapshot distributions \`$VERSION\`"
             echo
-            echo "- Build: $PUBLIC_URL/$PREFIX/builds/$VERSION/ (\`SHA256SUMS\`, \`manifest.json\`)"
+            echo "- Build: $PUBLIC_URL/$PREFIX/$VERSION/ (\`SHA256SUMS\`, \`manifest.json\`)"
             echo "- Newest build pointer: $PUBLIC_URL/$PREFIX/latest.json"
             echo
             echo '| File | Size |'
