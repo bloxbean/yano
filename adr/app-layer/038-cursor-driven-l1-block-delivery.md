@@ -3,8 +3,8 @@
 ## Status
 
 Accepted (design approved at `3ab767f1b`, 2026-10-03). Implemented in PR #167
-(M0–M3; M4 partly), 2026-10-04. Section 15 records the decisions settled
-during implementation.
+(M0–M4), 2026-10-04. Section 15 records the decisions settled during
+implementation.
 
 The number is local to the `adr/app-layer` series. Root-level and
 `adr/in-progress` ADR numbers are separate series; in particular, this is not
@@ -1291,7 +1291,7 @@ pass, including script-anchor and rotation-governance. Exit: all tests green.
 
 ## 15. Implementation notes (r6)
 
-Implemented in PR #167 (M0–M3; M4 partly). Code map: `L1DeliveryLoop`,
+Implemented in PR #167 (M0–M4). Code map: `L1DeliveryLoop`,
 `L1DeliveryRecord`, `L1Point` and `L1PhaseResult` in `runtime/appchain`; the
 `L1Phases` host inside `AppChainSubsystem`; `CanonicalMutationSequence` and
 `BlockBodyRetentionRegistry` in `runtime/chain`; the `admin/l1/rebaseline`
@@ -1351,12 +1351,39 @@ the code follows this section:
    cancel it (I6).
 10. **Start-up check.** An L1 chain reader, not an event bus, is required when
     `l1.stability-depth > 0`, anchoring or L1 observers are configured.
-11. **D10.** Status `l1Delivery` reports state, delivery health, phase, cursor,
-    delivered points, the pending intent, body tip, lag and the last failure.
-    Readiness, the cursor hash, the baseline and the retention value remain
-    for M4.
+11. **D10.** Status `l1Delivery` reports the state, delivery health (the D9a
+    fence), phase, effective cursor (number, slot, hash), delivered and
+    baseline points, the pending intent, body tip, lag, the retained-from
+    block and the last failure. Readiness degrades while delivery is not
+    `RUNNING` or lags the body tip by more than the node-local
+    `l1.delivery.readiness-max-lag-blocks` (default 100), and status names the
+    reason (`notReady`).
 12. **Plugin API.** The new `ChainBlockReader` and `AppChainGateway` defaults
     ship at plugin API level 12, which no release has yet used.
+13. **D8b rule 6, chain-index horizon.** A record that is not canonical and
+    lies below the oldest slot in the node's canonical index
+    (`ChainBlockReader.getEarliestIndexedSlot`, for example after a chain-state
+    restore from a newer snapshot) cannot be judged dead. It makes the
+    evidence unavailable (`L1_EVIDENCE_UNAVAILABLE`) instead of quarantining.
+14. **D8b scope, script-anchor identity candidates.** An unpromoted candidate
+    records no L1 block, so reconciliation drops it; the follower learns it
+    again from the next verified sign request.
+15. **Observations after a restart.** The observer's in-memory window is
+    rebuilt only from blocks delivered after the restart, but a follower
+    verifies an older pending observation from its durable journal, so it
+    still votes in the original round. A two-member test covers it.
+16. **Verification added.** Crash points before every record write and around
+    every apply and rollback effect; same-slot replacements and storage
+    failures in the differential model; fenced readers during a pending
+    rollback, a reconciliation and a terminal state; Byron blocks; the body
+    tip cap (I10). End to end, the release-QA two-node cluster rolls L1 back
+    below a follower's delivered cursor, checks that the follower's delivery
+    rolls back, then restarts the follower and checks it resumes; all four
+    app-chain QA tests pass. A rollback while the follower is down cannot be
+    driven end to end yet: the L1 client restarts ChainSync from its tip
+    alone, so it finds no intersection once the upstream has dropped that
+    block (a separate L1 issue). The subsystem test covers the app-chain side
+    of that case.
 
 ## Revision history
 
@@ -1435,3 +1462,7 @@ the code follows this section:
   synchronous epoch rollback phase, upgrade detection, the durable pending
   anchor, retention release, retry backoff, the start-up check, D10 scope and
   the plugin API level.
+- **r7** (2026-10-04; implementation complete): §15 items 11 and 13–16 — D10
+  readiness and status, the chain-index horizon for D8b rule 6, dropping
+  script-anchor identity candidates, observation verification after a restart,
+  and the verification added for M4.
