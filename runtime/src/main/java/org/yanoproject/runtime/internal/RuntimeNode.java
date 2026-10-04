@@ -569,6 +569,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     headerValidationLedgerViewProvider(),
                     headerValidationCustomizers());
             constructionCleanup.addLast(syncSubsystem::close);
+            syncSubsystem.setRollbackFloorSlot(this::commonRollbackFloorSlot);
             relayConnectionManager.addListener(this.syncSubsystem.peerGovernorConnectionListener());
             peerStoreSupplierRef.set(this.syncSubsystem::sharablePeerEntries);
             this.producerStartupCoordinator = new ProducerStartupCoordinator(producerStartupActions());

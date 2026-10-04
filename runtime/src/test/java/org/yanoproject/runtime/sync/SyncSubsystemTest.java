@@ -346,6 +346,60 @@ class SyncSubsystemTest {
     }
 
     @Test
+    void intersectionSearchNeverOffersAPointBelowTheRollbackFloor() {
+        YanoConfig config = clientConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            storeChain(runtime, 1, 20);
+            sync.setRollbackFloorSlot(() -> 170L); // e.g. the UTXO store kept deltas back to block 17 only
+
+            sync.startClientSync();
+            for (int attempt = 1; attempt <= 4; attempt++) {
+                rejectIntersection(clients, attempt);
+            }
+
+            waitForTerminal(sync);
+            // Doubling would reach block 16, below the floor; the oldest recoverable block 17 is offered once
+            assertThat(startSlots(clients)).containsExactly(200L, 190L, 180L, 170L);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void pipelinedSearchStepsBackThroughHeaderOnlyBlocksAheadOfTheBodyTip() {
+        YanoConfig config = clientConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            storeChain(runtime, 1, 10);
+            for (long number = 11; number <= 12; number++) { // headers only: bodies not fetched yet
+                runtime.owned.chainStorage().chainState().storeBlockHeader(blockHash(number), number, number * 10,
+                        new byte[]{1});
+            }
+
+            sync.startClientSync();
+            rejectIntersection(clients, 1);
+            rejectIntersection(clients, 2);
+
+            waitForClients(clients, 3);
+            assertThat(startSlots(clients)).as("down to the body tip, block 10").containsExactly(120L, 110L, 100L);
+            assertThat(sync.peerRecoverySnapshot().terminal()).isFalse();
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void intersectionSearchOffersTheOldestIndexedAncestorBeforeStopping() {
         YanoConfig config = clientConfig().toBuilder().enablePipelinedSync(false).build();
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -388,6 +442,7 @@ class SyncSubsystemTest {
             waitForClients(clients, 2);
             Point ancestor = clients.get(1).startPoint;
             clients.get(1).listener().intersactFound(new Tip(ancestor, 19), ancestor);
+            clients.get(1).listener().intersactFound(new Tip(ancestor, 19), ancestor); // yaci may repeat it
             sync.handleChainSyncRollback(ancestor);
 
             // Still in INTERSECT_PHASE, yet block 20 is gone: consumers must see the rollback
@@ -1132,10 +1187,15 @@ class SyncSubsystemTest {
     /** Blocks first..last at slot 10 * number. */
     private static void storeChain(TestRuntime runtime, long first, long last) {
         for (long number = first; number <= last; number++) {
-            byte[] hash = new byte[32];
-            java.util.Arrays.fill(hash, (byte) number);
-            runtime.owned.chainStorage().chainState().storeBlock(hash, number, number * 10, new byte[]{1});
+            runtime.owned.chainStorage().chainState().storeBlock(blockHash(number), number, number * 10,
+                    new byte[]{1});
         }
+    }
+
+    private static byte[] blockHash(long number) {
+        byte[] hash = new byte[32];
+        java.util.Arrays.fill(hash, (byte) number);
+        return hash;
     }
 
     /** The upstream answers the n-th session's FindIntersect with IntersectNotFound, twice as yaci may. */

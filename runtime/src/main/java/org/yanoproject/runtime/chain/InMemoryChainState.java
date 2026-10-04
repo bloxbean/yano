@@ -49,7 +49,8 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
 
     @Override
     public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {
-        boolean replaces = replacesEntry(blockHashByNumber, blockNumber, blockHash);
+        boolean replaces = replacesEntry(headerHashByNumber, blockNumber, blockHash)
+                || replacesEntry(blockHashByNumber, blockNumber, blockHash);
         if (replaces) {
             mutationSequence.begin();
         }
@@ -139,7 +140,8 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
 
     @Override
     public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
-        byte[] hash = blockHashByNumber.get(blockNumber);
+        // Header index, like DirectRocksDBChainState: header-only blocks ahead of the body tip are canonical too
+        byte[] hash = headerHashByNumber.get(blockNumber);
         if (hash == null) {
             if (blockNumber != 0) return Optional.empty();
             return ebbHeaderNumberBySlot.entrySet().stream()
@@ -148,10 +150,8 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
                     .map(entry -> new CanonicalBlockReference(
                             blockNumber, entry.getKey(), ebbHeaderHashBySlot.get(entry.getKey())));
         }
-        return blockNumberBySlot.entrySet().stream()
-                .filter(entry -> java.util.Objects.equals(entry.getValue(), blockNumber))
-                .findFirst()
-                .map(entry -> new CanonicalBlockReference(blockNumber, entry.getKey(), hash));
+        Long slot = getSlotByBlockNumber(blockNumber);
+        return slot == null ? Optional.empty() : Optional.of(new CanonicalBlockReference(blockNumber, slot, hash));
     }
 
     @Override
