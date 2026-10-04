@@ -42,12 +42,27 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
 
     private ChainTip tip;
     private ChainTip headerTip;
+    private final CanonicalMutationSequence mutationSequence = new CanonicalMutationSequence();
     private volatile byte[] epochNonceState;
     private final Map<Integer, byte[]> epochNonces = new ConcurrentHashMap<>();
     private final Map<Integer, NonceStateSnapshot> epochNonceCheckpoints = new ConcurrentHashMap<>();
 
     @Override
     public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {
+        boolean replaces = replacesEntry(blockHashByNumber, blockNumber, blockHash);
+        if (replaces) {
+            mutationSequence.begin();
+        }
+        try {
+            storeBlockUnsequenced(blockHash, blockNumber, slot, block);
+        } finally {
+            if (replaces) {
+                mutationSequence.end();
+            }
+        }
+    }
+
+    private void storeBlockUnsequenced(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {
         String key = toHex(blockHash);
         blockStore.put(key, block);
         boolean ebb = slot != null && java.util.Arrays.equals(ebbHeaderHashBySlot.get(slot), blockHash);
@@ -72,9 +87,29 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
 
     @Override
     public void storeBlockHeader(byte[] blockHash, Long blockNumber, Long slot, byte[] blockHeader) {
-        blockHeaderStore.put(toHex(blockHash), blockHeader);
-        indexMainHeader(blockHash, blockNumber, slot);
-        headerTip = new ChainTip(slot, blockHash, blockNumber);
+        boolean replaces = replacesEntry(headerHashByNumber, blockNumber, blockHash);
+        if (replaces) {
+            mutationSequence.begin();
+        }
+        try {
+            blockHeaderStore.put(toHex(blockHash), blockHeader);
+            indexMainHeader(blockHash, blockNumber, slot);
+            headerTip = new ChainTip(slot, blockHash, blockNumber);
+        } finally {
+            if (replaces) {
+                mutationSequence.end();
+            }
+        }
+    }
+
+    private static boolean replacesEntry(Map<Long, byte[]> index, Long blockNumber, byte[] blockHash) {
+        byte[] existing = blockNumber != null ? index.get(blockNumber) : null;
+        return existing != null && !java.util.Arrays.equals(existing, blockHash);
+    }
+
+    @Override
+    public OptionalLong canonicalMutationSequence() {
+        return OptionalLong.of(mutationSequence.current());
     }
 
     public void storeByronEbHeader(byte[] blockHash, Long blockNumber, Long slot, byte[] blockHeader) {
@@ -139,6 +174,15 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
 
     @Override
     public synchronized void rollbackTo(Point target) {
+        mutationSequence.begin();
+        try {
+            rollbackToUnsequenced(target);
+        } finally {
+            mutationSequence.end();
+        }
+    }
+
+    private void rollbackToUnsequenced(Point target) {
         if (target == null) throw new IllegalArgumentException("Rollback target is required");
         if (target.getHash() == null) {
             rollbackToOrigin();
@@ -183,6 +227,15 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
     }
 
     public void rollbackToOrigin() {
+        mutationSequence.begin();
+        try {
+            rollbackToOriginUnsequenced();
+        } finally {
+            mutationSequence.end();
+        }
+    }
+
+    private void rollbackToOriginUnsequenced() {
         blockStore.clear();
         blockHeaderStore.clear();
         blockHashByNumber.clear();

@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
+import org.yanoproject.api.CanonicalBlockReference;
 import org.yanoproject.api.appchain.AppChainConfig;
 import org.yanoproject.api.appchain.l1view.L1Observation;
 import org.yanoproject.api.appchain.l1view.L1Observer;
@@ -143,10 +144,12 @@ class AppChainSenderSeqTest {
     void enforceOn_frameworkObservationsFinalizeAcrossTwoMembers() throws Exception {
         EventBus busA = new SimpleEventBus();
         EventBus busB = new SimpleEventBus();
-        AppChainSubsystem[] nodes = startObservationPair(busA, busB);
+        L1TestChain l1A = new L1TestChain();
+        L1TestChain l1B = new L1TestChain();
+        AppChainSubsystem[] nodes = startObservationPair(busA, l1A, busB, l1B);
 
-        feedObservedL1(busA, 1, 3);
-        feedObservedL1(busB, 1, 3);
+        feedObservedL1(l1A, busA, 1, 3);
+        feedObservedL1(l1B, busB, 1, 3);
 
         awaitTrue("framework observation finalized on both enforcing members",
                 () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
@@ -158,6 +161,58 @@ class AppChainSenderSeqTest {
         assertThat(nodes[1].block(1).orElseThrow().messages())
                 .anySatisfy(message ->
                         assertThat(message.getTopic()).startsWith(L1Observation.TOPIC_PREFIX));
+    }
+
+    /**
+     * ADR-038: a member that stops after journaling an observation, and restarts with an empty in-memory window,
+     * still verifies and votes on that observation; in a 2-of-2 chain its vote is required.
+     */
+    @Test
+    void restartedMemberVotesOnAnObservationJournaledBeforeItsRestart() throws Exception {
+        EventBus busA = new SimpleEventBus();
+        EventBus busB = new SimpleEventBus();
+        L1TestChain l1A = new L1TestChain();
+        L1TestChain l1B = new L1TestChain();
+        AppChainSubsystem[] nodes = startObservationPair(busA, l1A, busB, l1B);
+
+        feedObservedL1(l1B, busB, 1, 1);
+        awaitTrue("B delivered and journaled slot 1", () -> l1CursorSlot(nodes[1]) == 1);
+        nodes[1].stop();
+
+        feedObservedL1(l1A, busA, 1, 2);
+        Thread.sleep(1_000);
+        assertThat(nodes[0].tipHeight()).as("nothing finalizes without B").isZero();
+
+        startAfterDrain(nodes[1]);
+        feedObservedL1(l1B, busB, 2, 2);
+        awaitTrue("the pre-restart observation finalizes on both members",
+                () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
+        assertThat(nodes[1].block(1).orElseThrow().messages())
+                .anySatisfy(message -> assertThat(message.getTopic()).startsWith(L1Observation.TOPIC_PREFIX));
+        // B verified the observation from its journal and voted in the original round; without that it would refuse
+        // ("outside the live window") and only a view change, with B leading, could finalize it.
+        assertThat(nodes[1].block(1).orElseThrow().view()).isZero();
+    }
+
+    private static long l1CursorSlot(AppChainSubsystem subsystem) {
+        return subsystem.status().get("l1Delivery") instanceof Map<?, ?> delivery
+                && delivery.get("cursorSlot") instanceof Number slot ? slot.longValue() : -1L;
+    }
+
+    private static void startAfterDrain(AppChainSubsystem subsystem) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (true) {
+            try {
+                subsystem.start();
+                return;
+            } catch (IllegalStateException draining) {
+                if (!String.valueOf(draining.getMessage()).contains("still draining")
+                        || System.currentTimeMillis() > deadline) {
+                    throw draining;
+                }
+                Thread.sleep(10);
+            }
+        }
     }
 
     @Test
@@ -215,7 +270,7 @@ class AppChainSenderSeqTest {
         return new AppChainSubsystem[]{nodeA, nodeB};
     }
 
-    private AppChainSubsystem[] startObservationPair(EventBus busA, EventBus busB)
+    private AppChainSubsystem[] startObservationPair(EventBus busA, L1TestChain l1A, EventBus busB, L1TestChain l1B)
             throws Exception {
         String pubA = pubHex(KEY_A);
         String pubB = pubHex(KEY_B);
@@ -225,10 +280,13 @@ class AppChainSenderSeqTest {
         PluginProviderRegistry registry = new ObservationRegistry();
 
         AppChainSubsystem nodeA = startObservationNode("observation-a", KEY_A, members,
-                pubA, portA, List.of(peer(portB)), busA, registry);
+                pubA, portA, List.of(peer(portB)), busA, l1A, registry);
         AppChainSubsystem nodeB = startObservationNode("observation-b", KEY_B, members,
-                pubA, portB, List.of(peer(portA)), busB, registry);
+                pubA, portB, List.of(peer(portA)), busB, l1B, registry);
         awaitTrue("observation A/B connected", () -> connected(nodeA) && connected(nodeB));
+        // Blocks appended before the loop records its baseline would be history, not delivered blocks.
+        awaitTrue("observation A/B L1 baselines recorded",
+                () -> l1BaselineRecorded(nodeA) && l1BaselineRecorded(nodeB));
         return new AppChainSubsystem[]{nodeA, nodeB};
     }
 
@@ -240,6 +298,7 @@ class AppChainSenderSeqTest {
             int serverPort,
             List<AppChainConfig.AppPeer> peers,
             EventBus eventBus,
+            L1TestChain l1,
             PluginProviderRegistry registry
     ) throws Exception {
         AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
@@ -260,6 +319,7 @@ class AppChainSenderSeqTest {
         AppChainSubsystem subsystem = new AppChainSubsystem(
                 config, MAGIC, eventBus, null,
                 tempDir.resolve("ledger-" + name).toString(), null, registry, log);
+        subsystem.wireL1Chain(l1.reader(), null);
         subsystems.add(subsystem);
 
         NodeServer server = new NodeServer(serverPort,
@@ -274,17 +334,20 @@ class AppChainSenderSeqTest {
         return subsystem;
     }
 
-    private static void feedObservedL1(EventBus eventBus, long first, long last) {
+    /** Appends one empty L1 block per slot, then wakes the delivery loop as the node's applied event would. */
+    private static void feedObservedL1(L1TestChain l1, EventBus eventBus, long first, long last) {
         for (long slot = first; slot <= last; slot++) {
-            byte[] hash = seed(Math.toIntExact(slot));
-            Block block = Block.builder()
-                    .transactionBodies(List.of())
-                    .invalidTransactions(List.of())
-                    .build();
-            eventBus.publish(new BlockAppliedEvent(null, slot, slot,
-                            HexUtil.encodeHexString(hash), block),
-                    EventMetadata.builder().build(), PublishOptions.builder().build());
+            l1.append(slot);
         }
+        CanonicalBlockReference tip = l1.block(l1.tipNumber());
+        eventBus.publish(new BlockAppliedEvent(null, tip.slot(), tip.blockNumber(),
+                        HexUtil.encodeHexString(tip.blockHash()), null),
+                EventMetadata.builder().build(), PublishOptions.builder().build());
+    }
+
+    private static boolean l1BaselineRecorded(AppChainSubsystem subsystem) {
+        return subsystem.status().get("l1Delivery") instanceof Map<?, ?> delivery
+                && delivery.containsKey("cursorBlock");
     }
 
     private AppChainSubsystem startSingle(String name, byte[] key, Set<String> members,

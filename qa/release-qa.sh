@@ -24,7 +24,7 @@ haskell-sync-native|l1|native|Haskell node sync, 2 epochs|25|qa/harness/haskell-
 past-time-travel-jvm|l1|jvm|Past time travel + Haskell sync from slot 0|25|qa/harness/past-time-travel.sh jvm
 past-time-travel-native|l1|native|Past time travel + Haskell sync from slot 0|25|qa/harness/past-time-travel.sh native
 sparse-backfill|l1|jvm|Sparse backfill matrix + Haskell sync|60|scripts/sparse-backfill/run-sparse-backfill-test.sh --skip-build --run-dir "$OUT/runs/sparse-backfill"
-appchain-cluster|appchain|jvm|Two-node cluster, proofs, L1 anchor|20|qa/harness/appchain-cluster.sh
+appchain-cluster|appchain|jvm|Two-node cluster, proofs, L1 anchor, L1 rollback and follower restart|25|qa/harness/appchain-cluster.sh
 appchain-extensions|appchain|jvm|Multi-chain, query, SSE, admin, rotation, snapshot|25|qa/harness/appchain-extensions.sh
 appchain-rotation-governance|appchain|jvm|Rotating sequencer + governed membership|20|qa/harness/appchain-rotation-governance.sh
 appchain-script-anchor|appchain|jvm|Script anchors + L1 deposit observations|25|qa/harness/appchain-script-anchor.sh

@@ -361,6 +361,13 @@ public class AppChainResource {
 
     @POST
     @Operation(hidden = true)
+    @Path("admin/l1/rebaseline")
+    public Response rebaselineL1Delivery() {
+        return singleChain().rebaselineL1Delivery();
+    }
+
+    @POST
+    @Operation(hidden = true)
     @Path("admin/anchor/bootstrap")
     public Response bootstrapScriptAnchor() {
         return singleChain().bootstrapScriptAnchor();
@@ -1286,6 +1293,24 @@ public class AppChainResource {
         public Response forceAnchor() {
             boolean triggered = gateway.forceAnchor();
             return Response.ok(Map.of("chainId", gateway.chainId(), "anchorTriggered", triggered)).build();
+        }
+
+        /**
+         * Operator re-baseline of L1 delivery (app-layer ADR-038, D7a). Refused with 409 while a terminal
+         * quarantine is persisted.
+         */
+        @POST
+        @Path("admin/l1/rebaseline")
+        public Response rebaselineL1Delivery() {
+            boolean accepted;
+            try {
+                accepted = gateway.rebaselineL1Delivery();
+            } catch (UnsupportedOperationException e) {
+                throw jsonError(Response.Status.BAD_REQUEST, e.getMessage());
+            }
+            // Refused: a terminal quarantine is persisted, or the chain is not running.
+            return Response.status(accepted ? Response.Status.OK : Response.Status.CONFLICT)
+                    .entity(Map.of("chainId", gateway.chainId(), "rebaselineAccepted", accepted)).build();
         }
 
         /**

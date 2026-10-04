@@ -718,20 +718,27 @@ implemented rule:
   stable L1 point. The confirmations are the bounded
   `anchor_confirmation_history_v1` journal that metadata and script modes
   share. The stable point is the block `l1.stability-depth` blocks below
-  the node's observed L1 tip, the same `stableL1Ref` that selects block L1
-  references and drains L1 observations. An L1_ANCHORED effect at height
-  `h` is eligible when `h ≤ frontier − anchor-margin-blocks`. Dispatch,
+  the newest L1 block the app chain has delivered, the same `stableL1Ref`
+  that selects block L1 references and drains L1 observations. It is read
+  through the ADR-038 D9a freshness fence (amended by ADR-038). An
+  L1_ANCHORED effect at height `h` is eligible when
+  `h ≤ frontier − anchor-margin-blocks`. Dispatch,
   external claims and the pre-execution recheck all use this frontier.
   `EffectExecutionContext.anchoredHeight()` and the node status
   (`anchor.stableAnchoredHeight`) report it.
-- **Rollback.** Both anchor services rewind the journal on an L1 rollback,
-  and the stable point is recomputed from the rolled-back L1 view. A
-  rolled-back anchor therefore never counts. Its re-inclusion counts once
-  the new slot is stable.
+- **Rollback.** Both anchor services rewind the journal when the app
+  chain's L1 delivery rolls back (ADR-038), and the stable point is
+  recomputed from the rolled-back delivered window. A rolled-back anchor
+  therefore never counts. Its re-inclusion counts once the new slot is
+  stable. Confirmations that record no L1 inclusion block (written before
+  ADR-038) never count.
 - **Node-local.** This is execution-plane state only. Nothing is written to
   consensus state: the frontier is derived from local meta and the
-  in-memory L1 window. After a restart it stays 0 until the node has seen
-  `l1.stability-depth + 1` L1 blocks (fail closed).
+  durable L1 delivery window (ADR-038). After a restart it is available
+  once the durable delivery record has been recovered and checked against
+  chain state (ADR-038 D9, D9a). A chain upgraded from before ADR-038 is
+  reconciled first and then waits for `l1.stability-depth + 1` delivered L1
+  blocks (fail closed).
 - **Depth 0 or no anchors.** Without a stability depth there is no stable
   L1 point, so the frontier stays 0. The gate fails closed, like
   `ZK_SETTLED` on a non-ZK chain. `effects.default-gate=l1-anchored`

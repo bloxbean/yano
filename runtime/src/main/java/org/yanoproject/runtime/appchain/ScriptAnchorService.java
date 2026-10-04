@@ -44,9 +44,17 @@ import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
+import org.rocksdb.WriteBatch;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -57,6 +65,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiPredicate;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.BiConsumer;
 import java.util.function.IntSupplier;
@@ -142,6 +153,9 @@ final class ScriptAnchorService {
     private static final String META_SCRIPT_CANDIDATE_BASE_TX = "anchor_script_candidate_base_tx";
     private static final String META_SCRIPT_CANDIDATE_SLOT = "anchor_script_candidate_slot";
     private static final String META_SCRIPT_CANDIDATE_BASE_INDEX = "anchor_script_candidate_base_index";
+    /** Durable L1 facts awaiting local completion (ADR-038 D4a); empty means none. */
+    private static final String META_SCRIPT_OBSERVED_SUBMIT = "anchor_script_observed_submit_v1";
+    private static final String META_SCRIPT_OBSERVED_BOOTSTRAP = "anchor_script_observed_bootstrap_v1";
     private static final int MAX_ADOPTION_TXS = 8;
 
     private final String chainId;
@@ -175,10 +189,17 @@ final class ScriptAnchorService {
 
     private final Object anchorLock = new Object();
     private volatile PendingBootstrap pendingBootstrap;
-    private volatile ObservedBootstrap observedBootstrap;
     private volatile PendingCosign pendingCosign;
     private volatile PendingSubmit pendingSubmit;
-    private volatile ObservedSubmit observedSubmit;
+    /** Confirmations are written only while this holds (ADR-038 D8b rule 9: not while reconciling). */
+    private volatile BooleanSupplier completionGate = () -> true;
+    /** Best-effort notification after each confirmation, from any path (ADR-038 D4a). */
+    private volatile Consumer<AnchorService.ConfirmedAnchor> confirmationListener = confirmed -> { };
+    /**
+     * Canonical L1 block hash at a slot, or null when unknown or not yet delivered (ADR-038 D3); records follower
+     * inclusion points.
+     */
+    private volatile LongFunction<byte[]> canonicalHashAtSlot = slot -> null;
     private volatile long lastAnchorAttemptAt;
     private volatile String lastError;
     /** Session-local committed-view observations; never interpreted as cluster state. */
@@ -245,6 +266,18 @@ final class ScriptAnchorService {
                        Supplier<AppChainEngine.L1Ref> currentL1Point) {
         this.protocolParamsSupplier = protocolParams;
         this.currentL1PointSupplier = currentL1Point;
+    }
+
+    void wireCanonicalHashAtSlot(LongFunction<byte[]> canonicalHashAtSlot) {
+        this.canonicalHashAtSlot = Objects.requireNonNull(canonicalHashAtSlot, "canonicalHashAtSlot");
+    }
+
+    void setCompletionGate(BooleanSupplier gate) {
+        this.completionGate = Objects.requireNonNull(gate, "gate");
+    }
+
+    void setConfirmationListener(Consumer<AnchorService.ConfirmedAnchor> listener) {
+        this.confirmationListener = Objects.requireNonNull(listener, "listener");
     }
 
     String anchorAddress() {
@@ -369,113 +402,117 @@ final class ScriptAnchorService {
     // Leader: periodic tick, co-sign rounds, assembly
     // ------------------------------------------------------------------
 
-    AnchorService.ConfirmedAnchor tick() {
+    void tick() {
+        AnchorService.ConfirmedAnchor confirmed;
         synchronized (anchorLock) {
-            try {
-                if (!leader) {
-                    // Every member derives the durable anchor frontier from
-                    // its OWN authenticated L1 UTxO view. Followers never
-                    // enter any construction/submission path below.
-                    return reconcileObservedAnchor();
-                }
-                if (observedBootstrap != null) {
-                    completeObservedBootstrap();
-                    return null;
-                }
-                if (observedSubmit != null) {
-                    return completeObservedSubmit();
-                }
-                // Leader recovery/restart repair when there is no in-flight
-                // confirmation to complete. Pending observations stay the
-                // authoritative path so their retry/count semantics cannot
-                // be double-applied by reconciliation.
-                AnchorService.ConfirmedAnchor repaired = reconcileObservedAnchor();
-                if (repaired != null) {
-                    return repaired;
-                }
-                PendingBootstrap bootstrap = pendingBootstrap;
-                if (bootstrap != null
-                        && System.currentTimeMillis() - bootstrap.submittedAt() > RESUBMIT_AFTER_MS) {
-                    log.warn("Script-anchor bootstrap tx {} not observed on L1 within {}ms — clearing "
-                            + "(re-run bootstrap; the seed UTxO may have been spent)",
-                            bootstrap.txHash(), RESUBMIT_AFTER_MS);
-                    pendingBootstrap = null;
-                }
-                if (!bootstrapped())
-                    return null;
+            confirmed = tickLocked();
+        }
+        notifyConfirmed(confirmed);
+    }
 
-                PendingSubmit submit = pendingSubmit;
-                if (submit != null) {
-                    if (System.currentTimeMillis() - submit.submittedAt() > RESUBMIT_AFTER_MS) {
-                        log.warn("Script-anchor tx {} not observed on L1 within {}ms — restarting co-sign",
-                                submit.txHash(), RESUBMIT_AFTER_MS);
-                        pendingSubmit = null;
-                        startCosignRound(null);
-                    }
-                    return null;
-                }
+    private AnchorService.ConfirmedAnchor tickLocked() {
+        try {
+            if (!leader) {
+                // Every member derives the durable anchor frontier from
+                // its OWN authenticated L1 UTxO view. Followers never
+                // enter any construction/submission path below.
+                return reconcileObservedAnchor();
+            }
+            if (loadObservedBootstrap() != null) {
+                completeObservedBootstrap();
+                return null;
+            }
+            if (loadObservedSubmit() != null) {
+                return completeObservedSubmit();
+            }
+            // Leader recovery/restart repair when there is no in-flight
+            // confirmation to complete. Pending observations stay the
+            // authoritative path so their retry/count semantics cannot
+            // be double-applied by reconciliation.
+            AnchorService.ConfirmedAnchor repaired = reconcileObservedAnchor();
+            if (repaired != null) {
+                return repaired;
+            }
+            PendingBootstrap bootstrap = pendingBootstrap;
+            if (bootstrap != null
+                    && System.currentTimeMillis() - bootstrap.submittedAt() > RESUBMIT_AFTER_MS) {
+                log.warn("Script-anchor bootstrap tx {} not observed on L1 within {}ms — clearing "
+                        + "(re-run bootstrap; the seed UTxO may have been spent)",
+                        bootstrap.txHash(), RESUBMIT_AFTER_MS);
+                pendingBootstrap = null;
+            }
+            if (!bootstrapped())
+                return null;
 
-                PendingCosign cosign = pendingCosign;
-                if (cosign != null) {
-                    if (cosignComplete(cosign)) {
-                        assembleAndSubmit(cosign);
-                    } else if (System.currentTimeMillis() - cosign.startedAt() > COSIGN_ROUND_TIMEOUT_MS) {
-                        retryWithResponsiveSubset(cosign);
-                    } else {
-                        // Nudge: re-diffuse the same request for members that missed it
-                        diffuser.accept(TOPIC_SIGN, cosign.requestBody());
-                    }
-                    return null;
-                }
-
-                long tip = tipHeightSupplier.get();
-                long lastAnchored = lastAnchoredHeight();
-                if (tip <= lastAnchored)
-                    return null;
-                boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
-                boolean dueByTime = lastAnchorAttemptAt > 0
-                        ? System.currentTimeMillis() - lastAnchorAttemptAt
-                                >= anchorConfig.maxIntervalMinutes() * 60_000
-                        : true;
-                if (dueByCount || dueByTime) {
+            PendingSubmit submit = pendingSubmit;
+            if (submit != null) {
+                if (System.currentTimeMillis() - submit.submittedAt() > RESUBMIT_AFTER_MS) {
+                    log.warn("Script-anchor tx {} not observed on L1 within {}ms — restarting co-sign",
+                            submit.txHash(), RESUBMIT_AFTER_MS);
+                    pendingSubmit = null;
                     startCosignRound(null);
                 }
                 return null;
-            } catch (Throwable failure) {
-                // ScheduledExecutor suppresses all later invocations when a
-                // periodic task lets an Error escape. Isolate every
-                // recoverable plugin/transaction failure here; only errors
-                // after which the process is unsafe may terminate the task.
-                recordFailure("tick", failure);
+            }
+
+            PendingCosign cosign = pendingCosign;
+            if (cosign != null) {
+                if (cosignComplete(cosign)) {
+                    assembleAndSubmit(cosign);
+                } else if (System.currentTimeMillis() - cosign.startedAt() > COSIGN_ROUND_TIMEOUT_MS) {
+                    retryWithResponsiveSubset(cosign);
+                } else {
+                    // Nudge: re-diffuse the same request for members that missed it
+                    diffuser.accept(TOPIC_SIGN, cosign.requestBody());
+                }
                 return null;
             }
+
+            long tip = tipHeightSupplier.get();
+            long lastAnchored = lastAnchoredHeight();
+            if (tip <= lastAnchored)
+                return null;
+            boolean dueByCount = tip - lastAnchored >= anchorConfig.everyBlocks();
+            boolean dueByTime = lastAnchorAttemptAt > 0
+                    ? System.currentTimeMillis() - lastAnchorAttemptAt
+                            >= anchorConfig.maxIntervalMinutes() * 60_000
+                    : true;
+            if (dueByCount || dueByTime) {
+                startCosignRound(null);
+            }
+            return null;
+        } catch (Throwable failure) {
+            // ScheduledExecutor suppresses all later invocations when a
+            // periodic task lets an Error escape. Isolate every
+            // recoverable plugin/transaction failure here; only errors
+            // after which the process is unsafe may terminate the task.
+            recordFailure("tick", failure);
+            return null;
         }
     }
 
     boolean forceAnchorNow() {
         if (!leader)
             return false;
+        AnchorService.ConfirmedAnchor confirmed = null;
+        boolean started = false;
         synchronized (anchorLock) {
             try {
-                if (observedBootstrap != null) {
+                if (loadObservedBootstrap() != null) {
                     completeObservedBootstrap();
-                    return false;
+                } else if (loadObservedSubmit() != null) {
+                    confirmed = completeObservedSubmit();
+                } else if (bootstrapped() && pendingSubmit == null && pendingCosign == null
+                        && tipHeightSupplier.get() > lastAnchoredHeight()) {
+                    startCosignRound(null);
+                    started = pendingCosign != null || pendingSubmit != null;
                 }
-                if (observedSubmit != null) {
-                    completeObservedSubmit();
-                    return false;
-                }
-                if (!bootstrapped() || pendingSubmit != null || pendingCosign != null)
-                    return false;
-                if (tipHeightSupplier.get() <= lastAnchoredHeight())
-                    return false;
-                startCosignRound(null);
-                return pendingCosign != null || pendingSubmit != null;
             } catch (Throwable failure) {
                 recordFailure("force-anchor", failure);
-                return false;
             }
         }
+        notifyConfirmed(confirmed);
+        return started;
     }
 
     /**
@@ -1007,132 +1044,174 @@ final class ScriptAnchorService {
     // L1 confirmation / rollback (mirrors metadata mode)
     // ------------------------------------------------------------------
 
-    AnchorService.ConfirmedAnchor onL1Block(long slot, List<String> txHashes) {
+    /**
+     * L1 delivery phase for one block (ADR-038 D4a): records the leader's observed bootstrap or submit as a durable
+     * L1 fact, then attempts local completion. A completion that cannot finish yet is retried by {@link #tick()}.
+     * Redelivering the same block is a no-op.
+     *
+     * @return {@code DURABLE} once a fact is written, {@code NO_OP} when the block concerns no pending transaction,
+     *         or {@code RETRYABLE} when the fact could not be written
+     */
+    L1PhaseResult onL1Block(long slot, byte[] l1BlockHash, List<String> txHashes) {
+        if (l1BlockHash == null || l1BlockHash.length != 32) {
+            throw new IllegalArgumentException("L1 block hash must be 32 bytes");
+        }
+        AnchorService.ConfirmedAnchor confirmed = null;
         synchronized (anchorLock) {
+            if (txHashes == null) {
+                return L1PhaseResult.NO_OP;
+            }
+            PendingBootstrap bootstrap = pendingBootstrap;
+            PendingSubmit submit = pendingSubmit;
+            boolean bootstrapSeen = bootstrap != null && txHashes.contains(bootstrap.txHash());
+            if (!bootstrapSeen && (submit == null || !txHashes.contains(submit.txHash()))) {
+                return L1PhaseResult.NO_OP;
+            }
             try {
-                if (observedBootstrap != null) {
-                    completeObservedBootstrap();
-                    return null;
-                }
-                if (observedSubmit != null) {
-                    return completeObservedSubmit();
-                }
-                if (txHashes == null) {
-                    return null;
-                }
-                PendingBootstrap bootstrap = pendingBootstrap;
-                if (bootstrap != null && txHashes.contains(bootstrap.txHash())) {
-                    if (pendingBootstrap != bootstrap || observedBootstrap != null) {
-                        return null;
+                if (bootstrapSeen) {
+                    ObservedBootstrap fact = new ObservedBootstrap(bootstrap.txHash(), bootstrap.policyId(),
+                            bootstrap.scriptHash(), bootstrap.datumHeight(), slot, l1BlockHash.clone());
+                    if (!fact.sameAs(loadObservedBootstrap())) {
+                        ledger.metaPutAll(Map.of(), Map.of(META_SCRIPT_OBSERVED_BOOTSTRAP, fact.encode()));
                     }
-                    observedBootstrap = new ObservedBootstrap(bootstrap, slot);
-                    completeObservedBootstrap();
-                    return null;
+                } else {
+                    AnchorService.ObservedConfirmation fact = new AnchorService.ObservedConfirmation(
+                            submit.fromHeight(), submit.toHeight(), submit.txHash(), slot, l1BlockHash.clone());
+                    if (!fact.sameAs(loadObservedSubmit())) {
+                        ledger.metaPutAll(Map.of(), Map.of(META_SCRIPT_OBSERVED_SUBMIT, fact.encode()));
+                    }
                 }
-                PendingSubmit submit = pendingSubmit;
-                if (submit == null || !txHashes.contains(submit.txHash())) {
-                    return null;
-                }
-                if (pendingSubmit != submit || observedSubmit != null) {
-                    return null;
-                }
-                observedSubmit = new ObservedSubmit(submit, slot);
-                return completeObservedSubmit();
             } catch (Throwable failure) {
                 recordFailure("L1 observation", failure);
-                return null;
+                return L1PhaseResult.retryable("SCRIPT_ANCHOR_OBSERVATION_WRITE_FAILED");
+            }
+            if (bootstrapSeen) {
+                completeObservedBootstrap();
+            } else {
+                confirmed = completeObservedSubmit();
             }
         }
+        notifyConfirmed(confirmed);
+        return L1PhaseResult.DURABLE;
     }
 
+    /** Local completion of a durable observed bootstrap; idempotent and gated. Callers hold the anchor lock. */
     private void completeObservedBootstrap() {
-        ObservedBootstrap observed = observedBootstrap;
-        if (observed == null) {
-            return;
-        }
-        PendingBootstrap bootstrap = observed.bootstrap();
         try {
-            byte[] anchoredBlockHash = blockHashAtConfirmedHeight(bootstrap.datumHeight());
-            if (observedBootstrap != observed || pendingBootstrap != bootstrap) {
+            if (!completionGate.getAsBoolean()) {
                 return;
             }
-            long fromHeight = bootstrap.datumHeight() > 0 ? 1L : 0L;
+            ObservedBootstrap observed = loadObservedBootstrap();
+            if (observed == null) {
+                return;
+            }
+            byte[] anchoredBlockHash = blockHashAtConfirmedHeight(observed.datumHeight());
+            if (!observed.sameAs(loadObservedBootstrap())) {
+                return;
+            }
+            long fromHeight = observed.datumHeight() > 0 ? 1L : 0L;
             AnchorService.Confirmation confirmation = new AnchorService.Confirmation(
-                    fromHeight, bootstrap.datumHeight(), bootstrap.txHash(), observed.l1Slot(),
-                    anchoredBlockHash);
+                    fromHeight, observed.datumHeight(), observed.txHash(), observed.l1Slot(),
+                    anchoredBlockHash, observed.l1BlockHash());
             List<AnchorService.Confirmation> history = historyWith(confirmation);
-            if (observedBootstrap != observed || pendingBootstrap != bootstrap) {
-                return;
-            }
             Map<String, Long> longs = new LinkedHashMap<>();
             longs.put(META_SCRIPT_BOOTSTRAP_SLOT, observed.l1Slot());
             longs.put(META_SCRIPT_IDENTITY_ADOPTED, 0L);
             longs.put(META_SCRIPT_CANDIDATE_SLOT, 0L);
             longs.put(META_SCRIPT_CANDIDATE_BASE_INDEX, -1L);
-            longs.put(META_LAST_ANCHORED, bootstrap.datumHeight());
+            longs.put(META_LAST_ANCHORED, observed.datumHeight());
             longs.put(META_ANCHOR_FROM, fromHeight);
             longs.put(META_ANCHOR_SLOT, observed.l1Slot());
             Map<String, byte[]> bytes = new LinkedHashMap<>();
-            bytes.put(META_SCRIPT_POLICY_ID, bootstrap.policyId());
-            bytes.put(META_SCRIPT_HASH, bootstrap.scriptHash());
-            bytes.put(META_SCRIPT_BOOTSTRAP_TX,
-                    bootstrap.txHash().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            bytes.put(META_SCRIPT_POLICY_ID, observed.policyId());
+            bytes.put(META_SCRIPT_HASH, observed.scriptHash());
+            bytes.put(META_SCRIPT_BOOTSTRAP_TX, observed.txHash().getBytes(StandardCharsets.UTF_8));
             bytes.put(META_SCRIPT_ADOPTION_TX, new byte[0]);
             bytes.put(META_SCRIPT_CANDIDATE_POLICY, new byte[0]);
             bytes.put(META_SCRIPT_CANDIDATE_HASH, new byte[0]);
             bytes.put(META_SCRIPT_CANDIDATE_BASE_TX, new byte[0]);
             bytes.put(META_ANCHOR_BLOCK_HASH, anchoredBlockHash);
-            bytes.put(META_ANCHOR_TX,
-                    bootstrap.txHash().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            bytes.put(META_ANCHOR_TX, observed.txHash().getBytes(StandardCharsets.UTF_8));
             bytes.put(META_ANCHOR_HISTORY, AnchorService.ConfirmationHistory.encode(history));
+            bytes.put(META_SCRIPT_OBSERVED_BOOTSTRAP, new byte[0]);
             ledger.metaPutAll(longs, bytes);
 
-            pendingBootstrap = null;
-            observedBootstrap = null;
+            PendingBootstrap bootstrap = pendingBootstrap;
+            if (bootstrap != null && bootstrap.txHash().equals(observed.txHash())) {
+                pendingBootstrap = null;
+            }
             lastAnchoredL1Slot = observed.l1Slot();
-            lastAnchorTxHash = bootstrap.txHash();
+            lastAnchorTxHash = observed.txHash();
             lastError = null;
             logInfoSafely("Script-anchor bootstrap CONFIRMED on L1: tx={}, policyId={}, l1Slot={}",
-                    bootstrap.txHash(), HexUtil.encodeHexString(bootstrap.policyId()), observed.l1Slot());
+                    observed.txHash(), HexUtil.encodeHexString(observed.policyId()), observed.l1Slot());
         } catch (Throwable failure) {
             recordFailure("L1 bootstrap confirmation", failure);
         }
     }
 
+    /**
+     * Local completion of a durable observed submit; idempotent and gated. Callers hold the anchor lock.
+     *
+     * @return the completed anchor, or null when there is nothing to complete or completion must wait
+     */
     private AnchorService.ConfirmedAnchor completeObservedSubmit() {
-        ObservedSubmit observed = observedSubmit;
-        if (observed == null) {
-            return null;
-        }
-        PendingSubmit submit = observed.submit();
         try {
-            byte[] anchoredBlockHash = blockHashAtConfirmedHeight(submit.toHeight());
-            if (observedSubmit != observed || pendingSubmit != submit) {
+            if (!completionGate.getAsBoolean()) {
+                return null;
+            }
+            AnchorService.ObservedConfirmation observed = loadObservedSubmit();
+            if (observed == null) {
+                return null;
+            }
+            byte[] anchoredBlockHash = blockHashAtConfirmedHeight(observed.toHeight());
+            if (!observed.sameAs(loadObservedSubmit())) {
                 return null;
             }
             AnchorService.Confirmation confirmation = new AnchorService.Confirmation(
-                    submit.fromHeight(), submit.toHeight(), submit.txHash(), observed.l1Slot(),
-                    anchoredBlockHash);
-            List<AnchorService.Confirmation> history = historyWith(confirmation);
-            if (observedSubmit != observed || pendingSubmit != submit) {
-                return null;
-            }
-            persistConfirmation(confirmation, history);
+                    observed.fromHeight(), observed.toHeight(), observed.txHash(), observed.l1Slot(),
+                    anchoredBlockHash, observed.l1BlockHash());
+            persistConfirmation(confirmation, historyWith(confirmation), Map.of(),
+                    Map.of(META_SCRIPT_OBSERVED_SUBMIT, new byte[0]));
 
-            pendingSubmit = null;
-            observedSubmit = null;
+            PendingSubmit submit = pendingSubmit;
+            if (submit != null && submit.txHash().equals(observed.txHash())) {
+                pendingSubmit = null;
+            }
             anchoredCount++;
             lastAnchoredL1Slot = observed.l1Slot();
-            lastAnchorTxHash = submit.txHash();
+            lastAnchorTxHash = observed.txHash();
             lastError = null;
             logInfoSafely("Script-anchor CONFIRMED on L1: tx={}, app blocks {}..{}, l1Slot={}",
-                    submit.txHash(), submit.fromHeight(), submit.toHeight(), observed.l1Slot());
-            return new AnchorService.ConfirmedAnchor(submit.fromHeight(), submit.toHeight(),
-                    submit.txHash(), observed.l1Slot());
+                    observed.txHash(), observed.fromHeight(), observed.toHeight(), observed.l1Slot());
+            return new AnchorService.ConfirmedAnchor(observed.fromHeight(), observed.toHeight(),
+                    observed.txHash(), observed.l1Slot());
         } catch (Throwable failure) {
             recordFailure("L1 confirmation", failure);
             return null;
         }
+    }
+
+    /** Publishes a confirmation outside the anchor lock; the notification is best-effort. */
+    private void notifyConfirmed(AnchorService.ConfirmedAnchor confirmed) {
+        if (confirmed == null) {
+            return;
+        }
+        try {
+            confirmationListener.accept(confirmed);
+        } catch (Throwable failure) {
+            recordFailure("confirmation notification", failure);
+        }
+    }
+
+    private ObservedBootstrap loadObservedBootstrap() {
+        byte[] encoded = ledger.metaBytes(META_SCRIPT_OBSERVED_BOOTSTRAP);
+        return encoded == null || encoded.length == 0 ? null : ObservedBootstrap.decode(encoded);
+    }
+
+    private AnchorService.ObservedConfirmation loadObservedSubmit() {
+        byte[] encoded = ledger.metaBytes(META_SCRIPT_OBSERVED_SUBMIT);
+        return encoded == null || encoded.length == 0 ? null : AnchorService.ObservedConfirmation.decode(encoded);
     }
 
     private byte[] blockHashAtConfirmedHeight(long height) {
@@ -1186,6 +1265,9 @@ final class ScriptAnchorService {
     private AnchorService.ConfirmedAnchor reconcileObservedAnchor() {
         synchronized (anchorLock) {
             try {
+                if (!completionGate.getAsBoolean()) {
+                    return null;
+                }
                 AppChainEngine.L1Ref canonicalPoint = observedL1TipPoint();
                 if (canonicalPoint == null || canonicalPoint.slot() <= 0L
                         || canonicalPoint.blockHash() == null
@@ -1303,12 +1385,20 @@ final class ScriptAnchorService {
                     return null;
                 }
 
+                // The confirmation records its L1 inclusion block (ADR-038 D8a), and only once L1 delivery
+                // has reached it, so the delivery loop's rollback covers it (D3); until then it waits.
+                byte[] inclusionHash = canonicalHashAtSlot.apply(inclusionSlot);
+                if (inclusionHash == null || inclusionHash.length != 32) {
+                    log.debug("Script-anchor: L1 inclusion slot {} not yet delivered; observation deferred",
+                            inclusionSlot);
+                    return null;
+                }
                 boolean advances = observedHeight > persistedHeight;
                 long fromHeight = advances && persistedHeight > 0L
                         ? persistedHeight + 1L : (observedHeight > 0L ? 1L : 0L);
                 AnchorService.Confirmation confirmation = new AnchorService.Confirmation(
                         fromHeight, observedHeight, observedTx, inclusionSlot,
-                        expectedBlockHash);
+                        expectedBlockHash, inclusionHash.clone());
                 List<AnchorService.Confirmation> history = advances
                         ? historyWith(confirmation)
                         : canonicalHistoryThrough(confirmation);
@@ -1327,28 +1417,30 @@ final class ScriptAnchorService {
                     promotionLongs.put(META_SCRIPT_CANDIDATE_BASE_INDEX, -1L);
                 }
                 String candidateBaseTx = ledger.metaString(META_SCRIPT_CANDIDATE_BASE_TX);
-                Map<String, byte[]> promotionBytes = promotesCandidate
-                        ? Map.of(
-                                META_SCRIPT_POLICY_ID, policyId,
-                                META_SCRIPT_HASH, scriptHash,
-                                META_SCRIPT_BOOTSTRAP_TX,
-                                        (candidateBaseTx != null ? candidateBaseTx : "")
-                                                .getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                                META_SCRIPT_ADOPTION_TX, new byte[0],
-                                META_SCRIPT_CANDIDATE_POLICY, new byte[0],
-                                META_SCRIPT_CANDIDATE_HASH, new byte[0],
-                                META_SCRIPT_CANDIDATE_BASE_TX, new byte[0])
-                        : Map.of();
-                persistConfirmation(confirmation, history, promotionLongs, promotionBytes);
-                observedAnchorCount++;
-
+                Map<String, byte[]> promotionBytes = new LinkedHashMap<>();
+                if (promotesCandidate) {
+                    promotionBytes.put(META_SCRIPT_POLICY_ID, policyId);
+                    promotionBytes.put(META_SCRIPT_HASH, scriptHash);
+                    promotionBytes.put(META_SCRIPT_BOOTSTRAP_TX,
+                            (candidateBaseTx != null ? candidateBaseTx : "").getBytes(StandardCharsets.UTF_8));
+                    promotionBytes.put(META_SCRIPT_ADOPTION_TX, new byte[0]);
+                    promotionBytes.put(META_SCRIPT_CANDIDATE_POLICY, new byte[0]);
+                    promotionBytes.put(META_SCRIPT_CANDIDATE_HASH, new byte[0]);
+                    promotionBytes.put(META_SCRIPT_CANDIDATE_BASE_TX, new byte[0]);
+                }
                 PendingSubmit submit = pendingSubmit;
                 boolean completesLocalSubmit = leader && submit != null
                         && observedTx.equals(submit.txHash())
                         && observedHeight == submit.toHeight();
+                if (completesLocalSubmit || !advances) {
+                    // The canonical view supersedes any observed submit awaiting completion.
+                    promotionBytes.put(META_SCRIPT_OBSERVED_SUBMIT, new byte[0]);
+                }
+                persistConfirmation(confirmation, history, promotionLongs, promotionBytes);
+                observedAnchorCount++;
+
                 if (completesLocalSubmit) {
                     pendingSubmit = null;
-                    observedSubmit = null;
                     anchoredCount++;
                 }
                 lastAnchoredL1Slot = inclusionSlot;
@@ -1357,7 +1449,6 @@ final class ScriptAnchorService {
                 if (!advances) {
                     pendingCosign = null;
                     pendingSubmit = null;
-                    observedSubmit = null;
                     logWarnSafely("Script-anchor canonical L1 view corrected durable frontier: "
                                     + "tx={}, appHeight={}, l1Slot={}",
                             observedTx, observedHeight, inclusionSlot);
@@ -1398,15 +1489,19 @@ final class ScriptAnchorService {
     }
 
     private void clearIdentityCandidate() {
-        ledger.metaPutAll(
-                Map.of(
-                        META_SCRIPT_CANDIDATE_SLOT, 0L,
-                        META_SCRIPT_CANDIDATE_BASE_INDEX, -1L),
-                Map.of(
-                        META_SCRIPT_CANDIDATE_POLICY, new byte[0],
-                        META_SCRIPT_CANDIDATE_HASH, new byte[0],
-                        META_SCRIPT_CANDIDATE_BASE_TX, new byte[0],
-                        META_SCRIPT_ADOPTION_TX, new byte[0]));
+        Map<String, Long> longs = new LinkedHashMap<>();
+        Map<String, byte[]> bytes = new LinkedHashMap<>();
+        candidateResetValues(longs, bytes);
+        ledger.metaPutAll(longs, bytes);
+    }
+
+    private static void candidateResetValues(Map<String, Long> longs, Map<String, byte[]> bytes) {
+        longs.put(META_SCRIPT_CANDIDATE_SLOT, 0L);
+        longs.put(META_SCRIPT_CANDIDATE_BASE_INDEX, -1L);
+        bytes.put(META_SCRIPT_CANDIDATE_POLICY, new byte[0]);
+        bytes.put(META_SCRIPT_CANDIDATE_HASH, new byte[0]);
+        bytes.put(META_SCRIPT_CANDIDATE_BASE_TX, new byte[0]);
+        bytes.put(META_SCRIPT_ADOPTION_TX, new byte[0]);
     }
 
     private List<AnchorService.Confirmation> canonicalHistoryThrough(
@@ -1456,39 +1551,56 @@ final class ScriptAnchorService {
         return null;
     }
 
-    void onL1Rollback(long rollbackToSlot) {
+    /**
+     * L1 rollback phase (ADR-038 D4a): durable facts, identity checkpoints and confirmations above
+     * {@code rollbackToSlot} are removed. {@code -1} rolls back to ORIGIN. Idempotent.
+     *
+     * @return {@code DURABLE} when state changed, {@code NO_OP} when nothing was above the target, or
+     *         {@code RETRYABLE} when the rewind could not be written
+     */
+    L1PhaseResult onL1Rollback(long rollbackToSlot) {
         synchronized (anchorLock) {
             try {
-                ObservedBootstrap bootstrapObservation = observedBootstrap;
+                boolean changed = false;
+                Map<String, byte[]> clearedFacts = new LinkedHashMap<>();
+                ObservedBootstrap bootstrapObservation = loadObservedBootstrap();
                 if (bootstrapObservation != null
                         && bootstrapObservation.l1Slot() > rollbackToSlot) {
-                    observedBootstrap = null;
+                    clearedFacts.put(META_SCRIPT_OBSERVED_BOOTSTRAP, new byte[0]);
                     pendingBootstrap = null;
                 }
-                ObservedSubmit submitObservation = observedSubmit;
+                AnchorService.ObservedConfirmation submitObservation = loadObservedSubmit();
                 if (submitObservation != null && submitObservation.l1Slot() > rollbackToSlot) {
-                    observedSubmit = null;
+                    clearedFacts.put(META_SCRIPT_OBSERVED_SUBMIT, new byte[0]);
+                }
+                if (!clearedFacts.isEmpty()) {
+                    ledger.metaPutAll(Map.of(), clearedFacts);
+                    changed = true;
                 }
                 long candidateSlot = ledger.metaLong(META_SCRIPT_CANDIDATE_SLOT, 0L);
-                if (candidateSlot > rollbackToSlot) {
+                if (candidateSlot > 0L && candidateSlot > rollbackToSlot) {
                     clearIdentityCandidate();
+                    changed = true;
                 }
                 long bootstrapSlot = ledger.metaLong(META_SCRIPT_BOOTSTRAP_SLOT, 0L);
                 boolean adoptedIdentity = ledger.metaLong(META_SCRIPT_IDENTITY_ADOPTED, 0L) == 1L;
-                if (bootstrapSlot > rollbackToSlot
+                if ((bootstrapSlot > 0L && bootstrapSlot > rollbackToSlot)
                         || (adoptedIdentity && bootstrapSlot <= 0L)) {
                     resetRolledBackIdentity(rollbackToSlot, bootstrapSlot, adoptedIdentity);
-                    return;
+                    return L1PhaseResult.DURABLE;
                 }
                 if (rollbackConfirmedHistory(rollbackToSlot)) {
                     // Co-sign/submission state was built against the rolled
                     // back thread output and confirmation frontier.
                     pendingCosign = null;
                     pendingSubmit = null;
-                    observedSubmit = null;
+                    ledger.metaPutAll(Map.of(), Map.of(META_SCRIPT_OBSERVED_SUBMIT, new byte[0]));
+                    changed = true;
                 }
+                return changed ? L1PhaseResult.DURABLE : L1PhaseResult.NO_OP;
             } catch (Throwable failure) {
                 recordFailure("L1 rollback", failure);
+                return L1PhaseResult.retryable("SCRIPT_ANCHOR_ROLLBACK_WRITE_FAILED");
             }
         }
     }
@@ -1496,42 +1608,102 @@ final class ScriptAnchorService {
     private void resetRolledBackIdentity(long rollbackToSlot, long identitySlot,
                                          boolean adoptedIdentity) {
         Map<String, Long> longs = new LinkedHashMap<>();
-        longs.put(META_SCRIPT_BOOTSTRAP_SLOT, 0L);
-        longs.put(META_SCRIPT_IDENTITY_ADOPTED, 0L);
-        longs.put(META_SCRIPT_CANDIDATE_SLOT, 0L);
-        longs.put(META_SCRIPT_OUT_INDEX, -1L);
-        longs.put(META_SCRIPT_CANDIDATE_BASE_INDEX, -1L);
-        longs.put(META_LAST_ANCHORED, 0L);
-        longs.put(META_ANCHOR_FROM, 0L);
-        longs.put(META_ANCHOR_SLOT, 0L);
         Map<String, byte[]> bytes = new LinkedHashMap<>();
-        bytes.put(META_SCRIPT_POLICY_ID, new byte[0]);
-        bytes.put(META_SCRIPT_HASH, new byte[0]);
-        bytes.put(META_SCRIPT_BOOTSTRAP_TX, new byte[0]);
-        bytes.put(META_SCRIPT_ADOPTION_TX, new byte[0]);
-        bytes.put(META_SCRIPT_CANDIDATE_POLICY, new byte[0]);
-        bytes.put(META_SCRIPT_CANDIDATE_HASH, new byte[0]);
-        bytes.put(META_SCRIPT_CANDIDATE_BASE_TX, new byte[0]);
-        bytes.put(META_ANCHOR_BLOCK_HASH, new byte[0]);
-        bytes.put(META_ANCHOR_TX, new byte[0]);
-        bytes.put(META_ANCHOR_HISTORY,
-                AnchorService.ConfirmationHistory.encode(List.of()));
+        identityResetValues(longs, bytes);
         ledger.metaPutAll(longs, bytes);
-        pendingBootstrap = null;
-        observedBootstrap = null;
-        pendingCosign = null;
-        pendingSubmit = null;
-        observedSubmit = null;
-        lastAnchorTxHash = null;
-        lastAnchoredL1Slot = 0L;
+        clearVolatileAnchorState();
         logWarnSafely("L1 rollback to slot {} invalidated script-anchor {} identity checkpoint "
                         + "at slot {} — identity reset for safe re-adoption/bootstrap",
                 rollbackToSlot, adoptedIdentity ? "adopted" : "bootstrap", identitySlot);
     }
 
+    /**
+     * L1 evidence reconciliation (app-layer ADR-038, D8b): dead observed facts are deleted, and a dead bootstrap
+     * confirmation resets the identity as an L1 rollback would. The shared confirmation journal is judged by
+     * {@link AnchorService#reconcileHistory}; an identity reset replaces it, so its stager must run after that one.
+     * Read-only; the stager joins the caller's commit.
+     */
+    Consumer<WriteBatch> reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        synchronized (anchorLock) {
+            List<AnchorService.Confirmation> history = loadHistory();
+            String bootstrapTx = ledger.metaString(META_SCRIPT_BOOTSTRAP_TX);
+            boolean deadIdentity = history.stream().anyMatch(confirmation -> confirmation.txHash().equals(bootstrapTx)
+                    && confirmation.l1BlockHash() != null
+                    && !canonicalAtSlot.test(confirmation.l1Slot(), confirmation.l1BlockHash()));
+            if (deadIdentity) {
+                Map<String, Long> longs = new LinkedHashMap<>();
+                Map<String, byte[]> bytes = new LinkedHashMap<>();
+                identityResetValues(longs, bytes);
+                return batch -> {
+                    longs.forEach((key, value) -> ledger.stageMetaLong(batch, key, value));
+                    bytes.forEach((key, value) -> ledger.stageMetaBytes(batch, key, value));
+                };
+            }
+            AnchorService.ObservedConfirmation submit = loadObservedSubmit();
+            boolean deadSubmit = submit != null && !canonicalAtSlot.test(submit.l1Slot(), submit.l1BlockHash());
+            ObservedBootstrap bootstrap = loadObservedBootstrap();
+            boolean deadBootstrap = bootstrap != null
+                    && !canonicalAtSlot.test(bootstrap.l1Slot(), bootstrap.l1BlockHash());
+            // An unpromoted identity candidate records no L1 block, so it cannot be judged; it is dropped and
+            // learned again from the next verified sign request.
+            byte[] candidate = ledger.metaBytes(META_SCRIPT_CANDIDATE_POLICY);
+            Map<String, Long> candidateLongs = new LinkedHashMap<>();
+            Map<String, byte[]> candidateBytes = new LinkedHashMap<>();
+            if (candidate != null && candidate.length > 0) {
+                candidateResetValues(candidateLongs, candidateBytes);
+            }
+            return batch -> {
+                candidateLongs.forEach((key, value) -> ledger.stageMetaLong(batch, key, value));
+                candidateBytes.forEach((key, value) -> ledger.stageMetaBytes(batch, key, value));
+                if (deadSubmit) {
+                    ledger.stageMetaBytes(batch, META_SCRIPT_OBSERVED_SUBMIT, new byte[0]);
+                }
+                if (deadBootstrap) {
+                    ledger.stageMetaBytes(batch, META_SCRIPT_OBSERVED_BOOTSTRAP, new byte[0]);
+                }
+            };
+        }
+    }
+
+    /** After a reconciliation commit: drop in-flight state that may have been built on reset or dead facts. */
+    void reloadAfterReconciliation() {
+        synchronized (anchorLock) {
+            if (!bootstrapped()) {
+                clearVolatileAnchorState();
+            }
+        }
+    }
+
+    private void clearVolatileAnchorState() {
+        pendingBootstrap = null;
+        pendingCosign = null;
+        pendingSubmit = null;
+        lastAnchorTxHash = null;
+        lastAnchoredL1Slot = 0L;
+    }
+
+    private static void identityResetValues(Map<String, Long> longs, Map<String, byte[]> bytes) {
+        candidateResetValues(longs, bytes);
+        longs.put(META_SCRIPT_BOOTSTRAP_SLOT, 0L);
+        longs.put(META_SCRIPT_IDENTITY_ADOPTED, 0L);
+        longs.put(META_SCRIPT_OUT_INDEX, -1L);
+        longs.put(META_LAST_ANCHORED, 0L);
+        longs.put(META_ANCHOR_FROM, 0L);
+        longs.put(META_ANCHOR_SLOT, 0L);
+        bytes.put(META_SCRIPT_POLICY_ID, new byte[0]);
+        bytes.put(META_SCRIPT_HASH, new byte[0]);
+        bytes.put(META_SCRIPT_BOOTSTRAP_TX, new byte[0]);
+        bytes.put(META_ANCHOR_BLOCK_HASH, new byte[0]);
+        bytes.put(META_ANCHOR_TX, new byte[0]);
+        bytes.put(META_ANCHOR_HISTORY,
+                AnchorService.ConfirmationHistory.encode(List.of()));
+        bytes.put(META_SCRIPT_OBSERVED_BOOTSTRAP, new byte[0]);
+        bytes.put(META_SCRIPT_OBSERVED_SUBMIT, new byte[0]);
+    }
+
     private boolean rollbackConfirmedHistory(long rollbackToSlot) {
         long persistedSlot = ledger.metaLong(META_ANCHOR_SLOT, 0L);
-        if (persistedSlot <= rollbackToSlot) {
+        if (persistedSlot <= 0L || persistedSlot <= rollbackToSlot) {
             return false;
         }
         String rolledBackTx = ledger.metaString(META_ANCHOR_TX);
@@ -1612,9 +1784,13 @@ final class ScriptAnchorService {
         if (bootstrap != null) {
             status.put("pendingBootstrapTx", bootstrap.txHash());
         }
-        ObservedBootstrap bootstrapObservation = observedBootstrap;
-        if (bootstrapObservation != null) {
-            status.put("bootstrapConfirmationObservedAtL1Slot", bootstrapObservation.l1Slot());
+        try {
+            ObservedBootstrap bootstrapObservation = loadObservedBootstrap();
+            if (bootstrapObservation != null) {
+                status.put("bootstrapConfirmationObservedAtL1Slot", bootstrapObservation.l1Slot());
+            }
+        } catch (IllegalArgumentException unreadable) {
+            status.put("bootstrapConfirmationObservedAtL1Slot", "unreadable");
         }
         PendingCosign cosign = pendingCosign;
         if (cosign != null) {
@@ -1626,9 +1802,13 @@ final class ScriptAnchorService {
             status.put("pendingTx", submit.txHash());
             status.put("pendingRange", submit.fromHeight() + ".." + submit.toHeight());
         }
-        ObservedSubmit submitObservation = observedSubmit;
-        if (submitObservation != null) {
-            status.put("confirmationObservedAtL1Slot", submitObservation.l1Slot());
+        try {
+            AnchorService.ObservedConfirmation submitObservation = loadObservedSubmit();
+            if (submitObservation != null) {
+                status.put("confirmationObservedAtL1Slot", submitObservation.l1Slot());
+            }
+        } catch (IllegalArgumentException unreadable) {
+            status.put("confirmationObservedAtL1Slot", "unreadable");
         }
         // Prefer the in-memory copy; fall back to the PERSISTED meta so a
         // restart does not blank the last confirmed anchor in status/UI.
@@ -1983,7 +2163,62 @@ final class ScriptAnchorService {
                                     long submittedAt) {
     }
 
-    private record ObservedBootstrap(PendingBootstrap bootstrap, long l1Slot) {
+    /** Durable L1 fact: the bootstrap tx was seen as a valid transaction in L1 block {@code (l1Slot, l1BlockHash)}. */
+    private record ObservedBootstrap(String txHash, byte[] policyId, byte[] scriptHash, long datumHeight,
+                                     long l1Slot, byte[] l1BlockHash) {
+        private static final int MAGIC = 0x59414232; // YAB2
+
+        boolean sameAs(ObservedBootstrap other) {
+            return other != null && datumHeight == other.datumHeight && l1Slot == other.l1Slot
+                    && txHash.equals(other.txHash) && Arrays.equals(policyId, other.policyId)
+                    && Arrays.equals(scriptHash, other.scriptHash) && Arrays.equals(l1BlockHash, other.l1BlockHash);
+        }
+
+        byte[] encode() {
+            try {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                try (DataOutputStream out = new DataOutputStream(bytes)) {
+                    byte[] tx = txHash.getBytes(StandardCharsets.UTF_8);
+                    out.writeInt(MAGIC);
+                    out.write(policyId);
+                    out.write(scriptHash);
+                    out.writeLong(datumHeight);
+                    out.writeLong(l1Slot);
+                    out.write(l1BlockHash);
+                    out.writeInt(tx.length);
+                    out.write(tx);
+                }
+                return bytes.toByteArray();
+            } catch (IOException impossible) {
+                throw new IllegalStateException("Observed bootstrap encoding failed", impossible);
+            }
+        }
+
+        static ObservedBootstrap decode(byte[] encoded) {
+            try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(encoded))) {
+                if (in.readInt() != MAGIC) {
+                    throw new IllegalArgumentException("Invalid observed bootstrap magic");
+                }
+                byte[] policyId = in.readNBytes(28);
+                byte[] scriptHash = in.readNBytes(28);
+                long datumHeight = in.readLong();
+                long slot = in.readLong();
+                byte[] l1BlockHash = in.readNBytes(32);
+                int txLength = in.readInt();
+                if (policyId.length != 28 || scriptHash.length != 28 || l1BlockHash.length != 32
+                        || datumHeight < 0 || slot < 0 || txLength <= 0 || txLength > 1_024) {
+                    throw new IllegalArgumentException("Invalid observed bootstrap");
+                }
+                byte[] tx = in.readNBytes(txLength);
+                if (tx.length != txLength || in.read() != -1) {
+                    throw new IllegalArgumentException("Invalid observed bootstrap");
+                }
+                return new ObservedBootstrap(new String(tx, StandardCharsets.UTF_8), policyId, scriptHash,
+                        datumHeight, slot, l1BlockHash);
+            } catch (IOException failure) {
+                throw new IllegalArgumentException("Invalid observed bootstrap", failure);
+            }
+        }
     }
 
     private record PendingCosign(Transaction tx, byte[] bodyBytes, byte[] bodyHash, byte[] requestBody,
@@ -1994,6 +2229,4 @@ final class ScriptAnchorService {
     private record PendingSubmit(long fromHeight, long toHeight, String txHash, long submittedAt) {
     }
 
-    private record ObservedSubmit(PendingSubmit submit, long l1Slot) {
-    }
 }

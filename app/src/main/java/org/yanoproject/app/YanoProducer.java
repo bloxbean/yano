@@ -1577,6 +1577,11 @@ public class YanoProducer {
         }
 
         @Override
+        public boolean rebaselineL1Delivery() {
+            throw unavailableRole("AppChainGateway");
+        }
+
+        @Override
         public java.util.Set<String> members() {
             throw unavailableRole("AppChainGateway");
         }
