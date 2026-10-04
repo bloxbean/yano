@@ -1,4 +1,4 @@
-# From the release-ops standard (templates/workflows/release.yml, 2026-09-14), adapted for Yano: no release
+# From the release-ops standard (templates/workflows/release.yml, 2026-10-04), adapted for Yano: no release
 # assets and no `github-release` job here (release-dist.yml owns the GitHub release, the distribution zips and
 # npm), plus the BloxBean Maven repository and the Docker release, each gated by a flag.
 name: Release Maven artifacts

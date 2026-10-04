@@ -117,7 +117,7 @@ curl -X POST http://localhost:7070/api/v1/devnet/epochs/catch-up
 ## Use as a library
 
 Yano publishes its modules to [Maven Central](https://central.sonatype.com/namespace/org.yanoproject)
-and to the BloxBean Maven repository (`https://repo.bloxbean.org/maven/releases`).
+and, from the next release on, to the BloxBean Maven repository (`https://repo.bloxbean.org/maven/releases`).
 
 Development snapshots are in `https://repo.bloxbean.org/maven/snapshots`, one version per commit, for example
 `0.1.0-pre18-de81cc5-SNAPSHOT`. The newest version, a ready-to-paste snippet and the snapshot distribution zips
