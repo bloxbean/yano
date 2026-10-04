@@ -409,15 +409,17 @@ bloxbean_repo_publish = true   # https://repo.bloxbean.org/maven/releases, publi
 ```
 
 Both must be set explicitly to `true` or `false`; a missing or misspelled value fails the release before the
-build. With both off, a tag only builds and validates, like the other flags' rehearsal mode.
+build. With both off, a tag only builds, stages and signs. The staging checks run only when the BloxBean repository
+is on.
 
 ```text
 v* tag ─► validate tag and flags ─► clean fullBuild
-       ─► [bloxbean] discover publications, seed maven/releases metadata
+       ─► [bloxbean] discover publications (unsigned), seed maven/releases metadata, refuse an existing version
        ─► stage and sign once: one Gradle run builds the staged repository AND the Central bundle
-       ─► [bloxbean] verify: staged tree + every Central bundle file byte-identical ─► upload ─► verify public
-                     + Gradle consumer
-       ─► [central]  upload that same bundle (-x nmcpZipAggregation) as a USER_MANAGED deployment
+       ─► [bloxbean] verify: staged tree + every Central bundle file byte-identical
+       ─► [central]  keep the checked bundle as the run artifact central-bundle-<version>
+       ─► [bloxbean] upload ─► [central] upload that same bundle (-x nmcpZipAggregation), USER_MANAGED
+       ─► [bloxbean] verify public + Gradle consumer (also after a Central failure)
 release-dist.yml / release-docker.yml: unchanged
 ```
 
@@ -429,11 +431,14 @@ Rules:
    in the bundle. The Central upload runs `publishAggregationToCentralPortal -x nmcpZipAggregation`. Its task graph
    is the scope check, the upload and its alias: nothing compiles, signs or zips again, so Central receives the
    checked bundle.
-2. **BloxBean repository first.** It is uploaded before Central. A Central failure, for example its quota, leaves
-   the release in the BloxBean repository, and the run fails visibly at the Central step.
-3. **Releases are immutable.** The artifact metadata is seeded from `maven/releases` as for snapshots. If the
-   seed already lists the version, the validator refuses it: a release is never replaced. Releases carry the same
-   `.asc` signatures as on Central, and every jar, POM and module must be signed.
+2. **Uploads first, checks after.** The BloxBean repository is uploaded first, then Central. The public checks
+   and the Gradle consumer run only afterwards, so a flaky check can never keep a release off Central. They still
+   run when the Central upload failed, because the BloxBean copy is then the release's only copy. The run summary
+   reports what each destination actually received.
+3. **Releases are immutable.** The artifact metadata is seeded from `maven/releases` as for snapshots. A version is
+   refused if any object exists under its directory, which covers a run that stopped before writing its metadata,
+   or if the seed already lists it. Releases carry the same `.asc` signatures as on Central, and every jar, POM and
+   module must be signed.
 4. **Visibility.** The BloxBean copy is public as soon as the tag's run uploads it, while Central waits for a
    human. The tag itself already required a release owner's approval (`tag-release.yml`). Like a pushed Docker
    image, a version that reached the BloxBean repository is permanent. Accepted by the release owners on
@@ -442,7 +447,11 @@ Rules:
    patch to the BloxBean repository only. Such a release stays BloxBean-only; the next version goes to Central
    once the quota resets. There is no workflow to copy a BloxBean-only release to Central later (decided
    2026-10-04).
-6. **Serialization.** Seeding, staging and uploading is a read-modify-write of each artifact's version list.
+6. **Central fails after the BloxBean upload.** Re-running the tag is then refused, because the BloxBean repository
+   already has the version. The run keeps the checked Central bundle as the artifact `central-bundle-<version>`
+   for 90 days. To put the same bytes on Central, upload that zip in the Central Portal, then publish it as usual.
+   It is a manual step, not a workflow, and the run summary says so when it applies.
+7. **Serialization.** Seeding, staging and uploading is a read-modify-write of each artifact's version list.
    The publish job therefore holds the `bloxbean-maven-releases` concurrency group, and releases of different tags
    run one at a time. A pending release run has uploaded nothing. If GitHub cancels it because a third release
    queued, run it again.
@@ -453,6 +462,9 @@ Rules:
 - The artifact metadata must name the version as `<release>`.
 - Classifiers beyond `sources` and `javadoc` are allowed: `yano-archive-core` publishes a `test-fixtures` jar. The
   bundle check ties that set to Central's.
+- The consumer check compares jars by the group and module Gradle resolved, never by file name. Dependencies such
+  as julc use the same `0.1.0-preN` version scheme, so a file name ending in the release version is not proof that
+  the jar is Yano's.
 
 **Testing.** Before merging, the release job's step scripts ran in a JDK 25 container against MinIO, signing with a
 throwaway key. `fullBuild` and the Central upload were skipped:

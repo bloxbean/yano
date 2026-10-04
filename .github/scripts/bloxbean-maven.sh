@@ -15,6 +15,8 @@
 # deleted.
 set -euo pipefail
 
+# Both are removed and recreated below; refuse to start without them.
+: "${STAGING_DIR:?}" "${RUNNER_TEMP:?}"
 SEED_DIR="$RUNNER_TEMP/maven-seed"
 
 # Stages every publication to learn which artifactIds this build owns: those, and only those, are seeded and
@@ -38,12 +40,21 @@ discover() {
 # is emptied and seeded with each artifact's published metadata. Read through the S3 API, not the public URL, so
 # the copy is the stored object rather than an edge-cached one. A missing object is an artifact's first
 # publication; any other error stops the run instead of silently replacing the published version list. A copy of
-# every seed lets the verification prove that no published version was dropped.
+# every seed lets the verification prove that no published version was dropped. A release version that already has
+# any object - even from a run that stopped before its metadata - is refused: a release is never replaced.
 seed() {
   rm -rf "$STAGING_DIR" "$SEED_DIR"
   mkdir -p "$SEED_DIR"
-  local artifact key
+  local artifact key existing
   for artifact in $ARTIFACTS; do
+    if [[ "$VERSION" != *-SNAPSHOT ]]; then
+      existing=$(aws s3api list-objects-v2 --bucket "$BUCKET" --max-keys 1 --query 'KeyCount' --output text \
+        --prefix "$REPOSITORY_PREFIX/$GROUP_PATH/$artifact/$VERSION/")
+      if [[ "$existing" != 0 ]]; then
+        echo "::error::$artifact $VERSION already has objects in $REPOSITORY_PREFIX; a release is never replaced." >&2
+        exit 1
+      fi
+    fi
     key="$REPOSITORY_PREFIX/$GROUP_PATH/$artifact/maven-metadata.xml"
     if aws s3api head-object --bucket "$BUCKET" --key "$key" > /dev/null 2> "$RUNNER_TEMP/head.err"; then
       aws s3 cp --only-show-errors "s3://$BUCKET/$key" "$SEED_DIR/$artifact.xml"
@@ -74,18 +85,25 @@ upload() {
   echo "Uploaded $(find "$source" -type f | wc -l) files to $REPOSITORY_PREFIX/$GROUP_PATH/"
 }
 
+# Every artifact's version list, its version-level metadata (snapshots) and its POM must be served byte for byte.
 verify_public() {
-  local artifact path served
+  local artifact path served paths
   for artifact in $ARTIFACTS; do
-    while read -r path; do
+    paths=("$GROUP_PATH/$artifact/maven-metadata.xml")
+    mapfile -t -O 1 paths < <(cd "$STAGING_DIR" \
+      && find "$GROUP_PATH/$artifact/$VERSION" \( -name maven-metadata.xml -o -name '*.pom' \) | sort)
+    if [[ "${paths[*]}" != *.pom* ]]; then
+      echo "::error::No staged POM for $artifact $VERSION." >&2
+      exit 1
+    fi
+    for path in "${paths[@]}"; do
       served=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$PUBLIC_REPOSITORY_URL/$path" \
         | sha256sum | cut -d' ' -f1)
       if [[ "$served" != "$(sha256sum < "$STAGING_DIR/$path" | cut -d' ' -f1)" ]]; then
         echo "::error::$PUBLIC_REPOSITORY_URL/$path does not serve the uploaded file." >&2
         exit 1
       fi
-    done < <(cd "$STAGING_DIR" && find "$GROUP_PATH/$artifact" -maxdepth 1 -name maven-metadata.xml \
-      && find "$GROUP_PATH/$artifact/$VERSION" \( -name maven-metadata.xml -o -name '*.pom' \))
+    done
   done
   echo "Public metadata and POMs match for every artifact."
 }
@@ -122,20 +140,25 @@ dependencies {
     implementation "org.yanoproject:yano:\${yanoVersion}"
 }
 tasks.register('resolveYano') {
-    def runtimeClasspath = configurations.runtimeClasspath
+    def artifacts = configurations.runtimeClasspath.incoming.artifacts
     doLast {
-        runtimeClasspath.files.each { println "resolved \${it}" }
+        artifacts.each { artifact ->
+            def id = artifact.id.componentIdentifier
+            if (id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier) {
+                println "resolved \${id.group} \${id.module} \${artifact.file}"
+            }
+        }
     }
 }
 EOF
   ./gradlew -p "$consumer" resolveYano --refresh-dependencies -q \
     -PyanoVersion="$VERSION" -PrepositoryUrl="$PUBLIC_REPOSITORY_URL" | tee "$RUNNER_TEMP/resolved.txt"
-  # Gradle caches a snapshot jar under its base version; the staged file carries the timestamped value that the
-  # version-level metadata names. A release jar keeps its name.
-  local matched=0 resolved artifact staged value
-  while read -r resolved; do
-    artifact=$(basename "$resolved" "-$VERSION.jar")
-    [[ "$artifact" != "$(basename "$resolved")" ]] || continue
+  # Only this group's jars are compared, by the module id Gradle resolved, never by file name: a dependency can
+  # share Yano's version string. Gradle caches a snapshot jar under its base version; the staged file carries the
+  # timestamped value that the version-level metadata names. A release jar keeps its name.
+  local matched=0 group artifact resolved staged value
+  while read -r group artifact resolved; do
+    [[ "$group" == "${GROUP_PATH//\//.}" ]] || continue
     staged="$STAGING_DIR/$GROUP_PATH/$artifact/$VERSION"
     value="$VERSION"
     if [[ "$VERSION" == *-SNAPSHOT ]]; then
@@ -152,7 +175,7 @@ EOF
   done < <(sed -n 's/^resolved //p' "$RUNNER_TEMP/resolved.txt")
   local required
   for required in yano-core-api yano-runtime; do
-    if ! grep -qF "/$required-$VERSION.jar" "$RUNNER_TEMP/resolved.txt"; then
+    if ! grep -qF "resolved ${GROUP_PATH//\//.} $required " "$RUNNER_TEMP/resolved.txt"; then
       echo "::error::The consumer did not resolve $required." >&2
       exit 1
     fi

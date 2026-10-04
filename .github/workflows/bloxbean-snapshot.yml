@@ -90,6 +90,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           ARTIFACTS: ${{ steps.discover.outputs.artifacts }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: bash .github/scripts/bloxbean-maven.sh seed
 
       - name: Stage the Maven publications

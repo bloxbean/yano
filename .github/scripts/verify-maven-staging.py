@@ -127,7 +127,7 @@ def check_artifact(artifact_dir, seed, group_id, artifact, version):
         errors.append(f'{artifact}: missing {classifier or "main"} {extension}')
 
     # Anything else in the version directory would be uploaded but never resolved.
-    expected = set(named.values()) | {'maven-metadata.xml'}
+    expected = set(named.values()) | (set() if release else {'maven-metadata.xml'})
     for f in version_dir.iterdir():
         if base_name(f.name) not in expected:
             errors.append(f'{artifact}: unexpected file {f.name}')
