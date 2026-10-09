@@ -71,20 +71,24 @@ public class KoiosBootstrapProvider implements BootstrapDataProvider {
 
     @Override
     public List<BootstrapBlockInfo> getBlocks(long fromBlockNumber, long toBlockNumber) {
+        // Koios block_info accepts block hashes; use blocks endpoint with a height range filter instead
+        JsonNode arr = get("/blocks?block_height=gte." + fromBlockNumber + "&block_height=lte." + toBlockNumber
+                + "&order=block_height.asc");
         List<BootstrapBlockInfo> blocks = new ArrayList<>();
-        // Koios block_info accepts block hashes; use blocks endpoint with height filter instead
-        for (long n = fromBlockNumber; n <= toBlockNumber; n++) {
-            JsonNode arr = get("/blocks?block_height=eq." + n + "&limit=1");
-            if (arr.isArray() && !arr.isEmpty()) {
-                JsonNode b = arr.get(0);
-                blocks.add(new BootstrapBlockInfo(
-                        b.get("hash").asText(),
-                        b.get("block_height").asLong(),
-                        b.get("abs_slot").asLong(),
-                        b.has("prev_hash") && !b.get("prev_hash").isNull()
-                                ? b.get("prev_hash").asText() : null
-                ));
-            }
+        for (JsonNode b : arr) {
+            blocks.add(new BootstrapBlockInfo(
+                    b.get("hash").asText(),
+                    b.get("block_height").asLong(),
+                    b.get("abs_slot").asLong(),
+                    b.has("prev_hash") && !b.get("prev_hash").isNull()
+                            ? b.get("prev_hash").asText() : null
+            ));
+        }
+        // A lagging Koios instance can omit recent heights; a gap must not pass as a complete range
+        long expected = toBlockNumber - fromBlockNumber + 1;
+        if (blocks.size() != expected) {
+            throw new RuntimeException("Koios returned " + blocks.size() + " of " + expected
+                    + " blocks for range [" + fromBlockNumber + " .. " + toBlockNumber + "]");
         }
         return blocks;
     }
