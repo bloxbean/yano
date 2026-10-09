@@ -337,12 +337,12 @@ keeps its zips as Actions artifacts for only 3 days, behind a GitHub login.
   green CI is rejected before the build starts.
 - **Build:** it calls `dist-dev.yml`, which has a `workflow_call` trigger for this. That is the same build and the
   same packaged-catalog smoke tests as the existing dev distribution build, for the JVM zip and four native zips.
-  `release-dist.yml` (GitHub releases) is untouched.
+  Each is a checkbox, all ticked by default; unticking the slow native platforms publishes a smaller build, and
+  `latest.json` then names that smaller build. `release-dist.yml` (GitHub releases) is untouched.
 - **Approval:** after the build, a release owner approves in the `release` environment, so the reviewer approves
   zips that already built and passed their smoke tests. Then the upload job, with the `release-staging`
   credentials, publishes exactly those files.
-- **Checks before upload:** the job requires exactly one JVM zip and the four native zips, all named with this
-  commit's version.
+- **Checks before upload:** the job requires exactly the selected zips, all named with this commit's version.
 - **Upload order:** zips and `SHA256SUMS` first, then `manifest.json`, then `latest.json`.
 - **Immutable builds:** `manifest.json` marks a build as published, and a published build is never overwritten. A
   re-run of the same commit is refused, and a run that stopped before the manifest is completed by running again.

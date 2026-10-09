@@ -8,9 +8,33 @@ name: Publish snapshot distributions
 # Each commit gets <version>/ with its zips, SHA256SUMS and manifest.json; latest.json names the most recently
 # published one. A version directory is never overwritten: manifest.json, uploaded last, marks it as published.
 # Every project writes only dist/snapshots/<project>/; one bucket lifecycle rule on dist/snapshots/ expires them.
+#
+# Every distribution is built by default; unticking platforms publishes a smaller build. Because a version directory
+# is never overwritten, the commit's missing zips can't be added later, and latest.json then names that smaller build.
 
 on:
   workflow_dispatch:
+    inputs:
+      jar-dist:
+        description: JVM (uber-jar) distribution
+        type: boolean
+        default: true
+      linux-x64:
+        description: Native linux-x64
+        type: boolean
+        default: true
+      linux-arm64:
+        description: Native linux-arm64
+        type: boolean
+        default: true
+      macos-arm64:
+        description: Native macos-arm64
+        type: boolean
+        default: true
+      windows-x64:
+        description: Native windows-x64
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -49,6 +73,12 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/dist-dev.yml
+    with:
+      jar-dist: ${{ inputs.jar-dist }}
+      linux-x64: ${{ inputs.linux-x64 }}
+      linux-arm64: ${{ inputs.linux-arm64 }}
+      macos-arm64: ${{ inputs.macos-arm64 }}
+      windows-x64: ${{ inputs.windows-x64 }}
 
   # The approval gate, after the build so the reviewer approves zips that were built and smoke-tested. The
   # `release` environment holds no secrets; its reviewers are the release-owners team, and the person who started
@@ -62,7 +92,7 @@ jobs:
         run: echo "Publishing the snapshot distributions of $GITHUB_SHA approved."
 
   publish:
-    needs: approve
+    needs: [build, approve]
     # The bucket credentials are secrets of this environment, which only accepts main, release/** and v* tags.
     environment: release-staging
     runs-on: ubuntu-24.04
@@ -95,26 +125,33 @@ jobs:
           merge-multiple: true
 
       # Yano-specific: the zip names carry the version, which build.gradle derives with the short commit id. Exactly
-      # one JVM zip and the four native zips of this commit, nothing else.
+      # the selected zips of this commit, nothing else.
       - name: Verify the distributions
         id: dist
         shell: bash
+        env:
+          JAR_DIST: ${{ needs.build.outputs.jar-dist }}
+          PLATFORMS: ${{ needs.build.outputs.platforms }}
         run: |
           set -euo pipefail
           cd dist
-          jvm=(yano-[0-9]*.zip)
-          VERSION=${jvm[0]#yano-}
-          VERSION=${VERSION%.zip}
-          if [[ ${#jvm[@]} != 1 || "$VERSION" != *"-${GITHUB_SHA:0:7}" ]]; then
-            echo "::error::Expected one JVM zip of commit ${GITHUB_SHA:0:7}; found: ${jvm[*]}" >&2
+          found=$(find . -maxdepth 1 -type f -printf '%f\n' | sort)
+          name=$(head -1 <<< "$found")
+          name=${name#yano-native-}
+          name=${name#yano-}
+          if [[ "$name" != *"-${GITHUB_SHA:0:7}"* ]]; then
+            echo "::error::Expected zips of commit ${GITHUB_SHA:0:7}; found: $(tr '\n' ' ' <<< "$found")" >&2
             exit 1
           fi
-          expected="yano-$VERSION.zip"
-          for platform in linux-arm64 linux-x64 macos-arm64 windows-x64; do
-            expected+=$'\n'"yano-native-$VERSION-$platform.zip"
+          VERSION=${name%%-"${GITHUB_SHA:0:7}"*}-${GITHUB_SHA:0:7}
+          expected=()
+          if [[ "$JAR_DIST" == true ]]; then
+            expected+=("yano-$VERSION.zip")
+          fi
+          for platform in $PLATFORMS; do
+            expected+=("yano-native-$VERSION-$platform.zip")
           done
-          found=$(find . -maxdepth 1 -type f -printf '%f\n' | sort)
-          if [[ "$found" != "$(sort <<< "$expected")" ]]; then
+          if [[ "$found" != "$(printf '%s\n' "${expected[@]}" | sort)" ]]; then
             echo "::error::Unexpected distribution set: $(tr '\n' ' ' <<< "$found")" >&2
             exit 1
           fi
