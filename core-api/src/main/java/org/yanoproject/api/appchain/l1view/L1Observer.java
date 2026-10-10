@@ -28,6 +28,13 @@ public interface L1Observer {
      * Inspect one L1 block and return the observations it yields (empty for
      * most blocks). Must be deterministic and side-effect free.
      *
+     * <p>{@code block.getTransactionBodies()} includes phase-2-invalid
+     * transactions, whose indexes are in {@code block.getInvalidTransactions()}.
+     * Cardano consumes only the collateral of such a transaction and creates
+     * only its collateral-return output: its regular inputs are not spent and
+     * its regular outputs and metadata never take effect, so an observer must
+     * skip it rather than report it as if it had happened.</p>
+     *
      * @param slot      the block's slot
      * @param blockHash the block's hash (32B)
      * @param block     the parsed L1 block

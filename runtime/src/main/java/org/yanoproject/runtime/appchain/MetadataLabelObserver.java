@@ -18,6 +18,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Built-in {@code metadata-label} observer (ADR 008.4 §3.1, ADR-005 D5
@@ -59,10 +60,13 @@ final class MetadataLabelObserver implements L1Observer {
             return List.of();
         List<L1Observation> observations = new ArrayList<>();
         List<TransactionBody> txs = block.getTransactionBodies();
+        // The metadata of a phase-2-invalid transaction never took effect.
+        Set<Integer> invalid = InvalidL1Transactions.of(block);
         for (Map.Entry<Integer, AuxData> entry : block.getAuxiliaryDataMap().entrySet()) {
-            int txIndex = entry.getKey();
+            Integer txIndex = entry.getKey();
             AuxData auxData = entry.getValue();
-            if (txIndex < 0 || txIndex >= txs.size() || auxData == null
+            if (txIndex == null || txIndex < 0 || txIndex >= txs.size() || invalid.contains(txIndex)
+                    || txs.get(txIndex) == null || auxData == null
                     || auxData.getMetadataCbor() == null)
                 continue;
             byte[] labelValue = extractLabel(auxData.getMetadataCbor());
