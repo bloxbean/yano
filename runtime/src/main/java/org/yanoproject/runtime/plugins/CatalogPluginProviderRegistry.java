@@ -658,8 +658,10 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 }
                 Object exposed = immutableMetadata == null
                         ? PluginSpiFacades.provider(
-                                kind, candidate, pluginClassLoader, bundleId, name,
-                                providerClass, productReservations, callbackTracker)
+                                kind, candidate, pluginClassLoader,
+                                manifest != null ? manifest.id() : bundleId, name,
+                                providerClass, productReservations, callbackTracker,
+                                manifest != null)
                         : immutableNodePluginFacade(
                                 (NodePlugin) candidate, immutableMetadata,
                                 pluginClassLoader, callbackTracker);
@@ -680,12 +682,16 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 String action,
                 Throwable failure
         ) {
-            // The identity fields come from the validated manifest, so the startup boundary may show them.
-            return new HostPluginActivationException(
-                    "Failed to activate provider '" + providerClass + "' for "
-                            + kind.manifestKey() + "/" + name + " in plugin bundle '"
-                            + bundleId + "' while attempting to " + action,
-                    bundleId, kind.manifestKey(), name, providerClass, failure);
+            String message = "Failed to activate provider '" + providerClass + "' for "
+                    + kind.manifestKey() + "/" + name + " in plugin bundle '"
+                    + bundleId + "' while attempting to " + action;
+            // Only a validated manifest's identity is host provenance. A legacy entry's bundle id comes
+            // from the plugin's own id(), so it stays an ordinary, untrusted activation exception.
+            return manifest != null
+                    ? new HostPluginActivationException(message, manifest.id(), kind.manifestKey(), name,
+                            providerClass, failure)
+                    : new PluginActivationException(message, bundleId, kind.manifestKey(), name,
+                            providerClass, failure);
         }
 
         private static Throwable closeFailedCandidate(

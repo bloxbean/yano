@@ -1206,8 +1206,8 @@ public class YanoProducer {
                     PluginManager.PluginManagerException.class.getName(),
                     managerFailure.phase().name());
         }
-        // Only the catalog registry builds this type, from the validated manifest. Any other
-        // PluginActivationException may come from plugin code, whatever its fields contain.
+        // Only the host builds this type, for manifested providers, from the validated manifest. Any other
+        // PluginActivationException may come from plugin code or a legacy id, whatever its fields contain.
         if (failure instanceof HostPluginActivationException host) {
             return new PluginStartupException(PluginActivationException.class.getName(), null,
                     host.bundleId(), host.contributionKind());

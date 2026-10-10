@@ -156,9 +156,11 @@ A required plugin that fails at startup stops the node with
 `YANO_STARTUP_FAILURE code=PLUGIN_ACTIVATION_FAILED` and one summary line. The
 summary never includes plugin messages or other plugin-supplied values, which
 can carry credentials. It names the failure type and, for a lifecycle failure,
-the phase. When the catalog registry itself failed to construct a provider, it
-also names that provider's bundle and contribution kind, taken from the
-validated catalog manifest, for example:
+the phase. When the host failed to construct or call a provider declared in a
+bundle manifest, for example a factory rejecting its configuration, it also
+names that provider's bundle and contribution kind, taken from the validated
+manifest. Legacy providers without a manifest are not named, because their
+identity comes from the plugin itself. For example:
 
 ```text
 Required plugin discovery or startup failed (errorType=org.yanoproject.api.plugin.PluginActivationException, bundle=org.example.ledger, contribution=app-state-machine)
