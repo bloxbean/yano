@@ -30,9 +30,10 @@ public interface L1Observer {
      *
      * <p>{@code block.getTransactionBodies()} includes phase-2-invalid
      * transactions, whose indexes are in {@code block.getInvalidTransactions()}.
-     * Cardano takes only the collateral of such a transaction: its inputs are
-     * not spent and its outputs and metadata never take effect, so an observer
-     * must skip it rather than report it as if it had happened.</p>
+     * Cardano consumes only the collateral of such a transaction and creates
+     * only its collateral-return output: its regular inputs are not spent and
+     * its regular outputs and metadata never take effect, so an observer must
+     * skip it rather than report it as if it had happened.</p>
      *
      * @param slot      the block's slot
      * @param blockHash the block's hash (32B)

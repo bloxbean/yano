@@ -8,8 +8,8 @@ import java.util.Set;
 
 /**
  * The indexes of a block's phase-2-invalid transactions. Cardano includes a transaction whose script fails, but
- * only its collateral is taken: its inputs are not spent and its outputs and metadata never take effect. Observers
- * must not report such a transaction as if it had happened.
+ * consumes only its collateral and creates only its collateral-return output: its regular inputs are not spent and
+ * its regular outputs and metadata never take effect. Observers must not report it as if it had happened.
  */
 final class InvalidL1Transactions {
     private InvalidL1Transactions() {
