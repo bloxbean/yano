@@ -375,6 +375,32 @@ class FxEffectsM2Test {
         }
     }
 
+    /**
+     * A chain that can never produce a stability-deep anchor (stability depth 0
+     * or anchoring off) still fails closed, but reports why in its stats.
+     */
+    @Test
+    void reportsUnreachableL1AnchoredGate(@TempDir Path dir) throws Exception {
+        RecordingExecutor executor = new RecordingExecutor("test.action",
+                effect -> EffectExecution.confirmed(new byte[0]));
+        try (Pipeline pipeline = new Pipeline(dir,
+                emitting("test.action", ResultPolicy.NONE, FinalityGate.L1_ANCHORED), FX_SETTINGS);
+             EffectRuntime runtime = new EffectRuntime(pipeline.store, "fx-chain",
+                     runtimeSettings(3), List.of(executor), Map.of(), LoggerFactory.getLogger("fx"))) {
+            awaitL1AnchoredGate(runtime, Map.of("reachable", true));
+
+            runtime.setStableAnchorFrontier(() -> 0L);
+            runtime.markL1AnchoredGateUnreachable("l1.stability-depth is 0");
+            pipeline.applyNext(1);
+            runtime.tick();
+            Thread.sleep(100);
+
+            assertThat(executor.invocations).isEmpty();
+            assertThat(runtime.claim("worker-1", Set.of(), 10, 60)).isEmpty();
+            awaitL1AnchoredGate(runtime, Map.of("reachable", false, "reason", "l1.stability-depth is 0"));
+        }
+    }
+
     @Test
     void retryableFailures_backOffThenPark_thenRequeueRecovers(@TempDir Path dir) throws Exception {
         AtomicReference<EffectExecution> outcome = new AtomicReference<>(
@@ -2073,6 +2099,19 @@ class FxEffectsM2Test {
         throw new AssertionError("Effect " + height + "/" + ordinal + " never reached status "
                 + expected + "; current: " + store.fxRuntimeStatus(height, ordinal)
                         .map(FxStatusRecord::statusName).orElse("<none>"));
+    }
+
+    private static void awaitL1AnchoredGate(EffectRuntime runtime, Map<String, Object> expected)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (expected.equals(runtime.stats().get("l1AnchoredGate"))) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Effect runtime never reported l1AnchoredGate=" + expected
+                + "; current: " + runtime.stats().get("l1AnchoredGate"));
     }
 
     private static void awaitInFlight(EffectRuntime runtime, int expected)

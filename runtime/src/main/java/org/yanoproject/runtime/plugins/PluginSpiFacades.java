@@ -394,13 +394,32 @@ final class PluginSpiFacades {
             ProductReservations products,
             CallbackTracker callbacks
     ) {
+        return provider(kind, delegate, loader, bundleId, selector, providerClass, products, callbacks,
+                false);
+    }
+
+    /**
+     * @param manifestIdentity true only when {@code bundleId} is a validated catalog manifest's id; callback
+     *                         failures then carry it as host provenance ({@link HostPluginActivationException})
+     */
+    static Object provider(
+            ContributionKind kind,
+            Object delegate,
+            ClassLoader loader,
+            String bundleId,
+            String selector,
+            String providerClass,
+            ProductReservations products,
+            CallbackTracker callbacks,
+            boolean manifestIdentity
+    ) {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(delegate, "delegate");
         Objects.requireNonNull(products, "products");
         Objects.requireNonNull(callbacks, "callbacks");
         ClassLoader effectiveLoader = PluginThreadContext.effective(loader);
         ActivationContext activation = new ActivationContext(
-                bundleId, kind.manifestKey(), selector, providerClass);
+                bundleId, kind.manifestKey(), selector, providerClass, manifestIdentity);
         return switch (kind) {
             case NODE_PLUGIN -> delegate;
             case APP_STATE_MACHINE -> new StateMachineProviderFacade(
@@ -656,7 +675,8 @@ final class PluginSpiFacades {
             String bundleId,
             String kind,
             String selector,
-            String providerClass
+            String providerClass,
+            boolean manifestIdentity
     ) {
         private <T> T call(String action, Supplier<T> callback) {
             try {
@@ -674,10 +694,13 @@ final class PluginSpiFacades {
                 if (failure instanceof InterruptedException) {
                     Thread.currentThread().interrupt();
                 }
-                throw new PluginActivationException(
-                        "Plugin bundle '" + bundleId + "' failed to " + action + " for "
-                                + kind + "/" + selector + " via '" + providerClass + "'",
-                        bundleId, kind, selector, providerClass, failure);
+                String message = "Plugin bundle '" + bundleId + "' failed to " + action + " for "
+                        + kind + "/" + selector + " via '" + providerClass + "'";
+                throw manifestIdentity
+                        ? new HostPluginActivationException(message, bundleId, kind, selector,
+                                providerClass, failure)
+                        : new PluginActivationException(message, bundleId, kind, selector,
+                                providerClass, failure);
             }
         }
 

@@ -5875,6 +5875,28 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 ? 0L : AnchorService.stableAnchoredHeight(currentLedger, stable.slot());
     }
 
+    /**
+     * Why this node can never see a stability-deep anchor for the L1_ANCHORED
+     * gate, or null when it can. Effects config rejects this only for
+     * {@code effects.default-gate}; a state machine can still emit L1_ANCHORED
+     * effects explicitly.
+     *
+     * <p>Anchor confirmations are recorded only by this node's own anchor
+     * service or by the script-anchor service, which every member with L1
+     * access runs as a follower even with {@code anchor.enabled=false}. Only
+     * the certain cases are reported: a member that follows a chain anchored
+     * by another mode is not flagged.
+     */
+    private String l1AnchoredGateUnreachableReason() {
+        if (config.l1StabilityDepth() <= 0) {
+            return "l1.stability-depth is 0, so no anchor ever becomes stability-deep";
+        }
+        if (anchorService == null && scriptAnchorService == null) {
+            return "this node neither submits anchors nor follows script anchors (no L1 transaction access)";
+        }
+        return null;
+    }
+
     private boolean l1ObservationInputsHealthy() {
         L1ObservationService blockObservations = observationService;
         L1EpochObservationCoordinator epochObservations = epochObservationCoordinator;
@@ -6277,6 +6299,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             createdRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
                     executors, executorConfigs, executorSources, runtimeOwner, log);
             createdRuntime.setStableAnchorFrontier(this::stableAnchoredHeight);
+            String unreachable = l1AnchoredGateUnreachableReason();
+            if (unreachable != null) {
+                createdRuntime.markL1AnchoredGateUnreachable(unreachable);
+            }
             // Publish ownership before registering the lifetime signal. If a
             // custom registry rejects registration, startup rollback sees and
             // closes the runtime instead of directly double-closing products.
