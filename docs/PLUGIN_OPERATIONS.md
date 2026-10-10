@@ -150,6 +150,40 @@ Each explicit JAR, or all regular files in one exploded artifact, is limited
 to an aggregate 1 GiB immutable scan snapshot. Inputs over that boundary are
 rejected before temporary capture and rechecked while streaming.
 
+## Diagnose a plugin startup failure
+
+A required plugin that fails at startup stops the node with
+`YANO_STARTUP_FAILURE code=PLUGIN_ACTIVATION_FAILED` and one summary line. The
+summary never includes plugin messages or other plugin-supplied values, which
+can carry credentials. It names the failure type and, for a lifecycle failure,
+the phase. When the host failed to construct or call a provider declared in a
+bundle manifest, for example a factory rejecting its configuration, it also
+names that provider's bundle and contribution kind, taken from the validated
+manifest. Legacy providers without a manifest are not named, because their
+identity comes from the plugin itself. For example:
+
+```text
+Required plugin discovery or startup failed (errorType=org.yanoproject.api.plugin.PluginActivationException, bundle=org.example.ledger, contribution=app-state-machine)
+```
+
+For a catalog failure, such as a selected bundle whose dependency is missing,
+run the offline validator above on the plugin directory with the node's own
+selection policy. The validator does not read node configuration, so pass each
+`yano.plugins.allow-list` entry as `--allow` and each `yano.plugins.deny-list`
+entry as `--deny`. Without them it validates every bundle in the directory, and
+can report `VALID` for a selection the node refuses:
+
+```bash
+./tools/yano-plugins/bin/yano-plugins validate \
+  --allow org.example.feature --allow org.example.base plugins/*.jar
+```
+
+To see a failure's causes on a disposable development node, start it with
+`yano.plugins.startup-diagnostics=full`. The node then also logs each cause's
+class and message, one line each, bounded to 512 characters, with control
+characters and Unicode line separators replaced. Do not enable it where plugin
+configuration holds real secrets.
+
 ## Shutdown behavior
 
 Yano bounds plugin callbacks and reports stale or failed sources from cached

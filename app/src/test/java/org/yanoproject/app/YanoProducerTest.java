@@ -11,6 +11,7 @@ import org.yanoproject.app.archive.ProjectionHistoryService;
 import org.yanoproject.runtime.assembly.Yano;
 import org.yanoproject.runtime.config.RollbackRetentionGenesisValues;
 import org.yanoproject.runtime.config.RollbackRetentionPlanner;
+import org.yanoproject.runtime.plugins.HostPluginActivationException;
 import org.yanoproject.runtime.plugins.PluginCatalogActivationException;
 import org.yanoproject.runtime.plugins.PluginManager;
 import io.smallrye.config.EnvConfigSource;
@@ -25,7 +26,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Constructor;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -583,6 +586,72 @@ class YanoProducerTest {
             }
             throw new IllegalArgumentException("Cannot unwrap to " + type.getName());
         }
+    }
+
+    @Test
+    void startupFailureNamesOnlyCatalogIdentityFromTheHostRegistry() throws Exception {
+        String sentinel = "startup-secret-7d9b2f";
+        RuntimeException hostFailure = hostActivationFailure(
+                "provider failed", "org.example.ledger", "app-state-machine",
+                new IllegalStateException("credentials unavailable " + sentinel));
+        PluginStartupException named = assertThrows(PluginStartupException.class,
+                () -> new StartupProbeProducer(new RuntimeException("wrapper", hostFailure)).onStart(null));
+        assertEquals(Optional.of("org.example.ledger"), named.bundleId());
+        assertEquals(Optional.of("app-state-machine"), named.contributionKind());
+        assertTrue(named.getMessage().contains("bundle=org.example.ledger, contribution=app-state-machine"));
+        assertFalse(renderStackTrace(named).contains(sentinel));
+
+        // A plugin can throw the public API type with values that look like catalog identity (#179 review F1).
+        RuntimeException pluginBuilt = new PluginActivationException(
+                "plugin failed", "abc123.deadbeef", "private-password", "x", "org.example.P", null);
+        RuntimeException pluginSubclass = new PluginActivationException(
+                "plugin failed", "org.example.ledger", "app-state-machine", "x", "org.example.P", null) { };
+        for (RuntimeException plugin : List.of(pluginBuilt, pluginSubclass)) {
+            PluginStartupException unnamed = assertThrows(PluginStartupException.class,
+                    () -> new StartupProbeProducer(plugin).onStart(null));
+            assertEquals(Optional.empty(), unnamed.bundleId());
+            assertEquals(Optional.empty(), unnamed.contributionKind());
+            assertFalse(unnamed.getMessage().contains("abc123.deadbeef"));
+            assertFalse(unnamed.getMessage().contains("private-password"));
+        }
+
+        // A lifecycle failure's plugin id comes from the plugin's own id(), so only the phase is shown.
+        RuntimeException lifecycle = new PluginManager.PluginManagerException(
+                PluginManager.FailurePhase.START, "abc123.deadbeef", "start failed " + sentinel, null);
+        PluginStartupException started = assertThrows(PluginStartupException.class,
+                () -> new StartupProbeProducer(lifecycle).onStart(null));
+        assertTrue(started.getMessage().endsWith("phase=START)"));
+        assertFalse(renderStackTrace(started).contains("abc123.deadbeef"));
+        assertFalse(renderStackTrace(started).contains(sentinel));
+    }
+
+    /** Only the runtime's catalog registry can build this type; the test reaches its constructor reflectively. */
+    private static RuntimeException hostActivationFailure(String message, String bundleId, String kind,
+                                                          Throwable cause) throws Exception {
+        Constructor<HostPluginActivationException> constructor =
+                HostPluginActivationException.class.getDeclaredConstructor(String.class, String.class,
+                        String.class, String.class, String.class, Throwable.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(message, bundleId, kind, "selector", "org.example.Provider", cause);
+    }
+
+    @Test
+    void optInDiagnosticsListABoundedSingleLineCauseChain() {
+        Throwable hostile = new IllegalStateException("hostile") {
+            @Override
+            public synchronized Throwable getCause() {
+                throw new IllegalStateException("graph inspection");
+            }
+        };
+        Throwable failure = new RuntimeException("outer\nsecond\u2028third\u2029line",
+                new PluginActivationException("x".repeat(600), hostile));
+
+        var lines = YanoProducer.fullPluginDiagnostics(failure);
+
+        assertEquals(3, lines.size());
+        assertEquals("cause[0] java.lang.RuntimeException: outer second third line", lines.get(0));
+        assertTrue(lines.get(1).endsWith("x".repeat(512) + "..."));
+        assertTrue(lines.get(2).endsWith(": <diagnostic unavailable>"));
     }
 
     private static String renderStackTrace(Throwable failure) {
