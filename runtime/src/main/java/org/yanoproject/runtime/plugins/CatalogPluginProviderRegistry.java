@@ -680,7 +680,8 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 String action,
                 Throwable failure
         ) {
-            return new PluginActivationException(
+            // The identity fields come from the validated manifest, so the startup boundary may show them.
+            return new HostPluginActivationException(
                     "Failed to activate provider '" + providerClass + "' for "
                             + kind.manifestKey() + "/" + name + " in plugin bundle '"
                             + bundleId + "' while attempting to " + action,

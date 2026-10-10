@@ -1032,7 +1032,8 @@ class PluginCatalogRuntimeTest {
             try {
                 assertThatThrownBy(() -> environment.providers().find(
                         FinalizedStreamSinkFactory.class, FlakyLegacySinkFactory.INITIAL_SCHEME))
-                        .isInstanceOf(IllegalStateException.class)
+                        // The registry's own failure carries catalog identity the app boundary may show.
+                        .isInstanceOf(HostPluginActivationException.class)
                         .hasMessageContaining("Failed to activate provider")
                         .hasRootCauseMessage("Provider '"
                                 + FlakyLegacySinkFactory.class.getName()

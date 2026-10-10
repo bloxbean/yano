@@ -48,6 +48,7 @@ import org.yanoproject.runtime.debug.DebugLedgerStateAccess;
 import org.yanoproject.runtime.kernel.NodeKernel;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
 import org.yanoproject.api.plugin.PluginActivationException;
+import org.yanoproject.runtime.plugins.HostPluginActivationException;
 import org.yanoproject.runtime.plugins.PluginCatalogActivationException;
 import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 import org.yanoproject.runtime.plugins.PluginManager;
@@ -76,6 +77,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -92,11 +95,6 @@ public class YanoProducer {
     static final String PLUGIN_STARTUP_DIAGNOSTICS = "yano.plugins.startup-diagnostics";
     private static final int MAX_DIAGNOSTIC_CAUSES = 16;
     private static final int MAX_DIAGNOSTIC_LENGTH = 512;
-    // The catalog's bundle-id grammar (lowercase DNS labels) and its contribution-kind keys.
-    private static final java.util.regex.Pattern BUNDLE_ID = java.util.regex.Pattern.compile(
-            "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+");
-    private static final java.util.regex.Pattern CONTRIBUTION_KIND =
-            java.util.regex.Pattern.compile("[a-z]+(?:-[a-z0-9]+){0,4}");
     private static final String ROLLBACK_RETENTION_EPOCHS = RollbackRetentionPlanner.ROLLBACK_RETENTION_EPOCHS;
     private static final String UTXO_ROLLBACK_WINDOW = RollbackRetentionPlanner.UTXO_ROLLBACK_WINDOW;
     private static final String ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG =
@@ -1087,8 +1085,10 @@ public class YanoProducer {
                 log.error("YANO_STARTUP_FAILURE code=PLUGIN_ACTIVATION_FAILED");
                 log.error(sanitized.getMessage());
                 if (pluginFailure instanceof PluginCatalogActivationException) {
-                    log.error("Check the plugin directory offline with: "
-                            + "tools/yano-plugins/bin/yano-plugins validate <plugins-directory>/*.jar");
+                    log.error("Check the plugin directory offline with: tools/yano-plugins/bin/yano-plugins"
+                            + " validate [--allow <bundle-id>]... [--deny <bundle-id>]... <plugins-directory>/*.jar,"
+                            + " passing this node's " + YanoPropertyKeys.Plugins.ALLOW_LIST + " and "
+                            + YanoPropertyKeys.Plugins.DENY_LIST + " as --allow and --deny; it does not read them");
                 }
                 if ("full".equals(pluginStartupDiagnostics)) {
                     fullPluginDiagnostics(e).forEach(log::error);
@@ -1201,34 +1201,27 @@ public class YanoProducer {
                     PluginCatalogActivationException.class.getName(), null);
         }
         if (failure instanceof PluginManager.PluginManagerException managerFailure) {
+            // The plugin id comes from the plugin's own id(), so only the host's fixed phase is shown.
             return new PluginStartupException(
                     PluginManager.PluginManagerException.class.getName(),
-                    managerFailure.phase().name(),
-                    hostIdentity(managerFailure.pluginId().orElse(null), BUNDLE_ID), null);
+                    managerFailure.phase().name());
         }
-        // Only the host constructs this exact class, from catalog-validated identities; a plugin subclass could
-        // override the accessors, so its identities are not shown.
-        if (failure.getClass() == PluginActivationException.class) {
-            PluginActivationException activation = (PluginActivationException) failure;
+        // Only the catalog registry builds this type, from the validated manifest. Any other
+        // PluginActivationException may come from plugin code, whatever its fields contain.
+        if (failure instanceof HostPluginActivationException host) {
             return new PluginStartupException(PluginActivationException.class.getName(), null,
-                    hostIdentity(activation.bundleId(), BUNDLE_ID),
-                    hostIdentity(activation.contributionKind(), CONTRIBUTION_KIND));
+                    host.bundleId(), host.contributionKind());
         }
         return new PluginStartupException(PluginActivationException.class.getName(), null);
-    }
-
-    /** A value shown only when it matches the catalog's identity grammar, so free text never crosses. */
-    private static String hostIdentity(String value, java.util.regex.Pattern grammar) {
-        return value != null && value.length() <= 160 && grammar.matcher(value).matches() ? value : null;
     }
 
     /**
      * The opt-in cause chain: class and bounded single-line message of each cause, at most
      * {@value #MAX_DIAGNOSTIC_CAUSES} deep. A cause whose inspection fails ends the chain.
      */
-    static java.util.List<String> fullPluginDiagnostics(Throwable failure) {
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    static List<String> fullPluginDiagnostics(Throwable failure) {
+        List<String> lines = new ArrayList<>();
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         Throwable current = failure;
         while (current != null && lines.size() < MAX_DIAGNOSTIC_CAUSES && seen.add(current)) {
             String message;
@@ -1248,12 +1241,19 @@ public class YanoProducer {
         return lines;
     }
 
+    /** ISO controls and the Unicode line and paragraph separators, which some log viewers render as breaks. */
+    private static boolean breaksLine(char character) {
+        int type = Character.getType(character);
+        return Character.isISOControl(character)
+                || type == Character.LINE_SEPARATOR || type == Character.PARAGRAPH_SEPARATOR;
+    }
+
     private static String boundedLine(String message) {
         if (message == null) return "";
         StringBuilder line = new StringBuilder(Math.min(message.length(), MAX_DIAGNOSTIC_LENGTH));
         for (int index = 0; index < message.length() && line.length() < MAX_DIAGNOSTIC_LENGTH; index++) {
             char character = message.charAt(index);
-            line.append(Character.isISOControl(character) ? ' ' : character);
+            line.append(breaksLine(character) ? ' ' : character);
         }
         return message.length() > MAX_DIAGNOSTIC_LENGTH ? line + "..." : line.toString();
     }

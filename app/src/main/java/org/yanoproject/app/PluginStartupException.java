@@ -11,8 +11,8 @@ import java.util.Optional;
  * cleanup failures, and wrapper messages can contain credentials. This
  * exception therefore never accepts or retains a cause. It exposes only a
  * platform-normalized failure type, for lifecycle failures a fixed enum
- * phase, and the bundle id and contribution kind when the host named them and
- * they match the catalog identity grammar.</p>
+ * phase, and, for a provider the catalog registry failed to activate, the
+ * bundle id and contribution kind from the validated catalog manifest.</p>
  */
 public final class PluginStartupException extends IllegalStateException {
     static final String DIRECTORY_CAPTURE_FAILURE = "PLUGIN_DIRECTORY_CAPTURE";
@@ -48,12 +48,12 @@ public final class PluginStartupException extends IllegalStateException {
         return Optional.ofNullable(failurePhase);
     }
 
-    /** Catalog-validated id of the bundle or plugin the host was activating, when it named one. */
+    /** Catalog bundle id of the provider the registry failed to activate, when that was the failure. */
     public Optional<String> bundleId() {
         return Optional.ofNullable(bundleId);
     }
 
-    /** Contribution kind the host was activating, when it named one. */
+    /** Catalog contribution kind of that provider. */
     public Optional<String> contributionKind() {
         return Optional.ofNullable(contributionKind);
     }
