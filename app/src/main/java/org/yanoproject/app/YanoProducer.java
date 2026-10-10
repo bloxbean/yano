@@ -89,6 +89,14 @@ import java.util.Set;
 public class YanoProducer {
 
     private static final Logger log = LoggerFactory.getLogger(YanoProducer.class);
+    static final String PLUGIN_STARTUP_DIAGNOSTICS = "yano.plugins.startup-diagnostics";
+    private static final int MAX_DIAGNOSTIC_CAUSES = 16;
+    private static final int MAX_DIAGNOSTIC_LENGTH = 512;
+    // The catalog's bundle-id grammar (lowercase DNS labels) and its contribution-kind keys.
+    private static final java.util.regex.Pattern BUNDLE_ID = java.util.regex.Pattern.compile(
+            "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+");
+    private static final java.util.regex.Pattern CONTRIBUTION_KIND =
+            java.util.regex.Pattern.compile("[a-z]+(?:-[a-z0-9]+){0,4}");
     private static final String ROLLBACK_RETENTION_EPOCHS = RollbackRetentionPlanner.ROLLBACK_RETENTION_EPOCHS;
     private static final String UTXO_ROLLBACK_WINDOW = RollbackRetentionPlanner.UTXO_ROLLBACK_WINDOW;
     private static final String ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG =
@@ -127,6 +135,13 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.Server.PORT, defaultValue = "13337")
     int serverPort;
+
+    /**
+     * {@code full} also logs the bounded cause chain of a plugin startup failure. Off by default: plugin messages
+     * can contain credentials, so only an operator debugging a disposable node should enable it.
+     */
+    @ConfigProperty(name = PLUGIN_STARTUP_DIAGNOSTICS, defaultValue = "summary")
+    String pluginStartupDiagnostics = "summary";
 
     @ConfigProperty(name = YanoPropertyKeys.Client.ENABLED, defaultValue = "true")
     boolean clientEnabled;
@@ -1071,6 +1086,16 @@ public class YanoProducer {
                 PluginStartupException sanitized = sanitizedPluginStartupFailure(pluginFailure);
                 log.error("YANO_STARTUP_FAILURE code=PLUGIN_ACTIVATION_FAILED");
                 log.error(sanitized.getMessage());
+                if (pluginFailure instanceof PluginCatalogActivationException) {
+                    log.error("Check the plugin directory offline with: "
+                            + "tools/yano-plugins/bin/yano-plugins validate <plugins-directory>/*.jar");
+                }
+                if ("full".equals(pluginStartupDiagnostics)) {
+                    fullPluginDiagnostics(e).forEach(log::error);
+                } else {
+                    log.error("On a disposable node, set " + PLUGIN_STARTUP_DIAGNOSTICS
+                            + "=full to log the failure's causes");
+                }
                 throw sanitized;
             }
             IncompatibleChainStateException incompatibleChainState =
@@ -1170,7 +1195,7 @@ public class YanoProducer {
         return firstPluginFailure;
     }
 
-    private static PluginStartupException sanitizedPluginStartupFailure(Throwable failure) {
+    static PluginStartupException sanitizedPluginStartupFailure(Throwable failure) {
         if (failure instanceof PluginCatalogActivationException) {
             return new PluginStartupException(
                     PluginCatalogActivationException.class.getName(), null);
@@ -1178,9 +1203,59 @@ public class YanoProducer {
         if (failure instanceof PluginManager.PluginManagerException managerFailure) {
             return new PluginStartupException(
                     PluginManager.PluginManagerException.class.getName(),
-                    managerFailure.phase().name());
+                    managerFailure.phase().name(),
+                    hostIdentity(managerFailure.pluginId().orElse(null), BUNDLE_ID), null);
+        }
+        // Only the host constructs this exact class, from catalog-validated identities; a plugin subclass could
+        // override the accessors, so its identities are not shown.
+        if (failure.getClass() == PluginActivationException.class) {
+            PluginActivationException activation = (PluginActivationException) failure;
+            return new PluginStartupException(PluginActivationException.class.getName(), null,
+                    hostIdentity(activation.bundleId(), BUNDLE_ID),
+                    hostIdentity(activation.contributionKind(), CONTRIBUTION_KIND));
         }
         return new PluginStartupException(PluginActivationException.class.getName(), null);
+    }
+
+    /** A value shown only when it matches the catalog's identity grammar, so free text never crosses. */
+    private static String hostIdentity(String value, java.util.regex.Pattern grammar) {
+        return value != null && value.length() <= 160 && grammar.matcher(value).matches() ? value : null;
+    }
+
+    /**
+     * The opt-in cause chain: class and bounded single-line message of each cause, at most
+     * {@value #MAX_DIAGNOSTIC_CAUSES} deep. A cause whose inspection fails ends the chain.
+     */
+    static java.util.List<String> fullPluginDiagnostics(Throwable failure) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        Throwable current = failure;
+        while (current != null && lines.size() < MAX_DIAGNOSTIC_CAUSES && seen.add(current)) {
+            String message;
+            Throwable cause;
+            try {
+                message = current.getMessage();
+                cause = current.getCause();
+            } catch (Throwable inspection) {
+                LifecycleFailures.rethrowIfProcessFatal(inspection);
+                lines.add("cause[" + lines.size() + "] " + current.getClass().getName()
+                        + ": <diagnostic unavailable>");
+                break;
+            }
+            lines.add("cause[" + lines.size() + "] " + current.getClass().getName() + ": " + boundedLine(message));
+            current = cause;
+        }
+        return lines;
+    }
+
+    private static String boundedLine(String message) {
+        if (message == null) return "";
+        StringBuilder line = new StringBuilder(Math.min(message.length(), MAX_DIAGNOSTIC_LENGTH));
+        for (int index = 0; index < message.length() && line.length() < MAX_DIAGNOSTIC_LENGTH; index++) {
+            char character = message.charAt(index);
+            line.append(Character.isISOControl(character) ? ' ' : character);
+        }
+        return message.length() > MAX_DIAGNOSTIC_LENGTH ? line + "..." : line.toString();
     }
 
     private String nodeApiBaseUrl() {

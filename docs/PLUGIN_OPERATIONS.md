@@ -150,6 +150,25 @@ Each explicit JAR, or all regular files in one exploded artifact, is limited
 to an aggregate 1 GiB immutable scan snapshot. Inputs over that boundary are
 rejected before temporary capture and rechecked while streaming.
 
+## Diagnose a plugin startup failure
+
+A required plugin that fails at startup stops the node with
+`YANO_STARTUP_FAILURE code=PLUGIN_ACTIVATION_FAILED` and one summary line. The
+summary never includes plugin messages, which can carry credentials. It names
+the failure type, the lifecycle phase, and the bundle and contribution kind
+when the host was activating one, for example:
+
+```text
+Required plugin discovery or startup failed (errorType=org.yanoproject.api.plugin.PluginActivationException, bundle=org.example.ledger, contribution=app-state-machine)
+```
+
+For a catalog failure, such as a selected bundle whose dependency is missing,
+run the offline validator above on the plugin directory: it prints the exact
+rule. To see a failure's causes on a disposable development node, start it with
+`yano.plugins.startup-diagnostics=full`. The node then also logs each cause's
+class and message, bounded to one line each. Do not enable it where plugin
+configuration holds real secrets.
+
 ## Shutdown behavior
 
 Yano bounds plugin callbacks and reports stale or failed sources from cached

@@ -10,18 +10,28 @@ import java.util.Optional;
  * graph reach Quarkus' startup exception renderer: plugin messages, suppressed
  * cleanup failures, and wrapper messages can contain credentials. This
  * exception therefore never accepts or retains a cause. It exposes only a
- * platform-normalized failure type and, for lifecycle failures, a fixed enum
- * phase.</p>
+ * platform-normalized failure type, for lifecycle failures a fixed enum
+ * phase, and the bundle id and contribution kind when the host named them and
+ * they match the catalog identity grammar.</p>
  */
 public final class PluginStartupException extends IllegalStateException {
     static final String DIRECTORY_CAPTURE_FAILURE = "PLUGIN_DIRECTORY_CAPTURE";
     private final String sourceFailureType;
     private final String failurePhase;
+    private final String bundleId;
+    private final String contributionKind;
 
     PluginStartupException(String sourceFailureType, String failurePhase) {
-        super(message(sourceFailureType, failurePhase));
+        this(sourceFailureType, failurePhase, null, null);
+    }
+
+    PluginStartupException(String sourceFailureType, String failurePhase, String bundleId,
+                           String contributionKind) {
+        super(message(sourceFailureType, failurePhase, bundleId, contributionKind));
         this.sourceFailureType = sourceFailureType;
         this.failurePhase = failurePhase;
+        this.bundleId = bundleId;
+        this.contributionKind = contributionKind;
     }
 
     static PluginStartupException directoryCaptureFailure() {
@@ -38,9 +48,22 @@ public final class PluginStartupException extends IllegalStateException {
         return Optional.ofNullable(failurePhase);
     }
 
-    private static String message(String sourceFailureType, String failurePhase) {
+    /** Catalog-validated id of the bundle or plugin the host was activating, when it named one. */
+    public Optional<String> bundleId() {
+        return Optional.ofNullable(bundleId);
+    }
+
+    /** Contribution kind the host was activating, when it named one. */
+    public Optional<String> contributionKind() {
+        return Optional.ofNullable(contributionKind);
+    }
+
+    private static String message(String sourceFailureType, String failurePhase, String bundleId,
+                                  String contributionKind) {
         String phase = failurePhase == null ? "" : ", phase=" + failurePhase;
+        String bundle = bundleId == null ? "" : ", bundle=" + bundleId;
+        String kind = contributionKind == null ? "" : ", contribution=" + contributionKind;
         return "Required plugin discovery or startup failed (errorType="
-                + sourceFailureType + phase + ")";
+                + sourceFailureType + phase + bundle + kind + ")";
     }
 }

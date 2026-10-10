@@ -585,6 +585,54 @@ class YanoProducerTest {
         }
     }
 
+    @Test
+    void startupFailureNamesOnlyHostValidatedIdentities() {
+        String sentinel = "startup-secret-7d9b2f";
+        RuntimeException hostFailure = new PluginActivationException(
+                "provider failed " + sentinel, "org.example.ledger", "app-state-machine",
+                "eutxo-ledger", "org.example.ledger.Provider",
+                new IllegalStateException("credentials unavailable " + sentinel));
+        PluginStartupException named = assertThrows(PluginStartupException.class,
+                () -> new StartupProbeProducer(new RuntimeException("wrapper", hostFailure)).onStart(null));
+        assertEquals(Optional.of("org.example.ledger"), named.bundleId());
+        assertEquals(Optional.of("app-state-machine"), named.contributionKind());
+        assertTrue(named.getMessage().contains("bundle=org.example.ledger, contribution=app-state-machine"));
+        assertFalse(renderStackTrace(named).contains(sentinel));
+
+        // A plugin subclass can override the accessors, so nothing it names is shown.
+        RuntimeException pluginSubclass = new PluginActivationException(
+                "plugin failed", "org.example.ledger", "app-state-machine", "x", "org.example.P", null) { };
+        PluginStartupException unnamed = assertThrows(PluginStartupException.class,
+                () -> new StartupProbeProducer(pluginSubclass).onStart(null));
+        assertEquals(Optional.empty(), unnamed.bundleId());
+
+        RuntimeException lifecycle = new PluginManager.PluginManagerException(
+                PluginManager.FailurePhase.START, "org.example.plugin", "start failed " + sentinel, null);
+        PluginStartupException started = assertThrows(PluginStartupException.class,
+                () -> new StartupProbeProducer(lifecycle).onStart(null));
+        assertTrue(started.getMessage().contains("phase=START, bundle=org.example.plugin"));
+        assertFalse(renderStackTrace(started).contains(sentinel));
+    }
+
+    @Test
+    void optInDiagnosticsListABoundedSingleLineCauseChain() {
+        Throwable hostile = new IllegalStateException("hostile") {
+            @Override
+            public synchronized Throwable getCause() {
+                throw new IllegalStateException("graph inspection");
+            }
+        };
+        Throwable failure = new RuntimeException("outer\nsecond line",
+                new PluginActivationException("x".repeat(600), hostile));
+
+        var lines = YanoProducer.fullPluginDiagnostics(failure);
+
+        assertEquals(3, lines.size());
+        assertEquals("cause[0] java.lang.RuntimeException: outer second line", lines.get(0));
+        assertTrue(lines.get(1).endsWith("x".repeat(512) + "..."));
+        assertTrue(lines.get(2).endsWith(": <diagnostic unavailable>"));
+    }
+
     private static String renderStackTrace(Throwable failure) {
         StringWriter rendered = new StringWriter();
         failure.printStackTrace(new PrintWriter(rendered));
