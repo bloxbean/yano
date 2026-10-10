@@ -1,16 +1,94 @@
 name: Dev Distribution Build
 
 # Manual only. A dev-* tag trigger was removed: anyone with write access can create such tags.
-# bloxbean-snapshot-dist.yml calls it to build the zips it publishes.
+# bloxbean-snapshot-dist.yml calls it to build the zips it publishes. Every distribution is built by default; untick
+# the slow native platforms that are not needed.
 on:
   workflow_dispatch:
+    inputs:
+      jar-dist:
+        description: JVM (uber-jar) distribution
+        type: boolean
+        default: true
+      linux-x64:
+        description: Native linux-x64
+        type: boolean
+        default: true
+      linux-arm64:
+        description: Native linux-arm64
+        type: boolean
+        default: true
+      macos-arm64:
+        description: Native macos-arm64
+        type: boolean
+        default: true
+      windows-x64:
+        description: Native windows-x64
+        type: boolean
+        default: true
   workflow_call:
+    inputs:
+      jar-dist:
+        description: JVM (uber-jar) distribution
+        type: boolean
+        default: true
+      linux-x64:
+        description: Native linux-x64
+        type: boolean
+        default: true
+      linux-arm64:
+        description: Native linux-arm64
+        type: boolean
+        default: true
+      macos-arm64:
+        description: Native macos-arm64
+        type: boolean
+        default: true
+      windows-x64:
+        description: Native windows-x64
+        type: boolean
+        default: true
+    outputs:
+      jar-dist:
+        description: Whether the JVM zip was built
+        value: ${{ jobs.plan.outputs.jar-dist }}
+      platforms:
+        description: Space-separated labels of the native zips built
+        value: ${{ jobs.plan.outputs.platforms }}
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      jar-dist: ${{ inputs.jar-dist }}
+      native: ${{ steps.plan.outputs.native }}
+      platforms: ${{ steps.plan.outputs.platforms }}
+    steps:
+      - name: Select the distributions
+        id: plan
+        shell: bash
+        env:
+          JAR_DIST: ${{ inputs.jar-dist }}
+          CHOICES: >-
+            [{"os": "ubuntu-22.04", "label": "linux-x64", "selected": ${{ inputs.linux-x64 }}},
+             {"os": "ubuntu-22.04-arm", "label": "linux-arm64", "selected": ${{ inputs.linux-arm64 }}},
+             {"os": "macos-15", "label": "macos-arm64", "selected": ${{ inputs.macos-arm64 }}},
+             {"os": "windows-latest", "label": "windows-x64", "selected": ${{ inputs.windows-x64 }}}]
+        run: |
+          set -euo pipefail
+          native=$(jq -c 'map(select(.selected) | del(.selected))' <<< "$CHOICES")
+          if [[ "$JAR_DIST" != true && "$native" == '[]' ]]; then
+            echo "::error::Select at least one distribution." >&2
+            exit 1
+          fi
+          echo "native=$native" >> "$GITHUB_OUTPUT"
+          echo "platforms=$(jq -r 'map(.label) | join(" ")' <<< "$native")" >> "$GITHUB_OUTPUT"
+
   jar-dist:
+    if: inputs.jar-dist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,18 +113,12 @@ jobs:
           retention-days: 3
 
   native-dist:
+    needs: plan
+    if: needs.plan.outputs.native != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            label: linux-x64
-          - os: ubuntu-22.04-arm
-            label: linux-arm64
-          - os: macos-15
-            label: macos-arm64
-          - os: windows-latest
-            label: windows-x64
+        include: ${{ fromJSON(needs.plan.outputs.native) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
