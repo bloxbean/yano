@@ -522,6 +522,58 @@ class AppChainL1DeliveryTest {
         }
     }
 
+    /** PR #177 F1: a member without local anchoring still follows script anchors, so the gate can open. */
+    @Test
+    void l1AnchoredGateIsReachableOnScriptAnchorFollower() throws Exception {
+        for (AppChainConfig.AnchorConfig anchor : Arrays.asList(
+                null, new AppChainConfig.AnchorConfig(false, SIGNING_KEY_HEX, 1, 60, 7014))) {
+            String id = anchor == null ? "gate-follower-absent" : "gate-follower-disabled";
+            assertThat(l1AnchoredGateStatus(id, anchor, true)).isEqualTo(Map.of("reachable", true));
+        }
+    }
+
+    @Test
+    void l1AnchoredGateIsUnreachableWithoutAnyAnchorPath() throws Exception {
+        assertThat(l1AnchoredGateStatus("gate-no-l1-tx", null, false)).isEqualTo(Map.of(
+                "reachable", false,
+                "reason", "this node neither submits anchors nor follows script anchors (no L1 transaction access)"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object l1AnchoredGateStatus(String testId, AppChainConfig.AnchorConfig anchor, boolean wireL1Tx)
+            throws Exception {
+        L1TestChain l1 = new L1TestChain();
+        l1.append(10, 20);
+        AppChainConfig config = AppChainConfig.builder("l1-delivery-" + testId)
+                .signingKeyHex(SIGNING_KEY_HEX)
+                .memberKeysHex(Set.of(PUBLIC_KEY))
+                .proposerKeyHex(PUBLIC_KEY)
+                .threshold(1)
+                .blockIntervalMs(25)
+                .l1StabilityDepth(1)
+                .anchor(anchor)
+                .pluginSettings(Map.of(
+                        "effects.enabled", "true",
+                        "effects.executor.enabled", "true",
+                        "effects.executors.webhook.url", "http://127.0.0.1:9/unused"))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppChainSubsystem subsystem = new AppChainSubsystem(config, 42, new DirectEventBus(), null,
+                tempDir.resolve(testId).toString(), null, mock(Logger.class));
+        if (wireL1Tx) {
+            subsystem.wireL1(ignored -> ANCHOR_TX_HASH, () -> new FixedUtxoState(List.of(anchorUtxo())));
+        }
+        subsystem.wireL1Chain(l1.reader(), null);
+        try {
+            subsystem.start();
+            Map<String, Object> effects = (Map<String, Object>) subsystem.status().get("effects");
+            Map<String, Object> executor = (Map<String, Object>) effects.get("executor");
+            return executor.get("l1AnchoredGate");
+        } finally {
+            subsystem.close();
+        }
+    }
+
     private StartedHarness startHarness(String testId, Controls controls) throws Exception {
         return startHarness(testId, controls, Map.of());
     }

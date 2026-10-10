@@ -5876,17 +5876,23 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     /**
-     * Why this chain's configuration can never produce a stability-deep anchor
-     * for the L1_ANCHORED gate, or null when it can. Effects config rejects this
-     * only for {@code effects.default-gate}; a state machine can still emit
-     * L1_ANCHORED effects explicitly.
+     * Why this node can never see a stability-deep anchor for the L1_ANCHORED
+     * gate, or null when it can. Effects config rejects this only for
+     * {@code effects.default-gate}; a state machine can still emit L1_ANCHORED
+     * effects explicitly.
+     *
+     * <p>Anchor confirmations are recorded only by this node's own anchor
+     * service or by the script-anchor service, which every member with L1
+     * access runs as a follower even with {@code anchor.enabled=false}. Only
+     * the certain cases are reported: a member that follows a chain anchored
+     * by another mode is not flagged.
      */
     private String l1AnchoredGateUnreachableReason() {
         if (config.l1StabilityDepth() <= 0) {
             return "l1.stability-depth is 0, so no anchor ever becomes stability-deep";
         }
-        if (config.anchor() == null || !config.anchor().enabled()) {
-            return "anchoring is disabled";
+        if (anchorService == null && scriptAnchorService == null) {
+            return "this node neither submits anchors nor follows script anchors (no L1 transaction access)";
         }
         return null;
     }
