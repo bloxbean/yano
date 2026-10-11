@@ -26,7 +26,8 @@ epoch-anchor = [
     new-epoch : uint,
 ]
 
-; Built-in transaction claim payloads:
+; Built-in transaction claim payloads (claim schemas *-claim-v2: only
+; phase-2-valid transactions are observed; v1 also reported invalid ones):
 ;
 ; metadata-label observer:
 ;   claim = the raw CBOR bytes of the watched label's metadata value
