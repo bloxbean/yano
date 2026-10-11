@@ -164,10 +164,12 @@ final class L1ObservationService {
             String observerId, String type, Map<String, String> settings,
             PluginProviderRegistry providers) {
         return switch (type) {
+            // v2: claims exclude phase-2-invalid transactions (#181). The new identity makes a
+            // journal written by a v1 observer fail startup instead of re-emitting its claims.
             case MetadataLabelObserver.TYPE -> builtInIdentity(
-                    "metadata-label-claim-v1", "label", settings);
+                    "metadata-label-claim-v2", "label", settings);
             case AddressDepositObserver.TYPE -> builtInIdentity(
-                    "address-deposit-claim-v1", "address", settings);
+                    "address-deposit-claim-v2", "address", settings);
             default -> providers.find(L1ObserverProvider.class, type)
                     .map(provider -> Objects.requireNonNull(provider.consensusIdentity(
                             observerId, Map.copyOf(settings)),
