@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/badge/java-25-orange.svg" alt="Java 25">
   <a href="https://central.sonatype.com/namespace/org.yanoproject"><img src="https://img.shields.io/maven-central/v/org.yanoproject/yano-runtime?label=maven%20central" alt="Maven Central"></a>
   <a href="https://github.com/bloxbean/yano/releases/tag/snapshot"><img src="https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2F%2Frepo.bloxbean.org%2Fmaven%2Fsnapshots%2Forg%2Fyanoproject%2Fyano%2Fmaven-metadata.xml&strategy=latestProperty&label=snapshot" alt="Latest development snapshot"></a>
+  <a href="https://github.com/bloxbean/yano/releases/tag/snapshot"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Frepo.bloxbean.org%2Fdist%2Fsnapshots%2Fyano%2Flatest.json&query=%24.version&label=snapshot%20dist" alt="Latest snapshot distribution"></a>
   <a href=".github/workflows/build.yml"><img src="https://github.com/bloxbean/yano/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 </p>
 
