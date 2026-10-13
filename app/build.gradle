@@ -532,10 +532,10 @@ tasks.register('normalizeYanoReleaseSbom') {
         body.metadata.remove('timestamp')
         def mitLicense = [[license: [id: 'MIT']]]
         // Yano publishes under org.yanoproject; the sibling BloxBean projects it
-        // depends on (yaci, cardano-client-lib, julc, zeroj) stayed on
-        // com.bloxbean.cardano. Both families are first-party MIT, so ownership
-        // is decided by either prefix rather than by the single group Yano used
-        // to share with them.
+        // depends on (yaci, cardano-client-lib) stayed on com.bloxbean.cardano.
+        // Both families are first-party MIT, so ownership is decided by either
+        // prefix rather than by the single group Yano used to share with them.
+        // julc (org.julclang) declares its own MIT license in its POM.
         def firstPartyGroup = { component ->
             def group = component.group?.toString()
             group?.startsWith('org.yanoproject') || group?.startsWith('com.bloxbean.cardano')

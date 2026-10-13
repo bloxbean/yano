@@ -31,7 +31,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.VkeyWitness;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
-import com.bloxbean.cardano.julc.clientlib.eval.JulcTransactionEvaluator;
+import org.julclang.clientlib.eval.JulcTransactionEvaluator;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.appchain.AppBlock;
 import org.yanoproject.api.appchain.AppChainConfig;
