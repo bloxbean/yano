@@ -1,0 +1,57 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Spring Boot's versions apply as constraints, Yano's own dependencies keep theirs.
+    implementation platform(org.springframework.boot.gradle.plugin.SpringBootPlugin.BOM_COORDINATES)
+    implementation platform("org.yanoproject:yano-bom:${yanoVersion}")
+    // Spring Boot manages Netty 4.2; Yano is built and tested on Netty 4.1.
+    implementation enforcedPlatform('io.netty:netty-bom:4.1.135.Final')
+
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.yanoproject:yano-runtime'
+
+    runtimeOnly 'com.h2database:h2'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'com.h2database:h2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+configurations.configureEach {
+    // Spring Boot ships Logback; drop the reload4j binding that Yano's standalone node uses.
+    exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+    exclude group: 'ch.qos.reload4j', module: 'reload4j'
+}
+
+// RocksDB loads a native library; JDK 25 warns unless native access is granted.
+tasks.named('bootJar') {
+    manifest {
+        attributes 'Enable-Native-Access': 'ALL-UNNAMED'
+    }
+}
+
+tasks.named('bootRun') {
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

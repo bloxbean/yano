@@ -56,6 +56,13 @@
     "devnet-toolkit/README.md",
     "runtime/src/main/java/org/yanoproject/runtime/assembly/YanoAssembly.java"
   ],
+  "develop/library": [
+    "examples/spring-boot-indexer/README.md",
+    "examples/spring-boot-indexer/src/main/java/com/example/yano/indexer/YanoNodeLifecycle.java",
+    "runtime/src/main/java/org/yanoproject/runtime/assembly/YanoAssembly.java",
+    "runtime/src/main/java/org/yanoproject/runtime/events/PropagatingEventBus.java",
+    "core-api/src/main/java/org/yanoproject/api/config/YanoPropertyKeys.java"
+  ],
   "develop/time-travel": [
     "testkit/README.md",
     "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java"

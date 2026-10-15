@@ -2,7 +2,7 @@
 title: "App ledger testkit"
 description: "Test your state machine with an embedded cluster of Yano members."
 sidebar:
-  order: 7
+  order: 8
 ---
 
 `org.yanoproject:yano-appchain-core-testkit` provides a JUnit 5 extension with generated member keys, temporary ledgers, and real socket connections between embedded nodes.

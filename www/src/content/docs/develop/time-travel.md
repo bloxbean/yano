@@ -2,7 +2,7 @@
 title: "Snapshots, rollback & time"
 description: "Make local Cardano history reproducible in development and tests."
 sidebar:
-  order: 8
+  order: 9
 ---
 
 Yano's devnet controls let tests create history, rewind it, and explore epoch boundaries. They require a devnet-capable recipe and are not general public-network administration tools.

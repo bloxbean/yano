@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: yano-spring-boot-indexer
+  datasource:
+    url: jdbc:h2:file:./data/indexer;AUTO_SERVER=TRUE
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+
+server:
+  port: 8080
+
+indexer:
+  # CIP-20 transaction messages
+  metadata-label: 674
+
+yano:
+  network: preprod
+  remote-host: preprod-node.world.dev.cardano.org
+  remote-port: 30000
+  storage-path: ./data/chainstate
+  # Set to 13337 to serve downstream Cardano nodes from this process.
+  server-port: 0
+  # Runtime feature switches. Keys are YanoPropertyKeys names; brackets keep the dots.
+  # Everything here is off for an embedded node unless enabled.
+  globals:
+    "[yano.utxo.enabled]": false
+    "[yano.account-state.enabled]": false
+
+---
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: jdbc:postgresql://localhost:5432/yano_indexer
+    username: postgres
+    password: postgres
