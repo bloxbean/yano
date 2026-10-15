@@ -2,7 +2,7 @@
 title: "Yano in use"
 description: "Use Yano as part of a complete local Cardano development environment."
 sidebar:
-  order: 6
+  order: 7
 ---
 
 Yano is used in **[Yaci DevKit](https://github.com/bloxbean/yaci-devkit)** as a local Cardano devnet node. This is a practical use of Yano's block production and node-to-node protocol support: a broader development environment can run around the chain it produces.
