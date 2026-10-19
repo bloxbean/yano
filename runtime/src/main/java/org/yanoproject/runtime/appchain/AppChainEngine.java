@@ -896,7 +896,7 @@ final class AppChainEngine implements AutoCloseable {
                     && verifyMemberSignature(m, candidateHeight)) {
                 return false;
             }
-            log.info("Message {} dropped: invalid, expired or not member-signed for height {}",
+            AppMessageLog.LOG.info("Message {} dropped: invalid, expired or not member-signed for height {}",
                     m.getMessageIdHex(), candidateHeight);
             pool.remove(List.of(m));
             return true;
@@ -920,7 +920,7 @@ final class AppChainEngine implements AutoCloseable {
             long floor = senderFloor.computeIfAbsent(senderHex,
                     h -> ledger.senderSeq(m));
             if (m.getSenderSeq() <= floor) {
-                log.info("Message {} dropped: stale sender-seq {} (floor {})",
+                AppMessageLog.LOG.info("Message {} dropped: stale sender-seq {} (floor {})",
                         m.getMessageIdHex(), m.getSenderSeq(), floor);
                 pool.remove(List.of(m));
                 return true;
@@ -937,7 +937,7 @@ final class AppChainEngine implements AutoCloseable {
             if (authorizedResultMessage(m)) {
                 return false;
             }
-            log.info("Effect result {} dropped: sender is not designated by effects.result.signers",
+            AppMessageLog.LOG.info("Effect result {} dropped: sender is not designated by effects.result.signers",
                     m.getMessageIdHex());
             pool.remove(List.of(m));
             return true;
@@ -956,7 +956,7 @@ final class AppChainEngine implements AutoCloseable {
                 // Admission reasons are plugin-controlled free text. Do not
                 // copy a possibly secret-bearing reason into the default node
                 // log; the message id is sufficient to correlate rejection.
-                log.info("Message {} rejected by state machine", m.getMessageIdHex());
+                AppMessageLog.LOG.info("Message {} rejected by state machine", m.getMessageIdHex());
                 pool.remove(List.of(m));
                 return true;
             }
