@@ -50,6 +50,10 @@ quarkus:
         # Peer dial failures are expected with public/discovered relay sets.
         # Yano logs the selected peer and root cause in one line at the sync layer.
         level: "OFF"
+      "com.bloxbean.cardano.yaci.core.protocol.appmsg":
+        # The app-message relay logs every protocol round trip at INFO, about
+        # 2 KB of log per relayed message. WARN keeps rejections and failures.
+        level: WARN
   smallrye-openapi:
     info-title: "Yano API"
     info-version: "${quarkus.application.version:0.1.0}"

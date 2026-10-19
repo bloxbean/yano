@@ -21,6 +21,11 @@ quarkus:
     port: 7070
   log:
     level: INFO
+    category:
+      "com.bloxbean.cardano.yaci.core.protocol.appmsg":
+        # App-message relay round trips log at INFO, about 2 KB per relayed
+        # message. WARN keeps rejections and failures.
+        level: WARN
     console:
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{3.}] (%t) %s%e%n"
     file:
