@@ -22,6 +22,8 @@ import java.util.List;
 public class KoiosBootstrapProvider implements BootstrapDataProvider {
     private static final Logger log = LoggerFactory.getLogger(KoiosBootstrapProvider.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Koios returns at most this many rows per response
+    private static final int MAX_ROWS = 1000;
 
     private final String baseUrl;
     private final HttpClient httpClient;
@@ -71,12 +73,14 @@ public class KoiosBootstrapProvider implements BootstrapDataProvider {
 
     @Override
     public List<BootstrapBlockInfo> getBlocks(long fromBlockNumber, long toBlockNumber) {
+        // Koios block_info accepts block hashes; use blocks endpoint with a height range filter instead.
+        // Koios caps a response at 1000 rows, so request the range in windows of at most that many heights.
         List<BootstrapBlockInfo> blocks = new ArrayList<>();
-        // Koios block_info accepts block hashes; use blocks endpoint with height filter instead
-        for (long n = fromBlockNumber; n <= toBlockNumber; n++) {
-            JsonNode arr = get("/blocks?block_height=eq." + n + "&limit=1");
-            if (arr.isArray() && !arr.isEmpty()) {
-                JsonNode b = arr.get(0);
+        for (long from = fromBlockNumber; from <= toBlockNumber; from += MAX_ROWS) {
+            long to = Math.min(from + MAX_ROWS - 1, toBlockNumber);
+            JsonNode arr = get("/blocks?block_height=gte." + from + "&block_height=lte." + to
+                    + "&order=block_height.asc");
+            for (JsonNode b : arr) {
                 blocks.add(new BootstrapBlockInfo(
                         b.get("hash").asText(),
                         b.get("block_height").asLong(),
@@ -85,6 +89,12 @@ public class KoiosBootstrapProvider implements BootstrapDataProvider {
                                 ? b.get("prev_hash").asText() : null
                 ));
             }
+        }
+        // A lagging Koios instance can omit recent heights; a gap must not pass as a complete range
+        long expected = toBlockNumber - fromBlockNumber + 1;
+        if (blocks.size() != expected) {
+            throw new RuntimeException("Koios returned " + blocks.size() + " of " + expected
+                    + " blocks for range [" + fromBlockNumber + " .. " + toBlockNumber + "]");
         }
         return blocks;
     }
@@ -125,16 +135,15 @@ public class KoiosBootstrapProvider implements BootstrapDataProvider {
     private List<BootstrapUtxo> fetchUtxosPaginatedPost(String path, String body) {
         List<BootstrapUtxo> all = new ArrayList<>();
         int offset = 0;
-        int limit = 1000;
         while (true) {
-            String url = path + "?limit=" + limit + "&offset=" + offset;
+            String url = path + "?limit=" + MAX_ROWS + "&offset=" + offset;
             JsonNode arr = post(url, body);
             if (!arr.isArray() || arr.isEmpty()) break;
             for (JsonNode item : arr) {
                 all.add(parseKoiosAddressUtxo(item));
             }
-            if (arr.size() < limit) break;
-            offset += limit;
+            if (arr.size() < MAX_ROWS) break;
+            offset += MAX_ROWS;
         }
         log.info("Koios: fetched {} UTXOs from {}", all.size(), path);
         return all;

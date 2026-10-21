@@ -4,7 +4,7 @@ This build-only bundle covers the `NodePlugin` lifecycle and all eleven typed
 app-chain plugin SPIs without peers or external work.
 
 Its schema-v1 manifest declares the host's current plugin API range
-(`PluginApiVersion`; major `3`, `minLevel` `11` at the time of writing). The JVM verifier requires the runtime catalog
+(`PluginApiVersion`; major `3`, `minLevel` `12` at the time of writing). The JVM verifier requires the runtime catalog
 to publish the current API major and level before constructing providers; the
 broader ADR-011.2 tests also prove that an out-of-range major or a host level
 below `minLevel` fails before construction and yields the same result in offline

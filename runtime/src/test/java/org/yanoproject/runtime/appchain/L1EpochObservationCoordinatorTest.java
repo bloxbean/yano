@@ -17,7 +17,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -226,7 +228,8 @@ class L1EpochObservationCoordinatorTest {
             await(() -> coordinator.status().toString().contains("finalized=1"),
                     coordinator::status);
 
-            coordinator.onRollback(4_999);
+            assertThat(coordinator.rollback(4_999)).isEqualTo(
+                    L1PhaseResult.quarantined("DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION"));
             await(() -> !coordinator.healthy(), coordinator::status);
 
             assertThat(coordinator.status().get("unhealthyReason"))
@@ -234,6 +237,60 @@ class L1EpochObservationCoordinatorTest {
             coordinator.onBlockApplied(5_200, 1_400, bytes(0x54));
             Thread.sleep(50);
             assertThat(coordinator.healthy()).isFalse();
+        }
+    }
+
+    /** ADR-038 D8b: a dead unfinalized job is removed with its records; live jobs are untouched; read-only. */
+    @Test
+    void spoolReconcileRemovesOnlyDeadUnfinalizedJobs(@TempDir Path dir) {
+        L1EpochBoundary dead = new L1EpochBoundary(70, 71, 7_000, bytes(0x71), 1_700);
+        L1EpochBoundary live = new L1EpochBoundary(71, 72, 7_200, bytes(0x72), 1_720);
+        EpochObservationManifest deadManifest = new EpochObservationManifest(
+                1, "synthetic", 70, 71, 71, 0, 1, 0, bytes(0x73));
+        EpochObservationManifest liveManifest = new EpochObservationManifest(
+                1, "synthetic", 71, 72, 72, 0, 1, 0, bytes(0x74));
+        try (AppLedgerStore ledger = ledger(dir.resolve("reconcile"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            for (var job : List.of(Map.entry(dead, deadManifest), Map.entry(live, liveManifest))) {
+                spool.begin(job.getKey(), job.getValue());
+                spool.append(job.getKey(), job.getValue(), 0, new byte[]{0});
+                spool.complete(job.getValue());
+            }
+
+            L1ObservationJournal.ReconcileDecision decision = spool.reconcile(
+                    (slot, hash) -> slot == 7_200 && Arrays.equals(hash, bytes(0x72)));
+
+            assertThat(decision.quarantine()).isNull();
+            assertThat(spool.prepared("synthetic", 71)).as("read-only").isTrue();
+            ledger.epochSpoolWrite(decision.invalidations());
+            spool.reloaded();
+            assertThat(spool.prepared("synthetic", 71)).isFalse();
+            assertThat(spool.prepared("synthetic", 72)).isTrue();
+            assertThat(spool.status().toString()).contains("ready=1");
+        }
+    }
+
+    @Test
+    void spoolReconcileQuarantinesADeadFinalizedJob(@TempDir Path dir) {
+        L1EpochBoundary boundary = new L1EpochBoundary(80, 81, 8_000, bytes(0x81), 1_800);
+        EpochObservationManifest manifest = new EpochObservationManifest(
+                1, "synthetic", 80, 81, 81, 1, 1, 1, bytes(0x82));
+        try (AppLedgerStore ledger = ledger(dir.resolve("reconcile-finalized"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            spool.begin(boundary, manifest);
+            spool.append(boundary, manifest, 0, new byte[]{0});
+            spool.append(boundary, manifest, 1, new byte[]{1});
+            spool.complete(manifest);
+            for (EpochObservationSpool.Offered offered : spool.offer(1_800, 2, 65_536)) {
+                assertThat(spool.acknowledge(offered.observation())).isTrue();
+            }
+
+            assertThat(spool.reconcile((slot, hash) -> false).quarantine())
+                    .isEqualTo("DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION");
+            assertThat(spool.reconcile((slot, hash) -> true)).satisfies(decision -> {
+                assertThat(decision.quarantine()).isNull();
+                assertThat(decision.invalidations()).isEmpty();
+            });
         }
     }
 
@@ -399,7 +456,7 @@ class L1EpochObservationCoordinatorTest {
             if (rollback) {
                 // Re-enter Shelley directly from epoch 2: without the rollback clamp
                 // the event path incorrectly enqueues the Byron 2 -> 3 boundary.
-                coordinator.onRollback(43_200);
+                assertThat(coordinator.rollback(43_200)).isEqualTo(L1PhaseResult.DURABLE);
             }
             completed.set(true);
             coordinator.onBlockApplied(86_400, 100, bytes(0x04));

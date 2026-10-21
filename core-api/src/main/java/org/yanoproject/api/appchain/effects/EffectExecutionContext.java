@@ -15,7 +15,11 @@ public interface EffectExecutionContext {
     /** Current committed tip height. */
     long tipHeight();
 
-    /** L1-confirmed anchor high-water-mark height (0 = nothing anchored). */
+    /**
+     * Highest app height covered by an L1 anchor that is at least
+     * {@code l1.stability-depth} blocks deep on this node's L1 view: the
+     * {@link FinalityGate#L1_ANCHORED} frontier (0 = none yet).
+     */
     long anchoredHeight();
 
     /** 1-based attempt number for this effect on this node. */

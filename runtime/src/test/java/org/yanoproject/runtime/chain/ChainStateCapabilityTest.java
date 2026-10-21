@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.chain;
 
+import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import org.yanoproject.api.db.RocksDbAccess;
 import org.yanoproject.api.rollback.RollbackCapableStore;
 import org.yanoproject.runtime.blockproducer.NonceStateStore;
@@ -52,5 +53,38 @@ class ChainStateCapabilityTest {
         assertThat(chainState).isNotInstanceOf(BootstrapChainStateWriter.class);
         assertThat(chainState).isNotInstanceOf(RocksDbSupplier.class);
         assertThat(chainState).isNotInstanceOf(RocksDbAccess.class);
+    }
+
+    @Test
+    void bothChainStatesIndexHeaderOnlyBlocksAheadOfTheBodyTip() {
+        try (DirectRocksDBChainState chainState =
+                     new DirectRocksDBChainState(tempDir.resolve("chainstate").toString())) {
+            assertHeaderOnlyBlockIsCanonical(chainState, chainState);
+        }
+        InMemoryChainState inMemory = new InMemoryChainState();
+        assertHeaderOnlyBlockIsCanonical(inMemory, inMemory);
+    }
+
+    private static void assertHeaderOnlyBlockIsCanonical(ChainState chainState, ArchiveChainStateCapabilities index) {
+        for (long number = 1; number <= 3; number++) {
+            chainState.storeBlockHeader(hash(number), number, number * 10, ("header-" + number).getBytes());
+            if (number <= 2) {
+                chainState.storeBlock(hash(number), number, number * 10, ("body-" + number).getBytes());
+            }
+        }
+
+        assertThat(chainState.getTip().getBlockNumber()).isEqualTo(2L);
+        assertThat(index.getCanonicalBlockReference(3)).hasValueSatisfying(reference -> {
+            assertThat(reference.slot()).isEqualTo(30L);
+            assertThat(reference.blockHash()).isEqualTo(hash(3));
+        });
+        assertThat(index.getCanonicalBlockReference(2)).hasValueSatisfying(
+                reference -> assertThat(reference.slot()).isEqualTo(20L));
+    }
+
+    private static byte[] hash(long number) {
+        byte[] hash = new byte[32];
+        hash[31] = (byte) number;
+        return hash;
     }
 }

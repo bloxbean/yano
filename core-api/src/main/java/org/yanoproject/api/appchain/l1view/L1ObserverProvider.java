@@ -19,6 +19,9 @@ public interface L1ObserverProvider {
      * Returns the complete deterministic identity for this configured observer.
      * Operational endpoints, credentials, paths, retry, and timeout settings
      * must not affect observation output and therefore must not be included.
+     * Declare a new identity (for example a new claim schema) whenever the same
+     * settings would produce different observations, so a journal written by
+     * the old implementation fails startup instead of re-emitting its claims.
      */
     default L1ObserverConsensusIdentity consensusIdentity(
             String observerId, Map<String, String> settings) {

@@ -43,8 +43,12 @@ import java.util.function.Predicate;
  *
  * Guard rails (evaluated at activation, deterministic): a change never drops
  * the member count below the active threshold; thresholds stay in [1, n];
- * removing the configured FIXED proposer is void. A violating activation is a
- * deterministic no-op, never a stall.
+ * removing the configured FIXED proposer is void; and the resulting
+ * threshold-of-members pair must satisfy {@code ConsensusQuorum} under the
+ * chain's {@code consensus.max-byzantine-members} bound f
+ * ({@code 2·threshold − n > f} and {@code threshold ≤ n − f}), because every
+ * block's consensus context is built from it (bloxbean/yano#163). A violating
+ * activation is a deterministic no-op, never a stall.
  */
 final class GovernedMembership {
 
@@ -62,6 +66,7 @@ final class GovernedMembership {
     private final MemberGroup group;
     private final String fixedProposerHex;
     private final long approvalWindowBlocks;
+    private final int maxByzantineMembers;
     private final Logger log;
     private Predicate<EpochEffect> epochGuard = ignored -> true;
 
@@ -97,12 +102,13 @@ final class GovernedMembership {
     }
 
     GovernedMembership(MemberGroup group, String fixedProposerHex,
-                       long approvalWindowBlocks, Logger log) {
+                       long approvalWindowBlocks, int maxByzantineMembers, Logger log) {
         this.group = Objects.requireNonNull(group, "group");
         this.fixedProposerHex = fixedProposerHex != null
                 ? fixedProposerHex.toLowerCase(Locale.ROOT) : "";
         this.approvalWindowBlocks = approvalWindowBlocks > 0
                 ? approvalWindowBlocks : DEFAULT_APPROVAL_WINDOW_BLOCKS;
+        this.maxByzantineMembers = maxByzantineMembers;
         this.log = Objects.requireNonNull(log, "log");
     }
 
@@ -195,6 +201,7 @@ final class GovernedMembership {
         Set<String> members = new LinkedHashSet<>(group.membersAt(height));
         int threshold = group.thresholdAt(height);
         long fromHeight = height + Math.max(1, command.activationLag());
+        String change;
 
         switch (command.op()) {
             case OP_ADD -> {
@@ -210,7 +217,7 @@ final class GovernedMembership {
                     return null;
                 }
                 members.add(key);
-                log.info("Governance ACTIVATED: add member {} from height {}", key, fromHeight);
+                change = "add member " + key;
             }
             case OP_REMOVE -> {
                 String key = HexUtil.encodeHexString(command.memberKey()).toLowerCase(Locale.ROOT);
@@ -227,7 +234,7 @@ final class GovernedMembership {
                             + "at height {} — void", key, members.size(), threshold, height);
                     return null;
                 }
-                log.info("Governance ACTIVATED: remove member {} from height {}", key, fromHeight);
+                change = "remove member " + key;
             }
             case OP_SET_THRESHOLD -> {
                 if (command.threshold() < 1 || command.threshold() > members.size()) {
@@ -236,17 +243,26 @@ final class GovernedMembership {
                     return null;
                 }
                 threshold = command.threshold();
-                log.info("Governance ACTIVATED: threshold {} from height {}", threshold, fromHeight);
+                change = "threshold " + threshold;
             }
             default -> {
                 return null;
             }
+        }
+        String violation = MemberGroup.quorumViolation(members.size(), threshold, maxByzantineMembers);
+        if (violation != null) {
+            log.warn("Governance: {} at height {} would leave a {}-of-{} membership that breaks the "
+                            + "consensus quorum rules for consensus.max-byzantine-members={} ({}) — void",
+                    change, height, threshold, members.size(), maxByzantineMembers, violation);
+            return null;
         }
         EpochEffect effect = new EpochEffect(fromHeight, members, threshold);
         if (!epochGuard.test(effect)) {
             log.warn("Governance: membership at height {} violates the observation profile — void", height);
             return null;
         }
+        log.info("Governance ACTIVATED: {} from height {} ({}-of-{})",
+                change, fromHeight, threshold, members.size());
         return effect;
     }
 
