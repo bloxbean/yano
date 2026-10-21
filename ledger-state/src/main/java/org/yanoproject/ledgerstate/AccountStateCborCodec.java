@@ -3,9 +3,11 @@ package org.yanoproject.ledgerstate;
 import co.nstant.in.cbor.model.*;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import org.yanoproject.api.account.LedgerStateProvider.DepositObligations;
 
 import java.math.BigInteger;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -288,10 +290,31 @@ public final class AccountStateCborCodec {
         return CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(0)));
     }
 
-    // --- AdaPot (prefix 0x52): {0: treasury, 1: reserves, 2: deposits, 3: fees, 4: distributed, 5: undistributed, 6: rewardsPot, 7: poolRewardsPot} ---
+    // --- AdaPot (prefix 0x52): {0: treasury, 1: reserves, 2: deposits, 3: fees, 4: distributed, 5: undistributed,
+    //     6: rewardsPot, 7: poolRewardsPot, 8: [stakeKeys, pools, dreps, proposals] (ADR-058; absent before)} ---
 
+    /**
+     * @param deposits           the deposit pot; {@code depositObligations.total()} once the boundary has finalised it
+     * @param depositObligations the deposit pot by category (ADR-058), or {@code null} while the boundary has not
+     *                           finalised it yet and for a pot written before ADR-058
+     */
     public record AdaPot(BigInteger treasury, BigInteger reserves, BigInteger deposits, BigInteger fees,
-                  BigInteger distributed, BigInteger undistributed, BigInteger rewardsPot, BigInteger poolRewardsPot) {}
+                         BigInteger distributed, BigInteger undistributed, BigInteger rewardsPot,
+                         BigInteger poolRewardsPot, DepositObligations depositObligations) {
+
+        /** A pot whose deposit categories are not computed yet. */
+        public AdaPot(BigInteger treasury, BigInteger reserves, BigInteger deposits, BigInteger fees,
+                      BigInteger distributed, BigInteger undistributed, BigInteger rewardsPot,
+                      BigInteger poolRewardsPot) {
+            this(treasury, reserves, deposits, fees, distributed, undistributed, rewardsPot, poolRewardsPot, null);
+        }
+
+        /** This pot with its deposit pot set to the given obligations and their total. */
+        public AdaPot withDepositObligations(DepositObligations obligations) {
+            return new AdaPot(treasury, reserves, obligations.total(), fees, distributed, undistributed,
+                    rewardsPot, poolRewardsPot, obligations);
+        }
+    }
 
     static byte[] encodeAdaPot(AdaPot pot) {
         Map map = new Map();
@@ -303,11 +326,29 @@ public final class AccountStateCborCodec {
         map.put(new UnsignedInteger(5), new UnsignedInteger(pot.undistributed()));
         map.put(new UnsignedInteger(6), new UnsignedInteger(pot.rewardsPot()));
         map.put(new UnsignedInteger(7), new UnsignedInteger(pot.poolRewardsPot()));
+        DepositObligations obligations = pot.depositObligations();
+        if (obligations != null) {
+            Array categories = new Array();
+            categories.add(new UnsignedInteger(obligations.stakeKeys()));
+            categories.add(new UnsignedInteger(obligations.pools()));
+            categories.add(new UnsignedInteger(obligations.dreps()));
+            categories.add(new UnsignedInteger(obligations.proposals()));
+            map.put(new UnsignedInteger(8), categories);
+        }
         return CborSerializationUtil.serialize(map, true);
     }
 
     static AdaPot decodeAdaPot(byte[] bytes) {
         Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
+        DepositObligations obligations = null;
+        if (map.get(new UnsignedInteger(8)) instanceof Array categories) {
+            List<DataItem> items = categories.getDataItems();
+            obligations = new DepositObligations(
+                    CborSerializationUtil.toBigInteger(items.get(0)),
+                    CborSerializationUtil.toBigInteger(items.get(1)),
+                    CborSerializationUtil.toBigInteger(items.get(2)),
+                    CborSerializationUtil.toBigInteger(items.get(3)));
+        }
         return new AdaPot(
                 CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(0))),
                 CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(1))),
@@ -316,7 +357,8 @@ public final class AccountStateCborCodec {
                 CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(4))),
                 CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(5))),
                 CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(6))),
-                CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(7)))
+                CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(7))),
+                obligations
         );
     }
 

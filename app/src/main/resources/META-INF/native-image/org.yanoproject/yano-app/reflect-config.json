@@ -439,6 +439,12 @@
     "allDeclaredConstructors": true
   },
   {
+    "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$DepositAuditDto",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "org.yanoproject.app.api.accounts.DebugSnapshotResource$PoolParamsDto",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,

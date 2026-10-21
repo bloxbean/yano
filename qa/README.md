@@ -132,11 +132,12 @@ to the ledger rules or the ledger state.
    ```bash
    qa/tools/koios_compare.py --network preprod --yano http://localhost:7171 --out koios-preprod.md
    ```
-   It checks treasury, reserves and fees for every epoch, the deposits, the registered
+   It checks treasury, reserves and fees for every epoch, each deposit category for every
+   epoch (ADR-058), a deposit audit at the tip (`/api/v1/api/debug/deposits`), the registered
    DReps, the DRep distribution of the last epochs (`--drep-epochs`) and every governance
    proposal's state. Add `--cafile /etc/ssl/cert.pem` when Python has no trust store
    (python.org builds on macOS).
-5. Expected difference: the deposits at the tip (informational, not counted) can be
-   whole pool deposits above Koios. Koios `pool_list` still reports pools registered and
-   retired in the same transaction as registered, although POOLREAP retired them and
-   refunded their deposits.
+5. Expected difference: the pool count at the tip (informational, not counted) can be
+   above Yano's. Koios `pool_list` still reports pools registered and retired in the same
+   transaction as registered, although POOLREAP retired them and refunded their deposits.
+   AdaPots written before ADR-058 have no deposit categories and are listed, not compared.

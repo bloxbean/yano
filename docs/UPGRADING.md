@@ -1,5 +1,25 @@
 # Upgrading preview releases
 
+## ADR-058 AdaPot deposits
+
+The AdaPot `deposits` field (`/api/v1/epochs/{n}/adapot`, `/latest/adapot`, `/adapots`)
+now holds the ledger's deposit pot (Haskell `utxosDeposited`): stake-key, pool, DRep and
+governance-proposal deposits. Before, it counted only stake-key and DRep deposits. Four
+new fields split it by category: `deposits_key`, `deposits_pool`, `deposits_drep` and
+`deposits_proposal`. `deposits_key + deposits_pool` equals db-sync's and Koios's
+`deposits_stake`. Treasury, reserves, fees and rewards do not change.
+
+No migration runs. On an existing chainstate, AdaPots written before the upgrade keep the
+old value and have `null` categories; every epoch boundary after the upgrade writes the new
+value. For a consistent history, sync from genesis. The archive's `ada_pots.deposits` column
+follows the same rule. `GET /api/v1/api/debug/deposits` audits the deposit state at the tip.
+While an epoch boundary is being processed, `/epochs/{n}/adapot` for the new epoch briefly
+shows the previous epoch's `deposits` with `null` categories; the categories appear when the
+boundary completes.
+
+On a devnet with Shelley-genesis pools, the genesis pool deposits are no longer counted in
+the internal stake-key and DRep deposit total. Recreate such devnets.
+
 ## ADR-056 default validation engine
 
 - The default transaction validation engine is now `java-julc`. To roll back, set

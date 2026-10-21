@@ -153,6 +153,8 @@ class DefaultAccountStateStorePoolLifecycleTest {
         applyBlockWithCerts(2, epochStartSlot(11), poolRegistration());
 
         assertThat(store.getPoolDeposit(POOL_HASH)).contains(registrationDeposit);
+        // ADR-058: an update keeps the one lifecycle deposit obligation
+        assertThat(store.depositObligations().pools()).isEqualTo(registrationDeposit);
     }
 
     @Test
@@ -195,11 +197,17 @@ class DefaultAccountStateStorePoolLifecycleTest {
                 setupCertificates.toArray(Certificate[]::new));
         applyBlockWithCerts(2, epochStartSlot(11),
                 PoolRetirement.builder().poolKeyHash(POOL_HASH).epoch(12).build());
+        // ADR-058: a retiring pool keeps its deposit obligation until POOLREAP
+        BigInteger keyDeposits = BigInteger.valueOf(2_000_000L * CREDENTIAL_HASHES.size());
+        assertThat(store.depositObligations().pools()).isEqualTo(epochParams().getPoolDeposit(10));
+        assertThat(store.depositObligations().stakeKeys()).isEqualTo(keyDeposits);
 
         EpochRewardCalculator calculator = rewardCalculator();
         PoolReapProcessor.Result result = store.processPoolReap(
                 12, epochStartSlot(12), calculator);
 
+        assertThat(store.depositObligations().pools()).isZero();
+        assertThat(store.depositObligations().stakeKeys()).isEqualTo(keyDeposits);
         assertThat(store.isPoolRegistered(POOL_HASH)).isFalse();
         assertThat(store.getPoolRetirementEpoch(POOL_HASH)).isEmpty();
         assertThat(store.getPoolParams(POOL_HASH, 12)).isPresent();

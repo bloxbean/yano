@@ -271,10 +271,26 @@ public interface LedgerStateProvider extends OpCertCounterProvider {
 
     // --- AdaPot Queries ---
 
+    /**
+     * The ledger's deposit obligations by category (Haskell {@code Obligations}: {@code oblStake}, {@code oblPool},
+     * {@code oblDRep}, {@code oblProposal}). Their sum is the deposit pot ({@code utxosDeposited}).
+     */
+    record DepositObligations(BigInteger stakeKeys, BigInteger pools, BigInteger dreps, BigInteger proposals) {
+        public BigInteger total() {
+            return stakeKeys.add(pools).add(dreps).add(proposals);
+        }
+    }
+
+    /**
+     * @param deposits           the deposit pot: the sum of {@code depositObligations} when those are present
+     * @param depositObligations the deposit pot by category, or {@code null} for a pot written before ADR-058,
+     *                           whose {@code deposits} counts only stake-key and DRep deposits
+     */
     record AdaPotSnapshot(int epoch, BigInteger treasury, BigInteger reserves,
                           BigInteger deposits, BigInteger fees,
                           BigInteger distributedRewards, BigInteger undistributedRewards,
-                          BigInteger rewardsPot, BigInteger poolRewardsPot) {}
+                          BigInteger rewardsPot, BigInteger poolRewardsPot,
+                          DepositObligations depositObligations) {}
 
     /**
      * Whether AdaPot tracking is enabled for this provider.

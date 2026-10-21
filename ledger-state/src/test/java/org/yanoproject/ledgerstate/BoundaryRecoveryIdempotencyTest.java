@@ -1,5 +1,6 @@
 package org.yanoproject.ledgerstate;
 
+import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.ledgerstate.test.TestRocksDBHelper;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
@@ -395,9 +396,54 @@ class BoundaryRecoveryIdempotencyTest {
         }
         assertThat(readAdaPot(epoch).treasury()).isEqualTo(BigInteger.valueOf(95_000));
 
-        // Rollback — must restore to null (pre-reward), not 100000 (intermediate)
+        // Step 7 (ADR-058): the finalised deposit pot is a plain, unjournaled write of the same key
+        adaPotTracker().storeAdaPot(epoch, govPot.withDepositObligations(OBLIGATIONS));
+        assertThat(readAdaPot(epoch).depositObligations()).isEqualTo(OBLIGATIONS);
+
+        // Rollback — must restore to null (pre-reward), not 100000 (intermediate) or the finalised pot
         store.rollbackToSlot(BOUNDARY_SLOT - 1);
         assertAdaPotAbsent(epoch);
+    }
+
+    @Test
+    void adaPot_finalisedDeposits_keptByRollbackInsideItsEpoch_laterPotDeleted() throws Exception {
+        long epochLength = 432_000; // the store's default epoch length
+        int epoch = 1;
+        long boundarySlot = epoch * epochLength;
+        registerCredential(0, CRED_HASH, BigInteger.ZERO);
+
+        // Rewards phase journals the pot, then step 7 rewrites it with the deposit categories
+        var rewardPot = new AccountStateCborCodec.AdaPot(
+                BigInteger.valueOf(100_000), BigInteger.valueOf(900_000),
+                BigInteger.ZERO, BigInteger.valueOf(2000),
+                BigInteger.valueOf(5000), BigInteger.ZERO,
+                BigInteger.valueOf(7000), BigInteger.valueOf(7000));
+        List<DefaultAccountStateStore.DeltaOp> rewardOps = new ArrayList<>();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            store.putStateWithDelta(DefaultAccountStateStore.adaPotKey(epoch),
+                    AccountStateCborCodec.encodeAdaPot(rewardPot), batch, rewardOps);
+            store.commitBoundaryDelta(boundarySlot, DefaultAccountStateStore.PHASE_REWARDS, batch, rewardOps);
+            batch.put(rocks.cfState(), "meta.last_snapshot_epoch".getBytes(),
+                    ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array());
+            rocks.db().write(wo, batch);
+        }
+        var finalPot = rewardPot.withDepositObligations(OBLIGATIONS);
+        adaPotTracker().storeAdaPot(epoch, finalPot);
+        // A pot beyond the rollback target's epoch (left by a later boundary) must go
+        adaPotTracker().storeAdaPot(epoch + 1, finalPot);
+
+        // A block of the epoch after its boundary: withdraw 1000 -> 0
+        byte[] acctKey = DefaultAccountStateStore.accountKey(0, CRED_HASH);
+        writeBlockDelta(21L, boundarySlot + 100, List.of(
+                new DefaultAccountStateStore.DeltaOp(DefaultAccountStateStore.OP_PUT, acctKey,
+                        TestCborHelper.encodeStakeAccount(BigInteger.valueOf(1000), BigInteger.ZERO))
+        ), TestCborHelper.encodeStakeAccount(BigInteger.ZERO, BigInteger.ZERO));
+
+        store.rollbackToSlot(boundarySlot + 50);
+
+        assertRewardBalance(0, CRED_HASH, BigInteger.valueOf(1000));
+        assertThat(readAdaPot(epoch)).isEqualTo(finalPot);
+        assertAdaPotAbsent(epoch + 1);
     }
 
     // --- AdaPot atomicity with phase commit ---
@@ -643,6 +689,14 @@ class BoundaryRecoveryIdempotencyTest {
     }
 
     // --- Helpers ---
+
+    private static final LedgerStateProvider.DepositObligations OBLIGATIONS =
+            new LedgerStateProvider.DepositObligations(BigInteger.valueOf(4_000_000), BigInteger.valueOf(500_000_000),
+                    BigInteger.valueOf(500_000_000), BigInteger.valueOf(100_000_000_000L));
+
+    private AdaPotTracker adaPotTracker() {
+        return new AdaPotTracker(rocks.db(), rocks.cfState(), true, BigInteger.valueOf(45_000_000_000_000_000L));
+    }
 
     private void registerCredential(int credType, String credHash, BigInteger initialReward) throws Exception {
         byte[] key = DefaultAccountStateStore.accountKey(credType, credHash);

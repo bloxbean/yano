@@ -101,6 +101,17 @@ public class DebugSnapshotResource {
             @JsonProperty("pool_rewards_pot") BigInteger poolRewardsPot
     ) {}
 
+    record DepositAuditDto(
+            @JsonProperty("total_deposited") BigInteger totalDeposited,
+            @JsonProperty("account_count") long accountCount,
+            @JsonProperty("account_deposits") BigInteger accountDeposits,
+            @JsonProperty("drep_count") long drepCount,
+            @JsonProperty("drep_deposits") BigInteger drepDeposits,
+            @JsonProperty("pool_count") long poolCount,
+            @JsonProperty("pool_deposits") BigInteger poolDeposits,
+            @JsonProperty("stake_keys_consistent") boolean stakeKeysConsistent
+    ) {}
+
     record PoolParamsDto(
             @JsonProperty("pool_hash") String poolHash,
             @JsonProperty("deposit") BigInteger deposit,
@@ -374,6 +385,25 @@ public class DebugSnapshotResource {
                 pot.fees(), pot.distributed(), pot.undistributed(),
                 pot.rewardsPot(), pot.poolRewardsPot()
         )).build();
+    }
+
+    /**
+     * Deposit audit at the tip (ADR-058): the stake accounts' deposits, which must add up to {@code total_dep} minus
+     * the DRep deposits, and the pool count and deposits. Scans every stake account, under one RocksDB snapshot.
+     */
+    @GET
+    @Path("/deposits")
+    public Response getDepositAudit() {
+        DefaultAccountStateStore store = defaultStore();
+        if (store == null) {
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity("{\"error\":\"Account state store not available\"}")
+                    .build();
+        }
+        var audit = store.auditDeposits();
+        return Response.ok(new DepositAuditDto(audit.totalDeposited(), audit.accountCount(),
+                audit.accountDeposits(), audit.drepCount(), audit.drepDeposits(), audit.poolCount(),
+                audit.poolDeposits(), audit.stakeKeysConsistent())).build();
     }
 
     @GET

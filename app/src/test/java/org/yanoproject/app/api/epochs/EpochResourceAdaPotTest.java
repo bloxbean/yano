@@ -118,6 +118,34 @@ class EpochResourceAdaPotTest {
         assertTrue(json.contains("\"deposits\":\"300\""));
     }
 
+    @Test
+    void adaPotDtoShouldSerializeDepositCategories() throws Exception {
+        var legacy = snapshot(10);
+        var pot = new LedgerStateProvider.AdaPotSnapshot(11, legacy.treasury(), legacy.reserves(),
+                BigInteger.valueOf(1_010), legacy.fees(), legacy.distributedRewards(),
+                legacy.undistributedRewards(), legacy.rewardsPot(), legacy.poolRewardsPot(),
+                new LedgerStateProvider.DepositObligations(BigInteger.valueOf(4), BigInteger.valueOf(500),
+                        BigInteger.valueOf(6), BigInteger.valueOf(500)));
+
+        String json = MAPPER.writeValueAsString(AdaPotDto.from(pot));
+
+        assertTrue(json.contains("\"deposits\":\"1010\""));
+        assertTrue(json.contains("\"deposits_key\":\"4\""));
+        assertTrue(json.contains("\"deposits_pool\":\"500\""));
+        assertTrue(json.contains("\"deposits_drep\":\"6\""));
+        assertTrue(json.contains("\"deposits_proposal\":\"500\""));
+    }
+
+    @Test
+    void adaPotDtoShouldReturnNullCategoriesForPreAdr058Pot() throws Exception {
+        String json = MAPPER.writeValueAsString(AdaPotDto.from(snapshot(10)));
+
+        assertTrue(json.contains("\"deposits_key\":null"));
+        assertTrue(json.contains("\"deposits_pool\":null"));
+        assertTrue(json.contains("\"deposits_drep\":null"));
+        assertTrue(json.contains("\"deposits_proposal\":null"));
+    }
+
     private static EpochResource resourceWith(LedgerStateProvider ledgerStateProvider) {
         EpochResource resource = new EpochResource();
         TestNodeRoles nodeRoles = nodeRolesWith(ledgerStateProvider);
@@ -183,7 +211,8 @@ class EpochResourceAdaPotTest {
                 BigInteger.valueOf(500),
                 BigInteger.valueOf(600),
                 BigInteger.valueOf(700),
-                BigInteger.valueOf(800)
+                BigInteger.valueOf(800),
+                null
         );
     }
 

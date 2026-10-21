@@ -296,7 +296,7 @@ public class InMemoryAccountStateStore implements AccountStateStore {
         switch (cert) {
             case StakeRegistration sr ->
                     registerStake(sr.getStakeCredential(),
-                            epochParamProvider.getKeyDeposit(0), slot, delta);
+                            epochParamProvider.getKeyDeposit(currentEpoch), slot, delta);
             case RegCert rc ->
                     registerStake(rc.getStakeCredential(),
                             rc.getCoin() != null ? rc.getCoin() : BigInteger.ZERO, slot, delta);
