@@ -432,10 +432,7 @@ class SyncSubsystemTest {
         try {
             SyncSubsystem sync = runtime.sync(config.getRemoteHost());
             storeChain(runtime, 1, 10);
-            for (long number = 11; number <= 12; number++) { // headers only: bodies not fetched yet
-                runtime.owned.chainStorage().chainState().storeBlockHeader(blockHash(number), number, number * 10,
-                        new byte[]{1});
-            }
+            storeHeaders(runtime, 11, 12);
 
             sync.startClientSync();
             rejectIntersection(clients, 1);
@@ -468,8 +465,8 @@ class SyncSubsystemTest {
             }
 
             waitForClients(clients, 5);
-            // Doubling would step from block 11 to block 9; the body tip, block 10, comes first
-            assertThat(startSlots(clients)).containsExactly(130L, 120L, 110L, 100L, 70L);
+            // Doubling would step from block 11 to block 9; the body tip, block 10, comes first, then block 9
+            assertThat(startSlots(clients)).containsExactly(130L, 120L, 110L, 100L, 90L);
         } finally {
             runtime.close();
             scheduler.shutdownNow();
@@ -490,13 +487,14 @@ class SyncSubsystemTest {
             storeHeaders(runtime, 11, 15); // more header-only blocks than k = 3
 
             sync.startClientSync();
-            for (int attempt = 1; attempt <= 6; attempt++) {
+            for (int attempt = 1; attempt <= 8; attempt++) {
                 rejectIntersection(clients, attempt);
             }
 
             waitForTerminal(sync);
-            // Header-only blocks are not applied: the search reaches the body tip, then k = 3 blocks below it
-            assertThat(startSlots(clients)).containsExactly(150L, 140L, 130L, 110L, 100L, 70L);
+            // Header-only blocks are not applied: the search reaches the body tip, then doubles the applied
+            // distance below it up to k = 3
+            assertThat(startSlots(clients)).containsExactly(150L, 140L, 130L, 110L, 100L, 90L, 80L, 70L);
         } finally {
             runtime.close();
             scheduler.shutdownNow();
@@ -504,24 +502,26 @@ class SyncSubsystemTest {
     }
 
     @Test
-    void anUpstreamBehindTheLocalTipIsNotSteppedBackFromAndCountsAsNoRejection() {
-        YanoConfig config = clientConfig().toBuilder().enablePipelinedSync(false).build();
+    void anUpstreamBehindTheLocalTipIsRetriedAfterTheFailoverCooldownWithoutAStepBack() {
+        YanoConfig config = clientConfig().toBuilder()
+                .enablePipelinedSync(false)
+                .remoteHost(null)
+                .remotePort(0)
+                .upstream(UpstreamConfig.builder()
+                        .mode(UpstreamPreset.TRUSTED_FAILOVER)
+                        .peers(List.of(upstreamPeer("a", "relay-a", 3001, 0)))
+                        .failover(UpstreamFailoverConfig.builder().cooldownMs(300).build())
+                        .build())
+                .build();
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
         AtomicInteger submissions = new AtomicInteger();
         TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
         runtime.peerRecoveryExecutor.shutdownNow();
-        runtime.peerRecoveryExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>()) {
-            @Override
-            public void execute(Runnable command) {
-                submissions.incrementAndGet();
-                super.execute(command);
-            }
-        };
+        runtime.peerRecoveryExecutor = countingExecutor(submissions);
 
         try {
-            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            SyncSubsystem sync = runtime.sync(null);
             storeChain(runtime, 1, 20);
 
             sync.startClientSync();
@@ -535,11 +535,37 @@ class SyncSubsystemTest {
             assertThat(sync.peerRecoverySnapshot().terminal()).isFalse();
             assertThat(runtime.owned.chainStorage().chainState().getTip().getBlockNumber()).isEqualTo(20L);
 
-            // A later recovery offers the tip again; an upstream that is ahead by then is stepped back from
-            sync.requestPeerRecovery(PeerRecoveryReason.NO_PROGRESS);
+            // After the cooldown, not the no-progress timeout, the tip is offered again; an upstream that is ahead
+            // by then is stepped back from
+            waitForClients(clients, 2);
             rejectIntersection(clients, 2);
             waitForClients(clients, 3);
             assertThat(startSlots(clients)).containsExactly(200L, 200L, 190L);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void anUpstreamThatOvertakesTheLocalTipWithinTheSessionIsSteppedBackFrom() {
+        YanoConfig config = clientConfig().toBuilder().enablePipelinedSync(false).build();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        List<RecordingPeerClient> clients = Collections.synchronizedList(new ArrayList<>());
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, recordingClients(clients));
+
+        try {
+            SyncSubsystem sync = runtime.sync(config.getRemoteHost());
+            storeChain(runtime, 1, 20);
+
+            sync.startClientSync();
+            waitForClients(clients, 1);
+            // Behind at first, ahead when the handshake resumes in the same session
+            clients.get(0).listener().intersactNotFound(new Tip(new Point(150, "ee"), 15));
+            clients.get(0).listener().intersactNotFound(new Tip(new Point(500, "ff"), 50));
+
+            waitForClients(clients, 2);
+            assertThat(startSlots(clients)).containsExactly(200L, 190L);
         } finally {
             runtime.close();
             scheduler.shutdownNow();
@@ -632,14 +658,7 @@ class SyncSubsystemTest {
         AtomicInteger submissions = new AtomicInteger();
         TestRuntime runtime = new TestRuntime(config, scheduler, () -> true, null);
         runtime.peerRecoveryExecutor.shutdownNow();
-        runtime.peerRecoveryExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>()) {
-            @Override
-            public void execute(Runnable command) {
-                submissions.incrementAndGet();
-                super.execute(command);
-            }
-        };
+        runtime.peerRecoveryExecutor = countingExecutor(submissions);
 
         try {
             SyncSubsystem sync = runtime.sync(config.getRemoteHost());
@@ -1328,6 +1347,17 @@ class SyncSubsystemTest {
                     Collections.synchronizedList(new ArrayList<>()));
             clients.add(client);
             return client;
+        };
+    }
+
+    /** A single-thread executor that counts the tasks submitted to it. */
+    private static ExecutorService countingExecutor(AtomicInteger submissions) {
+        return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>()) {
+            @Override
+            public void execute(Runnable command) {
+                submissions.incrementAndGet();
+                super.execute(command);
+            }
         };
     }
 

@@ -181,6 +181,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private final Set<String> upstreamsWithoutIntersection = ConcurrentHashMap.newKeySet();
     private final AtomicLong rejectedSyncGeneration = new AtomicLong(-1);
     private volatile boolean steppedBackIntersection;
+    private volatile ScheduledFuture<?> behindUpstreamRetryFuture;
     private PipelineConfig pipelineConfig;
     private long blocksProcessed;
     private long lastProcessedSlot;
@@ -997,6 +998,9 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             return; // the session repeated its FindIntersect
         }
         if (isBehindLocalChain(upstreamTip)) {
+            // Not a rejection: a later IntersectNotFound in this session (a resumed handshake) is handled again
+            rejectedSyncGeneration.compareAndSet(generation, -1);
+            scheduleBehindUpstreamRetry(generation);
             return;
         }
         try {
@@ -1016,7 +1020,10 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
      * Whether the upstream's tip is below the height of the local chain. Such an upstream is behind (resyncing, or
      * without this node's latest forged block), not on a longer fork, and Praos chain selection never switches to
      * a shorter chain: no older point is offered, nothing is rolled back, and the upstream does not count as one
-     * without an intersection. The session idles until no-progress recovery offers its start point again.
+     * without an intersection. The session offers its start point again after the failover cooldown
+     * ({@link #scheduleBehindUpstreamRetry}). An upstream at the local height is followed, unlike Praos, which keeps
+     * the current chain on equal length: the node follows a single trusted upstream, as when an upstream header
+     * replaces a forged block.
      */
     private boolean isBehindLocalChain(Tip upstreamTip) {
         ChainTip bodyTip = chainState.getTip();
@@ -1027,6 +1034,37 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         log.warn("Upstream tip #{} is below the local tip #{}: keeping the local chain until the upstream catches up",
                 upstreamTip.getBlock(), localTip.getBlockNumber());
         return true;
+    }
+
+    /**
+     * Restarts the session after the failover cooldown, the wait before an upstream that could not serve this node
+     * is tried again, so that the start point is offered again once the upstream may have caught up. Yaci only logs
+     * IntersectNotFound, so the session would otherwise idle until the no-progress timeout, with forging paused. A
+     * later schedule replaces a pending one, and a retry for a replaced session does nothing.
+     */
+    private void scheduleBehindUpstreamRetry(long generation) {
+        ScheduledFuture<?> pending = behindUpstreamRetryFuture;
+        if (pending != null) {
+            pending.cancel(false);
+        }
+        try {
+            behindUpstreamRetryFuture = scheduler.schedule(() -> {
+                if (generation != syncGeneration.get() || !runtimeRunning.getAsBoolean()) {
+                    return;
+                }
+                try {
+                    peerRecoveryExecutor.execute(() -> {
+                        if (generation == syncGeneration.get()) {
+                            recoverPeerSession(PeerRecoveryReason.NO_PROGRESS);
+                        }
+                    });
+                } catch (RejectedExecutionException e) {
+                    log.warn("Retry of an upstream behind the local chain rejected", e);
+                }
+            }, activeUpstreamFailoverCooldownMillis(), TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            log.warn("Retry of an upstream behind the local chain could not be scheduled", e);
+        }
     }
 
     /** Supplies the oldest slot the rollback-capable stores can restore, which bounds the intersection search. */
@@ -2378,19 +2416,22 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
      * The next distance behind the local tip to offer: twice {@code offered} capped at k, or else the largest
      * distance beyond it whose ancestor is still recoverable. Returns {@code offered} when there is none.
      *
-     * <p>Header-only blocks above the body tip (the pipelined start tip is the header tip) are not applied: k counts
-     * from the body tip, and no step passes the body tip without offering it, so an upstream that has the body tip
-     * rolls back no applied block.</p>
+     * <p>Header-only blocks above the body tip (the pipelined start tip is the header tip) are not applied: no step
+     * passes the body tip without offering it, so an upstream that has the body tip rolls back no applied block.
+     * Below the body tip, the distance of applied blocks doubles up to k, as without header-only blocks.</p>
      */
     private long recoverableBacktrack(ChainTip localTip, long offered, long floorSlot) {
         ChainTip bodyTip = chainState.getTip();
         long headerOnly = bodyTip != null ? Math.max(0L, localTip.getBlockNumber() - bodyTip.getBlockNumber()) : 0L;
         long low = offered;
-        long high = Math.min(Math.min(offered == 0 ? 1 : offered * 2, headerOnly + securityParam()),
-                localTip.getBlockNumber());
+        long high;
         if (offered < headerOnly) {
-            high = Math.min(high, headerOnly);
+            high = Math.min(offered == 0 ? 1 : offered * 2, headerOnly);
+        } else {
+            long applied = offered - headerOnly;
+            high = headerOnly + Math.min(applied == 0 ? 1 : applied * 2, securityParam());
         }
+        high = Math.min(high, localTip.getBlockNumber());
         if (recoverableAncestor(localTip, high, floorSlot).isPresent()) {
             return high;
         }
