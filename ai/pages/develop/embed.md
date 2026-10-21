@@ -6,6 +6,8 @@ Canonical URL: https://getyano.dev/develop/embed/
 
 Yano is also a library. `YanoAssembly` composes the runtime and returns a `Yano` handle. The public role interfaces live under `org.yanoproject.api`; callers do not need raw runtime nodes or RocksDB handles.
 
+To run a node inside a Spring Boot application, listen to chain events and keep your own index, follow [Yano as a library](/develop/library/).
+
 For devnet mutation controls, add `yano-devnet-toolkit` and use `YanoDevnetAssembly`:
 
 ```java

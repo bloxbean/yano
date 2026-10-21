@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "https://getyano.dev",
   "version": "0.1.0-pre19-SNAPSHOT",
-  "sourceRevision": "01a09b001f5e22a50c5ec37cada4af997823c060",
+  "sourceRevision": "f5e1260749c02af3ba39d1299dd5c5c2c8e93e20",
   "sourceRepository": "https://github.com/bloxbean/yano",
   "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
   "pages": [
@@ -116,7 +116,7 @@
       "description": "Use public node roles and the runtime assembly API in your application.",
       "url": "https://getyano.dev/develop/embed/",
       "markdown": "https://getyano.dev/ai/pages/develop/embed.md",
-      "sha256": "f20f12b5cd2573223d87429bf4ece2e1b87a68240bba56d393c5ebfd62f95c6d"
+      "sha256": "6b5d089a4b1fc71edb74c0d25d9df8fcdd4e79c73b5f16698a30d26279e6c114"
     },
     {
       "title": "Java testkit",
@@ -131,6 +131,13 @@
       "url": "https://getyano.dev/develop/javascript-testkit/",
       "markdown": "https://getyano.dev/ai/pages/develop/javascript-testkit.md",
       "sha256": "2cf617e436edc6e893897f60ae2488759fe7022dee8a8ee8a13de71d7bada19d"
+    },
+    {
+      "title": "Yano as a library",
+      "description": "Run a Yano node inside your own Spring Boot application, listen to chain events, and keep a scoped index in your own database.",
+      "url": "https://getyano.dev/develop/library/",
+      "markdown": "https://getyano.dev/ai/pages/develop/library.md",
+      "sha256": "ad21839fcbc3cecd5d2ac8317a0f339fb33ef9909e33a0b2ec1f636fb8c330ef"
     },
     {
       "title": "Snapshots, rollback & time",
@@ -235,7 +242,7 @@
       "description": "Active packaged configuration values and declared property keys, generated from source.",
       "url": "https://getyano.dev/reference/configuration-catalog/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
-      "sha256": "e7e443a85b6209608aca9b67704eff3f2e53c2904a8c6a7d8275411f8a22f6b0"
+      "sha256": "1b3abcfa5d725d1cdbb76c1cdee1464a158f427ee2b91c75f6700b054e2cc575"
     },
     {
       "title": "Configuration guide",
@@ -318,11 +325,11 @@
   "artifacts": [
     {
       "url": "https://getyano.dev/llms.txt",
-      "sha256": "61515218c594102fb02adf8d4c355eea5f12193bcedfbc0b5bd7efafadfbb6fb"
+      "sha256": "cf5fc2d5b6a086d1da6961abe96ec9c1bb0cf27c682f2c9d7bd7a39ee77e6e0c"
     },
     {
       "url": "https://getyano.dev/llms-full.txt",
-      "sha256": "a389de0ddbd28639af1974224e7e8a363c90aaf707a38e6865e6050a60fd3a72"
+      "sha256": "2ff6bff3e5e3763347cd22f847eef37be4af13bc39fcc76caf4182f29a576d9b"
     },
     {
       "url": "https://getyano.dev/ai/agent-instructions.md",
@@ -330,11 +337,11 @@
     },
     {
       "url": "https://getyano.dev/ai/configuration.json",
-      "sha256": "f70048d0987cbea4a0ff4cbb4bc22975b5446c9d4082dc27581efe34f2fde83a"
+      "sha256": "92331adf1d06b88101858b144e8ff6283ad7396ba6feac22c36f89bd2d38e60b"
     },
     {
       "url": "https://getyano.dev/ai/routes.json",
-      "sha256": "30653e0e30472eaab828ddd3d41d85634749be8820916d90ddf3294276892578"
+      "sha256": "f192801357d0aba95ebe92ace16fd3ff6d73105748479c053f149c0d861124bc"
     }
   ]
 }

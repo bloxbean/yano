@@ -1,5 +1,5 @@
 {
-  "sourceRevision": "01a09b001f5e22a50c5ec37cada4af997823c060",
+  "sourceRevision": "f5e1260749c02af3ba39d1299dd5c5c2c8e93e20",
   "version": "0.1.0-pre19-SNAPSHOT",
   "apiPrefix": "/api/v1",
   "note": "Static literal JAX-RS annotation inventory. Not OpenAPI; excludes generated/dynamic plugin routes and does not encode schemas, authentication, feature gates, or availability. Obtain /q/openapi?format=json from your actual artifact.",
@@ -155,6 +155,13 @@
       "method": "GET",
       "path": "/api/v1/api/debug/adapot/{epoch}",
       "handler": "getAdaPot",
+      "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/api/debug/deposits",
+      "handler": "getDepositAudit",
       "source": "app/src/main/java/org/yanoproject/app/api/accounts/DebugSnapshotResource.java",
       "hidden": false
     },

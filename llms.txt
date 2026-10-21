@@ -32,6 +32,7 @@ Java 25. Maven group org.yanoproject. Built-in machine: ordered-log. Additional 
 - [Embed Yano in Java](https://getyano.dev/ai/pages/develop/embed.md): Use public node roles and the runtime assembly API in your application.
 - [Java testkit](https://getyano.dev/ai/pages/develop/java-testkit.md): Run isolated Cardano devnets in JUnit and plain Java.
 - [JavaScript & TypeScript testkit](https://getyano.dev/ai/pages/develop/javascript-testkit.md): Manage a native devnet process from JavaScript tests.
+- [Yano as a library](https://getyano.dev/ai/pages/develop/library.md): Run a Yano node inside your own Spring Boot application, listen to chain events, and keep a scoped index in your own database.
 - [Snapshots, rollback & time](https://getyano.dev/ai/pages/develop/time-travel.md): Make local Cardano history reproducible in development and tests.
 - [Query and submit transactions](https://getyano.dev/ai/pages/develop/transactions.md): Use the REST API with your existing Cardano transaction library.
 - [Historical archive](https://getyano.dev/ai/pages/node/history.md): Enable Yano's DuckLake archive and query its history with DuckDB.
