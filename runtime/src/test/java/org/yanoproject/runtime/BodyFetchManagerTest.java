@@ -20,6 +20,8 @@ import org.yanoproject.api.SyncPhase;
 import org.yanoproject.api.EpochParamProvider;
 import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.api.events.ByronMainBlockAppliedEvent;
+import org.yanoproject.api.events.TipChangedEvent;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.chain.InMemoryChainState;
 import org.yanoproject.runtime.events.PropagatingEventBus;
 import org.junit.jupiter.api.Test;
@@ -376,6 +378,38 @@ class BodyFetchManagerTest {
         } finally {
             nearTipManager.stop();
         }
+    }
+
+    @Test
+    @DisplayName("ADR-056: block apply is one canonical write section; mempool hooks run after release")
+    void blockApplyIsOneCanonicalWriteSection() {
+        chainState.storeBlock(
+                hexToBytes("0000000000000000000000000000000000000000000000000000000000000abc"),
+                500L,
+                1000L,
+                "00".getBytes()
+        );
+        CanonicalStateGate gate = CanonicalStateGate.of(chainState);
+        long before = gate.generation();
+        List<String> events = Collections.synchronizedList(new ArrayList<>());
+        eventBus.subscribe(BlockAppliedEvent.class, ctx -> {
+            events.add("applied held=" + gate.isWriteHeldByCurrentThread() + " gen=" + gate.generation());
+            CanonicalStateGate.runAfterWriteRelease(() -> events.add(
+                    "mempool held=" + gate.isWriteHeldByCurrentThread() + " gen=" + gate.generation()));
+        }, SubscriptionOptions.builder().build());
+        eventBus.subscribe(TipChangedEvent.class,
+                ctx -> events.add("tip held=" + gate.isWriteHeldByCurrentThread()),
+                SubscriptionOptions.builder().build());
+
+        bodyFetchManager.onBlock(Era.Shelley,
+                createTestBlock(1001L, 501L, "b10c1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
+                Collections.emptyList());
+
+        assertEquals(List.of(
+                "applied held=true gen=" + before,
+                "mempool held=false gen=" + (before + 1),
+                "tip held=false"), events);
+        assertEquals(1001L, gate.tip().slot());
     }
 
     @Test

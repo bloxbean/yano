@@ -6,6 +6,7 @@ import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
+import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.runtime.chain.TransactionOutputProjector;
 
 import java.util.HashMap;
@@ -64,19 +65,15 @@ public class BlockBuildUtxoOverlay {
      */
     public void applyTransaction(byte[] txCbor) {
         try {
-            Transaction tx = Transaction.deserialize(txCbor);
+            Transaction tx = CclTransactions.deserialize(txCbor);
             if (tx.getBody().getInputs() != null) {
                 for (TransactionInput input : tx.getBody().getInputs()) {
                     spent.add(new Outpoint(input.getTransactionId(), input.getIndex()));
                 }
             }
             String txHash = TransactionUtil.getTxHash(txCbor);
-            if (tx.getBody().getOutputs() != null) {
-                for (int index = 0; index < tx.getBody().getOutputs().size(); index++) {
-                    Utxo utxo = TransactionOutputProjector.project(
-                            txHash, index, tx.getBody().getOutputs().get(index));
-                    produced.put(utxo.outpoint(), utxo);
-                }
+            for (Utxo utxo : TransactionOutputProjector.projectOutputs(txHash, txCbor, tx)) {
+                produced.put(utxo.outpoint(), utxo);
             }
         } catch (Exception e) {
             throw new IllegalArgumentException("failed to apply transaction to block UTXO overlay", e);

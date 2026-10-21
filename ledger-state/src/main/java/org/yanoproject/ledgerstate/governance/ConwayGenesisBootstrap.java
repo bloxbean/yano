@@ -60,6 +60,9 @@ public class ConwayGenesisBootstrap {
             log.info("Conway genesis bootstrap complete: {} committee members, constitution={}, epoch={}",
                     committeeCount, constitutionSet, conwayFirstEpoch);
             return true;
+        } catch (IllegalArgumentException e) {
+            // An invalid Conway genesis is a configuration error, not a bootstrap to retry.
+            throw e;
         } catch (Exception e) {
             log.error("Conway genesis bootstrap failed: {}", e.getMessage(), e);
             return false;
@@ -83,6 +86,12 @@ public class ConwayGenesisBootstrap {
                 Map.Entry<String, JsonNode> field = fields.next();
                 String key = field.getKey();
                 int expiryEpoch = field.getValue().asInt();
+                // Yano tells a member (a term) from a pre-enrollment placeholder (term 0) by the term, and
+                // on-chain terms are always at least 1 (Conway/Rules/Gov.hs:555-556).
+                if (expiryEpoch <= 0) {
+                    throw new IllegalArgumentException("Conway genesis committee member " + key
+                            + " has term epoch " + field.getValue() + "; committee terms must be at least 1");
+                }
 
                 // Parse credential type and hash from key
                 // Format: "scriptHash-<hash>" or "keyHash-<hash>" or just "<hash>"

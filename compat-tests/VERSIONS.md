@@ -12,7 +12,7 @@ snapshot no dApp author has.
 | CCL | `com.bloxbean.cardano:cardano-client-backend-blockfrost` | `0.8.0-pre5` | same |
 | MeshJS | `@meshsdk/core`, `@meshsdk/core-csl` | `1.9.1` | `mesh/package.json` + lockfile |
 | Evolution | `@evolution-sdk/lucid` | `2.0.1` | `evolution/package.json` + lockfile |
-| BLS contract | `com.bloxbean.cardano:julc-*` | `0.1.0-pre16` | `contracts/bls/build.gradle` |
+| BLS contract | `org.julclang:julc-*` | `0.1.0-pre17` | `contracts/bls/build.gradle` |
 
 Notes:
 
@@ -22,7 +22,7 @@ Notes:
 - Both npm lockfiles are committed. Without them "SDK compatibility" would mean
   something different on every run as transitive dependencies drift.
 - Java toolchain is 25, matching the repo. `contracts/bls` requires it regardless:
-  julc `0.1.0-pre16` is Java-25-only.
+  julc `0.1.0-pre17` is Java-25-only.
 
 ## Bumping a version
 

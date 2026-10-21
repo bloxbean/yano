@@ -45,6 +45,8 @@ public class NodeMetrics {
             "yano.node.mempool.admission.queue",
             "yano.node.mempool.admission.duration.seconds",
             "yano.node.mempool.validation.slow.total",
+            "yano.node.mempool.catching.up",
+            "yano.node.mempool.canonical.lag.generations",
             "yano.node.tx.diffusion.total",
             "yano.node.tx.diffusion.inflight.transactions",
             "yano.node.tx.diffusion.inflight.bytes",
@@ -141,6 +143,10 @@ public class NodeMetrics {
         taggedDurationCounter("validation", Snapshot::mempoolValidationNanos);
         functionCounter("yano.node.mempool.validation.slow.total", Snapshot::mempoolSlowValidations,
                 "Process-lifetime slow mempool validation listener dispatches");
+        gauge("yano.node.mempool.catching.up", Snapshot::mempoolCatchingUp,
+                "1 while the ledger-state mempool is catching up with the canonical chain (admission paused)");
+        gauge("yano.node.mempool.canonical.lag.generations", Snapshot::mempoolCanonicalLag,
+                "Canonical generations the published mempool state lags behind");
 
         functionCounter("outbound_forwarded", Snapshot::outboundForwarded);
         functionCounter("outbound_suppressed", Snapshot::outboundSuppressed);
@@ -268,6 +274,8 @@ public class NodeMetrics {
                 number(status.getMempoolAdmissionHoldNanos()),
                 number(status.getMempoolValidationNanos()),
                 number(status.getMempoolSlowValidations()),
+                Boolean.TRUE.equals(status.getMempoolCatchingUp()) ? 1 : 0,
+                number(status.getMempoolCanonicalLagGenerations()),
                 number(status.getTxDiffusionOutboundForwarded()),
                 number(status.getTxDiffusionOutboundSuppressed()),
                 number(status.getTxDiffusionInboundTxBodiesAccepted()),
@@ -320,6 +328,8 @@ public class NodeMetrics {
             double mempoolAdmissionHoldNanos,
             double mempoolValidationNanos,
             double mempoolSlowValidations,
+            double mempoolCatchingUp,
+            double mempoolCanonicalLag,
             double outboundForwarded,
             double outboundSuppressed,
             double inboundAccepted,

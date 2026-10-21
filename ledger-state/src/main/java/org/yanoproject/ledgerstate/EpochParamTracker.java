@@ -34,9 +34,14 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.Objects;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
@@ -350,14 +355,188 @@ public class EpochParamTracker implements EpochParamProvider {
         return resolve(epoch);
     }
 
+    // ===== Side-effect-free preview of an epoch boundary (ADR-056 TickedLedgerView) =====
+
+    /**
+     * The tracker state that decides {@code epoch}'s parameters, copied so a later
+     * {@link #previewEpochParams} does not depend on the live maps.
+     *
+     * <p>{@code finalized} holds only what materialization reads: the finalized snapshot of
+     * {@code epoch} itself (normally absent before its boundary) and the nearest lower one.
+     * {@code pending} is the merged pre-Conway {@code Update} proposals taking effect at
+     * {@code epoch} ('P' keys). The {@link ProtocolParamUpdate} values are the tracker's own
+     * instances, which the tracker replaces but never mutates.</p>
+     *
+     * @param tracker   the tracker that captured it (supplies the genesis configuration)
+     * @param epoch     the epoch the boundary enters
+     * @param finalized the finalized snapshots materialization reads (unmodifiable)
+     * @param pending   pending pre-Conway updates for {@code epoch}, or {@code null}
+     * @param eras      the era answers materialization and the getters need for {@code epoch}, captured
+     *                  with the base (the live era provider learns an era only when its first block is
+     *                  applied, i.e. after the boundary); {@code null} when the tracker has no era
+     *                  provider
+     */
+    public record PreviewBase(EpochParamTracker tracker, int epoch,
+                              NavigableMap<Integer, ProtocolParamUpdate> finalized,
+                              ProtocolParamUpdate pending, CapturedEras eras) {
+        public PreviewBase {
+            Objects.requireNonNull(tracker, "tracker");
+            Objects.requireNonNull(finalized, "finalized");
+        }
+    }
+
+    /**
+     * Copies the state {@link #previewEpochParams} needs. O(1); intended to run while no block is
+     * being applied (under the canonical gate's read lock), so the copy matches one ledger tip.
+     */
+    public PreviewBase capturePreviewBase(int epoch) {
+        NavigableMap<Integer, ProtocolParamUpdate> relevant = new TreeMap<>();
+        ProtocolParamUpdate exact = epochParams.get(epoch);
+        if (exact != null) {
+            relevant.put(epoch, exact);
+        }
+        Map.Entry<Integer, ProtocolParamUpdate> lower = epochParams.lowerEntry(epoch);
+        if (lower != null) {
+            relevant.put(lower.getKey(), lower.getValue());
+        }
+        // Carry-forward (devnet) resolves gap epochs by floor; keep the floor at or below the epoch
+        // too, so a view built from this base answers exactly like the live tracker.
+        EraProvider live = eraProvider;
+        return new PreviewBase(this, epoch, Collections.unmodifiableNavigableMap(relevant),
+                pendingUpdates.get(epoch), live != null ? CapturedEras.capture(live, epoch) : null);
+    }
+
+    /**
+     * Immutable answers of an {@link EraProvider}, captured at one moment for the epochs a boundary
+     * preview asks about: {@link #isEraOrLater} for the Alonzo, Babbage and Conway eras at
+     * {@code epoch - 1} and {@code epoch}, and the first Conway epoch. Any other question throws, so
+     * a preview never falls back to a live read.
+     */
+    public static final class CapturedEras implements EraProvider {
+        private static final Era[] ERAS = {Era.Alonzo, Era.Babbage, Era.Conway};
+
+        private final int epoch;
+        private final Map<Long, Boolean> eraOrLater;
+        private final Integer firstConwayEpoch;
+
+        private CapturedEras(int epoch, Map<Long, Boolean> eraOrLater, Integer firstConwayEpoch) {
+            this.epoch = epoch;
+            this.eraOrLater = eraOrLater;
+            this.firstConwayEpoch = firstConwayEpoch;
+        }
+
+        /** Captures {@code live}'s answers for {@code epoch - 1} and {@code epoch}. */
+        public static CapturedEras capture(EraProvider live, int epoch) {
+            Objects.requireNonNull(live, "live");
+            Map<Long, Boolean> answers = new HashMap<>();
+            for (int e = Math.max(0, epoch - 1); e <= epoch; e++) {
+                for (Era era : ERAS) {
+                    answers.put(key(e, era.getValue()), live.isEraOrLater(e, era.getValue()));
+                }
+            }
+            return new CapturedEras(epoch, Map.copyOf(answers), live.resolveFirstConwayEpochOrNull());
+        }
+
+        private static long key(int epoch, int eraValue) {
+            return ((long) epoch << 8) | eraValue;
+        }
+
+        /** @return the epoch the answers were captured for */
+        public int epoch() {
+            return epoch;
+        }
+
+        @Override
+        public boolean isEraOrLater(int epoch, int eraValue) {
+            Boolean answer = eraOrLater.get(key(epoch, eraValue));
+            if (answer == null) {
+                throw new IllegalStateException("era " + eraValue + " at epoch " + epoch
+                        + " was not captured for the boundary into epoch " + this.epoch);
+            }
+            return answer;
+        }
+
+        @Override
+        public Integer resolveFirstEpochOrNull(int eraValue) {
+            if (eraValue == Era.Conway.getValue()) {
+                return firstConwayEpoch;
+            }
+            throw new IllegalStateException("first epoch of era " + eraValue + " was not captured");
+        }
+
+        @Override
+        public Integer resolveFirstConwayEpochOrNull() {
+            return firstConwayEpoch;
+        }
+    }
+
+    /**
+     * Computes, without mutating anything, the parameters the real boundary produces for
+     * {@code base.epoch()}: {@link #finalizeEpoch} (carry forward, era overlays, pending pre-Conway
+     * updates) followed by {@link #applyEnactedParamChange} for each enacted governance update, in
+     * order. Uses the same {@link #materializeEffectiveParams} and {@link #mergeUpdates} code as the
+     * real path.
+     *
+     * @param base            captured tracker state
+     * @param enactedUpdates  updates of the ParameterChange/HardFork actions enacted at this boundary,
+     *                        in enactment order ({@code null} entries are skipped, as the real path does)
+     * @return the resolved parameters; {@code null} when the tracker is disabled or the epoch has no
+     *         Shelley parameters (the real path then stores nothing either)
+     */
+    public ProtocolParamUpdate previewEpochParams(PreviewBase base, List<ProtocolParamUpdate> enactedUpdates) {
+        Objects.requireNonNull(base, "base");
+        if (!enabled) return null;
+        // Materialize on a scratch tracker carrying the captured era answers, never the live provider.
+        ProtocolParamUpdate resolved = previewView(base, null)
+                .materializeEffectiveParams(base.finalized(), base.epoch(), base.pending());
+        if (resolved == null) return null;
+        if (enactedUpdates != null) {
+            for (ProtocolParamUpdate update : enactedUpdates) {
+                if (update != null) {
+                    resolved = mergeUpdates(resolved, update);
+                }
+            }
+        }
+        return resolved;
+    }
+
+    /**
+     * An in-memory, non-persistent tracker holding {@code base.finalized()} plus {@code resolved}
+     * for {@code base.epoch()}, with this tracker's configuration and the captured era answers. Its
+     * {@link EpochParamProvider} getters for {@code base.epoch()} answer exactly as this tracker will
+     * after the real boundary stores {@code resolved}.
+     */
+    public EpochParamTracker previewView(PreviewBase base, ProtocolParamUpdate resolved) {
+        Objects.requireNonNull(base, "base");
+        EpochParamTracker view = new EpochParamTracker(baseProvider, enabled);
+        view.eraProvider = base.eras();
+        view.carryForwardLookup = carryForwardLookup;
+        view.epochParams.putAll(base.finalized());
+        if (resolved != null) {
+            view.epochParams.put(base.epoch(), resolved);
+        }
+        return view;
+    }
+
     private ProtocolParamUpdate materializeEffectiveParams(int epoch, ProtocolParamUpdate pending) {
+        return materializeEffectiveParams(epochParams, epoch, pending);
+    }
+
+    /**
+     * Materializes {@code epoch}'s full parameter snapshot from {@code finalized} (the finalized
+     * per-epoch snapshots; only the entry for {@code epoch} and the nearest lower entry are read) plus
+     * {@code pending}. Shared by the real boundary path ({@link #finalizeEpoch},
+     * {@link #applyEnactedParamChange}) and the side-effect-free {@link #previewEpochParams} dry run.
+     */
+    private ProtocolParamUpdate materializeEffectiveParams(NavigableMap<Integer, ProtocolParamUpdate> finalized,
+                                                          int epoch, ProtocolParamUpdate pending) {
         if (epoch < firstNonByronEpoch()) {
             return null;
         }
 
-        ProtocolParamUpdate resolved = epochParams.get(epoch);
+        ProtocolParamUpdate resolved = finalized.get(epoch);
         if (resolved == null) {
-            ProtocolParamUpdate previous = previousSnapshot(epoch);
+            ProtocolParamUpdate previous = previousSnapshot(finalized, epoch);
             if (previous != null) {
                 resolved = copyUpdate(previous);
                 if (isEraTransition(epoch, Era.Alonzo)) {
@@ -597,8 +776,9 @@ public class EpochParamTracker implements EpochParamProvider {
         return baseProvider.getEpochSlotCalc().slotToEpoch(baseProvider.getShelleyStartSlot());
     }
 
-    private ProtocolParamUpdate previousSnapshot(int epoch) {
-        Map.Entry<Integer, ProtocolParamUpdate> lower = epochParams.lowerEntry(epoch);
+    private static ProtocolParamUpdate previousSnapshot(NavigableMap<Integer, ProtocolParamUpdate> finalized,
+                                                        int epoch) {
+        Map.Entry<Integer, ProtocolParamUpdate> lower = finalized.lowerEntry(epoch);
         return lower != null ? lower.getValue() : null;
     }
 

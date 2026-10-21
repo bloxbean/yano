@@ -1,0 +1,10 @@
+[
+  {
+    "name": "org.yanoproject.ledger.rules.conway.JavaJulcEngineFactory",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "org.yanoproject.ledger.rules.conway.JavaScalusEngineFactory",
+    "allDeclaredConstructors": true
+  }
+]

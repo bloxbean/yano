@@ -1,6 +1,7 @@
 package org.yanoproject.ledgerstate.governance.ratification;
 
 import com.bloxbean.cardano.yaci.core.model.Credential;
+import com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.model.governance.actions.*;
@@ -56,9 +57,8 @@ public class EnactmentProcessor {
 
         switch (type) {
             case PARAMETER_CHANGE_ACTION -> {
-                if (proposal.govAction() instanceof ParameterChangeAction pca
-                        && pca.getProtocolParamUpdate() != null && paramTracker != null) {
-                    var update = pca.getProtocolParamUpdate();
+                var update = enactedParamUpdate(proposal);
+                if (update != null && paramTracker != null) {
                     paramTracker.applyEnactedParamChange(epoch, update, batch);
                     log.info("Enacted ParameterChange for epoch {} from {}/{} fields={}", epoch,
                             id.getTransactionId().substring(0, 8), id.getGov_action_index(),
@@ -71,12 +71,8 @@ public class EnactmentProcessor {
                 }
             }
             case HARD_FORK_INITIATION_ACTION -> {
-                if (proposal.govAction() instanceof HardForkInitiationAction hf
-                        && hf.getProtocolVersion() != null && paramTracker != null) {
-                    var ppu = com.bloxbean.cardano.yaci.core.model.ProtocolParamUpdate.builder()
-                            .protocolMajorVer((int) hf.getProtocolVersion().get_1())
-                            .protocolMinorVer((int) hf.getProtocolVersion().get_2())
-                            .build();
+                var ppu = enactedParamUpdate(proposal);
+                if (ppu != null && paramTracker != null) {
                     paramTracker.applyEnactedParamChange(epoch, ppu, batch);
                 }
                 String protocolVersion = proposal.govAction() instanceof HardForkInitiationAction hf
@@ -113,13 +109,9 @@ public class EnactmentProcessor {
                         id.getGov_action_index());
             }
             case NEW_CONSTITUTION -> {
-                if (proposal.govAction() instanceof NewConstitution nc && nc.getConstitution() != null) {
-                    var anchor = nc.getConstitution().getAnchor();
-                    String scriptHash = nc.getConstitution().getScripthash();
-                    governanceStore.storeConstitution(new GovernanceCborCodec.ConstitutionRecord(
-                            anchor != null ? anchor.getAnchor_url() : null,
-                            anchor != null ? anchor.getAnchor_data_hash() : null,
-                            scriptHash), batch, deltaOps);
+                var constitution = enactedConstitution(proposal);
+                if (constitution != null) {
+                    governanceStore.storeConstitution(constitution, batch, deltaOps);
                 }
                 log.info("Enacted NewConstitution from {}/{}", id.getTransactionId().substring(0, 8),
                         id.getGov_action_index());
@@ -162,45 +154,134 @@ public class EnactmentProcessor {
 
     private void enactUpdateCommittee(UpdateCommittee uc, WriteBatch batch,
                                       List<DeltaOp> deltaOps) throws RocksDBException {
+        CommitteeUpdate change = committeeUpdateOf(uc);
+
         // Remove members
-        if (uc.getMembersForRemoval() != null) {
-            for (Credential cred : uc.getMembersForRemoval()) {
-                int ct = credTypeFromModel(cred);
-                governanceStore.removeCommitteeMember(ct, cred.getHash(), batch, deltaOps);
-            }
+        for (GovernanceStateStore.CredentialKey member : change.removals()) {
+            governanceStore.removeCommitteeMember(member.credType(), member.hash(), batch, deltaOps);
         }
 
         // Add new members with term epochs.
         // Preserve any existing hot key authorization (may have been submitted before enrollment).
-        if (uc.getNewMembersAndTerms() != null) {
-            for (var entry : uc.getNewMembersAndTerms().entrySet()) {
-                Credential cred = entry.getKey();
-                int expiryEpoch = entry.getValue();
-                int ct = credTypeFromModel(cred);
-
-                // Check for existing record with hot key (from prior AuthCommitteeHotCert)
-                var existing = governanceStore.getCommitteeMember(ct, cred.getHash());
-                CommitteeMemberRecord record;
-                if (existing.isPresent() && existing.get().hasHotKey()) {
-                    // Preserve the hot key, update expiry
-                    record = new CommitteeMemberRecord(
-                            existing.get().hotCredType(), existing.get().hotHash(),
-                            expiryEpoch, false);
-                } else {
-                    record = CommitteeMemberRecord.noHotKey(expiryEpoch);
-                }
-                governanceStore.storeCommitteeMember(ct, cred.getHash(), record, batch, deltaOps);
-            }
+        // The existing record is read from committed state, not from this batch.
+        for (CommitteeAddition addition : change.additions()) {
+            var existing = governanceStore.getCommitteeMember(
+                    addition.member().credType(), addition.member().hash());
+            CommitteeMemberRecord record = enactedMemberRecord(existing.orElse(null), addition.expiryEpoch());
+            governanceStore.storeCommitteeMember(addition.member().credType(), addition.member().hash(),
+                    record, batch, deltaOps);
         }
 
         // Update committee threshold
-        if (uc.getThreshold() != null) {
-            BigInteger num = uc.getThreshold().getNumerator();
-            BigInteger den = uc.getThreshold().getDenominator();
-            if (num != null && den != null) {
-                governanceStore.storeCommitteeThreshold(num, den, batch, deltaOps);
+        if (change.hasThreshold()) {
+            governanceStore.storeCommitteeThreshold(change.thresholdNumerator(), change.thresholdDenominator(),
+                    batch, deltaOps);
+        }
+    }
+
+    // ===== Pure enactment effects (shared with the ADR-056 boundary preview) =====
+
+    /**
+     * @return the protocol-parameter update an enacted ParameterChange or HardForkInitiation applies
+     *         (for a hard fork, only the protocol version); {@code null} for other actions or when the
+     *         action carries no update
+     */
+    public static ProtocolParamUpdate enactedParamUpdate(GovActionRecord proposal) {
+        if (proposal.actionType() == GovActionType.PARAMETER_CHANGE_ACTION
+                && proposal.govAction() instanceof ParameterChangeAction pca) {
+            return pca.getProtocolParamUpdate();
+        }
+        if (proposal.actionType() == GovActionType.HARD_FORK_INITIATION_ACTION
+                && proposal.govAction() instanceof HardForkInitiationAction hf
+                && hf.getProtocolVersion() != null) {
+            return ProtocolParamUpdate.builder()
+                    .protocolMajorVer((int) hf.getProtocolVersion().get_1())
+                    .protocolMinorVer((int) hf.getProtocolVersion().get_2())
+                    .build();
+        }
+        return null;
+    }
+
+    /** @return the constitution an enacted NewConstitution stores; {@code null} when it stores none */
+    public static GovernanceCborCodec.ConstitutionRecord enactedConstitution(GovActionRecord proposal) {
+        if (proposal.actionType() == GovActionType.NEW_CONSTITUTION
+                && proposal.govAction() instanceof NewConstitution nc && nc.getConstitution() != null) {
+            var anchor = nc.getConstitution().getAnchor();
+            String scriptHash = nc.getConstitution().getScripthash();
+            return new GovernanceCborCodec.ConstitutionRecord(
+                    anchor != null ? anchor.getAnchor_url() : null,
+                    anchor != null ? anchor.getAnchor_data_hash() : null,
+                    scriptHash);
+        }
+        return null;
+    }
+
+    /** A member added by an enacted UpdateCommittee, with its term. */
+    public record CommitteeAddition(GovernanceStateStore.CredentialKey member, int expiryEpoch) {
+    }
+
+    /**
+     * The committee changes of an UpdateCommittee action, in the order enactment applies them:
+     * removals, then additions, then the threshold.
+     *
+     * @param removals             cold credentials removed
+     * @param additions            cold credentials added, with their terms
+     * @param thresholdNumerator   new quorum numerator, or {@code null} when unchanged
+     * @param thresholdDenominator new quorum denominator, or {@code null} when unchanged
+     */
+    public record CommitteeUpdate(List<GovernanceStateStore.CredentialKey> removals, List<CommitteeAddition> additions,
+                                  BigInteger thresholdNumerator, BigInteger thresholdDenominator) {
+        public boolean hasThreshold() {
+            return thresholdNumerator != null && thresholdDenominator != null;
+        }
+    }
+
+    /** Decodes the committee changes of an UpdateCommittee action (credential hashes as given). */
+    public static CommitteeUpdate committeeUpdateOf(UpdateCommittee uc) {
+        List<GovernanceStateStore.CredentialKey> removals = new ArrayList<>();
+        if (uc.getMembersForRemoval() != null) {
+            for (Credential cred : uc.getMembersForRemoval()) {
+                removals.add(new GovernanceStateStore.CredentialKey(credTypeFromModel(cred), cred.getHash()));
             }
         }
+        List<CommitteeAddition> additions = new ArrayList<>();
+        if (uc.getNewMembersAndTerms() != null) {
+            for (var entry : uc.getNewMembersAndTerms().entrySet()) {
+                Credential cred = entry.getKey();
+                additions.add(new CommitteeAddition(
+                        new GovernanceStateStore.CredentialKey(credTypeFromModel(cred), cred.getHash()),
+                        entry.getValue()));
+            }
+        }
+        BigInteger num = null;
+        BigInteger den = null;
+        if (uc.getThreshold() != null) {
+            num = uc.getThreshold().getNumerator();
+            den = uc.getThreshold().getDenominator();
+        }
+        return new CommitteeUpdate(List.copyOf(removals), List.copyOf(additions), num, den);
+    }
+
+    /**
+     * The record an UpdateCommittee addition stores: the existing hot-key authorization or resignation
+     * is kept with the new term (Haskell keeps a member's committee state entry while it stays in the
+     * committee, Conway/Rules/Epoch.hs:419-423), otherwise a record without hot key.
+     *
+     * @param existing the member's record in committed state before this enactment, or {@code null}
+     */
+    public static CommitteeMemberRecord enactedMemberRecord(CommitteeMemberRecord existing, int expiryEpoch) {
+        if (existing == null) {
+            return CommitteeMemberRecord.noHotKey(expiryEpoch);
+        }
+        return new CommitteeMemberRecord(existing.hotCredType(), existing.hotHash(), expiryEpoch, existing.resigned());
+    }
+
+    /**
+     * Maps an action type to its purpose root key ({@code UPDATE_COMMITTEE} for both committee
+     * actions); {@code null} for actions without a purpose chain.
+     */
+    public static GovActionType purposeOf(GovActionType type) {
+        return ProposalDropService.getPurposeType(type);
     }
 
     private static int credTypeFromModel(Credential cred) {

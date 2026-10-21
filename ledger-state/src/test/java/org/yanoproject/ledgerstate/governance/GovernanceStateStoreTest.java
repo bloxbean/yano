@@ -1,5 +1,6 @@
 package org.yanoproject.ledgerstate.governance;
 
+import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
@@ -198,7 +199,7 @@ class GovernanceStateStoreTest {
     void drepState_storeAndRetrieve() throws Exception {
         var state = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), "http://example.com", "abc123def456",
-                200, null, 220, true, 84974395L, 10, null);
+                200, null, 220, true, 84974395L, 10, null, false);
         try (WriteBatch batch = new WriteBatch()) {
             store.storeDRepState(0, DREP1, state, batch, new ArrayList<>());
             commit(batch);
@@ -217,16 +218,34 @@ class GovernanceStateStoreTest {
     void drepState_getAll() throws Exception {
         try (WriteBatch batch = new WriteBatch()) {
             store.storeDRepState(0, DREP1, new DRepStateRecord(
-                    BigInteger.valueOf(500_000_000_000L), null, null, 200, null, 220, true, 84974395L, 10, null),
+                    BigInteger.valueOf(500_000_000_000L), null, null, 200, null, 220, true, 84974395L, 10, null, false),
                     batch, new ArrayList<>());
             store.storeDRepState(0, DREP2, new DRepStateRecord(
-                    BigInteger.valueOf(500_000_000_000L), null, null, 181, null, 202, true, 76909405L, 10, null),
+                    BigInteger.valueOf(500_000_000_000L), null, null, 181, null, 202, true, 76909405L, 10, null, false),
                     batch, new ArrayList<>());
             commit(batch);
         }
 
         var all = store.getAllDRepStates();
         assertThat(all).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("A DRep record without the deregistered flag derives it from the slots")
+    void drepState_legacyRecordDerivesDeregisteredFromSlots() {
+        assertThat(decodeWithoutFlag(new DRepStateRecord(BigInteger.ONE, null, null, 200, null, 220, false,
+                100L, 10, 150L, true)).deregistered()).isTrue();
+        assertThat(decodeWithoutFlag(new DRepStateRecord(BigInteger.ONE, null, null, 200, null, 220, true,
+                300L, 10, 150L, false)).deregistered()).isFalse();
+        assertThat(decodeWithoutFlag(new DRepStateRecord(BigInteger.ONE, null, null, 200, null, 220, true,
+                300L, 10, null, false)).deregistered()).isFalse();
+    }
+
+    private static DRepStateRecord decodeWithoutFlag(DRepStateRecord record) {
+        co.nstant.in.cbor.model.Map map = (co.nstant.in.cbor.model.Map)
+                CborSerializationUtil.deserializeOne(GovernanceCborCodec.encodeDRepState(record));
+        map.remove(new co.nstant.in.cbor.model.UnsignedInteger(10));
+        return GovernanceCborCodec.decodeDRepState(CborSerializationUtil.serialize(map, true));
     }
 
     // ===== Proposals =====

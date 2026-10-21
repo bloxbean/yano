@@ -2,9 +2,10 @@ package org.yanoproject.runtime.blockproducer;
 
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
-import org.yanoproject.ledgerrules.TransactionValidator;
-import org.yanoproject.ledgerrules.ValidationResult;
-import org.yanoproject.ledgerrules.impl.YaciScriptSupplier;
+import org.yanoproject.ledger.rules.TransactionValidator;
+import org.yanoproject.ledger.rules.ValidationError;
+import org.yanoproject.ledger.rules.ValidationResult;
+import org.yanoproject.ledger.scripteval.YaciScriptSupplier;
 import com.bloxbean.cardano.client.plutus.spec.PlutusV2Script;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -127,9 +128,9 @@ class TransactionValidationServiceTest {
         TransactionValidationService overlayService = new TransactionValidationService(
                 (bytes, inputs) -> supplier.getScript(scriptHash).isPresent()
                         ? ValidationResult.success()
-                        : ValidationResult.failure(new org.yanoproject.ledgerrules.ValidationError(
+                        : ValidationResult.failure(new ValidationError(
                                 "ReferenceScript", "not found",
-                                org.yanoproject.ledgerrules.ValidationError.Phase.PHASE_2)),
+                                ValidationError.Phase.PHASE_2)),
                 utxoState);
 
         assertThat(overlayService.validate(txCbor, ignored -> resolved).valid()).isTrue();

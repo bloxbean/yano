@@ -17,6 +17,10 @@ import java.math.BigInteger;
  * @param previousDeregistrationSlot    Slot of previous deregistration (null if never deregistered).
  *                                      Required for v9 re-registration bug compatibility.
  *                                      See Amaru backward_compatibility.rs lines 18-71.
+ * @param deregistered                  Whether the DRep's latest certificate is a retirement ({@code ConwayUnRegDRep}):
+ *                                      the record is then a tombstone kept for {@code previousDeregistrationSlot}.
+ *                                      Explicit because slots cannot order a retirement and a re-registration
+ *                                      in one block.
  */
 public record DRepStateRecord(
         BigInteger deposit,
@@ -28,7 +32,8 @@ public record DRepStateRecord(
         boolean active,
         long registeredAtSlot,
         int protocolVersionAtRegistration,
-        Long previousDeregistrationSlot
+        Long previousDeregistrationSlot,
+        boolean deregistered
 ) {
     /**
      * Create an updated copy with a new last interaction epoch.
@@ -36,7 +41,7 @@ public record DRepStateRecord(
     public DRepStateRecord withLastInteraction(int epoch) {
         return new DRepStateRecord(deposit, anchorUrl, anchorHash, registeredAtEpoch,
                 epoch, expiryEpoch, active, registeredAtSlot, protocolVersionAtRegistration,
-                previousDeregistrationSlot);
+                previousDeregistrationSlot, deregistered);
     }
 
     /**
@@ -45,7 +50,7 @@ public record DRepStateRecord(
     public DRepStateRecord withExpiry(int newExpiry, boolean isActive) {
         return new DRepStateRecord(deposit, anchorUrl, anchorHash, registeredAtEpoch,
                 lastInteractionEpoch, newExpiry, isActive, registeredAtSlot, protocolVersionAtRegistration,
-                previousDeregistrationSlot);
+                previousDeregistrationSlot, deregistered);
     }
 
     /**
@@ -54,6 +59,6 @@ public record DRepStateRecord(
     public DRepStateRecord withAnchor(String url, String hash) {
         return new DRepStateRecord(deposit, url, hash, registeredAtEpoch,
                 lastInteractionEpoch, expiryEpoch, active, registeredAtSlot, protocolVersionAtRegistration,
-                previousDeregistrationSlot);
+                previousDeregistrationSlot, deregistered);
     }
 }

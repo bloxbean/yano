@@ -247,21 +247,24 @@ public class DevnetBlockProducer implements BlockProducerService {
         }
 
         var result = blockBuilder.buildBlock(0, slot, null, List.of());
-        try {
-            BlockProducerHelper.publishGenesisBlockEvent(eventBus, result, "devnet-genesis");
-        } catch (RuntimeException | Error e) {
-            rollbackPendingProducedBlock();
-            throw e;
+        // ADR-056: genesis bootstrap, block store and apply form one canonical write section.
+        try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+            try {
+                BlockProducerHelper.publishGenesisBlockEvent(eventBus, result, "devnet-genesis");
+            } catch (RuntimeException | Error e) {
+                rollbackPendingProducedBlock();
+                throw e;
+            }
+
+            storeBlock(result);
+            nextBlockNumber = 1;
+            prevBlockHash = result.blockHash();
+
+            log.info("Genesis block produced: slot={}, hash={}",
+                    slot, HexUtil.encodeHexString(result.blockHash()));
+
+            publishEvent(result, 0, false);
         }
-
-        storeBlock(result);
-        nextBlockNumber = 1;
-        prevBlockHash = result.blockHash();
-
-        log.info("Genesis block produced: slot={}, hash={}",
-                slot, HexUtil.encodeHexString(result.blockHash()));
-
-        publishEvent(result, 0, false);
         notifyServer();
     }
 
@@ -286,26 +289,30 @@ public class DevnetBlockProducer implements BlockProducerService {
         }
 
         long slot = calculateCurrentSlot();
-        BlockProducerHelper.prepareEpochTransitionBeforeBlock(
-                eventBus, slot, nextBlockNumber, "devnet-block-producer");
+        // ADR-056: boundary section, then block selection, then the store-and-apply section.
+        BlockProducerHelper.prepareEpochTransitionInWriteSection(
+                chainState, eventBus, slot, nextBlockNumber, "devnet-block-producer");
 
         try {
-            List<byte[]> txList = blockBuilder.fitTransactions(slot, drainMempool());
+            List<byte[]> txList = blockBuilder.fitTransactions(slot, drainMempool(slot));
             if (lazy && txList.isEmpty()) {
                 transactions.blockSelectionFailed();
                 return;
             }
             var result = blockBuilder.buildBlock(nextBlockNumber, slot, prevBlockHash, txList);
-            storeBlock(result);
+            try (var section = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                BlockProducerHelper.requireCurrentSelection(transactions, section, blockBuilder, slot);
+                storeBlock(result);
 
-            long producedBlockNumber = nextBlockNumber;
-            nextBlockNumber++;
-            prevBlockHash = result.blockHash();
+                long producedBlockNumber = nextBlockNumber;
+                nextBlockNumber++;
+                prevBlockHash = result.blockHash();
 
-            log.info("Block #{} produced: slot={}, txs={}",
-                    producedBlockNumber, slot, txList.size());
+                log.info("Block #{} produced: slot={}, txs={}",
+                        producedBlockNumber, slot, txList.size());
 
-            publishEvent(result, txList.size());
+                publishEvent(result, txList.size());
+            }
             transactions.blockCandidatePublished();
             notifyServer();
         } catch (UnfitBlockTransactionException e) {
@@ -317,14 +324,18 @@ public class DevnetBlockProducer implements BlockProducerService {
             }
             log.warn("Discarded {} mempool transaction(s) after block resource rejection: {}",
                     removed, e.getMessage());
+        } catch (StaleBlockSelectionException e) {
+            // The slot was consumed (lastUsedSlot); the next tick selects again on the new canonical state.
+            transactions.blockSelectionFailed();
+            log.info(e.getMessage());
         } catch (RuntimeException | Error e) {
             transactions.blockSelectionFailed();
             throw e;
         }
     }
 
-    private List<byte[]> drainMempool() {
-        return transactions.drainForBlock();
+    private List<byte[]> drainMempool(long slot) {
+        return transactions.drainForBlock(slot);
     }
 
     private void storeBlock(DevnetBlockBuilder.BlockBuildResult result) {
@@ -408,19 +419,20 @@ public class DevnetBlockProducer implements BlockProducerService {
         }
 
         while (currentSlot <= targetSlot) {
-            BlockProducerHelper.prepareEpochTransitionBeforeBlock(
-                    eventBus, currentSlot, nextBlockNumber, "devnet-time-advance");
+            BlockProducerHelper.prepareEpochTransitionInWriteSection(
+                    chainState, eventBus, currentSlot, nextBlockNumber, "devnet-time-advance");
 
             var result = blockBuilder.buildBlock(nextBlockNumber, currentSlot, prevBlockHash, List.of());
-            storeBlock(result);
+            try (var ignored = BlockProducerHelper.enterCanonicalWrite(chainState)) {
+                storeBlock(result);
 
-            long producedBlockNumber = nextBlockNumber;
-            nextBlockNumber++;
-            prevBlockHash = result.blockHash();
-            lastUsedSlot = currentSlot;
-            blocksProduced++;
+                nextBlockNumber++;
+                prevBlockHash = result.blockHash();
+                lastUsedSlot = currentSlot;
+                blocksProduced++;
 
-            publishEvent(result, 0);
+                publishEvent(result, 0);
+            }
 
             if (blocksProduced % 1000 == 0) {
                 log.info("Time advance progress: {} blocks produced, current slot={}", blocksProduced, currentSlot);

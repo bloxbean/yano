@@ -1,6 +1,23 @@
 package org.yanoproject.ledgerstate.governance.epoch;
 
+import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Credential;
+import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.certs.Certificate;
+import com.bloxbean.cardano.yaci.core.model.certs.RegCert;
+import com.bloxbean.cardano.yaci.core.model.certs.RegDrepCert;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeCredType;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeCredential;
+import com.bloxbean.cardano.yaci.core.model.certs.UnregDrepCert;
+import com.bloxbean.cardano.yaci.core.model.certs.VoteDelegCert;
+import com.bloxbean.cardano.yaci.core.model.governance.Drep;
+import org.slf4j.LoggerFactory;
+import org.yanoproject.api.EpochParamProvider;
+import org.yanoproject.api.era.EraProvider;
+import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
+import org.yanoproject.ledgerstate.governance.GovernanceBlockProcessor;
 import org.yanoproject.ledgerstate.TestCborHelper;
 import org.yanoproject.ledgerstate.governance.GovernanceStateStore;
 import org.yanoproject.ledgerstate.governance.model.DRepStateRecord;
@@ -95,7 +112,7 @@ class DRepDistributionCalculatorTest {
     private void registerDRep(int drepType, String drepHash, int epoch, long slot) throws Exception {
         var state = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                epoch, null, epoch + 20, true, slot, 10, null);
+                epoch, null, epoch + 20, true, slot, 10, null, false);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(drepType, drepHash, state, batch, new ArrayList<>());
             commit(batch);
@@ -234,7 +251,7 @@ class DRepDistributionCalculatorTest {
         // DRep with previousDeregistrationSlot AFTER registration → deregistered
         var deregState = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                200, null, 220, false, 84974395L, 10, 85000000L); // prevDeregSlot > regSlot
+                200, null, 220, false, 84974395L, 10, 85000000L, true); // prevDeregSlot > regSlot
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_B, deregState, batch, new ArrayList<>());
             commit(batch);
@@ -275,7 +292,7 @@ class DRepDistributionCalculatorTest {
         registerDRep(0, DREP_A, 200, 84974395L);
         var deregisteredDRep = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                200, null, 220, false, 84974395L, 10, 85000010L);
+                200, null, 220, false, 84974395L, 10, 85000010L, true);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_B, deregisteredDRep, batch, new ArrayList<>());
             commit(batch);
@@ -430,7 +447,7 @@ class DRepDistributionCalculatorTest {
         // Register DRep A, then deregister it (simulated by storing with prevDeregSlot > registeredAtSlot)
         var deregisteredState = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 136000000L, 10, 150000000L); // prevDeregSlot=150M > registeredAt=136M
+                507, null, 527, true, 136000000L, 10, 150000000L, true); // prevDeregSlot=150M > registeredAt=136M
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_A, deregisteredState, batch, new ArrayList<>());
             commit(batch);
@@ -464,7 +481,7 @@ class DRepDistributionCalculatorTest {
         // DRep A: deregistered (prevDeregSlot > registeredAtSlot)
         var deregisteredA = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 136000000L, 10, 150000000L);
+                507, null, 527, true, 136000000L, 10, 150000000L, true);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_A, deregisteredA, batch, new ArrayList<>());
             commit(batch);
@@ -494,31 +511,39 @@ class DRepDistributionCalculatorTest {
     }
 
     /**
-     * Verifies that the defensive timing guard filters delegations made before a DRep's
-     * previous deregistration. If DRep X deregisters (prevDeregSlot=200) and re-registers
-     * (registeredAtSlot=300), a delegation at slot 100 (before deregistration) is filtered.
-     * <p>
-     * The DRep deregistration cleanup should have already cleared this delegation via the
-     * reverse index. The timing guard is a defensive safety net for Yano's tombstone model.
-     * Haskell's DRep distribution only checks {@code Map.member cred regDReps} and does not
-     * have this guard; correctness comes from cleanup clearing the delegation at deregistration.
+     * PV 9: a delegation made before its DRep registered is not in the DRep's {@code drepDelegs}
+     * ({@code Map.adjust}, Conway/Rules/Deleg.hs:363-365), so the DRep's retirement does not clear it
+     * (GovCert.hs:246-254). When the DRep registers again, Haskell counts the delegation
+     * ({@code Map.member cred regDReps}, DRepPulser.hs:236-241), although it is older than the retirement.
+     * Replaces a test of the removed delegation-slot-before-retirement guard, which dropped it.
      */
     @Test
-    @DisplayName("Delegation before DRep re-registration filtered by defensive timing guard")
-    void delegationBeforeReRegistration_filteredByTimingGuard() throws Exception {
-        // DRep X: deregistered at slot 200, re-registered at slot 300
-        var reRegisteredState = new DRepStateRecord(
-                BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 300L, 10, 200L); // registeredAt=300, prevDeregSlot=200
-        try (WriteBatch batch = new WriteBatch()) {
-            govStore.storeDRepState(0, DREP_A, reRegisteredState, batch, new ArrayList<>());
-            commit(batch);
-        }
+    @DisplayName("PV9 delegation made before the DRep registered counts after the DRep retires and registers again")
+    void pv9DelegationBeforeRegistration_countedAfterRetirementAndReRegistration() throws Exception {
+        var params = new EpochParamProvider() {
+            @Override public int getProtocolMajor(long epoch) { return 9; }
+            @Override public BigInteger getKeyDeposit(long epoch) { return BigInteger.valueOf(2_000_000); }
+            @Override public BigInteger getPoolDeposit(long epoch) { return BigInteger.valueOf(500_000_000); }
+        };
+        var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                LoggerFactory.getLogger(DefaultAccountStateStore.class), true, params);
+        store.setEraProvider(new EraProvider() {
+            @Override
+            public boolean isConwayOrLater(int epoch) {
+                return true;
+            }
+        });
+        store.setGovernanceBlockProcessor(new GovernanceBlockProcessor(govStore, params));
+        StakeCredential x = StakeCredential.builder().type(StakeCredType.ADDR_KEYHASH).hash(CRED1).build();
+        Credential a = new Credential(StakeCredType.ADDR_KEYHASH, DREP_A);
+        BigInteger drepDeposit = BigInteger.valueOf(500_000_000);
 
-        // Credential A delegated at slot 100 — BEFORE the deregistration at slot 200
-        // In practice, cleanup would have cleared this. The timing guard is defensive backup.
-        storeDRepDelegation(0, CRED1, 0, DREP_A, 100L);
-        storeStakeAccount(0, CRED1, BigInteger.ZERO, BigInteger.valueOf(2_000_000));
+        applyCerts(store, 1, 100L,
+                RegCert.builder().stakeCredential(x).coin(BigInteger.valueOf(2_000_000)).build(),
+                VoteDelegCert.builder().stakeCredential(x).drep(Drep.addrKeyHash(DREP_A)).build());
+        applyCerts(store, 2, 200L, RegDrepCert.builder().drepCredential(a).coin(drepDeposit).build());
+        applyCerts(store, 3, 300L, UnregDrepCert.builder().drepCredential(a).coin(drepDeposit).build());
+        applyCerts(store, 4, 400L, RegDrepCert.builder().drepCredential(a).coin(drepDeposit).build());
 
         var utxoBalances = Map.of(
                 new org.yanoproject.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED1),
@@ -526,9 +551,14 @@ class DRepDistributionCalculatorTest {
 
         var dist = calculator.calculate(540, utxoBalances, Map.of());
 
-        // Timing guard: delegSlot=100 <= prevDeregSlot=200 → filtered
-        var key = new DRepDistributionCalculator.DRepDistKey(0, DREP_A);
-        assertThat(dist.getOrDefault(key, BigInteger.ZERO)).isEqualTo(BigInteger.ZERO);
+        assertThat(dist.get(new DRepDistributionCalculator.DRepDistKey(0, DREP_A)))
+                .isEqualTo(BigInteger.valueOf(50_000_000));
+    }
+
+    private static void applyCerts(DefaultAccountStateStore store, long blockNo, long slot, Certificate... certs) {
+        TransactionBody tx = TransactionBody.builder().certificates(new ArrayList<>(Arrays.asList(certs))).build();
+        Block block = Block.builder().transactionBodies(new ArrayList<>(List.of(tx))).build();
+        store.applyBlock(new BlockAppliedEvent(Era.Conway, slot, blockNo, "hash" + blockNo, block));
     }
 
     /**
@@ -543,7 +573,7 @@ class DRepDistributionCalculatorTest {
         // DRep X: deregistered (tombstone)
         var deregisteredX = new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
-                507, null, 527, true, 136000000L, 10, 150000000L);
+                507, null, 527, true, 136000000L, 10, 150000000L, true);
         try (WriteBatch batch = new WriteBatch()) {
             govStore.storeDRepState(0, DREP_A, deregisteredX, batch, new ArrayList<>());
             commit(batch);

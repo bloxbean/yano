@@ -1,0 +1,16 @@
+#!/bin/sh
+# C compiler shim for cc-rs when cross-compiling to wasm32 with zig (macOS developer builds;
+# Apple clang cannot target wasm). CI uses wasi-sdk instead (see build-wasm.sh).
+# cc-rs passes --target=wasm32-wasip1; zig spells that triple wasm32-wasi.
+: "${ZIG:=zig}"
+export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-${TMPDIR:-/tmp}/amaru-validator-zig-cache}"
+export ZIG_LOCAL_CACHE_DIR="$ZIG_GLOBAL_CACHE_DIR"
+for a in "$@"; do
+  case "$a" in
+    --target=wasm32-wasip1|--target=wasm32-wasi) set -- "$@" "--target=wasm32-wasi" ;;
+    --target=wasm32-unknown-unknown) set -- "$@" "--target=wasm32-freestanding" ;;
+    *) set -- "$@" "$a" ;;
+  esac
+  shift
+done
+exec "$ZIG" cc "$@"

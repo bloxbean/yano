@@ -30,8 +30,13 @@ dependencies {
     implementation libs.jackson.databind
 
     // Script anchors (ADR 008.4): UPLC param application + script hashing for
-    // the anchor artifacts (already shipped via ledger-rules' tx evaluator)...
+    // the anchor artifacts...
     implementation libs.julc.cardano.client.lib
+    // ...and the julc VM provider that JulcTransactionEvaluator loads through
+    // ServiceLoader when ScriptAnchorService prices anchor transactions.
+    runtimeOnly(libs.julc.vm.java) {
+        exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
+    }
     // ...and the bundled julc-compiled anchor artifacts (resources only — the
     // validator classes are never loaded)
     runtimeOnly project(':appchain-anchor-onchain')
@@ -40,6 +45,9 @@ dependencies {
     implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
+    testImplementation project(':script-evaluators')
+    // ADR-056 Phase 6a: the mempool gates validate real Conway transactions with the java engine
+    testImplementation testFixtures(project(':ledger-rules'))
     testImplementation libs.netty
 
     // Generate @DomainEventListener bindings at build time
@@ -106,6 +114,12 @@ tasks.named('test') {
     dependsOn tasks.named('generateTestPluginCatalogIndex')
     classpath += files(generatedTestPluginCatalogDir)
     catalogSemanticsTestClasses.each { exclude it }
+    // ADR-056 Phase 6a mempool budget microbenchmark: disabled by default,
+    // run with `./gradlew :runtime:test --tests '*LedgerMempoolBudgetTest' -PmempoolBenchmark=true`.
+    if (project.hasProperty('mempoolBenchmark')) {
+        systemProperty 'yano.mempool.benchmark', 'true'
+        maxHeapSize = '4g'
+    }
     doFirst {
         systemProperty 'yano.test.runtime-classpath', classpath.asPath
     }

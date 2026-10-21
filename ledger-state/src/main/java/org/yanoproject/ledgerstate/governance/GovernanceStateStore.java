@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import org.yanoproject.ledgerstate.governance.epoch.DRepExpiryCalculator;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import org.yanoproject.ledgerstate.DefaultAccountStateStore.BatchStateOverlay;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore.DeltaOp;
 import org.yanoproject.ledgerstate.governance.model.CommitteeMemberRecord;
 import org.yanoproject.ledgerstate.governance.model.DRepStateRecord;
@@ -339,16 +340,40 @@ public class GovernanceStateStore {
 
     public void storeDRepState(int credType, String credHash, DRepStateRecord record,
                                WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
-        byte[] key = drepStateKey(credType, credHash);
-        byte[] prev = db.get(cfState, key);
-        byte[] val = GovernanceCborCodec.encodeDRepState(record);
-        batch.put(cfState, key, val);
-        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+        storeDRepState(credType, credHash, record, batch, deltaOps, null);
+    }
+
+    /**
+     * Store a DRep record and, when {@code overlay} is given, record the write in it so later
+     * certificates and votes of the same block read it back ({@link #getDRepState(int, String,
+     * BatchStateOverlay)}); {@code db.get()} does not see the uncommitted batch.
+     */
+    public void storeDRepState(int credType, String credHash, DRepStateRecord record,
+                               WriteBatch batch, List<DeltaOp> deltaOps,
+                               BatchStateOverlay overlay) throws RocksDBException {
+        putThrough(drepStateKey(credType, credHash), GovernanceCborCodec.encodeDRepState(record),
+                batch, deltaOps, overlay);
     }
 
     public Optional<DRepStateRecord> getDRepState(int credType, String credHash) throws RocksDBException {
-        byte[] val = db.get(cfState, drepStateKey(credType, credHash));
+        return getDRepState(credType, credHash, null);
+    }
+
+    /**
+     * The DRep record as the block being applied sees it: {@code overlay}'s uncommitted value when
+     * the block already wrote one, else the committed value.
+     */
+    public Optional<DRepStateRecord> getDRepState(int credType, String credHash,
+                                                  BatchStateOverlay overlay) throws RocksDBException {
+        byte[] val = BatchStateOverlay.readThrough(overlay, db, cfState, drepStateKey(credType, credHash));
         return val != null ? Optional.of(GovernanceCborCodec.decodeDRepState(val)) : Optional.empty();
+    }
+
+    /** Journal and write a governance record through the block overlay (see {@link BatchStateOverlay}). */
+    private void putThrough(byte[] key, byte[] val, WriteBatch batch, List<DeltaOp> deltaOps,
+                            BatchStateOverlay overlay) throws RocksDBException {
+        byte[] prev = BatchStateOverlay.readThrough(overlay, db, cfState, key);
+        BatchStateOverlay.putThrough(overlay, batch, cfState, deltaOps, key, prev, val);
     }
 
     /**
@@ -405,15 +430,25 @@ public class GovernanceStateStore {
 
     public void storeCommitteeMember(int credType, String coldHash, CommitteeMemberRecord record,
                                      WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
-        byte[] key = committeeMemberKey(credType, coldHash);
-        byte[] prev = db.get(cfState, key);
-        byte[] val = GovernanceCborCodec.encodeCommitteeMember(record);
-        batch.put(cfState, key, val);
-        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+        storeCommitteeMember(credType, coldHash, record, batch, deltaOps, null);
+    }
+
+    /** As {@link #storeDRepState(int, String, DRepStateRecord, WriteBatch, List, BatchStateOverlay)}. */
+    public void storeCommitteeMember(int credType, String coldHash, CommitteeMemberRecord record,
+                                     WriteBatch batch, List<DeltaOp> deltaOps,
+                                     BatchStateOverlay overlay) throws RocksDBException {
+        putThrough(committeeMemberKey(credType, coldHash), GovernanceCborCodec.encodeCommitteeMember(record),
+                batch, deltaOps, overlay);
     }
 
     public Optional<CommitteeMemberRecord> getCommitteeMember(int credType, String coldHash) throws RocksDBException {
-        byte[] val = db.get(cfState, committeeMemberKey(credType, coldHash));
+        return getCommitteeMember(credType, coldHash, null);
+    }
+
+    /** As {@link #getDRepState(int, String, BatchStateOverlay)}. */
+    public Optional<CommitteeMemberRecord> getCommitteeMember(int credType, String coldHash,
+                                                              BatchStateOverlay overlay) throws RocksDBException {
+        byte[] val = BatchStateOverlay.readThrough(overlay, db, cfState, committeeMemberKey(credType, coldHash));
         return val != null ? Optional.of(GovernanceCborCodec.decodeCommitteeMember(val)) : Optional.empty();
     }
 

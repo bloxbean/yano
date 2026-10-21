@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** Bounded, resumable application of the Shelley POOLREAP live-state transition. */
 final class PoolReapProcessor {
@@ -317,9 +318,48 @@ final class PoolReapProcessor {
     }
 
     private PoolReapPlan buildPlan(int epoch) {
+        try (ReadOptions options = new ReadOptions().setFillCache(false)) {
+            return buildPlan(epoch, () -> db.newIterator(cfState, options),
+                    key -> db.get(cfState, key), store::isStakeCredentialRegistered);
+        }
+    }
+
+    /** Point reads used by {@link #buildPlan(int, Supplier, KeyReader, RegistrationCheck)}. */
+    @FunctionalInterface
+    interface KeyReader {
+        byte[] get(byte[] key) throws RocksDBException;
+    }
+
+    /** Whether a stake credential is registered, as the plan sees it. */
+    @FunctionalInterface
+    interface RegistrationCheck {
+        boolean isRegistered(int credentialType, String credentialHash);
+    }
+
+    /**
+     * The POOLREAP plan read through a RocksDB read snapshot, for the side-effect-free ADR-056
+     * boundary preview. Every read (retirements, registrations, reward-credential registration) goes
+     * through {@code reads}; it uses the same {@link #buildPlan(int, Supplier, KeyReader,
+     * RegistrationCheck)} code as the real boundary.
+     */
+    static PoolReapPlan planFromSnapshot(RocksDB db, ColumnFamilyHandle cfState, ReadOptions reads, int epoch) {
+        return buildPlan(epoch, () -> db.newIterator(cfState, reads),
+                key -> db.get(cfState, reads, key),
+                (type, hash) -> {
+                    try {
+                        return db.get(cfState, reads,
+                                DefaultAccountStateStore.accountKey(type, hash)) != null;
+                    } catch (RocksDBException e) {
+                        throw new IllegalStateException("Failed to read stake registration "
+                                + type + ":" + hash, e);
+                    }
+                });
+    }
+
+    private static PoolReapPlan buildPlan(int epoch, Supplier<RocksIterator> iterators,
+                                          KeyReader reader, RegistrationCheck registration) {
         List<PoolReapEntry> entries = new ArrayList<>();
-        try (ReadOptions options = new ReadOptions().setFillCache(false);
-             RocksIterator iterator = db.newIterator(cfState, options)) {
+        try (RocksIterator iterator = iterators.get()) {
             iterator.seek(new byte[]{DefaultAccountStateStore.PREFIX_POOL_RETIRE});
             while (iterator.isValid()) {
                 byte[] retirementKey = iterator.key();
@@ -342,7 +382,7 @@ final class PoolReapProcessor {
                     }
                     String poolHash = HexUtil.encodeHexString(
                             Arrays.copyOfRange(retirementKey, 1, retirementKey.length));
-                    entries.add(buildEntry(poolHash, retirementValue));
+                    entries.add(buildEntry(poolHash, retirementValue, reader, registration));
                 }
                 iterator.next();
             }
@@ -353,10 +393,10 @@ final class PoolReapProcessor {
         return new PoolReapPlan(List.copyOf(entries), Set.copyOf(hashes));
     }
 
-    private PoolReapEntry buildEntry(String poolHash, byte[] retirementValue) {
+    private static PoolReapEntry buildEntry(String poolHash, byte[] retirementValue,
+                                            KeyReader reader, RegistrationCheck registration) {
         try {
-            byte[] poolValue = db.get(cfState,
-                    DefaultAccountStateStore.poolDepositKey(poolHash));
+            byte[] poolValue = reader.get(DefaultAccountStateStore.poolDepositKey(poolHash));
             if (poolValue == null) {
                 throw new IllegalStateException("POOLREAP retirement " + poolHash
                         + " has no live pool registration");
@@ -367,8 +407,7 @@ final class PoolReapProcessor {
                 throw new IllegalStateException("POOLREAP pool " + poolHash
                         + " has an invalid lifecycle deposit");
             }
-            byte[] registrationSlotValue = db.get(cfState,
-                    DefaultAccountStateStore.poolRegSlotKey(poolHash));
+            byte[] registrationSlotValue = reader.get(DefaultAccountStateStore.poolRegSlotKey(poolHash));
             if (registrationSlotValue == null || registrationSlotValue.length != Long.BYTES) {
                 throw new IllegalStateException("POOLREAP pool " + poolHash
                         + " has no valid lifecycle registration slot");
@@ -383,8 +422,7 @@ final class PoolReapProcessor {
                 int separator = credential.indexOf(':');
                 credentialType = Integer.parseInt(credential.substring(0, separator));
                 credentialHash = credential.substring(separator + 1);
-                registered = store.isStakeCredentialRegistered(
-                        credentialType, credentialHash);
+                registered = registration.isRegistered(credentialType, credentialHash);
             }
             return new PoolReapEntry(poolHash, pool.deposit(), credentialType,
                     credentialHash, registered, poolValue.clone(), retirementValue,
@@ -567,7 +605,7 @@ final class PoolReapProcessor {
                          byte[] registrationSlotValue) {
     }
 
-    private record PoolReapPlan(List<PoolReapEntry> entries,
+    record PoolReapPlan(List<PoolReapEntry> entries,
                                 Set<String> retiringPoolHashes) {
     }
 

@@ -2,25 +2,26 @@ package org.yanoproject.scalusbridge;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.api.model.Utxo;
-import com.bloxbean.cardano.client.ledger.LedgerContext;
-import com.bloxbean.cardano.client.ledger.LedgerStateValidator;
-import com.bloxbean.cardano.client.ledger.rule.CertificateValidationRule;
-import com.bloxbean.cardano.client.ledger.rule.GovernanceValidationRule;
-import com.bloxbean.cardano.client.ledger.rule.LedgerRule;
-import com.bloxbean.cardano.client.ledger.slice.yaci.YaciAccountsSlice;
-import com.bloxbean.cardano.client.ledger.slice.yaci.YaciCommitteeSlice;
-import com.bloxbean.cardano.client.ledger.slice.yaci.YaciDRepsSlice;
-import com.bloxbean.cardano.client.ledger.slice.yaci.YaciPoolsSlice;
-import com.bloxbean.cardano.client.ledger.slice.yaci.YaciProposalsSlice;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import org.yanoproject.api.account.LedgerStateProvider;
-import org.yanoproject.ledgerrules.EpochProtocolParamsSupplier;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
-import org.yanoproject.ledgerrules.TransactionValidator;
-import org.yanoproject.ledgerrules.ValidationError;
-import org.yanoproject.ledgerrules.ValidationResult;
+import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.TransactionValidator;
+import org.yanoproject.ledger.rules.ValidationError;
+import org.yanoproject.ledger.rules.ValidationResult;
+import org.yanoproject.ledger.rules.conway.LedgerContext;
+import org.yanoproject.ledger.rules.conway.LedgerStateValidator;
+import org.yanoproject.ledger.rules.conway.RuleValidationError;
+import org.yanoproject.ledger.rules.conway.rule.CertificateValidationRule;
+import org.yanoproject.ledger.rules.conway.rule.GovernanceValidationRule;
+import org.yanoproject.ledger.rules.conway.rule.LedgerRule;
+import org.yanoproject.ledger.rules.view.slice.yaci.YaciAccountsSlice;
+import org.yanoproject.ledger.rules.view.slice.yaci.YaciCommitteeSlice;
+import org.yanoproject.ledger.rules.view.slice.yaci.YaciDRepsSlice;
+import org.yanoproject.ledger.rules.view.slice.yaci.YaciPoolsSlice;
+import org.yanoproject.ledger.rules.view.slice.yaci.YaciProposalsSlice;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scalus.bloxbean.ScriptSupplier;
@@ -284,7 +285,7 @@ public class ScalusBasedTransactionValidator implements TransactionValidator {
                 return ValidationResult.failure(new ValidationError(
                         cclError.getRule(),
                         cclError.getMessage(),
-                        cclError.getPhase() == com.bloxbean.cardano.client.api.model.ValidationError.Phase.PHASE_2
+                        cclError.getPhase() == RuleValidationError.Phase.PHASE_2
                                 ? ValidationError.Phase.PHASE_2
                                 : ValidationError.Phase.PHASE_1));
             }

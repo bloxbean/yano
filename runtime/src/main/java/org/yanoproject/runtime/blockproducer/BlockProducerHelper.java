@@ -19,6 +19,7 @@ import org.yanoproject.api.events.PreEpochTransitionEvent;
 import org.yanoproject.api.genesis.GenesisBootstrapData;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.runtime.chain.MemPool;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.tx.BlockTransactionSelector;
 import org.yanoproject.runtime.tx.BlockTransactionSelectors;
 import lombok.extern.slf4j.Slf4j;
@@ -197,23 +198,63 @@ public final class BlockProducerHelper {
         return BlockTransactionSelectors.fromMemPool(memPool, () -> validatorService, () -> utxoState, log);
     }
 
-    public static List<byte[]> drainMempool(MemPool memPool,
-                                      TransactionValidationService validatorService,
-                                      UtxoState utxoState) {
-        BlockTransactionSelector selector = transactionSelector(memPool, validatorService, utxoState);
-        List<byte[]> selected = selector.drainForBlock();
-        selector.blockCandidatePublished();
-        return selected;
+    /**
+     * Producer boundary section (ADR-056): runs {@link #prepareEpochTransitionBeforeBlock} as one
+     * canonical write section, separate from the later store-and-apply section so block selection
+     * can happen between them. A section with no transition does not publish a new generation.
+     */
+    public static void prepareEpochTransitionInWriteSection(ChainState chainState, EventBus eventBus, long slot,
+                                                            long blockNumber, String origin) {
+        try (CanonicalStateGate.WriteSection section = enterCanonicalWrite(chainState)) {
+            if (!prepareEpochTransitionBeforeBlock(eventBus, slot, blockNumber, origin)) {
+                section.markUnchanged();
+            }
+        }
     }
 
-    public static void prepareEpochTransitionBeforeBlock(EventBus eventBus, long slot, long blockNumber,
-                                                         String origin) {
-        if (eventBus == null) return;
-        if (epochProvider == null) return;
-        int currentEpoch = epochForSlot(slot);
-        if (currentEpoch < 0) return;
+    /**
+     * Inside the store section, just before a forged block with selected transactions is stored: verifies that the
+     * selection is still valid for the canonical state (ADR-056 §6: a selection whose canonical generation changed
+     * is discarded, never forged). On failure the section is marked unchanged and a signed builder's pending nonce
+     * state is rolled back.
+     *
+     * @throws StaleBlockSelectionException when the selection is stale
+     */
+    public static void requireCurrentSelection(BlockTransactionSelector transactions,
+                                               CanonicalStateGate.WriteSection section,
+                                               DevnetBlockBuilder blockBuilder, long slot) {
+        if (transactions.selectionCurrent()) {
+            return;
+        }
+        section.markUnchanged();
+        if (blockBuilder instanceof SignedBlockBuilder signedBlockBuilder) {
+            signedBlockBuilder.rollbackPendingNonceState();
+        }
+        throw new StaleBlockSelectionException(slot);
+    }
 
+    /**
+     * Enters the canonical write section for storing a produced block and applying it (ADR-056).
+     * Close it after the block's {@code BlockAppliedEvent} has been published; mempool notifications
+     * raised while it is open run when it closes.
+     */
+    public static CanonicalStateGate.WriteSection enterCanonicalWrite(ChainState chainState) {
+        return CanonicalStateGate.of(chainState).enterWrite();
+    }
+
+    /**
+     * @return true when an epoch transition was published
+     */
+    public static boolean prepareEpochTransitionBeforeBlock(EventBus eventBus, long slot, long blockNumber,
+                                                            String origin) {
+        if (eventBus == null) return false;
+        if (epochProvider == null) return false;
+        int currentEpoch = epochForSlot(slot);
+        if (currentEpoch < 0) return false;
+
+        boolean transitioned = false;
         if (previousEpoch >= 0 && currentEpoch > previousEpoch) {
+            transitioned = true;
             log.info("Epoch transition detected (block producer): {} -> {} at slot {}, block {}",
                     previousEpoch, currentEpoch, slot, blockNumber);
             EventMetadata meta = EventMetadata.builder()
@@ -236,6 +277,7 @@ public final class BlockProducerHelper {
             }
         }
         previousEpoch = currentEpoch;
+        return transitioned;
     }
 
     private static void publishEpochTransition(EventBus eventBus, int fromEpoch, int toEpoch,

@@ -35,6 +35,7 @@ import org.yanoproject.runtime.chain.ChainStateRecovery;
 import org.yanoproject.runtime.chain.ChainStateRollback;
 import org.yanoproject.runtime.chain.EraMetadataStore;
 import org.yanoproject.p2p.peer.PeerHealth;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.sync.validation.BodyValidationContext;
 import org.yanoproject.runtime.sync.validation.BodyValidationException;
 import org.yanoproject.runtime.sync.validation.BodyValidationResult;
@@ -668,6 +669,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         String hash = null;
         ChainTip tipBeforeStore = null;
         boolean blockStored = false;
+        // ADR-056: the block's chain store and every ledger listener run in one canonical write section.
+        CanonicalStateGate.WriteSection canonicalWrite = null;
 
         try {
             slot = block.getHeader().getHeaderBody().getSlot();
@@ -730,6 +733,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                         + ", slot=" + slot + ", reason=" + rejectionReason);
             }
 
+            canonicalWrite = CanonicalStateGate.of(chainState).enterWrite();
             tipBeforeStore = chainState.getTip();
             boolean freshChain = tipBeforeStore == null;
             chainState.storeBlock(
@@ -761,6 +765,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(era, slot, blockNumber, hash, block), appMeta, appOptions);
             recordBodyApplied(slot, blockNumber);
+
+            // The block's canonical state is complete: publish the generation and release the gate
+            // (running deferred mempool notifications) before TipChanged.
+            canonicalWrite.close();
 
             // Publish TipChanged if tip advanced
             var _newTip = chainState.getTip();
@@ -824,6 +832,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                      block != null && block.getHeader() != null && block.getHeader().getHeaderBody() != null ?
                      block.getHeader().getHeaderBody().getBlockHash() : "unknown", e);
             throw e; // Re-throw non-continuity errors
+        } finally {
+            if (canonicalWrite != null) {
+                canonicalWrite.close();
+            }
         }
     }
 
@@ -867,6 +879,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         String hash = null;
         ChainTip tipBeforeStore = null;
         boolean blockStored = false;
+        // ADR-056: the block's chain store and every ledger listener run in one canonical write section.
+        CanonicalStateGate.WriteSection canonicalWrite = null;
 
         try {
             // Handle Byron main block storage
@@ -923,6 +937,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                         + ", slot=" + slot + ", reason=" + rejectionReason);
             }
 
+            canonicalWrite = CanonicalStateGate.of(chainState).enterWrite();
             tipBeforeStore = chainState.getTip();
             boolean freshChain = tipBeforeStore == null;
             chainState.storeBlock(
@@ -959,6 +974,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
             recordBodyApplied(slot, blockNumber);
+
+            // The block's canonical state is complete: publish the generation and release the gate
+            // (running deferred mempool notifications) before TipChanged.
+            canonicalWrite.close();
 
             // Publish TipChanged if tip advanced
             var _newTipByron = chainState.getTip();
@@ -998,6 +1017,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                      byronBlock != null && byronBlock.getHeader() != null ?
                      byronBlock.getHeader().getBlockHash() : "unknown", e);
             throw e; // Re-throw exception for proper error handling
+        } finally {
+            if (canonicalWrite != null) {
+                canonicalWrite.close();
+            }
         }
     }
 
@@ -1016,6 +1039,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         String hash = null;
         ChainTip tipBeforeStore = null;
         boolean blockStored = false;
+        // ADR-056: the block's chain store and every ledger listener run in one canonical write section.
+        CanonicalStateGate.WriteSection canonicalWrite = null;
 
         try {
             // Handle Byron epoch boundary block storage
@@ -1071,6 +1096,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                         + ", slot=" + slot + ", reason=" + rejectionReason);
             }
 
+            canonicalWrite = CanonicalStateGate.of(chainState).enterWrite();
             tipBeforeStore = chainState.getTip();
             boolean freshChain = tipBeforeStore == null;
             chainState.storeBlock(
@@ -1108,6 +1134,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                     byronEbBlock.getHeader().getPrevBlock(), byronEbBlock), appMeta, appOptions);
             recordBodyApplied(slot, blockNumber);
 
+            // The block's canonical state is complete: publish the generation and release the gate
+            // (running deferred mempool notifications) before TipChanged.
+            canonicalWrite.close();
+
             // Publish TipChanged if tip advanced
             var _newTipEb = chainState.getTip();
             if (_newTipEb != null) {
@@ -1140,6 +1170,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                      byronEbBlock != null && byronEbBlock.getHeader() != null ?
                      byronEbBlock.getHeader().getBlockHash() : "unknown", e);
             throw e; // Re-throw exception for proper error handling
+        } finally {
+            if (canonicalWrite != null) {
+                canonicalWrite.close();
+            }
         }
     }
 
@@ -1214,6 +1248,17 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
                                                 long failedBlockNumber,
                                                 String failedHash,
                                                 Throwable failure) {
+        // A compensating rollback is a canonical write; it joins the failed block's section when
+        // that section is still open (reentrant) and otherwise runs in its own.
+        CanonicalStateGate.of(chainState).runWrite(() -> compensateFailedPostStoreApplyInWriteSection(
+                tipBeforeStore, failedSlot, failedBlockNumber, failedHash, failure));
+    }
+
+    private void compensateFailedPostStoreApplyInWriteSection(ChainTip tipBeforeStore,
+                                                              long failedSlot,
+                                                              long failedBlockNumber,
+                                                              String failedHash,
+                                                              Throwable failure) {
         long rollbackSlot = tipBeforeStore != null ? tipBeforeStore.getSlot() : -1L;
         String rollbackHash = tipBeforeStore != null && tipBeforeStore.getBlockHash() != null
                 ? HexUtil.encodeHexString(tipBeforeStore.getBlockHash())

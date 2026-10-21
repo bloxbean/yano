@@ -25,7 +25,7 @@ echo "last block: $(grep 'Block #' "$LOGF" | tail -1 | cut -c1-200)"
 echo "epoch transitions: $(grep -c 'Epoch transition detected' "$LOGF")"
 grep -oE 'Epoch transition detected[^)]*' "$LOGF" | head -3
 echo "tip: $(yano_tip $HTTP_A)"
-NATIVE_ERRS=$(grep -cE 'NoClassDefFoundError|ClassNotFoundException|UnsupportedFeatureError|MissingReflectionRegistrationError' "$LOGF")
+NATIVE_ERRS=$(grep -cE "$NATIVE_IMAGE_ERRORS" "$LOGF")
 echo "native-init errors: $NATIVE_ERRS"
 echo "ERROR lines: $(grep -c ' ERROR ' "$LOGF")"; grep ' ERROR ' "$LOGF" | cut -c1-220 | sort | uniq -c | sort -rn | head -8
 echo "listening:"; lsof -nP -a -p $YANO_PID -iTCP -sTCP:LISTEN | awk 'NR>1{print $9}'

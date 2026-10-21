@@ -1,5 +1,6 @@
 package org.yanoproject.app;
 
+import org.yanoproject.runtime.chain.MempoolAdmissionException;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.NodeLifecycle;
@@ -151,6 +152,16 @@ public class YanoResource {
         try {
             String txHash = txGateway.submitTransaction(txCbor);
             return Response.accepted(Map.of("txHash", txHash)).build();
+        } catch (MempoolAdmissionException e) {
+            if (e.retryable()) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .header("Retry-After", "5")
+                        .entity(Map.of("error", "Mempool is catching up with the canonical chain; retry later"))
+                        .build();
+            }
+            return Response.serverError()
+                    .entity(Map.of("error", "Failed to submit transaction: " + e.getMessage()))
+                    .build();
         } catch (Exception e) {
             return Response.serverError()
                     .entity(Map.of("error", "Failed to submit transaction: " + e.getMessage()))

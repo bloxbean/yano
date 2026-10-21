@@ -303,8 +303,7 @@ public class GovernanceResource {
     }
 
     private static boolean isRegistered(AccountStateReadStore.DRepInfo drep) {
-        return drep.previousDeregistrationSlot() == null
-                || drep.registeredAtSlot() > drep.previousDeregistrationSlot();
+        return !drep.deregistered();
     }
 
     private static int blockfrostExpiration(AccountStateReadStore.GovernanceProposal proposal) {

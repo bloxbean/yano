@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.blockproducer;
 
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import co.nstant.in.cbor.model.*;
 import com.bloxbean.cardano.yaci.events.api.Event;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
@@ -23,8 +24,8 @@ import org.yanoproject.api.genesis.ShelleyGenesisBootstrap;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
-import org.yanoproject.ledgerrules.TransactionValidator;
-import org.yanoproject.ledgerrules.ValidationResult;
+import org.yanoproject.ledger.rules.TransactionValidator;
+import org.yanoproject.ledger.rules.ValidationResult;
 import org.yanoproject.runtime.chain.DefaultMemPool;
 import org.yanoproject.runtime.chain.InMemoryChainState;
 import org.yanoproject.runtime.chain.MemPool;
@@ -37,6 +38,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -203,7 +205,7 @@ class DevnetBlockProducerTest {
     @Test
     void producerInvalidatesFirstTransactionThatCannotFitEmptyBlock() {
         byte[] tx = buildSampleTxCbor();
-        String txHash = com.bloxbean.cardano.client.transaction.util.TransactionUtil.getTxHash(tx);
+        String txHash = TransactionUtil.getTxHash(tx);
         AtomicReference<String> invalidated = new AtomicReference<>();
         AtomicInteger failedSelections = new AtomicInteger();
         BlockTransactionSelector selector = new BlockTransactionSelector() {
@@ -243,6 +245,104 @@ class DevnetBlockProducerTest {
         assertThat(invalidated).hasValue(txHash);
         assertThat(failedSelections).hasValue(1);
         assertThat(chainState.getTip().getBlockNumber()).isZero();
+    }
+
+    @Test
+    void aStaleSelectionIsDiscardedInsideTheStoreSectionAndNeverStored() {
+        // ADR-056 §6: the canonical generation moved between selection and forging.
+        byte[] tx = buildSampleTxCbor();
+        AtomicInteger failedSelections = new AtomicInteger();
+        AtomicInteger published = new AtomicInteger();
+        AtomicBoolean current = new AtomicBoolean(false);
+        List<Long> forgeSlots = new CopyOnWriteArrayList<>();
+        BlockTransactionSelector selector = new BlockTransactionSelector() {
+            @Override
+            public boolean hasPendingTransactions() {
+                return true;
+            }
+
+            @Override
+            public List<byte[]> drainForBlock() {
+                return List.of(tx);
+            }
+
+            @Override
+            public List<byte[]> drainForBlock(long forgeSlot) {
+                forgeSlots.add(forgeSlot);
+                return List.of(tx);
+            }
+
+            @Override
+            public boolean selectionCurrent() {
+                return current.get();
+            }
+
+            @Override
+            public void blockSelectionFailed() {
+                failedSelections.incrementAndGet();
+            }
+
+            @Override
+            public void blockCandidatePublished() {
+                published.incrementAndGet();
+            }
+        };
+        blockProducer = DevnetBlockProducer.withTransactionSelector(
+                chainState, selector, () -> null, new NoopEventBus(), scheduler, new DevnetBlockBuilder(),
+                60_000, false, System.currentTimeMillis(), 1_000, null);
+        blockProducer.start();
+        blockProducer.setForceSequentialSlots(true);
+
+        blockProducer.produceBlock();
+
+        assertThat(chainState.getTip().getBlockNumber()).as("the stale block was not stored").isZero();
+        assertThat(failedSelections).hasValue(1);
+        assertThat(published).hasValue(0);
+        assertThat(forgeSlots).as("the selection is made for the forge slot").singleElement()
+                .isEqualTo(chainState.getTip().getSlot() + 1);
+
+        current.set(true);
+        blockProducer.produceBlock();
+        assertThat(chainState.getTip().getBlockNumber()).as("the redone selection is forged").isEqualTo(1);
+        assertThat(published).hasValue(1);
+    }
+
+    @Test
+    void aSelectedTransactionClaimingIsValidFalseIsInvalidatedNeverForged() {
+        // ADR-056 §6: the builder cannot encode invalid_txs; admission rejects such transactions, and the builder
+        // refuses one that reaches it anyway.
+        byte[] tx = buildSampleTxCbor(false);
+        String txHash = TransactionUtil.getTxHash(tx);
+        AtomicReference<String> invalidated = new AtomicReference<>();
+        BlockTransactionSelector selector = new BlockTransactionSelector() {
+            @Override
+            public boolean hasPendingTransactions() {
+                return true;
+            }
+
+            @Override
+            public List<byte[]> drainForBlock() {
+                return List.of(tx);
+            }
+
+            @Override
+            public int invalidateSelectedTransaction(String candidateHash) {
+                invalidated.set(candidateHash);
+                return 1;
+            }
+        };
+        blockProducer = DevnetBlockProducer.withTransactionSelector(
+                chainState, selector, () -> null, new NoopEventBus(), scheduler, new DevnetBlockBuilder(),
+                60_000, false, System.currentTimeMillis(), 1_000, null);
+        blockProducer.start();
+        blockProducer.setForceSequentialSlots(true);
+
+        blockProducer.produceBlock();
+
+        assertThat(invalidated).hasValue(txHash);
+        assertThat(chainState.getTip().getBlockNumber()).isZero();
+        assertThrows(IllegalStateException.class,
+                () -> new DevnetBlockBuilder().buildBlock(1, 10, new byte[32], List.of(tx)));
     }
 
     @Test
@@ -567,6 +667,10 @@ class DevnetBlockProducerTest {
     }
 
     private byte[] buildSampleTxCbor() {
+        return buildSampleTxCbor(true);
+    }
+
+    private byte[] buildSampleTxCbor(boolean isValid) {
         Map txBody = new Map();
         Array inputs = new Array();
         Array input = new Array();
@@ -588,7 +692,7 @@ class DevnetBlockProducerTest {
         Array tx = new Array();
         tx.add(txBody);
         tx.add(witnesses);
-        tx.add(SimpleValue.TRUE);
+        tx.add(isValid ? SimpleValue.TRUE : SimpleValue.FALSE);
         tx.add(SimpleValue.NULL);
 
         return CborSerializationUtil.serialize(tx);

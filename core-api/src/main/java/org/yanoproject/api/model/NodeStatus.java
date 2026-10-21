@@ -387,6 +387,18 @@ public class NodeStatus {
     private final Long mempoolSlowValidations;
 
     /**
+     * The ledger-state mempool's state ({@code READY} or {@code CATCHING_UP}, ADR-056 §6), or {@code null} on the
+     * legacy mempool.
+     */
+    private final String mempoolLedgerState;
+
+    /** Whether the ledger-state mempool is catching up with the canonical chain (admission paused, retryable). */
+    private final Boolean mempoolCatchingUp;
+
+    /** Canonical generations the published mempool state lags behind (0 when fresh). */
+    private final Long mempoolCanonicalLagGenerations;
+
+    /**
      * Whether transaction admission is currently accepting new transactions.
      */
     private final Boolean mempoolAccepting;

@@ -62,7 +62,7 @@ class DRepExpiryCalculatorTest {
         return new DRepStateRecord(
                 BigInteger.valueOf(500_000_000_000L), null, null,
                 regEpoch, lastInteractionEpoch,
-                regEpoch + DREP_ACTIVITY, true, regSlot, protocolVersion, null);
+                regEpoch + DREP_ACTIVITY, true, regSlot, protocolVersion, null, false);
     }
 
     /**

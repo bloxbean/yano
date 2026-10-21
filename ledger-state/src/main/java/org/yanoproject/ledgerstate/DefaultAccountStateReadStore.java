@@ -348,7 +348,8 @@ class DefaultAccountStateReadStore implements AccountStateReadStore {
                 record.active(),
                 record.registeredAtSlot(),
                 record.protocolVersionAtRegistration(),
-                record.previousDeregistrationSlot()
+                record.previousDeregistrationSlot(),
+                record.deregistered()
         );
     }
 

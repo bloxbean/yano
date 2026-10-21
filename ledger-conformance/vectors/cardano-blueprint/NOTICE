@@ -1,0 +1,7 @@
+This directory contains ledger conformance test vectors from cardano-blueprint
+(https://github.com/cardano-scaling/cardano-blueprint), commit
+d57b8d765395e54645824b6718b02c6565bc0ffc, file
+src/ledger/conformance-test-vectors/vectors.tar.gz, extracted without modification.
+
+cardano-blueprint is licensed under the Apache License, Version 2.0; a copy of the
+license is in the LICENSE file in this directory.

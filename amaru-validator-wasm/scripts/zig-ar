@@ -1,0 +1,6 @@
+#!/bin/sh
+# Archiver shim matching zig-cc-wasm32.
+: "${ZIG:=zig}"
+export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-${TMPDIR:-/tmp}/amaru-validator-zig-cache}"
+export ZIG_LOCAL_CACHE_DIR="$ZIG_GLOBAL_CACHE_DIR"
+exec "$ZIG" ar "$@"

@@ -94,9 +94,33 @@ private[scalusbridge] object ProtocolParamsBridge:
 
   private def convertCostModels(pp: CclProtocolParams): CostModels =
     if pp.getCostModels == null || pp.getCostModels.isEmpty then
-      CostModels(scala.collection.immutable.Map.empty)
+      rawCostModels(pp)
     else
       Interop.getCostModels(pp)
+
+  /**
+   * Cost models from CCL's `costModelsRaw` (`PlutusV1`/`PlutusV2`/`PlutusV3` to the ordered parameter
+   * list), used when the named `costModels` map is empty: ledger views built from raw parameter lists (the
+   * Amaru scenario corpus, canonical snapshots of raw-only parameters) carry only these.
+   */
+  private[scalusbridge] def rawCostModels(pp: CclProtocolParams): CostModels =
+    val raw = pp.getCostModelsRaw
+    if raw == null || raw.isEmpty then CostModels(scala.collection.immutable.Map.empty)
+    else
+      val models = scala.collection.immutable.Map.newBuilder[Int, IndexedSeq[Long]]
+      raw.forEach { (language, values) =>
+        val languageId = language match
+          case "PlutusV1" => 0
+          case "PlutusV2" => 1
+          case "PlutusV3" => 2
+          case other => throw new IllegalArgumentException(s"Unknown cost model language $other")
+        if values != null then
+          models += languageId -> values.toArray(Array.empty[java.lang.Long]).map(_.longValue()).toIndexedSeq
+      }
+      CostModels(models.result())
+
+  /** Scalus cost models from either CCL representation. */
+  private[scalusbridge] def costModels(pp: CclProtocolParams): CostModels = convertCostModels(pp)
 
   private def toUnitInterval(value: BigDecimal, field: String): UnitInterval =
     if value == null then UnitInterval.zero
@@ -191,7 +215,8 @@ private[scalusbridge] object ProtocolParamsBridge:
       requireBigDecimal(pp.getCollateralPercent, "collateralPercent")
       requireInt(pp.getMaxCollateralInputs, "maxCollateralInputs")
       requireUtxoCost(pp, protocolMajor)
-      if pp.getCostModels == null || pp.getCostModels.isEmpty then
+      if (pp.getCostModels == null || pp.getCostModels.isEmpty)
+          && (pp.getCostModelsRaw == null || pp.getCostModelsRaw.isEmpty) then
         throw new IllegalArgumentException("Protocol parameter costModels is required for Alonzo or later")
 
     if protocolMajor >= 9 then

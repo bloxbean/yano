@@ -2,7 +2,7 @@ package org.yanoproject.scalusbridge;
 
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import org.yanoproject.api.util.EpochSlotCalc;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
 
 final class SlotConfigAdapters {
 

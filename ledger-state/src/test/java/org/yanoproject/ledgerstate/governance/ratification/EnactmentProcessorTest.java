@@ -154,6 +154,31 @@ class EnactmentProcessorTest {
         assertThat(member.get().hotHash()).isEqualTo(HOT1); // preserved!
     }
 
+    @Test
+    @DisplayName("UpdateCommittee re-electing a resigned member keeps the resignation")
+    void updateCommittee_reElectedResignedMemberStaysResigned() throws Exception {
+        // Haskell keeps the CommitteeMemberResigned entry of a member that stays in the committee
+        // (Conway/Rules/Epoch.hs:419-423 intersects the committee state with the new members).
+        try (WriteBatch batch = new WriteBatch()) {
+            store.storeCommitteeMember(0, COLD3, new CommitteeMemberRecord(0, HOT1, 300, true), batch, new ArrayList<>());
+            commit(batch);
+        }
+
+        var newMembers = new LinkedHashMap<Credential, Integer>();
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD3), 372);
+        var action = UpdateCommittee.builder().newMembersAndTerms(newMembers).build();
+
+        try (WriteBatch batch = new WriteBatch()) {
+            processor.enact(new GovActionId(TX_HASH, 0), makeProposal(GovActionType.UPDATE_COMMITTEE, action), 232,
+                    batch, new ArrayList<>());
+            commit(batch);
+        }
+
+        var member = store.getCommitteeMember(0, COLD3).orElseThrow();
+        assertThat(member.resigned()).isTrue();
+        assertThat(member.expiryEpoch()).isEqualTo(372);
+    }
+
     // ===== NoConfidence =====
 
     @Test

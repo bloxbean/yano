@@ -103,6 +103,31 @@ public final class PropagatingEventBus implements EventBus {
         };
     }
 
+    /**
+     * One active subscription, for diagnostics and ordering guards (ADR-056 Phase 7a: shadow sync must run before every
+     * listener that changes ledger state).
+     *
+     * @param priority      the subscription priority (lower runs first)
+     * @param listenerClass the listener's class name (a lambda's name starts with its defining class)
+     */
+    public record SubscriberInfo(int priority, String listenerClass) {
+    }
+
+    /** @return the active subscriptions of {@code type}, in delivery order */
+    public List<SubscriberInfo> subscribers(Class<? extends Event> type) {
+        CopyOnWriteArrayList<Sub<?>> list = subs.get(type);
+        if (list == null) {
+            return List.of();
+        }
+        List<SubscriberInfo> infos = new ArrayList<>();
+        for (Sub<?> sub : list) {
+            if (sub.active.get()) {
+                infos.add(new SubscriberInfo(sub.priority, sub.listener.getClass().getName()));
+            }
+        }
+        return List.copyOf(infos);
+    }
+
     private static boolean requiresSynchronousDelivery(Class<?> type) {
         return type == TransactionValidateEvent.class
                 || type == UtxoStateAppliedEvent.class

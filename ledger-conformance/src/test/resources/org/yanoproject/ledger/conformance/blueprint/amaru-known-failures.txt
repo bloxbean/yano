@@ -1,0 +1,31 @@
+# Amaru's known failures on the cardano-blueprint ledger conformance vectors: the keys of
+# crates/amaru-ledger/tests/data/rules-conformance.failures.toml at Amaru tag v10.11.20260925 (commit eaf8ac3f),
+# one vector id per line. Every other vector passes Amaru's harness (evaluate_ledger_states.rs).
+# AmaruKnownFailuresTest checks this list against the file when an Amaru checkout is configured.
+allegra/fail-utxow-invalidmetadata/0
+conway/fail-certs-withdrawing-from-an-unregistered-reward-account/0
+conway/fail-deleg-delegate-unregistered-stake-credentials/0
+conway/fail-deleg-delegate-vote-of-unregistered-stake-credentials/0
+conway/fail-deleg-with-non-zero-reward-balance/0
+conway/fail-gov-empty-prevgovid-after-the-first-constitution-was-enacted/0
+conway/fail-gov-expired-gov-actions/0
+conway/fail-gov-policy-is-respected-by-proposals/0
+conway/fail-utxos-alwaysfails-plutus-govpolicy-does-not-validate/0
+conway/fail-utxos-failing-native-script-govpolicy/0
+conway/fail-utxos-fails-when-using-inline-datums-for-plutusv1/0
+conway/fail-utxos-proposalprocedures-v1/0
+conway/fail-utxos-proposalprocedures-v2/0
+conway/fail-utxos-treasurydonation-v1/0
+conway/fail-utxos-treasurydonation-v2/0
+conway/fail-utxos-votingprocedures-v1/0
+conway/fail-utxos-votingprocedures-v2/0
+conway/pass-deleg-delegate-retire-and-re-register-pool/0
+conway/pass-deleg-deregistering-returns-the-deposit/0
+conway/pass-gov-fails-for-empty-withdrawals/0
+conway/pass-govcert-registering-a-resigned-cc-member-hotkey/0
+conway/pass-ratify-rewards-contribute-to-active-voting-stake-even-in-the-absence-of-stakedistr/0
+conway/pass-ratify-stakepool-rewards-contribute-to-active-voting-stake-even-in-the-absence-of-e489f777/0
+conway/pass-utxos-alwayssucceeds-plutus-govpolicy-validates/0
+conway/pass-utxos-updating-costmodels-and-setting-the-govpolicy-afterwards-succeeds/0
+conway/pass-utxos-updating-costmodels-with-alwaysfails-govpolicy-does-not-validate/0
+conway/pass-enact-cc-re-election/0

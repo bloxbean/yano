@@ -68,7 +68,7 @@ HERR=$(grep -iE 'error|invalid|reject' "$RUN/haskell.log" | grep -vE 'Node confi
 echo "haskell error-like lines: $(printf '%s' "$HERR" | grep -c .)"; printf '%s\n' "$HERR" | cut -c1-260 | head -5
 [ -z "$HERR" ] || FAIL+=(haskell-errors)
 echo "yano ERROR lines: $(grep -c ' ERROR ' "$LOGF")"; grep ' ERROR ' "$LOGF" | cut -c1-220 | head -5
-NATIVE_ERRS=$(grep -cE 'NoClassDefFoundError|ClassNotFoundException|UnsupportedFeatureError|MissingReflectionRegistrationError' "$LOGF")
+NATIVE_ERRS=$(grep -cE "$NATIVE_IMAGE_ERRORS" "$LOGF")
 echo "native-init errors: $NATIVE_ERRS"; [ "$NATIVE_ERRS" -eq 0 ] || FAIL+=(native-init)
 kill_tracked
 if [ ${#FAIL[@]} -eq 0 ]; then echo "VERDICT: PASS"; else echo "VERDICT: FAIL (${FAIL[*]})"; fi

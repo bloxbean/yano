@@ -1,6 +1,6 @@
 package org.yanoproject.tx;
 
-import org.yanoproject.ledgerrules.EpochProtocolParamsSupplier;
+import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
 
 /**
  * Selected protocol-parameter source for transaction validation/evaluation.

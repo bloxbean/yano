@@ -235,8 +235,67 @@ public final class YanoPropertyKeys {
      * Transaction validation listener settings.
      */
     public static final class Validation {
+        /** Deprecated (ADR-056 §7): removed in ADR-056 Phase 8; a WARN is logged when it is set. */
         public static final String DEFAULT_VALIDATOR_ENABLED = "yano.validation.default-validator-enabled";
+        /** Deprecated (ADR-056 §7): removed in ADR-056 Phase 8; a WARN is logged when it is set. */
         public static final String SUPPLEMENTARY_RULES_ENABLED = "yano.validation.supplementary-rules-enabled";
+        /** ADR-056: soft cap on live canonical ledger snapshots (default 4); only shadow requests are refused. */
+        public static final String MAX_LIVE_SNAPSHOTS = "yano.validation.max-live-snapshots";
+        /** ADR-056 §6 step 6: discarded off-lane mempool rebuilds before the synchronous fallback (default 3). */
+        public static final String REBUILD_MAX_RESTARTS = "yano.validation.rebuild-max-restarts";
+        /** ADR-056 §6 step 7: synchronous rebuild attempts before the mempool enters CATCHING_UP (default 3). */
+        public static final String REBUILD_SYNC_ATTEMPTS = "yano.validation.rebuild-sync-attempts";
+        /**
+         * ADR-056 §7: admission engine, {@code java-julc} (default, ADR-056 Phase 8) | {@code java-scalus} |
+         * {@code scalus} (the legacy validator) | {@code amaru} | {@code amaru-scalus}. Ids name
+         * {@code <rules>-<evaluator>}: the Java rules run Plutus on julc ({@code java-julc}) or Scalus
+         * ({@code java-scalus}), ADR-056 Phase 7c; Amaru runs it itself ({@code amaru}) or on Scalus
+         * ({@code amaru-scalus}), ADR-057.
+         */
+        public static final String ENGINE = "yano.validation.engine";
+        /** ADR-056 §7: engines run in the shadow of admission, comma-separated (default none). */
+        public static final String SHADOW_ENGINES = "yano.validation.shadow-engines";
+        /** ADR-056 §7: directory for replay bundles of engine disagreements (default empty: no dumps). */
+        public static final String SHADOW_DUMP_DIR = "yano.validation.shadow-dump-dir";
+        /**
+         * ADR-056 §7, Phase 7a: validate every transaction of every applied Conway block (PV 9+) against its pre-block
+         * state, observe only (default false).
+         */
+        public static final String SHADOW_SYNC = "yano.validation.shadow-sync";
+        /**
+         * ADR-056 Phase 7a: engines shadow sync runs, comma-separated (default {@code java-julc});
+         * {@code java-julc,java-scalus} runs both phase-2 evaluators side by side (Phase 7c).
+         */
+        public static final String SHADOW_SYNC_ENGINES = "yano.validation.shadow-sync-engines";
+        /** ADR-056 Phase 7a: JSONL file with one line per disagreement or engine failure (default empty: none). */
+        public static final String SHADOW_SYNC_REPORT = "yano.validation.shadow-sync-report";
+        /** ADR-056 Phase 7a: directory for replay bundles of shadow-sync findings (default empty: none). */
+        public static final String SHADOW_SYNC_DUMP_DIR = "yano.validation.shadow-sync-dump-dir";
+        /** ADR-056 Phase 7a: at most this many bundles are written (default 1000). */
+        public static final String SHADOW_SYNC_MAX_DUMPS = "yano.validation.shadow-sync-max-dumps";
+        /**
+         * ADR-056 Phase 7a: blocks validated in parallel, each on a virtual thread holding one snapshot (0 or unset:
+         * half the processors). Raise it for faster catch-up on a dedicated machine; keep it below the processor
+         * count, since validation shares the virtual-thread carriers with the node's own sync.
+         */
+        public static final String SHADOW_SYNC_MAX_IN_FLIGHT = "yano.validation.shadow-sync-max-in-flight";
+        /** ADR-056 Phase 7a: longest the apply thread waits for a free slot before skipping a block (default 30000). */
+        public static final String SHADOW_SYNC_MAX_WAIT_MS = "yano.validation.shadow-sync-max-wait-ms";
+        /** ADR-056 Phase 7a: seconds between INFO summaries (default 60; 0 disables). */
+        public static final String SHADOW_SYNC_SUMMARY_SECONDS = "yano.validation.shadow-sync-summary-seconds";
+        /** ADR-056 §3: a shadow task older than this is cancelled and its snapshot released (default 30000). */
+        public static final String SNAPSHOT_MAX_AGE_MS = "yano.validation.snapshot-max-age-ms";
+        /**
+         * ADR-057 §2: Amaru instances; 0 (default) means one per validation thread plus two (rebuild, selection);
+         * for the shadow-sync engine, 0 means {@link #SHADOW_SYNC_MAX_IN_FLIGHT} instances.
+         */
+        public static final String AMARU_POOL_SIZE = "yano.validation.amaru.pool-size";
+        /** ADR-057 §2: how long a caller waits for one Amaru module call (default 2000). */
+        public static final String AMARU_TIMEOUT_MS = "yano.validation.amaru.timeout-ms";
+        /** ADR-057 §2: stuck calls tolerated before the Amaru engine turns unhealthy (default 2). */
+        public static final String AMARU_MAX_ABANDONED = "yano.validation.amaru.max-abandoned";
+        /** ADR-057 §2: linear-memory page limit per Amaru instance (default 2048 = 128 MiB). */
+        public static final String AMARU_MAX_MEMORY_PAGES = "yano.validation.amaru.max-memory-pages";
 
         private Validation() {
         }

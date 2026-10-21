@@ -96,6 +96,11 @@ public final class DefaultTxDiffusion implements TxDiffusion {
 
     @Override
     public TxRequestPlan onPeerTxIds(String peerId, PeerClass peerClass, List<TxIdAndSize> announced) {
+        if (!txCatalog.admitting()) {
+            int ignored = announced != null ? announced.size() : 0;
+            inboundTxIdsIgnored.addAndGet(ignored);
+            return new TxRequestPlan(List.of(), ignored, 0, 0);
+        }
         TxRequestPlan plan = state(peerId, peerClass).planRequests(
                 mode,
                 announced,

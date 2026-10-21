@@ -1,0 +1,76 @@
+package org.yanoproject.app.api.validation;
+
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import org.eclipse.microprofile.health.HealthCheck;
+import org.eclipse.microprofile.health.HealthCheckResponse;
+import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
+import org.eclipse.microprofile.health.Readiness;
+import org.yanoproject.ledger.rules.LedgerValidationEngines;
+import org.yanoproject.runtime.validation.ValidationEngines;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport;
+import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
+
+/**
+ * Readiness of the validation engines (ADR-057 §2): it matters only when an Amaru engine ({@code amaru} or
+ * {@code amaru-scalus}) is the admission or a shadow engine, since only Amaru can turn unhealthy (after
+ * {@code max-abandoned} stuck calls it fails every request closed until restart).
+ *
+ * <ul>
+ *   <li>No Amaru engine configured: UP, with the engine name.</li>
+ *   <li>Admission engine unhealthy: DOWN (every admission is rejected).</li>
+ *   <li>Only a shadow engine unhealthy: UP with {@code shadowUnhealthy} set; admission is unaffected, and the
+ *       {@code yano_validation_engine_healthy} metric alerts.</li>
+ *   <li>Shadow-sync engines (ADR-056 Phase 7a) never gate readiness: an unhealthy one (an Amaru engine that failed
+ *       closed) only makes shadow sync report engine failures. Their health is reported as data
+ *       ({@code shadowSync.<engine>.healthy}, {@code shadowSyncUnhealthy}) and in
+ *       {@code yano_validation_shadow_sync_engine_healthy}.</li>
+ * </ul>
+ */
+@Readiness
+@ApplicationScoped
+public class ValidationEngineHealthCheck implements HealthCheck {
+
+    static final String NAME = "validation-engine";
+
+    @Inject
+    ValidationEnginesSource source;
+
+    @Override
+    public HealthCheckResponse call() {
+        ValidationEngines engines = source == null ? null : source.engines().orElse(null);
+        return check(engines);
+    }
+
+    static HealthCheckResponse check(ValidationEngines engines) {
+        HealthCheckResponseBuilder builder = HealthCheckResponse.named(NAME);
+        if (engines == null) {
+            return builder.up().withData("engine", "scalus (legacy)").build();
+        }
+        ValidationEngines.Status status = engines.status();
+        builder.withData("engine", status.engine())
+                .withData("shadowEngines", String.join(",", status.shadowEngines()));
+        ShadowSyncValidator sync = engines.shadowSync();
+        if (sync != null) {
+            ShadowSyncValidator.Status syncStatus = sync.status();
+            ShadowSyncReport.Stats stats = syncStatus.report();
+            builder.withData("shadowSync.engines", String.join(",", syncStatus.engines()))
+                    .withData("shadowSync.blocksValidated", stats.blocksValidated())
+                    .withData("shadowSync.disagreements", stats.disagreedTotal())
+                    .withData("shadowSync.engineFailures", stats.engineFailuresTotal())
+                    .withData("shadowSync.blockFailures", stats.blockFailures())
+                    .withData("shadowSync.inFlight", syncStatus.inFlight());
+            status.shadowSyncHealth().forEach((name, healthy) ->
+                    builder.withData("shadowSync." + name + ".healthy", healthy));
+            builder.withData("shadowSyncUnhealthy", status.shadowSyncHealth().containsValue(false));
+        }
+        if (!engines.uses(LedgerValidationEngines.AMARU) && !engines.uses(LedgerValidationEngines.AMARU_SCALUS)) {
+            return builder.up().build();
+        }
+        status.engineHealth().forEach((name, healthy) -> builder.withData(name + ".healthy", healthy));
+        boolean shadowUnhealthy = status.engineHealth().entrySet().stream()
+                .anyMatch(e -> !e.getKey().equals(status.engine()) && !e.getValue());
+        builder.withData("shadowUnhealthy", shadowUnhealthy);
+        return status.admissionHealthy() ? builder.up().build() : builder.down().build();
+    }
+}

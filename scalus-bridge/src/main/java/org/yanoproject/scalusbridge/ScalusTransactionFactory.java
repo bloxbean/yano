@@ -2,10 +2,10 @@ package org.yanoproject.scalusbridge;
 
 import com.bloxbean.cardano.client.api.ScriptSupplier;
 import org.yanoproject.api.account.LedgerStateProvider;
-import org.yanoproject.ledgerrules.EpochProtocolParamsSupplier;
-import org.yanoproject.ledgerrules.SlotConfigSupplier;
-import org.yanoproject.ledgerrules.TransactionEvaluator;
-import org.yanoproject.ledgerrules.TransactionValidator;
+import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
+import org.yanoproject.ledger.rules.SlotConfigSupplier;
+import org.yanoproject.ledger.rules.TransactionEvaluator;
+import org.yanoproject.ledger.rules.TransactionValidator;
 
 import java.util.function.LongFunction;
 import java.util.function.LongSupplier;

@@ -22,7 +22,12 @@ public record MempoolAdmissionResult(
         TRANSACTION_CAPACITY,
         BYTE_CAPACITY,
         INDEX_CAPACITY,
-        REENTRANT_ADMISSION
+        REENTRANT_ADMISSION,
+        /**
+         * The mempool's ledger state is catching up with the canonical chain (ADR-056 §6, rebuild step 7): the
+         * transaction was not judged; retry later.
+         */
+        CATCHING_UP
     }
 
     public MempoolAdmissionResult {
@@ -35,5 +40,10 @@ public record MempoolAdmissionResult(
 
     public boolean present() {
         return status == Status.ACCEPTED || status == Status.DUPLICATE;
+    }
+
+    /** @return true when the submitter should retry later rather than treat the transaction as rejected */
+    public boolean retryable() {
+        return status == Status.CATCHING_UP;
     }
 }

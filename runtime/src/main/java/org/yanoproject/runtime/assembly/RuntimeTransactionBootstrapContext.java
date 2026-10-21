@@ -9,6 +9,7 @@ import org.yanoproject.runtime.internal.RuntimeNode;
 import org.yanoproject.runtime.config.InMemoryDevnetGenesis;
 import org.yanoproject.runtime.tx.TransactionBootstrapContext;
 
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -53,6 +54,11 @@ final class RuntimeTransactionBootstrapContext implements TransactionBootstrapCo
     @Override
     public long resolvedGenesisTimestamp() {
         return runtimeNode.getResolvedGenesisTimestamp();
+    }
+
+    @Override
+    public Map<String, Object> globals() {
+        return runtimeNode.runtimeGlobals();
     }
 
     @Override

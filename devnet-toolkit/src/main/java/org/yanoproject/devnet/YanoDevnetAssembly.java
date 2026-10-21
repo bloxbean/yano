@@ -23,6 +23,7 @@ import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
 import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
 import org.yanoproject.runtime.tx.TransactionServicesFactory;
+import org.yanoproject.runtime.validation.ValidationEngines;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -301,6 +302,11 @@ public final class YanoDevnetAssembly {
         @Override
         public java.util.Optional<org.yanoproject.api.db.RocksDbAccess> chainstateRocksAccess() {
             return delegate.chainstateRocksAccess();
+        }
+
+        @Override
+        public Optional<ValidationEngines> validationEngines() {
+            return delegate.validationEngines();
         }
 
         @Override

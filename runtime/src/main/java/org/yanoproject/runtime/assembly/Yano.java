@@ -12,6 +12,7 @@ import org.yanoproject.api.TxGateway;
 import org.yanoproject.runtime.debug.DebugLedgerStateAccess;
 import org.yanoproject.runtime.kernel.NodeKernel;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
+import org.yanoproject.runtime.validation.ValidationEngines;
 
 import java.util.Optional;
 
@@ -161,6 +162,14 @@ public interface Yano extends AutoCloseable {
     default java.util.Optional<org.yanoproject.api.CanonicalBlockReference>
             canonicalBlockReference(long blockNumber) {
         return java.util.Optional.empty();
+    }
+
+    /**
+     * The transaction validation engines (ADR-056 §7), for health checks and metrics; empty when admission
+     * uses the legacy validator.
+     */
+    default Optional<ValidationEngines> validationEngines() {
+        return Optional.empty();
     }
 
     default Optional<RuntimeMaintenanceGate> maintenanceGate() {

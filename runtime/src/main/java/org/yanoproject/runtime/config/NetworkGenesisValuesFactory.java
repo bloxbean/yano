@@ -206,6 +206,11 @@ public class NetworkGenesisValuesFactory {
         };
     }
 
+    /** @return the treasury Yano stores in the first AdaPot for {@code magic} (0 on devnets) */
+    public static BigInteger knownInitialTreasury(int magic) {
+        return resolveKnownInitialTreasury(magic);
+    }
+
     private static BigInteger resolveKnownInitialTreasury(int magic) {
         return switch (magic) {
             case 764824073, 1 -> BigInteger.ZERO;                       // mainnet, preprod
