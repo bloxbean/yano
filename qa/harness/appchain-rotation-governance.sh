@@ -23,7 +23,16 @@ check "mode rotating, window>0, proposer in {A,B}, no split votes" $(echo "$S" |
 check "peers connected (A,B)" $(for u in $A $B; do curl -s $u/app-chain/status | jq -e '(.peers|to_entries|length)>0 and (.peers|to_entries|all(.value==true))' >/dev/null || echo x; done | grep -q x; [ $? -ne 0 ]; echo $?)
 
 echo "== rotation across windows"
-for i in 1 2 3 4; do submit $A/app-chain/messages t "rot-$i" | jq -c . ; sleep 12; done
+# One message per 10 s window. Each window's proposer is a hash draw, so four windows can all pick the same
+# member (1 in 8); keep going, up to eight windows, until two distinct proposers have finalized blocks.
+proposers() {
+  local h; h=$(curl -s $A/app-chain/tip | jq .height)
+  for b in $(seq 1 "$h"); do curl -s $A/app-chain/blocks/$b | jq -r .proposer; done | sort -u | grep -c .
+}
+for i in 1 2 3 4 5 6 7 8; do
+  submit $A/app-chain/messages t "rot-$i" | jq -c . ; sleep 12
+  [ "$i" -ge 4 ] && [ "$(proposers)" -ge 2 ] && break
+done
 TA=$(curl -s $A/app-chain/tip); TB=$(curl -s $B/app-chain/tip); H=$(echo "$TA" | jq .height)
 echo "  tips A=$(echo $TA | jq -c '{height}') B=$(echo $TB | jq -c '{height}')"
 check "tips identical" $(jq -en --argjson a "$TA" --argjson b "$TB" '$a.height>=3 and $a.height==$b.height and $a.stateRoot==$b.stateRoot' >/dev/null; echo $?)

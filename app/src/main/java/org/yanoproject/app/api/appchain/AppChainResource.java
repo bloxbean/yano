@@ -7,6 +7,7 @@ import org.yanoproject.api.appchain.AppChainGateway;
 import org.yanoproject.api.appchain.AppChainGateways;
 import org.yanoproject.api.appchain.AppQueryPath;
 import org.yanoproject.api.appchain.AppSubmissionRejectedException;
+import org.yanoproject.api.appchain.MembershipChangeRejectedException;
 import org.yanoproject.api.appchain.ReceivedAppMessage;
 import org.yanoproject.api.appchain.PoolFullException;
 import org.yanoproject.api.appchain.observation.ObservationReport;
@@ -360,6 +361,13 @@ public class AppChainResource {
 
     @POST
     @Operation(hidden = true)
+    @Path("admin/l1/rebaseline")
+    public Response rebaselineL1Delivery() {
+        return singleChain().rebaselineL1Delivery();
+    }
+
+    @POST
+    @Operation(hidden = true)
     @Path("admin/anchor/bootstrap")
     public Response bootstrapScriptAnchor() {
         return singleChain().bootstrapScriptAnchor();
@@ -614,8 +622,12 @@ public class AppChainResource {
                 result.put("topic", request.topic() != null ? request.topic() : "");
                 return Response.accepted(result).build();
             } catch (AppSubmissionRejectedException e) {
-                return Response.status(Response.Status.BAD_REQUEST)
-                        .entity(Map.of("code", e.code())).build();
+                // Structured details (bloxbean/yano#153) are allowlisted and grammar-checked by the exception;
+                // the body keeps its historical shape when none survived.
+                Map<String, Object> rejection = new LinkedHashMap<>();
+                rejection.put("code", e.code());
+                if (!e.details().isEmpty()) rejection.put("details", e.details());
+                return Response.status(Response.Status.BAD_REQUEST).entity(rejection).build();
             } catch (org.yanoproject.api.appchain.PoolFullException e) {
                 // Backpressure (ADR 008.1 I1.1): the message was NOT retained/relayed
                 return Response.status(429)
@@ -1203,6 +1215,8 @@ public class AppChainResource {
             try {
                 gateway.addMember(request.publicKey());
                 return listMembers();
+            } catch (MembershipChangeRejectedException e) {
+                return membershipRejected(e);
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
             }
@@ -1217,6 +1231,8 @@ public class AppChainResource {
             try {
                 gateway.removeMember(request.publicKey());
                 return listMembers();
+            } catch (MembershipChangeRejectedException e) {
+                return membershipRejected(e);
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
             }
@@ -1242,6 +1258,8 @@ public class AppChainResource {
             try {
                 gateway.setThreshold(request.threshold());
                 return listMembers();
+            } catch (MembershipChangeRejectedException e) {
+                return membershipRejected(e);
             } catch (IllegalArgumentException e) {
                 return badRequest(e.getMessage());
             }
@@ -1275,6 +1293,24 @@ public class AppChainResource {
         public Response forceAnchor() {
             boolean triggered = gateway.forceAnchor();
             return Response.ok(Map.of("chainId", gateway.chainId(), "anchorTriggered", triggered)).build();
+        }
+
+        /**
+         * Operator re-baseline of L1 delivery (app-layer ADR-038, D7a). Refused with 409 while a terminal
+         * quarantine is persisted.
+         */
+        @POST
+        @Path("admin/l1/rebaseline")
+        public Response rebaselineL1Delivery() {
+            boolean accepted;
+            try {
+                accepted = gateway.rebaselineL1Delivery();
+            } catch (UnsupportedOperationException e) {
+                throw jsonError(Response.Status.BAD_REQUEST, e.getMessage());
+            }
+            // Refused: a terminal quarantine is persisted, or the chain is not running.
+            return Response.status(accepted ? Response.Status.OK : Response.Status.CONFLICT)
+                    .entity(Map.of("chainId", gateway.chainId(), "rebaselineAccepted", accepted)).build();
         }
 
         /**
@@ -2401,6 +2437,11 @@ public class AppChainResource {
         private static Response badRequest(String message) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", message)).build();
+        }
+
+        private static Response membershipRejected(MembershipChangeRejectedException rejected) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("code", rejected.code(), "error", rejected.getMessage())).build();
         }
     }
 

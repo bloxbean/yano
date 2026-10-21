@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.appchain;
 
+import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.network.server.AgentFactory;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
@@ -8,10 +9,13 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionServer
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionListener;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgValidator;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.messages.MsgReplyMessages;
+import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import org.yanoproject.api.CanonicalBlockReference;
+import org.yanoproject.api.ChainBlockReader;
 import org.yanoproject.api.appchain.*;
 import org.yanoproject.api.appchain.authmap.AuthenticatedMapValidatorResolver;
 import org.yanoproject.api.appchain.codec.AppBlockCodec;
@@ -43,12 +47,14 @@ import org.yanoproject.api.events.AppMessageReceivedEvent;
 import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.appchain.config.AppChainConfigSemantics;
+import org.yanoproject.runtime.chain.BlockBodyRetentionRegistry;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.plugins.CatalogAuthenticatedMapValidatorResolver;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
+import org.rocksdb.WriteBatch;
 
 import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
@@ -71,7 +77,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.LongFunction;
+import java.util.function.BiPredicate;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * App-chain subsystem: authenticated diffusion (M1) + sequenced durable ledger
@@ -146,6 +154,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /** Consensus mode (008.2): fixed | rotating | plugin-provided; null = diffusion-only. */
     private final org.yanoproject.api.appchain.sequencer.SequencerMode sequencerMode;
     private final String ledgerPath;
+    /** Node-local readiness threshold for L1 delivery lag (ADR-038, D10); readiness only, never safety. */
+    private final long l1ReadinessMaxLagBlocks;
 
     // M3: L1 anchoring + stable L1 reference tracking
     private volatile AnchorService anchorService;
@@ -175,9 +185,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             epochStateProvider;
     private volatile java.util.function.Function<byte[], String> txSubmitter;
     private volatile java.util.function.Supplier<org.yanoproject.api.utxo.UtxoState> utxoStateSupplier;
-    private volatile LongFunction<BlockAppliedEvent> l1BlockReplay;
-    private final java.util.concurrent.ConcurrentLinkedDeque<AppChainEngine.L1Ref> recentL1Points =
-            new java.util.concurrent.ConcurrentLinkedDeque<>();
+    /** The node's canonical chain state, read by L1 delivery (app-layer ADR-038, D1). */
+    private volatile ChainBlockReader l1Chain;
+    /** This chain's block-body retention requirement, owned from node construction until close (D7a). */
+    private volatile BlockBodyRetentionRegistry.Registration l1Retention;
+    /** The current generation's L1 delivery loop; null for L1-less chains (D3). */
+    private volatile L1DeliveryLoop l1Delivery;
     private final List<com.bloxbean.cardano.yaci.events.api.SubscriptionHandle> eventSubscriptions =
             new ArrayList<>();
 
@@ -652,6 +665,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             this.ledgerPath = (ledgerPath != null
                     ? ledgerPath : YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
                     + "/" + config.chainId();
+            this.l1ReadinessMaxLagBlocks = parseLongSetting("l1.delivery.readiness-max-lag-blocks", 100);
 
             if (!group.contains(signer.publicKeyHex())) {
                 if (governedMode()) {
@@ -745,9 +759,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /**
      * Submit a membership governance command as this member (008.3). Internal
-     * path — the public submit() rejects reserved {@code ~} topics.
+     * path — the public submit() rejects reserved {@code ~} topics. Callers
+     * screen the command first; activation re-applies every guard rail.
      */
-    private String submitGovernance(byte[] commandBody) {
+    String submitGovernance(byte[] commandBody) {
         if (!running.get())
             throw new IllegalStateException("App chain is not running");
         AppMessage message = buildSigned(GovernedMembership.TOPIC, commandBody,
@@ -796,8 +811,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 return sorted;
             }
             @Override public long currentL1Slot() {
-                AppChainEngine.L1Ref last = recentL1Points.peekLast();
-                return last != null ? last.slot() : 0L;
+                AppChainEngine.L1Ref tip = l1TipPoint();
+                return tip != null ? tip.slot() : 0L;
             }
             @Override public Map<String, String> settings() { return settings; }
         };
@@ -1120,7 +1135,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
 
         String senderHex = HexUtil.encodeHexString(sender).toLowerCase(Locale.ROOT);
-        if (!group.contains(senderHex)) {
+        // Members now or in a scheduled epoch: a joiner's early message stays
+        // pooled until it can be included, and a member scheduled for removal
+        // keeps voting until it leaves. Engine checks membership per height.
+        if (!group.containsFrom(senderHex, tipHeight() + 1)) {
             countDrop("not_member");
             return AppMsgValidator.Result.reject("sender not in app-chain member list: " + senderHex);
         }
@@ -1224,9 +1242,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.utxoStateSupplier = utxoStateSupplier;
     }
 
-    /** Wire read-only access to retained canonical L1 blocks for observer recovery. */
-    public void wireL1BlockReplay(LongFunction<BlockAppliedEvent> blockReplay) {
-        this.l1BlockReplay = Objects.requireNonNull(blockReplay, "blockReplay");
+    /**
+     * Wire the node's canonical chain state and this chain's body-retention registration (app-layer ADR-038). The
+     * registration is held across stop and start, and released on {@link #close()}.
+     */
+    public void wireL1Chain(ChainBlockReader chain, BlockBodyRetentionRegistry.Registration retention) {
+        this.l1Chain = Objects.requireNonNull(chain, "chain");
+        this.l1Retention = retention;
     }
 
     /** Wire the persistent, epoch-pinned ledger-state source used by ADR-028 observers. */
@@ -1974,6 +1996,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private String submitPrivilegedSystemMessageWithinGeneration(String topic, byte[] body) {
         if (!running.get()) throw new IllegalStateException("App chain is not running");
         if (submissionsPaused.get()) throw new IllegalStateException("Submissions are paused (admin)");
+        requireActiveMember();
         validatePrivilegedSystemMessageWithinGeneration(topic, body);
         AppMessage message = buildSigned(topic, body, config.defaultTtlSeconds());
         AppMsgPool.AddResult added = pool.add(message);
@@ -2024,6 +2047,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (!validTopic(effectiveTopic))
             throw new IllegalArgumentException("topic must be at most "
                     + AppChainConfig.MAX_TOPIC_BYTES + " valid UTF-8 bytes without NUL");
+        requireActiveMember();
 
         // Admit locally BEFORE diffusing — a message this node cannot hold must
         // not be half-way into the network with an "accepted" id (ADR 008.1 I1.1)
@@ -2041,6 +2065,29 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         log.info("App message submitted: id={}, chain={}, topic={}, seq={}",
                 message.getMessageIdHex(), config.chainId(), effectiveTopic, message.getSenderSeq());
         return message.getMessageIdHex();
+    }
+
+    /**
+     * A sequencing node submits only as a member of the next block's epoch.
+     * A joiner whose epoch is scheduled but not active, or a non-member, gets
+     * a clear refusal (REST 503) rather than an id for a message no block can
+     * include yet. Diffusion-only nodes keep their configured membership.
+     */
+    private void requireActiveMember() {
+        AppLedgerStore currentLedger = ledger;
+        if (!config.sequencingEnabled() || currentLedger == null) {
+            return;
+        }
+        long nextHeight = currentLedger.tipHeight() + 1;
+        String self = signer.publicKeyHex();
+        if (group.containsAt(self, nextHeight)) {
+            return;
+        }
+        throw new IllegalStateException(group.containsFrom(self, nextHeight)
+                ? "This node is not an active member at height " + nextHeight + " yet: its membership "
+                        + "epoch is scheduled. Retry once status memberActiveForNextBlock is true"
+                : "This node is not an active member of app-chain '" + config.chainId()
+                        + "'; no block can include its submissions");
     }
 
     /**
@@ -2082,8 +2129,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // Count only here: proposal validation and REST exception mapping
             // must not count the same local admission decision again.
             admissionRejectedCount.incrementAndGet();
-            AdmissionDiagnostics.INSTANCE.rejected(snapshot.height() + 1L, result.reason());
-            throw new AppSubmissionRejectedException(result.reason());
+            AdmissionDiagnostics.INSTANCE.rejected(snapshot.height() + 1L, result.reason(), result.details());
+            throw new AppSubmissionRejectedException(result.reason(), result.details());
         }
     }
 
@@ -3615,6 +3662,38 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         ledgerStore.metaPutString(META_MEMBER_EPOCHS, group.encode());
     }
 
+    /**
+     * The epochs a governed command can activate against: the one for the next
+     * block and, when different, the newest scheduled one. Activation evaluates
+     * the epoch in effect at its own height, which may be either.
+     */
+    private List<MemberGroup.Epoch> governedBaseEpochs() {
+        MemberGroup.Epoch newest = group.history().getLast();
+        AppLedgerStore currentLedger = ledger;
+        MemberGroup.Epoch next = currentLedger != null
+                ? group.epochAt(currentLedger.tipHeight() + 1) : newest;
+        return next == newest ? List.of(newest) : List.of(next, newest);
+    }
+
+    /**
+     * Refuse a governed membership command whose result could never certify a
+     * block under {@code consensus.max-byzantine-members} (bloxbean/yano#163).
+     * Activation applies the same rule deterministically; this check only
+     * spares operators a command that would activate void.
+     */
+    private void requireCertifiable(int members, int threshold) {
+        int faults = MemberGroup.maxByzantineMembers(config);
+        String violation = MemberGroup.quorumViolation(members, threshold, faults);
+        if (violation != null) {
+            throw new MembershipChangeRejectedException(MembershipChangeRejectedException.QUORUM_INVALID,
+                    "A " + threshold + "-of-" + members + " membership breaks the consensus quorum rules for "
+                            + "consensus.max-byzantine-members=" + faults + " (" + violation + "); thresholds "
+                            + "that certify " + members + " member(s): "
+                            + MemberGroup.certifiableThresholds(members, faults)
+                            + ". Change the threshold first and wait until it is active.");
+        }
+    }
+
     @Override
     public Set<String> members() {
         return group.members();
@@ -3638,6 +3717,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // Governed mode (008.3): this call SUBMITS a governance command —
             // the change activates once threshold-many members do the same
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                if (!base.members().contains(normalized)) {
+                    requireCertifiable(base.members().size() + 1, base.threshold());
+                }
+            }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
@@ -3666,6 +3750,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private void removeMemberWithinGeneration(String publicKeyHex) {
         if (governedMode()) {
             String normalized = normalizeMemberKeys(Set.of(publicKeyHex)).iterator().next();
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                if (base.members().contains(normalized)) {
+                    requireCertifiable(base.members().size() - 1, base.threshold());
+                }
+            }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_REMOVE,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
@@ -3705,6 +3794,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (governedMode()) {
             if (threshold < 1) {
                 throw new IllegalArgumentException("Threshold must be >= 1");
+            }
+            for (MemberGroup.Epoch base : governedBaseEpochs()) {
+                requireCertifiable(base.members().size(), threshold);
             }
             submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
                     null, threshold, GovernedMembership.DEFAULT_ACTIVATION_LAG));
@@ -3790,6 +3882,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     @Override
     public boolean forceAnchor() {
         return generationUseOr(false, this::forceAnchorWithinGeneration);
+    }
+
+    @Override
+    public boolean rebaselineL1Delivery() {
+        return generationUseOr(false, () -> {
+            L1DeliveryLoop delivery = l1Delivery;
+            if (delivery == null) {
+                throw new UnsupportedOperationException("App-chain '" + config.chainId() + "' runs no L1 delivery");
+            }
+            boolean accepted = delivery.requestRebaseline();
+            log.warn("App-chain '{}' L1 delivery re-baseline {} (admin)", config.chainId(),
+                    accepted ? "accepted" : "refused");
+            return accepted;
+        });
     }
 
     private boolean forceAnchorWithinGeneration() {
@@ -4026,6 +4132,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Map<String, Object> anchorStatus = currentAnchor.status();
             anchorStatus.put("lagBlocks",
                     Math.max(0, tipHeight() - currentAnchor.lastAnchoredHeight()));
+            anchorStatus.put("stableAnchoredHeight", stableAnchoredHeight());
             status.put("anchor", anchorStatus);
         } else if (currentScriptAnchor != null
                 && ((config.anchoringEnabled() && config.anchor() != null && config.anchor().scriptMode())
@@ -4035,7 +4142,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Map<String, Object> anchorStatus = currentScriptAnchor.status();
             anchorStatus.put("lagBlocks",
                     Math.max(0, tipHeight() - currentScriptAnchor.lastAnchoredHeight()));
+            anchorStatus.put("stableAnchoredHeight", stableAnchoredHeight());
             status.put("anchor", anchorStatus);
+        }
+        L1DeliveryLoop currentDelivery = l1Delivery;
+        if (currentDelivery != null) {
+            status.put("l1Delivery", l1DeliveryStatus(currentDelivery));
         }
         L1ObservationService currentObservations = observationService;
         if (currentObservations != null) {
@@ -4569,15 +4681,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 config.sequencingEnabled());
         logTransitionActivations();
 
-        // Fail fast on a silently-degraded L1 linkage (ADR 008.1 I1.3): with
-        // stability-depth or anchoring configured but no L1 event feed, every
-        // block would carry l1Slot=0 / anchors would never confirm.
-        if ((config.l1StabilityDepth() > 0 || config.anchoringEnabled()) && eventBus == null) {
-            throw new IllegalStateException("App-chain '" + config.chainId()
-                    + "': l1.stability-depth/anchoring is configured but no L1 event feed is wired "
-                    + "(EventBus is null) — refusing to start with a silent L1 linkage "
-                    + "(set l1.stability-depth: 0 and disable anchoring for L1-less chains)");
-        }
         if (config.sequencingEnabled()) {
             // Pre-open manifest verification (008.1 I1.7): a freshly restored
             // snapshot must carry a valid member-signed manifest and intact file
@@ -4732,10 +4835,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     epochObservers = L1EpochObservationCoordinator.observersFromConfig(
                     config.pluginSettings(), pluginProviders);
             if (!epochObservers.isEmpty()) {
-                if (eventBus == null) {
-                    throw new IllegalArgumentException(
-                            "L1 epoch observers require an L1 BlockAppliedEvent feed");
-                }
                 if (config.retentionEnabled()) {
                     throw new IllegalArgumentException(
                             "L1 epoch observers require retention.enabled=false");
@@ -4764,7 +4863,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                         .L1EpochObserver::observerId)
                                 .toList());
             }
-            chainEngine.setVotingHealth(this::l1ObservationInputsHealthy);
+            chainEngine.setVotingHealth(() -> l1ObservationInputsHealthy() && l1DeliveryHealthyForVoting());
             chainEngine.setConsensusContextProvider(height ->
                     chainEngine.configuredConsensusContextDigest(
                             height, observerProfileDigest));
@@ -4824,6 +4923,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         config.proposerKeyHex(),
                         parseLongSetting("membership.approval-window-blocks",
                                 GovernedMembership.DEFAULT_APPROVAL_WINDOW_BLOCKS),
+                        MemberGroup.maxByzantineMembers(config),
                         log);
                 governed.restore(ledgerStore);
                 governed.setEpochGuard(effect -> observationSettings.admitsMembership(
@@ -4834,9 +4934,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         GovernedMembership.TOPIC);
             }
             boolean anchorScriptMode = config.anchor() != null && config.anchor().scriptMode();
-            java.util.function.Supplier<AppChainEngine.L1Ref> anchorPointSupplier =
-                    recentL1Points::peekLast;
-            java.util.function.Supplier<Long> anchorSlotSupplier = () -> {
+            Supplier<AppChainEngine.L1Ref> anchorPointSupplier = this::l1TipPoint;
+            Supplier<Long> anchorSlotSupplier = () -> {
                 AppChainEngine.L1Ref last = anchorPointSupplier.get();
                 return last != null ? last.slot() : 0L;
             };
@@ -4863,6 +4962,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                         : null;
                             },
                             anchorSlotSupplier);
+                    this.anchorService.setConfirmationListener(this::publishConfirmedAnchor);
+                    this.anchorService.setCompletionGate(this::l1Reconciled);
                 }
             }
             // Script anchors (008.4): EVERY ledger member runs the co-sign
@@ -4901,6 +5002,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 return supplier != null ? supplier.get() : null;
                             },
                             anchorPointSupplier);
+                    // A follower's confirmation must not run ahead of delivery: the loop rolls back only from
+                    // recorded points, so an L1 fact above the cursor would survive a fork there (ADR-038 D3).
+                    scriptService.wireCanonicalHashAtSlot(slot -> {
+                        ChainBlockReader chain = l1Chain;
+                        L1DeliveryLoop delivery = l1Delivery;
+                        if (chain == null || delivery == null || slot > delivery.healthyCursorSlot()) {
+                            return null;
+                        }
+                        return chain.getCanonicalBlockReferenceAtSlot(slot)
+                                .map(CanonicalBlockReference::blockHash).orElse(null);
+                    });
+                    scriptService.setConfirmationListener(this::publishConfirmedAnchor);
+                    scriptService.setCompletionGate(this::l1Reconciled);
                     this.scriptAnchorService = scriptService;
                 } catch (Exception e) {
                     log.warn("Script-anchor service unavailable (errorType={})",
@@ -4909,7 +5023,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
             buildSinks(ledgerStore);
             buildEffectRuntime(ledgerStore);
-            subscribeL1Events(generationToken);
+            startL1Delivery(generationToken, ledgerStore);
+            subscribeL1Events();
             if (epochObservationCoordinator != null) {
                 epochObservationCoordinator.start();
             }
@@ -4996,13 +5111,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 }
             }), 1, 1, TimeUnit.SECONDS);
         }
-        if (observationService != null && l1BlockReplay != null) {
-            exec.scheduleWithFixedDelay(
-                    () -> generationUseOrNoop(generationToken,
-                            () -> runL1Phase("observation replay",
-                                    this::retryFailedL1Observation)),
-                    1, 5, TimeUnit.SECONDS);
-        }
         if (!sinkRunners.isEmpty()) {
             // Sinks run on their OWN thread — a slow/blocked sink (e.g. an
             // unreachable Kafka broker) must never stall proposeTick / catch-up
@@ -5034,8 +5142,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             // ordering and restart. ScriptAnchorService.tick() keeps all tx
             // construction/submission leader-only.
             exec.scheduleWithFixedDelay(
-                    () -> generationUseOrNoop(() ->
-                            publishConfirmedAnchor(currentScriptAnchor.tick())),
+                    () -> generationUseOrNoop(currentScriptAnchor::tick),
                     10, 10, TimeUnit.SECONDS);
             if (config.anchoringEnabled()
                     && config.anchor() != null && config.anchor().scriptMode()) {
@@ -5287,32 +5394,329 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
     }
 
-    /** Track applied L1 blocks: stable-depth reference for proposals + anchor confirmation. */
-    private void subscribeL1Events(long generationToken) {
-        if (eventBus == null) {
+    /**
+     * Starts L1 delivery when this chain consumes L1 at all (app-layer ADR-038, D3). L1-less library chains, with no
+     * chain state wired or nothing that reads L1, run none. Each pass runs inside this generation's lease, so stop
+     * waits for an in-flight pass and a retired loop never touches the next generation.
+     */
+    private void startL1Delivery(long generationToken, AppLedgerStore ledgerStore) {
+        ChainBlockReader chain = l1Chain;
+        // Fail fast on a silently degraded L1 linkage (ADR 008.1 I1.3): without a chain to read, blocks would carry
+        // l1Slot=0, anchors would never confirm and observers would never run.
+        boolean requiresL1 = config.l1StabilityDepth() > 0 || config.anchoringEnabled()
+                || observationService != null || epochObservationCoordinator != null;
+        if (requiresL1 && chain == null) {
+            throw new IllegalStateException("App-chain '" + config.chainId()
+                    + "': l1.stability-depth, anchoring or L1 observers are configured but no L1 chain reader is "
+                    + "wired — refusing to start with a silent L1 linkage (set l1.stability-depth: 0, disable "
+                    + "anchoring and remove observers for L1-less chains)");
+        }
+        // The script-anchor verifier every member runs also reads L1, but alone it does not require it.
+        if (chain == null || !(requiresL1 || scriptAnchorService != null)) {
+            if (l1Retention != null) {
+                l1Retention.update(OptionalLong.empty()); // no loop, so no block bodies to keep (D7a)
+            }
             return;
         }
-        // Bind the subscription to this exact resource generation.  An event
-        // callback admitted before stop may outlive field unpublication, and
-        // a late callback from a retired subscription must never observe the
-        // next generation's services.
-        L1GenerationServices services = new L1GenerationServices(
-                generationToken, anchorService, scriptAnchorService, observationService,
-                epochObservationCoordinator, l1BlockReplay);
-        eventSubscriptions.addAll(acquireL1Subscriptions(
-                eventBus,
-                event -> onL1BlockApplied(event, services),
-                event -> onL1Rollback(event, services)));
+        L1DeliveryLoop delivery = new L1DeliveryLoop(config.chainId(), config.l1StabilityDepth(), chain, ledgerStore,
+                new L1Phases(ledgerStore, chain, anchorService, scriptAnchorService, observationService,
+                        epochObservationCoordinator),
+                l1Retention, log);
+        this.l1Delivery = delivery;
+        delivery.start(pass -> generationUseOrNoop(generationToken, pass));
     }
 
-    private record L1GenerationServices(
-            long generationToken,
-            AnchorService anchor,
-            ScriptAnchorService scriptAnchor,
-            L1ObservationService observations,
-            L1EpochObservationCoordinator epochObservations,
-            LongFunction<BlockAppliedEvent> blockReplay
-    ) {
+    /** Node L1 events only wake the delivery loop; chain state is the source of truth (ADR-038, D3, I6). */
+    private void subscribeL1Events() {
+        L1DeliveryLoop delivery = l1Delivery;
+        if (eventBus == null || delivery == null) {
+            return;
+        }
+        eventSubscriptions.addAll(acquireL1Subscriptions(eventBus, event -> delivery.wake(),
+                event -> delivery.wakeForRollback()));
+    }
+
+    /** Delivery status (app-layer ADR-038, D10): cursor, intent, phase, lag and whether the fence is open. */
+    private Map<String, Object> l1DeliveryStatus(L1DeliveryLoop delivery) {
+        L1DeliveryLoop.Snapshot snapshot = delivery.snapshot();
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("state", snapshot.state().name());
+        status.put("deliveryHealthy", delivery.deliveryHealthy());
+        L1DeliveryRecord record = snapshot.record();
+        if (record != null) {
+            L1Point cursor = record.cursor();
+            status.put("phase", record.phase().name());
+            status.put("cursorBlock", cursor.blockNumber());
+            status.put("cursorSlot", cursor.slot());
+            status.put("cursorHash", cursor.isOrigin() ? "origin" : HexUtil.encodeHexString(cursor.blockHash()));
+            status.put("deliveredPoints", record.window().size());
+            status.put("baselinePoints", record.baseline().size());
+            status.put("baselineFromBlock", record.baseline().getFirst().blockNumber());
+            if (record.pending() != null) {
+                status.put("pending", record.pending().kind().name() + " " + record.pending().point());
+            }
+            ChainBlockReader chain = l1Chain;
+            var tip = chain != null ? chain.getLocalTip() : null;
+            if (tip != null) {
+                status.put("bodyTipBlock", tip.getBlockNumber());
+                status.put("lagBlocks", Math.max(0L, tip.getBlockNumber() - cursor.blockNumber()));
+            }
+        }
+        if (snapshot.lastFailure() != null) {
+            status.put("lastFailure", snapshot.lastFailure());
+        }
+        BlockBodyRetentionRegistry.Registration retention = l1Retention;
+        if (retention != null) {
+            retention.oldestRequiredBlockNumber().ifPresent(block -> status.put("retainedFromBlock", block));
+        }
+        String readiness = l1DeliveryReadinessProblem(delivery);
+        if (readiness != null) {
+            status.put("notReady", readiness);
+        }
+        return status;
+    }
+
+    /**
+     * Readiness signal (ADR-038, D10): degraded while delivery is not {@code RUNNING} or lags the body tip by more
+     * than {@code l1.delivery.readiness-max-lag-blocks}. Safety never depends on it; the D9a fence does that.
+     */
+    private String l1DeliveryReadinessProblem(L1DeliveryLoop delivery) {
+        L1DeliveryLoop.Snapshot snapshot = delivery.snapshot();
+        if (snapshot.state() != L1DeliveryLoop.State.RUNNING) {
+            return "L1 delivery " + snapshot.state();
+        }
+        ChainBlockReader chain = l1Chain;
+        ChainTip tip = chain != null ? chain.getLocalTip() : null;
+        long lag = tip != null && snapshot.record() != null
+                ? tip.getBlockNumber() - snapshot.record().cursor().blockNumber() : 0L;
+        return lag > l1ReadinessMaxLagBlocks ? "L1 delivery lags " + lag + " blocks" : null;
+    }
+
+    /** Anchor completion runs only once L1 state is reconciled (ADR-038, D8b rule 9). */
+    private boolean l1Reconciled() {
+        L1DeliveryLoop delivery = l1Delivery;
+        if (delivery == null) {
+            return true;
+        }
+        L1DeliveryRecord record = delivery.snapshot().record();
+        return record != null && record.phase() == L1DeliveryRecord.Phase.RECONCILED;
+    }
+
+    /**
+     * One generation's L1 phases (app-layer ADR-038, D3, D4a), with the services captured when the generation
+     * started. Each phase reports an outcome; a phase that throws is retryable and never stops the others.
+     */
+    private final class L1Phases implements L1DeliveryLoop.Host {
+        private final AppLedgerStore ledgerStore;
+        private final ChainBlockReader chain;
+        private final AnchorService anchor;
+        private final ScriptAnchorService scriptAnchor;
+        private final L1ObservationService observations;
+        private final L1EpochObservationCoordinator epochObservations;
+
+        private L1Phases(AppLedgerStore ledgerStore, ChainBlockReader chain, AnchorService anchor,
+                         ScriptAnchorService scriptAnchor, L1ObservationService observations,
+                         L1EpochObservationCoordinator epochObservations) {
+            this.ledgerStore = ledgerStore;
+            this.chain = chain;
+            this.anchor = anchor;
+            this.scriptAnchor = scriptAnchor;
+            this.observations = observations;
+            this.epochObservations = epochObservations;
+        }
+
+        @Override
+        public List<L1PhaseResult> applyBlock(BlockAppliedEvent event) {
+            byte[] l1BlockHash = HexUtil.decodeHexString(event.blockHash());
+            Block block = event.block();
+            List<L1PhaseResult> results = new ArrayList<>(4);
+            // L1 observations (008.4 I3.2): EVERY member recomputes; injection stays stability-gated.
+            if (observations != null && block != null) {
+                results.add(phase("observation", () -> observations.deliver(event.slot(), l1BlockHash, block)));
+            }
+            if (epochObservations != null) {
+                results.add(phase("epoch observation wake-up", () -> {
+                    epochObservations.onBlockApplied(event.slot(), event.blockNumber(), l1BlockHash);
+                    return L1PhaseResult.DURABLE;
+                }));
+            }
+            List<String> txHashes = validTransactionHashes(block);
+            if (anchor != null && txHashes != null) {
+                results.add(phase("anchor confirmation",
+                        () -> anchor.onL1Block(event.slot(), l1BlockHash, txHashes)));
+            }
+            if (scriptAnchor != null && txHashes != null) {
+                results.add(phase("script-anchor confirmation",
+                        () -> scriptAnchor.onL1Block(event.slot(), l1BlockHash, txHashes)));
+            }
+            return results;
+        }
+
+        @Override
+        public List<L1PhaseResult> rollbackTo(L1Point target) {
+            long slot = target.isOrigin() ? -1L : target.slot();
+            List<L1PhaseResult> results = new ArrayList<>(4);
+            if (anchor != null) {
+                results.add(phase("metadata-anchor rollback", () -> anchor.onL1Rollback(slot)));
+            }
+            if (scriptAnchor != null) {
+                results.add(phase("script-anchor rollback", () -> scriptAnchor.onL1Rollback(slot)));
+            }
+            if (observations != null) {
+                results.add(phase("observation rollback", () -> observations.rollback(slot)));
+            }
+            if (epochObservations != null) {
+                results.add(phase("epoch observation rollback",
+                        () -> epochObservations.rollback(Math.max(slot, 0L))));
+            }
+            return results;
+        }
+
+        /**
+         * Any app block, anchor confirmation, or entry in the epoch-observations column family (observation journal
+         * records, cursors and markers, and epoch-spool jobs) is L1-derived state an upgrade must reconcile (D8). A
+         * new chain with observers also takes one reconciliation pass, which only records its baseline.
+         */
+        @Override
+        public boolean hasL1DerivedState() {
+            byte[] anchorHistory = ledgerStore.metaBytes(AnchorService.META_ANCHOR_HISTORY);
+            return ledgerStore.tipHeight() > 0 || (anchorHistory != null && anchorHistory.length > 0)
+                    || !ledgerStore.epochSpoolScan(new byte[0], 1).isEmpty();
+        }
+
+        @Override
+        public L1DeliveryLoop.Reconciliation reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+            List<Consumer<WriteBatch>> stagers = new ArrayList<>();
+            // Journal records and finalized cursors (D8b rule 3).
+            if (observations != null) {
+                L1ObservationJournal.ReconcileDecision journal = observations.reconcile(canonicalAtSlot);
+                if (journal.quarantine() != null) {
+                    return quarantine(journal.quarantine());
+                }
+                stagers.add(batch -> ledgerStore.stageEpochSpoolMutations(batch, journal.invalidations()));
+            }
+            // Epoch-spool jobs record their boundary block (rule 3, "everything else L1-derived").
+            if (epochObservations != null) {
+                L1ObservationJournal.ReconcileDecision epochs = epochObservations.reconcile(canonicalAtSlot);
+                if (epochs.quarantine() != null) {
+                    return quarantine(epochs.quarantine());
+                }
+                stagers.add(batch -> ledgerStore.stageEpochSpoolMutations(batch, epochs.invalidations()));
+            }
+            // Finalized evidence older than the cursors: the L1 observations in committed app blocks (rule 4).
+            CommittedEvidence evidence = scanCommittedObservations(canonicalAtSlot);
+            if (evidence == CommittedEvidence.DEAD) {
+                return quarantine("DEEP_L1_ROLLBACK_BELOW_FINALIZED_OBSERVATION");
+            }
+            if (evidence == CommittedEvidence.UNAVAILABLE) {
+                return new L1DeliveryLoop.Reconciliation(batch -> { }, null, true, OptionalLong.empty());
+            }
+            // Anchor facts and confirmations that record an L1 point, whatever their schema (rule 3). Both anchor
+            // services share one confirmation journal; a script identity reset, staged after it, replaces it.
+            if (anchor != null || scriptAnchor != null) {
+                stagers.add(AnchorService.reconcileHistory(ledgerStore, canonicalAtSlot));
+            }
+            if (anchor != null) {
+                stagers.add(anchor.reconcile(canonicalAtSlot));
+            }
+            if (scriptAnchor != null) {
+                stagers.add(scriptAnchor.reconcile(canonicalAtSlot));
+            }
+            // A legacy failed-callback marker: deliver from the failed block, or drop it as orphaned (D8a).
+            OptionalLong baselineTop = OptionalLong.empty();
+            long failedSlot = observations != null ? observations.callbackFailureSlot() : -1L;
+            if (failedSlot >= 0) {
+                Optional<CanonicalBlockReference> failed = chain.getCanonicalBlockReferenceAtSlot(failedSlot);
+                if (failed.isPresent()) {
+                    baselineTop = OptionalLong.of(failed.get().blockNumber() - 1);
+                } else {
+                    stagers.add(batch -> ledgerStore.stageEpochSpoolMutations(batch,
+                            List.of(L1ObservationJournal.clearCallbackFailureMutation())));
+                }
+            }
+            return new L1DeliveryLoop.Reconciliation(batch -> stagers.forEach(stager -> stager.accept(batch)),
+                    null, false, baselineTop);
+        }
+
+        @Override
+        public void reconciled() {
+            if (observations != null) {
+                observations.reloadAfterReconciliation();
+            }
+            if (epochObservations != null) {
+                epochObservations.reloadAfterReconciliation();
+            }
+            if (scriptAnchor != null) {
+                scriptAnchor.reloadAfterReconciliation();
+            }
+        }
+
+        private L1DeliveryLoop.Reconciliation quarantine(String reason) {
+            return new L1DeliveryLoop.Reconciliation(batch -> ledgerStore.stageEpochSpoolMutations(batch,
+                    List.of(L1ObservationJournal.quarantineMutation(reason))), reason, false,
+                    OptionalLong.empty());
+        }
+
+        /**
+         * Checks every L1 observation in committed app blocks (D8b rule 4). Read-only. Blocks at or below the
+         * retention prune cursor had their bodies stripped by configuration, below an L1 anchor, and are treated as
+         * settled (Q8(b) with the prune cursor as the horizon); otherwise a retention-enabled chain could never
+         * reconcile. The journal's finalized cursors are still checked. Any other missing body makes the evidence
+         * unavailable (rule 6).
+         */
+        private CommittedEvidence scanCommittedObservations(BiPredicate<Long, byte[]> canonicalAtSlot) {
+            boolean unavailable = false;
+            for (long height = ledgerStore.pruneCursor() + 1; height <= ledgerStore.tipHeight(); height++) {
+                AppBlock block = ledgerStore.block(height).orElse(null);
+                if (block == null) {
+                    unavailable = true;
+                    continue;
+                }
+                for (AppMessage message : block.messages()) {
+                    String topic = message.getTopic();
+                    if (topic == null || !topic.startsWith(L1Observation.TOPIC_PREFIX)) {
+                        continue;
+                    }
+                    byte[] body = message.getBody();
+                    L1Observation observation = body == null || body.length == 0 ? null : L1Observation.decode(body);
+                    if (observation == null) {
+                        unavailable = true;
+                    } else if (!canonicalAtSlot.test(observation.slot(), observation.blockHash())) {
+                        return CommittedEvidence.DEAD;
+                    }
+                }
+            }
+            return unavailable ? CommittedEvidence.UNAVAILABLE : CommittedEvidence.CANONICAL;
+        }
+
+        private L1PhaseResult phase(String name, Supplier<L1PhaseResult> body) {
+            try {
+                return body.get();
+            } catch (RuntimeException failure) {
+                reportL1PhaseFailure(name, failure);
+                return L1PhaseResult.retryable("L1_PHASE_FAILED_" + name.replace(' ', '_').toUpperCase(Locale.ROOT));
+            }
+        }
+    }
+
+    private enum CommittedEvidence { CANONICAL, DEAD, UNAVAILABLE }
+
+    /** Hashes of the block's valid transactions; null without a parsed body (Byron). */
+    private static List<String> validTransactionHashes(Block block) {
+        if (block == null || block.getTransactionBodies() == null) {
+            return null;
+        }
+        List<Integer> invalidTransactions = block.getInvalidTransactions();
+        Set<Integer> invalidIndexes = invalidTransactions != null
+                ? new HashSet<>(invalidTransactions) : Set.of();
+        List<String> txHashes = new ArrayList<>();
+        List<com.bloxbean.cardano.yaci.core.model.TransactionBody> bodies = block.getTransactionBodies();
+        for (int index = 0; index < bodies.size(); index++) {
+            if (!invalidIndexes.contains(index)) {
+                txHashes.add(bodies.get(index).getTxHash());
+            }
+        }
+        return txHashes;
     }
 
     /**
@@ -5372,102 +5776,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return new IllegalStateException(message, failure);
     }
 
-    private void onL1BlockApplied(
-            org.yanoproject.api.events.BlockAppliedEvent event,
-            L1GenerationServices services) {
-        generationUseOrNoop(services.generationToken(),
-                () -> onL1BlockAppliedWithinGeneration(event, services));
-    }
-
-    private void onL1BlockAppliedWithinGeneration(
-            org.yanoproject.api.events.BlockAppliedEvent event,
-            L1GenerationServices services) {
-        runL1Phase("observation replay", () ->
-                retryFailedL1Observation(services.observations(),
-                        services.blockReplay(), event.slot()));
-        runL1Phase("reference tracking", () -> {
-            recentL1Points.addLast(new AppChainEngine.L1Ref(event.slot(),
-                    HexUtil.decodeHexString(event.blockHash())));
-            while (recentL1Points.size() > Math.max(config.l1StabilityDepth(), 1) + 64) {
-                recentL1Points.pollFirst();
-            }
-        });
-
-        // Observation and anchor confirmation are deliberately independent.
-        // A plugin observer failure must not consume the only event carrying
-        // an anchor transaction, and an anchor failure must not prevent the
-        // local L1 verification window from advancing.
-        runL1Phase("observation", () -> {
-            // L1 observations (008.4 I3.2): EVERY member recomputes (feeds the
-            // verification window). Injection is STABILITY-GATED for rollback
-            // safety — the app chain never rolls back, so a fact may only be
-            // sequenced once it is l1.stability-depth confirmations old. All
-            // members drain at the same L1 block; the scheduled proposer
-            // injects (the message then replicates via the shared pool).
-            L1ObservationService currentObservations = services.observations();
-            if (currentObservations != null && event.block() != null) {
-                currentObservations.onL1Block(event.slot(),
-                        HexUtil.decodeHexString(event.blockHash()), event.block());
-            }
-        });
-
-        runL1Phase("epoch observation wake-up", () -> {
-            L1EpochObservationCoordinator coordinator = services.epochObservations();
-            if (coordinator != null) {
-                coordinator.onBlockApplied(event.slot(), event.blockNumber(),
-                        HexUtil.decodeHexString(event.blockHash()));
-            }
-        });
-
-        runL1Phase("anchor confirmation", () -> {
-            AnchorService currentAnchor = services.anchor();
-            ScriptAnchorService currentScriptAnchor = services.scriptAnchor();
-            if ((currentAnchor != null || currentScriptAnchor != null) && event.block() != null
-                    && event.block().getTransactionBodies() != null) {
-                List<Integer> invalidTransactions = event.block().getInvalidTransactions();
-                java.util.Set<Integer> invalidIndexes = invalidTransactions != null
-                        ? new java.util.HashSet<>(invalidTransactions) : java.util.Set.of();
-                List<String> txHashes = new ArrayList<>();
-                List<com.bloxbean.cardano.yaci.core.model.TransactionBody> transactionBodies =
-                        event.block().getTransactionBodies();
-                for (int index = 0; index < transactionBodies.size(); index++) {
-                    if (!invalidIndexes.contains(index)) {
-                        txHashes.add(transactionBodies.get(index).getTxHash());
-                    }
-                }
-                AnchorService.ConfirmedAnchor confirmed = currentAnchor != null
-                        ? currentAnchor.onL1Block(event.slot(), txHashes) : null;
-                if (confirmed == null && currentScriptAnchor != null) {
-                    confirmed = currentScriptAnchor.onL1Block(event.slot(), txHashes);
-                }
-                publishConfirmedAnchor(confirmed);
-            }
-        });
-    }
-
-    private void retryFailedL1Observation() {
-        retryFailedL1Observation(observationService, l1BlockReplay, -1);
-    }
-
-    private void retryFailedL1Observation(
-            L1ObservationService observations,
-            LongFunction<BlockAppliedEvent> blockReplay,
-            long currentEventSlot) {
-        if (observations == null || blockReplay == null) {
-            return;
-        }
-        long failedSlot = observations.callbackFailureSlot();
-        if (failedSlot < 0 || failedSlot == currentEventSlot) {
-            return;
-        }
-        BlockAppliedEvent retained = blockReplay.apply(failedSlot);
-        if (retained == null || retained.slot() != failedSlot || retained.block() == null) {
-            return;
-        }
-        observations.onL1Block(retained.slot(),
-                HexUtil.decodeHexString(retained.blockHash()), retained.block());
-    }
-
     private void publishConfirmedAnchor(AnchorService.ConfirmedAnchor confirmed) {
         if (confirmed == null || eventBus == null) {
             return;
@@ -5477,51 +5785,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 config.chainId(), confirmed.fromHeight(), confirmed.toHeight(),
                                 confirmed.txHash(), confirmed.l1Slot()),
                         EventMetadata.builder().build(), PublishOptions.builder().build()));
-    }
-
-    private void onL1Rollback(
-            org.yanoproject.api.events.RollbackEvent event,
-            L1GenerationServices services) {
-        generationUseOrNoop(services.generationToken(),
-                () -> onL1RollbackWithinGeneration(event, services));
-    }
-
-    private void onL1RollbackWithinGeneration(
-            org.yanoproject.api.events.RollbackEvent event,
-            L1GenerationServices services) {
-        final long targetSlot;
-        try {
-            targetSlot = event.target() != null ? event.target().getSlot() : 0;
-        } catch (Throwable failure) {
-            reportL1PhaseFailure("rollback target", failure);
-            return;
-        }
-        runL1Phase("reference rollback", () ->
-                recentL1Points.removeIf(ref -> ref.slot() > targetSlot));
-        runL1Phase("metadata-anchor rollback", () -> {
-            AnchorService currentAnchor = services.anchor();
-            if (currentAnchor != null) {
-                currentAnchor.onL1Rollback(targetSlot);
-            }
-        });
-        runL1Phase("script-anchor rollback", () -> {
-            ScriptAnchorService currentScriptAnchor = services.scriptAnchor();
-            if (currentScriptAnchor != null) {
-                currentScriptAnchor.onL1Rollback(targetSlot);
-            }
-        });
-        runL1Phase("observation rollback", () -> {
-            L1ObservationService currentObservations = services.observations();
-            if (currentObservations != null) {
-                currentObservations.onL1Rollback(targetSlot);
-            }
-        });
-        runL1Phase("epoch observation rollback", () -> {
-            L1EpochObservationCoordinator coordinator = services.epochObservations();
-            if (coordinator != null) {
-                coordinator.onRollback(targetSlot);
-            }
-        });
     }
 
     private void runL1Phase(String phase, Runnable action) {
@@ -5553,63 +5816,83 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final AtomicLong l1RefDeferrals = new AtomicLong();
 
     /**
-     * Follower-side verdict on a proposed L1 ref against this node's OWN
-     * observed points (ADR 008.1 I1.3). The window covers stability-depth + 64
-     * blocks, so an in-window slot that is absent means the proposer's ref does
-     * not exist on our chain — fabricated or rolled back — a hard MISMATCH.
+     * Follower-side verdict on a proposed L1 ref against this node's OWN delivered L1 points (ADR 008.1 I1.3),
+     * fenced by delivery health (app-layer ADR-038, D9a): UNKNOWN while the delivered view is not fresh.
      */
     private AppChainEngine.L1RefVerdict checkL1Ref(long slot, byte[] blockHash) {
-        AppChainEngine.L1Ref newest = recentL1Points.peekLast();
-        AppChainEngine.L1Ref oldest = recentL1Points.peekFirst();
-        if (newest == null) {
-            return AppChainEngine.L1RefVerdict.UNKNOWN; // no local view yet (restart)
-        }
-        if (slot > newest.slot()) {
+        L1DeliveryLoop delivery = l1Delivery;
+        AppChainEngine.L1RefVerdict verdict = delivery != null
+                ? delivery.checkL1Ref(slot, blockHash) : AppChainEngine.L1RefVerdict.UNKNOWN;
+        if (verdict == AppChainEngine.L1RefVerdict.AHEAD) {
             l1RefDeferrals.incrementAndGet();
-            return AppChainEngine.L1RefVerdict.AHEAD;
         }
-        if (slot < oldest.slot()) {
-            return AppChainEngine.L1RefVerdict.UNKNOWN; // older than our window
-        }
-        int fromEnd = 0;
-        AppChainEngine.L1Ref match = null;
-        for (var iterator = recentL1Points.descendingIterator(); iterator.hasNext(); ) {
-            AppChainEngine.L1Ref ref = iterator.next();
-            if (ref.slot() == slot) {
-                match = ref;
-                break;
-            }
-            fromEnd++;
-        }
-        if (match == null) {
-            return AppChainEngine.L1RefVerdict.MISMATCH; // in-window slot we never saw
-        }
-        if (!java.util.Arrays.equals(match.blockHash(), blockHash)) {
-            return AppChainEngine.L1RefVerdict.MISMATCH;
-        }
-        if (fromEnd < config.l1StabilityDepth()) {
-            l1RefDeferrals.incrementAndGet();
-            return AppChainEngine.L1RefVerdict.AHEAD; // not deep enough yet in OUR view
-        }
-        return AppChainEngine.L1RefVerdict.OK;
+        return verdict;
     }
 
     /**
-     * L1 point at least l1StabilityDepth blocks below the observed tip, from the
-     * subsystem's own view of applied blocks. Null when depth is 0/unknown.
+     * The stable L1 point: l1StabilityDepth blocks below the newest delivered point, fenced by delivery health and
+     * an at-read canonical check (app-layer ADR-038, D9a). Null when unavailable or at depth 0.
      */
     private AppChainEngine.L1Ref stableL1Ref() {
-        int depth = config.l1StabilityDepth();
-        if (depth <= 0 || recentL1Points.size() <= depth) {
-            return null;
+        L1DeliveryLoop delivery = l1Delivery;
+        return delivery != null ? delivery.stablePoint() : null;
+    }
+
+    /**
+     * The node's newest applied L1 block, read from chain state and unfenced: the sequencer's slot clock, anchor TTL
+     * hints, and the point script anchors match against the UTxO store. Never a consensus input.
+     */
+    private AppChainEngine.L1Ref l1TipPoint() {
+        ChainBlockReader chain = l1Chain;
+        ChainTip tip = chain != null ? chain.getLocalTip() : null;
+        return tip != null && tip.getBlockHash() != null ? new AppChainEngine.L1Ref(tip.getSlot(), tip.getBlockHash())
+                : null;
+    }
+
+    /**
+     * The voting gate's delivery condition (app-layer ADR-038, D9a): only chains whose consensus reads L1
+     * (l1.stability-depth > 0) need healthy delivery; L1-less and depth-0 chains vote as before.
+     */
+    private boolean l1DeliveryHealthyForVoting() {
+        if (config.l1StabilityDepth() <= 0) {
+            return true;
         }
-        // deque: oldest..newest; pick the element depth-from-the-end
-        int index = recentL1Points.size() - 1 - depth;
-        int i = 0;
-        for (AppChainEngine.L1Ref ref : recentL1Points) {
-            if (i++ == index) {
-                return ref;
-            }
+        L1DeliveryLoop delivery = l1Delivery;
+        return delivery != null && delivery.deliveryHealthy();
+    }
+
+    /**
+     * The L1_ANCHORED effect gate frontier (ADR-010 F7): the highest app height
+     * covered by an anchor confirmed at or below {@link #stableL1Ref()}, i.e.
+     * at least {@code l1.stability-depth} blocks below this node's L1 tip.
+     * Node-local execution-plane state, never consensus input. 0 without a
+     * stable L1 point (depth 0, or too few L1 blocks seen since start).
+     */
+    private long stableAnchoredHeight() {
+        AppLedgerStore currentLedger = ledger;
+        AppChainEngine.L1Ref stable = stableL1Ref();
+        return currentLedger == null || stable == null
+                ? 0L : AnchorService.stableAnchoredHeight(currentLedger, stable.slot());
+    }
+
+    /**
+     * Why this node can never see a stability-deep anchor for the L1_ANCHORED
+     * gate, or null when it can. Effects config rejects this only for
+     * {@code effects.default-gate}; a state machine can still emit L1_ANCHORED
+     * effects explicitly.
+     *
+     * <p>Anchor confirmations are recorded only by this node's own anchor
+     * service or by the script-anchor service, which every member with L1
+     * access runs as a follower even with {@code anchor.enabled=false}. Only
+     * the certain cases are reported: a member that follows a chain anchored
+     * by another mode is not flagged.
+     */
+    private String l1AnchoredGateUnreachableReason() {
+        if (config.l1StabilityDepth() <= 0) {
+            return "l1.stability-depth is 0, so no anchor ever becomes stability-deep";
+        }
+        if (anchorService == null && scriptAnchorService == null) {
+            return "this node neither submits anchors nor follows script anchors (no L1 transaction access)";
         }
         return null;
     }
@@ -6015,6 +6298,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             String runtimeOwner = effectRuntimeOwner(executorIdentity, runtimeSettings.types());
             createdRuntime = new EffectRuntime(ledgerStore, config.chainId(), runtimeSettings,
                     executors, executorConfigs, executorSources, runtimeOwner, log);
+            createdRuntime.setStableAnchorFrontier(this::stableAnchoredHeight);
+            String unreachable = l1AnchoredGateUnreachableReason();
+            if (unreachable != null) {
+                createdRuntime.markL1AnchoredGateUnreachable(unreachable);
+            }
             // Publish ownership before registering the lifetime signal. If a
             // custom registry rejects registration, startup rollback sees and
             // closes the runtime instead of directly double-closing products.
@@ -6425,6 +6713,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 failure = LifecycleFailures.merge(failure, providerFailure);
             }
         }
+        BlockBodyRetentionRegistry.Registration retention = l1Retention;
+        if (retention != null) {
+            retention.close();
+        }
 
         if (failure == null) {
             permanentCloseCompletion.complete(null);
@@ -6481,6 +6773,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         }
         eventSubscriptions.clear();
+
+        // The loop writes the app ledger, so it stops before the ledger closes. The sealed generation already
+        // turns any further pass into a no-op; close waits for the one in flight.
+        L1DeliveryLoop retiringDelivery = l1Delivery;
+        l1Delivery = null;
+        if (retiringDelivery != null) {
+            closeResource("L1 delivery loop", retiringDelivery::close, cleanupFailures);
+        }
 
         L1EpochObservationCoordinator retiringEpochCoordinator =
                 epochObservationCoordinator;
@@ -6897,9 +7197,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // Peer connectivity is intentionally NOT a readiness gate: in a two-node
         // group the first node would never become ready while waiting for the
         // second (bootstrap deadlock). Connectivity is reported via status().
-        return running.get()
-                ? SubsystemHealth.up(name())
-                : SubsystemHealth.down(name(), "stopped");
+        if (!running.get()) {
+            return SubsystemHealth.down(name(), "stopped");
+        }
+        L1DeliveryLoop delivery = l1Delivery;
+        String l1Readiness = delivery != null ? l1DeliveryReadinessProblem(delivery) : null;
+        return l1Readiness == null ? SubsystemHealth.up(name()) : SubsystemHealth.degraded(name(), l1Readiness);
     }
 
 }

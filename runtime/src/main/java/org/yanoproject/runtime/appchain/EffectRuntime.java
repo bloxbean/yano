@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.LongSupplier;
 
 /**
  * The execution plane (ADR app-layer/010 F5): discovers finalized effects
@@ -243,6 +244,11 @@ final class EffectRuntime implements AutoCloseable {
     private volatile long statsCachedAt;
     private volatile boolean closed;
     private volatile String lastError;
+    /** L1_ANCHORED gate frontier; nothing is stability-deep until the subsystem wires it. */
+    private volatile LongSupplier stableAnchorFrontier = () -> 0L;
+    /** Why no anchor can ever become stability-deep on this chain, or null when one can. */
+    private volatile String l1AnchoredGateUnreachable;
+    private final AtomicBoolean warnedUnreachableL1Anchored = new AtomicBoolean();
 
     EffectRuntime(AppLedgerStore ledger, String chainId, Settings settings,
                   List<AppEffectExecutor> executors,
@@ -606,6 +612,33 @@ final class EffectRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Wire the L1_ANCHORED gate frontier (ADR-010 F7): the highest app height
+     * covered by an anchor at least {@code l1.stability-depth} blocks deep on
+     * this node's L1 view. Until wired, no L1_ANCHORED effect is eligible.
+     */
+    void setStableAnchorFrontier(LongSupplier frontier) {
+        this.stableAnchorFrontier = Objects.requireNonNull(frontier, "frontier");
+    }
+
+    /**
+     * Record that this chain's configuration can never produce a stability-deep
+     * anchor, so an L1_ANCHORED effect stays queued until it expires. The gate
+     * still fails closed; this only makes the stall visible in the log and in
+     * {@link #stats()}.
+     */
+    void markL1AnchoredGateUnreachable(String reason) {
+        this.l1AnchoredGateUnreachable = Objects.requireNonNull(reason, "reason");
+    }
+
+    private void warnIfL1AnchoredGateUnreachable(long height, int ordinal, String type) {
+        String reason = l1AnchoredGateUnreachable;
+        if (reason != null && warnedUnreachableL1Anchored.compareAndSet(false, true)) {
+            log.warn("App-chain '{}' effect {}/{} ({}) is gated l1-anchored but can never run: {}",
+                    chainId, height, ordinal, type, reason);
+        }
+    }
+
     /** One scheduler tick: intake new blocks, then gate + dispatch eligible effects. */
     void tick() {
         synchronized (tickCycleLock) {
@@ -805,7 +838,7 @@ final class EffectRuntime implements AutoCloseable {
         if (closed) {
             return List.of();
         }
-        long anchored = ledger.metaLong("anchor_last_height", 0L);
+        long anchored = stableAnchorFrontier.getAsLong();
         long now = System.currentTimeMillis();
         List<DispatchEntry> candidates = new ArrayList<>();
         long[] cursor = ledger.fxDispatchCursor().orElse(null);
@@ -847,7 +880,8 @@ final class EffectRuntime implements AutoCloseable {
             }
             if (record.gate() == FinalityGate.L1_ANCHORED
                     && height > anchored - settings.anchorMarginBlocks()) {
-                continue; // wait for the anchor high-water-mark (row stays queued)
+                warnIfL1AnchoredGateUnreachable(height, ordinal, record.type());
+                continue; // wait for a stability-deep covering anchor (row stays queued)
             }
             if (record.expiryHeight() > 0 && record.expiryHeight() <= tip + EXPIRY_SAFETY_BLOCKS) {
                 continue; // too close to deterministic expiry — let the sweep close it
@@ -1089,7 +1123,7 @@ final class EffectRuntime implements AutoCloseable {
                     && height > ledger.metaLong("zk_settled_height", 0L)) {
                 return null;
             }
-            long anchoredHeight = ledger.metaLong("anchor_last_height", 0L);
+            long anchoredHeight = stableAnchorFrontier.getAsLong();
             if (currentRecord.gate() == FinalityGate.L1_ANCHORED
                     && height > anchoredHeight - settings.anchorMarginBlocks()) {
                 return null;
@@ -1286,7 +1320,7 @@ final class EffectRuntime implements AutoCloseable {
         }
         try {
             long tip = ledger.tipHeight();
-            long anchored = ledger.metaLong("anchor_last_height", 0L);
+            long anchored = stableAnchorFrontier.getAsLong();
             long now = System.currentTimeMillis();
             long leaseUntil = now + Math.max(1, Math.min(leaseSeconds, 3600)) * 1000L;
             int cap = Math.max(1, Math.min(max, 256));
@@ -1317,6 +1351,7 @@ final class EffectRuntime implements AutoCloseable {
                 }
                 if (record.gate() == FinalityGate.L1_ANCHORED
                         && height > anchored - settings.anchorMarginBlocks()) {
+                    warnIfL1AnchoredGateUnreachable(height, ordinal, record.type());
                     continue;
                 }
                 if (record.expiryHeight() > 0
@@ -1705,6 +1740,10 @@ final class EffectRuntime implements AutoCloseable {
                 "failed", failedCount.get(),
                 "parked", parkedCount.get()));
         stats.put("expiredTotal", ledger.fxExpiredCount());
+        String unreachable = l1AnchoredGateUnreachable;
+        stats.put("l1AnchoredGate", unreachable == null
+                ? Map.of("reachable", true)
+                : Map.of("reachable", false, "reason", unreachable));
         stats.put("latencyByType", Map.copyOf(latency));
         stats.put("metricsGeneration", metricsGeneration);
         stats.put("owner", "v1:" + runtimeOwner);

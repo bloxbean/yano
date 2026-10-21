@@ -7,14 +7,14 @@ on:
       - main
       - develop
       - develop*
-      - release*
+      - release**
       - next
   pull_request:
     branches:
       - main
       - develop
       - develop*
-      - release*
+      - release**
       - next
 
 # PR builds run the pull request's own code: give it a read-only token.

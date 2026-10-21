@@ -32,6 +32,6 @@ domain names (`api`, `runtime`, `consensus`, `p2p`, `ledgerstate`, …); keep it
 that way.
 
 Do not introduce `org.yanoproject.yano.*` or a `com.bloxbean.cardano.yano.*`
-package. The `com.bloxbean.cardano` group still owns Yano's *dependencies*
-(yaci, cardano-client-lib, julc, zeroj), which are unrelated projects and are
-not moving.
+package. The `com.bloxbean.cardano` group still owns some of Yano's
+*dependencies* (yaci, cardano-client-lib); julc and zeroj publish under their
+own `org.julclang` and `org.zeroj` groups. All are separate projects.

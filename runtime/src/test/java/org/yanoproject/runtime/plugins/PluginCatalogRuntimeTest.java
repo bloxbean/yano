@@ -1018,6 +1018,40 @@ class PluginCatalogRuntimeTest {
     }
 
     @Test
+    void manifestedFactoryCallbackFailureCarriesManifestProvenance() throws Exception {
+        String bundleId = "com.example.failing-factory";
+        String providerName = "com.example.failing.FailingFactorySink";
+        Path classes = compileFailingFactorySink(providerName, "failing-factory");
+        Path jar = tempDirectory.resolve("failing-factory.jar");
+        writeJar(jar, Map.of(
+                providerName.replace('.', '/') + ".class",
+                Files.readAllBytes(classes.resolve(providerName.replace('.', '/') + ".class")),
+                SINK_SERVICE, providerName.getBytes(StandardCharsets.UTF_8),
+                manifestPath(bundleId), manifest(bundleId, "failing-factory", providerName)));
+        PluginIndex index = new PluginArtifactScanner().scan(jar);
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+                    PluginsOptions.defaults(), loader,
+                    List.of(new PluginCatalogBuilder.CatalogInput(index, PluginSourceCategory.CLASSPATH)));
+            try {
+                FinalizedStreamSinkFactory factory = runtime.registry()
+                        .find(FinalizedStreamSinkFactory.class, "failing-factory").orElseThrow();
+                // An ordinary configuration error inside the factory keeps its catalog attribution.
+                assertThatThrownBy(() -> factory.create("chain", Map.of()))
+                        .isInstanceOfSatisfying(HostPluginActivationException.class, failure -> {
+                            assertThat(failure.bundleId()).isEqualTo(bundleId);
+                            assertThat(failure.contributionKind()).isEqualTo("finalized-sink");
+                        })
+                        .hasRootCauseMessage("missing setting");
+            } finally {
+                runtime.registry().close();
+            }
+        }
+    }
+
+    @Test
     void failedEagerLegacyActivationIsClosedExactlyOnce() throws Exception {
         FlakyLegacySinkFactory.schemeCalls.set(0);
         FlakyLegacySinkFactory.closeCalls.set(0);
@@ -1032,7 +1066,9 @@ class PluginCatalogRuntimeTest {
             try {
                 assertThatThrownBy(() -> environment.providers().find(
                         FinalizedStreamSinkFactory.class, FlakyLegacySinkFactory.INITIAL_SCHEME))
-                        .isInstanceOf(IllegalStateException.class)
+                        // A legacy entry has no manifest: its identity is plugin-derived, so no host provenance.
+                        .isInstanceOf(PluginActivationException.class)
+                        .isNotInstanceOf(HostPluginActivationException.class)
                         .hasMessageContaining("Failed to activate provider")
                         .hasRootCauseMessage("Provider '"
                                 + FlakyLegacySinkFactory.class.getName()
@@ -3726,6 +3762,33 @@ import org.yanoproject.api.appchain.AppBlockExecutionContext;
                     public String marker() { return "%s"; }
                 }
                 """.formatted(marker));
+        String apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
+                .getCodeSource().getLocation().toURI()).toString();
+        int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
+                "-classpath", apiPath, "-d", classes.toString(), source.toString());
+        assertThat(result).isZero();
+        return classes;
+    }
+
+    private Path compileFailingFactorySink(String providerName, String scheme) throws Exception {
+        int separator = providerName.lastIndexOf('.');
+        Path sourceRoot = Files.createDirectories(tempDirectory.resolve(scheme + "-source"));
+        Path classes = Files.createDirectories(tempDirectory.resolve(scheme + "-classes"));
+        Path source = sourceRoot.resolve(providerName.replace('.', '/') + ".java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, """
+                package %s;
+                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
+                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+                import java.util.List;
+                import java.util.Map;
+                public final class %s implements FinalizedStreamSinkFactory {
+                    public String scheme() { return "%s"; }
+                    public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+                        throw new IllegalStateException("missing setting");
+                    }
+                }
+                """.formatted(providerName.substring(0, separator), providerName.substring(separator + 1), scheme));
         String apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI()).toString();
         int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
