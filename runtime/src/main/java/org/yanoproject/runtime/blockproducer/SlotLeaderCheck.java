@@ -3,12 +3,17 @@ package org.yanoproject.runtime.blockproducer;
 import com.bloxbean.cardano.client.crypto.vrf.cardano.CardanoLeaderCheck;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 
 /**
  * Slot leader eligibility check for Ouroboros Praos.
  * Wraps VRF computation and threshold comparison.
  */
 public class SlotLeaderCheck {
+
+    /** Decimal digits of the ledger's {@code FixedPoint} ({@code Digits34}, BaseTypes.hs:265-272). */
+    private static final int FIXED_POINT_DIGITS = 34;
 
     private final byte[] vrfSkey;
     private final BigDecimal activeSlotCoeff;
@@ -23,6 +28,21 @@ public class SlotLeaderCheck {
         this.vrfSkey = vrfSkey;
         this.activeSlotCoeff = activeSlotCoeff;
         this.blockSigner = blockSigner;
+    }
+
+    /**
+     * The relative stake as the Haskell leader check uses it: the pool distribution's exact ratio
+     * {@code poolStake %. totalActiveStake} (cardano-ledger-core State/SnapShots.hs:198) converted by
+     * {@code fromRational} to {@code FixedPoint} in {@code checkLeaderNatValue} (cardano-protocol
+     * TPraos/BlockHeader.hs:400), which floors to 34 decimal digits.
+     *
+     * @return the stake ratio, zero when either value is missing or the total is not positive
+     */
+    public static BigDecimal relativeStake(BigInteger poolStake, BigInteger totalStake) {
+        if (poolStake == null || totalStake == null || totalStake.signum() <= 0 || poolStake.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return new BigDecimal(poolStake).divide(new BigDecimal(totalStake), FIXED_POINT_DIGITS, RoundingMode.FLOOR);
     }
 
     /**

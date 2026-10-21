@@ -4,7 +4,9 @@ import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import org.yanoproject.runtime.blockproducer.EpochNonceState;
+import org.yanoproject.runtime.blockproducer.ForgingReadiness;
 import org.yanoproject.runtime.blockproducer.SignedBlockBuilder;
+import org.yanoproject.runtime.blockproducer.SlotClock;
 import org.yanoproject.runtime.blockproducer.SlotLeaderBlockProducer;
 import org.yanoproject.runtime.blockproducer.SlotLeaderCheck;
 import org.yanoproject.runtime.blockproducer.SlotLeaderTimeTravelBlockProducer;
@@ -32,9 +34,8 @@ public final class SlotLeaderProducerFactory {
                                              SlotLeaderCheck slotLeaderCheck,
                                              StakeDataProvider stakeDataProvider,
                                              String poolHash,
-                                             long resolvedGenesisTimestamp,
-                                             int slotLengthMillis) {
-        var producer = SlotLeaderBlockProducer.withTransactionSelector(
+                                             SlotClock slotClock) {
+        var producer = new SlotLeaderBlockProducer(
                 dependencies.chainState(),
                 dependencies.transactions(),
                 dependencies.nodeServerSupplier(),
@@ -45,11 +46,12 @@ public final class SlotLeaderProducerFactory {
                 slotLeaderCheck,
                 stakeDataProvider,
                 poolHash,
-                resolvedGenesisTimestamp,
-                slotLengthMillis);
+                slotClock,
+                dependencies.readiness());
         dependencies.producerSubsystem().installSlotLeader(producer);
         dependencies.producerSubsystem().start();
-        log.info("Block producer started (slot-leader mode, pool={}, slotLength={}ms)", poolHash, slotLengthMillis);
+        log.info("Block producer started (slot-leader mode, pool={}, slotLength={}ms)", poolHash,
+                slotClock.slotMillis());
         return producer;
     }
 
@@ -98,7 +100,7 @@ public final class SlotLeaderProducerFactory {
 
     /**
      * Runtime collaborators required to install slot-leader producer
-     * strategies.
+     * strategies. {@code readiness} gates live forging on the sync state.
      */
     public record Dependencies(
             ChainState chainState,
@@ -106,7 +108,8 @@ public final class SlotLeaderProducerFactory {
             Supplier<NodeServer> nodeServerSupplier,
             EventBus eventBus,
             ScheduledExecutorService scheduler,
-            ProducerSubsystem producerSubsystem) {
+            ProducerSubsystem producerSubsystem,
+            ForgingReadiness readiness) {
         public Dependencies {
             Objects.requireNonNull(chainState, "chainState");
             Objects.requireNonNull(transactions, "transactions");
@@ -114,6 +117,7 @@ public final class SlotLeaderProducerFactory {
             Objects.requireNonNull(eventBus, "eventBus");
             Objects.requireNonNull(scheduler, "scheduler");
             Objects.requireNonNull(producerSubsystem, "producerSubsystem");
+            Objects.requireNonNull(readiness, "readiness");
         }
     }
 }

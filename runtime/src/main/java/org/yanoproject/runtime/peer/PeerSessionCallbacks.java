@@ -19,8 +19,12 @@ public interface PeerSessionCallbacks {
 
     void onIntersectionFound();
 
-    /** The upstream has none of the points offered in FindIntersect. */
-    default void onIntersectionNotFound() {
+    /**
+     * The upstream has none of the points offered in FindIntersect.
+     *
+     * @param upstreamTip the upstream's tip, sent with IntersectNotFound
+     */
+    default void onIntersectionNotFound(Tip upstreamTip) {
     }
 
     void maybeFastTransitionToSteadyState(Tip remoteTip);

@@ -98,6 +98,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         this.peerHealth = peerHealth;
         this.ledgerApplyProcessor = ledgerApplyProcessor;
         this.ledgerGeneration = ledgerGeneration;
+        // An upstream header that competes with a local block rolls back through the RollBackward path.
+        if (headerSyncManager != null) {
+            headerSyncManager.setForkRollback(this::onRollback);
+        }
 
         log.info("PipelineDataListener initialized for parallel header/body processing");
     }
@@ -404,8 +408,8 @@ public class PipelineDataListener implements BlockChainDataListener {
         // Notify HeaderSyncManager about intersection not found
         headerSyncManager.intersactNotFound(tip);
 
-        // Yano offers an older local point next
-        callbacks.onIntersectionNotFound();
+        // Yano offers an older local point next, unless the upstream is behind the local chain
+        callbacks.onIntersectionNotFound(tip);
 
         log.warn("Intersection not found for tip: {} - notified header manager and Yano", tip);
     }

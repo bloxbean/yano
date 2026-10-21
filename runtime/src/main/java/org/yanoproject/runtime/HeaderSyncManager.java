@@ -9,16 +9,21 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.n2n.ChainSyncAgentListener;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import org.yanoproject.runtime.chain.ByronEbHeaderStore;
+import org.yanoproject.runtime.ledger.canonical.CanonicalStateGate;
 import org.yanoproject.runtime.sync.validation.HeaderValidationException;
 import org.yanoproject.runtime.sync.validation.HeaderValidationResult;
 import org.yanoproject.runtime.sync.validation.HeaderValidator;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * HeaderSyncManager handles header-only synchronization using ChainSyncAgent with intelligent backpressure.
@@ -67,6 +72,11 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     private volatile BooleanSupplier ingestHold = () -> false;
     private volatile String ingestHoldReason = null;
     private volatile BooleanSupplier epochBoundaryHold = () -> false;
+    /**
+     * Rolls the local chain back to a point through the upstream RollBackward path. Without it, a header that
+     * competes with a local block fails the session (peer recovery) instead.
+     */
+    private volatile Consumer<Point> forkRollback;
 
     // Progress logging
     private static final int PROGRESS_LOG_INTERVAL = 1000;
@@ -138,13 +148,10 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
             String blockHash = blockHeader.getHeaderBody().getBlockHash();
 
             // Store header immediately when received from ChainSync
-            chainState.storeBlockHeader(
-                HexUtil.decodeHexString(blockHash),
-                blockNumber,
-                slot,
-                originalHeaderBytes
-            );
-            afterHeaderStored(slot, blockNumber, blockHash);
+            if (storeShelleyHeader(blockHeader.getHeaderBody().getPrevHash(), slot, blockNumber, blockHash,
+                    originalHeaderBytes)) {
+                afterHeaderStored(slot, blockNumber, blockHash);
+            }
 
             // Update metrics
             headersReceived++;
@@ -325,6 +332,86 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
         // No action needed here - ChainSyncAgent handles reconnection automatically
         // using its internal currentPoint tracking for robust resumption
         log.debug("📄 ChainSyncAgent will automatically resume headers from last confirmed point");
+    }
+
+    /**
+     * Sets the rollback used when an upstream header competes with a local block: the same path as an upstream
+     * RollBackward, so that ledger state, nonce, mempool and downstream peers unwind as for any rollback.
+     */
+    public void setForkRollback(Consumer<Point> forkRollback) {
+        this.forkRollback = forkRollback;
+    }
+
+    /**
+     * Stores a Shelley+ header, first rolling back a local block it competes with.
+     *
+     * <p>The chain store is linear by block number, so a header must extend the header tip. During sync it always
+     * does: an upstream RollBackward moves the tip before the next header arrives. It does not when this node
+     * forged a block the upstream does not have: the upstream's next header then follows an earlier local block.
+     * The upstream wins, as the node follows a single trusted upstream: the local chain is rolled back to the
+     * header's parent through {@link #forkRollback}, then the header is stored. A parent that is not on the local
+     * chain fails the session for peer recovery, and nothing is stored. A header that is already on the local
+     * chain (a forged block the upstream adopted) is not stored again.</p>
+     *
+     * <p>All of it holds the chain-extension lock, which a slot-leader producer only tries, so no block is forged
+     * on a tip that an upstream header is replacing ({@link CanonicalStateGate#chainExtensionLock()}).</p>
+     *
+     * @return whether the header was stored
+     */
+    private boolean storeShelleyHeader(String prevHash, long slot, long blockNumber, String blockHash,
+                                       byte[] headerBytes) {
+        Lock extension = CanonicalStateGate.of(chainState).chainExtensionLock();
+        extension.lock();
+        try {
+            ChainTip headerTip = chainState.getHeaderTip();
+            if (extendsHeaderTip(headerTip, prevHash)) {
+                chainState.storeBlockHeader(HexUtil.decodeHexString(blockHash), blockNumber, slot, headerBytes);
+                return true;
+            }
+            if (localPoint(blockNumber, blockHash) != null) {
+                return false;
+            }
+            Point parent = localPoint(blockNumber - 1, prevHash);
+            Consumer<Point> rollback = forkRollback;
+            if (parent == null || rollback == null) {
+                throw new IllegalStateException(String.format(
+                        "Upstream header #%d at slot %d (%s) follows %s, which is %s; header tip is #%d at slot %d",
+                        blockNumber, slot, blockHash, prevHash,
+                        parent == null ? "not on the local chain" : "a local block that cannot be rolled back here",
+                        headerTip.getBlockNumber(), headerTip.getSlot()));
+            }
+            log.warn("Upstream header #{} at slot {} competes with local block #{} at slot {}: rolling back to its "
+                            + "parent at slot {}", blockNumber, slot, headerTip.getBlockNumber(), headerTip.getSlot(),
+                    parent.getSlot());
+            rollback.accept(parent);
+            ChainTip rolledBack = chainState.getHeaderTip();
+            if (!extendsHeaderTip(rolledBack, prevHash)) {
+                throw new IllegalStateException("Rollback to " + parent + " for upstream header #" + blockNumber
+                        + " left the header tip at " + rolledBack);
+            }
+            chainState.storeBlockHeader(HexUtil.decodeHexString(blockHash), blockNumber, slot, headerBytes);
+            return true;
+        } finally {
+            extension.unlock();
+        }
+    }
+
+    private static boolean extendsHeaderTip(ChainTip headerTip, String prevHash) {
+        return headerTip == null || prevHash == null
+                || prevHash.equalsIgnoreCase(HexUtil.encodeHexString(headerTip.getBlockHash()));
+    }
+
+    /** @return the point of the header {@code hash} when it is the local chain's header at {@code blockNumber} */
+    private Point localPoint(long blockNumber, String hash) {
+        if (blockNumber < 0 || hash == null) {
+            return null;
+        }
+        byte[] header = chainState.getBlockHeader(HexUtil.decodeHexString(hash));
+        if (header == null || !Arrays.equals(header, chainState.getBlockHeaderByNumber(blockNumber))) {
+            return null;
+        }
+        Long slot = chainState.getSlotByBlockNumber(blockNumber);
+        return slot != null ? new Point(slot, hash) : null;
     }
 
     private void afterHeaderStored(long slot, long blockNumber, String blockHash) {

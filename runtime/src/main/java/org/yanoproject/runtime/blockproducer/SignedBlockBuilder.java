@@ -161,8 +161,8 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
             boolean pendingBoundary = epochNonceState.consumeEpochTransitionPending();
             boolean checkpointBoundary = epochTransition || pendingBoundary;
 
+            byte[] serialized = epochNonceState.serialize();
             if (nonceStore != null) {
-                byte[] serialized = epochNonceState.serialize();
                 NonceStateSnapshot snapshot = new NonceStateSnapshot(
                         slot, blockNumber, result.blockHash(), serialized);
                 pendingNonceCommit = new PendingNonceCommit(
@@ -170,10 +170,12 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
                         epochNonceState.getCurrentEpoch(),
                         epochNonceState.getEpochNonce(),
                         snapshot,
-                        checkpointBoundary);
+                        checkpointBoundary,
+                        slot,
+                        serialized);
             } else {
                 pendingNonceCommit = new PendingNonceCommit(
-                        stateBeforeMutation, -1, null, null, false);
+                        stateBeforeMutation, -1, null, null, false, slot, serialized);
             }
         } catch (RuntimeException | Error e) {
             epochNonceState.restore(stateBeforeMutation);
@@ -193,6 +195,9 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
         if (pending == null) {
             return;
         }
+        // The rollback checkpoint of a forged block, as NonceEvolutionListener saves one for a synced block: a
+        // rollback to this block restores the state after it.
+        epochNonceState.saveCheckpoint(pending.slot(), pending.stateAfterMutation());
         if (nonceStore != null && pending.snapshot() != null) {
             nonceStore.storeLatestNonceSnapshot(pending.snapshot());
             nonceStore.storeEpochNonce(pending.epoch(), pending.epochNonce());
@@ -227,7 +232,9 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
             int epoch,
             byte[] epochNonce,
             NonceStateSnapshot snapshot,
-            boolean checkpointBoundary) {
+            boolean checkpointBoundary,
+            long slot,
+            byte[] stateAfterMutation) {
     }
 
     /**

@@ -226,11 +226,22 @@ public final class BlockProducerHelper {
         if (transactions.selectionCurrent()) {
             return;
         }
+        throw discardBuiltBlock(section, blockBuilder, slot);
+    }
+
+    /**
+     * Discards a built block that must not be stored because the canonical state moved since it was built: the
+     * section stays unchanged and the nonce state staged by the build is restored.
+     *
+     * @return the exception for the caller to throw
+     */
+    public static StaleBlockSelectionException discardBuiltBlock(CanonicalStateGate.WriteSection section,
+                                                                 DevnetBlockBuilder blockBuilder, long slot) {
         section.markUnchanged();
         if (blockBuilder instanceof SignedBlockBuilder signedBlockBuilder) {
             signedBlockBuilder.rollbackPendingNonceState();
         }
-        throw new StaleBlockSelectionException(slot);
+        return new StaleBlockSelectionException(slot);
     }
 
     /**

@@ -420,7 +420,9 @@ class EngineAdmissionTest {
 
         assertThat(subsystem.containsTransaction(hash)).isTrue();
         assertThat(engine.requests).as("the mempool validated with the engine itself").hasSize(1);
-        assertThat(subsystem.drainForBlock()).as("fresh: validated at the tip").hasSize(1);
+        // Fresh, but this capture has no UTxO store: the block's reference-script size cannot be bounded, so
+        // selection forges nothing rather than risk BBODY.BodyRefScriptsSizeTooBig.
+        assertThat(subsystem.drainForBlock()).as("fresh, reference scripts not measurable").isEmpty();
         subsystem.blockSelectionCompleted();
     }
 

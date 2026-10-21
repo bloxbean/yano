@@ -3,9 +3,6 @@ package org.yanoproject.runtime.validation.shadowsync;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
-import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
-import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
-import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
@@ -16,7 +13,7 @@ import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
 import org.yanoproject.ledger.rules.conway.tx.RawRedeemer;
 import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
-import org.yanoproject.ledger.rules.conway.utxo.MinFee;
+import org.yanoproject.ledger.rules.conway.utxo.BlockRefScriptSize;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
 import org.yanoproject.ledger.rules.shadow.ShadowDumpBundle;
@@ -25,17 +22,12 @@ import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.Lookup;
 import org.yanoproject.ledger.rules.view.OverlayLedgerView;
 import org.yanoproject.ledger.rules.view.RecordingLedgerView;
-import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
 import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * Validates the transactions of one applied block against its pre-block state (ADR-056 Phase 7a, shadow sync).
@@ -359,50 +351,21 @@ public final class SyncBlockValidator {
 
     /** {@code totalRefScriptSizeInBlock} (Bbody.hs:357-371) against {@code base}, the pre-block UTxO. */
     RefScriptCheck refScripts(SyncBlock block, List<RawTransaction> decoded, LedgerView base, int protocolMajor) {
-        boolean cumulative = protocolMajor >= 11;
-        Map<Outpoint, TransactionOutput> produced = new HashMap<>();
-        long total = 0;
+        BlockRefScriptSize size = BlockRefScriptSize.over(base, protocolMajor);
         for (int i = 0; i < block.size(); i++) {
             Transaction tx = decoded.get(i) != null ? decoded.get(i).decoded() : null;
             if (tx == null || tx.getBody() == null) {
-                return new RefScriptCheck(total, maxRefScriptSizePerBlock,
+                return new RefScriptCheck(size.total(), maxRefScriptSizePerBlock,
                         "transaction " + block.txIds().get(i) + " does not decode");
             }
             TransactionBody body = tx.getBody();
-            Set<Outpoint> inputs = new LinkedHashSet<>();
-            addAll(inputs, body.getReferenceInputs());
-            addAll(inputs, body.getInputs());
-            for (Outpoint in : inputs) {
-                TransactionOutput output = cumulative ? produced.get(in) : null;
-                if (output == null) {
-                    Lookup<UtxoEntry> entry = base.utxo(in);
-                    if (entry instanceof Lookup.Unavailable<UtxoEntry> u) {
-                        return new RefScriptCheck(total, maxRefScriptSizePerBlock, u.reason());
-                    }
-                    output = entry instanceof Lookup.Present<UtxoEntry> p ? p.value().output() : null;
-                }
-                if (output != null && output.getScriptRef() != null) {
-                    try {
-                        total += MinFee.scriptOriginalSize(output.getScriptRef());
-                    } catch (RuntimeException e) {
-                        return new RefScriptCheck(total, maxRefScriptSizePerBlock,
-                                "reference script of " + in + " does not decode: " + e.getMessage());
-                    }
-                }
+            Lookup<Long> txSize = size.measure(body);
+            if (txSize instanceof Lookup.Unavailable<Long> u) {
+                return new RefScriptCheck(size.total(), maxRefScriptSizePerBlock, u.reason());
             }
-            if (cumulative) {
-                String id = block.txIds().get(i);
-                List<TransactionOutput> outputs = body.getOutputs() != null ? body.getOutputs() : List.of();
-                if (!block.phase2Invalid(i)) {
-                    for (int o = 0; o < outputs.size(); o++) {
-                        produced.put(new Outpoint(id, o), outputs.get(o));
-                    }
-                } else if (body.getCollateralReturn() != null) {
-                    produced.put(new Outpoint(id, outputs.size()), body.getCollateralReturn());
-                }
-            }
+            size.add(block.txIds().get(i), body, !block.phase2Invalid(i), ((Lookup.Present<Long>) txSize).value());
         }
-        return new RefScriptCheck(total, maxRefScriptSizePerBlock, null);
+        return new RefScriptCheck(size.total(), maxRefScriptSizePerBlock, null);
     }
 
     /** {@code validateExUnits} (Alonzo/Rules/Bbody.hs) against the pre-block {@code maxBlockExUnits}. */
@@ -432,14 +395,5 @@ public final class SyncBlockValidator {
             return new ExUnitsCheck(mem, steps, null, null, "maxBlockExUnits is not in the protocol parameters");
         }
         return new ExUnitsCheck(mem, steps, new BigInteger(maxMem.trim()), new BigInteger(maxSteps.trim()), null);
-    }
-
-    private static void addAll(Set<Outpoint> into, List<TransactionInput> inputs) {
-        if (inputs == null) {
-            return;
-        }
-        for (TransactionInput in : inputs) {
-            into.add(new Outpoint(in.getTransactionId().toLowerCase(), in.getIndex()));
-        }
     }
 }

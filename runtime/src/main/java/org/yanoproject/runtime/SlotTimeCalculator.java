@@ -1,5 +1,6 @@
 package org.yanoproject.runtime;
 
+import org.yanoproject.runtime.blockproducer.SlotClock;
 import org.yanoproject.runtime.chain.EraMetadataStore;
 import lombok.extern.slf4j.Slf4j;
 
@@ -13,42 +14,37 @@ import lombok.extern.slf4j.Slf4j;
  * </ul>
  * where {@code shelleyEraStartTime = networkStartTime + firstShelleySlot * byronSlotDuration}.
  * <p>
- * When {@code firstNonByronSlot == 0} (devnet/preview), the formula degenerates to:
+ * When {@code firstNonByronSlot == 0} (no Byron era), the formula degenerates to:
  * {@code networkStartTime + slot * shelleySlotLength}
+ * <p>
+ * The arithmetic is the millisecond {@link SlotClock} that forging uses, rounded to whole seconds.
  */
 @Slf4j
 public class SlotTimeCalculator {
 
-    private final long networkStartTimeSec;
-    private final long byronSlotDurationSec;
-    private final double shelleySlotLengthSec;
+    private final SlotClock clock;
     private final EraMetadataStore eraMetadataStore;
     private long firstNonByronSlot = -1;
 
     public SlotTimeCalculator(long networkStartTimeSec, long byronSlotDurationSec,
                               double shelleySlotLengthSec, EraMetadataStore eraMetadataStore) {
-        this.networkStartTimeSec = networkStartTimeSec;
-        this.byronSlotDurationSec = byronSlotDurationSec;
-        this.shelleySlotLengthSec = shelleySlotLengthSec;
         this.eraMetadataStore = eraMetadataStore;
+        // Until the first non-Byron slot is known, every slot is a Byron slot.
+        this.clock = new SlotClock(networkStartTimeSec * 1000, byronSlotDurationSec * 1000,
+                Math.round(shelleySlotLengthSec * 1000), () -> {
+                    long firstShelley = resolveFirstNonByronSlot();
+                    return firstShelley >= 0 ? firstShelley : Long.MAX_VALUE;
+                });
     }
 
     /**
      * Convert a slot number to a Unix timestamp (seconds since epoch).
      *
      * @param slot the slot number
-     * @return Unix timestamp in seconds
+     * @return Unix timestamp in seconds, the slot start rounded to the nearest second
      */
     public long slotToUnixTime(long slot) {
-        long firstShelley = resolveFirstNonByronSlot();
-        if (firstShelley < 0 || slot < firstShelley) {
-            // Byron era or first non-Byron slot not yet known
-            return networkStartTimeSec + slot * byronSlotDurationSec;
-        } else {
-            // Shelley+ era
-            long shelleyStartTime = networkStartTimeSec + firstShelley * byronSlotDurationSec;
-            return shelleyStartTime + Math.round((slot - firstShelley) * shelleySlotLengthSec);
-        }
+        return Math.floorDiv(clock.slotStartMillis(slot) + 500, 1000);
     }
 
     /**

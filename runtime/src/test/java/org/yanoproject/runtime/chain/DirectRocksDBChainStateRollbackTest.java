@@ -64,6 +64,40 @@ class DirectRocksDBChainStateRollbackTest {
     }
 
     @Test
+    void theLastForgedSlotOnlyIncreasesAndSurvivesRollbacksAndReopen() {
+        assertThat(chainState.getLastForgedSlot()).isEqualTo(-1);
+        storeMain(hash(1), 1L, 5L);
+        storeMain(hash(2), 2L, 10L);
+        chainState.storeLastForgedSlot(10L);
+        chainState.storeLastForgedSlot(7L);
+        assertThat(chainState.getLastForgedSlot()).as("a lower slot is ignored").isEqualTo(10);
+
+        chainState.rollbackTo(5L);
+        assertThat(chainState.getTip().getSlot()).isEqualTo(5);
+        assertThat(chainState.getLastForgedSlot()).isEqualTo(10);
+        chainState.close();
+        chainState = new DirectRocksDBChainState(tempDir.resolve("testdb").toString());
+
+        assertThat(chainState.getTip().getSlot()).isEqualTo(5);
+        assertThat(chainState.getLastForgedSlot()).isEqualTo(10);
+    }
+
+    @Test
+    void aRollbackToOriginClearsTheLastForgedSlot() {
+        storeMain(hash(1), 1L, 5L);
+        chainState.storeLastForgedSlot(5L);
+
+        chainState.rollbackToOrigin();
+        chainState.close();
+        chainState = new DirectRocksDBChainState(tempDir.resolve("testdb").toString());
+
+        assertThat(chainState.getTip()).isNull();
+        assertThat(chainState.getLastForgedSlot()).isEqualTo(-1);
+        chainState.storeLastForgedSlot(3L);
+        assertThat(chainState.getLastForgedSlot()).as("a new chain forges from its own slots").isEqualTo(3);
+    }
+
+    @Test
     void pointRollbackToEbbRemovesSameSlotSuccessorMain() {
         byte[] main1 = hash(1);
         byte[] ebb = hash(2);

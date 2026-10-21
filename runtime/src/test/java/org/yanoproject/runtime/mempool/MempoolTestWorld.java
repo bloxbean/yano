@@ -4,7 +4,13 @@ import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import co.nstant.in.cbor.model.Array;
+import co.nstant.in.cbor.model.ByteString;
+import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import org.yanoproject.api.utxo.model.Outpoint;
@@ -30,6 +36,7 @@ import org.yanoproject.runtime.validation.ValidationEnvFactory;
 
 import java.math.BigInteger;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -202,7 +209,15 @@ final class MempoolTestWorld {
                 settings);
     }
 
-    /** The world with {@code extraUtxos} more 10 ADA outputs at {@code dev-42} ({@link #extraInput(int)}). */
+    /** An output at {@code dev-42} carrying a {@link #REFERENCE_SCRIPT_SIZE}-byte reference script. */
+    static final TransactionInput REFERENCE_SCRIPT_INPUT = new TransactionInput("ef".repeat(32), 0);
+    /** Under the 200 KiB per-transaction limit; six of them exceed the 1 MiB per-block limit. */
+    static final int REFERENCE_SCRIPT_SIZE = 180_000;
+
+    /**
+     * The world with {@code extraUtxos} more 10 ADA outputs at {@code dev-42} ({@link #extraInput(int)}) and the
+     * reference-script output {@link #REFERENCE_SCRIPT_INPUT}.
+     */
     static InMemoryLedgerView world(ProtocolParams params, int extraUtxos) {
         InMemoryLedgerView.Builder builder = MutationWorld.builder(params);
         String owner = TestKey.DEV_42.enterpriseAddress(MutationWorld.NETWORK);
@@ -210,7 +225,22 @@ final class MempoolTestWorld {
             TransactionInput in = extraInput(i);
             builder.utxo(in.getTransactionId(), in.getIndex(), MutationWorld.output(owner, ADA.multiply(BigInteger.TEN)));
         }
+        TransactionOutput referenceScript = MutationWorld.output(owner, ADA.multiply(BigInteger.TEN));
+        referenceScript.setScriptRef(plutusV2ScriptRef(REFERENCE_SCRIPT_SIZE));
+        builder.utxo(REFERENCE_SCRIPT_INPUT.getTransactionId(), REFERENCE_SCRIPT_INPUT.getIndex(), referenceScript);
         return builder.build();
+    }
+
+    /** A {@code [2, bytes]} script reference of {@code size} bytes. */
+    private static byte[] plutusV2ScriptRef(int size) {
+        try {
+            Array ref = new Array();
+            ref.add(new UnsignedInteger(2));
+            ref.add(new ByteString(Arrays.copyOf(HexUtil.decodeHexString("46010000222499"), size)));
+            return CborSerializationUtil.serialize(ref);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     static TransactionInput extraInput(int i) {
