@@ -2,7 +2,7 @@
 title: "Cardano Client Lib adapter"
 description: "Use an embedded CCL BackendService in integration tests."
 sidebar:
-  order: 5
+  order: 6
 ---
 
 `testkit-ccl` adapts `YanoDevnetTestKit` to Cardano Client Lib's
