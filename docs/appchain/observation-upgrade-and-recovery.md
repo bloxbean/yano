@@ -58,6 +58,30 @@ Changing a genesis-pinned observation profile is not an in-place operational
 configuration edit. Replay retained generations using their original profiles.
 Do not infer wall-clock cadence from an APP_HEIGHT interval.
 
+## Built-in observers skip phase-2-invalid transactions
+
+Earlier `address-deposit` and `metadata-label` observers reported the outputs
+and metadata of transactions whose scripts failed (issue #181). Such a
+transaction is on chain but only its collateral is taken, so those deposits
+and events never happened. The fixed observers skip them and declare new
+claim schemas, `address-deposit-claim-v2` and `metadata-label-claim-v2`.
+
+This is a fresh-chain change for every app chain that configures either
+observer type; chains without them are unaffected. The new schemas change the
+observer-profile digest and with it the consensus context, so:
+
+- old and new members cannot certify each other's blocks, and a node cannot
+  catch up an old generation's blocks with the new software;
+- a node whose retained L1 observation journal holds observations refuses
+  startup with `L1 observation journal profile differs from configuration`,
+  rather than proposing or accepting claims the old observer journaled.
+
+Upgrade all members together into a new generation. Preserve the old store
+and software for replay as described above; do not reset the journal to get
+past the guard. Claims already finalized in an old generation remain in its
+committed state: check each finalized `~l1/<observer-id>` observation against
+the invalid transactions of its L1 block before relying on it.
+
 ## Historical local L1 cursor writer defect
 
 Phase 4 fixed new writes that previously stored a raw journal record key where

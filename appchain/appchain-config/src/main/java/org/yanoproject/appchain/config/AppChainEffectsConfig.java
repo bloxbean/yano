@@ -100,6 +100,12 @@ public record AppChainEffectsConfig(
                         "effects.result.signers contains nonmember key " + signer);
             }
         }
+        if (defaultGate == FinalityGate.L1_ANCHORED && config.l1StabilityDepth() <= 0) {
+            // ADR-010 F7: the gate waits for a stability-deep anchor; with no
+            // stability depth there is none, so every such effect would expire.
+            throw new IllegalArgumentException(
+                    "effects.default-gate=l1-anchored requires l1.stability-depth > 0");
+        }
         return new AppChainConsensusProfile(
                 AppChainConsensusProfile.SCHEMA_VERSION,
                 config.maxMessageBytes(), config.maxBlockMessages(), config.blockMaxBytes(),

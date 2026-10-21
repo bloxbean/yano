@@ -32,6 +32,14 @@ public final class PeerRecoveryFailureTracker {
         return snapshot();
     }
 
+    /** Enters the terminal state at once, for a failure that retrying cannot fix. */
+    public synchronized Snapshot recordTerminal(PeerRecoveryReason reason, String detail) {
+        lastReason = Objects.requireNonNullElse(reason, PeerRecoveryReason.UNKNOWN);
+        terminal = true;
+        message = "Peer recovery stopped; last reason=" + lastReason + ": " + detail;
+        return snapshot();
+    }
+
     public synchronized void recordSuccess() {
         consecutiveFailures = 0;
         terminal = false;

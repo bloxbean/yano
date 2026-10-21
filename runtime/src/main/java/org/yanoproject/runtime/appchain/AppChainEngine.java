@@ -206,10 +206,8 @@ final class AppChainEngine implements AutoCloseable {
                 .sorted()
                 .map(HexUtil::decodeHexString)
                 .toList();
-        int maximumFaults = Integer.parseInt(config.pluginSettings().getOrDefault(
-                "consensus.max-byzantine-members", "0"));
         ConsensusQuorum quorum = new ConsensusQuorum(epoch.members().size(),
-                epoch.threshold(), maximumFaults);
+                epoch.threshold(), MemberGroup.maxByzantineMembers(config));
         return new ConsensusContext(3, config.chainId(),
                 stateBackend.identity().genesisId(), height, quorum, members,
                 AppChainConsensusProfileCommitment.digest(
@@ -447,12 +445,10 @@ final class AppChainEngine implements AutoCloseable {
                 observationSettings.profile());
         observationProfileGuard.verifyRetained(ledger, config.chainId());
         if (observationSettings.profile().enabled()) {
-            int maximumFaults = Integer.parseInt(config.pluginSettings().getOrDefault(
-                    "consensus.max-byzantine-members", "0"));
             ObservationKernel observationKernel = new ObservationKernel(
                     observationSettings.profile(), stateBackend.identity().genesisId(),
                     config.chainId(), AppChainConsensusProfileCommitment.digest(
-                    consensusProfileGuard.profile()), maximumFaults,
+                    consensusProfileGuard.profile()), MemberGroup.maxByzantineMembers(config),
                     height -> {
                         MemberGroup.Epoch epoch = group.epochAt(height);
                         return new AppChainMembershipEpoch(
@@ -861,9 +857,11 @@ final class AppChainEngine implements AutoCloseable {
         if (mandatoryInputs.size() > maxBlockMessages) {
             throw new IllegalStateException("OBSERVATION_PREFIX_EXCEEDS_BLOCK_COUNT");
         }
+        // A sender whose membership epoch is scheduled but not yet active at
+        // this height stays pooled (and does not crowd out others) until it is.
         List<AppMessage> candidates = pool.drainCandidates(
                 maxBlockMessages - mandatoryInputs.size() - observationResults.size(),
-                proposalMaxBytes);
+                proposalMaxBytes, message -> !awaitsMembership(message, candidateHeight));
         // L1 observations have one framework-owned durable ingress. Stale
         // preview-era copies in the ordinary pool may never compete with or
         // duplicate the mandatory prefix.
@@ -886,6 +884,23 @@ final class AppChainEngine implements AutoCloseable {
         });
         // Exclude anything already finalized (re-gossip after restart)
         candidates.removeIf(m -> ledger.messageHeight(m.getMessageId()).isPresent());
+        // Apply the follower's per-message checks (consensus guide §4.2 item 10)
+        // at the candidate height, so an honest leader never proposes a block
+        // every follower must reject. What can never pass is dropped.
+        long now = System.currentTimeMillis() / 1000;
+        candidates.removeIf(m -> {
+            if (awaitsMembership(m, candidateHeight)) {
+                return true; // stays pooled until the sender's epoch is active
+            }
+            if (validFinalizedMessageProfile(m) && m.hasValidMessageId() && !m.isExpired(now)
+                    && verifyMemberSignature(m, candidateHeight)) {
+                return false;
+            }
+            log.info("Message {} dropped: invalid, expired or not member-signed for height {}",
+                    m.getMessageIdHex(), candidateHeight);
+            pool.remove(List.of(m));
+            return true;
+        });
         int ticks = 0;
         for (var iterator = candidates.iterator(); iterator.hasNext();) {
             AppMessage message = iterator.next();
@@ -2111,6 +2126,15 @@ final class AppChainEngine implements AutoCloseable {
         }
     }
 
+
+    /** The sender is not a member at {@code height} but is in an epoch scheduled after it. */
+    private boolean awaitsMembership(AppMessage message, long height) {
+        if (message == null || message.getSender() == null || message.getSender().length != 32) {
+            return false;
+        }
+        String senderHex = HexUtil.encodeHexString(message.getSender());
+        return !group.containsAt(senderHex, height) && group.containsFrom(senderHex, height);
+    }
 
     private boolean verifyMemberSignature(AppMessage message, long height) {
         if (message == null || !config.chainId().equals(message.getChainId())

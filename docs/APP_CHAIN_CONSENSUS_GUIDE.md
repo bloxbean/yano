@@ -62,15 +62,19 @@ machine, whose transition logic is `core-api/.../appchain/transition/OrderedLogK
 
 ```
 submit (REST / SDK / gossip)
-  → envelope auth: member Ed25519 signature, message-id integrity
+  → local submit: this node must be a member at the next height (else 503)
+  → envelope auth: Ed25519 signature by a member now or in a scheduled
+     epoch, message-id integrity
   → transport limits: size (chain max-message-bytes), TTL cap
   → local sequenced submission: validateForBlock(next height, committed snapshot)
                                  ← declared application rejection = 400
   → pool (backpressure: full pool = 429 + counted gossip drops)
   → gossip to app peers (dedup by message-id)
-  → proposer selects into a block  (drops: finalized dupes, stale
-     sender-seqs, machine-rejected; revalidates at actual candidate height/state;
-     ~system topics bypass ordinary application admission)
+  → proposer selects into a block  (applies the follower checks at the
+     candidate height; drops: finalized dupes, invalid/expired/non-member,
+     stale sender-seqs, machine-rejected; keeps pooled: senders whose epoch
+     is scheduled but not active yet; revalidates at actual candidate
+     height/state; ~system topics bypass ordinary application admission)
   → consensus round (§4)          ← the only place messages become canonical
   → finalized: indexed by id/topic/sender, applied to state, streamed to
      SSE/webhooks/Kafka, provable via MPF, eventually anchored to L1
@@ -133,9 +137,13 @@ leader from committed context on every node, so only that member proceeds:
 3. Select the mandatory durable L1 prefix, then ordinary messages: cap by
    `block.max-bytes` (primary; the
    serialized block is trimmed to fit) and `block.max-messages` (backstop);
-   drop already-finalized ids, stale per-sender seqs, and messages the state
-   machine's `validate()` rejects. Reserved `~` topics bypass application
-   admission — a state machine cannot veto governance or consensus traffic.
+   apply the follower's per-message checks (§4.2 item 10) at the candidate
+   height; drop already-finalized ids, messages that fail those checks, stale
+   per-sender seqs, and messages the state machine's `validate()` rejects.
+   A message whose sender joins in a scheduled epoch stays pooled, without
+   taking a slot, until the sender is a member at the candidate height.
+   Reserved `~` topics bypass application admission — a state machine cannot
+   veto governance or consensus traffic.
 4. Build and **apply locally** to compute the real `stateRoot`, persist the
    `(height, view, blockHash)` prepare lock, broadcast the proposal and PREPARE.
 
@@ -176,9 +184,10 @@ Any member holding the round aggregates PREPARE votes. At `threshold`, it
 persists and broadcasts a `PreparedQC`; members then sign COMMIT. At a COMMIT
 quorum, the holder assembles `FinalityCert`, commits, and broadcasts `cert`.
 
-Cert verification never trusts the sender: scheme must be Ed25519, each
-signer must be a member at that height, duplicates are ignored, every
-signature is verified over the commit-domain digest, and the count must reach the
+Cert verification never trusts the sender: the scheme must be Ed25519, and a
+certificate is rejected as a whole if any signer is not a member at that
+height, any signer appears twice, or any signature fails over the
+commit-domain digest. The count of distinct valid signers must reach the
 threshold at that height.
 
 A block is **APP_FINAL** once committed with a threshold cert — via own
@@ -260,6 +269,40 @@ so blocks from before a rotation verify against the membership that was
 current then. Governance commands ride reserved `~governance/*` topics
 (which bypass state-machine admission) and their effects persist atomically
 with the block that finalizes them.
+
+Every epoch must be able to certify blocks. Each block's consensus context
+pins `ConsensusQuorum(n, t, f)`, where `f` is
+`consensus.max-byzantine-members` (default 0). It requires `2t − n > f` (any
+two quorums share an honest member) and `t ≤ n − f` (a quorum survives `f`
+silent members). A governed add, remove or set-threshold whose resulting
+`t`-of-`n` breaks either rule is **void** at activation on every member: it is
+logged and no epoch is appended, exactly like an out-of-range threshold. In
+governed mode the admin endpoints (`admin/members/add|remove`,
+`admin/threshold`) refuse such a change before submitting the command, with
+`400 {"code": "MEMBERSHIP_QUORUM_INVALID", "error": …}`. Static mode applies
+admin changes locally at the next height without this check. Order static
+steps so that every intermediate epoch is valid: while an invalid epoch is
+current, no block can be proposed and the node cannot restart.
+
+An add keeps the current threshold, so with `f = 0` a 2-of-3 chain cannot add
+a fourth member directly (2-of-4 fails `2t − n > 0`). Grow it in two governed
+steps:
+
+1. Set the threshold to 3 (3-of-3). Wait until that epoch is active: status
+   `membershipActiveThreshold` reads 3.
+2. Add the member. All three members must now approve; the result is 3-of-4.
+
+Activation evaluates the epoch in effect at the activating height, so a
+change approved before an earlier one takes effect is computed without it.
+That is why step 2 waits. To shrink, run the steps the other way: lower the
+threshold first when a removal would leave `t > n − f`.
+
+A joining node refuses local submissions with 503 until it is a member at
+the next height (status `memberActiveForNextBlock`). Members already admit
+gossip from it, and a message of its that reaches the pool early waits there,
+outside block selection, until its epoch is active at the candidate height.
+It still expires after its TTL, so an idle chain that does not reach the
+activation height in time drops it.
 
 ## 7. State, the MPF trie, and proofs
 

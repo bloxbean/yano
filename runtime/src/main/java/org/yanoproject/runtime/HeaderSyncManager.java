@@ -19,10 +19,7 @@ import org.yanoproject.runtime.sync.validation.HeaderValidationResult;
 import org.yanoproject.runtime.sync.validation.HeaderValidator;
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.function.BooleanSupplier;
@@ -80,14 +77,6 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      * competes with a local block fails the session (peer recovery) instead.
      */
     private volatile Consumer<Point> forkRollback;
-    /**
-     * Sends chain-sync FindIntersect again at an older local point after IntersectNotFound. Without it,
-     * IntersectNotFound is only logged.
-     */
-    private volatile Consumer<Point> intersectRestart;
-    private volatile long securityParam;
-    /** The older local points not yet offered since the last IntersectNotFound; null after an intersection. */
-    private Iterator<Point> olderIntersectPoints;
 
     // Progress logging
     private static final int PROGRESS_LOG_INTERVAL = 1000;
@@ -315,64 +304,16 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     public void intersactFound(Tip tip, Point point) {
         log.info("📄 Header intersection found at: {} (tip: {})", point, tip);
         if (syncTipContext != null) syncTipContext.update(tip);
-        synchronized (this) {
-            olderIntersectPoints = null;
-        }
         // ChainSyncAgent automatically resumes from this point on reconnection
         // No manual state management needed
     }
 
-    /**
-     * Offers the upstream the next older local point after IntersectNotFound, as the Haskell chain-sync client
-     * offers several ({@link IntersectPoints}). Yaci's FindIntersect carries one point, so they go one at a time,
-     * newest first, which finds the same intersection. On an intersection below the local tip, the upstream's
-     * RollBackward rolls the blocks it does not have back through the normal rollback path. The points are taken
-     * back from the body tip, the durable restart point of both sync modes, which is offered first when a
-     * header-only cache lay above it (the pipelined start point is the header tip).
-     *
-     * <p>An upstream whose tip is below the body tip's height is behind, not on a longer fork: nothing is offered,
-     * so the local chain is kept, and no-progress recovery retries the session later.</p>
-     *
-     * @throws IllegalStateException when the upstream has none of the points (its chain forks off more than k
-     *                               back): the session fails for peer recovery
-     */
     @Override
     public void intersactNotFound(Tip tip) {
         log.warn("📄 Header intersection not found. Tip: {}", tip);
         if (syncTipContext != null) syncTipContext.update(tip);
-        Consumer<Point> restart = intersectRestart;
-        if (restart == null) {
-            return;
-        }
-        ChainTip bodyTip = chainState.getTip();
-        ChainTip localTip = bodyTip != null ? bodyTip : chainState.getHeaderTip();
-        if (localTip != null && tip != null && tip.getBlock() < localTip.getBlockNumber()) {
-            log.warn("📄 The upstream tip #{} is below the local tip #{}: keeping the local chain and waiting for "
-                    + "the upstream to catch up", tip.getBlock(), localTip.getBlockNumber());
-            return;
-        }
-        Point next;
-        synchronized (this) {
-            if (olderIntersectPoints == null) {
-                List<Point> points = new ArrayList<>();
-                ChainTip headerTip = chainState.getHeaderTip();
-                if (bodyTip != null && headerTip != null && headerTip.getSlot() > bodyTip.getSlot()) {
-                    points.add(new Point(bodyTip.getSlot(), HexUtil.encodeHexString(bodyTip.getBlockHash())));
-                }
-                points.addAll(IntersectPoints.olderThan(chainState, localTip, securityParam));
-                olderIntersectPoints = points.iterator();
-            }
-            next = olderIntersectPoints.hasNext() ? olderIntersectPoints.next() : null;
-            if (next == null) {
-                olderIntersectPoints = null;
-            }
-        }
-        if (next == null) {
-            throw new IllegalStateException("No intersection with the upstream (tip " + tip + ") within k="
-                    + securityParam + " blocks of the local tip " + localTip);
-        }
-        log.warn("📄 Offering the upstream an older local point for intersection: {}", next);
-        restart.accept(next);
+        // SyncSubsystem restarts the session from an older local point; the server's
+        // RollBackward to the intersection it then finds is handled by Yano.onRollback()
     }
 
     @Override
@@ -399,17 +340,6 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      */
     public void setForkRollback(Consumer<Point> forkRollback) {
         this.forkRollback = forkRollback;
-    }
-
-    /**
-     * Sets how FindIntersect is sent again at an older local point after IntersectNotFound.
-     *
-     * @param securityParam k, the deepest rollback: no point further back is offered
-     * @param restart       starts chain sync again from the given point on the current connection
-     */
-    public void setIntersectRestart(long securityParam, Consumer<Point> restart) {
-        this.securityParam = securityParam;
-        this.intersectRestart = restart;
     }
 
     /**

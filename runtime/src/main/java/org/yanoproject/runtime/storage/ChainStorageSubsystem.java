@@ -6,6 +6,7 @@ import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.db.RocksDbAccess;
+import org.yanoproject.runtime.chain.BlockBodyRetentionRegistry;
 import org.yanoproject.runtime.chain.BlockPruner;
 import org.yanoproject.runtime.chain.BootstrapChainStateWriter;
 import org.yanoproject.runtime.chain.ByronGenesisUtxoMetadataStore;
@@ -28,7 +29,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalLong;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Storage-owned runtime boundary for chain-state construction, storage
@@ -42,8 +42,8 @@ public final class ChainStorageSubsystem implements Subsystem {
     private final RuntimeMaintenanceGate maintenanceGate = new RuntimeMaintenanceGate();
 
     private PruneService blockPruneService;
-    private final MutableBlockBodyRetentionBoundary blockBodyRetentionBoundary =
-            new MutableBlockBodyRetentionBoundary();
+    private final BlockBodyRetentionRegistry blockBodyRetentionRegistry = new BlockBodyRetentionRegistry();
+    private AutoCloseable legacyRetentionRegistration;
     private boolean closed;
 
     public ChainStorageSubsystem(YanoConfig config, RuntimeOptions runtimeOptions, Logger log) {
@@ -139,15 +139,29 @@ public final class ChainStorageSubsystem implements Subsystem {
                 runtimeOptions.globals().get(YanoPropertyKeys.Chain.BLOCK_PRUNE_INTERVAL_SECONDS),
                 120L);
         blockPruneService = new PruneService(
-                new BlockPruner(chainState, rocks, blockPruneDepth, pruneBatch, blockBodyRetentionBoundary),
+                new BlockPruner(chainState, rocks, blockPruneDepth, pruneBatch, blockBodyRetentionRegistry),
                 Math.max(1L, pruneIntervalSec) * 1000L);
         blockPruneService.start();
         log.info("Block body prune service started (retention={} blocks, batch={}, interval={}s)",
                 blockPruneDepth, pruneBatch, pruneIntervalSec);
     }
 
-    public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
-        blockBodyRetentionBoundary.setDelegate(boundary);
+    /** Replaces the single consumer registered through {@link #setBlockBodyRetentionBoundary}; null removes it. */
+    public synchronized void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
+        AutoCloseable previous = legacyRetentionRegistration;
+        legacyRetentionRegistration = boundary == null ? null : blockBodyRetentionRegistry.register(boundary);
+        if (previous != null) {
+            try {
+                previous.close();
+            } catch (Exception impossible) {
+                throw new IllegalStateException(impossible);
+            }
+        }
+    }
+
+    /** Registers one consumer's body-retention requirement (app-layer ADR-038, D7). */
+    public BlockBodyRetentionRegistry.Registration registerBlockBodyRetention(OptionalLong initial) {
+        return blockBodyRetentionRegistry.register(initial);
     }
 
     @Override
@@ -236,30 +250,5 @@ public final class ChainStorageSubsystem implements Subsystem {
             }
         }
         return def;
-    }
-
-    /** Stable boundary captured by the pruner with safe optional-consumer detach. */
-    private static final class MutableBlockBodyRetentionBoundary implements BlockBodyRetentionBoundary {
-        private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-        private BlockBodyRetentionBoundary delegate = BlockBodyRetentionBoundary.NONE;
-
-        @Override
-        public OptionalLong oldestRequiredBlockNumber() {
-            lock.readLock().lock();
-            try {
-                return delegate.oldestRequiredBlockNumber();
-            } finally {
-                lock.readLock().unlock();
-            }
-        }
-
-        void setDelegate(BlockBodyRetentionBoundary boundary) {
-            lock.writeLock().lock();
-            try {
-                delegate = boundary == null ? BlockBodyRetentionBoundary.NONE : boundary;
-            } finally {
-                lock.writeLock().unlock();
-            }
-        }
     }
 }

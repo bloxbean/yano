@@ -17,12 +17,14 @@ import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
+import com.bloxbean.cardano.yaci.core.protocol.txsubmission.TxSubmissionListener;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
+import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -61,16 +63,22 @@ import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A block this node forged competes with a block of the upstream it follows: the upstream wins. The node follows
  * the upstream through the real header and body pipeline ({@link PipelineDataListener}, {@link HeaderSyncManager},
- * {@link BodyFetchManager}) and, where stated, the runtime's rollback path ({@link SyncSubsystem}), over a RocksDB
- * chain store with the UTxO and account-state stores listening, and forges with {@link SlotLeaderBlockProducer}.
+ * {@link BodyFetchManager}) and, where stated, the runtime's rollback path and intersection search
+ * ({@link SyncSubsystem}), over a RocksDB chain store with the UTxO and account-state stores listening, and forges
+ * with {@link SlotLeaderBlockProducer}.
  */
 class ForgedBlockForkTest {
     private static final Path DEVNET_FIXTURE = Path.of("src/test/resources/devnet");
@@ -235,10 +243,11 @@ class ForgedBlockForkTest {
 
         // The node restarts while the upstream, which never adopted the forged block, went on with block 2 and 3.
         List<Point> offered = new ArrayList<>();
-        Point intersection = node.intersect(List.of(genesis, block1, block2, block3), offered);
+        Point intersection = node.restartSync(List.of(genesis, block1, block2, block3), offered);
 
         Point parent = new Point(1, hex(block1.blockHash()));
-        assertThat(offered).as("the forged tip, then its parent").containsExactly(parent);
+        assertThat(offered).as("the forged tip, then its parent")
+                .containsExactly(new Point(3, hex(forged.getBlockHash())), parent);
         assertThat(intersection).isEqualTo(parent);
         assertThat(node.rollbacks).containsExactly(parent);
         assertThat(node.realReorgs).as("applied blocks were rolled back").containsExactly(true);
@@ -278,10 +287,10 @@ class ForgedBlockForkTest {
         byte[] nonce = node.nonceState.serialize();
 
         List<Point> offered = new ArrayList<>();
-        Point intersection = node.intersect(List.of(genesis, block1, block2), offered);
+        Point intersection = node.restartSync(List.of(genesis, block1, block2), offered);
 
         Point tip = new Point(2, hex(block2.blockHash()));
-        assertThat(offered).isEmpty();
+        assertThat(offered).containsExactly(tip);
         assertThat(intersection).isEqualTo(tip);
         assertThat(node.rollbacks).containsExactly(tip);
         assertThat(node.realReorgs).containsExactly(false);
@@ -291,28 +300,28 @@ class ForgedBlockForkTest {
     }
 
     @Test
-    void anUpstreamWithoutACommonPointFailsTheSessionForPeerRecovery() throws Exception {
+    void anUpstreamWithoutACommonPointStopsSyncWithNoIntersection() throws Exception {
         Upstream upstream = new Upstream();
         var genesis = upstream.block(0, 0, null, List.of());
         var block1 = upstream.block(1, 1, genesis.blockHash(), List.of());
         var otherGenesis = upstream.block(0, 5, null, List.of());
         var other1 = upstream.block(1, 6, otherGenesis.blockHash(), List.of());
         var other2 = upstream.block(2, 7, other1.blockHash(), List.of());
-        RecordingCallbacks callbacks = new RecordingCallbacks();
-        Node node = new Node(tempDir.resolve("node"), callbacks);
+        Node node = new Node(tempDir.resolve("node"), null);
         node.storeGenesis(genesis);
         node.receive(block1);
         node.producer(List.of()).checkSlot(2);
         ChainTip forged = node.chainState.getTip();
 
         List<Point> offered = new ArrayList<>();
-        Point intersection = node.intersect(List.of(otherGenesis, other1, other2), offered);
+        Point intersection = node.restartSync(List.of(otherGenesis, other1, other2), offered);
 
         assertThat(intersection).isNull();
-        assertThat(offered).as("every older point back to the first block")
-                .containsExactly(new Point(1, hex(block1.blockHash())), new Point(0, hex(genesis.blockHash())));
-        assertThat(callbacks.recoveries).containsExactly(PeerRecoveryReason.APPLY_FAILED);
-        assertThat(callbacks.rollbacks).isEmpty();
+        assertThat(offered).as("every older point back to the first block").containsExactly(
+                new Point(2, hex(forged.getBlockHash())), new Point(1, hex(block1.blockHash())),
+                new Point(0, hex(genesis.blockHash())));
+        assertThat(node.sync.health().message()).contains("NO_INTERSECTION_WITHIN_RECOVERABLE_HISTORY");
+        assertThat(node.rollbacks).isEmpty();
         assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(forged.getBlockHash());
     }
 
@@ -321,8 +330,7 @@ class ForgedBlockForkTest {
         Upstream upstream = new Upstream();
         var genesis = upstream.block(0, 0, null, List.of());
         var block1 = upstream.block(1, 1, genesis.blockHash(), List.of());
-        RecordingCallbacks callbacks = new RecordingCallbacks();
-        Node node = new Node(tempDir.resolve("node"), callbacks);
+        Node node = new Node(tempDir.resolve("node"), null);
         node.storeGenesis(genesis);
         node.receive(block1);
         node.producer(List.of()).checkSlot(2);
@@ -330,12 +338,13 @@ class ForgedBlockForkTest {
 
         // The upstream has not received the forged block yet: its tip is block 1.
         List<Point> offered = new ArrayList<>();
-        Point intersection = node.intersect(List.of(genesis, block1), offered);
+        Point intersection = node.restartSync(List.of(genesis, block1), offered);
 
         assertThat(intersection).isNull();
-        assertThat(offered).isEmpty();
-        assertThat(callbacks.rollbacks).isEmpty();
-        assertThat(callbacks.recoveries).isEmpty();
+        assertThat(offered).as("no older point").containsExactly(new Point(2, hex(forged.getBlockHash())));
+        assertThat(node.rollbacks).isEmpty();
+        assertThat(node.sync.peerRecoverySnapshot().terminal()).isFalse();
+        assertThat(node.sync.isSyncing()).isTrue();
         assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(forged.getBlockHash());
         assertThat(node.chainState.getHeaderTip().getBlockHash()).isEqualTo(forged.getBlockHash());
     }
@@ -374,6 +383,18 @@ class ForgedBlockForkTest {
         final List<Boolean> realReorgs = new CopyOnWriteArrayList<>();
         final EpochNonceState nonceState = newNonceState();
         final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        /** The upstream sessions sync started, oldest first; their intersection steps run on {@code recovery}. */
+        final List<UpstreamSession> sessions = new CopyOnWriteArrayList<>();
+        final AtomicInteger recoverySteps = new AtomicInteger();
+        final ExecutorService recovery = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>()) {
+            @Override
+            public void execute(Runnable command) {
+                recoverySteps.incrementAndGet();
+                super.execute(command);
+            }
+        };
+        final SyncSubsystem sync;
 
         Node(Path dir, PeerSessionCallbacks callbacks) {
             YanoConfig config = YanoConfig.builder().protocolMagic(42L).enableServer(false).enableClient(false)
@@ -384,6 +405,7 @@ class ForgedBlockForkTest {
             closeables.add(() -> storage.closeAfterRuntimeDrain(false));
             closeables.add(bus::close);
             closeables.add(scheduler::shutdownNow);
+            closeables.add(recovery::shutdownNow);
 
             utxoStore = new DefaultUtxoStore(chainState, LOG, Map.of("yano.utxo.enabled", true));
             new UtxoEventHandler(bus, utxoStore);
@@ -402,19 +424,28 @@ class ForgedBlockForkTest {
 
             PeerClient peerClient = new PeerClient("upstream", 3001, 42, Point.ORIGIN);
             headers = new HeaderSyncManager(peerClient, chainState);
+            sync = callbacks == null ? syncSubsystem(config, storage) : null;
             listener = new PipelineDataListener(headers, new BodyFetchManager(peerClient, chainState, bus),
-                    callbacks != null ? callbacks : syncSubsystem(config, storage));
+                    callbacks != null ? callbacks : sync);
         }
 
+        /** Sync that follows the upstream over sequential sessions recorded in {@link #sessions}. */
         private SyncSubsystem syncSubsystem(YanoConfig config, ChainStorageSubsystem storage) {
             RuntimeOptions options = new RuntimeOptions(null, null, Map.of("yano.account-state.enabled", false));
             LedgerStateSubsystem ledgerState = new LedgerStateSubsystem(config, options, chainState,
                     new NoopEventBus(), LOG, null, null, null, null, () -> null, () -> null, () -> null, null);
             ServeSubsystem serve = new ServeSubsystem(0, config.getProtocolMagic(), chainState, noAdmission(),
                     false, LOG);
-            SyncSubsystem sync = new SyncSubsystem(config, chainState, bus, scheduler, serve, ledgerState, storage,
-                    () -> false, ledgerState::epochParamProvider, ledgerState::currentGenesisBootstrapData,
-                    "localhost", 3001, config.getProtocolMagic(), LOG);
+            YanoConfig following = config.toBuilder().enableClient(true).enablePipelinedSync(false)
+                    .remoteHost("upstream").remotePort(3001).build();
+            SyncSubsystem sync = new SyncSubsystem(following, chainState, bus, scheduler, recovery, serve,
+                    ledgerState, storage, () -> true, ledgerState::epochParamProvider,
+                    ledgerState::currentGenesisBootstrapData, "upstream", 3001, config.getProtocolMagic(), LOG, null,
+                    null, (endpoint, startPoint) -> {
+                        UpstreamSession session = new UpstreamSession(startPoint);
+                        sessions.add(session);
+                        return session;
+                    });
             closeables.add(ledgerState::close);
             closeables.add(serve::close);
             closeables.add(sync::close);
@@ -439,30 +470,48 @@ class ForgedBlockForkTest {
         }
 
         /**
-         * Chain-sync intersection after a restart with an upstream that has {@code upstreamChain}: the node offers
-         * its tip, then each older point it offers on IntersectNotFound, until the upstream has one. The upstream
-         * replies IntersectFound and RollBackward to it.
+         * Starts sync again, as after a restart, with an upstream that has {@code upstreamChain}. Each session
+         * offers its start point: the upstream replies IntersectFound and RollBackward to a point it has, and
+         * IntersectNotFound to any other, after which sync may start a session at an older point.
          *
-         * @param offered receives the older points offered
-         * @return the intersection, or null when the node offered no further point
+         * @param offered receives the point each session offered
+         * @return the intersection, or null when sync started no further session
          */
-        Point intersect(List<DevnetBlockBuilder.BlockBuildResult> upstreamChain, List<Point> offered) {
+        Point restartSync(List<DevnetBlockBuilder.BlockBuildResult> upstreamChain, List<Point> offered)
+                throws InterruptedException {
             var upstreamTip = upstreamChain.getLast();
             Tip tip = new Tip(new Point(upstreamTip.slot(), hex(upstreamTip.blockHash())), upstreamTip.blockNumber());
-            headers.setIntersectRestart(100, offered::add);
-            ChainTip localTip = chainState.getTip();
-            Point point = new Point(localTip.getSlot(), hex(localTip.getBlockHash()));
-            while (!hasPoint(upstreamChain, point)) {
-                int before = offered.size();
-                listener.intersactNotFound(tip);
-                if (offered.size() == before) {
-                    return null;
+            sync.startClientSync();
+            for (int n = 0; awaitSession(n); n++) {
+                UpstreamSession session = sessions.get(n);
+                offered.add(session.startPoint);
+                if (hasPoint(upstreamChain, session.startPoint)) {
+                    session.listener.intersactFound(tip, session.startPoint);
+                    session.listener.onRollback(session.startPoint);
+                    return session.startPoint;
                 }
-                point = offered.getLast();
+                int steps = recoverySteps.get();
+                session.listener.intersactNotFound(tip);
+                if (recoverySteps.get() == steps) {
+                    return null; // no intersection step was taken
+                }
             }
-            listener.intersactFound(tip, point);
-            listener.onRollback(point);
-            return point;
+            return null;
+        }
+
+        /** @return whether session {@code n} started, false once sync stopped without it */
+        private boolean awaitSession(int n) throws InterruptedException {
+            long deadline = System.currentTimeMillis() + 5_000L;
+            while (System.currentTimeMillis() < deadline) {
+                if (sessions.size() > n && sessions.get(n).listener != null) {
+                    return true;
+                }
+                if (!sync.isSyncing()) {
+                    return false;
+                }
+                Thread.sleep(10);
+            }
+            throw new AssertionError("no upstream session " + n);
         }
 
         private static boolean hasPoint(List<DevnetBlockBuilder.BlockBuildResult> chain, Point point) {
@@ -485,6 +534,39 @@ class ForgedBlockForkTest {
             utxoStore.forEachUtxoRecord(u -> out.add(u.outpoint().txHash() + "#" + u.outpoint().index() + ":"
                     + u.lovelace()));
             return out;
+        }
+    }
+
+    /** An upstream connection that records the session's listener and start point and sends nothing itself. */
+    private static final class UpstreamSession extends PeerClient {
+        final Point startPoint;
+        volatile BlockChainDataListener listener;
+
+        UpstreamSession(Point startPoint) {
+            super("upstream", 3001, 42, startPoint);
+            this.startPoint = startPoint;
+        }
+
+        @Override
+        public void connect(BlockChainDataListener listener, TxSubmissionListener txSubmissionListener) {
+            this.listener = listener;
+        }
+
+        @Override
+        public void enableTxSubmission() {
+        }
+
+        @Override
+        public void startSync(Point from) {
+        }
+
+        @Override
+        public boolean isRunning() {
+            return true;
+        }
+
+        @Override
+        public void stop() {
         }
     }
 
