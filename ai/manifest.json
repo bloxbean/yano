@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "https://getyano.dev",
   "version": "0.1.0-pre19-SNAPSHOT",
-  "sourceRevision": "b511fc862785c26ca52784b85d9925c1c20243b3",
+  "sourceRevision": "01a09b001f5e22a50c5ec37cada4af997823c060",
   "sourceRepository": "https://github.com/bloxbean/yano",
   "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
   "pages": [
@@ -81,7 +81,7 @@
       "description": "Build, test, and improve Yano through its public modules and contracts.",
       "url": "https://getyano.dev/contribute/guide/",
       "markdown": "https://getyano.dev/ai/pages/contribute/guide.md",
-      "sha256": "616a64d99e351872b0580e26a19732a781309f5f87eeaeace9c7514f644323dc"
+      "sha256": "0010bea568331db6e138e58cc067918b3e3f876b019569abc1bb93b559ac66ef"
     },
     {
       "title": "App ledger testkit",
@@ -235,7 +235,7 @@
       "description": "Active packaged configuration values and declared property keys, generated from source.",
       "url": "https://getyano.dev/reference/configuration-catalog/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
-      "sha256": "f93d9fb7704d17d548ad27ec05af5c3364580a02ff56be5c7c11bccd3ce55555"
+      "sha256": "e7e443a85b6209608aca9b67704eff3f2e53c2904a8c6a7d8275411f8a22f6b0"
     },
     {
       "title": "Configuration guide",
@@ -322,7 +322,7 @@
     },
     {
       "url": "https://getyano.dev/llms-full.txt",
-      "sha256": "3b27dd86118097d4130f87cdf353da43b347f41662875737027303376e853dfb"
+      "sha256": "a389de0ddbd28639af1974224e7e8a363c90aaf707a38e6865e6050a60fd3a72"
     },
     {
       "url": "https://getyano.dev/ai/agent-instructions.md",
@@ -330,11 +330,11 @@
     },
     {
       "url": "https://getyano.dev/ai/configuration.json",
-      "sha256": "3ba93a91ca046856ad27f362e5ec6a26db215665802ae8a81340e1491b2ae3ff"
+      "sha256": "f70048d0987cbea4a0ff4cbb4bc22975b5446c9d4082dc27581efe34f2fde83a"
     },
     {
       "url": "https://getyano.dev/ai/routes.json",
-      "sha256": "36593e7a91d95d821de498c1eb64737d637076f5d3137f1cac42bf438af8f1d3"
+      "sha256": "30653e0e30472eaab828ddd3d41d85634749be8820916d90ddf3294276892578"
     }
   ]
 }

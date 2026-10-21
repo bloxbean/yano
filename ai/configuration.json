@@ -1,5 +1,5 @@
 {
-  "sourceRevision": "b511fc862785c26ca52784b85d9925c1c20243b3",
+  "sourceRevision": "01a09b001f5e22a50c5ec37cada4af997823c060",
   "version": "0.1.0-pre19-SNAPSHOT",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
@@ -452,12 +452,72 @@
           "value": 30
         },
         {
-          "key": "yano.validation.default-validator-enabled",
-          "value": true
+          "key": "yano.validation.engine",
+          "value": "java-julc"
         },
         {
-          "key": "yano.validation.supplementary-rules-enabled",
+          "key": "yano.validation.shadow-engines",
+          "value": ""
+        },
+        {
+          "key": "yano.validation.shadow-dump-dir",
+          "value": ""
+        },
+        {
+          "key": "yano.validation.shadow-sync",
           "value": false
+        },
+        {
+          "key": "yano.validation.shadow-sync-engines",
+          "value": "java-julc"
+        },
+        {
+          "key": "yano.validation.shadow-sync-report",
+          "value": ""
+        },
+        {
+          "key": "yano.validation.shadow-sync-dump-dir",
+          "value": ""
+        },
+        {
+          "key": "yano.validation.shadow-sync-max-dumps",
+          "value": 1000
+        },
+        {
+          "key": "yano.validation.shadow-sync-max-in-flight",
+          "value": 0
+        },
+        {
+          "key": "yano.validation.shadow-sync-max-wait-ms",
+          "value": 30000
+        },
+        {
+          "key": "yano.validation.shadow-sync-summary-seconds",
+          "value": 60
+        },
+        {
+          "key": "yano.validation.snapshot-max-age-ms",
+          "value": 30000
+        },
+        {
+          "key": "yano.validation.max-live-snapshots",
+          "value": 4
+        },
+        {
+          "key": "yano.validation.amaru.pool-size",
+          "value": 0
+        },
+        {
+          "key": "yano.validation.amaru.timeout-ms",
+          "value": 2000
+        },
+        {
+          "key": "yano.validation.amaru.max-abandoned",
+          "value": 2
+        },
+        {
+          "key": "yano.validation.amaru.max-memory-pages",
+          "value": 2048
         },
         {
           "key": "yano.utxo.rebuild-unmarked-from-genesis",
@@ -954,6 +1014,10 @@
         {
           "key": "yano.storage.path",
           "value": "./chainstate-test"
+        },
+        {
+          "key": "yano.block-producer.tx-evaluation",
+          "value": false
         }
       ]
     },
@@ -2321,7 +2385,26 @@
     "yano.utxo.pruneDepth",
     "yano.utxo.rebuild-unmarked-from-genesis",
     "yano.utxo.rollbackWindow",
+    "yano.validation.amaru.max-abandoned",
+    "yano.validation.amaru.max-memory-pages",
+    "yano.validation.amaru.pool-size",
+    "yano.validation.amaru.timeout-ms",
     "yano.validation.default-validator-enabled",
+    "yano.validation.engine",
+    "yano.validation.max-live-snapshots",
+    "yano.validation.rebuild-max-restarts",
+    "yano.validation.rebuild-sync-attempts",
+    "yano.validation.shadow-dump-dir",
+    "yano.validation.shadow-engines",
+    "yano.validation.shadow-sync",
+    "yano.validation.shadow-sync-dump-dir",
+    "yano.validation.shadow-sync-engines",
+    "yano.validation.shadow-sync-max-dumps",
+    "yano.validation.shadow-sync-max-in-flight",
+    "yano.validation.shadow-sync-max-wait-ms",
+    "yano.validation.shadow-sync-report",
+    "yano.validation.shadow-sync-summary-seconds",
+    "yano.validation.snapshot-max-age-ms",
     "yano.validation.supplementary-rules-enabled"
   ]
 }
