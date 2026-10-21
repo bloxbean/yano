@@ -6,7 +6,6 @@ import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.runtime.chain.TransactionOutputProjector;
 
 import java.util.HashMap;
@@ -65,7 +64,7 @@ public class BlockBuildUtxoOverlay {
      */
     public void applyTransaction(byte[] txCbor) {
         try {
-            Transaction tx = CclTransactions.deserialize(txCbor);
+            Transaction tx = Transaction.deserialize(txCbor);
             if (tx.getBody().getInputs() != null) {
                 for (TransactionInput input : tx.getBody().getInputs()) {
                     spent.add(new Outpoint(input.getTransactionId(), input.getIndex()));

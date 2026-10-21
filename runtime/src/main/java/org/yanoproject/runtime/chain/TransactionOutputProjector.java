@@ -1,6 +1,5 @@
 package org.yanoproject.runtime.chain;
 
-import com.bloxbean.cardano.client.api.util.ReferenceScriptUtil;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -9,6 +8,7 @@ import org.yanoproject.api.utxo.model.AssetAmount;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.ledger.rules.conway.tx.RawOutput;
+import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 
@@ -94,9 +94,9 @@ public final class TransactionOutputProjector {
         String referenceScriptHash = null;
         if (output.getScriptRef() != null) {
             try {
-                var script = ReferenceScriptUtil.deserializeScriptRef(output.getScriptRef());
-                referenceScriptHash = HexUtil.encodeHexString(script.getScriptHash());
-            } catch (Exception e) {
+                // from the original bytes, as the UTxO store hashes it (a re-encoding can change the hash)
+                referenceScriptHash = RawScript.fromScriptRef(output.getScriptRef()).hashHex();
+            } catch (RuntimeException e) {
                 throw new IllegalArgumentException("invalid reference script", e);
             }
         }

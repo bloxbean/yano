@@ -5,7 +5,6 @@ import org.yanoproject.api.utxo.UtxoReadView;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressType;
-import com.bloxbean.cardano.client.api.util.ReferenceScriptUtil;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.model.*;
@@ -19,6 +18,7 @@ import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.CanonicalBlockReference;
 import org.yanoproject.api.genesis.GenesisUtxos;
+import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.api.utxo.index.UtxoIndexContributorProvider;
 import org.yanoproject.runtime.utxo.index.UtxoIndexes;
 import org.yanoproject.api.wallet.AddressFirstSeen;
@@ -1907,12 +1907,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
-    private byte[] getReferenceScriptHash(TransactionOutput out) {
+    /**
+     * The reference script's hash, from its original bytes ({@link RawScript}: CCL's raw script hash). Decoding the
+     * script and hashing its re-encoding would give another hash for a script whose encoding is not canonical.
+     */
+    private static byte[] getReferenceScriptHash(TransactionOutput out) {
         if (out.getScriptRef() != null) {
             try {
-                var script = ReferenceScriptUtil.deserializeScriptRef(HexUtil.decodeHexString(out.getScriptRef()));
-                return script.getScriptHash();
-            } catch (Exception ex) {
+                return RawScript.fromScriptRef(HexUtil.decodeHexString(out.getScriptRef())).hash();
+            } catch (RuntimeException ex) {
                 throw new IllegalArgumentException("Invalid reference script: " + out.getScriptRef(), ex);
             }
         }

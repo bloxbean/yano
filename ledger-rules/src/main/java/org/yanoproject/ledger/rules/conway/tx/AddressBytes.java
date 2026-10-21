@@ -1,7 +1,10 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.address.util.AddressUtil;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.zip.CRC32;
 
@@ -169,12 +172,15 @@ public final class AddressBytes {
      * data, which the address's bootstrap witness must reproduce.
      */
     public static byte[] bootstrapRoot(byte[] address) {
-        CborReader outer = new CborReader(address);
-        outer.readArrayHeader();
-        outer.readTag();
-        CborReader payload = new CborReader(outer.readDefiniteBytes());
-        payload.readArrayHeader();
-        byte[] root = payload.readDefiniteBytes();
+        List<CborSpan> outer = StrictCbor.array(StrictCbor.first(address));
+        if (outer.isEmpty() || outer.getFirst().tag() == -1) {
+            throw new TxDecodingException("a bootstrap address wraps its payload in a tag");
+        }
+        List<CborSpan> payload = StrictCbor.array(StrictCbor.first(StrictCbor.definiteBytes(outer.getFirst().untag())));
+        if (payload.isEmpty()) {
+            throw new TxDecodingException("a bootstrap address payload is [root, attributes, type]");
+        }
+        byte[] root = StrictCbor.definiteBytes(payload.getFirst());
         if (root.length != 28) {
             throw new TxDecodingException("a bootstrap address root is 28 bytes");
         }
@@ -191,46 +197,43 @@ public final class AddressBytes {
      * derivation path, key 2 the network magic, every other key is unparsed and counted by size.
      */
     static ByronAttributes byronAttributes(byte[] address) {
-        CborReader outer = new CborReader(address);
-        if (outer.readArrayHeader() != 2) {
+        CborSpan outer = StrictCbor.span(address);
+        List<CborSpan> parts = StrictCbor.array(outer);
+        if (outer.isIndefinite() || parts.size() != 2) {
             throw new TxDecodingException("a bootstrap address is a two-element array");
         }
-        if (outer.readTag() != 24) {
+        if (parts.get(0).tag() != 24) {
             throw new TxDecodingException("a bootstrap address wraps its payload in tag 24");
         }
-        byte[] payload = outer.readDefiniteBytes();
-        long crc = outer.readUnsignedLong();
-        if (!outer.atEnd()) {
-            throw new TxDecodingException("trailing bytes after a bootstrap address");
-        }
+        byte[] payload = StrictCbor.definiteBytes(parts.get(0).untag());
+        long crc = StrictCbor.unsignedLong(parts.get(1));
         CRC32 expected = new CRC32();
         expected.update(payload);
         if (expected.getValue() != crc) {
             throw new TxDecodingException("bootstrap address CRC mismatch");
         }
-        CborReader reader = new CborReader(payload);
-        if (reader.readArrayHeader() != 3) {
+        CborSpan payloadSpan = StrictCbor.span(payload);
+        List<CborSpan> fields = StrictCbor.array(payloadSpan);
+        if (payloadSpan.isIndefinite() || fields.size() != 3) {
             throw new TxDecodingException("a bootstrap address payload is [root, attributes, type]");
         }
-        if (reader.readDefiniteBytes().length != 28) {
+        if (StrictCbor.definiteBytes(fields.get(0)).length != 28) {
             throw new TxDecodingException("a bootstrap address root is 28 bytes");
         }
-        long entries = reader.readMapHeader();
         boolean magic = false;
         int size = 0;
-        for (long i = 0; reader.hasNext(entries, i); i++) {
-            long key = reader.readUnsignedLong();
-            byte[] value = reader.readDefiniteBytes();
+        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(fields.get(1))) {
+            long key = StrictCbor.unsignedLong(entry.getKey());
+            byte[] value = StrictCbor.definiteBytes(entry.getValue());
             if (key == 1) {
-                size += new CborReader(value).readDefiniteBytes().length;
+                size += StrictCbor.definiteBytes(StrictCbor.first(value)).length;
             } else if (key == 2) {
                 magic = true;
             } else {
                 size += value.length;
             }
         }
-        long type = reader.readUnsignedLong();
-        if (type > 2 || !reader.atEnd()) {
+        if (StrictCbor.unsignedLong(fields.get(2)) > 2) {
             throw new TxDecodingException("bad bootstrap address type or trailing bytes");
         }
         return new ByronAttributes(magic, size);

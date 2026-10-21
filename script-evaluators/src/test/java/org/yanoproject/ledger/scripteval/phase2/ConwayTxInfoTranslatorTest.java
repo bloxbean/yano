@@ -2,6 +2,7 @@ package org.yanoproject.ledger.scripteval.phase2;
 
 import com.bloxbean.cardano.client.spec.UnitInterval;
 import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.cert.RegCert;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeCredential;
 import com.bloxbean.cardano.client.transaction.spec.governance.Anchor;
@@ -11,7 +12,6 @@ import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 import org.julclang.core.PlutusData;
 import org.yanoproject.api.utxo.model.Outpoint;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
 import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
@@ -167,7 +167,7 @@ class ConwayTxInfoTranslatorTest {
 
     private static ConwayTxInfoTranslator translator(TxSpec spec, int protocolMajor) throws Exception {
         byte[] cbor = ConwayTxBuilder.build(spec, MutationWorld.view()).cbor();
-        RawTransaction raw = RawTransaction.parse(cbor, CclTransactions.deserialize(cbor));
+        RawTransaction raw = RawTransaction.parse(cbor, Transaction.deserialize(cbor));
         Map<Outpoint, UtxoEntry> resolved = new HashMap<>();
         for (TxInRef in : raw.allInputs()) {
             if (MutationWorld.view().utxo(in.outpoint()) instanceof Lookup.Present<UtxoEntry> present) {

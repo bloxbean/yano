@@ -30,6 +30,9 @@ import java.util.List;
  *       recorded UTxOs are byte-identical to the chain's, Koios {@code tx_cbor}). Output 1's value has a policy with 324
  *       assets: 5001 bytes as encoded (definite-length map head), 5000 as Haskell measures it (indefinite-length map
  *       above 23 entries), with {@code maxValSize} 5000.</li>
+ *   <li>{@link #PREPROD_DEEP_NATIVE_SCRIPT}: from Koios {@code tx_cbor} (CCL's fixture
+ *       {@code preprod-trigger-tx.json}). A transaction whose witness native script nests 5,383 levels deep (script hash
+ *       {@code ff3efca65569f6b0b868a3d34abdb1ad8eccf745e0da71fa94fb4f18}).</li>
  * </ul>
  */
 public final class PublicNetworkTransactions {
@@ -40,6 +43,9 @@ public final class PublicNetworkTransactions {
     /** Preview, block 2527148, slot 60896134. */
     public static final String PREVIEW_INDEFINITE_POOL_OWNERS =
             "preview-1c09afd80edba3e530fa48fa34f1bc0b2c7999b7e0c76bda2d644444c53e1032";
+    /** Preprod, block 5183974, epoch 313. */
+    public static final String PREPROD_DEEP_NATIVE_SCRIPT =
+            "preprod-f90dce5765108da976abdbb9fc618f9a6ffd9fa4d93b2f288eed1808545424c9";
     /** Preprod, block 4990228, slot 129586448, protocol version 11, the block's first transaction. */
     public static final String PREPROD_INDEFINITE_ASSET_MAP_OUTPUT =
             "preprod-96ae78f724a27b0d76c3d6a861857af3a644de971fe0c7fcbefe4e45811e5687";

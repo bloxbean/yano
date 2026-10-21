@@ -15,7 +15,6 @@ import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSet;
 import org.yanoproject.ledger.rules.conway.ruleset.ConwayRuleSets;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
@@ -148,7 +147,7 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
 
         Transaction tx;
         try {
-            tx = CclTransactions.deserialize(txCbor);
+            tx = Transaction.deserialize(txCbor);
         } catch (Exception e) {
             return engine(DECODING_FAILURE, "the transaction does not decode: " + e.getMessage());
         }

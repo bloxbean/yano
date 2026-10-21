@@ -7,7 +7,7 @@ import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
-import org.yanoproject.ledger.rules.conway.tx.CborReader;
+import org.yanoproject.ledger.rules.conway.tx.StrictCbor;
 import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
@@ -143,7 +143,7 @@ class JulcScriptPhaseEvaluatorTest {
 
     /** The {@code PlutusBinary}: the contents of a CCL script's {@code cborHex} byte string. */
     static byte[] plutusBinary(String cborHex) {
-        return new CborReader(HexUtil.decodeHexString(cborHex)).readBytes();
+        return StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString(cborHex)));
     }
 
     static TxValidationOutcome validate(TxSpec spec) {

@@ -300,8 +300,16 @@ class PlutusScriptDecoderTest {
         assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("d87a80")).finish()), 10)).isTrue();
         assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("d88080")).finish()), 10))
                 .as("tag 128").isFalse();
+        // FlatViaSerialise decodes with serialise's deserialiseOrFail (Codec/Serialise.hs:134-143), which stops after
+        // the first item: whatever follows it, even bytes that are not CBOR, is ignored.
         assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("0100")).finish()), 10))
-                .as("trailing CBOR").isFalse();
+                .as("trailing CBOR").isTrue();
+        assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("01ff1c")).finish()), 10))
+                .as("trailing bytes that are not CBOR").isTrue();
+        assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("d87980ff")).finish()), 10))
+                .as("a constructor followed by a stray break").isTrue();
+        assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("5841" + "00".repeat(65) + "00")).finish()),
+                10)).as("the leading item is still checked").isFalse();
         assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("f5")).finish()), 10)).isFalse();
     }
 

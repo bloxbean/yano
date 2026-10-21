@@ -95,6 +95,34 @@ class ScriptCollectionTest {
         }
     }
 
+    /**
+     * The TxInfo translates the inputs as a {@code Set TxIn} ({@code Set.toList}: transaction id bytes, then index), so
+     * the first failure named is the first in that order, not in the body's.
+     */
+    @Test
+    void translationFailuresNameTheFirstInputInSetOrder() {
+        Outpoint inline = Outpoints.normalize(new Outpoint(A, 1));
+        Outpoint byron = Outpoints.normalize(new Outpoint(B, 0));
+        Outpoint byronFirst = Outpoints.normalize(new Outpoint(A, 0));
+        TransactionOutput inlineOutput = TransactionOutput.builder().address(SHELLEY)
+                .value(Value.builder().coin(BigInteger.TEN).build()).inlineDatum(BigIntPlutusData.of(1)).build();
+        Map<Outpoint, UtxoEntry> resolved = Map.of(inline, new UtxoEntry(inline, inlineOutput),
+                byron, new UtxoEntry(byron, out(BYRON)), byronFirst, new UtxoEntry(byronFirst, out(BYRON)));
+
+        // body order B#0, A#1: the set order reads A#1 first
+        Transaction tx = tx(List.of(input(B, 0), input(A, 1)), List.of(), List.of(out(SHELLEY)));
+        assertThat(ScriptCollection.translationError(tx, resolved, 10, 1, -1))
+                .hasValue("InlineDatumsNotSupported input " + input(A, 1));
+        // body order A#1, A#0: the same transaction id, then the index
+        Transaction byIndex = tx(List.of(input(A, 1), input(A, 0)), List.of(), List.of(out(SHELLEY)));
+        assertThat(ScriptCollection.translationError(byIndex, resolved, 10, 1, -1))
+                .hasValue("ByronTxOutInContext input " + input(A, 0));
+        // reference inputs too
+        Transaction references = tx(List.of(), List.of(input(B, 0), input(A, 1)), List.of(out(SHELLEY)));
+        assertThat(ScriptCollection.translationError(references, resolved, 10, 1, -1))
+                .hasValue("InlineDatumsNotSupported reference input " + input(A, 1));
+    }
+
     @Test
     void conwayPlutusV1AcceptsReferenceScriptsInEveryTxOut() {
         // Conway's own transTxOutV1 / transTxInInfoV1 (Conway/TxInfo.hs:306-335, reference inputs at :411) reject an

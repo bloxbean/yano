@@ -2,7 +2,7 @@ package org.yanoproject.ledger.rules.conway.utxow;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 
-import org.yanoproject.ledger.rules.conway.tx.CborSlice;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import org.yanoproject.ledger.rules.conway.tx.Hashes;
 import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
@@ -52,15 +52,15 @@ final class ScriptIntegrity {
      * @return the preimage, or empty when Haskell's {@code mkScriptIntegrity} is {@code SNothing}
      */
     static Optional<byte[]> preimage(RawTransaction raw, Set<Integer> languages, ProtocolParams params) {
-        CborSlice redeemers = raw.witnessFields().get(RawTransaction.WITNESS_REDEEMERS);
-        CborSlice datums = raw.witnessFields().get(RawTransaction.WITNESS_DATUMS);
+        CborSpan redeemers = raw.rawTx().witnessField(RawTransaction.WITNESS_REDEEMERS).orElse(null);
+        CborSpan datums = raw.rawTx().witnessField(RawTransaction.WITNESS_DATUMS).orElse(null);
         if (redeemers == null && datums == null && languages.isEmpty()) {
             return Optional.empty();
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.writeBytes(redeemers != null ? raw.bytes(redeemers) : EMPTY_REDEEMERS);
+        out.writeBytes(redeemers != null ? redeemers.bytes() : EMPTY_REDEEMERS);
         if (datums != null) {
-            out.writeBytes(raw.bytes(datums));
+            out.writeBytes(datums.bytes());
         }
         out.writeBytes(languageViews(languages, params));
         return Optional.of(out.toByteArray());

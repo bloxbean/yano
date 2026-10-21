@@ -1,11 +1,15 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+
 import org.yanoproject.ledger.rules.view.model.ProposalState;
 
 import java.math.BigInteger;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.SortedMap;
@@ -50,6 +54,7 @@ public final class RawParamUpdate {
     public static final Set<Integer> SECURITY_GROUP_KEYS = ProposalState.SECURITY_GROUP_KEYS;
 
     private static final BigInteger WORD64_MAX = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
+    private static final BigInteger WORD32_MAX = BigInteger.valueOf(0xFFFF_FFFFL);
     private static final BigInteger INT64_MAX = BigInteger.valueOf(Long.MAX_VALUE);
     private static final BigInteger INT64_MIN = BigInteger.valueOf(Long.MIN_VALUE);
 
@@ -61,74 +66,65 @@ public final class RawParamUpdate {
         this.integers = Collections.unmodifiableSortedMap(integers);
     }
 
-    /** Reads a {@code protocol_param_update} at the reader's position. */
-    static RawParamUpdate read(CborReader reader) {
-        long entries = reader.readMapHeader();
+    /** Reads a {@code protocol_param_update}. */
+    static RawParamUpdate read(CborSpan item) {
         SortedSet<Integer> keys = new TreeSet<>();
         SortedMap<Integer, BigInteger> integers = new TreeMap<>();
-        for (long i = 0; reader.hasNext(entries, i); i++) {
-            BigInteger rawKey = reader.readUnsigned();
+        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
+            BigInteger rawKey = StrictCbor.unsigned(entry.getKey());
             if (rawKey.bitLength() > 31 || !keys.add(rawKey.intValue())) {
                 throw new TxDecodingException("PParamsUpdate: " + (rawKey.bitLength() > 31 ? "invalid" : "duplicate")
                         + " key " + rawKey);
             }
             int key = rawKey.intValue();
+            CborSpan value = entry.getValue();
             switch (key) {
-                case 0, 1, 5, 6, 16, 17, 30, 31 -> integers.put(key, bounded(reader, WORD64_MAX, key));
-                case 2, 3, 7, 22, 28, 29, 32 -> integers.put(key, bounded(reader, BigInteger.valueOf(0xFFFF_FFFFL), key));
-                case 4, 8, 23, 24, 27 -> integers.put(key, bounded(reader, BigInteger.valueOf(0xFFFF), key));
-                case 9, 33 -> BoundedFields.boundedRational(reader, "PParamsUpdate key " + key, false);
-                case 10, 11 -> BoundedFields.boundedRational(reader, "PParamsUpdate key " + key, true);
-                case 18 -> costModels(reader);
-                case 19 -> fixedArray(reader, 2, "Prices", () -> BoundedFields.boundedRational(reader, "price", false));
-                case 20, 21 -> fixedArray(reader, 2, "ExUnits", () -> bounded(reader, INT64_MAX, key));
-                case 25 -> fixedArray(reader, 5, "PoolVotingThresholds",
-                        () -> BoundedFields.boundedRational(reader, "pool voting threshold", true));
-                case 26 -> fixedArray(reader, 10, "DRepVotingThresholds",
-                        () -> BoundedFields.boundedRational(reader, "DRep voting threshold", true));
+                case 0, 1, 5, 6, 16, 17, 30, 31 -> integers.put(key, bounded(value, WORD64_MAX, key));
+                case 2, 3, 7, 22, 28, 29, 32 -> integers.put(key, bounded(value, WORD32_MAX, key));
+                case 4, 8, 23, 24, 27 -> integers.put(key, bounded(value, BigInteger.valueOf(0xFFFF), key));
+                case 9, 33 -> BoundedFields.boundedRational(value, "PParamsUpdate key " + key, false);
+                case 10, 11 -> BoundedFields.boundedRational(value, "PParamsUpdate key " + key, true);
+                case 18 -> costModels(value);
+                case 19 -> fixedArray(value, 2, "Prices").forEach(
+                        price -> BoundedFields.boundedRational(price, "price", false));
+                case 20, 21 -> fixedArray(value, 2, "ExUnits").forEach(units -> bounded(units, INT64_MAX, key));
+                case 25 -> fixedArray(value, 5, "PoolVotingThresholds").forEach(
+                        threshold -> BoundedFields.boundedRational(threshold, "pool voting threshold", true));
+                case 26 -> fixedArray(value, 10, "DRepVotingThresholds").forEach(
+                        threshold -> BoundedFields.boundedRational(threshold, "DRep voting threshold", true));
                 default -> throw new TxDecodingException("PParamsUpdate: invalid key " + key);
             }
         }
         return new RawParamUpdate(keys, integers);
     }
 
-    private static BigInteger bounded(CborReader reader, BigInteger max, int key) {
-        BigInteger value = reader.readUnsigned();
+    private static BigInteger bounded(CborSpan item, BigInteger max, int key) {
+        BigInteger value = StrictCbor.unsigned(item);
         if (value.compareTo(max) > 0) {
             throw new TxDecodingException("PParamsUpdate key " + key + ": " + value + " exceeds " + max);
         }
         return value;
     }
 
-    private static void fixedArray(CborReader reader, int length, String what, Runnable element) {
-        long found = reader.readArrayHeader();
-        if (found != length && found != CborReader.INDEFINITE) {
-            throw new TxDecodingException(what + " has " + found + " elements, expected " + length);
+    private static List<CborSpan> fixedArray(CborSpan item, int length, String what) {
+        List<CborSpan> elements = StrictCbor.array(item);
+        if (elements.size() != length) {
+            throw new TxDecodingException(what + " has " + elements.size() + " elements, expected " + length);
         }
-        for (int i = 0; i < length; i++) {
-            if (found == CborReader.INDEFINITE && !reader.hasNext(found, i)) {
-                throw new TxDecodingException(what + " has " + i + " elements, expected " + length);
-            }
-            element.run();
-        }
-        if (found == CborReader.INDEFINITE && reader.hasNext(found, length)) {
-            throw new TxDecodingException(what + " has more than " + length + " elements");
-        }
+        return elements;
     }
 
     /** {@code Map Word8 [Int64]} without duplicate languages. */
-    private static void costModels(CborReader reader) {
-        long languages = reader.readMapHeader();
+    private static void costModels(CborSpan item) {
         Set<Long> seen = new HashSet<>();
-        for (long i = 0; reader.hasNext(languages, i); i++) {
-            long language = reader.readUnsignedLong();
+        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
+            long language = StrictCbor.unsignedLong(entry.getKey());
             if (language > 0xFF || !seen.add(language)) {
                 throw new TxDecodingException("CostModels: " + (language > 0xFF ? "invalid" : "duplicate")
                         + " language " + language);
             }
-            long values = reader.readArrayHeader();
-            for (long j = 0; reader.hasNext(values, j); j++) {
-                BigInteger value = reader.readInteger();
+            for (CborSpan parameter : StrictCbor.array(entry.getValue())) {
+                BigInteger value = StrictCbor.integer(parameter);
                 if (value.compareTo(INT64_MAX) > 0 || value.compareTo(INT64_MIN) < 0) {
                     throw new TxDecodingException("CostModels: parameter " + value + " exceeds Int64");
                 }

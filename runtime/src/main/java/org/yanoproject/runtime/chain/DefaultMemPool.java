@@ -28,7 +28,6 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import org.yanoproject.api.util.AddressKeyUtil;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 
 /**
  * In-memory FIFO mempool with one fair mutation lane and a derived, bounded UTXO
@@ -891,7 +890,7 @@ public class DefaultMemPool implements MemPool {
     private static Projection project(byte[] txBytes) throws Exception {
         String txHash = TransactionUtil.getTxHash(txBytes);
         TxId txId = TxId.fromHex(txHash);
-        Transaction transaction = CclTransactions.deserialize(txBytes);
+        Transaction transaction = Transaction.deserialize(txBytes);
         if (transaction.getBody() == null) {
             throw new IllegalArgumentException("transaction body is null");
         }

@@ -1,9 +1,9 @@
 package org.yanoproject.ledger.rules;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.util.HexUtil;
-
-import org.yanoproject.ledger.rules.util.CborItems;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -62,8 +62,11 @@ public final class TxIdentity {
         if ((txCbor[headerLength] & 0xff) >>> 5 != 5) {
             throw new IllegalArgumentException("Transaction body is not a CBOR map");
         }
-        int end = CborItems.skip(txCbor, headerLength);
-        return Arrays.copyOfRange(txCbor, headerLength, end);
+        try {
+            return Arrays.copyOfRange(txCbor, headerLength, CborSpan.skip(txCbor, headerLength, txCbor.length));
+        } catch (CborRuntimeException e) {
+            throw new IllegalArgumentException("Malformed CBOR in the transaction body: " + e.getMessage(), e);
+        }
     }
 
     /** @return blake2b-256 of the original body bytes */

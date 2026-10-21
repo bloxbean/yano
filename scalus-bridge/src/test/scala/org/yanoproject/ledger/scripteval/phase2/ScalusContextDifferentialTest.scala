@@ -3,14 +3,14 @@ package org.yanoproject.ledger.scripteval.phase2
 import com.bloxbean.cardano.client.address.{AddressProvider, Credential}
 import com.bloxbean.cardano.client.plutus.spec.{ConstrPlutusData, ExUnits as CclExUnits, Redeemer as CclRedeemer, RedeemerTag as CclRedeemerTag}
 import com.bloxbean.cardano.client.spec.UnitInterval
-import com.bloxbean.cardano.client.transaction.spec.{ProtocolParamUpdate, Withdrawal}
+import com.bloxbean.cardano.client.transaction.spec.{ProtocolParamUpdate, Transaction, Withdrawal}
 import com.bloxbean.cardano.client.transaction.spec.governance.{Anchor, Constitution, ProposalProcedure, Vote, Voter, VoterType, VotingProcedure, VotingProcedures}
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.{GovAction, GovActionId, NewConstitution, ParameterChangeAction, TreasuryWithdrawalsAction, UpdateCommittee}
 import org.julclang.core.PlutusData as JulcData
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.yanoproject.api.utxo.model.Outpoint
-import org.yanoproject.ledger.rules.conway.tx.{CclTransactions, RawTransaction}
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction
 import org.yanoproject.ledger.rules.fixtures.tx.{ConwayTxBuilder, MutationWorld, TxSpec}
 import org.yanoproject.ledger.rules.view.model.{Outpoints, UtxoEntry}
 import org.yanoproject.scalusbridge.ScalusPhaseTwo
@@ -95,7 +95,7 @@ class ScalusContextDifferentialTest:
   private def compare(spec: TxSpec, protocolMajor: Int): Seq[RedeemerTag] =
     val view = MutationWorld.view(protocolMajor)
     val cbor = ConwayTxBuilder.build(spec, view).cbor()
-    val raw = RawTransaction.parse(cbor, CclTransactions.deserialize(cbor))
+    val raw = RawTransaction.parse(cbor, Transaction.deserialize(cbor))
     val resolved = new util.HashMap[Outpoint, UtxoEntry]()
     raw.allInputs().asScala.foreach { in =>
       view.utxo(Outpoints.normalize(in.outpoint())).orElseThrowUnavailable()

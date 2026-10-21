@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.scripteval.phase2;
 
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
@@ -8,7 +9,6 @@ import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.RawOutput;
 import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
@@ -59,7 +59,7 @@ class JulcPublicNetworkTest {
                 .filter(x -> x.name().startsWith("preprod-8e4b1ced")).findFirst().orElseThrow();
         TxValidationRequest request = c.bundle().replayRequest();
         byte[] txCbor = request.txCbor();
-        RawTransaction raw = RawTransaction.parse(txCbor, CclTransactions.deserialize(txCbor));
+        RawTransaction raw = RawTransaction.parse(txCbor, Transaction.deserialize(txCbor));
         Map<Outpoint, UtxoEntry> resolved = new HashMap<>();
         for (TxInRef in : raw.allInputs()) {
             if (request.view().utxo(in.outpoint()) instanceof Lookup.Present<UtxoEntry> present) {
@@ -98,7 +98,7 @@ class JulcPublicNetworkTest {
         Phase2Case c = PublicNetworkTransactions.PHASE2_CASES.stream()
                 .filter(x -> x.name().startsWith("preprod-aee75c1c")).findFirst().orElseThrow();
         byte[] txCbor = c.bundle().txCbor();
-        RawTransaction raw = RawTransaction.parse(txCbor, CclTransactions.deserialize(txCbor));
+        RawTransaction raw = RawTransaction.parse(txCbor, Transaction.deserialize(txCbor));
         RawScript script = raw.allOutputs().stream().map(RawOutput::scriptRef)
                 .filter(s -> s != null && s.language() == 2).findFirst().orElseThrow();
 

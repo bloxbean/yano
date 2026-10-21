@@ -9,7 +9,6 @@ import org.yanoproject.ledger.rules.TransactionValidator;
 import org.yanoproject.ledger.rules.ScriptReferenceResolverScope;
 import org.yanoproject.ledger.rules.ValidationError;
 import org.yanoproject.ledger.rules.ValidationResult;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.runtime.validation.EngineAdmission;
 import lombok.extern.slf4j.Slf4j;
 
@@ -87,7 +86,7 @@ public class TransactionValidationService {
         // Deserialize to extract input references for UTXO resolution
         Transaction transaction;
         try {
-            transaction = CclTransactions.deserialize(txCbor);
+            transaction = Transaction.deserialize(txCbor);
         } catch (Exception e) {
             log.debug("Failed to deserialize transaction CBOR: {}", e.getMessage());
             return ValidationResult.failure(new ValidationError(

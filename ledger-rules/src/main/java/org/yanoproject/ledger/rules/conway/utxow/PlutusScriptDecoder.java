@@ -1,8 +1,10 @@
 package org.yanoproject.ledger.rules.conway.utxow;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
+
 import org.yanoproject.ledger.rules.conway.tx.PlutusData;
 import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
-import org.yanoproject.ledger.rules.util.CborItems;
 
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -39,15 +41,15 @@ import java.util.Optional;
  *       types, which do not flat-decode, 12 array, 13 value) forming exactly one well-kinded type of kind
  *       {@code *}, then the value: zigzag integers, filler-aligned chunked byte strings, UTF-8 text, a bit for bools,
  *       nothing for unit, bit-prefixed lists (arrays too), pairs, {@code Data} as CBOR inside a byte string
- *       ({@code decodeData}: at most 64-byte byte-string chunks, tags 121–127, 1280–1400 and 102, bignums 2/3, no
- *       trailing bytes), and {@code Value} (ascending currency symbols and token names of at most 32 bytes, no empty
- *       inner map, non-zero signed 128-bit quantities).</li>
+ *       ({@code decodeData}: at most 64-byte byte-string chunks, tags 121–127, 1280–1400 and 102, bignums 2/3;
+ *       bytes after the item are ignored, {@code deserialiseOrFail}), and {@code Value} (ascending currency symbols
+ *       and token names of at most 32 bytes, no empty inner map, non-zero signed 128-bit quantities).</li>
  * </ol>
  *
  * <p>The program's Plutus Core version is <em>not</em> checked here: {@code plcVersionsAvailableIn} is checked when
  * the script is run ({@code mkTermToEvaluate}, {@code PlutusLedgerApi/Common/Eval.hs:118-122}), which is a phase-2
- * failure. Terms are decoded without recursion; a constant nested beyond the thread's stack cannot be judged and
- * fails closed ({@link IllegalStateException}).</p>
+ * failure. Terms and {@code Data} constants are decoded without recursion; a constant of another type nested beyond
+ * the thread's stack cannot be judged and fails closed ({@link IllegalStateException}).</p>
  */
 public final class PlutusScriptDecoder {
 
@@ -89,7 +91,7 @@ public final class PlutusScriptDecoder {
      * @return the leading CBOR item, or {@code script} itself when nothing follows it
      */
     public static byte[] leadingItem(byte[] script) {
-        int end = CborItems.skip(script, 0);
+        int end = CborSpan.skip(script, 0, script.length);
         return end == script.length ? script : Arrays.copyOf(script, end);
     }
 
@@ -100,7 +102,7 @@ public final class PlutusScriptDecoder {
      */
     public static Optional<List<BigInteger>> programVersion(byte[] script) {
         try {
-            Bits in = new Bits(new Cbor(script, 0, script.length).bytes());
+            Bits in = new Bits(envelope(script).byteString());
             return Optional.of(List.of(in.natural(), in.natural(), in.natural()));
         } catch (Malformed | IndexOutOfBoundsException e) {
             return Optional.empty();
@@ -113,16 +115,27 @@ public final class PlutusScriptDecoder {
         if (language < 1 || language > 3) {
             throw new IllegalArgumentException("not a Plutus language: " + language);
         }
-        Cbor cbor = new Cbor(script, 0, script.length);
-        int head = cbor.peek();
+        CborSpan envelope = envelope(script);
+        if (language == 3 && envelope.length() != script.length) {
+            throw new Malformed("RemainderError: " + (script.length - envelope.length()) + " bytes after the script");
+        }
+        new Program(envelope.byteString(), language, pv).decode();
+    }
+
+    /** @return the {@code PlutusBinary}'s leading item, a definite-length byte string ({@code decodeBytes}) */
+    private static CborSpan envelope(byte[] script) {
+        if (script.length == 0) {
+            throw new Malformed("unexpected end of CBOR");
+        }
+        int head = script[0] & 0xff;
         if (head >>> 5 != 2 || (head & 0x1f) == 31) {
             throw new Malformed("the script is not a definite-length CBOR byte string");
         }
-        byte[] flat = cbor.bytes();
-        if (language == 3 && !cbor.atEnd()) {
-            throw new Malformed("RemainderError: " + (script.length - cbor.pos) + " bytes after the script");
+        try {
+            return CborSpan.at(script, 0);
+        } catch (CborRuntimeException e) {
+            throw new Malformed(e.getMessage());
         }
-        new Program(flat, language, pv).decode();
     }
 
     // ------------------------------------------------------------------ flat program
@@ -512,113 +525,18 @@ public final class PlutusScriptDecoder {
 
     // ------------------------------------------------------------------ Data
 
-    /** {@code Data} constants: {@link PlutusData} (the ledger's datums and redeemers use the same decoder). */
+    /**
+     * {@code Data} constants: {@link PlutusData#validateFirst}, plutus-core's {@code decodeData} through serialise's
+     * {@code deserialiseOrFail} ({@code FlatViaSerialise}), which ignores bytes after the item.
+     */
     private static final class Data {
 
         static void decode(byte[] bytes) {
             try {
-                PlutusData.validate(bytes);
+                PlutusData.validateFirst(bytes);
             } catch (TxDecodingException e) {
                 throw new Malformed(e.getMessage());
             }
-        }
-    }
-
-    // ------------------------------------------------------------------ CBOR
-
-    /** A minimal CBOR reader for the script envelope and {@code Data}. */
-    private static final class Cbor {
-        static final long INDEFINITE = -1;
-        private final byte[] data;
-        private final int end;
-        int pos;
-
-        Cbor(byte[] data, int start, int end) {
-            this.data = data;
-            this.pos = start;
-            this.end = end;
-        }
-
-        boolean atEnd() {
-            return pos >= end;
-        }
-
-        int peek() {
-            if (pos >= end) {
-                throw new Malformed("unexpected end of CBOR");
-            }
-            return data[pos] & 0xff;
-        }
-
-        /** Reads an integer head (major 0 or 1) and returns its argument. */
-        BigInteger argument() {
-            int head = peek();
-            pos++;
-            return argumentOf(head & 0x1f);
-        }
-
-        BigInteger argumentOf(int info) {
-            if (info < 24) {
-                return BigInteger.valueOf(info);
-            }
-            int n = switch (info) {
-                case 24 -> 1;
-                case 25 -> 2;
-                case 26 -> 4;
-                case 27 -> 8;
-                default -> throw new Malformed("unsupported CBOR additional information " + info);
-            };
-            if (pos + n > end) {
-                throw new Malformed("truncated CBOR integer");
-            }
-            BigInteger v = BigInteger.ZERO;
-            for (int i = 0; i < n; i++) {
-                v = v.shiftLeft(8).or(BigInteger.valueOf(data[pos++] & 0xff));
-            }
-            return v;
-        }
-
-        /** A definite byte string. */
-        byte[] bytes() {
-            int head = peek();
-            if (head >>> 5 != 2 || (head & 0x1f) == 31) {
-                throw new Malformed("expected a definite byte string");
-            }
-            pos++;
-            BigInteger length = argumentOf(head & 0x1f);
-            if (length.compareTo(BigInteger.valueOf(end - pos)) > 0) {
-                throw new Malformed("byte string runs past the input");
-            }
-            byte[] out = Arrays.copyOfRange(data, pos, pos + length.intValue());
-            pos += out.length;
-            return out;
-        }
-
-        long containerHeader(int major) {
-            int head = peek();
-            if (head >>> 5 != major) {
-                throw new Malformed("unexpected CBOR major type " + (head >>> 5));
-            }
-            pos++;
-            if ((head & 0x1f) == 31) {
-                return INDEFINITE;
-            }
-            BigInteger n = argumentOf(head & 0x1f);
-            if (n.bitLength() > 31) {
-                throw new Malformed("container too large");
-            }
-            return n.longValue();
-        }
-
-        boolean more(long n, long i) {
-            if (n != INDEFINITE) {
-                return i < n;
-            }
-            if (peek() == 0xff) {
-                pos++;
-                return false;
-            }
-            return true;
         }
     }
 

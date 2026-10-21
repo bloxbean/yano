@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.math.BigInteger;
@@ -68,22 +69,25 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             }
         }
 
-        static DRep read(CborReader reader) {
-            long length = reader.readArrayHeader();
-            long kind = reader.readUnsignedLong();
-            RawCredential credential = null;
-            long expected;
+        static DRep read(CborSpan item) {
+            List<CborSpan> fields = StrictCbor.array(item);
+            if (fields.isEmpty()) {
+                throw new TxDecodingException("a DRep is an empty array");
+            }
+            long kind = StrictCbor.unsignedLong(fields.get(0));
+            int expected;
             if (kind <= 1) {
-                credential = new RawCredential(kind == 1, reader.readDefiniteBytes());
                 expected = 2;
             } else if (kind <= 3) {
                 expected = 1;
             } else {
                 throw new TxDecodingException("unknown DRep kind " + kind);
             }
-            if (length == CborReader.INDEFINITE ? reader.hasNext(length, expected) : length != expected) {
+            if (fields.size() != expected) {
                 throw new TxDecodingException("a DRep of kind " + kind + " has " + expected + " elements");
             }
+            RawCredential credential = kind <= 1
+                    ? new RawCredential(kind == 1, StrictCbor.definiteBytes(fields.get(1))) : null;
             return new DRep((int) kind, credential);
         }
 
@@ -202,13 +206,27 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
     }
 
     /**
-     * Reads one certificate at the reader's position. The fields the rules do not read are still decoded with their
-     * Haskell bounds ({@link BoundedFields}: anchors, the pool margin, relays and metadata URL).
+     * Reads one certificate. The fields the rules do not read are still decoded with their Haskell bounds
+     * ({@link BoundedFields}: anchors, the pool margin, relays and metadata URL).
      */
-    static RawCertificate read(CborReader reader, int index) {
-        long length = reader.readArrayHeader();
-        long tag = reader.readUnsignedLong();
-        int expected;
+    static RawCertificate read(CborSpan item, int index) {
+        List<CborSpan> f = StrictCbor.array(item);
+        if (f.isEmpty()) {
+            throw new TxDecodingException("a certificate is an empty array");
+        }
+        long tag = StrictCbor.unsignedLong(f.get(0));
+        int expected = switch ((int) Math.min(tag, 19)) {
+            case 0, 1 -> 2;
+            case 2, 7, 8, 9, 14, 15, 17, 18, 4 -> 3;
+            case 10, 11, 12, 16 -> 4;
+            case 13 -> 5;
+            case 3 -> 10;
+            default -> throw new TxDecodingException("certificate tag " + tag + " is not a Conway certificate");
+        };
+        if (f.size() != expected) {
+            throw new TxDecodingException("certificate tag " + tag + " has " + f.size() + " elements, expected "
+                    + expected);
+        }
         RawCredential credential = null;
         RawCredential hot = null;
         byte[] poolId = null;
@@ -218,119 +236,89 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
         BigInteger coin = null;
         Long epoch = null;
         PoolParams pool = null;
-        switch ((int) Math.min(tag, 19)) {
-            case 0, 1 -> {
-                credential = RawCredential.read(reader);
-                expected = 2;
-            }
+        switch ((int) tag) {
+            case 0, 1 -> credential = RawCredential.read(f.get(1));
             case 2 -> {
-                credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
-                expected = 3;
+                credential = RawCredential.read(f.get(1));
+                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
             }
             case 7, 8, 17 -> {
-                credential = RawCredential.read(reader);
-                coin = reader.readUnsigned();
-                expected = 3;
+                credential = RawCredential.read(f.get(1));
+                coin = StrictCbor.unsigned(f.get(2));
             }
             case 9 -> {
-                credential = RawCredential.read(reader);
-                drep = DRep.read(reader);
-                expected = 3;
+                credential = RawCredential.read(f.get(1));
+                drep = DRep.read(f.get(2));
             }
             case 10 -> {
-                credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
-                drep = DRep.read(reader);
-                expected = 4;
+                credential = RawCredential.read(f.get(1));
+                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
+                drep = DRep.read(f.get(3));
             }
             case 11 -> {
-                credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
-                coin = reader.readUnsigned();
-                expected = 4;
+                credential = RawCredential.read(f.get(1));
+                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
+                coin = StrictCbor.unsigned(f.get(3));
             }
             case 12 -> {
-                credential = RawCredential.read(reader);
-                drep = DRep.read(reader);
-                coin = reader.readUnsigned();
-                expected = 4;
+                credential = RawCredential.read(f.get(1));
+                drep = DRep.read(f.get(2));
+                coin = StrictCbor.unsigned(f.get(3));
             }
             case 13 -> {
-                credential = RawCredential.read(reader);
-                targetPool = keyHash(reader.readDefiniteBytes(), "delegatee pool");
-                drep = DRep.read(reader);
-                coin = reader.readUnsigned();
-                expected = 5;
+                credential = RawCredential.read(f.get(1));
+                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
+                drep = DRep.read(f.get(3));
+                coin = StrictCbor.unsigned(f.get(4));
             }
             case 14 -> {
-                credential = RawCredential.read(reader);
-                hot = RawCredential.read(reader);
-                expected = 3;
+                credential = RawCredential.read(f.get(1));
+                hot = RawCredential.read(f.get(2));
             }
             case 15, 18 -> {
-                credential = RawCredential.read(reader);
-                BoundedFields.anchorOrNull(reader, "certificate");
-                expected = 3;
+                credential = RawCredential.read(f.get(1));
+                BoundedFields.anchorOrNull(f.get(2), "certificate");
             }
             case 16 -> {
-                credential = RawCredential.read(reader);
-                coin = reader.readUnsigned();
-                BoundedFields.anchorOrNull(reader, "certificate");
-                expected = 4;
+                credential = RawCredential.read(f.get(1));
+                coin = StrictCbor.unsigned(f.get(2));
+                BoundedFields.anchorOrNull(f.get(3), "certificate");
             }
             case 3 -> {
                 // pool_params, flattened: operator, vrf, pledge, cost, margin, reward account, owners, relays,
                 // metadata (decodeStakePoolParamsFlat)
-                poolId = keyHash(reader.readDefiniteBytes(), "pool operator");
-                byte[] vrf = reader.readDefiniteBytes();
+                poolId = keyHash(StrictCbor.definiteBytes(f.get(1)), "pool operator");
+                byte[] vrf = StrictCbor.definiteBytes(f.get(2));
                 if (vrf.length != VRF_KEY_HASH_LENGTH) {
                     throw new TxDecodingException("VRF key hash of " + vrf.length + " bytes");
                 }
-                reader.readUnsigned(); // pledge: a Word64 coin
-                BigInteger cost = reader.readUnsigned();
-                BoundedFields.unitInterval(reader, "pool margin");
-                byte[] rewardAccount = reader.readDefiniteBytes();
+                StrictCbor.unsigned(f.get(3)); // pledge: a Word64 coin
+                BigInteger cost = StrictCbor.unsigned(f.get(4));
+                BoundedFields.unitInterval(f.get(5), "pool margin");
+                byte[] rewardAccount = StrictCbor.definiteBytes(f.get(6));
                 // decodeAccountAddress (Address.hs:938-955): header & 0xEE == 0xE0, then a 28-byte hash
                 if (rewardAccount.length != 29 || (rewardAccount[0] & 0xee) != 0xe0) {
                     throw new TxDecodingException("pool reward account is not an account address");
                 }
-                reader.skipTag(258);
-                long count = reader.readArrayHeader();
-                for (long i = 0; reader.hasNext(count, i); i++) {
-                    owners.add(keyHash(reader.readDefiniteBytes(), "pool owner"));
+                for (CborSpan owner : StrictCbor.set(f.get(7))) {
+                    owners.add(keyHash(StrictCbor.definiteBytes(owner), "pool owner"));
                 }
-                long relays = reader.readArrayHeader();
-                for (long i = 0; reader.hasNext(relays, i); i++) {
-                    BoundedFields.relay(reader);
+                for (CborSpan relay : StrictCbor.array(f.get(8))) {
+                    BoundedFields.relay(relay);
                 }
                 Integer metadataHashSize = null;
-                if (reader.peekNull()) {
-                    reader.readNull();
-                } else {
-                    long fields = reader.readArrayHeader();
-                    BoundedFields.url(reader, "pool metadata");
-                    metadataHashSize = reader.readDefiniteBytes().length;
-                    if (fields == CborReader.INDEFINITE ? reader.hasNext(fields, 2) : fields != 2) {
-                        throw new TxDecodingException("pool metadata is a two-element array");
-                    }
+                if (!f.get(9).isNull()) {
+                    List<CborSpan> metadata = StrictCbor.array(f.get(9), 2, "pool metadata is a two-element array");
+                    BoundedFields.url(metadata.get(0), "pool metadata");
+                    metadataHashSize = StrictCbor.definiteBytes(metadata.get(1)).length;
                 }
                 pool = new PoolParams(vrf, cost, rewardAccount, metadataHashSize);
-                expected = 10;
             }
-            case 4 -> {
-                poolId = keyHash(reader.readDefiniteBytes(), "pool id");
-                epoch = reader.readUnsignedLong();
-                expected = 3;
+            default -> {
+                // 4: pool retirement
+                poolId = keyHash(StrictCbor.definiteBytes(f.get(1)), "pool id");
+                epoch = StrictCbor.unsignedLong(f.get(2));
             }
-            default -> throw new TxDecodingException("certificate tag " + tag + " is not a Conway certificate");
-        }
-        if (length != CborReader.INDEFINITE && length != expected) {
-            throw new TxDecodingException("certificate tag " + tag + " has " + length + " elements, expected "
-                    + expected);
-        }
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, expected)) {
-            throw new TxDecodingException("certificate tag " + tag + " has extra elements");
         }
         Delegatee delegatee = targetPool != null || drep != null ? new Delegatee(targetPool, drep) : null;
         return new RawCertificate(index, (int) tag, credential, poolId, owners, hot, delegatee, coin, epoch, pool);

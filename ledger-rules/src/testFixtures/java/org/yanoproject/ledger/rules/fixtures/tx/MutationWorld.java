@@ -9,6 +9,7 @@ import com.bloxbean.cardano.client.address.Credential;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.api.util.CostModelUtil;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.common.model.Network;
 import com.bloxbean.cardano.client.common.model.Networks;
 import com.bloxbean.cardano.client.common.model.SlotConfig;
@@ -44,7 +45,6 @@ import com.bloxbean.cardano.client.spec.Script;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.ValidationEnv;
-import org.yanoproject.ledger.rules.conway.tx.CborSlice;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.view.InMemoryLedgerView;
@@ -504,17 +504,19 @@ public final class MutationWorld {
      *         Haskell's decoder treats differently from CCL's
      */
     public static byte[] withWitnessEntry(byte[] tx, String entryHex) {
-        CborSlice witnesses = RawTransaction.parse(tx, null).witnessSet();
-        int header = tx[witnesses.start()] & 0xff;
+        CborSpan witnesses = RawTransaction.parse(tx, null).witnessSet();
+        int start = witnesses.offset();
+        int end = start + witnesses.length();
+        int header = tx[start] & 0xff;
         if (header < 0xa0 || header > 0xb6) {
             throw new IllegalArgumentException("not a small witness-set map: " + Integer.toHexString(header));
         }
         byte[] entry = HexUtil.decodeHexString(entryHex);
         byte[] out = new byte[tx.length + entry.length];
-        System.arraycopy(tx, 0, out, 0, witnesses.end());
-        out[witnesses.start()] = (byte) (header + 1);
-        System.arraycopy(entry, 0, out, witnesses.end(), entry.length);
-        System.arraycopy(tx, witnesses.end(), out, witnesses.end() + entry.length, tx.length - witnesses.end());
+        System.arraycopy(tx, 0, out, 0, end);
+        out[start] = (byte) (header + 1);
+        System.arraycopy(entry, 0, out, end, entry.length);
+        System.arraycopy(tx, end, out, end + entry.length, tx.length - end);
         return out;
     }
 

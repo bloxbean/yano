@@ -6,7 +6,6 @@ import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import org.yanoproject.api.util.AddressKeyUtil;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.view.model.Outpoints;
 import org.yanoproject.runtime.chain.TransactionOutputProjector;
 
@@ -42,7 +41,7 @@ public record TxProjection(String txHash, Set<Outpoint> regularInputs, Set<Outpo
      */
     public static TxProjection of(byte[] txBytes) throws Exception {
         String txHash = TransactionUtil.getTxHash(txBytes).toLowerCase(Locale.ROOT);
-        Transaction transaction = CclTransactions.deserialize(txBytes);
+        Transaction transaction = Transaction.deserialize(txBytes);
         if (transaction.getBody() == null) {
             throw new IllegalArgumentException("transaction body is null");
         }

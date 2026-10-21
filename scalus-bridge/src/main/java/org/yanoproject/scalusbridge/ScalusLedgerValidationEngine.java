@@ -22,7 +22,6 @@ import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.ReapplyPolicy;
 import org.yanoproject.ledger.rules.conway.mempool.MempoolRule;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.effects.TxEffects;
 import org.yanoproject.ledger.rules.effects.TxEffectsDeriver;
@@ -125,7 +124,7 @@ public final class ScalusLedgerValidationEngine implements LedgerValidationEngin
 
         Transaction tx;
         try {
-            tx = CclTransactions.deserialize(txCbor);
+            tx = Transaction.deserialize(txCbor);
         } catch (Exception e) {
             return engine(DECODING_FAILURE, "the transaction does not decode: " + e.getMessage());
         }

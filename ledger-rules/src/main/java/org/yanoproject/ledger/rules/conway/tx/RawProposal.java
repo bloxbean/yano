@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.view.model.GovActionId;
@@ -10,6 +11,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.SortedMap;
 import java.util.SortedSet;
@@ -130,7 +132,7 @@ public final class RawProposal {
     private final int actionTag;
     private final GovActionId prevActionId;
     private final RawParamUpdate paramUpdate;
-    private final CborSlice paramUpdateSlice;
+    private final CborSpan paramUpdateSpan;
     private final ProtVer protocolVersion;
     private final List<Withdrawal> withdrawals;
     private final byte[] policyHash;
@@ -146,7 +148,7 @@ public final class RawProposal {
         this.actionTag = b.actionTag;
         this.prevActionId = b.prevActionId;
         this.paramUpdate = b.paramUpdate;
-        this.paramUpdateSlice = b.paramUpdateSlice;
+        this.paramUpdateSpan = b.paramUpdateSpan;
         this.protocolVersion = b.protocolVersion;
         this.withdrawals = List.copyOf(b.withdrawals);
         this.policyHash = b.policyHash != null ? b.policyHash.clone() : null;
@@ -192,11 +194,11 @@ public final class RawProposal {
     }
 
     /**
-     * @return where a {@code ParameterChange}'s {@code protocol_param_update} is encoded in the transaction bytes, else
-     *         null (a script context translates the update from it: {@code ToPlutusData PParamsUpdate})
+     * @return a {@code ParameterChange}'s {@code protocol_param_update} as encoded in the transaction, else null (a
+     *         script context translates the update from it: {@code ToPlutusData PParamsUpdate})
      */
-    public CborSlice paramUpdateSlice() {
-        return paramUpdateSlice;
+    public CborSpan paramUpdateSpan() {
+        return paramUpdateSpan;
     }
 
     /** @return the proposed protocol version of a {@code HardForkInitiation}, else null */
@@ -234,18 +236,18 @@ public final class RawProposal {
         return constitutionScript != null ? constitutionScript.clone() : null;
     }
 
-    /** Reads a proposal procedure at the reader's position. */
-    static RawProposal read(CborReader reader, int index) {
+    /** Reads a proposal procedure. */
+    static RawProposal read(CborSpan item, int index) {
         Builder b = new Builder();
         b.index = index;
-        long length = reader.readArrayHeader();
-        if (length != 4 && length != CborReader.INDEFINITE) {
-            throw new TxDecodingException("a proposal procedure has 4 elements");
+        List<CborSpan> fields = StrictCbor.array(item, 4, "a proposal procedure has 4 elements");
+        b.deposit = StrictCbor.unsigned(fields.get(0));
+        b.returnAccount = accountAddress(fields.get(1), "proposal return account");
+        List<CborSpan> action = StrictCbor.array(fields.get(2));
+        if (action.isEmpty()) {
+            throw new TxDecodingException("a governance action is an empty array");
         }
-        b.deposit = reader.readUnsigned();
-        b.returnAccount = accountAddress(reader, "proposal return account");
-        long actionLength = reader.readArrayHeader();
-        long tag = reader.readUnsignedLong();
+        long tag = StrictCbor.unsignedLong(action.get(0));
         int expected = switch ((int) Math.min(tag, 7)) {
             case PARAMETER_CHANGE -> 4;
             case HARD_FORK_INITIATION, TREASURY_WITHDRAWALS -> 3;
@@ -255,90 +257,77 @@ public final class RawProposal {
             case INFO -> 1;
             default -> throw new TxDecodingException("unknown governance action tag " + tag);
         };
-        if (actionLength != CborReader.INDEFINITE && actionLength != expected) {
-            throw new TxDecodingException("governance action tag " + tag + " has " + actionLength + " elements");
+        if (action.size() != expected) {
+            throw new TxDecodingException("governance action tag " + tag + " has " + action.size() + " elements");
         }
         b.actionTag = (int) tag;
         switch (b.actionTag) {
             case PARAMETER_CHANGE -> {
-                b.prevActionId = govActionIdOrNull(reader);
-                int start = reader.position();
-                b.paramUpdate = RawParamUpdate.read(reader);
-                b.paramUpdateSlice = new CborSlice(start, reader.position());
-                b.policyHash = scriptHashOrNull(reader, "guardrails policy hash");
+                b.prevActionId = govActionIdOrNull(action.get(1));
+                b.paramUpdate = RawParamUpdate.read(action.get(2));
+                b.paramUpdateSpan = action.get(2);
+                b.policyHash = scriptHashOrNull(action.get(3), "guardrails policy hash");
             }
             case HARD_FORK_INITIATION -> {
-                b.prevActionId = govActionIdOrNull(reader);
-                b.protocolVersion = protVer(reader);
+                b.prevActionId = govActionIdOrNull(action.get(1));
+                b.protocolVersion = protVer(action.get(2));
             }
             case TREASURY_WITHDRAWALS -> {
-                b.withdrawals.addAll(treasuryWithdrawals(reader));
-                b.policyHash = scriptHashOrNull(reader, "guardrails policy hash");
+                b.withdrawals.addAll(treasuryWithdrawals(action.get(1)));
+                b.policyHash = scriptHashOrNull(action.get(2), "guardrails policy hash");
             }
-            case NO_CONFIDENCE -> b.prevActionId = govActionIdOrNull(reader);
+            case NO_CONFIDENCE -> b.prevActionId = govActionIdOrNull(action.get(1));
             case UPDATE_COMMITTEE -> {
-                b.prevActionId = govActionIdOrNull(reader);
-                committeeRemovals(reader, b.committeeRemovals);
-                committeeAdditions(reader, b.committeeAdditions);
-                b.quorum = BoundedFields.boundedRational(reader, "committee quorum", true);
+                b.prevActionId = govActionIdOrNull(action.get(1));
+                committeeRemovals(action.get(2), b.committeeRemovals);
+                committeeAdditions(action.get(3), b.committeeAdditions);
+                b.quorum = BoundedFields.boundedRational(action.get(4), "committee quorum", true);
             }
             case NEW_CONSTITUTION -> {
-                b.prevActionId = govActionIdOrNull(reader);
-                b.constitutionScript = constitution(reader);
+                b.prevActionId = govActionIdOrNull(action.get(1));
+                b.constitutionScript = constitution(action.get(2));
             }
             default -> {
                 // InfoAction: [6]
             }
         }
-        if (actionLength == CborReader.INDEFINITE && reader.hasNext(actionLength, expected)) {
-            throw new TxDecodingException("governance action tag " + tag + " has extra elements");
-        }
-        BoundedFields.anchor(reader, "proposal");
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, 4)) {
-            throw new TxDecodingException("a proposal procedure has 4 elements");
-        }
+        BoundedFields.anchor(fields.get(3), "proposal");
         return new RawProposal(b);
     }
 
     /** {@code decodeAccountAddress}: 29 bytes, header {@code 111s 000n} (Address.hs:938-955). */
-    static byte[] accountAddress(CborReader reader, String what) {
-        byte[] account = reader.readDefiniteBytes();
+    static byte[] accountAddress(CborSpan item, String what) {
+        byte[] account = StrictCbor.definiteBytes(item);
         if (account.length != 29 || (account[0] & 0xee) != 0xe0) {
             throw new TxDecodingException(what + " is not an account address");
         }
         return account;
     }
 
-    /** {@code gov_action_id / null}: {@code [transaction_id, Word16]}. */
-    private static GovActionId govActionIdOrNull(CborReader reader) {
-        if (reader.peekNull()) {
-            reader.readNull();
-            return null;
-        }
-        long length = reader.readArrayHeader();
-        if (length != 2 && length != CborReader.INDEFINITE) {
-            throw new TxDecodingException("a governance action id has 2 elements");
-        }
-        byte[] txId = reader.readDefiniteBytes();
+    /** {@code gov_action_id / null}. */
+    private static GovActionId govActionIdOrNull(CborSpan item) {
+        return item.isNull() ? null : govActionId(item);
+    }
+
+    /** {@code gov_action_id = [transaction_id, Word16]}. */
+    static GovActionId govActionId(CborSpan item) {
+        List<CborSpan> fields = StrictCbor.array(item, 2, "a governance action id has 2 elements");
+        byte[] txId = StrictCbor.definiteBytes(fields.get(0));
         if (txId.length != 32) {
             throw new TxDecodingException("a governance action id's transaction id of " + txId.length + " bytes");
         }
-        long ix = reader.readUnsignedLong();
+        long ix = StrictCbor.unsignedLong(fields.get(1));
         if (ix > 0xFFFF) {
             throw new TxDecodingException("a governance action index exceeds Word16: " + ix);
-        }
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-            throw new TxDecodingException("a governance action id has 2 elements");
         }
         return new GovActionId(HexUtil.encodeHexString(txId), (int) ix);
     }
 
-    private static byte[] scriptHashOrNull(CborReader reader, String what) {
-        if (reader.peekNull()) {
-            reader.readNull();
+    private static byte[] scriptHashOrNull(CborSpan item, String what) {
+        if (item.isNull()) {
             return null;
         }
-        byte[] hash = reader.readDefiniteBytes();
+        byte[] hash = StrictCbor.definiteBytes(item);
         if (hash.length != RawCredential.HASH_LENGTH) {
             throw new TxDecodingException("a " + what + " is 28 bytes");
         }
@@ -346,16 +335,10 @@ public final class RawProposal {
     }
 
     /** {@code decodeProtVer @ConwayEra}: {@code [major, minor]}, the major at most 12. */
-    private static ProtVer protVer(CborReader reader) {
-        long length = reader.readArrayHeader();
-        if (length != 2 && length != CborReader.INDEFINITE) {
-            throw new TxDecodingException("a protocol version has 2 elements");
-        }
-        BigInteger major = reader.readUnsigned();
-        BigInteger minor = reader.readUnsigned();
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-            throw new TxDecodingException("a protocol version has 2 elements");
-        }
+    private static ProtVer protVer(CborSpan item) {
+        List<CborSpan> fields = StrictCbor.array(item, 2, "a protocol version has 2 elements");
+        BigInteger major = StrictCbor.unsigned(fields.get(0));
+        BigInteger minor = StrictCbor.unsigned(fields.get(1));
         if (minor.compareTo(WORD32_MAX) > 0) {
             throw new TxDecodingException("a protocol minor version exceeds Word32: " + minor);
         }
@@ -366,12 +349,11 @@ public final class RawProposal {
         return new ProtVer(major.longValue(), minor.longValue());
     }
 
-    private static List<Withdrawal> treasuryWithdrawals(CborReader reader) {
-        long count = reader.readMapHeader();
+    private static List<Withdrawal> treasuryWithdrawals(CborSpan item) {
         TreeMap<byte[], BigInteger> sorted = new TreeMap<>(ACCOUNT_ORDER);
-        for (long i = 0; reader.hasNext(count, i); i++) {
-            byte[] account = accountAddress(reader, "treasury withdrawal account");
-            BigInteger amount = reader.readUnsigned();
+        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
+            byte[] account = accountAddress(entry.getKey(), "treasury withdrawal account");
+            BigInteger amount = StrictCbor.unsigned(entry.getValue());
             if (sorted.put(account, amount) != null) {
                 throw new TxDecodingException("duplicate treasury withdrawal account "
                         + HexUtil.encodeHexString(account));
@@ -382,22 +364,19 @@ public final class RawProposal {
         return result;
     }
 
-    private static void committeeRemovals(CborReader reader, SortedSet<RawCredential> into) {
-        reader.skipTag(258);
-        long count = reader.readArrayHeader();
-        for (long i = 0; reader.hasNext(count, i); i++) {
-            RawCredential credential = RawCredential.read(reader);
+    private static void committeeRemovals(CborSpan item, SortedSet<RawCredential> into) {
+        for (CborSpan member : StrictCbor.set(item)) {
+            RawCredential credential = RawCredential.read(member);
             if (!into.add(credential)) {
                 throw new TxDecodingException("duplicate committee member to remove " + credential);
             }
         }
     }
 
-    private static void committeeAdditions(CborReader reader, SortedMap<RawCredential, BigInteger> into) {
-        long count = reader.readMapHeader();
-        for (long i = 0; reader.hasNext(count, i); i++) {
-            RawCredential credential = RawCredential.read(reader);
-            BigInteger epoch = reader.readUnsigned();
+    private static void committeeAdditions(CborSpan item, SortedMap<RawCredential, BigInteger> into) {
+        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
+            RawCredential credential = RawCredential.read(entry.getKey());
+            BigInteger epoch = StrictCbor.unsigned(entry.getValue());
             if (into.put(credential, epoch) != null) {
                 throw new TxDecodingException("duplicate committee member to add " + credential);
             }
@@ -405,17 +384,10 @@ public final class RawProposal {
     }
 
     /** {@code constitution = [anchor, script_hash / null]}: @return the script hash, or null */
-    private static byte[] constitution(CborReader reader) {
-        long length = reader.readArrayHeader();
-        if (length != 2 && length != CborReader.INDEFINITE) {
-            throw new TxDecodingException("a constitution has 2 elements");
-        }
-        BoundedFields.anchor(reader, "constitution");
-        byte[] script = scriptHashOrNull(reader, "constitution guardrails script hash");
-        if (length == CborReader.INDEFINITE && reader.hasNext(length, 2)) {
-            throw new TxDecodingException("a constitution has 2 elements");
-        }
-        return script;
+    private static byte[] constitution(CborSpan item) {
+        List<CborSpan> fields = StrictCbor.array(item, 2, "a constitution has 2 elements");
+        BoundedFields.anchor(fields.get(0), "constitution");
+        return scriptHashOrNull(fields.get(1), "constitution guardrails script hash");
     }
 
     /** @return Haskell's {@code showGovActionType} */
@@ -449,7 +421,7 @@ public final class RawProposal {
         private byte[] policyHash;
         private final SortedSet<RawCredential> committeeRemovals = new TreeSet<>();
         private final SortedMap<RawCredential, BigInteger> committeeAdditions = new TreeMap<>();
-        private CborSlice paramUpdateSlice;
+        private CborSpan paramUpdateSpan;
         private BigInteger[] quorum;
         private byte[] constitutionScript;
     }

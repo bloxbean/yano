@@ -3,10 +3,9 @@ package org.yanoproject.ledger.rules.conway.utxo;
 import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
 import org.yanoproject.ledger.rules.conway.ConwayParams;
 import org.yanoproject.ledger.rules.conway.TransitionContext;
-import org.yanoproject.ledger.rules.conway.tx.CborReader;
 import org.yanoproject.ledger.rules.conway.tx.RawRedeemer;
+import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
-import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
@@ -106,32 +105,7 @@ public final class MinFee {
      *                  wrapper)
      */
     public static int scriptOriginalSize(byte[] scriptRef) {
-        CborReader reader = new CborReader(scriptRef);
-        if (reader.peekMajor() == 6) {
-            if (reader.readTag() != 24) {
-                throw new TxDecodingException("a script reference is wrapped in tag 24");
-            }
-            reader = new CborReader(reader.readBytes());
-        }
-        reader.readArrayHeader();
-        long type = reader.readUnsignedLong();
-        if (type == 0) {
-            return reader.readItem().length();
-        }
-        return reader.readBytes().length;
-    }
-
-    /** @return whether a reference script ({@code [type, script]}, optionally tag-24 wrapped) is a Plutus script */
-    public static boolean isPlutusScript(byte[] scriptRef) {
-        CborReader reader = new CborReader(scriptRef);
-        if (reader.peekMajor() == 6) {
-            if (reader.readTag() != 24) {
-                throw new TxDecodingException("a script reference is wrapped in tag 24");
-            }
-            reader = new CborReader(reader.readBytes());
-        }
-        reader.readArrayHeader();
-        return reader.readUnsignedLong() != 0;
+        return RawScript.fromScriptRef(scriptRef).bytes().length;
     }
 
     /** A non-negative exact fraction. */

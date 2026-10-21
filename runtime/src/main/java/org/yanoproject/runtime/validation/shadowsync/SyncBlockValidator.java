@@ -11,7 +11,6 @@ import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
 import org.yanoproject.ledger.rules.conway.tx.RawRedeemer;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.utxo.BlockRefScriptSize;
 import org.yanoproject.ledger.rules.effects.TxEffects;
@@ -340,7 +339,7 @@ public final class SyncBlockValidator {
         for (byte[] tx : block.txs()) {
             RawTransaction t;
             try {
-                t = RawTransaction.parse(tx, CclTransactions.deserialize(tx));
+                t = RawTransaction.parse(tx, Transaction.deserialize(tx));
             } catch (Exception | StackOverflowError e) {
                 t = null;
             }
