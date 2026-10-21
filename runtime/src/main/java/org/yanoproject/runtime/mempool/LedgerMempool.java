@@ -2,6 +2,7 @@ package org.yanoproject.runtime.mempool;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.exception.CborDeserializationException;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
@@ -20,7 +21,6 @@ import org.yanoproject.ledger.rules.ValidatedTx;
 import org.yanoproject.ledger.rules.ValidationEnv;
 import org.yanoproject.ledger.rules.ValidationError;
 import org.yanoproject.ledger.rules.conway.ConwayLedgerConstants;
-import org.yanoproject.ledger.rules.conway.tx.CclTransactions;
 import org.yanoproject.ledger.rules.conway.utxo.BlockRefScriptSize;
 import org.yanoproject.ledger.rules.view.LedgerStateUnavailableException;
 import org.yanoproject.ledger.rules.view.Lookup;
@@ -1112,7 +1112,7 @@ public final class LedgerMempool implements MemPool, AutoCloseable {
                     TransactionBody body;
                     Lookup<Long> refScriptSize;
                     try {
-                        body = CclTransactions.deserialize(e.txBytes()).getBody();
+                        body = Transaction.deserialize(e.txBytes()).getBody();
                         refScriptSize = refScripts.measure(body);
                     } catch (CborDeserializationException | RuntimeException ex) {
                         body = null;
