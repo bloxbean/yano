@@ -17,6 +17,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Built-in {@code address-deposit} observer (ADR 008.4 §3.1, ADR-005 D5
@@ -53,7 +54,13 @@ final class AddressDepositObserver implements L1Observer {
         if (block == null || block.getTransactionBodies() == null)
             return List.of();
         List<L1Observation> observations = new ArrayList<>();
-        for (TransactionBody tx : block.getTransactionBodies()) {
+        // A phase-2-invalid transaction created no outputs; depositing through one deposits nothing.
+        Set<Integer> invalid = InvalidL1Transactions.of(block);
+        List<TransactionBody> bodies = block.getTransactionBodies();
+        for (int index = 0; index < bodies.size(); index++) {
+            TransactionBody tx = bodies.get(index);
+            if (tx == null || invalid.contains(index))
+                continue;
             BigInteger deposited = depositedLovelace(tx);
             if (deposited.signum() <= 0)
                 continue;

@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.junit.jupiter.api.Test;
 
+import java.util.OptionalLong;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class InMemoryChainStateTest {
@@ -94,5 +96,26 @@ class InMemoryChainStateTest {
 
     private static byte[] hash(int value) {
         return HexUtil.decodeHexString(String.format("%064x", value));
+    }
+
+    @Test
+    void canonicalMutationSequenceBracketsRollbacksAndBodyReplacements() {
+        InMemoryChainState chainState = new InMemoryChainState();
+        byte[] first = new byte[32];
+        first[31] = 1;
+        byte[] second = new byte[32];
+        second[31] = 2;
+        byte[] replacement = new byte[32];
+        replacement[31] = 3;
+        long start = chainState.canonicalMutationSequence().orElseThrow();
+        chainState.storeBlock(first, 1L, 10L, new byte[]{1});
+        chainState.storeBlock(second, 2L, 20L, new byte[]{2});
+        assertEquals(OptionalLong.of(start), chainState.canonicalMutationSequence());
+
+        chainState.storeBlock(replacement, 2L, 21L, new byte[]{3});
+        assertEquals(OptionalLong.of(start + 2), chainState.canonicalMutationSequence());
+
+        chainState.rollbackToOrigin();
+        assertEquals(OptionalLong.of(start + 4), chainState.canonicalMutationSequence());
     }
 }

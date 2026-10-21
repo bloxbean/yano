@@ -163,9 +163,20 @@ class AppChainSubsystemGenerationLifecycleTest {
     @Test
     void concurrentHostStopsSerializeWhileResourceCallbackReadsState() throws Exception {
         BlockingCloseEventBus eventBus = new BlockingCloseEventBus();
-        AppChainSubsystem subsystem = subsystem(
-                tempDir.resolve("concurrent-stop"), new NoOpStateMachine(),
-                eventBus, PluginProviderRegistry.empty(), Map.of());
+        // Node L1 events only wake the delivery loop, so they are subscribed only for a chain that consumes L1.
+        AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
+                .signingKeyHex(HexUtil.encodeHexString(SIGNING_KEY))
+                .memberKeysHex(Set.of(PUBLIC_KEY))
+                .proposerKeyHex(PUBLIC_KEY)
+                .threshold(1)
+                .blockIntervalMs(60_000)
+                .l1StabilityDepth(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppChainSubsystem subsystem = new AppChainSubsystem(config, 42, eventBus, new NoOpStateMachine(),
+                tempDir.resolve("concurrent-stop").toString(), null, PluginProviderRegistry.empty(),
+                LoggerFactory.getLogger(AppChainSubsystemGenerationLifecycleTest.class));
+        subsystem.wireL1Chain(new L1TestChain().reader(), null);
         eventBus.subsystem.set(subsystem);
         ExecutorService callers = Executors.newFixedThreadPool(2);
         try {

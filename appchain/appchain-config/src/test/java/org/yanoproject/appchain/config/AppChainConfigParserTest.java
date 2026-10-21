@@ -1,6 +1,7 @@
 package org.yanoproject.appchain.config;
 
 import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.effects.FinalityGate;
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
@@ -66,6 +67,23 @@ class AppChainConfigParserTest {
         assertThatThrownBy(() -> AppChainEffectsConfig.from(parsed))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("16777216");
+    }
+
+    /** ADR-010 F7 / bloxbean/yano#164: the l1-anchored gate waits for a stability-deep anchor. */
+    @Test
+    void l1AnchoredDefaultGateRequiresAStabilityDepth() {
+        Map<String, Object> values = base();
+        values.put("effects.enabled", "true");
+        values.put("effects.default-gate", "l1-anchored");
+        AppChainConfig withoutDepth = AppChainConfigParser.parse(values);
+        assertThatThrownBy(() -> AppChainEffectsConfig.from(withoutDepth).consensusProfile(withoutDepth))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("l1.stability-depth > 0");
+
+        values.put("l1.stability-depth", "2");
+        AppChainConfig withDepth = AppChainConfigParser.parse(values);
+        assertThat(AppChainEffectsConfig.from(withDepth).consensusProfile(withDepth).effectsDefaultGate())
+                .isEqualTo(FinalityGate.L1_ANCHORED);
     }
 
     @Test

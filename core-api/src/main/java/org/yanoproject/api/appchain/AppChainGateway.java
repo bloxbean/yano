@@ -404,6 +404,18 @@ public interface AppChainGateway {
     boolean forceAnchor();
 
     /**
+     * Operator re-baseline of L1 delivery (app-layer ADR-038, D7a): reconcile every retained L1-derived record
+     * against the node's chain state and restart delivery from the current body tip. Admin action for a chain
+     * stopped by missing block bodies or a divergence deeper than its recorded history; L1 input in the gap is
+     * never observed. Refused while a terminal quarantine is persisted.
+     * @return true if the re-baseline was accepted
+     * @throws UnsupportedOperationException if the chain runs no L1 delivery
+     */
+    default boolean rebaselineL1Delivery() {
+        throw new UnsupportedOperationException("L1 delivery re-baseline is not supported");
+    }
+
+    /**
      * Bootstrap the script anchor (ADR app-layer/008.4, admin action): mint
      * the one-shot state-thread NFT and lock the initial datum at the anchor
      * validator. Only valid on the anchor leader with {@code anchor.mode:
@@ -419,6 +431,10 @@ public interface AppChainGateway {
     // Operator-coordinated: apply the SAME steps on EVERY node, in the runbook
     // order (add everywhere → switch signer → re-threshold → retire everywhere).
     // Rotated state persists and overrides the static config across restarts.
+    // In governed membership mode, add/remove/threshold submit the matching
+    // governance command instead, and throw MembershipChangeRejectedException
+    // (QUORUM_INVALID) when the resulting threshold-of-members pair could not
+    // certify blocks under consensus.max-byzantine-members.
     // ------------------------------------------------------------------
 
     /** The effective member set (config or rotated override). */

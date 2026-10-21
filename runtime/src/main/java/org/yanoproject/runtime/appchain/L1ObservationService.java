@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.function.BiPredicate;
 
 /**
  * L1 observations (ADR app-layer/008.4 §3.1): EVERY member runs the
@@ -163,10 +164,12 @@ final class L1ObservationService {
             String observerId, String type, Map<String, String> settings,
             PluginProviderRegistry providers) {
         return switch (type) {
+            // v2: claims exclude phase-2-invalid transactions (#181). The new identity makes a
+            // journal written by a v1 observer fail startup instead of re-emitting its claims.
             case MetadataLabelObserver.TYPE -> builtInIdentity(
-                    "metadata-label-claim-v1", "label", settings);
+                    "metadata-label-claim-v2", "label", settings);
             case AddressDepositObserver.TYPE -> builtInIdentity(
-                    "address-deposit-claim-v1", "address", settings);
+                    "address-deposit-claim-v2", "address", settings);
             default -> providers.find(L1ObserverProvider.class, type)
                     .map(provider -> Objects.requireNonNull(provider.consensusIdentity(
                             observerId, Map.copyOf(settings)),
@@ -423,6 +426,60 @@ final class L1ObservationService {
             }
         }
         return AppChainEngine.L1RefVerdict.OK;
+    }
+
+    /**
+     * One delivery phase (app-layer ADR-038, D4a): runs the observers over the block. An observer or journal failure
+     * is retryable, and the loop retries this same block (the replay barrier accepts it); a journal quarantine is
+     * terminal.
+     */
+    L1PhaseResult deliver(long slot, byte[] blockHash, Block block) {
+        try {
+            onL1Block(slot, blockHash, block);
+            return L1PhaseResult.DURABLE;
+        } catch (RuntimeException failure) {
+            return failureResult("L1_OBSERVER_CALLBACK_FAILED");
+        }
+    }
+
+    /** One rollback phase (D4a): forgets observations above the target; a deep rollback quarantines. */
+    L1PhaseResult rollback(long rollbackToSlot) {
+        try {
+            onL1Rollback(rollbackToSlot);
+            return L1PhaseResult.DURABLE;
+        } catch (RuntimeException failure) {
+            return failureResult("L1_OBSERVATION_ROLLBACK_FAILED");
+        }
+    }
+
+    /** The journal's part of an L1 evidence reconciliation (app-layer ADR-038, D8b); empty without a journal. */
+    L1ObservationJournal.ReconcileDecision reconcile(BiPredicate<Long, byte[]> canonicalAtSlot) {
+        return journal == null ? new L1ObservationJournal.ReconcileDecision(List.of(), null)
+                : journal.reconcile(canonicalAtSlot);
+    }
+
+    /** After a reconciliation commit: forget in-memory observations and reread the journal's markers. */
+    synchronized void reloadAfterReconciliation() {
+        window.clear();
+        blockHashes.clear();
+        pendingInjection.clear();
+        newestSlot = 0;
+        if (journal != null) {
+            journal.reloaded();
+            callbackFailureSlot = journal.callbackFailureSlot();
+            healthy = journal.healthy();
+        }
+    }
+
+    private L1PhaseResult failureResult(String retryReason) {
+        try {
+            if (journal != null && journal.quarantined()) {
+                return L1PhaseResult.quarantined("L1_OBSERVATION_JOURNAL_QUARANTINED");
+            }
+        } catch (RuntimeException unreadable) {
+            return L1PhaseResult.retryable("L1_OBSERVATION_JOURNAL_UNREADABLE");
+        }
+        return L1PhaseResult.retryable(retryReason);
     }
 
     /** L1 rollback: forget observations above the rollback point. */

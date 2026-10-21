@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.nio.file.Files;
 import java.util.OptionalLong;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -197,5 +199,59 @@ class BlockPrunerTest {
         for (int i = 0; i < 6; i++) storeBlockAndHeader(i, i * 10);
         new BlockPruner(chain, chain, 1, 100, () -> OptionalLong.of(0)).pruneOnce();
         for (int i = 0; i < 6; i++) assertNotNull(chain.getBlock(hash(i)));
+    }
+
+    @Test
+    void pruneOnce_keepsTheMinimumAcrossRegisteredConsumers() throws Exception {
+        for (int i = 0; i < 10; i++) storeBlockAndHeader(i, i * 10);
+        BlockBodyRetentionRegistry registry = new BlockBodyRetentionRegistry();
+        registry.register(OptionalLong.of(6));
+        BlockBodyRetentionRegistry.Registration slower = registry.register(OptionalLong.of(4));
+        registry.register(OptionalLong.empty());
+        BlockPruner pruner = new BlockPruner(chain, chain, 2, 100, registry);
+
+        pruner.pruneOnce();
+        // The boundary protects its own block: 4 stays, 3 goes.
+        for (int i = 0; i < 4; i++) assertNull(chain.getBlock(hash(i)));
+        for (int i = 4; i < 10; i++) assertNotNull(chain.getBlock(hash(i)));
+
+        slower.close();
+        pruner.pruneOnce();
+        for (int i = 4; i < 6; i++) assertNull(chain.getBlock(hash(i)));
+        for (int i = 6; i < 10; i++) assertNotNull(chain.getBlock(hash(i)));
+    }
+
+    @Test
+    void registrationUpdateWaitsForAnInFlightPruneBatch() throws Exception {
+        for (int i = 0; i < 10; i++) storeBlockAndHeader(i, i * 10);
+        BlockBodyRetentionRegistry registry = new BlockBodyRetentionRegistry();
+        CountDownLatch inBatch = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        registry.register(() -> {
+            inBatch.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return OptionalLong.empty();
+        });
+        BlockBodyRetentionRegistry.Registration registration = registry.register(OptionalLong.empty());
+        Thread prune = new Thread(() -> new BlockPruner(chain, chain, 2, 100, registry).pruneOnce());
+        prune.start();
+        assertTrue(inBatch.await(5, TimeUnit.SECONDS));
+
+        Thread update = new Thread(() -> registration.update(OptionalLong.of(1)));
+        update.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (update.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        // The update cannot land while the batch holds the registry, so it never splits a batch (I15).
+        assertEquals(Thread.State.BLOCKED, update.getState());
+        release.countDown();
+        prune.join(5000);
+        update.join(5000);
+        assertEquals(OptionalLong.of(1), registry.oldestRequiredBlockNumber());
     }
 }

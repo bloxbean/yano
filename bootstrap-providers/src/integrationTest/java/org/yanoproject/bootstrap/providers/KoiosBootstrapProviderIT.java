@@ -39,8 +39,9 @@ class KoiosBootstrapProviderIT {
     @Test
     void testGetBlocks() {
         BootstrapBlockInfo latest = provider.getLatestBlock();
-        long from = latest.blockNumber() - 5;
-        long to = latest.blockNumber() - 3;
+        // Stay well behind the tip: Koios instances behind the load balancer can lag the one that served /tip
+        long from = latest.blockNumber() - 20;
+        long to = latest.blockNumber() - 18;
 
         List<BootstrapBlockInfo> blocks = provider.getBlocks(from, to);
         log.info("Fetched {} blocks from {} to {}", blocks.size(), from, to);

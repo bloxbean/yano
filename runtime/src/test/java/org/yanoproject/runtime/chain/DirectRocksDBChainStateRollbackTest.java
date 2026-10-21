@@ -199,6 +199,30 @@ class DirectRocksDBChainStateRollbackTest {
         assertThat(chainState.getHeaderTip().getBlockNumber()).isEqualTo(2L);
     }
 
+    @Test
+    void canonicalMutationSequenceBracketsRollbacksAndReplacementsButNotAppends() {
+        long start = sequence();
+        assertThat(start % 2).isZero();
+        storeMain(hash(1), 1L, 10L);
+        storeMain(hash(2), 2L, 20L);
+        assertThat(sequence()).as("appends are not mutations").isEqualTo(start);
+
+        chainState.rollbackTo(new Point(10L, HexUtil.encodeHexString(hash(1))));
+        assertThat(sequence()).as("one rollback, one odd/even pair").isEqualTo(start + 2);
+
+        chainState.storeBlockHeader(hash(3), 2L, 25L, new byte[]{3});
+        assertThat(sequence()).as("refilling a number freed by the rollback is an append").isEqualTo(start + 2);
+        chainState.storeBlockHeader(hash(4), 2L, 26L, new byte[]{4});
+        assertThat(sequence()).as("replacing a canonical entry is a mutation").isEqualTo(start + 4);
+
+        chainState.rollbackTo(new Point(0L, null));
+        assertThat(sequence()).as("a nested rollback to origin still counts once").isEqualTo(start + 6);
+    }
+
+    private long sequence() {
+        return chainState.canonicalMutationSequence().orElseThrow();
+    }
+
     private byte[] hash(int suffix) {
         byte[] bytes = new byte[32];
         bytes[31] = (byte) suffix;
