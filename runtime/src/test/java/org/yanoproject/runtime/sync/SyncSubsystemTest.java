@@ -252,6 +252,31 @@ class SyncSubsystemTest {
     }
 
     @Test
+    void blockNearTipCompletesInitialSyncOutsideInitialSyncPhase() {
+        YanoConfig config = serverOnlyConfig();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        TestRuntime runtime = new TestRuntime(config, scheduler, () -> false, null);
+
+        try {
+            SyncSubsystem sync = runtime.sync(null);
+            sync.setRollbackClassificationTimeoutMillis(60_000L);
+            sync.maybeFastTransitionToSteadyState(new Tip(new Point(1_000, "aa"), 50));
+            sync.onIntersectionFound();
+
+            sync.updateSyncProgress(950L, 48L);
+            assertThat(sync.isInitialSyncComplete()).isFalse();
+
+            sync.updateSyncProgress(995L, 49L);
+
+            assertThat(sync.isInitialSyncComplete()).isTrue();
+            assertThat(sync.syncPhase()).isEqualTo(SyncPhase.INTERSECT_PHASE);
+        } finally {
+            runtime.close();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void clientStartupCancelsPendingIntersectionTransition() {
         YanoConfig config = clientConfig();
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
