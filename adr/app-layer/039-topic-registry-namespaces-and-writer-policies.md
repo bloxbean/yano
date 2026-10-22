@@ -213,7 +213,8 @@ machinery. Illustrative key layout (normative encoding fixed in M1):
 | Key | Value |
 |---|---|
 | `~yano/topics/v1/config` | Effective chain-level topic configuration (D1, D4, D14). |
-| `~yano/topics/v1/entry/<name>` | Namespace or exact-topic record: the **active** revision (owners, policy, status, revision number, `activeFrom`), materialized by the framework (D5a), plus the pending revisions with their activation heights and recorded epochs. A record with no active revision yet (a pending creation) reserves the name but governs nothing. |
+| `~yano/topics/v1/entry/<name>` | Namespace or exact-topic record, **bounded**: the active revision (owners, policy, status, revision number, `activeFrom`), materialized by the framework (D5a), plus small head metadata (head revision number, pending count). A record with no active revision yet (a pending creation) reserves the name but governs nothing. Pending revisions are never stored here. |
+| `~yano/topics/v1/queued/<name>/<revision>` | One pending revision: its content, activation height and recorded authority epoch. Removed when it activates or is cancelled. |
 | `~yano/topics/v1/history/<name>/<revision>` | Superseded revisions, kept so old messages stay verifiable (D13). |
 | `~yano/topics/v1/schema/<irHash>` | Schema IR bytes, content-addressed (D10). |
 | `~yano/topics/v1/used/<statementHash>` | Replay guard: the hash of a used write-statement (not of its signatures), removed after its `notAfter` (D9). |
@@ -268,6 +269,7 @@ yano.app-chain.chains[n].topics:
   unregistered-topics: open          # or: reject (D14)
   max-delegation-ms: 3600000
   max-command-ms: 604800000          # D5a
+  max-pending-per-entry: 4           # D5a
   max-entries: 100000
 ```
 
@@ -341,6 +343,12 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   window, and because blocks are produced only when messages arrive, its
   duration in time is unbounded. A command whose `notAfter` passes during
   the lag still activates (subject to the authority recheck).
+- **Bounded queue.** Each entry may have at most `max-pending-per-entry`
+  (default 4) pending revisions. A command that would exceed it is refused
+  at inclusion with `TOPIC_COMMAND_LIMIT`, a deterministic no-op with a
+  receipt. Pending revisions live under their own `queued/` keys, never in
+  the entry record (D2), so a queue — however it fills and drains — never
+  changes the size of the record an effective-policy proof carries.
 - **Deterministic order.** Commands are judged in block order. Within a
   block the first command naming a head revision wins and later ones are
   stale. Pending revisions activate at their activation heights in inclusion
@@ -413,6 +421,9 @@ policy = {
 }
 ```
 
+- Every key set — owners, writers and `delegate` — has at most 16 keys and
+  a threshold ≤ 16, so an entry's active revision has a fixed upper size
+  (D15).
 - `writers: open` keeps today's behaviour for that topic but still applies
   `schema` and `maxPayloadBytes`. This is how "schema without
   authorization" works.
@@ -635,6 +646,7 @@ Refusal codes (HTTP 400 at ingress, receipts for registry commands):
 | `TOPIC_SCHEMA_REJECTED` | not canonical CBOR, or the schema refused it |
 | `TOPIC_COMMAND_STALE` | a registry command named a head revision that is no longer the head, or a taken name (D5a) |
 | `TOPIC_COMMAND_EXPIRED` | a registry command's `notAfter` passed or is too far ahead (D5a) |
+| `TOPIC_COMMAND_LIMIT` | the entry already has `max-pending-per-entry` pending revisions (D5a) |
 | `TOPIC_COMMAND_SUPERSEDED` | a pending command was cancelled by governance or by a change of its authorizing owners (D5a) |
 
 ### D12 — Certified block time gets bounds (prerequisite)
@@ -719,7 +731,7 @@ certified time benefit on every schema-3 chain.
   inclusion proof or an absence proof. Authenticated snapshot proof bundles
   already carry absence proofs (`AuthenticatedSnapshotProofBundleCodec`), and
   the witness is bounded by the topic's segments (topic ≤ 256 bytes). The
-  verifier reads only each proven entry's **active** revision as committed in
+  verifier reads each proven entry's **active** revision as committed in
   that root — activation, including its D5a epoch recheck and any
   cancellation, is already materialized there (D5a) — and ignores pending
   revisions, so it needs no registrar configuration, epochs or activation
@@ -727,8 +739,14 @@ certified time benefit on every schema-3 chain.
   counts as absent. It then applies the D3 resolution itself (exact entry,
   longest prefix, inheritance) and checks the result against
   `effectivePolicyDigest` = BLAKE2b-256 over the canonical resolved policy
-  and the (entry, revision) pairs it came from. Verification work is one
-  proof and one record decode per prefix. An omitted override or ancestor, a
+  and the (entry, revision) pairs it came from. **Bounds:** an entry record
+  holds only the active revision and head metadata, and a policy's key sets
+  are capped (at most 16 keys and `threshold ≤ 16` per set, D6), so a record
+  is at most `max-entry-record-bytes` (4,096 bytes; an estimate, frozen in
+  M1). Proof size and verification work are therefore at most one proof
+  path and one bounded record decode per prefix, independent of how many
+  revisions are queued. A record above the bound is refused when written
+  and fails verification if presented. An omitted override or ancestor, a
   second root or height, a stale revision, or a missing prefix fails closed
   (I16).
 - Authorship of a message on a protected topic is provable with the existing
@@ -910,6 +928,11 @@ Threats and mitigations:
   and a governance cancellation of a revision otherwise scheduled for *h* —
   in each, the `topic-policy-v1` proof for *h* yields the policy the
   runtime enforced, and a proof that presents the cancelled revision fails;
+  **proof bounds**: an owner fills an entry's queue to the limit (the next
+  command is refused with `TOPIC_COMMAND_LIMIT`), the queued revisions are
+  then cancelled by a rotation, and throughout the effective policy and the
+  `topic-policy-v1` proof bytes for a topic beneath it stay unchanged and
+  within the per-prefix bound;
   **effective-policy proofs**: an
   omitted exact override, an omitted ancestor, inclusion proofs from two
   roots or heights, a stale revision; **threshold writers**: the same signer
@@ -993,3 +1016,7 @@ Threats and mitigations:
   ignores pending ones and never replays activation; D2 entry record, D11 apply note, I16, M2 and
   V3 (registrar rotation overtaking creation, ancestor rotation overtaking a child change,
   governance cancellation) updated.
+- r6 (2026-10-22; responds to the review of `02408a3a4`): F7 completion → pending revisions move
+  to their own `queued/<name>/<revision>` keys; the entry record holds only the active revision and
+  head metadata, capped at `max-entry-record-bytes`; `max-pending-per-entry` with
+  `TOPIC_COMMAND_LIMIT`; D15 states proof-size and work bounds; D2, D5a, D11 codes and V3 updated.
