@@ -213,7 +213,7 @@ machinery. Illustrative key layout (normative encoding fixed in M1):
 | Key | Value |
 |---|---|
 | `~yano/topics/v1/config` | Effective chain-level topic configuration (D1, D4, D14). |
-| `~yano/topics/v1/entry/<name>` | Namespace or exact-topic record: owners, policy, status, revision, `activeFrom`. |
+| `~yano/topics/v1/entry/<name>` | Namespace or exact-topic record: the **active** revision (owners, policy, status, revision number, `activeFrom`), materialized by the framework (D5a), plus the pending revisions with their activation heights and recorded epochs. A record with no active revision yet (a pending creation) reserves the name but governs nothing. |
 | `~yano/topics/v1/history/<name>/<revision>` | Superseded revisions, kept so old messages stay verifiable (D13). |
 | `~yano/topics/v1/schema/<irHash>` | Schema IR bytes, content-addressed (D10). |
 | `~yano/topics/v1/used/<statementHash>` | Replay guard: the hash of a used write-statement (not of its signatures), removed after its `notAfter` (D9). |
@@ -355,6 +355,16 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   epoch is recorded with the pending revision. Pending revisions never
   authorize anything; owners named in a pending rotation can sign only after
   it activates.
+- **Activation is materialized one block early.** A revision whose
+  activation height is *a* governs messages in blocks ≥ *a*. The framework
+  activates it while applying block *a − 1*, after that block's messages,
+  in the same atomic commit (D11): it runs the recheck below, then writes
+  the outcome — the new active revision, or the cancellation — into the
+  entry record (or the registrar set in `config`). The committed root of
+  block *a − 1*, which is the parent state every check for block *a* uses,
+  therefore already holds the effective registry for *a*; nobody, member or
+  verifier, has to replay activation to know which revision governs a
+  message.
 - **Recheck at activation.** Pending revisions activate in inclusion order.
   Immediately before a command takes effect — after every activation that
   precedes it in that order — the authority's active epoch must still equal
@@ -604,8 +614,9 @@ Order of checks — first failure wins:
 The follower-side rejection is what makes the policy a consensus rule; the
 ingress and proposer checks only avoid wasted work. During apply the
 framework records used write-statement hashes and pending registry commands **before** the
-machine sees the block, in the same atomic commit (as ADR-008.3 does for
-membership).
+machine sees the block and, after the block's messages, materializes the
+revisions that activate at the next height (D5a), all in the same atomic
+commit (as ADR-008.3 does for membership).
 
 ![The validation pipeline and where each check runs](images/039/validation-pipeline.svg)
 
@@ -698,9 +709,9 @@ certified time benefit on every schema-3 chain.
 
 - REST, read-only: `GET .../topics/entries/{name}`, `GET .../topics/resolve?topic=`
   (the effective policy and the entry it came from), `GET .../topics/schemas/{hash}`.
-- **`topic-entry-v1`** proves one entry record (owners, the policy fields it
-  sets, its revisions with activation heights) at a committed root. It says
-  nothing about whether that entry governs a given topic.
+- **`topic-entry-v1`** proves one entry record (its active revision and its
+  pending revisions) at a committed root. It says nothing about whether that
+  entry governs a given topic.
 - **`topic-policy-v1`** proves the **effective policy** of topic *t* for a
   message in block *h*. It is one multi-proof against the single committed
   root at *h − 1* (the parent state the check used) containing, for *t*
@@ -708,12 +719,18 @@ certified time benefit on every schema-3 chain.
   inclusion proof or an absence proof. Authenticated snapshot proof bundles
   already carry absence proofs (`AuthenticatedSnapshotProofBundleCodec`), and
   the witness is bounded by the topic's segments (topic ≤ 256 bytes). The
-  verifier selects each entry's revision active at *h* from the proven
-  revision records, applies the D3 resolution itself (exact entry, longest
-  prefix, inheritance) and checks the result against
+  verifier reads only each proven entry's **active** revision as committed in
+  that root — activation, including its D5a epoch recheck and any
+  cancellation, is already materialized there (D5a) — and ignores pending
+  revisions, so it needs no registrar configuration, epochs or activation
+  order and never replays activation. A record with no active revision
+  counts as absent. It then applies the D3 resolution itself (exact entry,
+  longest prefix, inheritance) and checks the result against
   `effectivePolicyDigest` = BLAKE2b-256 over the canonical resolved policy
-  and the (entry, revision) pairs it came from. An omitted override or
-  ancestor, a second root or height, or a stale revision cannot verify (I16).
+  and the (entry, revision) pairs it came from. Verification work is one
+  proof and one record decode per prefix. An omitted override or ancestor, a
+  second root or height, a stale revision, or a missing prefix fails closed
+  (I16).
 - Authorship of a message on a protected topic is provable with the existing
   finalized-message proof (the frame is in the body), the chain's generation
   id, and a `topic-policy-v1` proof for the message's topic and height.
@@ -791,7 +808,7 @@ Threats and mitigations:
 | I13 | On profile-schema-3 chains block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule). | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
 | I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks keep the framed bytes and message proofs resolve to them. | D7, D7a |
-| I16 | A `topic-policy-v1` proof verifies only if it covers the topic and every `/`-prefix of it, with inclusion or absence, against one root, and its resolved policy matches `effectivePolicyDigest`. | D15 |
+| I16 | A `topic-policy-v1` proof verifies only if it covers the topic and every `/`-prefix of it, with inclusion or absence, against one root, and its resolved policy matches `effectivePolicyDigest`. The active revisions committed in the root of block *h − 1* are exactly the revisions that govern block *h*, after every D5a recheck and cancellation. | D5a, D15 |
 | I17 | Each signed registry command takes effect at most once: only if included by its `notAfter`, only on the head revision it names, only if authorized by its authority's active epoch at inclusion, and only if that epoch is still active immediately before it activates. Pending revisions never authorize. | D5a |
 | I18 | No signed write, delegation or registry command verifies on a chain generation other than the one it names. | D5a, D7, D8 |
 
@@ -853,7 +870,7 @@ Threats and mitigations:
 |---|---|---|---|
 | M0 | D12 certified time bounds as consensus profile schema 3 | ADR accepted | I13 tests; a retained schema-2 chain replays and restarts byte-identically on the M0 build; schema-3 genesis commits the new field under `~yano/consensus-profile/v3`; a schema-2 marker refuses a schema-3 configuration and vice versa (fail closed); topics refuse to enable on schema 2; existing suites green |
 | M1 | Freeze formats: config, entry, command statement, frame, delegation, write statement (all with `generationId`), effective-policy digest; codes; vectors | M0 | Normative CDDL and test vectors committed; independent decoder agrees (V2) |
-| M2 | Registry state, owner and governance commands with D5a preconditions, activation, revisions, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17 tests; multi-node replay and restart parity |
+| M2 | Registry state, owner and governance commands with D5a preconditions, activation materialized at *a − 1*, revisions, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17 tests; multi-node replay and restart parity |
 | M3 | Writer proofs, delegations, replay guard, follower block validity | M2 | I3, I4, I9, I12, I18 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
 | M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects | M3, M4 | I15, I16 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
@@ -887,7 +904,13 @@ Threats and mitigations:
   rotated away and back does not revive a command from the old epoch; a
   registrar command overtaken by a registrar change; **namespaces**: child-then-parent
   and parent-then-child claims, a multi-segment open claim, a creation racing
-  a pending creation of the same name; **effective-policy proofs**: an
+  a pending creation of the same name; **activation outcomes in proofs**: a
+  registrar rotation overtaking a pending top-level creation scheduled for
+  the same height, an ancestor rotation overtaking a pending child change,
+  and a governance cancellation of a revision otherwise scheduled for *h* —
+  in each, the `topic-policy-v1` proof for *h* yields the policy the
+  runtime enforced, and a proof that presents the cancelled revision fails;
+  **effective-policy proofs**: an
   omitted exact override, an omitted ancestor, inclusion proofs from two
   roots or heights, a stale revision; **threshold writers**: the same signer
   set in different proof orders yields the same `VerifiedWriter`.
@@ -964,3 +987,9 @@ Threats and mitigations:
   governance and issuer revocation spelled out; I17 and V3 updated. F6 completion → the current
   profile is schema 2 (`~yano/consensus-profile/v2`), so D12 is profile schema 3; D1 opening,
   ADR-016 reference, D12, I1, I13, compatibility, M0, M6 and V5 corrected; new OQ10.
+- r5 (2026-10-22; responds to the review of `6b4519b8d`): F7 → D5a materializes activation while
+  applying block *a − 1* (recheck and cancellation included), so the parent root of block *a*
+  holds the effective registry; D15's `topic-policy-v1` reads only committed active revisions,
+  ignores pending ones and never replays activation; D2 entry record, D11 apply note, I16, M2 and
+  V3 (registrar rotation overtaking creation, ancestor rotation overtaking a child change,
+  governance cancellation) updated.
