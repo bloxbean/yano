@@ -37,9 +37,10 @@ paths. A defect can split members, admit forged writes, or lock owners out.
 - [ADR-010.1](010.1-emission-versioning.md) — height-indexed framework epochs.
 - [ADR-011](011-plugin-architecture.md) — the plugin API and its API levels.
 - [ADR-016](016-authenticated-appchain-consensus-profile-and-typed-runtime-limits.md)
-  — reserves `~yano/` for framework-authenticated state, commits
-  `~yano/consensus-profile/v1`, and explicitly leaves "application-schema
-  evolution" out of the v1 profile (§3.1). This ADR fills that gap for topics.
+  — reserves `~yano/` for framework-authenticated state, commits the
+  consensus profile (today schema version 2, under
+  `~yano/consensus-profile/v2`), and explicitly leaves "application-schema
+  evolution" out of the profile (§3.1). This ADR fills that gap for topics.
 - Yano X ADR app-layer/025.1 (declarative value schemas for the authenticated
   map) — the source of the `yano-cbor-schema-ir-v1` evaluator that this ADR
   moves into core.
@@ -192,11 +193,13 @@ yano.app-chain.chains[n].topics:
   mode: disabled | enabled            # default: disabled
 ```
 
-With `mode: disabled` nothing in this ADR runs: no `~yano/topics/` keys are
-written, no frame is parsed, and state roots are byte-identical to today
-(I1). Enabling requires a chain with consensus profile v2 (D12). It is a
-genesis choice for new chains, or a governed height-activated change on an
-existing v2 chain (D13). All members must agree;
+With `mode: disabled` the topic registry does not run: no `~yano/topics/`
+keys are written and no frame is parsed. Whether a chain is byte-identical to
+today depends only on its consensus profile schema (D12, I1): a chain on
+today's profile schema 2 is unchanged; a chain on the new schema 3 differs
+only by the D12 time rules and its profile marker. Enabling topics requires
+profile schema 3. It is a genesis choice for new chains, or a governed
+height-activated change on an existing schema-3 chain (D13). All members must agree;
 the effective topic configuration is committed under `~yano/topics/v1/config`
 at the activation height and verified on restart, the same way ADR-016
 treats the consensus profile.
@@ -330,22 +333,55 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   envelope — names a stale revision and becomes a no-op with
   `TOPIC_COMMAND_STALE`. Revocations change no entry; they are idempotent, so
   replaying one has no further effect.
-- **Freshness.** `notAfter` bounds how long a signed, unsubmitted command
-  stays usable; it may be at most `max-command-ms` (chain configuration,
-  default seven days, enough to gather k-of-n signatures) ahead of block time.
+- **Freshness is an inclusion deadline.** `notAfter` bounds how long a
+  signed, unsubmitted command stays usable: it must be ≥ the including
+  block's time and at most `max-command-ms` (chain configuration, default
+  seven days, enough to gather k-of-n signatures) ahead of it. It is not
+  re-checked at activation: the lag is a notice period, not a validity
+  window, and because blocks are produced only when messages arrive, its
+  duration in time is unbounded. A command whose `notAfter` passes during
+  the lag still activates (subject to the authority recheck).
 - **Deterministic order.** Commands are judged in block order. Within a
   block the first command naming a head revision wins and later ones are
   stale. Pending revisions activate at their activation heights in inclusion
   order.
-- **Recheck at activation.** A command is authorized at inclusion against the
-  owners of the authority's head revision. At activation it takes effect only
-  if that owner set is unchanged; otherwise it is cancelled with
-  `TOPIC_COMMAND_SUPERSEDED`.
+- **Authorization uses the active epoch, never a pending one.** The
+  revision precondition (above) is a compare-and-set on the *target's head*;
+  authorization is separate. Each authority has an **authority epoch**: the
+  revision number of its *active* revision (for an entry), or of the
+  registrar set in `~yano/topics/v1/config` (for `~registrars`). At inclusion
+  the command is authorized against the owners of the authority's active
+  revision — the revision in force at the including block's height — and that
+  epoch is recorded with the pending revision. Pending revisions never
+  authorize anything; owners named in a pending rotation can sign only after
+  it activates.
+- **Recheck at activation.** Pending revisions activate in inclusion order.
+  Immediately before a command takes effect — after every activation that
+  precedes it in that order — the authority's active epoch must still equal
+  the recorded one. Otherwise the command is cancelled with
+  `TOPIC_COMMAND_SUPERSEDED`. Comparing epochs rather than owner sets means
+  ownership that changes away and back does not revive an old command.
+  Consequences:
+  - *Self-rotation* (owners O of revision 1 rotate to N): authorized by epoch
+    1 and rechecked against epoch 1 just before it activates, so it succeeds
+    and makes revision 2 (owners N) active.
+  - A command O signs *while that rotation is pending* is also authorized by
+    epoch 1, but the rotation activates first, so it is cancelled. Clients
+    wait for the rotation to activate and have N sign.
+  - *Ancestor-authorized* commands (a creation beneath `acme/`, or an
+    ancestor updating a descendant) record `acme/`'s epoch; a rotation of
+    `acme/` that activates first cancels them.
+  - *Registrar* commands record the registrar-set epoch; a governance change
+    of registrars that activates first cancels them.
+  - An issuer revoking its own delegation is authorized by the delegation's
+    `issuer` key alone and has no epoch to recheck.
 - **Governance overrides.** A governance command on an entry (recovery or
-  retirement) names no revision. When it is approved it cancels the entry's
-  pending revisions (`TOPIC_COMMAND_SUPERSEDED`) and becomes its new head
-  revision. Commands the replaced owners authorized elsewhere fall to the
-  activation recheck, and anything they sign later fails authorization.
+  retirement) names no revision and is not epoch-checked. When it is
+  approved it cancels the entry's pending revisions
+  (`TOPIC_COMMAND_SUPERSEDED`) and becomes its new head revision. When it
+  activates, the entry's epoch advances, so commands the replaced owners
+  authorized elsewhere are cancelled by the activation recheck, and
+  anything they sign later fails authorization.
   Governance commands keep ADR-008.3 approval accounting (identical commands
   from distinct members within the window) and also bind `generationId`.
 
@@ -609,22 +645,27 @@ a vote rule only; members catching up certified blocks do not re-apply it.
 
 **Activation boundary.** The consensus profile is immutable for a chain
 generation: `ConsensusProfileGuard` writes it at height 1 and compares it
-byte-for-byte on every block and on restart. D12 therefore ships as
-**consensus profile v2**, chosen at genesis, which adds
-`block-time: { max-forward-skew-ms }` and the two rules above:
+byte-for-byte on every block and on restart. Today's profile is **schema
+version 2** (`AppChainConsensusProfile.SCHEMA_VERSION = 2`, marker
+`~yano/consensus-profile/v2`). D12 therefore ships as **profile schema 3**
+(marker `~yano/consensus-profile/v3`), chosen at genesis, which adds
+`block-time: { max-forward-skew-ms }` and the two rules above. The profile
+schema version is distinct from the block or consensus protocol version and
+from the topic formats (`yano-topic-*-v1`), none of which this changes.
 
-- New chains default to v2.
-- v1 chains keep today's rule (`timestamp ≥ 0`); on the new build they
-  produce byte-identical blocks and roots, and restart against their retained
-  v1 marker unchanged.
-- A retained v1 chain cannot switch in place (its marker would mismatch); it
-  adopts v2 only as a new chain generation. Retained deployments are not
-  migrated by this ADR.
-- Topics can be enabled only on v2 chains (D1), because delegation windows
-  and replay expiry need bounded time.
+- New chains default to schema 3.
+- Schema-2 chains keep today's rule (`timestamp ≥ 0`); on the new build they
+  produce byte-identical blocks and roots and restart against their retained
+  schema-2 marker unchanged.
+- A retained schema-2 chain cannot switch in place (its marker would
+  mismatch); it adopts schema 3 only as a new chain generation. Retained
+  deployments are not migrated by this ADR.
+- Topics can be enabled only on schema-3 chains (D1), because delegation
+  windows and replay expiry need bounded time.
 
+Keeping schema 2 accepted alongside schema 3 is a maintainer choice (OQ10).
 This decision is useful on its own: the games and any expiry logic built on
-certified time benefit on every v2 chain.
+certified time benefit on every schema-3 chain.
 
 ### D13 — Rotation, recovery and history
 
@@ -735,7 +776,7 @@ Threats and mitigations:
 
 | ID | Invariant | Decisions |
 |---|---|---|
-| I1 | With `mode: disabled` on a consensus-profile-v1 chain, state roots, blocks and REST behaviour are byte-identical to the pre-ADR implementation. A v2 chain with `mode: disabled` differs from v1 only by the D12 profile field and time rules. | D1, D12 |
+| I1 | A chain on consensus profile schema 2 (today's) has state roots, blocks and REST behaviour byte-identical to the pre-ADR implementation. A schema-3 chain with `mode: disabled` differs from that only by its profile marker and the D12 time rules. | D1, D12 |
 | I2 | `TopicPolicy.check` is a pure function of (message, parent committed state, block time, earlier messages in the block); every member computes the same result. | D11 |
 | I3 | A finalized block contains a message on a protected topic only if its writer proof satisfies the policy revision active at that height. | D6, D7, D11 |
 | I4 | No write-statement is accepted twice while its `notAfter` has not passed, whichever valid signatures or delegation accompany it. | D9 |
@@ -747,11 +788,11 @@ Threats and mitigations:
 | I10 | Topic policies only add refusals; they never make a machine accept a message it would refuse. | D6, D11 |
 | I11 | Every historical message can be re-verified against the effective policy active at its height. | D13, D15 |
 | I12 | `used/` and `revoked/` entries are removed after expiry; their size is bounded by rate × maximum lifetime. | D8, D9 |
-| I13 | On v2 chains block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule). | D12 |
+| I13 | On profile-schema-3 chains block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule). | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
 | I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks keep the framed bytes and message proofs resolve to them. | D7, D7a |
 | I16 | A `topic-policy-v1` proof verifies only if it covers the topic and every `/`-prefix of it, with inclusion or absence, against one root, and its resolved policy matches `effectivePolicyDigest`. | D15 |
-| I17 | Each signed registry command takes effect at most once, only on the head revision it names, before its `notAfter`, and only if its authorizing owners are unchanged at activation. | D5a |
+| I17 | Each signed registry command takes effect at most once: only if included by its `notAfter`, only on the head revision it names, only if authorized by its authority's active epoch at inclusion, and only if that epoch is still active immediately before it activates. Pending revisions never authorize. | D5a |
 | I18 | No signed write, delegation or registry command verifies on a chain generation other than the one it names. | D5a, D7, D8 |
 
 ## 7. Compatibility
@@ -769,9 +810,9 @@ Threats and mitigations:
 - **Yano X:** the authenticated map switches to the core schema evaluator
   with the same IR bytes, so existing collection schemas keep their
   meaning (companion ADR).
-- **Consensus profile:** v2 adds `block-time.max-forward-skew-ms` (D12).
-  v1 chains keep running unchanged; a retained v1 chain moves to v2 only as a
-  new generation.
+- **Consensus profile:** schema 3 adds `block-time.max-forward-skew-ms`
+  (D12). Schema-2 chains (today's) keep running unchanged; a retained
+  schema-2 chain moves to schema 3 only as a new generation.
 
 ## 8. Alternatives considered
 
@@ -810,13 +851,13 @@ Threats and mitigations:
 
 | ID | Scope | Entry gate | Exit criteria |
 |---|---|---|---|
-| M0 | D12 certified time bounds as consensus profile v2 | ADR accepted | I13 tests; a retained v1 chain replays and restarts byte-identically on the M0 build; v2 genesis commits the new field; a v1 marker refuses a v2 configuration (fail closed); existing suites green |
+| M0 | D12 certified time bounds as consensus profile schema 3 | ADR accepted | I13 tests; a retained schema-2 chain replays and restarts byte-identically on the M0 build; schema-3 genesis commits the new field under `~yano/consensus-profile/v3`; a schema-2 marker refuses a schema-3 configuration and vice versa (fail closed); topics refuse to enable on schema 2; existing suites green |
 | M1 | Freeze formats: config, entry, command statement, frame, delegation, write statement (all with `generationId`), effective-policy digest; codes; vectors | M0 | Normative CDDL and test vectors committed; independent decoder agrees (V2) |
 | M2 | Registry state, owner and governance commands with D5a preconditions, activation, revisions, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17 tests; multi-node replay and restart parity |
 | M3 | Writer proofs, delegations, replay guard, follower block validity | M2 | I3, I4, I9, I12, I18 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
 | M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects | M3, M4 | I15, I16 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
-| M6 | Qualification | M5 | I1 byte-identity with `mode: disabled` on v1 and the stated v2 difference; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; performance budget for signature checks recorded |
+| M6 | Qualification | M5 | I1 byte-identity on schema 2 and the stated schema-3 difference with `mode: disabled`; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; performance budget for signature checks recorded |
 
 ## 11. Verification and test-vector strategy
 
@@ -838,8 +879,13 @@ Threats and mitigations:
   generation B with identical `chainId`, keys, topic and times;
   **commands**: an old policy update replayed after a newer one, two
   conflicting commands on one head revision in one block, an expired command,
+  a command whose `notAfter` passes during the lag (still activates),
   recovery approved while an owner command is pending, a creation authorized
-  by owners rotated out before activation; **namespaces**: child-then-parent
+  by owners rotated out before activation; self-rotation O→N succeeds; a
+  command O signs while O→N is pending is cancelled; a command N signs before
+  activation is refused (pending revisions never authorize); ownership
+  rotated away and back does not revive a command from the old epoch; a
+  registrar command overtaken by a registrar change; **namespaces**: child-then-parent
   and parent-then-child claims, a multi-segment open claim, a creation racing
   a pending creation of the same name; **effective-policy proofs**: an
   omitted exact override, an omitted ancestor, inclusion proofs from two
@@ -847,9 +893,9 @@ Threats and mitigations:
   set in different proof orders yields the same `VerifiedWriter`.
 - **V4 — Schema parity.** The existing authenticated-map schema vectors pass
   unchanged against the core evaluator.
-- **V5 — Disabled parity.** A v1 chain with `mode: disabled` produces the
-  same blocks and roots as `main` for the existing suites; a v2 chain differs
-  only by its profile marker and time rules (I1).
+- **V5 — Disabled parity.** A schema-2 chain produces the same blocks and
+  roots as `main` for the existing suites; a schema-3 chain with
+  `mode: disabled` differs only by its profile marker and time rules (I1).
 
 ## 12. Production and audit gates
 
@@ -882,6 +928,7 @@ Threats and mitigations:
 | OQ7 | Quotas and anti-spam for open claims and writes | (a) `max-entries` only; (b) per-namespace message quotas in consensus; (c) deposits | (a) now, (b) as a follow-up ADR |
 | OQ8 | Default `max-delegation-ms` | 1 hour vs 24 hours | 1 hour |
 | OQ9 | Can a parent namespace give up authority over a child (D3)? | (a) no: ancestors always keep authority; (b) a transfer command that makes a child independent | (a) for v1; (b) can be added later as a new command without changing existing entries |
+| OQ10 | Keep profile schema 2 accepted beside schema 3 (D12)? | (a) yes: retained schema-2 chains run unchanged without topics; (b) no: app chains are pre-release, so require schema 3 and re-create retained chains | (a): it protects retained chain identities at the cost of one extra accepted schema |
 
 ## 15. Related findings (out of scope)
 
@@ -906,7 +953,14 @@ Threats and mitigations:
   single-segment top-level allocation, ancestor authority, pending names; D4, I6, OQ9, V3. F5 →
   D15 separates `topic-entry-v1` from the effective-policy proof `topic-policy-v1` (every prefix,
   one root, `effectivePolicyDigest`); `TopicMessageView` carries the digest and sources; I11,
-  I16, M5, V3. F6 → D12 ships as consensus profile v2 chosen at genesis; v1 chains unchanged;
-  D1, I1, I13, compatibility, M0, M6, V5. yano-x#80 F2–F4 (core parts) → `TopicMessageView`
+  I16, M5, V3. F6 → D12 ships as a new consensus profile chosen at genesis (numbering corrected
+  in r4); D1, I1, I13, compatibility, M0, M6, V5. yano-x#80 F2–F4 (core parts) → `TopicMessageView`
   available at admission and apply, canonical signer set for threshold writers, and D7a/I15
   wording on the finalized-message index.
+- r4 (2026-10-22; responds to the review of `38d5d90db`): F3 completion → D5a separates the
+  target-head compare-and-set from authorization by the authority's *active* epoch, recorded at
+  inclusion and rechecked immediately before activation in activation order; pending revisions
+  never authorize; `notAfter` is an inclusion deadline only (lag crossing still activates);
+  governance and issuer revocation spelled out; I17 and V3 updated. F6 completion → the current
+  profile is schema 2 (`~yano/consensus-profile/v2`), so D12 is profile schema 3; D1 opening,
+  ADR-016 reference, D12, I1, I13, compatibility, M0, M6 and V5 corrected; new OQ10.
