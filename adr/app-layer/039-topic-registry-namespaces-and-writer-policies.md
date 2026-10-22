@@ -210,7 +210,7 @@ machinery. Illustrative key layout (normative encoding fixed in M1):
 | `~yano/topics/v1/entry/<name>` | Namespace or exact-topic record: owners, policy, status, revision, `activeFrom`. |
 | `~yano/topics/v1/history/<name>/<revision>` | Superseded revisions, kept so old messages stay verifiable (D13). |
 | `~yano/topics/v1/schema/<irHash>` | Schema IR bytes, content-addressed (D10). |
-| `~yano/topics/v1/used/<proofHash>` | Writer-proof replay guard, removed after its `notAfter` (D9). |
+| `~yano/topics/v1/used/<statementHash>` | Replay guard: the hash of a used write-statement (not of its signatures), removed after its `notAfter` (D9). |
 | `~yano/topics/v1/revoked/<delegationHash>` | Early-revoked delegations, removed after their `notAfter` (D8). |
 | `~yano/topics/v1/pending/<commandHash>` | Governance approvals in progress (reusing ADR-008.3 accounting). |
 
@@ -337,20 +337,35 @@ Why the body and not a new envelope field: the envelope, its message id and
 the yaci gossip codec stay untouched (no transport change, no new wire
 version), the proof is covered by `messageId` and by the existing
 finalized-message proofs, and an off-chain verifier can check authorship from
-the body alone. The cost is that machines must read the payload through a
-helper rather than the raw body; core-api adds a small view:
+the body alone.
+
+#### D7a — Machines receive the verified payload as the body
+
+For a message on a protected topic, the framework hands every state-machine
+hook (`validate`, `validateForBlock` and `apply`) a **payload view** of the
+message: the same `messageId`, chain, topic, sender and position in the
+block, with `getBody()` returning the verified frame payload instead of the
+frame. Existing machines and codecs therefore work unchanged on protected
+topics — `balances`, `kv-registry` and the authenticated map decode their own
+command format, and Yano X composites, which decode `source.getBody()` in
+`EventBindingWorkflow` at admission and in apply, see the command rather than
+`[version, payload, proof]`. On an open topic the view is the message itself.
+
+The finalized block, `messageId`, message proofs and `ordered-log`'s record
+keep the original framed bytes, so authorship stays provable (D15). Writer
+information is available through a small core-api view:
 
 ```java
 // illustrative
 interface TopicMessageView {
-    byte[] payload();                  // the frame payload, or the body on an open topic
     Optional<VerifiedWriter> writer(); // key and, if delegated, the issuing writer
     long policyRevision();
 }
 ```
 
-`AppBlockExecutionContext` exposes it per message; `ordered-log` keeps
-recording the message as today (its proof covers the whole frame).
+`AppBlockExecutionContext` exposes it per message. Machines must use the
+provided `messageId` rather than recompute it from the view's body (they
+already do; recomputation is a transport check).
 
 ![The body frame and what each signature covers](images/039/topic-frame.svg)
 
@@ -377,7 +392,7 @@ block height:
    `blockTime ≤ notAfter` of the writer proof;
 4. the delegation hash is not in `~yano/topics/v1/revoked/`;
 5. the session key's signature over `write-statement` verifies;
-6. the writer proof's hash is not in `~yano/topics/v1/used/` (D9).
+6. the write-statement's hash is not in `~yano/topics/v1/used/` (D9).
 
 A policy with `writers: {threshold k > 1}` does not accept delegated writes
 (a delegation stands in for one writer); OQ5 discusses relaxing this.
@@ -397,12 +412,23 @@ which lands in `revoked/` until the delegation would have expired anyway.
 
 Identical bytes resubmitted through another member produce a new envelope
 and a new message id, so the envelope cannot stop replays of the client's
-intent. The writer proof can: its hash (over the statement and signatures)
-is recorded in `~yano/topics/v1/used/` when the message is applied and
-removed once `blockTime > notAfter`. A proof is refused if its hash is
-present, if it appears twice in one block, or if `notAfter` is more than
-`max-delegation-ms` ahead of the block time. State is therefore bounded by
-the write rate times the maximum lifetime (I12).
+intent. The write-statement can: it names the chain, topic, payload hash,
+nonce and `notAfter`, so it identifies one intended write exactly.
+
+The **replay identity is BLAKE2b-256 of the canonical write-statement**, and
+deliberately *not* of the signature bundle or the delegation. Hashing the
+signatures would let a relay replay one signed intent by attaching a
+different valid set: under a 2-of-3 policy, signatures A+B and A+C give two
+different proofs for the same statement. With the statement as the identity,
+any second message carrying the same statement is refused, whatever valid
+signatures or delegation accompany it.
+
+The statement hash is recorded in `~yano/topics/v1/used/` when the message is
+applied and removed once `blockTime > notAfter`. A message is refused if its
+statement hash is present, if the same statement appears twice in one block,
+or if `notAfter` is more than `max-delegation-ms` ahead of the block time.
+State is therefore bounded by the write rate times the maximum lifetime
+(I12).
 
 ### D10 — Schemas use the existing IR, moved into core
 
@@ -444,7 +470,7 @@ Order of checks — first failure wins:
 
 The follower-side rejection is what makes the policy a consensus rule; the
 ingress and proposer checks only avoid wasted work. During apply the
-framework records used proofs and pending registry commands **before** the
+framework records used write-statement hashes and pending registry commands **before** the
 machine sees the block, in the same atomic commit (as ADR-008.3 does for
 membership).
 
@@ -460,7 +486,7 @@ Refusal codes (HTTP 400 at ingress, receipts for registry commands):
 | `TOPIC_WRITER_DENIED` | signatures missing, invalid, below threshold, or keys not writers |
 | `TOPIC_DELEGATION_INVALID` | issuer not allowed, scope, time window, or revoked |
 | `TOPIC_PROOF_EXPIRED` | `notAfter` passed or too far ahead |
-| `TOPIC_PROOF_REPLAYED` | the writer proof was already used |
+| `TOPIC_PROOF_REPLAYED` | this write-statement was already used (with any signatures) |
 | `TOPIC_PAYLOAD_TOO_LARGE` | above `maxPayloadBytes` |
 | `TOPIC_SCHEMA_REJECTED` | not canonical CBOR, or the schema refused it |
 
@@ -539,9 +565,10 @@ Threats and mitigations:
 
 - **Forged writes** through any member → signatures checked by every member;
   block rejected otherwise (D11, I3).
-- **Replay** of a signed write through another member, topic or chain → the
-  statement binds chain and topic; the used-proof set and `notAfter` bound
-  replays (D9, I4).
+- **Replay** of a signed write through another member, topic or chain, or
+  with a different valid signature subset or delegation → the statement binds
+  chain and topic; the replay identity is the statement itself, not its
+  signatures; `notAfter` bounds the guard (D9, I4).
 - **Malicious proposer** including unauthorized messages → followers reject
   the block (D11).
 - **Time manipulation** to revive expired delegations → monotonic time and a
@@ -565,7 +592,7 @@ Threats and mitigations:
 | I1 | With `mode: disabled`, state roots, blocks and REST behaviour are byte-identical to the pre-ADR implementation. | D1 |
 | I2 | `TopicPolicy.check` is a pure function of (message, parent committed state, block time, earlier messages in the block); every member computes the same result. | D11 |
 | I3 | A finalized block contains a message on a protected topic only if its writer proof satisfies the policy revision active at that height. | D6, D7, D11 |
-| I4 | No writer proof is accepted twice while its `notAfter` has not passed. | D9 |
+| I4 | No write-statement is accepted twice while its `notAfter` has not passed, whichever valid signatures or delegation accompany it. | D9 |
 | I5 | Registry changes take effect only at `finalization height + lag (≥ 1)`; no change is retroactive. | D5, D13 |
 | I6 | A namespace is created only with no existing ancestor (top level) or by its nearest ancestor's owners; two owners never control overlapping prefixes. | D3, D4 |
 | I7 | Every registry record, revision and schema is under `~yano/topics/v1/` in the committed state root and is provable. | D2, D15 |
@@ -576,6 +603,7 @@ Threats and mitigations:
 | I12 | `used/` and `revoked/` entries are removed after expiry; their size is bounded by rate × maximum lifetime. | D8, D9 |
 | I13 | Block timestamps are monotonic and at most `max-forward-skew-ms` ahead of the voter's clock when voted. | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
+| I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks, message proofs and `ordered-log` records keep the framed bytes. | D7, D7a |
 
 ## 7. Compatibility
 
@@ -583,8 +611,9 @@ Threats and mitigations:
   compatibility mode; v1 formats start at version 1.
 - **Envelope and transport:** unchanged (D7).
 - **Plugin API:** additive — `TopicMessageView` and the schema evaluator in
-  core-api; this is a new API level (ADR-011). Plugins that ignore it keep
-  working; on protected topics they see the frame as the raw body.
+  core-api; this is a new API level (ADR-011). Machines that ignore it keep
+  working, including on protected topics, because they receive the payload as
+  the body (D7a).
 - **Chain identity:** the effective topic configuration is committed at its
   activation height (D1); a member started with a different configuration
   fails closed on restart, like ADR-016.
@@ -636,7 +665,7 @@ Threats and mitigations:
 | M2 | Registry state, owner and governance commands, activation, revisions, REST reads | M1 | I2, I5, I6, I7, I11, I14 tests; multi-node replay and restart parity |
 | M3 | Writer proofs, delegations, replay guard, follower block validity | M2 | I3, I4, I9, I12 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
-| M5 | `TopicMessageView`, API level, `topic-policy-v1` proof subject | M3, M4 | Plugin compatibility tests; proofs verified offline |
+| M5 | Payload view for machine hooks (D7a), `TopicMessageView`, API level, `topic-policy-v1` proof subject | M3, M4 | I15 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; plugin compatibility tests; proofs verified offline |
 | M6 | Qualification | M5 | I1 byte-identity with `mode: disabled`; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; performance budget for signature checks recorded |
 
 ## 11. Verification and test-vector strategy
@@ -650,7 +679,9 @@ Threats and mitigations:
 - **V3 — Adversarial cases.** Forged signature, wrong chain or topic in the
   statement, threshold not met, scope widening, expired and not-yet-valid
   delegations, revoked delegations, replay through a second member, replay
-  in the same block, non-canonical CBOR, oversized payload, schema bombs,
+  in the same block, the same write-statement resubmitted with a different
+  valid signature subset (A+B, then A+C under 2-of-3) or a different
+  delegation, non-canonical CBOR, oversized payload, schema bombs,
   a malicious proposer including a bad message, a proposer with a skewed
   clock, conflicting owner commands in one block, sub-namespace creation by a
   non-owner.
@@ -700,3 +731,9 @@ Threats and mitigations:
 ## Revision history
 
 - r1 (2026-10-22): initial proposal.
+- r2 (2026-10-22; responds to the automated reviews of `81e9fcd3a` on #197 and of `4ac4a9d8` on
+  yano-x#80): #197 F1 → D9 replay identity is the write-statement hash, independent of signatures
+  and delegation; D2, D8, D11 code table and apply note, threat model, I4 and V3 updated; diagrams
+  relabelled. yano-x#80 F1 (framed bodies reach typed-kernel codecs; a core concern) → new D7a:
+  machine hooks receive the verified payload as the body with the original `messageId`; new I15;
+  compatibility, M5 and V3 updated.
