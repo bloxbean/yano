@@ -1563,7 +1563,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentLedger != null && message.getSenderSeq() > 0
                 && message.getSenderSeq() <= currentLedger.senderSeq(message)) {
             countDrop("stale_seq");
-            log.debug("App-chain '{}': stale sender-seq {} from {} — dropped",
+            AppMessageLog.LOG.debug("App-chain '{}': stale sender-seq {} from {} — dropped",
                     config.chainId(), message.getSenderSeq(), message.getMessageIdHex());
             return;
         }
@@ -1571,7 +1571,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (added == AppMsgPool.AddResult.FULL) {
             // Gossip is best-effort; the drop is surfaced via counters, not errors
             countDrop("pool_full");
-            log.debug("App-chain '{}' pool full ({}): dropped inbound message {}",
+            AppMessageLog.LOG.debug("App-chain '{}' pool full ({}): dropped inbound message {}",
                     config.chainId(), pool.capacity(), message.getMessageIdHex());
             return;
         }
@@ -2062,7 +2062,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         relay(message);
         submittedCount.incrementAndGet();
         record(message, ReceivedAppMessage.Source.LOCAL);
-        log.info("App message submitted: id={}, chain={}, topic={}, seq={}",
+        AppMessageLog.LOG.debug("App message submitted: id={}, chain={}, topic={}, seq={}",
                 message.getMessageIdHex(), config.chainId(), effectiveTopic, message.getSenderSeq());
         return message.getMessageIdHex();
     }
