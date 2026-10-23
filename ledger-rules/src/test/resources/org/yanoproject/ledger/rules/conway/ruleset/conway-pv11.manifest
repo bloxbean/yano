@@ -101,7 +101,7 @@ UTXOW.MissingRequiredDatums | check | dynamic | 9 | utxow.UtxowChecks$MissingReq
 UTXOW.NotAllowedSupplementalDatums | check | dynamic | 9 | utxow.UtxowChecks$NotAllowedSupplementalDatums | aea551372f7fa842 |  | Alonzo/Rules/Utxow.hs (missingRequiredDatums); Babbage/UTxO.hs:74-84; Babbage/Rules/Utxow.hs:357
 UTXOW.ExtraRedeemers | check | dynamic | 9 | utxow.UtxowChecks$ExtraRedeemers | bb7daa0423e4e4a6 |  | Alonzo/Rules/Utxow.hs (hasExactSetOfRedeemers); Babbage/Rules/Utxow.hs:361
 UTXOW.MissingRedeemers | check | dynamic | 9 | utxow.UtxowChecks$MissingRedeemers | 433a6cce5bbc61fa |  | Alonzo/Rules/Utxow.hs (hasExactSetOfRedeemers); Babbage/Rules/Utxow.hs:361
-UTXOW.InvalidWitnessesUTXOW | check | static | 9 | utxow.UtxowChecks$InvalidWitnesses | 0a05382a6cbdaec5 |  | Shelley/Rules/Utxow.hs:391-408 (validateVerifiedWits); Babbage/Rules/Utxow.hs:366: runTestOnSignal
+UTXOW.InvalidWitnessesUTXOW | check | static | 9 | utxow.UtxowChecks$InvalidWitnesses | 01b71721247c7c6f |  | Shelley/Rules/Utxow.hs:391-408 (validateVerifiedWits); Babbage/Rules/Utxow.hs:366: runTestOnSignal
 UTXOW.MissingVKeyWitnessesUTXOW | check | dynamic | 9 | utxow.UtxowChecks$MissingVKeyWitnesses | de11d3b0d7c7d9ff |  | Shelley/Rules/Utxow.hs:412-424 (validateNeededWitnesses); Conway/UTxO.hs:174-199; Babbage/Rules/Utxow.hs:369
 UTXOW.MissingTxMetadata | check | static | 9 | utxow.UtxowChecks$MissingTxMetadata | 84397b36a0b00cfd |  | Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374
 UTXOW.MissingTxBodyMetadataHash | check | static | 9 | utxow.UtxowChecks$MissingTxBodyMetadataHash | 207c01da1ad7d529 |  | Shelley/Rules/Utxow.hs:427-443 (validateMetadata); Babbage/Rules/Utxow.hs:374

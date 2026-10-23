@@ -1,12 +1,13 @@
-package org.yanoproject.ledger.rules.conway.utxow;
+package org.yanoproject.api.util;
 
 import com.bloxbean.cardano.client.crypto.api.SigningProvider;
-import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
+import com.bloxbean.cardano.client.crypto.api.impl.EdDSASigningProvider;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 
 import java.math.BigInteger;
 
 /**
- * Ed25519 signature verification with the semantics of the node's {@code Ed25519DSIGN}
+ * Strict Ed25519 signature verification with the semantics of the node's {@code Ed25519DSIGN}
  * (cardano-crypto-class), which calls libsodium's {@code crypto_sign_ed25519_verify_detached} (1.0.18,
  * {@code crypto_sign/ed25519/ref10/open.c}):
  *
@@ -20,10 +21,14 @@ import java.math.BigInteger;
  *
  * <p>Steps 1–3 are made here, exactly as libsodium's {@code sc25519_is_canonical},
  * {@code ge25519_has_small_order} and {@code ge25519_is_canonical}; step 4 is the cofactorless verification of
- * the node's crypto provider (CCL's {@link SigningProvider}), which decodes the key and compares the recomputed
- * {@code R} bytewise like libsodium.</p>
+ * CCL's {@link EdDSASigningProvider}, which decodes the key and compares the recomputed {@code R} bytewise like
+ * libsodium.</p>
+ *
+ * <p>Used for Cardano transaction witnesses and for every client- or owner-signed app-chain topic statement
+ * (ADR app-layer/039 D7, I20), so a signature verifies exactly when libsodium accepts it, whatever signing
+ * provider is configured globally.</p>
  */
-final class Ed25519 {
+public final class StrictEd25519 {
 
     /** The group order {@code L = 2^252 + 27742317777372353535851937790883648493}. */
     private static final BigInteger L = BigInteger.ONE.shiftLeft(252)
@@ -31,25 +36,33 @@ final class Ed25519 {
 
     /** libsodium's {@code ge25519_has_small_order} blacklist (last byte compared without its top bit). */
     private static final byte[][] SMALL_ORDER = {
-            hex("0000000000000000000000000000000000000000000000000000000000000000"),
-            hex("0100000000000000000000000000000000000000000000000000000000000000"),
-            hex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
-            hex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"),
-            hex("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
-            hex("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
-            hex("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f")};
+            HexUtil.decodeHexString("0000000000000000000000000000000000000000000000000000000000000000"),
+            HexUtil.decodeHexString("0100000000000000000000000000000000000000000000000000000000000000"),
+            HexUtil.decodeHexString("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
+            HexUtil.decodeHexString("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"),
+            HexUtil.decodeHexString("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
+            HexUtil.decodeHexString("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
+            HexUtil.decodeHexString("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f")};
 
-    private Ed25519() {
+    /**
+     * The cofactorless equation check, pinned to CCL's {@link EdDSASigningProvider} (which recomputes {@code R}
+     * and compares it bytewise, like libsodium) rather than the replaceable global provider, so a differently
+     * configured provider can never change which signatures verify (ADR app-layer/039 I20).
+     */
+    private static final SigningProvider EQUATION = new EdDSASigningProvider();
+
+    private StrictEd25519() {
     }
 
     /**
      * @param publicKey the 32-byte verification key
      * @param signature the 64-byte signature
-     * @param message   the signed message (a transaction id)
+     * @param message   the signed message
      * @return true when libsodium would accept the signature
      */
-    static boolean verify(byte[] publicKey, byte[] signature, byte[] message) {
-        if (publicKey.length != 32 || signature.length != 64) {
+    public static boolean verify(byte[] publicKey, byte[] signature, byte[] message) {
+        if (publicKey == null || signature == null || message == null
+                || publicKey.length != 32 || signature.length != 64) {
             return false;
         }
         if (!scalarIsCanonical(signature) || hasSmallOrder(signature, 0) || !pointIsCanonical(publicKey)
@@ -57,8 +70,7 @@ final class Ed25519 {
             return false;
         }
         try {
-            SigningProvider provider = CryptoConfiguration.INSTANCE.getSigningProvider();
-            return provider.verify(signature, message, publicKey);
+            return EQUATION.verify(signature, message, publicKey);
         } catch (RuntimeException e) {
             // A key that does not decode to a curve point (ge25519_frombytes_negate_vartime fails).
             return false;
@@ -104,11 +116,4 @@ final class Ed25519 {
         return new BigInteger(1, be);
     }
 
-    private static byte[] hex(String value) {
-        byte[] out = new byte[value.length() / 2];
-        for (int i = 0; i < out.length; i++) {
-            out[i] = (byte) Integer.parseInt(value.substring(2 * i, 2 * i + 2), 16);
-        }
-        return out;
-    }
 }
