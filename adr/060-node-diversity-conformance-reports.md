@@ -132,15 +132,20 @@ The harness follows Amaru's `crates/amaru-uplc/tests/conformance.rs`, which defi
 
 - **Input:** each sample is a CBOR byte string holding Flat bytes, decoded before timing. The protocol version is
   taken from the epoch folder (≥644: 11, ≥537: 10, ≥507: 9, else 8), and the language from the file-name suffix.
-- **Cost models:** the default cost models of that protocol version and language, as the scenario requires.
+- **Cost models:** the default cost models of that protocol version and language, as the scenario requires. These
+  are julc's built-in defaults for the target; no cost model is configured.
+- **Decoding:** the Flat program is decoded as phase 2 decodes a script, before any timing.
 - **Measurement:**
-  - JIT warm-up runs first, and do not count;
-  - then 50 evaluations, keeping the best 30 by time;
+  - one unmeasured pass over the whole corpus warms up the JIT;
+  - then, per script, 5 unmeasured evaluations, then 50 measured ones, keeping the best 30 of each dimension;
   - `cpu_us` is the mean of `System.nanoTime` around evaluation only;
   - `mem_bytes` is the mean of the evaluating thread's allocated bytes
-    (`com.sun.management.ThreadMXBean.getThreadAllocatedBytes`). This is the JVM's counterpart of Amaru's arena bytes
-    used.
-- **Budgets:** CPU and memory are counted with the 10B / 10M budget the scenario sets.
+    (`com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes`). This is the JVM's counterpart of Amaru's arena
+    bytes used. An evaluation of a trivial script allocates about 26 KB.
+- **Budgets:** the consumed CPU and memory, evaluated with an unlimited budget, as the reference reports are (Amaru
+  uses `ExBudget::max`). The scenario page names 10B / 10M, but that would stop five scripts that use more than 10M
+  memory units. The cardano-node and Amaru reports carry those scripts' whole budgets, and the site checks each
+  budget against the majority.
 - **Machine block:** OS, architecture, CPU, logical cores and memory, from `java.lang.management`.
 
 ### 6. cbor-decoding: Yano's transaction-validation decoder
