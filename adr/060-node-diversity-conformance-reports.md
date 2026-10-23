@@ -115,9 +115,11 @@ The harness follows Amaru's `crates/amaru-uplc/tests/conformance.rs`, which defi
 - **Ids and labels:** `<path below the Plutus-version folder, non-alphanumerics as _, lower case>_<v1|v2|v3>`, with
   the group (the grandparent path) and title (the folder name, `-`/`_` as spaces) taken from the path.
 - **Evaluation:**
-  - parse the textual program with julc;
+  - decode the vector's `.flat` program when it has one, as phase 2 decodes a script (`JulcScriptAdapter.toProgram`:
+    `UplcFlatDecoder` with the decoding limits of the protocol version and language). On chain, scripts are Flat, so
+    this is the decoder Yano depends on. A vector with no Flat form (a `value` constant) is parsed from its text;
   - reject what the protocol version or Plutus version does not allow (program version 1.1.0 before protocol 11, and
-    builtins unavailable for the language and protocol), as Haskell's decoder does;
+    builtins unavailable for the language and protocol), as Haskell's decoder does (`ProgramValidator`);
   - evaluate on `JavaVmProvider` with the corpus cost model for (protocol, language) and a budget of 10B CPU / 14M
     memory.
 - **Reporting:**
