@@ -210,12 +210,18 @@ change on an existing chain (D13).
 **Configuration authority** (the ADR-008.3 §2.4 rule for member lists). The
 `topics:` YAML block is the **genesis seed only**. When a chain enables
 topics at genesis, the seed is committed under `~yano/topics/v1/config` at
-height 1, and a member whose YAML seed differs refuses to start (it would
-otherwise compute a different height-1 root). From then on the committed
-`config` record is the only authority: governed changes (D5, D13) replace it
-at their activation height, every member reads it from state, and a YAML
-block that differs from the current committed configuration is logged and
-never used. A chain that enables topics later does so with a governance
+height 1. The YAML is compared with the seed **only when a node builds
+height 1**: a new chain, a member joining from genesis, or a full resync.
+A YAML that differs then refuses to start, because it would compute a
+different height-1 root. Like ADR-008.3's genesis member list, the YAML
+used for such a start must hold the seed. A restart on existing state never
+compares the YAML with the seed: the committed `config` record is the only
+authority, governed changes (D5, D13) replace it at their activation height,
+and every member reads it from state. On such a restart a YAML that matches
+the current committed configuration is accepted silently, and any other
+YAML (including the original seed) is logged as differing and never used.
+So an operator may keep either the seed or the current configuration in the
+YAML, and only a later full resync needs the seed. A chain that enables topics later does so with a governance
 command that carries the whole initial configuration; its YAML `topics:`
 block is not used. Superseded configuration revisions are kept under
 `history/~config/<revision>`, so the seed and every later configuration stay
@@ -361,14 +367,25 @@ for every check that is decided by the parent state and the block time
 alone:
 
 - decode and canonical form, a known operation, and the D3 structural rules
-  (single-segment top-level names, an authority that is the target, an
-  ancestor of it, or `~registrars`; for a revocation, the D8 rules) →
-  `TOPIC_COMMAND_INVALID`;
+  (single-segment top-level names; an authority allowed for the operation,
+  listed below) → `TOPIC_COMMAND_INVALID`;
 - `chainId` and `generationId` of this chain → `TOPIC_COMMAND_INVALID`;
 - `notAfter` within range (D5a) → `TOPIC_COMMAND_EXPIRED`;
-- valid signatures (D7) from distinct keys of the authority's active
-  revision meeting its threshold, and a creation mode the configuration
-  allows → `TOPIC_COMMAND_DENIED`.
+- valid signatures (D7) meeting the threshold of the authority's key set,
+  counted over distinct keys, as below → `TOPIC_COMMAND_DENIED`.
+
+The authority names whose keys must sign. There are four cases, each judged
+against the parent state:
+
+| `authority` | Allowed for | Key set and threshold |
+|---|---|---|
+| an entry name (the target or an ancestor namespace, D3) | changes to the target or entries beneath it, sub-entry creation, owner revocation of a delegation whose `scope` that entry governs | the owners of that entry's **active** revision (D5a) |
+| `~registrars` | top-level creation, when `registrars` is configured | the registrar set in the committed `config` |
+| `~claim` | top-level open claim, when `open-claims: true` | the owners the claim itself names, at the threshold it names (the target has no active revision yet) |
+| `~issuer` | revoking one delegation (D8) | the delegation's `issuer` alone, and only if that key is in the `delegate` set of the effective policy that governs the delegation's `scope` (D3 resolution at the parent state) |
+
+An authority that the configuration does not enable (no registrars, open
+claims off) is refused with `TOPIC_COMMAND_DENIED`.
 
 So a command enters a block only if it is authentic and authorized; junk
 is never stored. Only outcomes that depend on what other authorized
@@ -389,7 +406,8 @@ carries a signed **command statement**:
 command-statement = [ "yano-topic-command-v1", chainId : tstr,
                       generationId : bstr .size 32,
                       target    : tstr,           ; the entry created or changed
-                      authority : tstr,           ; whose owners sign: target, an ancestor, or "~registrars"
+                      authority : tstr,           ; who signs (D5): target or ancestor, "~registrars",
+                                                  ;   "~claim" or "~issuer"
                       expected  : uint / null,    ; target's head revision; null = create
                       nonce     : bstr .size 16,
                       notAfter  : uint,           ; ms, block time; ≤ max-command-ms ahead
@@ -436,7 +454,10 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   revision — the revision in force at the including block's height — and that
   epoch is recorded with the pending revision. Pending revisions never
   authorize anything; owners named in a pending rotation can sign only after
-  it activates.
+  it activates. `~claim` and `~issuer` have no authority epoch (D5 table): a
+  claim is authorized by the owners it names, and its name is reserved while
+  it is pending. A revocation takes effect from the next block, so it is
+  never rechecked.
 - **Activation is materialized one block early.** A revision whose
   activation height is *a* governs messages in blocks ≥ *a*. The framework
   activates it while applying block *a − 1*, after that block's messages,
@@ -684,9 +705,16 @@ command on `~topics/registry`:
   the delegation's signature, `chainId` and `generationId` exactly as for a
   write, so it knows the issuer, scope and `notAfter` from verified bytes,
   never from a bare hash.
-- It is signed either by the delegation's `issuer` (authority `~issuer`), or
-  by the owners of the active entry that governs the delegation's `scope` or
-  of one of its ancestor namespaces (the D5a authority rules).
+- It is signed either by the delegation's `issuer` (authority `~issuer`),
+  or by the owners of the active entry that governs the delegation's
+  `scope` or of one of its ancestor namespaces. An issuer may revoke only
+  while it is in the `delegate` set of the effective policy that governs
+  the delegation's `scope` at the parent state. Otherwise the revocation is
+  refused with `TOPIC_COMMAND_DENIED`, and an unregistered scope cannot be
+  revoked. A key that is not an allowed issuer therefore cannot make the
+  framework store anything. Nothing is lost: a delegation whose issuer is no
+  longer in the `delegate` set already fails validity rule 1 below and
+  needs no revocation.
 - **Retention horizon.** It is accepted only if `blockTime ≤
   delegation.notAfter ≤ blockTime + max-delegation-ms`, using the
   configuration in force at the including block. A delegation that has
@@ -808,7 +836,7 @@ for commands already in a block, D5):
 | `TOPIC_PAYLOAD_TOO_LARGE` | above `maxPayloadBytes` |
 | `TOPIC_SCHEMA_REJECTED` | not canonical CBOR, or the schema refused it |
 | `TOPIC_COMMAND_INVALID` | a registry command is malformed, non-canonical, for another chain or generation, breaks the D3 structural rules, lists signatures out of order or twice, or revokes a delegation beyond the retention horizon (D5, D8) |
-| `TOPIC_COMMAND_DENIED` | a registry command's signatures are invalid or do not meet the authority's active threshold, or the configuration does not allow its creation mode (D5) |
+| `TOPIC_COMMAND_DENIED` | a registry command's signatures are invalid or do not meet the threshold of its authority's key set (active entry owners, registrar set, the claim's named owners, or an issuer that is an allowed delegator for the scope), or the configuration does not enable that authority (D5) |
 | `TOPIC_COMMAND_STALE` | a registry command named a head revision that is no longer the head, or a taken name (D5a) |
 | `TOPIC_COMMAND_EXPIRED` | a registry command's `notAfter` passed or is too far ahead (D5a), or it revokes an already expired delegation (D8) |
 | `TOPIC_COMMAND_LIMIT` | the entry already has `max-pending-per-entry` pending revisions, or a creation would exceed `max-entries` or `max-entries-per-namespace` (D4, D5a) |
@@ -1054,7 +1082,7 @@ Threats and mitigations:
 | I16 | A `topic-policy-v1` proof verifies only if it covers the configuration record and the topic and every `/`-prefix of it, each with inclusion or absence, against one root, and its resolved outcome (including the unregistered fallback) matches `effectivePolicyDigest`. The active revisions and configuration committed in the root of block *h − 1* are exactly those that govern block *h*, after every D5a recheck and cancellation. | D1, D5a, D15 |
 | I17 | Each signed registry command other than a revocation takes effect at most once: only if included by its `notAfter`, only on the head revision it names, only if authorized by its authority's active epoch at inclusion, and only if that epoch is still active immediately before it activates. Pending revisions never authorize. | D5a |
 | I18 | No signed write, delegation or registry command verifies on a chain generation other than the one it names. | D5a, D7, D8 |
-| I19 | A finalized block contains an owner command only if it decodes canonically, names this chain and generation, is within its `notAfter` range and carries valid signatures meeting its authority's active threshold; only stale, over-limit and superseded outcomes are receipts. | D5, D11 |
+| I19 | A finalized block contains an owner command only if it decodes canonically, names this chain and generation, is within its `notAfter` range and carries valid signatures meeting the threshold of its authority's key set as D5 defines it for each authority (entry owners, `~registrars`, `~claim`, `~issuer`), so no key outside those sets can cause a framework write; only stale, over-limit and superseded outcomes are receipts. | D5, D11 |
 | I20 | Every signature under this ADR is accepted exactly when the D7 rule set accepts it (`S < L`, canonical non-small-order `A` and `R`, cofactorless), whatever signing provider is configured; key lists are sorted and duplicate-free and thresholds count distinct keys. | D7 |
 
 ## 7. Compatibility
@@ -1070,9 +1098,11 @@ Threats and mitigations:
   working, including on protected topics, because they receive the payload as
   the body (D7a).
 - **Chain identity:** the `topics:` YAML is a genesis seed only (D1, the
-  ADR-008.3 §2.4 rule). A member whose seed differs from the committed seed
-  fails closed on start; after genesis the committed configuration is the
-  authority, so governed changes never make members' YAML a restart hazard.
+  ADR-008.3 §2.4 rule). It is checked against the seed only when a node
+  builds height 1 (new chain, joining from genesis, full resync) and fails
+  closed on a mismatch. A restart on existing state reads the committed
+  configuration and never fails because of the YAML, so governed changes are
+  never a restart hazard.
 - **Membership mode:** enabling topics requires `membership.mode: governed`
   (D1, OQ11).
 - **Yano X:** the authenticated map switches to the core schema evaluator
@@ -1121,7 +1151,7 @@ Threats and mitigations:
 |---|---|---|---|
 | M0 | D12 certified time bounds as consensus profile schema 3, including the proposer clamp | ADR accepted | I13 tests, including a proposer whose clock is behind the parent's timestamp producing a valid block (no view change); a retained schema-2 chain replays and restarts byte-identically on the M0 build; schema-3 genesis commits the new field under `~yano/consensus-profile/v3`; a schema-2 marker refuses a schema-3 configuration and vice versa (fail closed); topics refuse to enable on schema 2; existing suites green |
 | M1 | Freeze formats: config, entry, command statement, frame, delegation and delegation hash, write statement (all with `generationId`; write statement with the delegation hash), revocation command, expiry index key, effective-outcome digest; codes; the D7 signature rule set as one core verifier; vectors | M0 | Normative CDDL and test vectors committed; independent decoder agrees (V2); the core verifier matches libsodium on the speccheck vectors and rejects the small-order and non-canonical cases the default provider accepts (I20) |
-| M2 | Registry state, owner command admission (D5), owner and governance commands with D5a preconditions, activation of entries and configuration materialized at *a − 1*, revisions, genesis-seed handling, subtree caps, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17, I19 tests; a block carrying an unauthorized command is rejected; a governed configuration change followed by a restart with the original YAML starts cleanly; a different genesis seed fails closed; multi-node replay and restart parity |
+| M2 | Registry state, owner command admission (D5), owner and governance commands with D5a preconditions, activation of entries and configuration materialized at *a − 1*, revisions, genesis-seed handling, subtree caps, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17, I19 tests; a block carrying an unauthorized command is rejected; a governed configuration change followed by a restart starts cleanly both with the original seed YAML and with YAML matching the current configuration (neither is used); a full resync or a member joining from genesis with non-seed YAML fails closed; multi-node replay and restart parity |
 | M3 | Writer proofs, delegations, revocation, replay guard, expiry index and pruning, follower block validity | M2 | I3, I4, I9, I12, I18, I20 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
 | M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects (with the configuration record) | M3, M4 | I15, I16 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
@@ -1154,7 +1184,11 @@ Threats and mitigations:
   **registry ingress**: unsigned, mis-signed, wrong-generation, expired and
   unauthorized commands are refused at ingress, and a block carrying one is
   rejected; a stale command from an authorized signer becomes a receipt;
-  **revocation**: a revocation that names only a hash (refused), a
+  **revocation**: a revocation that names only a hash (refused); an
+  issuer revocation by a key that is not in the `delegate` set governing the
+  delegation's `scope`, or for an unregistered scope (refused at ingress with
+  `TOPIC_COMMAND_DENIED`, a block carrying it is rejected, nothing stored);
+  an owner revocation by an ancestor's owners (accepted); a
   far-future one-hour delegation (`notBefore` a century ahead) whose
   revocation is refused until it comes within the horizon, revocation at
   both horizon boundaries, revocation of an expired delegation, a repeated
@@ -1332,3 +1366,11 @@ Threats and mitigations:
   height, through the API-key-protected privileged path; no separate topic threshold. D14: the
   default becomes `reject`. Threat model: a stolen admin key of one node. §7: v1 restrictions
   can be relaxed later without format changes. New V6 showcase; M6 runs it.
+- r9 (2026-10-23; responds to reviewer 2's re-review of `feb9f7cf8`): F19 → issuer revocations need
+  the issuer to be in the `delegate` set of the effective policy that governs the delegation's
+  scope at the parent state (an unregistered scope cannot be revoked); `~issuer` and `~claim` are
+  added to the command-statement authority list; D5 gains an authority table (entry owners,
+  `~registrars`, `~claim`, `~issuer`); D5a, D8, I19, `TOPIC_COMMAND_DENIED`, V3. F20 → D1 and §7:
+  the YAML is compared with the seed only when a node builds height 1; a restart on existing state
+  never compares it and never fails because of it; M2 restart test extended. Editorial → each
+  authorization case named in D5, I19 and the code table.
