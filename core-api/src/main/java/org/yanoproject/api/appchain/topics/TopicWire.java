@@ -17,6 +17,8 @@ import java.util.regex.Pattern;
  */
 public final class TopicWire {
     public static final int MAX_KEYS = 16;
+    /** Governance approvers are members: at most the app-chain membership bound. */
+    public static final int MAX_APPROVERS = 32;
     public static final String AUTHORITY_REGISTRARS = "~registrars";
     public static final String AUTHORITY_CLAIM = "~claim";
     public static final String AUTHORITY_ISSUER = "~issuer";
@@ -85,22 +87,32 @@ public final class TopicWire {
 
     // ------------------------------------------------------------------ configuration
 
+    /**
+     * Chain-level topic configuration. {@code governanceWindowBlocks} is the approval window of topic
+     * governance (ADR-008.3 accounting); it is consensus state, never a node-local setting.
+     */
     public record Settings(boolean governance, KeySet registrars, boolean openClaims, boolean unregisteredReject,
                            long maxDelegationMs, long maxCommandMs, long maxPendingPerEntry, long maxEntries,
-                           long maxEntriesPerNamespace, long activationLag) {
+                           long maxEntriesPerNamespace, long activationLag, long governanceWindowBlocks) {
+        public static final long DEFAULT_GOVERNANCE_WINDOW_BLOCKS = 600;
+
         public Settings {
             if (maxDelegationMs < 1 || maxCommandMs < 1 || maxPendingPerEntry < 1 || maxEntries < 1
-                    || maxEntriesPerNamespace < 1 || activationLag < 1) {
+                    || maxEntriesPerNamespace < 1 || activationLag < 1 || governanceWindowBlocks < 1) {
                 throw new IllegalArgumentException("topic settings limits must be positive");
             }
         }
     }
 
-    public record Config(long revision, Settings settings) {
+    /**
+     * The committed configuration. {@code registrarsSince} is the revision at which the current registrar set
+     * took effect: the {@code ~registrars} authority epoch (D5a), unchanged by other configuration changes.
+     */
+    public record Config(long revision, long registrarsSince, Settings settings) {
         public Config {
             Objects.requireNonNull(settings, "settings");
-            if (revision < 1) {
-                throw new IllegalArgumentException("config revision must be positive");
+            if (revision < 1 || registrarsSince < 1 || registrarsSince > revision) {
+                throw new IllegalArgumentException("config revisions must satisfy 1 <= registrarsSince <= revision");
             }
         }
     }
@@ -114,11 +126,15 @@ public final class TopicWire {
         }
     }
 
-    public record ActiveRevision(long revision, long activeFrom, EntryContent content) {
+    /**
+     * The revision in force. {@code ownersSince} is the revision at which the current owners took effect: the
+     * entry's authority epoch (D5a), which policy changes that keep the owners do not advance.
+     */
+    public record ActiveRevision(long revision, long activeFrom, long ownersSince, EntryContent content) {
         public ActiveRevision {
             Objects.requireNonNull(content, "content");
-            if (revision < 1 || activeFrom < 1) {
-                throw new IllegalArgumentException("active revision and height must be positive");
+            if (revision < 1 || activeFrom < 1 || ownersSince < 1 || ownersSince > revision) {
+                throw new IllegalArgumentException("invalid active revision");
             }
         }
     }
@@ -135,11 +151,13 @@ public final class TopicWire {
         }
     }
 
+    /** A pending revision; {@code messageId} is the command whose receipt reports its outcome. */
     public record QueuedRevision(long revision, long activation, String authority, long authorityEpoch,
-                                 EntryContent content) {
+                                 EntryContent content, String messageId) {
         public QueuedRevision {
             Objects.requireNonNull(authority, "authority");
             Objects.requireNonNull(content, "content");
+            messageId = requireHash(messageId, "messageId");
             if (revision < 1 || activation < 1 || authorityEpoch < 0) {
                 throw new IllegalArgumentException("invalid queued revision");
             }
@@ -196,7 +214,7 @@ public final class TopicWire {
     public record GovernanceApproval(String commandHash, long firstSeen, List<String> approvers) {
         public GovernanceApproval {
             commandHash = requireHash(commandHash, "command hash");
-            approvers = sortedKeys(approvers, 1, "approvers");
+            approvers = sortedKeys(approvers, 1, MAX_APPROVERS, "approvers");
             if (firstSeen < 1) {
                 throw new IllegalArgumentException("approval height must be positive");
             }
@@ -456,9 +474,13 @@ public final class TopicWire {
 
     /** Sorted, duplicate-free key list; a list given out of order or with a repeat is refused. */
     static List<String> sortedKeys(List<String> keys, int minimum, String what) {
+        return sortedKeys(keys, minimum, MAX_KEYS, what);
+    }
+
+    static List<String> sortedKeys(List<String> keys, int minimum, int maximum, String what) {
         Objects.requireNonNull(keys, what);
-        if (keys.size() < minimum || keys.size() > MAX_KEYS) {
-            throw new IllegalArgumentException(what + " must hold " + minimum + ".." + MAX_KEYS + " keys");
+        if (keys.size() < minimum || keys.size() > maximum) {
+            throw new IllegalArgumentException(what + " must hold " + minimum + ".." + maximum + " keys");
         }
         List<String> normalized = new ArrayList<>(keys.size());
         for (String key : keys) {

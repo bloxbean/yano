@@ -3,9 +3,10 @@
 ## Status
 
 Accepted (design approved at `f13207952`, 2026-10-23; the maintainer's OQ10
-decision was recorded afterwards in r11, 2026-10-24). Design only: no
-implementation is part of this ADR. Implementation follows milestones M0–M6
-(§10) and the production and audit gates (§12).
+decision was recorded afterwards in r11, 2026-10-24). At the maintainer's
+direction, milestones M0–M6 (§10) are implemented in the same PR; the
+implementation notes are revisions r12–r16. The production and audit gates
+(§12) remain open.
 
 The number is local to the `adr/app-layer` series. Root-level and
 `adr/in-progress` ADR numbers are separate series; in particular, this is not
@@ -253,10 +254,17 @@ machinery. Illustrative key layout (normative encoding fixed in M1):
 | `~yano/topics/v1/schema/<irHash>` | Schema IR bytes, content-addressed (D10). |
 | `~yano/topics/v1/used/<statementHash>` | Replay guard: the hash of a used write-statement (not of its signatures), removed after its `notAfter` (D9). |
 | `~yano/topics/v1/revoked/<delegationHash>` | Early-revoked delegations, keyed by the hash of the unsigned delegation, removed after the delegation's `notAfter` (D8). |
-| `~yano/topics/v1/expiry/<notAfter>/<kind>/<hash>` | Expiry index for `used/` and `revoked/` (`notAfter` as 8-byte big-endian, so keys sort by time); pruning walks it from the front (D9). |
-| `~yano/topics/v1/pending/<commandHash>` | Governance approvals in progress (reusing ADR-008.3 accounting). |
+| `~yano/topics/v1/expiry/<queue>/<height>`, `expiry-item/<queue>/<height>/<index>`, `expiry-head/<queue>`, `expiry-tail/<queue>` | Expiry batches (D9): a fixed-size header per block (latest `notAfter`, next batch, item count, pruned count) and one key per item, linked in height order, in two queues of uniform retention: credentials (`used/`, `revoked/`) and receipts. The state API has no ordered key scan, so the index is a linked list rather than a key range; no record grows with the number of messages in a block. |
+| `~yano/topics/v1/governance` | Governance approvals in progress: one bounded record (at most 64 commands) of command hash, first-seen height and approvers, using ADR-008.3 accounting (consensus threshold, approval window). |
+| `~yano/topics/v1/activation/<height>`, `activation-item/<height>/<index>` | How many revisions activate at that height, and each one (entry name and revision, or `~config`) in inclusion order; materialized while applying block *height − 1* (D5a). |
+| `~yano/topics/v1/receipt/<messageId>` | The outcome of a registry or governance command (`ACCEPTED` with its activation height, or a receipt code), kept for `max-command-ms` after inclusion. |
+| `~yano/topics/v1/count` | Entries in the registry, pending creations included (the `max-entries` counter); a top-level record keeps its subtree count. |
 
 Application machines cannot write under `~yano/` (ADR-016 reserved prefix).
+Physical keys hash names (BLAKE2b-256 of the UTF-8 name) so every key stays
+under the 256-byte proof-key bound; the normative layout is
+`TopicKeys` and the record formats are `META-INF/yano/topics/v1/topics.cddl`
+(M1).
 
 ### D3 — Names: `/`-separated namespaces, longest prefix wins
 
@@ -358,12 +366,16 @@ in hardware or a KMS.
    distinct members numbering the chain's **consensus threshold** at that
    height (`group.thresholdAt(height)` in ADR-008.3's `GovernedMembership`,
    the same number of signatures that finalizes a block) have submitted the
-   identical command within the approval window. Each member submits through
+   identical command within the approval window (`governance-window-blocks`,
+   committed in the topic configuration because it decides consensus state;
+   600 blocks before topics are enabled). Each member submits through
    its node's privileged admin path, which requires a configured full API key
    (`AppChainApiKeyFilter`; without one the route answers `AUTH_UNAVAILABLE`)
    and signs with that node's member key. There is no separate topic
    threshold; a governed threshold change applies to topic governance from
-   its activation height.
+   its activation height. At most one configuration change is pending at a
+   time (a second is a `TOPIC_COMMAND_LIMIT` receipt), and at most 64
+   governance commands are being approved at once.
 
 Entry and configuration changes take effect at `activation height =
 finalization height + lag` (default lag 10, minimum 1), so every member sees
@@ -459,8 +471,11 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
 - **Authorization uses the active epoch, never a pending one.** The
   revision precondition (above) is a compare-and-set on the *target's head*;
   authorization is separate. Each authority has an **authority epoch**: the
-  revision number of its *active* revision (for an entry), or of the
-  registrar set in `~yano/topics/v1/config` (for `~registrars`). At inclusion
+  revision at which the owners of its *active* revision took effect (for an
+  entry), or at which the registrar set in `~yano/topics/v1/config` took
+  effect (for `~registrars`). Changes that keep the owners (a policy update,
+  a retirement) or the registrar set (other configuration) do not advance it,
+  so owners can queue several changes to their own entry. At inclusion
   the command is authorized against the owners of the authority's active
   revision — the revision in force at the including block's height — and that
   epoch is recorded with the pending revision. Pending revisions never
@@ -485,7 +500,11 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   precedes it in that order — the authority's active epoch must still equal
   the recorded one. Otherwise the command is cancelled with
   `TOPIC_COMMAND_SUPERSEDED`. Comparing epochs rather than owner sets means
-  ownership that changes away and back does not revive an old command.
+  ownership that changes away and back does not revive an old command. A
+  cancelled revision also cancels every later queued revision of the same
+  entry, because each was built on its content and must not carry a
+  cancelled change into force; a cancelled pending creation frees its name
+  and its place in the entry counts.
   Consequences:
   - *Self-rotation* (owners O of revision 1 rotate to N): authorized by epoch
     1 and rechecked against epoch 1 just before it activates, so it succeeds
@@ -767,13 +786,18 @@ applied. A message is refused if its statement hash is present, if the same
 statement appears twice in one block, or if `notAfter` is more than
 `max-delegation-ms` ahead of the block time.
 
-**Expiry and pruning.** Every `used/` and `revoked/` entry is written
-together with an `expiry/<notAfter>/<kind>/<hash>` index key (D2). While
-applying each block, after its messages, the framework walks `expiry/` from
-the front and removes entries with `notAfter < blockTime`, together with
-their index keys, at most `2 × max-block-messages` entries per block. Each
-message adds at most one such entry, so a block removes at least as many
-expired entries as it can add. An expired backlog (left, for example, by an
+**Expiry and pruning.** Every `used/` and `revoked/` entry, and every
+command receipt, is added to the current block's expiry batch in its queue
+(D2): credentials (`used/`, `revoked/`) or receipts. A batch records the
+latest `notAfter` of its items. While applying each block, after its
+messages, the framework takes batches from the front of each queue and
+removes their items once block time has passed the batch's latest
+`notAfter`, at most `2 × max-block-messages` items per queue per block.
+Each message adds at most one item to a queue, so a block removes at least
+as many expired items as it can add. Within the credential queue every item
+expires at most `max-delegation-ms` after its block, so an earlier batch
+never holds a later one back beyond that bound; receipts, which live for
+`max-command-ms`, have their own queue for the same reason. An expired backlog (left, for example, by an
 idle period with no blocks) shrinks by at least `max-block-messages` per
 block. Pruning is a deterministic part of the state transition, so every
 member removes the same keys. Validity never depends on whether pruning has
@@ -940,15 +964,19 @@ certified time benefit on every chain.
 - REST, read-only: `GET .../topics/entries/{name}`, `GET .../topics/resolve?topic=`
   (the effective policy and the entry it came from), `GET .../topics/schemas/{hash}`.
 - **`topic-entry-v1`** proves one entry record (its active revision and head
-  metadata) at a committed root. Pending revisions are separate `queued/`
+  metadata) at a committed root; it is the ordinary state proof of the
+  entry's key (`TopicKeys.entry(name)`). Pending revisions are separate `queued/`
   keys and are not part of it. It says nothing about whether that entry
   governs a given topic.
 - **`topic-policy-v1`** proves the **effective outcome** of topic *t* for a
-  message in block *h*. It is one multi-proof against the single committed
-  root at *h − 1* (the parent state the check used) containing the
+  message in block *h*. It is a bundle of key proofs against the single
+  committed root at *h − 1* (the parent state the check used): the consensus
+  profile marker (whose message bound is the default payload bound), the
   `~yano/topics/v1/config` record (inclusion, or absence when the chain has
-  not enabled topics) and, for *t* itself and for every prefix of *t* ending
-  in `/`, either that entry's inclusion proof or an absence proof. The
+  not enabled topics) and, for *t* itself and for every namespace prefix of
+  *t*, either that entry's inclusion proof or an absence proof. It is served
+  at `GET …/topics/proof?topic=&height=` and verified offline by
+  `TopicPolicyProofVerifier` (`appchain-proof-verifier`). The
   configuration is needed because prefix absence alone does not decide an
   unregistered topic: with every entry absent, `unregistered-topics: open`
   admits the message as an open topic and `reject` refuses it with
@@ -970,9 +998,11 @@ certified time benefit on every chain.
   Configuration changes are materialized at *a − 1* exactly like entries
   (D5a), and genesis enablement writes the configuration while applying
   block 1, so it governs blocks from height 2 (D1). The root at *h − 1*
-  therefore holds the configuration that governs *h* for every *h* ≥ 1:
-  for block 1 the proof shows configuration absence at the empty height-0
-  root (*disabled*), which is exactly what block 1 enforced. The verifier
+  therefore holds the configuration that governs *h* for every *h* ≥ 2.
+  Block 1 has no committed parent root, so no `topic-policy-v1` proof
+  exists for it (the endpoint refuses height 1): block 1 is governed as
+  *disabled* by rule on every chain, which is exactly what it enforced, and
+  a verifier treats a block-1 message as *disabled* without a proof. The verifier
   never reads the activation queue. **Bounds:** an entry
   record
   holds only the active revision and head metadata, and a policy's key sets
@@ -1098,7 +1128,7 @@ Threats and mitigations:
 | I13 | On every chain block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule); a proposer stamps `max(localNow, parent.timestamp)`. | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
 | I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks keep the framed bytes and message proofs resolve to them. | D7, D7a |
-| I16 | A `topic-policy-v1` proof verifies only if it covers the configuration record and the topic and every `/`-prefix of it, each with inclusion or absence, against one root, and its resolved outcome (including the unregistered fallback) matches `effectivePolicyDigest`. The active revisions and configuration committed in the root of block *h − 1* are exactly those that govern block *h*, for every *h* ≥ 1, after every D5a recheck and cancellation; on a genesis-enabled chain block 1 is governed as *disabled* and the seed governs from block 2. | D1, D5a, D15 |
+| I16 | A `topic-policy-v1` proof verifies only if it covers the configuration record and the topic and every `/`-prefix of it, each with inclusion or absence, against one root, and its resolved outcome (including the unregistered fallback) matches `effectivePolicyDigest`. The active revisions and configuration committed in the root of block *h − 1* are exactly those that govern block *h*, for every *h* ≥ 2, after every D5a recheck and cancellation; block 1 has no parent root and no proof, and is governed as *disabled* by rule on every chain, so on a genesis-enabled chain the seed governs from block 2. | D1, D5a, D15 |
 | I17 | Each signed registry command other than a revocation takes effect at most once: only if included by its `notAfter`, only on the head revision it names, only if authorized by its authority's active epoch at inclusion, and only if that epoch is still active immediately before it activates. Pending revisions never authorize. | D5a |
 | I18 | No signed write, delegation or registry command verifies on a chain generation other than the one it names. | D5a, D7, D8 |
 | I19 | A finalized block contains an owner command only if it decodes canonically, names this chain and generation, is within its `notAfter` range and carries valid signatures meeting the threshold of its authority's key set as D5 defines it for each authority (entry owners, `~registrars`, `~claim`, `~issuer`), so no key outside those sets can cause a framework write; only stale, over-limit and superseded outcomes are receipts. | D5, D11 |
@@ -1252,8 +1282,8 @@ Threats and mitigations:
   the blocks from its activation height; a chain without topics proves
   configuration absence (*disabled*); **genesis boundary**: on a
   genesis-enabled chain with `reject` and with `open`, block 1 accepts an
-  unregistered topic and its proof (against the height-0 root) yields
-  *disabled*; from block 2 the same topic yields `unregistered-reject` (or
+  unregistered topic and no proof is served for height 1 (*disabled* by
+  rule); from block 2 the same topic yields `unregistered-reject` (or
   `unregistered-open`) and the runtime enforces it; **threshold writers**: a signature
   list out of bytewise key order is refused, and the canonical list yields
   the same `VerifiedWriter` on every member.
@@ -1295,6 +1325,8 @@ Threats and mitigations:
 | Clients mis-implement frames | reference client libraries and vectors (Yano X ADR) |
 | Registry growth in open mode | `max-entries`, `max-entries-per-namespace`; OQ7 quotas or deposits |
 | Members disagree on a signature because providers differ | one pinned rule set run by core before any provider (D7, I20); speccheck vectors in V2 |
+| Signature checks dominate block time on topic-heavy chains (measured in M6: about 0.24 ms per delegated write, up to about 1.7 ms for a 16-of-16 write; a full default block of 5,000 messages would take seconds) | operators of topic-heavy chains lower `block.max-messages`; parallel verification or a per-block signature budget is a follow-up |
+| Pending changes wait on an idle chain (activations happen at block heights, and the proposer produces no empty blocks, as with membership governance) | any traffic produces the block; an "activation due" proposer trigger is a follow-up |
 
 ## 14. Open questions
 
@@ -1410,3 +1442,42 @@ Threats and mitigations:
   profile (schema 2, `~yano/consensus-profile/v2`) in place; chains created by earlier preview
   builds fail closed and are re-created from genesis. D1, D12, D13, I1, I13, §7, M0, M6, V5 and
   OQ10 updated; schema 3 removed throughout.
+- r12 (2026-10-24; implementation notes from M0–M2, maintainer-directed implementation in this PR):
+  D12's `block-time.max-forward-skew-ms` is a registered core setting. D2 records the physical
+  layout: names hashed into keys; expiry as linked per-block batches in two queues of uniform
+  retention (credentials, receipts), because the state API has no ordered scan; one bounded
+  `governance` approvals record; per-height `activation/` lists; `receipt/` and `count` keys. D5a:
+  a cancellation cascades to later queued revisions of the entry, and a cancelled pending creation
+  frees its name. D9 pruning rewritten for the batch queues.
+- r13 (2026-10-24; implementation notes from the M2 review): the authority epoch is the revision at
+  which the current owners (or registrar set) took effect, so changes that keep the owners do not
+  cancel the owners' own queued changes (`ownersSince` in the active revision, `registrarsSince` in the
+  configuration). Revision numbers are never reused after a cancellation; a revision activates no
+  earlier than its entry's queued head (inclusion order stays activation order after a lag decrease);
+  cancelled and overridden revisions turn their command receipts into `TOPIC_COMMAND_SUPERSEDED`;
+  governance can retire (cancel) a pending-only creation. The governance approval window is committed
+  configuration (`governance-window-blocks`); one configuration change may be pending at a time;
+  governance approvers are bounded by the membership bound (32). D5, D5a updated.
+- r14 (2026-10-24; implementation notes from M3–M5): the write check (D11 steps 2–6) is one pure
+  function used at REST ingress, gossip ingress (a refused message is neither pooled nor relayed), the
+  proposer (which stamps the block time before selecting messages) and the block transition, where a
+  refusal invalidates the block. The payload view is a message subclass carrying the view, so
+  `TopicMessageView.of(message)` works in every hook; `AppBlockExecutionContext.messages()` hands out
+  payload views and `block()` keeps the framed bytes. D10's evaluator is core-api `CborSchema`. D15:
+  `topic-entry-v1` is the entry key's state proof; `topic-policy-v1` is a bundle of key proofs including
+  the consensus profile marker, with REST and an offline verifier.
+- r15 (2026-10-24; implementation notes from the M5 review): block 1 has no committed parent root, so
+  no `topic-policy-v1` proof exists for it; block 1 is *disabled* by rule and proofs start at height 2.
+  D15, I16 and the V3 genesis boundary updated.
+- r16 (2026-10-24; implementation notes from M6): the V6 showcase, enabling topics on a running chain by
+  governance, and catch-up of a restarted member through protected writes run as cluster integration tests
+  (`GovernedMembershipIntegrationTest`). V6 step 4's "block carrying a forged write is rejected" is covered
+  by the transition tests, since a member's ingress never forwards one. The topic-policy proof bundle is
+  assembled once, by the gateway, for REST and for verifiers. Plugin API level 13 carries the topic API.
+  Activations happen at block heights; the proposer produces no empty blocks, so on an idle chain a
+  pending change takes effect with the next traffic (as membership governance does). **Signature-check
+  budget** (`TopicWriteRules.check`, warm JIT, Apple M4 Max, JDK 25.0.2, 5,000 iterations × 3 rounds, at
+  `777ad98c7` plus the M2–M6 changes): one strict Ed25519 verify about 106 µs; a direct 1-of-1 write about
+  125 µs; a delegated write (session and delegation signatures) about 238 µs; a 3-of-3 write about 339 µs;
+  a 16-of-16 write is therefore about 1.7 ms. The check runs at ingress, in the proposer and in apply on
+  every member. Both limits are recorded under Risks (§13).

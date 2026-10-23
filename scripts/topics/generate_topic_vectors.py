@@ -57,11 +57,11 @@ def add_invalid(name, kind, raw_bytes, reason):
 
 
 # --- policies and configuration ----------------------------------------------------------------
-settings = [True, None, False, True, 3_600_000, 604_800_000, 4, 100_000, 1_000, 10]
-add("config", "config", [1, 1, settings])
+settings = [True, None, False, True, 3_600_000, 604_800_000, 4, 100_000, 1_000, 10, 600]
+add("config", "config", [1, 1, 1, settings])
 registrar_settings = [True, key_set(1, [OWNER_A_PK, OWNER_B_PK]), True, False, 60_000, 86_400_000, 2,
-                      500, 50, 1]
-add("config-registrars", "config", [1, 7, registrar_settings])
+                      500, 50, 1, 20]
+add("config-registrars", "config", [1, 7, 4, registrar_settings])
 
 open_policy = [0, None, None, b"", None]
 writer_policy = [key_set(1, [ISSUER_PK, WRITER_PK]), sorted([ISSUER_PK]), 3_600_000, h(b"schema-ir"), 4096]
@@ -69,12 +69,12 @@ inherit_policy = [None, None, None, None, None]
 
 # --- registry state ------------------------------------------------------------------------------
 content = [key_set(2, [OWNER_A_PK, OWNER_B_PK]), writer_policy, False]
-add("entry-active", "entry-record", [1, "acme/", [3, 120, content], 4, 1, 17])
+add("entry-active", "entry-record", [1, "acme/", [3, 120, 2, content], 4, 1, 17])
 add("entry-pending-creation", "entry-record", [1, "acme/orders", None, 1, 1, 0])
-add("queued-revision", "queued-revision", [4, 131, "acme/", 3, content])
+add("queued-revision", "queued-revision", [4, 131, "acme/", 3, content, h(b"command-message")])
 add("entry-open-retired", "entry-record",
-    [1, "acme/old", [2, 77, [key_set(1, [OWNER_A_PK]), open_policy, True]], 2, 0, 0])
-add("entry-inherit", "entry-record", [1, "acme/new", [1, 90, [key_set(1, [WRITER_PK]), inherit_policy, False]],
+    [1, "acme/old", [2, 77, 1, [key_set(1, [OWNER_A_PK]), open_policy, True]], 2, 0, 0])
+add("entry-inherit", "entry-record", [1, "acme/new", [1, 90, 1, [key_set(1, [WRITER_PK]), inherit_policy, False]],
                                       1, 0, 0])
 add("expiry-batch", "expiry-batch", [1_800_000_360_000, 42, 3, 1])
 add("expiry-batch-last", "expiry-batch", [1_800_000_360_000, 0, 1, 0])
@@ -176,7 +176,7 @@ for name, outcome in [
     add(name, "effective-outcome", outcome, digest=h(enc(outcome)).hex())
 
 # --- invalid encodings ---------------------------------------------------------------------------
-config_bytes = enc([1, 1, settings])
+config_bytes = enc([1, 1, 1, settings])
 add_invalid("non-shortest-integer", "config",
             bytes([0x83, 0x18, 0x01]) + config_bytes[2:], "version 1 encoded in two bytes")
 add_invalid("indefinite-array", "config", bytes([0x9f]) + config_bytes[1:] + bytes([0xff]), "indefinite length")

@@ -78,15 +78,16 @@ public final class TopicWireCodec {
     // ------------------------------------------------------------------ public encode / decode
 
     public static byte[] encodeConfig(Config config) {
-        return requireRecordBound(bytes(array(uint(1), uint(config.revision()), settings(config.settings()))));
+        return requireRecordBound(bytes(array(uint(1), uint(config.revision()), uint(config.registrarsSince()),
+                settings(config.settings()))));
     }
 
     public static Config decodeConfig(byte[] bytes) {
         requireRecordBound(bytes);
         return decode(bytes, item -> {
-            List<DataItem> fields = fields(item, 3);
+            List<DataItem> fields = fields(item, 4);
             version(fields.get(0));
-            return new Config(longValue(fields.get(1)), settings(fields.get(2)));
+            return new Config(longValue(fields.get(1)), longValue(fields.get(2)), settings(fields.get(3)));
         }, TopicWireCodec::encodeConfig);
     }
 
@@ -114,14 +115,14 @@ public final class TopicWireCodec {
 
     public static byte[] encodeQueuedRevision(QueuedRevision queued) {
         return bytes(array(uint(queued.revision()), uint(queued.activation()), text(queued.authority()),
-                uint(queued.authorityEpoch()), content(queued.content())));
+                uint(queued.authorityEpoch()), content(queued.content()), hash32(queued.messageId())));
     }
 
     public static QueuedRevision decodeQueuedRevision(byte[] bytes) {
         return decode(bytes, item -> {
-            List<DataItem> fields = fields(item, 5);
+            List<DataItem> fields = fields(item, 6);
             return new QueuedRevision(longValue(fields.get(0)), longValue(fields.get(1)), text(fields.get(2)),
-                    longValue(fields.get(3)), content(fields.get(4)));
+                    longValue(fields.get(3)), content(fields.get(4)), hex(fixed(fields.get(5), 32)));
         }, TopicWireCodec::encodeQueuedRevision);
     }
 
@@ -298,15 +299,16 @@ public final class TopicWireCodec {
                 bool(settings.openClaims()), bool(settings.unregisteredReject()),
                 uint(settings.maxDelegationMs()), uint(settings.maxCommandMs()),
                 uint(settings.maxPendingPerEntry()), uint(settings.maxEntries()),
-                uint(settings.maxEntriesPerNamespace()), uint(settings.activationLag()));
+                uint(settings.maxEntriesPerNamespace()), uint(settings.activationLag()),
+                uint(settings.governanceWindowBlocks()));
     }
 
     private static Settings settings(DataItem item) {
-        List<DataItem> fields = fields(item, 10);
+        List<DataItem> fields = fields(item, 11);
         return new Settings(bool(fields.get(0)), isNull(fields.get(1)) ? null : keySet(fields.get(1)),
                 bool(fields.get(2)), bool(fields.get(3)), longValue(fields.get(4)), longValue(fields.get(5)),
                 longValue(fields.get(6)), longValue(fields.get(7)), longValue(fields.get(8)),
-                longValue(fields.get(9)));
+                longValue(fields.get(9)), longValue(fields.get(10)));
     }
 
     private static Array keySet(KeySet keySet) {
@@ -390,12 +392,14 @@ public final class TopicWireCodec {
     }
 
     private static Array activeRevision(ActiveRevision revision) {
-        return array(uint(revision.revision()), uint(revision.activeFrom()), content(revision.content()));
+        return array(uint(revision.revision()), uint(revision.activeFrom()), uint(revision.ownersSince()),
+                content(revision.content()));
     }
 
     private static ActiveRevision activeRevision(DataItem item) {
-        List<DataItem> fields = fields(item, 3);
-        return new ActiveRevision(longValue(fields.get(0)), longValue(fields.get(1)), content(fields.get(2)));
+        List<DataItem> fields = fields(item, 4);
+        return new ActiveRevision(longValue(fields.get(0)), longValue(fields.get(1)), longValue(fields.get(2)),
+                content(fields.get(3)));
     }
 
     private static Array statement(CommandStatement statement) {

@@ -19,6 +19,7 @@ public final class TopicKeys {
     private static final byte[] CONFIG = ascii(PREFIX + "config");
     private static final byte[] COUNT = ascii(PREFIX + "count");
     private static final byte[] GOVERNANCE = ascii(PREFIX + "governance");
+    private static final byte[] CONFIG_PENDING = ascii(PREFIX + "config-pending");
     /** Configuration revisions are kept in history under this reserved name (D1). */
     public static final String CONFIG_HISTORY_NAME = "~config";
 
@@ -32,6 +33,11 @@ public final class TopicKeys {
     /** Total entries, pending creations included (the {@code max-entries} counter). */
     public static byte[] count() {
         return COUNT.clone();
+    }
+
+    /** The revision of the one configuration change awaiting activation, if any (D5, D13). */
+    public static byte[] configPending() {
+        return CONFIG_PENDING.clone();
     }
 
     /** The bounded list of governance approvals in progress. */

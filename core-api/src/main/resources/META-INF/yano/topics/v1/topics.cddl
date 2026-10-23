@@ -53,14 +53,17 @@ topic-settings = [
   maxPendingPerEntry:     uint,                 ; >= 1
   maxEntries:             uint,                 ; >= 1
   maxEntriesPerNamespace: uint,                 ; >= 1
-  activationLag:          uint                  ; >= 1 (blocks)
+  activationLag:          uint,                 ; >= 1 (blocks)
+  governanceWindowBlocks: uint                  ; >= 1 (blocks; approval window of topic governance)
 ]
-topic-config = [1, revision: uint, settings: topic-settings]   ; revision >= 1
+topic-config = [1, revision: uint, registrarsSince: uint, settings: topic-settings]
+; 1 <= registrarsSince <= revision: the revision at which the registrar set took effect (~registrars epoch)
 
 ; ---------------------------------------------------------------- registry state (D2)
 
 entry-content   = [owners: key-set, policy: policy, retired: bool]
-active-revision = [revision: uint, activeFrom: uint, content: entry-content]   ; both >= 1
+active-revision = [revision: uint, activeFrom: uint, ownersSince: uint, content: entry-content]
+; all >= 1; ownersSince <= revision is the revision at which the owners took effect (the authority epoch)
 entry-record    = [
   1,
   name:     name,
@@ -74,7 +77,8 @@ queued-revision = [
   activation:     uint,                         ; height at which it governs; >= 1
   authority:      tstr,
   authorityEpoch: uint,                         ; 0 for governance, "~claim" and "~issuer"
-  content:        entry-content
+  content:        entry-content,
+  messageId:      hash32                        ; the command whose receipt reports the outcome
 ]
 ; Two FIFO queues of per-block batches with uniform retention: credentials (used, revoked) and receipts.
 ; A batch header is stored per (queue, height); each item under its own key, indexed 0..count-1.
@@ -84,7 +88,8 @@ expiry-item     = [kind: 0 / 1 / 2, hash32]                 ; used, revoked, rec
 ; activation/<height> holds the count of revisions activating there; each under its own index key.
 activation      = [name, revision: uint]                    ; "~config" names a configuration revision
 receipt         = [code: tstr, activation: uint]            ; "ACCEPTED" or a refusal code; 0 = none
-governance-pending = [* [commandHash: hash32, firstSeen: uint, approvers: [+ key]]]   ; firstSeen >= 1
+governance-pending = [* [commandHash: hash32, firstSeen: uint, approvers: [+ key]]]   ; firstSeen >= 1;
+                                                                                      ; 1..32 approvers, sorted
 
 ; ---------------------------------------------------------------- owner commands on ~topics/registry (D5, D5a)
 

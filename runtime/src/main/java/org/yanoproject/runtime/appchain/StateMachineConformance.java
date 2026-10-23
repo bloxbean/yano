@@ -421,7 +421,7 @@ public final class StateMachineConformance {
                     machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
                 }
                 outcomes.put(block.height(), applyAndCommit(
-                        store, machine, settings, profile, block, stateProbes));
+                        store, machine, settings, profile, stateIdentity, block, stateProbes, maxBlockMessages));
             }
         } finally {
             store.close();
@@ -433,11 +433,17 @@ public final class StateMachineConformance {
     private static HeightOutcome applyAndCommit(AppLedgerStore store, AppStateMachine machine,
                                                 Map<String, String> settings,
                                                 AppChainConsensusProfile profile,
+                                                StateCommitmentIdentity stateIdentity,
                                                 AppBlock block,
-                                                List<StateProbe> stateProbes) {
+                                                List<StateProbe> stateProbes,
+                                                int maxBlockMessages) {
+        // The harness member matches the AppChainInfo it passes to init
+        TopicRegistryKernel topics = TopicRegistryKernel.forChain(block.chainId(), settings,
+                () -> HexUtil.encodeHexString(stateIdentity.digest()), new MemberGroup(Set.of("00".repeat(32)), 1),
+                profile.maxMessageBytes(), Math.max(1, maxBlockMessages));
         SystemInputKernel kernel = new SystemInputKernel(
                 EffectsSettings.fromSettings(settings), new ConsensusProfileGuard(profile),
-                new ObservationProfileGuard(ObservationProfileV1.disabled()));
+                new ObservationProfileGuard(ObservationProfileV1.disabled()), null, topics);
         FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
         List<String> effectHashes = new ArrayList<>(applied.fx().emitted().size());
         for (FxKernel.StagedEffect staged : applied.fx().emitted()) {

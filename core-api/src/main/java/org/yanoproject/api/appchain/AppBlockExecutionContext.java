@@ -2,8 +2,10 @@ package org.yanoproject.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import org.yanoproject.api.appchain.l1view.L1Observation;
+import org.yanoproject.api.appchain.topics.TopicPayloadMessage;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -24,11 +26,14 @@ public final class AppBlockExecutionContext {
     private final List<Integer> visibleMessageIndexes;
     private final List<SequencedL1Observation> l1Observations;
     private final Map<Integer, SequencedL1Observation> l1ObservationsByIndex;
+    /** Payload views (ADR app-layer/039 D7a) by original block index; {@link #block()} keeps the frames. */
+    private final Map<Integer, AppMessage> payloadViews;
 
     private AppBlockExecutionContext(
             AppBlock block,
             List<Integer> visibleMessageIndexes,
-            List<SequencedL1Observation> l1Observations
+            List<SequencedL1Observation> l1Observations,
+            Map<Integer, AppMessage> payloadViews
     ) {
         // Only the full-view factory introduces a block. Routed views share
         // that already-snapshotted value and therefore cannot observe caller
@@ -58,6 +63,7 @@ public final class AppBlockExecutionContext {
             }
         }
         this.l1ObservationsByIndex = Map.copyOf(indexed);
+        this.payloadViews = Map.copyOf(payloadViews);
     }
 
     /**
@@ -84,7 +90,25 @@ public final class AppBlockExecutionContext {
             observations.add(new SequencedL1Observation(
                     index, message.getMessageId(), observation));
         }
-        return new AppBlockExecutionContext(safeBlock, indexes, observations);
+        return new AppBlockExecutionContext(safeBlock, indexes, observations, Map.of());
+    }
+
+    /**
+     * The same execution view with the payload views the topic registry verified (ADR app-layer/039 D7a):
+     * {@link #messages()} hands each such message out with its verified payload as the body, under its
+     * original identity, while {@link #block()} keeps the finalized framed bytes.
+     */
+    public AppBlockExecutionContext withPayloadViews(Map<Integer, AppMessage> views) {
+        Map<Integer, AppMessage> copy = new LinkedHashMap<>();
+        Objects.requireNonNull(views, "views").forEach((index, view) -> {
+            AppMessage original = index >= 0 && index < block.messages().size() ? block.messages().get(index) : null;
+            if (original == null || !(view instanceof TopicPayloadMessage)
+                    || !Arrays.equals(original.getMessageId(), view.getMessageId())) {
+                throw new IllegalArgumentException("Payload view does not match the block message at " + index);
+            }
+            copy.put(index, view);
+        });
+        return new AppBlockExecutionContext(block, visibleMessageIndexes, l1Observations, copy);
     }
 
     public AppBlock block() {
@@ -94,7 +118,7 @@ public final class AppBlockExecutionContext {
     /** Messages visible to this execution route, in their global block order. */
     public List<AppMessage> messages() {
         return visibleMessageIndexes.stream()
-                .map(index -> snapshot(block.messages().get(index)))
+                .map(index -> snapshot(payloadViews.getOrDefault(index, block.messages().get(index))))
                 .toList();
     }
 
@@ -125,7 +149,7 @@ public final class AppBlockExecutionContext {
                 .filter(observation -> Collections.binarySearch(
                         indexes, observation.originalMessageIndex()) >= 0)
                 .toList();
-        return new AppBlockExecutionContext(block, indexes, observations);
+        return new AppBlockExecutionContext(block, indexes, observations, payloadViews);
     }
 
     public List<SequencedL1Observation> l1Observations() {
@@ -163,6 +187,9 @@ public final class AppBlockExecutionContext {
     }
 
     private static AppMessage snapshot(AppMessage message) {
+        if (message instanceof TopicPayloadMessage payload) {
+            return payload.copy();
+        }
         return AppMessage.builder()
                 .version(message.getVersion())
                 .messageId(message.getMessageId().clone())

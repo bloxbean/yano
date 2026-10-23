@@ -2,11 +2,16 @@ package org.yanoproject.api.appchain;
 
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.state.StateIntegrityReport;
+import org.yanoproject.api.appchain.state.StateProof;
 import org.yanoproject.api.appchain.state.StateProofEnvelope;
 import org.yanoproject.api.appchain.evidence.MessageInclusionProof;
+import org.yanoproject.api.appchain.topics.TopicPolicyProof;
+import org.yanoproject.api.appchain.topics.TopicState;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Role interface for interacting with this node's app chain: submit opaque
@@ -60,6 +65,45 @@ public interface AppChainGateway {
     }
 
     /** Cached state-machine operational diagnostics, excluding secret detail. */
+    /**
+     * Submit a topic-governance command (ADR app-layer/039 D5) on {@code ~governance/topics}, signed by this
+     * member through the privileged path; it is approved once the chain's consensus threshold of distinct
+     * members submit the identical command within the approval window.
+     *
+     * @return the message id
+     */
+    default String submitTopicGovernance(byte[] command) {
+        throw new UnsupportedOperationException("Topic governance is unavailable");
+    }
+
+    /** Run typed topic-registry reads against one committed state snapshot (ADR app-layer/039 D15). */
+    default <T> T readTopics(Function<TopicState, T> read) {
+        throw new UnsupportedOperationException("Topic registry reads are unavailable");
+    }
+
+    /**
+     * {@code topic-policy-v1} (ADR app-layer/039 D15): key proofs, against the committed root of block
+     * {@code height - 1}, of everything that decides the topic's effective outcome for block {@code height};
+     * empty while that state is not retained. Block 1 has no committed parent state and no proof.
+     */
+    default java.util.Optional<TopicPolicyProof> topicPolicyProof(String topic, long height) {
+        if (height < 2) {
+            throw new IllegalArgumentException("height must be at least 2 (block 1 has no committed parent state)");
+        }
+        List<TopicPolicyProof.KeyProof> proofs = new ArrayList<>();
+        StateProof proof = null;
+        for (byte[] key : TopicPolicyProof.requiredKeys(topic)) {
+            java.util.Optional<StateProofEnvelope> envelope = stateProofEnvelopeAtHeight(height - 1, key);
+            if (envelope.isEmpty()) {
+                return java.util.Optional.empty();
+            }
+            proof = envelope.get().proof();
+            proofs.add(new TopicPolicyProof.KeyProof(key, proof.presence().name(), proof.value(), proof.nativeProof()));
+        }
+        return java.util.Optional.of(new TopicPolicyProof(topic, height, proof.snapshot().identity().profile().id(),
+                proof.snapshot().stateRoot(), proofs));
+    }
+
     default Map<String, Object> stateMachineStatus() {
         return Map.of();
     }

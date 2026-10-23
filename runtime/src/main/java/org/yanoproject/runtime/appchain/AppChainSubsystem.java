@@ -56,6 +56,13 @@ import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 import org.rocksdb.WriteBatch;
 
+import org.yanoproject.api.appchain.topics.TopicCommandRules;
+import org.yanoproject.api.appchain.topics.TopicPayloadMessage;
+import org.yanoproject.api.appchain.topics.TopicRefusal;
+import org.yanoproject.api.appchain.topics.TopicState;
+import org.yanoproject.api.appchain.topics.TopicWire;
+import org.yanoproject.api.appchain.topics.TopicWireCodec;
+import org.yanoproject.api.appchain.topics.TopicWriteRules;
 import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -748,8 +755,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /** Chain-governed membership selected (ADR 008.3)? Default: static. */
     private boolean governedMode() {
-        return "governed".equalsIgnoreCase(
-                config.pluginSettings().getOrDefault("membership.mode", "static"));
+        return GovernedMembership.selected(config.pluginSettings());
     }
 
     private long parseLongSetting(String key, long defaultValue) {
@@ -762,10 +768,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * path — the public submit() rejects reserved {@code ~} topics. Callers
      * screen the command first; activation re-applies every guard rail.
      */
-    String submitGovernance(byte[] commandBody) {
+    String submitGovernance(String topic, byte[] commandBody) {
         if (!running.get())
             throw new IllegalStateException("App chain is not running");
-        AppMessage message = buildSigned(GovernedMembership.TOPIC, commandBody,
+        AppMessage message = buildSigned(topic, commandBody,
                 config.defaultTtlSeconds());
         AppMsgPool.AddResult added = pool.add(message);
         if (added == AppMsgPool.AddResult.FULL) {
@@ -1484,6 +1490,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 }
                 continue;
             }
+            if (topicRefusedOnArrival(message)) {
+                countDrop("topic_refused");
+                continue;
+            }
             route(message, ReceivedAppMessage.Source.PEER);
             relay(message);
         }
@@ -2042,7 +2052,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             throw new IllegalArgumentException("body exceeds max message size ("
                     + body.length + " > " + config.maxMessageBytes() + ")");
         String effectiveTopic = topic != null ? topic : "";
-        if (effectiveTopic.startsWith(SYSTEM_TOPIC_PREFIX))
+        // ~topics/registry is the one user-submittable system topic: the framework verifies the
+        // owner signatures inside the command, not the relaying member (ADR-039 D5).
+        if (effectiveTopic.startsWith(SYSTEM_TOPIC_PREFIX) && !TopicCommandRules.TOPIC.equals(effectiveTopic))
             throw new IllegalArgumentException("Topics starting with '~' are reserved for the framework");
         if (!validTopic(effectiveTopic))
             throw new IllegalArgumentException("topic must be at most "
@@ -2110,9 +2122,26 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         AppLedgerStore.CommittedStateSnapshot snapshot = currentLedger.captureCommittedState();
         ExpiringQueryContext context = new ExpiringQueryContext(
                 currentLedger, snapshot.height(), snapshot.stateRoot(), null);
+        TopicVerdict verdict;
+        try {
+            verdict = topicVerdict(message, context);
+        } catch (RuntimeException failure) {
+            context.expire();
+            throw failure;
+        }
+        if (verdict.refusal() != null) {
+            context.expire();
+            admissionRejectedCount.incrementAndGet();
+            throw new AppSubmissionRejectedException(verdict.refusal().name(), Map.of("detail", verdict.detail()));
+        }
+        if (TopicCommandRules.TOPIC.equals(message.getTopic())) {
+            context.expire();
+            return; // registry commands are the framework's, not the machine's
+        }
         AppStateMachine.AdmissionResult result;
         try {
-            result = stateMachine.validateForBlock(message, Math.addExact(snapshot.height(), 1L), context);
+            result = stateMachine.validateForBlock(verdict.machineMessage(), Math.addExact(snapshot.height(), 1L),
+                    context);
             if (result == null) {
                 throw new IllegalStateException("Invalid admission result");
             }
@@ -2131,6 +2160,58 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             admissionRejectedCount.incrementAndGet();
             AdmissionDiagnostics.INSTANCE.rejected(snapshot.height() + 1L, result.reason(), result.details());
             throw new AppSubmissionRejectedException(result.reason(), result.details());
+        }
+    }
+
+    /** An ingress verdict: a refusal, or the message the machine's admission receives (D7a). */
+    private record TopicVerdict(TopicRefusal refusal, String detail, AppMessage machineMessage) {
+        static TopicVerdict refused(TopicRefusal refusal, String detail) {
+            return new TopicVerdict(refusal, detail, null);
+        }
+    }
+
+    /**
+     * ADR-039 ingress check (D11) at the committed tip with the local clock as provisional block time:
+     * registry commands get command admission, ordinary topics the write check.
+     */
+    private TopicVerdict topicVerdict(AppMessage message, AppQueryContext committed) {
+        String topic = message.getTopic() != null ? message.getTopic() : "";
+        TopicState state = new TopicState(committed, consensusProfile.maxMessageBytes());
+        String generation = HexUtil.encodeHexString(stateCommitmentIdentity.digest());
+        long now = System.currentTimeMillis();
+        if (TopicCommandRules.TOPIC.equals(topic)) {
+            TopicCommandRules.Admission admission = TopicCommandRules.admit(message.getBody(), config.chainId(),
+                    generation, now, state, Set.of());
+            return admission.admitted() ? new TopicVerdict(null, null, message)
+                    : TopicVerdict.refused(admission.refusal(), admission.detail());
+        }
+        if (topic.startsWith(SYSTEM_TOPIC_PREFIX)) {
+            return new TopicVerdict(null, null, message);
+        }
+        TopicWriteRules.Result write = TopicWriteRules.check(topic, message.getBody(), config.chainId(),
+                generation, now, state, Set.of());
+        return write.allowed() ? new TopicVerdict(null, null, TopicPayloadMessage.of(message, write))
+                : TopicVerdict.refused(write.refusal(), write.detail());
+    }
+
+    /** Gossip ingress: a message the registry refuses is neither pooled nor relayed. */
+    private boolean topicRefusedOnArrival(AppMessage message) {
+        AppLedgerStore currentLedger = ledger;
+        if (!config.sequencingEnabled() || currentLedger == null) {
+            return false; // diffusion-only nodes hold no state to check against
+        }
+        AppLedgerStore.CommittedStateSnapshot snapshot = currentLedger.captureCommittedState();
+        ExpiringQueryContext context = new ExpiringQueryContext(
+                currentLedger, snapshot.height(), snapshot.stateRoot(), null);
+        try {
+            TopicVerdict verdict = topicVerdict(message, context);
+            if (verdict.refusal() != null) {
+                log.debug("Peer topic message {} refused ({}) — dropped", message.getMessageIdHex(), verdict.refusal());
+                return true;
+            }
+            return false;
+        } finally {
+            context.expire();
         }
     }
 
@@ -2206,6 +2287,41 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return currentLedger != null
                     ? currentLedger.stateProofEnvelope(config.chainId(), keySnapshot)
                     : Optional.empty();
+        });
+    }
+
+    @Override
+    public String submitTopicGovernance(byte[] command) {
+        byte[] body = Objects.requireNonNull(command, "command").clone();
+        return requireGenerationUse(() -> {
+            if (!governedMode()) {
+                throw new IllegalStateException("Topic governance requires membership.mode=governed");
+            }
+            TopicWire.GovernanceCommand decoded = TopicWireCodec.decodeGovernanceCommand(body);
+            if (!config.chainId().equals(decoded.chainId()) || !HexUtil.encodeHexString(
+                    stateCommitmentIdentity.digest()).equals(decoded.generationId())) {
+                throw new IllegalArgumentException("Governance command is for another chain generation");
+            }
+            return submitGovernance(TopicCommandRules.GOVERNANCE_TOPIC, body);
+        });
+    }
+
+    @Override
+    public <T> T readTopics(java.util.function.Function<TopicState, T> read) {
+        Objects.requireNonNull(read, "read");
+        return requireGenerationUse(() -> {
+            AppLedgerStore currentLedger = ledger;
+            if (currentLedger == null) {
+                throw new UnsupportedOperationException("App-chain state is unavailable on this node");
+            }
+            AppLedgerStore.CommittedStateSnapshot snapshot = currentLedger.captureCommittedState();
+            ExpiringQueryContext context = new ExpiringQueryContext(
+                    currentLedger, snapshot.height(), snapshot.stateRoot(), null);
+            try {
+                return read.apply(new TopicState(context, consensusProfile.maxMessageBytes()));
+            } finally {
+                context.expire();
+            }
         });
     }
 
@@ -3722,7 +3838,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     requireCertifiable(base.members().size() + 1, base.threshold());
                 }
             }
-            submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
+            submitGovernance(GovernedMembership.TOPIC,
+                    GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
         }
@@ -3755,7 +3872,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     requireCertifiable(base.members().size() - 1, base.threshold());
                 }
             }
-            submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_REMOVE,
+            submitGovernance(GovernedMembership.TOPIC,
+                    GovernedMembership.encodeCommand(GovernedMembership.OP_REMOVE,
                     HexUtil.decodeHexString(normalized), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
         }
@@ -3798,7 +3916,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             for (MemberGroup.Epoch base : governedBaseEpochs()) {
                 requireCertifiable(base.members().size(), threshold);
             }
-            submitGovernance(GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
+            submitGovernance(GovernedMembership.TOPIC,
+                    GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
                     null, threshold, GovernedMembership.DEFAULT_ACTIVATION_LAG));
             return;
         }
@@ -4922,8 +5041,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 GovernedMembership governed = new GovernedMembership(
                         group,
                         config.proposerKeyHex(),
-                        parseLongSetting("membership.approval-window-blocks",
-                                GovernedMembership.DEFAULT_APPROVAL_WINDOW_BLOCKS),
+                        GovernedMembership.approvalWindowBlocks(config),
                         MemberGroup.maxByzantineMembers(config),
                         log);
                 governed.restore(ledgerStore);
