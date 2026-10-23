@@ -29,7 +29,8 @@ public final class TopicPolicyProofVerifier {
 
     /** The proven effective outcome, or empty when the proof is incomplete, padded or does not verify. */
     public static Optional<EffectiveOutcome> verify(TopicPolicyProof proof, byte[] trustedParentRoot) {
-        if (proof == null || trustedParentRoot == null || !Arrays.equals(proof.parentRoot(), trustedParentRoot)) {
+        if (proof == null || trustedParentRoot == null || !Arrays.equals(proof.parentRoot(), trustedParentRoot)
+                || !TopicNames.isValidTopic(proof.topic())) {
             return Optional.empty();
         }
         List<byte[]> required = TopicPolicyProof.requiredKeys(proof.topic());

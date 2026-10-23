@@ -38,7 +38,6 @@ class TopicNamesTest {
         assertThat(TopicNames.applicableNames("a//b")).containsExactly("a/", "a//b");
         assertThat(TopicNames.applicableNames("Acme/x")).containsExactly("Acme/x");
         assertThat(TopicNames.applicableNames("orders.v1")).containsExactly("orders.v1");
-        assertThat(TopicNames.parent("a/b/c")).isEqualTo("a/b/");
         assertThat(TopicNames.topLevel("a/b/c")).isEqualTo("a/");
         assertThat(TopicNames.covers("a/", "a/b/c")).isTrue();
         assertThat(TopicNames.covers("a/b", "a/b/c")).as("an exact topic covers only itself").isFalse();

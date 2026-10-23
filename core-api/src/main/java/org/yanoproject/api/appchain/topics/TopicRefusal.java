@@ -2,7 +2,8 @@ package org.yanoproject.api.appchain.topics;
 
 /**
  * Refusal codes of the topic registry (ADR app-layer/039 D11). They are HTTP 400 codes at ingress;
- * {@link #receiptOnly()} codes are also recorded as receipts for commands already in a block.
+ * {@code TOPIC_COMMAND_STALE}, {@code _LIMIT} and {@code _SUPERSEDED} are receipts only: they depend on other
+ * authorized commands and never invalidate a block (D5).
  */
 public enum TopicRefusal {
     TOPIC_UNREGISTERED,
@@ -19,10 +20,5 @@ public enum TopicRefusal {
     TOPIC_COMMAND_STALE,
     TOPIC_COMMAND_EXPIRED,
     TOPIC_COMMAND_LIMIT,
-    TOPIC_COMMAND_SUPERSEDED;
-
-    /** Outcomes that depend on other authorized commands and never invalidate a block (D5). */
-    public boolean receiptOnly() {
-        return this == TOPIC_COMMAND_STALE || this == TOPIC_COMMAND_LIMIT || this == TOPIC_COMMAND_SUPERSEDED;
-    }
+    TOPIC_COMMAND_SUPERSEDED
 }

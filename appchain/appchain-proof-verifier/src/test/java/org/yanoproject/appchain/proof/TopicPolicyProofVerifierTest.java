@@ -82,6 +82,17 @@ class TopicPolicyProofVerifierTest {
 
         assertThat(TopicPolicyProofVerifier.verify(proof, new byte[32])).as("another root").isEmpty();
 
+        for (byte[] relabelled : List.of(TopicKeys.config(), TopicKeys.entry("acme/orders/"))) {
+            List<TopicPolicyProof.KeyProof> tombstoned = new ArrayList<>();
+            for (TopicPolicyProof.KeyProof keyProof : proof.proofs()) {
+                tombstoned.add(java.util.Arrays.equals(keyProof.key(), relabelled) ? new TopicPolicyProof.KeyProof(
+                        keyProof.key(), "TOMBSTONED", keyProof.value(), keyProof.proofWire()) : keyProof);
+            }
+            assertThat(TopicPolicyProofVerifier.verify(new TopicPolicyProof(TOPIC, proof.height(), proof.profile(),
+                    proof.parentRoot(), tombstoned), trie.root())).as("a present record relabelled as a tombstone")
+                    .isEmpty();
+        }
+
         List<TopicPolicyProof.KeyProof> tampered = new ArrayList<>();
         for (TopicPolicyProof.KeyProof keyProof : proof.proofs()) {
             boolean config = java.util.Arrays.equals(keyProof.key(), TopicKeys.config());

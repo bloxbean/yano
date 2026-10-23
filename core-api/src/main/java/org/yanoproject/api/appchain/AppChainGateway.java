@@ -5,6 +5,7 @@ import org.yanoproject.api.appchain.state.StateIntegrityReport;
 import org.yanoproject.api.appchain.state.StateProof;
 import org.yanoproject.api.appchain.state.StateProofEnvelope;
 import org.yanoproject.api.appchain.evidence.MessageInclusionProof;
+import org.yanoproject.api.appchain.topics.TopicNames;
 import org.yanoproject.api.appchain.topics.TopicPolicyProof;
 import org.yanoproject.api.appchain.topics.TopicState;
 
@@ -89,6 +90,9 @@ public interface AppChainGateway {
     default java.util.Optional<TopicPolicyProof> topicPolicyProof(String topic, long height) {
         if (height < 2) {
             throw new IllegalArgumentException("height must be at least 2 (block 1 has no committed parent state)");
+        }
+        if (!TopicNames.isValidTopic(topic)) {
+            throw new IllegalArgumentException("not a valid topic");
         }
         List<TopicPolicyProof.KeyProof> proofs = new ArrayList<>();
         StateProof proof = null;

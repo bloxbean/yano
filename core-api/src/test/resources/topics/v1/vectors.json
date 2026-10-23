@@ -60,12 +60,12 @@
     {
       "name": "activation-entry",
       "type": "activation",
-      "hex": "826c61636d652f6f72646572732f03"
+      "hex": "836c61636d652f6f72646572732f035820ece488cadd9d6a5b9ea0e4085ac0738d4fcde6ba944c362b6bd48de3eb30538c"
     },
     {
       "name": "activation-config",
       "type": "activation",
-      "hex": "82677e636f6e66696702"
+      "hex": "83677e636f6e666967025820daa07573133d5a4270b47c56bc87e29914cf422a5ef6025979293f2593b2b247"
     },
     {
       "name": "receipt-accepted",

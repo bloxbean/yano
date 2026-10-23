@@ -1,5 +1,7 @@
 package org.yanoproject.api.appchain.topics;
 
+import org.yanoproject.api.appchain.AppChainConfig;
+
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -12,7 +14,6 @@ import java.util.regex.Pattern;
  * and from every namespace that is a prefix of it.
  */
 public final class TopicNames {
-    public static final int MAX_TOPIC_BYTES = 256;
     private static final Pattern NAMESPACE = Pattern.compile("((?!\\.+/)[a-z0-9._-]{1,64}/)+");
 
     private TopicNames() {
@@ -23,7 +24,7 @@ public final class TopicNames {
         if (topic == null || topic.isEmpty() || topic.startsWith("~") || topic.indexOf('\0') >= 0) {
             return false;
         }
-        return topic.getBytes(StandardCharsets.UTF_8).length <= MAX_TOPIC_BYTES;
+        return topic.getBytes(StandardCharsets.UTF_8).length <= AppChainConfig.MAX_TOPIC_BYTES;
     }
 
     public static boolean isNamespace(String name) {
@@ -65,12 +66,6 @@ public final class TopicNames {
         List<String> names = ancestors(topic);
         names.add(topic);
         return names;
-    }
-
-    /** The nearest ancestor namespace, or null for a top-level name. */
-    public static String parent(String name) {
-        List<String> ancestors = ancestors(name);
-        return ancestors.isEmpty() ? null : ancestors.get(ancestors.size() - 1);
     }
 
     /** The top-level ancestor of {@code name}, or {@code name} itself when it is top-level. */

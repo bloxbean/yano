@@ -1,35 +1,27 @@
 package org.yanoproject.api.appchain.topics;
 
-import com.bloxbean.cardano.client.crypto.KeyGenUtil;
-import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.junit.jupiter.api.Test;
-import org.yanoproject.api.appchain.AppStateReader;
 import org.yanoproject.api.appchain.schema.CborSchema;
-import org.yanoproject.api.appchain.topics.TopicWire.ActiveRevision;
-import org.yanoproject.api.appchain.topics.TopicWire.Config;
 import org.yanoproject.api.appchain.topics.TopicWire.Delegation;
-import org.yanoproject.api.appchain.topics.TopicWire.EntryContent;
-import org.yanoproject.api.appchain.topics.TopicWire.EntryRecord;
 import org.yanoproject.api.appchain.topics.TopicWire.Frame;
-import org.yanoproject.api.appchain.topics.TopicWire.KeySet;
 import org.yanoproject.api.appchain.topics.TopicWire.Policy;
-import org.yanoproject.api.appchain.topics.TopicWire.Settings;
 import org.yanoproject.api.appchain.topics.TopicWire.Signature;
 import org.yanoproject.api.appchain.topics.TopicWire.WriteStatement;
 import org.yanoproject.api.appchain.topics.TopicWire.WriterProof;
 import org.yanoproject.api.appchain.topics.TopicWire.Writers;
+import org.yanoproject.api.appchain.topics.TopicTestFixtures.Key;
+import org.yanoproject.api.appchain.topics.TopicTestFixtures.State;
 import org.yanoproject.api.appchain.topics.TopicWriteRules.Result;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.yanoproject.api.appchain.topics.TopicTestFixtures.key;
+import static org.yanoproject.api.appchain.topics.TopicTestFixtures.keys;
 
 /** ADR app-layer/039 D7-D11: the write check, step by step (V3 writer and delegation cases). */
 class TopicWriteRulesTest {
@@ -104,32 +96,44 @@ class TopicWriteRulesTest {
     @Test
     void delegatedWritesAndEveryDelegationRule() {
         State state = new State().config(true);
-        state.entry("acme/", new Policy(new Writers(keys(1, issuer, a)), List.of(issuer.hex), 600_000L, null, null),
+        state.entry("acme/", new Policy(new Writers(keys(1, issuer, a)), List.of(issuer.hex()), 600_000L, null, null),
                 false);
-        Delegation delegation = delegation(issuer, session.hex, "acme/orders/", NOW - 1_000, NOW + 300_000);
+        Delegation delegation = delegation(issuer, session.hex(), "acme/orders/", NOW - 1_000, NOW + 300_000);
 
         Result ok = check(state, frame(NOW + 60_000, delegation, session));
         assertThat(ok.allowed()).isTrue();
         assertThat(ok.writer().kind()).isEqualTo(TopicWriteRules.VerifiedWriter.Kind.DELEGATED);
-        assertThat(ok.writer().issuer()).isEqualTo(issuer.hex);
+        assertThat(ok.writer().issuer()).isEqualTo(issuer.hex());
 
-        assertThat(check(state, frame(NOW + 60_000, delegation(a, session.hex, "acme/", NOW - 1, NOW + 1_000),
-                session)).refusal()).as("issuer outside the delegate set").isEqualTo(TopicRefusal.TOPIC_DELEGATION_INVALID);
-        assertThat(check(state, frame(NOW + 60_000, delegation(issuer, session.hex, "acme/other/", NOW - 1,
+        assertThat(check(state, frame(NOW + 60_000, delegation(a, session.hex(), "acme/", NOW - 1, NOW + 1_000),
+                session)).refusal()).as("issuer outside the delegate set")
+                .isEqualTo(TopicRefusal.TOPIC_DELEGATION_INVALID);
+        assertThat(check(state, frame(NOW + 60_000, delegation(issuer, session.hex(), "acme/other/", NOW - 1,
                 NOW + 1_000), session)).refusal()).as("scope").isEqualTo(TopicRefusal.TOPIC_DELEGATION_INVALID);
-        assertThat(check(state, frame(NOW + 60_000, delegation(issuer, session.hex, "acme/", NOW + 1,
+        assertThat(check(state, frame(NOW + 60_000, delegation(issuer, session.hex(), "acme/", NOW + 1,
                 NOW + 1_000), session)).refusal()).as("not yet valid").isEqualTo(TopicRefusal.TOPIC_DELEGATION_INVALID);
-        assertThat(check(state, frame(NOW + 60_000, delegation(issuer, session.hex, "acme/", NOW - 1,
+        assertThat(check(state, frame(NOW + 60_000, delegation(issuer, session.hex(), "acme/", NOW - 1,
                 NOW + 600_000), session)).refusal()).as("lifetime").isEqualTo(TopicRefusal.TOPIC_DELEGATION_INVALID);
 
         // A relay cannot swap in another issuer's delegation: the session key signed the first one's hash.
-        Delegation other = delegation(a, session.hex, "acme/orders/", NOW - 1_000, NOW + 300_000);
+        Delegation other = delegation(a, session.hex(), "acme/orders/", NOW - 1_000, NOW + 300_000);
         Frame swapped = TopicWireCodec.decodeFrame(frame(NOW + 60_000, delegation, session));
         byte[] swappedBody = TopicWireCodec.encodeFrame(new Frame(swapped.payload(), new WriterProof(
                 swapped.proof().nonce(), swapped.proof().notAfter(), swapped.proof().signatures(), other)));
-        state.entry("acme/", new Policy(new Writers(keys(1, issuer, a)), List.of(issuer.hex, a.hex).stream().sorted()
+        state.entry("acme/", new Policy(new Writers(keys(1, issuer, a)), List.of(issuer.hex(), a.hex()).stream()
+                .sorted()
                 .toList(), 600_000L, null, null), false);
         assertThat(check(state, swappedBody).refusal()).isEqualTo(TopicRefusal.TOPIC_WRITER_DENIED);
+
+        // D8, I9: an issuer delegating only under acme/orders/ cannot hand out a key scoped to all of acme/,
+        // which it could not revoke (S3)
+        State child = new State().config(true);
+        child.entry("acme/", new Policy(new Writers(keys(1, a)), null, null, null, null), false);
+        child.entry("acme/orders/", new Policy(new Writers(keys(1, issuer)), List.of(issuer.hex()), 600_000L, null,
+                null), false);
+        assertThat(check(child, frame(NOW + 60_000, delegation, session)).allowed()).isTrue();
+        assertThat(check(child, frame(NOW + 60_000, delegation(issuer, session.hex(), "acme/", NOW - 1_000,
+                NOW + 300_000), session)).refusal()).isEqualTo(TopicRefusal.TOPIC_DELEGATION_INVALID);
 
         state.revoked(TopicWireCodec.delegationHash(CHAIN, GENERATION, delegation));
         assertThat(check(state, frame(NOW + 60_000, delegation, session)).refusal())
@@ -139,7 +143,7 @@ class TopicWriteRulesTest {
     @Test
     void degenerateSessionKeysAndOtherGenerationsAreRefused() {
         State state = new State().config(true);
-        state.entry("acme/", new Policy(new Writers(keys(1, issuer)), List.of(issuer.hex), null, null, null), false);
+        state.entry("acme/", new Policy(new Writers(keys(1, issuer)), List.of(issuer.hex()), null, null, null), false);
         String identity = "01" + "00".repeat(31);
         Delegation toIdentity = delegation(issuer, identity, "acme/", NOW - 1, NOW + 60_000);
         byte[] forged = new byte[64];
@@ -169,81 +173,19 @@ class TopicWriteRulesTest {
         byte[] statement = TopicWireCodec.encodeWriteStatement(new WriteStatement(CHAIN, generation, TOPIC,
                 TopicWireCodec.blake2b256Hex(PAYLOAD), nonce(), notAfter, delegationHash));
         List<Signature> signatures = new ArrayList<>();
-        Arrays.stream(signers).sorted((x, y) -> x.hex.compareTo(y.hex))
-                .forEach(k -> signatures.add(new Signature(k.hex, k.sign(statement))));
+        Arrays.stream(signers).sorted((x, y) -> x.hex().compareTo(y.hex()))
+                .forEach(k -> signatures.add(new Signature(k.hex(), k.sign(statement))));
         return TopicWireCodec.encodeFrame(new Frame(PAYLOAD, new WriterProof(nonce(), notAfter, signatures,
                 delegation)));
     }
 
     private Delegation delegation(Key by, String delegate, String scope, long notBefore, long notAfter) {
-        Delegation unsigned = new Delegation(delegate, scope, notBefore, notAfter, by.hex, new byte[64]);
-        return new Delegation(delegate, scope, notBefore, notAfter, by.hex,
+        Delegation unsigned = new Delegation(delegate, scope, notBefore, notAfter, by.hex(), new byte[64]);
+        return new Delegation(delegate, scope, notBefore, notAfter, by.hex(),
                 by.sign(TopicWireCodec.delegationSignedBytes(CHAIN, GENERATION, unsigned)));
     }
 
     private static String nonce() {
         return "11".repeat(16);
-    }
-
-    private static KeySet keys(int threshold, Key... keys) {
-        return new KeySet(threshold, Arrays.stream(keys).map(k -> k.hex).sorted().toList());
-    }
-
-    private static Key key(int seed) {
-        byte[] bytes = new byte[32];
-        Arrays.fill(bytes, (byte) seed);
-        return new Key(bytes, HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(bytes)));
-    }
-
-    private record Key(byte[] seed, String hex) {
-        byte[] sign(byte[] message) {
-            return CryptoConfiguration.INSTANCE.getSigningProvider().sign(message, seed);
-        }
-    }
-
-    /** An in-memory parent state holding just the registry keys a test needs. */
-    private static final class State implements AppStateReader {
-        private final Map<String, byte[]> values = new HashMap<>();
-
-        State config(boolean reject) {
-            put(TopicKeys.config(), TopicWireCodec.encodeConfig(new Config(1, 1, new Settings(true, null, false,
-                    reject, 3_600_000, 3_600_000, 4, 100, 10, 1, 600))));
-            return this;
-        }
-
-        void entry(String name, Policy policy, boolean retired) {
-            put(TopicKeys.entry(name), TopicWireCodec.encodeEntryRecord(new EntryRecord(name,
-                    new ActiveRevision(1, 1, 1, new EntryContent(keys(1, key(9)), policy, retired)), 1, 0, 1)));
-        }
-
-        void schema(String hash, byte[] ir) {
-            put(TopicKeys.schema(hash), ir);
-        }
-
-        void used(String statementHash) {
-            put(TopicKeys.used(statementHash), new byte[] {1});
-        }
-
-        void revoked(String delegationHash) {
-            put(TopicKeys.revoked(delegationHash), new byte[] {1});
-        }
-
-        TopicState view() {
-            return new TopicState(this, 65_536);
-        }
-
-        private void put(byte[] key, byte[] value) {
-            values.put(HexUtil.encodeHexString(key), value);
-        }
-
-        @Override
-        public Optional<byte[]> get(byte[] key) {
-            return Optional.ofNullable(values.get(HexUtil.encodeHexString(key)));
-        }
-
-        @Override
-        public byte[] stateRoot() {
-            return new byte[32];
-        }
     }
 }

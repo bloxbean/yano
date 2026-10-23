@@ -43,6 +43,7 @@ import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import org.yanoproject.api.appchain.topics.TopicState;
 import org.yanoproject.api.appchain.topics.TopicWire;
 import org.yanoproject.api.appchain.topics.TopicWireCodec;
+import org.yanoproject.api.appchain.topics.TopicNames;
 import org.yanoproject.api.appchain.topics.TopicPolicyProof;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
@@ -1576,8 +1577,8 @@ public class AppChainResource {
         @GET
         @Path("topics/resolve")
         public Response topicResolve(@QueryParam("topic") String topic) {
-            if (topic == null || topic.isBlank()) {
-                return badRequest("'topic' is required");
+            if (!TopicNames.isValidTopic(topic)) {
+                return badRequest("'topic' must be a valid topic (1..256 UTF-8 bytes, not reserved)");
             }
             return topicRead(state -> {
                 TopicWire.EffectiveOutcome outcome = state.outcome(topic);
@@ -1617,8 +1618,8 @@ public class AppChainResource {
         @GET
         @Path("topics/proof")
         public Response topicPolicyProof(@QueryParam("topic") String topic, @QueryParam("height") String height) {
-            if (topic == null || topic.isBlank()) {
-                return badRequest("'topic' is required");
+            if (!TopicNames.isValidTopic(topic)) {
+                return badRequest("'topic' must be a valid topic (1..256 UTF-8 bytes, not reserved)");
             }
             Long requested = parseProofHeight(height);
             long blockHeight = requested != null ? requested : gateway.tipHeight() + 1;

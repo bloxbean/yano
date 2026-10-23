@@ -5,6 +5,7 @@ import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.jmt.JellyfishMerkleTree;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
+import org.yanoproject.api.appchain.AppChainConsensusProfileCommitment;
 import org.yanoproject.api.appchain.AppStateCapabilities;
 import org.yanoproject.api.appchain.AppStateWriter;
 import org.yanoproject.api.appchain.snapshot.AuthenticatedSnapshotPlanCollector;
@@ -679,17 +680,26 @@ final class AuthenticatedSnapshotRuntime {
             this.capabilities = capabilities;
         }
 
+        /**
+         * The block's writer. Framework state under {@code ~yano/} (consensus profile, topic registry) is not
+         * charged to the application budget: the machine cannot write it (FxKernel rejects the prefix) and its
+         * per-block volume is bounded by the framework itself, e.g. the topic registry's prune budget.
+         */
         AppStateWriter writer() {
             return new AppStateWriter() {
                 @Override public AppStateCapabilities capabilities() { return capabilities; }
                 @Override public void put(byte[] key, byte[] value) {
                     requireApplicationKey(key);
-                    chargeApplication(key.length + Objects.requireNonNull(value, "value").length);
+                    if (!AppChainConsensusProfileCommitment.isReserved(key)) {
+                        chargeApplication(key.length + Objects.requireNonNull(value, "value").length);
+                    }
                     delegate.put(key, value);
                 }
                 @Override public void delete(byte[] key) {
                     requireApplicationKey(key);
-                    chargeApplication(key.length);
+                    if (!AppChainConsensusProfileCommitment.isReserved(key)) {
+                        chargeApplication(key.length);
+                    }
                     delegate.delete(key);
                 }
                 @Override public Optional<byte[]> get(byte[] key) { return delegate.get(key); }

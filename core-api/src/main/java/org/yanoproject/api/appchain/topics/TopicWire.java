@@ -95,11 +95,16 @@ public final class TopicWire {
                            long maxDelegationMs, long maxCommandMs, long maxPendingPerEntry, long maxEntries,
                            long maxEntriesPerNamespace, long activationLag, long governanceWindowBlocks) {
         public static final long DEFAULT_GOVERNANCE_WINDOW_BLOCKS = 600;
+        /** Retention bound of credentials and receipts (365 days), so no setting pins an expiry queue (D9). */
+        public static final long MAX_RETENTION_MS = 31_536_000_000L;
 
         public Settings {
             if (maxDelegationMs < 1 || maxCommandMs < 1 || maxPendingPerEntry < 1 || maxEntries < 1
                     || maxEntriesPerNamespace < 1 || activationLag < 1 || governanceWindowBlocks < 1) {
                 throw new IllegalArgumentException("topic settings limits must be positive");
+            }
+            if (maxDelegationMs > MAX_RETENTION_MS || maxCommandMs > MAX_RETENTION_MS) {
+                throw new IllegalArgumentException("topic retention settings exceed " + MAX_RETENTION_MS + " ms");
             }
         }
     }
@@ -190,9 +195,14 @@ public final class TopicWire {
     }
 
     /** A queued revision to activate: an entry name, or {@link TopicKeys#CONFIG_HISTORY_NAME}. */
-    public record Activation(String name, long revision) {
+    /**
+     * An activation ticket. {@code messageId} is the command that queued the revision: a ticket left behind by a
+     * cancelled creation never matches a later creation that reuses the freed name and revision number.
+     */
+    public record Activation(String name, long revision, String messageId) {
         public Activation {
             Objects.requireNonNull(name, "name");
+            messageId = requireHash(messageId, "messageId");
             if (revision < 1) {
                 throw new IllegalArgumentException("activation revision must be positive");
             }

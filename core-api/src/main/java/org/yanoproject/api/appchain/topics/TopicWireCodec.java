@@ -60,7 +60,7 @@ import java.util.function.Function;
  */
 public final class TopicWireCodec {
     /** Upper bound of any topic-registry structure on the wire or in state. */
-    public static final int MAX_BYTES = 1 << 20;
+    private static final int MAX_BYTES = 1 << 20;
     /** Upper bound of an entry record or the configuration record (D15 {@code max-entry-record-bytes}). */
     public static final int MAX_RECORD_BYTES = 4_096;
     private static final CborStructurePreflight.Limits LIMITS =
@@ -151,13 +151,14 @@ public final class TopicWireCodec {
     }
 
     public static byte[] encodeActivation(TopicWire.Activation activation) {
-        return bytes(array(text(activation.name()), uint(activation.revision())));
+        return bytes(array(text(activation.name()), uint(activation.revision()), hash32(activation.messageId())));
     }
 
     public static TopicWire.Activation decodeActivation(byte[] bytes) {
         return decode(bytes, item -> {
-            List<DataItem> fields = fields(item, 2);
-            return new TopicWire.Activation(text(fields.get(0)), longValue(fields.get(1)));
+            List<DataItem> fields = fields(item, 3);
+            return new TopicWire.Activation(text(fields.get(0)), longValue(fields.get(1)),
+                    hex(fixed(fields.get(2), 32)));
         }, TopicWireCodec::encodeActivation);
     }
 

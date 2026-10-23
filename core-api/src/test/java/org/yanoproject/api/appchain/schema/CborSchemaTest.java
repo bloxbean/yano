@@ -3,12 +3,14 @@ package org.yanoproject.api.appchain.schema;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.time.Duration;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class CborSchemaTest {
 
@@ -35,6 +37,21 @@ class CborSchemaTest {
                 new CborSchema.MapField("sku", true, text)));
         assertThat(CborSchema.of(unordered).definition())
                 .isEqualTo(CborSchema.of(reversed).definition());
+    }
+
+    @Test
+    void nestedChoicesAtTheDepthBoundCanonicalizeInLinearTime() {
+        // 15 nested choices are the deepest IR the 32-level CBOR bound admits (two levels per choice)
+        CborSchema.Node node = CborSchema.BooleanNode.any();
+        for (int depth = 0; depth < 15; depth++) {
+            node = new CborSchema.ChoiceNode(List.of(node, new CborSchema.NullNode()));
+        }
+        CborSchema.Node deepest = node;
+        // Re-encoding every subtree per comparison took about 3^15 encodings here
+        byte[] definition = assertTimeoutPreemptively(
+                Duration.ofSeconds(1), () -> CborSchema.of(deepest).definition());
+        assertThat(assertTimeoutPreemptively(Duration.ofSeconds(1),
+                () -> CborSchema.isCanonicalDefinition(definition))).isTrue();
     }
 
     @Test

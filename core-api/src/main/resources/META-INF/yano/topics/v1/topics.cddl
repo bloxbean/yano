@@ -48,8 +48,8 @@ topic-settings = [
   registrars:             null / key-set,
   openClaims:             bool,
   unregisteredReject:     bool,
-  maxDelegationMs:        uint,                 ; >= 1
-  maxCommandMs:           uint,                 ; >= 1
+  maxDelegationMs:        uint,                 ; 1..31536000000 (365 days)
+  maxCommandMs:           uint,                 ; 1..31536000000 (365 days)
   maxPendingPerEntry:     uint,                 ; >= 1
   maxEntries:             uint,                 ; >= 1
   maxEntriesPerNamespace: uint,                 ; >= 1
@@ -86,7 +86,8 @@ expiry-batch    = [maxNotAfter: ms, next: uint, count: uint, pruned: uint]   ; n
                                                                             ; 1 <= count, 0 <= pruned < count
 expiry-item     = [kind: 0 / 1 / 2, hash32]                 ; used, revoked, receipt (hash = message id)
 ; activation/<height> holds the count of revisions activating there; each under its own index key.
-activation      = [name, revision: uint]                    ; "~config" names a configuration revision
+activation      = [name, revision: uint, messageId: hash32] ; "~config" names a configuration revision;
+                                                            ; messageId = the command that queued it
 receipt         = [code: tstr, activation: uint]            ; "ACCEPTED" or a refusal code; 0 = none
 governance-pending = [* [commandHash: hash32, firstSeen: uint, approvers: [+ key]]]   ; firstSeen >= 1;
                                                                                       ; 1..32 approvers, sorted

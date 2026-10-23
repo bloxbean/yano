@@ -304,6 +304,54 @@ outside block selection, until its epoch is active at the candidate height.
 It still expires after its TTL, so an idle chain that does not reach the
 activation height in time drops it.
 
+### 6.6 Topic registry (ADR app-layer/039)
+
+A governed chain can turn its topics into a registry: namespaces with owners,
+per-topic writer policies, short-lived session keys and optional schemas,
+enforced as block validity by every member. Static chains have no registry and
+refuse `topics.mode: enabled`. With `mode: disabled` (the default) nothing
+changes.
+
+| Key (`plugin-settings`) | Default | Meaning |
+|---|---|---|
+| `topics.mode` | `disabled` | `enabled` seeds the registry while applying block 1 |
+| `topics.creation.governance` | `true` | top-level names are created by a vote at the consensus threshold |
+| `topics.creation.registrars.keys` / `.threshold` | none | comma-separated registrar keys, k-of-n |
+| `topics.creation.open-claims` | `false` | first-come single-segment claims |
+| `topics.unregistered-topics` | `reject` | `reject` or `open` for topics no entry covers |
+| `topics.max-delegation-ms` / `topics.max-command-ms` | 3,600,000 / 604,800,000 | credential and receipt retention, at most 365 days |
+| `topics.max-pending-per-entry`, `topics.max-entries`, `topics.max-entries-per-namespace` | 4, 100,000, 1,000 | registry bounds |
+| `topics.activation-lag` | 10 | blocks between inclusion and activation |
+| `topics.governance-window-blocks` | 600 | approval window of topic governance |
+
+The YAML is a genesis seed: it is read only while applying block 1, so block 1
+is ungoverned and the seed governs from block 2. After that only committed
+configuration counts; a restart with a different `topics:` block logs a warning
+and changes nothing. Governance changes the configuration with a `GovConfigure`
+command, and can enable topics on a running governed chain the same way.
+
+- **Owner commands** ride `~topics/registry`, the one `~` topic ordinary
+  submission accepts; they are owner-signed, checked against the committed
+  registry at REST and gossip ingress, and judged again in the block.
+- **Governance** rides `~governance/topics` through
+  `POST …/admin/topics/governance` (privileged API key); each member submits its
+  copy and the command applies at the consensus threshold. Of the commands
+  nobody else has approved yet, a member may open an equal share of the 64-slot
+  record (64 ÷ members).
+- **Writes** to a protected topic carry a frame (`topics.cddl`) with the
+  writers' signatures or a session-key signature under an issuer's delegation.
+  Machines receive the verified payload under the original message id
+  (`TopicMessageView.of(message)` gives the writer); the block keeps the frame.
+- **Reads and proofs**: `GET …/topics/config`, `topics/entries/{name}`,
+  `topics/resolve?topic=`, `topics/schemas/{hash}`, `topics/receipts/{messageId}`
+  and `topics/proof?topic=&height=` (`topic-policy-v1`, verified offline by
+  `TopicPolicyProofVerifier`; heights from 2). Chain info carries `generationId`,
+  which every signed statement binds.
+- Changes activate at block heights, and the proposer makes no empty blocks:
+  on an idle chain a pending change takes effect with the next message.
+
+Authoring tools, client libraries and typed topic views are in Yano X.
+
 ## 7. State, the MPF trie, and proofs
 
 Each chain's ledger is one RocksDB instance

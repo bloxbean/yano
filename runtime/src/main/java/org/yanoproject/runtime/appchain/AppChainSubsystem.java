@@ -57,12 +57,9 @@ import org.slf4j.Logger;
 import org.rocksdb.WriteBatch;
 
 import org.yanoproject.api.appchain.topics.TopicCommandRules;
-import org.yanoproject.api.appchain.topics.TopicPayloadMessage;
-import org.yanoproject.api.appchain.topics.TopicRefusal;
 import org.yanoproject.api.appchain.topics.TopicState;
 import org.yanoproject.api.appchain.topics.TopicWire;
 import org.yanoproject.api.appchain.topics.TopicWireCodec;
-import org.yanoproject.api.appchain.topics.TopicWriteRules;
 import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -2122,7 +2119,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         AppLedgerStore.CommittedStateSnapshot snapshot = currentLedger.captureCommittedState();
         ExpiringQueryContext context = new ExpiringQueryContext(
                 currentLedger, snapshot.height(), snapshot.stateRoot(), null);
-        TopicVerdict verdict;
+        TopicRegistryKernel.Verdict verdict;
         try {
             verdict = topicVerdict(message, context);
         } catch (RuntimeException failure) {
@@ -2163,35 +2160,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
     }
 
-    /** An ingress verdict: a refusal, or the message the machine's admission receives (D7a). */
-    private record TopicVerdict(TopicRefusal refusal, String detail, AppMessage machineMessage) {
-        static TopicVerdict refused(TopicRefusal refusal, String detail) {
-            return new TopicVerdict(refusal, detail, null);
-        }
-    }
-
-    /**
-     * ADR-039 ingress check (D11) at the committed tip with the local clock as provisional block time:
-     * registry commands get command admission, ordinary topics the write check.
-     */
-    private TopicVerdict topicVerdict(AppMessage message, AppQueryContext committed) {
-        String topic = message.getTopic() != null ? message.getTopic() : "";
-        TopicState state = new TopicState(committed, consensusProfile.maxMessageBytes());
-        String generation = HexUtil.encodeHexString(stateCommitmentIdentity.digest());
-        long now = System.currentTimeMillis();
-        if (TopicCommandRules.TOPIC.equals(topic)) {
-            TopicCommandRules.Admission admission = TopicCommandRules.admit(message.getBody(), config.chainId(),
-                    generation, now, state, Set.of());
-            return admission.admitted() ? new TopicVerdict(null, null, message)
-                    : TopicVerdict.refused(admission.refusal(), admission.detail());
-        }
-        if (topic.startsWith(SYSTEM_TOPIC_PREFIX)) {
-            return new TopicVerdict(null, null, message);
-        }
-        TopicWriteRules.Result write = TopicWriteRules.check(topic, message.getBody(), config.chainId(),
-                generation, now, state, Set.of());
-        return write.allowed() ? new TopicVerdict(null, null, TopicPayloadMessage.of(message, write))
-                : TopicVerdict.refused(write.refusal(), write.detail());
+    /** ADR-039 ingress check (D11) at the committed tip with the local clock as provisional block time. */
+    private TopicRegistryKernel.Verdict topicVerdict(AppMessage message, AppQueryContext committed) {
+        return TopicRegistryKernel.judge(message, config.chainId(),
+                HexUtil.encodeHexString(stateCommitmentIdentity.digest()), System.currentTimeMillis(),
+                new TopicState(committed, consensusProfile.maxMessageBytes()), Set.of());
     }
 
     /** Gossip ingress: a message the registry refuses is neither pooled nor relayed. */
@@ -2204,9 +2177,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         ExpiringQueryContext context = new ExpiringQueryContext(
                 currentLedger, snapshot.height(), snapshot.stateRoot(), null);
         try {
-            TopicVerdict verdict = topicVerdict(message, context);
+            TopicRegistryKernel.Verdict verdict = topicVerdict(message, context);
             if (verdict.refusal() != null) {
-                log.debug("Peer topic message {} refused ({}) — dropped", message.getMessageIdHex(), verdict.refusal());
+                log.debug("Peer topic message {} refused ({}) — dropped", message.getMessageIdHex(),
+                        verdict.refusal());
                 return true;
             }
             return false;

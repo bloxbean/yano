@@ -362,7 +362,7 @@ public final class CborSchema {
             case ChoiceNode choice -> {
                 wire.add(new UnsignedInteger(NODE_CHOICE));
                 Array options = new Array();
-                canonicalNodes(choice.options()).forEach(value -> options.add(encodeNode(value)));
+                canonicalOptions(choice.options()).forEach(options::add);
                 wire.add(options);
             }
             case MapNode map -> {
@@ -470,19 +470,25 @@ public final class CborSchema {
         };
     }
 
-    private static List<Node> canonicalNodes(List<Node> options) {
-        List<Node> sorted = new ArrayList<>(options);
-        sorted.sort(Comparator.comparing(CborSchema::encodedForOrder,
-                CborSchema::compareCanonicalBytes));
-        byte[] previous = null;
-        for (Node option : sorted) {
-            byte[] encoded = encodedForOrder(option);
-            if (previous != null && Arrays.equals(previous, encoded)) {
+    /**
+     * Each option is encoded exactly once; its bytes decide the canonical order and reject duplicates.
+     * Re-encoding a subtree per comparison would make nested choices exponential in depth.
+     */
+    private static List<DataItem> canonicalOptions(List<Node> options) {
+        record Encoded(DataItem item, byte[] bytes) {
+        }
+        List<Encoded> encoded = new ArrayList<>(options.size());
+        for (Node option : options) {
+            DataItem item = encodeNode(option);
+            encoded.add(new Encoded(item, encode(item)));
+        }
+        encoded.sort((left, right) -> compareCanonicalBytes(left.bytes(), right.bytes()));
+        for (int index = 1; index < encoded.size(); index++) {
+            if (Arrays.equals(encoded.get(index - 1).bytes(), encoded.get(index).bytes())) {
                 throw invalid("duplicate schema choice option");
             }
-            previous = encoded;
         }
-        return List.copyOf(sorted);
+        return encoded.stream().map(Encoded::item).toList();
     }
 
     private static List<MapField> canonicalFields(List<MapField> fields) {
@@ -490,10 +496,6 @@ public final class CborSchema {
         sorted.sort(Comparator.comparing(field -> encodedText(field.key()),
                 CborSchema::compareCanonicalBytes));
         return List.copyOf(sorted);
-    }
-
-    private static byte[] encodedForOrder(Node node) {
-        return encode(encodeNode(node));
     }
 
     private static byte[] encodedText(String value) {

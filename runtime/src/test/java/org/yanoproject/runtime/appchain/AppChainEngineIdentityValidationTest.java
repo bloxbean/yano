@@ -16,6 +16,12 @@ import org.yanoproject.api.appchain.observation.ObservationTopics;
 import org.yanoproject.api.appchain.l1view.L1Observation;
 import org.yanoproject.api.appchain.sequencer.SequencerContext;
 import org.yanoproject.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.api.appchain.topics.TopicChainSettings;
+import org.yanoproject.api.appchain.topics.TopicCommandRules;
+import org.yanoproject.api.appchain.topics.TopicKeys;
+import org.yanoproject.api.appchain.topics.TopicRefusal;
+import org.yanoproject.api.appchain.topics.TopicWire;
+import org.yanoproject.api.appchain.topics.TopicWireCodec;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,6 +33,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -434,6 +441,56 @@ class AppChainEngineIdentityValidationTest {
         }
     }
 
+    /** ADR app-layer/039 D11, I19: a follower rejects a proposal carrying a refused topic command. */
+    @Test
+    void rejectsAProposalCarryingARefusedTopicCommand(@TempDir Path directory) throws Exception {
+        AppMessageSigner proposer = new AppMessageSigner(HexUtil.encodeHexString(filled(71)));
+        AppMessageSigner follower = new AppMessageSigner(HexUtil.encodeHexString(filled(72)));
+        Set<String> members = Set.of(proposer.publicKeyHex(), follower.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(72)))
+                .memberKeysHex(members)
+                .proposerKeyHex(proposer.publicKeyHex())
+                .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .pluginSettings(Map.of("membership.mode", "governed", "topics.mode", "enabled"))
+                .build();
+        Logger logger = mock(Logger.class);
+        AppLedgerStore ledger = new AppLedgerStore(
+                directory.resolve("ledger").toString(), logger);
+        CountDownLatch voted = new CountDownLatch(1);
+        AppChainEngine engine = new AppChainEngine(
+                config, ledger, new AppMsgPool(10), new NoOpMachine(), follower,
+                new MemberGroup(members, 1), new AlwaysSequencer(), 60_000, 10,
+                config.blockMaxBytes(), (topic, body) -> {
+                    if (ConsensusCodec.TOPIC_PREPARE.equals(topic)) {
+                        voted.countDown();
+                    }
+                    return null;
+                }, logger);
+        try {
+            AppBlock first = certify(withConsensusProfileRoot(block(
+                    AppBlock.BLOCK_VERSION, CHAIN, List.of(), proposer.publicKey()), config, ledger), proposer);
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(first)));
+            awaitTip(ledger, 1);
+
+            AppMessage forged = signedMessage(proposer, CHAIN, TopicCommandRules.TOPIC, new byte[] {1}, 1);
+            AppBlock carrying = new AppBlock(AppBlock.BLOCK_VERSION, CHAIN, 2, AppBlockCodec.blockHash(first), 0,
+                    new byte[0], first.timestamp(), AppBlockCodec.messagesRoot(List.of(forged)), first.stateRoot(),
+                    List.of(forged), proposer.publicKey(), FinalityCert.empty());
+            engine.onConsensusMessage(proposal(proposer, carrying, 2));
+            verify(logger, timeout(5_000)).warn(
+                    "Proposal at height {} carries a refused topic message ({}) — rejecting",
+                    2L, TopicRefusal.TOPIC_COMMAND_INVALID);
+            assertThat(voted.getCount()).isEqualTo(1);
+            assertThat(ledger.tipHeight()).isEqualTo(1);
+        } finally {
+            engine.close();
+            engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            ledger.close();
+        }
+    }
+
     @Test
     void proposerStampsAtLeastTheParentTimestampWhenItsClockTrails(@TempDir Path directory)
             throws Exception {
@@ -604,6 +661,9 @@ class AppChainEngineIdentityValidationTest {
         new ConsensusProfileGuard(EffectsSettings.from(config).consensusProfile(config))
                 .apply(1, writer);
         new ObservationProfileGuard(ObservationProfileV1.disabled()).apply(1, writer);
+        // A genesis-enabled topic registry writes its seed while applying block 1 (ADR app-layer/039 D1)
+        TopicChainSettings.genesisSeed(config.pluginSettings()).ifPresent(seed ->
+                writer.put(TopicKeys.config(), TopicWireCodec.encodeConfig(new TopicWire.Config(1, 1, seed))));
         return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
                 block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
                 trie.getRootHash(), block.messages(), block.proposer(), block.cert());

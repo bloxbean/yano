@@ -424,7 +424,7 @@ class GovernedMembershipIntegrationTest {
         byte[] whileDown = HexUtil.decodeHexString(nodeA.submit("acme/orders/new",
                 frame(generation, "acme/orders/new", new byte[] {9}, writer)));
         awaitTrue("write finalized while C is down", () -> nodeA.messageHeight(whileDown).isPresent());
-        AppChainSubsystem restarted = restartC(cluster, topics);
+        AppChainSubsystem restarted = restartC(nodeA, nodeC, topics);
         long revision = restarted.readTopics(state -> state.entry("acme/orders/").orElseThrow().active().revision());
         assertThat(revision).isEqualTo(1L);
     }
@@ -459,7 +459,8 @@ class GovernedMembershipIntegrationTest {
         boolean createdByOneVote = nodeA.readTopics(state -> state.entry("acme/").isPresent());
         assertThat(createdByOneVote).isFalse();
         nodeB.submitTopicGovernance(createAcme);
-        awaitWithBlocks("acme/ active everywhere", nodeA, () -> cluster.stream().allMatch(node -> active(node, "acme/")));
+        awaitWithBlocks("acme/ active everywhere", nodeC,
+                () -> cluster.stream().allMatch(node -> active(node, "acme/")));
 
         // (2) the owners create acme/orders with a writer policy and a schema, then rotate its owners
         byte[] schemaIr = CborSchema.of(CborSchema.IntegerNode.uint()).definition();
@@ -468,14 +469,15 @@ class GovernedMembershipIntegrationTest {
         nodeC.submit(TopicCommandRules.TOPIC, signed(new TopicWire.CommandStatement(CHAIN_ID, generation,
                 "acme/orders", "acme/", null, nonce(2), now + 600_000,
                 new TopicWire.Create(keys(ordersOwner), orders, schemaIr)), owner));
-        awaitWithBlocks("acme/orders active everywhere", nodeA,
+        awaitWithBlocks("acme/orders active everywhere", nodeC,
                 () -> cluster.stream().allMatch(node -> active(node, "acme/orders")));
         long ordersHead = nodeA.readTopics(state -> state.entry("acme/orders").orElseThrow().head());
         nodeA.submit(TopicCommandRules.TOPIC, signed(new TopicWire.CommandStatement(CHAIN_ID, generation,
                 "acme/orders", "acme/orders", ordersHead, nonce(3), now + 600_000,
                 new TopicWire.Rotate(keys(rotatedOrdersOwner))), ordersOwner));
-        awaitWithBlocks("acme/orders owners rotated", nodeA, () -> cluster.stream().allMatch(node -> node.readTopics(state ->
-                state.entry("acme/orders").orElseThrow().active().content().owners().equals(keys(rotatedOrdersOwner)))));
+        awaitWithBlocks("acme/orders owners rotated", nodeC, () -> cluster.stream().allMatch(node ->
+                node.readTopics(state -> state.entry("acme/orders").orElseThrow().active().content().owners()
+                        .equals(keys(rotatedOrdersOwner)))));
 
         // (3) the issuer delegates a session key, which writes directly to any member
         TopicWire.Delegation delegation = delegation(generation, issuer, session, "acme/orders",
@@ -513,8 +515,9 @@ class GovernedMembershipIntegrationTest {
         byte[] recover = governance(generation, 10, new TopicWire.GovRecover("acme/", keys(recovered)));
         nodeA.submitTopicGovernance(recover);
         nodeB.submitTopicGovernance(recover);
-        awaitWithBlocks("acme/ recovered everywhere", nodeA, () -> cluster.stream().allMatch(node -> node.readTopics(state ->
-                state.entry("acme/").orElseThrow().active().content().owners().equals(keys(recovered)))));
+        awaitWithBlocks("acme/ recovered everywhere", nodeC, () -> cluster.stream().allMatch(node ->
+                node.readTopics(state -> state.entry("acme/").orElseThrow().active().content().owners()
+                        .equals(keys(recovered)))));
         String staleReceipt = nodeC.readTopics(state -> state.receipt(stale).orElseThrow().code());
         assertThat(staleReceipt).isEqualTo("TOPIC_COMMAND_SUPERSEDED");
         boolean openedByStaleChange = nodeC.readTopics(state -> state.entry("acme/").orElseThrow().active()
@@ -541,15 +544,21 @@ class GovernedMembershipIntegrationTest {
                 TopicWireCodec.delegationSignedBytes(CHAIN_ID, generation, delegation))).isTrue();
     }
 
-    /** ADR app-layer/039 D1, M6: governance enables topics on a running chain; a restarted member agrees. */
+    /**
+     * ADR app-layer/039 D1, M6: governance enables topics on a running chain. A member restarted with
+     * {@code topics.mode: enabled} in its YAML before the vote computes the same state (the seed is read only
+     * for block 1), and a member restarted after it agrees.
+     */
     @Test
     void governanceEnablesTopicsOnARunningChain() throws Exception {
-        List<AppChainSubsystem> cluster = startTopicCluster(Map.of());
-        AppChainSubsystem nodeA = cluster.get(0);
-        AppChainSubsystem nodeB = cluster.get(1);
-        awaitFinalizedTraffic(nodeA, cluster, "before topics");
+        List<AppChainSubsystem> started = startTopicCluster(Map.of());
+        AppChainSubsystem nodeA = started.get(0);
+        AppChainSubsystem nodeB = started.get(1);
+        awaitFinalizedTraffic(nodeA, started, "before topics");
         byte[] loose = HexUtil.decodeHexString(nodeB.submit("loose", new byte[] {1}));
         awaitTrue("unregistered write finalized", () -> nodeA.messageHeight(loose).isPresent());
+        AppChainSubsystem seeded = restartC(nodeA, started.get(2), Map.of("topics.mode", "enabled"));
+        List<AppChainSubsystem> cluster = List.of(nodeA, nodeB, seeded);
 
         byte[] enable = governance(generation(nodeA), 1, new TopicWire.GovConfigure(new TopicWire.Settings(true,
                 null, false, true, 3_600_000, 604_800_000, 4, 100_000, 1_000, 2, 600)));
@@ -558,15 +567,19 @@ class GovernedMembershipIntegrationTest {
         awaitWithBlocks("topics enabled everywhere", nodeA, () -> cluster.stream().allMatch(node ->
                 node.readTopics(state -> state.config().isPresent())));
         assertRefused(() -> nodeB.submit("loose", new byte[] {2}), "TOPIC_UNREGISTERED");
+        awaitTrue("roots agree", () -> cluster.stream().allMatch(node -> node.tipHeight() == nodeA.tipHeight()
+                && Arrays.equals(node.stateRoot(), nodeA.stateRoot())));
 
-        AppChainSubsystem restarted = restartC(cluster, Map.of());
+        AppChainSubsystem restarted = restartC(nodeA, seeded, Map.of());
         long configRevision = restarted.readTopics(state -> state.config().orElseThrow().revision());
         assertThat(configRevision).isEqualTo(1L);
     }
 
     /**
      * Waits for a registry activation. Activations happen at block heights and an idle chain produces no
-     * blocks, so this keeps blocks coming: each nudge is one member's vote that never reaches the threshold.
+     * blocks, so this keeps blocks coming: each nudge is one member's vote that never reaches the threshold
+     * (beyond that member's share of open commands it is refused with a receipt, which still makes a block).
+     * Nudge through a member that casts no real vote later, or its votes would hit its share.
      */
     private static void awaitWithBlocks(String what, AppChainSubsystem node, BooleanSupplier condition)
             throws InterruptedException {
@@ -598,9 +611,8 @@ class GovernedMembershipIntegrationTest {
     }
 
     /** Restart C on its own ledger and wait until it has caught up with A. */
-    private AppChainSubsystem restartC(List<AppChainSubsystem> cluster, Map<String, String> topics) throws Exception {
-        AppChainSubsystem nodeA = cluster.get(0);
-        AppChainSubsystem nodeC = cluster.get(2);
+    private AppChainSubsystem restartC(AppChainSubsystem nodeA, AppChainSubsystem nodeC, Map<String, String> topics)
+            throws Exception {
         if (nodes.remove(nodeC)) {
             nodeC.stop();
         }

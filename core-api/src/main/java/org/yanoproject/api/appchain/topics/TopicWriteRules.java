@@ -7,6 +7,7 @@ import org.yanoproject.api.appchain.topics.TopicWire.Delegation;
 import org.yanoproject.api.appchain.topics.TopicWire.EffectiveOutcome;
 import org.yanoproject.api.appchain.topics.TopicWire.Frame;
 import org.yanoproject.api.appchain.topics.TopicWire.KeySet;
+import org.yanoproject.api.appchain.topics.TopicWire.OutcomeKind;
 import org.yanoproject.api.appchain.topics.TopicWire.ResolvedPolicy;
 import org.yanoproject.api.appchain.topics.TopicWire.Signature;
 import org.yanoproject.api.appchain.topics.TopicWire.WriteStatement;
@@ -144,11 +145,21 @@ public final class TopicWriteRules {
         byte[] signed = TopicWireCodec.delegationSignedBytes(chainId, generationId, delegation);
         boolean valid = policy.delegate().contains(delegation.issuer())
                 && TopicNames.covers(delegation.scope(), topic)
+                && mayDelegate(state, delegation.scope(), delegation.issuer())
                 && delegation.notBefore() <= blockTime && blockTime <= delegation.notAfter()
                 && delegation.notAfter() - delegation.notBefore() <= policy.maxDelegationMs()
                 && StrictEd25519.verify(HexUtil.decodeHexString(delegation.issuer()), delegation.sig(), signed)
                 && !state.revoked(delegationHash);
         return valid ? null : TopicRefusal.TOPIC_DELEGATION_INVALID;
+    }
+
+    /**
+     * The issuer may delegate the whole scope (D8, I9). Writes and {@code ~issuer} revocations share this rule,
+     * so an issuer can always revoke every delegation that is usable.
+     */
+    static boolean mayDelegate(TopicState state, String scope, String issuer) {
+        EffectiveOutcome outcome = state.outcome(scope);
+        return outcome.kind() == OutcomeKind.POLICY && outcome.policy().delegate().contains(issuer);
     }
 
     private static Result payloadChecks(byte[] payload, ResolvedPolicy policy, TopicState state, Result allowed) {

@@ -108,6 +108,37 @@ final class TopicRegistryKernel {
                 maxBlockMessages);
     }
 
+    /** The D11 verdict on one message: a refusal, or the message the machine's admission receives (D7a). */
+    record Verdict(TopicRefusal refusal, String detail, AppMessage machineMessage, TopicWriteRules.Result write) {
+        boolean allowed() {
+            return refusal == null;
+        }
+    }
+
+    /**
+     * D11 for one message against committed (parent) state, as REST and gossip ingress and the proposer judge
+     * it: registry commands get command admission, other {@code ~} topics pass, ordinary topics the write check.
+     *
+     * @param earlierStatements statement hashes of protected writes earlier in the candidate block (D9)
+     */
+    static Verdict judge(AppMessage message, String chainId, String generationId, long blockTime, TopicState state,
+                         Set<String> earlierStatements) {
+        String topic = message.getTopic() != null ? message.getTopic() : "";
+        if (TopicCommandRules.TOPIC.equals(topic)) {
+            TopicCommandRules.Admission admission = TopicCommandRules.admit(message.getBody(), chainId, generationId,
+                    blockTime, state, Set.of());
+            return admission.admitted() ? new Verdict(null, null, message, null)
+                    : new Verdict(admission.refusal(), admission.detail(), null, null);
+        }
+        if (topic.startsWith("~")) {
+            return new Verdict(null, null, message, null);
+        }
+        TopicWriteRules.Result write = TopicWriteRules.check(topic, message.getBody(), chainId, generationId,
+                blockTime, state, earlierStatements);
+        return write.allowed() ? new Verdict(null, null, TopicPayloadMessage.of(message, write), write)
+                : new Verdict(write.refusal(), write.detail(), null, null);
+    }
+
     /**
      * Commands and writes of the block, in block order, before the state machine runs. A write that fails
      * the D11 check invalidates the block; a protected write's statement is recorded as used (D9).
@@ -146,8 +177,7 @@ final class TopicRegistryKernel {
         TopicWriteRules.Result result = TopicWriteRules.check(message.getTopic(), message.getBody(), chainId,
                 generationId.get(), block.timestamp(), new TopicState(state, maxMessageBytes), statementsInBlock);
         if (!result.allowed()) {
-            throw new IllegalArgumentException("block carries a refused topic write: " + result.refusal()
-                    + " (" + result.detail() + ")");
+            throw new TopicRefusedException("a refused topic write", result.refusal(), result.detail());
         }
         if (result.framed()) {
             statementsInBlock.add(result.statementHash());
@@ -175,9 +205,9 @@ final class TopicRegistryKernel {
         TopicCommandRules.Admission admission = TopicCommandRules.admit(message.getBody(), chainId,
                 generationId.get(), block.timestamp(), view, schemasStoredInBlock);
         if (!admission.admitted()) {
-            // Followers refuse such a block before applying it (I19); reaching here is a proposer bug.
-            throw new IllegalArgumentException("block carries an inadmissible topic command: "
-                    + admission.refusal() + " (" + admission.detail() + ")");
+            // The proposer never selects it (I19); a follower rejects the proposal on this refusal.
+            throw new TopicRefusedException("an inadmissible topic command", admission.refusal(),
+                    admission.detail());
         }
         Config config = view.config().orElseThrow();
         RegistryCommand command = admission.command();
@@ -185,23 +215,31 @@ final class TopicRegistryKernel {
         String messageId = messageId(message);
         long epoch = admission.authorityEpoch();
         Receipt receipt = switch (statement.operation()) {
-            case Create create -> {
-                storeSchema(create.policy().schema(), create.schemaIr(), state, schemasStoredInBlock);
-                yield create(block, statement.target(), statement.authority(), epoch,
-                        new EntryContent(create.owners(), create.policy(), false), config, messageId, state);
-            }
+            case Create create -> storeSchemaIfAccepted(create(block, statement.target(), statement.authority(),
+                    epoch, new EntryContent(create.owners(), create.policy(), false), config, messageId, state),
+                    create.policy().schema(), create.schemaIr(), state, schemasStoredInBlock);
             case Revoke revoke -> revoke(block, statement, revoke.delegation(), state, revokedInBlock);
-            case Update update -> {
-                storeSchema(update.policy().schema(), update.schemaIr(), state, schemasStoredInBlock);
-                yield change(block, statement, epoch, config, messageId, state,
-                        content -> new EntryContent(content.owners(), update.policy(), content.retired()));
-            }
+            case Update update -> storeSchemaIfAccepted(change(block, statement, epoch, config, messageId, state,
+                    content -> new EntryContent(content.owners(), update.policy(), content.retired())),
+                    update.policy().schema(), update.schemaIr(), state, schemasStoredInBlock);
             case Rotate rotate -> change(block, statement, epoch, config, messageId, state,
                     content -> new EntryContent(rotate.owners(), content.policy(), content.retired()));
             case Retire ignored -> change(block, statement, epoch, config, messageId, state,
                     content -> new EntryContent(content.owners(), content.policy(), true));
         };
-        writeReceipt(block, messageId, receipt, config.settings().maxCommandMs(), state);
+        // Claim signers choose their own keys, so a refused claim leaves no receipt (state anyone could mint)
+        if (receipt.code().equals(Receipt.ACCEPTED) || !TopicWire.AUTHORITY_CLAIM.equals(statement.authority())) {
+            writeReceipt(block, messageId, receipt, config.settings().maxCommandMs(), state);
+        }
+    }
+
+    /** IR is stored only for a command that took effect, so stale or over-limit commands leave nothing (D10). */
+    private static Receipt storeSchemaIfAccepted(Receipt receipt, String schema, byte[] ir, AppStateWriter state,
+                                                 Set<String> schemasStoredInBlock) {
+        if (receipt.code().equals(Receipt.ACCEPTED)) {
+            storeSchema(schema, ir, state, schemasStoredInBlock);
+        }
+        return receipt;
     }
 
     private Receipt create(AppBlock block, String name, String authority, long epoch, EntryContent content,
@@ -278,7 +316,7 @@ final class TopicRegistryKernel {
         return new Receipt(Receipt.ACCEPTED, block.height() + 1);
     }
 
-    private void storeSchema(String schema, byte[] ir, AppStateWriter state, Set<String> schemasStoredInBlock) {
+    private static void storeSchema(String schema, byte[] ir, AppStateWriter state, Set<String> schemasStoredInBlock) {
         if (ir != null && state.get(TopicKeys.schema(schema)).isEmpty()) {
             state.put(TopicKeys.schema(schema), ir);
             schemasStoredInBlock.add(schema);
@@ -286,6 +324,17 @@ final class TopicRegistryKernel {
     }
 
     // ------------------------------------------------------------------ governance commands (D5, D13)
+
+    /**
+     * The configuration governing this block's governance: the committed one, or while applying block 1 of a
+     * genesis-enabled chain the seed, which that block writes after its messages (D1). Node-local YAML is
+     * never read at any other height, so a restart with a different YAML cannot change consensus state.
+     */
+    private Optional<Config> governingConfig(TopicState view, long height) {
+        Optional<Config> committed = view.config();
+        return committed.isPresent() || height != 1 || genesisSeed == null
+                ? committed : Optional.of(new Config(1, 1, genesisSeed));
+    }
 
     private void govern(AppBlock block, AppMessage message, AppStateWriter state, Set<String> schemasStoredInBlock) {
         String sender = HexUtil.encodeHexString(message.getSender()).toLowerCase(Locale.ROOT);
@@ -302,13 +351,11 @@ final class TopicRegistryKernel {
         String hash = TopicWireCodec.blake2b256Hex(message.getBody());
         long height = block.height();
         TopicState view = new TopicState(state, maxMessageBytes);
-        Optional<Config> config = view.config();
-        // The window is committed configuration, never node-local YAML (it decides authenticated state).
+        Optional<Config> config = governingConfig(view, height);
         long window = config.map(c -> c.settings().governanceWindowBlocks())
                 .orElse(Settings.DEFAULT_GOVERNANCE_WINDOW_BLOCKS);
-        long maxCommandMs = config.map(c -> c.settings().maxCommandMs())
-                .orElseGet(() -> command.operation() instanceof GovConfigure configure
-                        ? configure.settings().maxCommandMs() : 0L);
+        // Receipts only under a governing configuration: an unapproved command never sets its own retention.
+        long maxCommandMs = config.map(c -> c.settings().maxCommandMs()).orElse(0L);
         List<GovernanceApproval> pending = new ArrayList<>();
         GovernanceApproval current = null;
         for (GovernanceApproval approval : view.governancePending()) {
@@ -326,7 +373,10 @@ final class TopicRegistryKernel {
         boolean approved = approvers.size() >= group.thresholdAt(height);
         Receipt receipt = null;
         if (!approved) {
-            if (current != null || pending.size() < MAX_GOVERNANCE_PENDING) {
+            // Each member has an equal share of the bounded record for commands nobody else has approved yet,
+            // so one member cannot fill it and deny governance to the others.
+            long opened = pending.stream().filter(approval -> approval.approvers().equals(List.of(sender))).count();
+            if (current != null || pending.size() < MAX_GOVERNANCE_PENDING && opened < proposalShare(height)) {
                 pending.add(new GovernanceApproval(hash, current == null ? height : current.firstSeen(),
                         List.copyOf(approvers)));
             } else {
@@ -342,24 +392,27 @@ final class TopicRegistryKernel {
         }
     }
 
+    /** Commands one member may have open with no other approver: an equal share of the record (D5). */
+    int proposalShare(long height) {
+        return Math.max(1, MAX_GOVERNANCE_PENDING / group.membersAt(height).size());
+    }
+
     private Receipt applyGovernance(AppBlock block, GovernanceCommand command, String messageId,
                                     AppStateWriter state, Set<String> schemasStoredInBlock) {
         TopicState view = new TopicState(state, maxMessageBytes);
-        Optional<Config> maybeConfig = view.config();
+        Optional<Config> maybeConfig = governingConfig(view, block.height());
         if (command.operation() instanceof GovConfigure configure) {
             if (state.get(TopicKeys.configPending()).isPresent()) {
                 return new Receipt(TopicRefusal.TOPIC_COMMAND_LIMIT.name(), 0); // one configuration change at a time
             }
             long lag = maybeConfig.map(config -> config.settings().activationLag())
                     .orElse(configure.settings().activationLag());
-            // A genesis-enabled chain's seed is revision 1 even before block 1 has written it.
-            long current = maybeConfig.map(Config::revision).orElse(genesisSeed != null ? 1L : 0L);
-            long revision = current + 1;
+            long revision = maybeConfig.map(Config::revision).orElse(0L) + 1;
             long activation = block.height() + lag;
             state.put(TopicKeys.queued(CONFIG, revision), TopicWireCodec.encodeConfig(
                     new Config(revision, revision, configure.settings())));
             state.put(TopicKeys.configPending(), TopicKeys.u64(revision));
-            addActivation(state, activation, new Activation(CONFIG, revision));
+            addActivation(state, activation, new Activation(CONFIG, revision, messageId));
             return new Receipt(Receipt.ACCEPTED, activation);
         }
         if (maybeConfig.isEmpty()) {
@@ -372,16 +425,14 @@ final class TopicRegistryKernel {
                         || !TopicNames.isValidEntryName(create.name())) {
                     yield new Receipt(TopicRefusal.TOPIC_COMMAND_DENIED.name(), 0);
                 }
-                String schema = create.policy().schema();
-                if (schema != null && !schema.isEmpty() && create.schemaIr() == null && !view.hasSchema(schema)) {
-                    yield new Receipt(TopicRefusal.TOPIC_COMMAND_INVALID.name(), 0);
+                TopicCommandRules.Admission schema = TopicCommandRules.checkSchema(create.policy(),
+                        create.schemaIr(), view, schemasStoredInBlock);
+                if (schema != null) {
+                    yield new Receipt(schema.refusal().name(), 0);
                 }
-                if (create.schemaIr() != null && !TopicCommandRules.validSchemaIr(schema, create.schemaIr())) {
-                    yield new Receipt(TopicRefusal.TOPIC_COMMAND_INVALID.name(), 0);
-                }
-                storeSchema(schema, create.schemaIr(), state, schemasStoredInBlock);
-                yield create(block, create.name(), GOVERNANCE_AUTHORITY, 0,
-                        new EntryContent(create.owners(), create.policy(), false), config, messageId, state);
+                yield storeSchemaIfAccepted(create(block, create.name(), GOVERNANCE_AUTHORITY, 0,
+                        new EntryContent(create.owners(), create.policy(), false), config, messageId, state),
+                        create.policy().schema(), create.schemaIr(), state, schemasStoredInBlock);
             }
             case GovRecover recover -> override(block, recover.name(), config, messageId, state,
                     content -> new EntryContent(recover.owners(), content.policy(), content.retired()));
@@ -439,7 +490,7 @@ final class TopicRegistryKernel {
             if (CONFIG.equals(activation.name())) {
                 activateConfig(activation.revision(), activationHeight, state);
             } else {
-                activateEntry(activation.name(), activation.revision(), activationHeight, state);
+                activateEntry(activation, activationHeight, state);
             }
         }
     }
@@ -464,13 +515,16 @@ final class TopicRegistryKernel {
                 new Config(next.revision(), registrarsSince, next.settings())));
     }
 
-    private void activateEntry(String name, long revision, long activationHeight, AppStateWriter state) {
+    private void activateEntry(Activation activation, long activationHeight, AppStateWriter state) {
+        String name = activation.name();
+        long revision = activation.revision();
         TopicState view = new TopicState(state, maxMessageBytes);
         Optional<QueuedRevision> maybeQueued = view.queued(name, revision);
         Optional<EntryRecord> maybeRecord = view.entry(name);
         if (maybeQueued.isEmpty() || maybeRecord.isEmpty()
-                || maybeQueued.get().activation() != activationHeight) {
-            return; // cancelled by a governance override or an earlier cancellation
+                || maybeQueued.get().activation() != activationHeight
+                || !maybeQueued.get().messageId().equals(activation.messageId())) {
+            return; // cancelled, or a stale ticket of a cancelled creation whose name was reused
         }
         QueuedRevision queued = maybeQueued.get();
         EntryRecord record = maybeRecord.get();
@@ -555,7 +609,7 @@ final class TopicRegistryKernel {
     }
 
     /** Append to this block's batch of the item's queue; batches are linked in height order for FIFO pruning. */
-    void addExpiry(long height, ExpiryItem item, long notAfter, AppStateWriter state) {
+    private void addExpiry(long height, ExpiryItem item, long notAfter, AppStateWriter state) {
         int queue = item.kind() == ExpiryItem.RECEIPT ? TopicKeys.RECEIPT_QUEUE : TopicKeys.CREDENTIAL_QUEUE;
         byte[] key = TopicKeys.expiryBatch(queue, height);
         Optional<ExpiryBatch> existing = state.get(key).map(TopicWireCodec::decodeExpiryBatch);
@@ -628,7 +682,7 @@ final class TopicRegistryKernel {
 
     private static void queue(AppStateWriter state, String name, QueuedRevision queued) {
         state.put(TopicKeys.queued(name, queued.revision()), TopicWireCodec.encodeQueuedRevision(queued));
-        addActivation(state, queued.activation(), new Activation(name, queued.revision()));
+        addActivation(state, queued.activation(), new Activation(name, queued.revision(), queued.messageId()));
     }
 
     private static void addActivation(AppStateWriter state, long height, Activation activation) {

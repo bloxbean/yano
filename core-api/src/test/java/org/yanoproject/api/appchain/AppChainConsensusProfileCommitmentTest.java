@@ -14,7 +14,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AppChainConsensusProfileCommitmentTest {
     private static final String SIGNER_1 = "11".repeat(32);
     private static final String SIGNER_2 = "22".repeat(32);
-    // Derived independently (Python: field layout + SHA-256 over the v2 domain), ADR app-layer/039 D12.
+    // Derived outside the code under test (a one-off Python encoder of the field layout + SHA-256 over the
+    // v2 domain; not kept as a script), ADR app-layer/039 D12.
     private static final String GOLDEN_BYTES = "0000000200010000000000400000000000400000"
             + "0000000500000005" + "0000000000001388"
             + "07000000800000400000000000000186a000000000000186a001000002"

@@ -18,9 +18,7 @@ import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 
 import org.yanoproject.api.appchain.topics.TopicChainSettings;
-import org.yanoproject.api.appchain.topics.TopicCommandRules;
 import org.yanoproject.api.appchain.topics.TopicKeys;
-import org.yanoproject.api.appchain.topics.TopicPayloadMessage;
 import org.yanoproject.api.appchain.topics.TopicState;
 import org.yanoproject.api.appchain.topics.TopicWire;
 import org.yanoproject.api.appchain.topics.TopicWireCodec;
@@ -975,33 +973,23 @@ final class AppChainEngine implements AutoCloseable {
         // a block carrying an inadmissible one is invalid.
         TopicState parentTopics = new TopicState(new CommittedStateReader(),
                 consensusProfileGuard.profile().maxMessageBytes());
-        boolean topicsEnabled = parentTopics.config().isPresent();
-        String generation = HexUtil.encodeHexString(stateBackend.identity().digest());
+        String generation = generationId();
         Set<String> statementsInBlock = new HashSet<>();
         candidates.removeIf(m -> {
-            String topic = m.getTopic() != null ? m.getTopic() : "";
-            if (TopicCommandRules.TOPIC.equals(topic)) {
-                TopicCommandRules.Admission admission = admitTopicCommand(m, blockTime, parentTopics);
-                if (!admission.admitted()) {
-                    AppMessageLog.LOG.info("Topic command {} is not admissible ({}) — dropped",
-                            m.getMessageIdHex(), admission.refusal());
-                    pool.remove(List.of(m));
-                    return true;
-                }
-            }
-            if (topic.startsWith("~")) {
-                return false;
-            }
-            TopicWriteRules.Result write = !topicsEnabled ? null : TopicWriteRules.check(topic, m.getBody(),
-                    config.chainId(), generation, blockTime, parentTopics, statementsInBlock);
-            if (write != null && !write.allowed()) {
-                AppMessageLog.LOG.info("Topic write {} refused ({}) — dropped", m.getMessageIdHex(), write.refusal());
+            TopicRegistryKernel.Verdict verdict = TopicRegistryKernel.judge(m, config.chainId(), generation,
+                    blockTime, parentTopics, statementsInBlock);
+            if (!verdict.allowed()) {
+                AppMessageLog.LOG.info("Topic message {} refused ({}) — dropped", m.getMessageIdHex(),
+                        verdict.refusal());
                 pool.remove(List.of(m));
                 return true;
             }
-            AppMessage machineView = write != null ? TopicPayloadMessage.of(m, write) : m;
+            if (m.getTopic() != null && m.getTopic().startsWith("~")) {
+                return false;
+            }
+            TopicWriteRules.Result write = verdict.write();
             AppStateMachine.AdmissionResult result = stateMachine.validateForBlock(
-                    machineView, candidateHeight, new CommittedStateReader());
+                    verdict.machineMessage(), candidateHeight, new CommittedStateReader());
             if (!result.isAccepted()) {
                 // Admission reasons are plugin-controlled free text. Do not
                 // copy a possibly secret-bearing reason into the default node
@@ -1010,7 +998,7 @@ final class AppChainEngine implements AutoCloseable {
                 pool.remove(List.of(m));
                 return true;
             }
-            if (write != null && write.framed()) {
+            if (write.framed()) {
                 statementsInBlock.add(write.statementHash()); // only kept messages count (D9)
             }
             return false;
@@ -1309,7 +1297,16 @@ final class AppChainEngine implements AutoCloseable {
         if (pendingRound != null) {
             discardRound();
         }
-        AppliedBlock applied = applyBlock(executionBlock, executionContext);
+        AppliedBlock applied;
+        try {
+            applied = applyBlock(executionBlock, executionContext);
+        } catch (RuntimeException failure) {
+            // D11: a proposal carrying a refused topic message is invalid, like an unauthorized result message
+            TopicRefusedException refused = TopicRefusedException.causeOf(failure).orElseThrow(() -> failure);
+            log.warn("Proposal at height {} carries a refused topic message ({}) — rejecting",
+                    block.height(), refused.refusal());
+            return;
+        }
         if (!Arrays.equals(applied.block.stateRoot(), block.stateRoot())) {
             try (applied) {
                 log.warn("Proposal state-root mismatch at height {} (local {} vs proposed {}) — rejecting",
@@ -1725,10 +1722,9 @@ final class AppChainEngine implements AutoCloseable {
         return samePreparedValue ? RecoveryProposal.PREPARED_VALUE : RecoveryProposal.INVALID;
     }
 
-    /** ADR-039 D5 admission of one registry command against the parent state at {@code blockTime}. */
-    TopicCommandRules.Admission admitTopicCommand(AppMessage message, long blockTime, TopicState parent) {
-        return TopicCommandRules.admit(message.getBody(), config.chainId(),
-                HexUtil.encodeHexString(stateBackend.identity().digest()), blockTime, parent, Set.of());
+    /** The chain generation id every topic statement binds (ADR app-layer/039 D7), lowercase hex. */
+    private String generationId() {
+        return HexUtil.encodeHexString(stateBackend.identity().digest());
     }
 
     /**
@@ -1737,16 +1733,20 @@ final class AppChainEngine implements AutoCloseable {
      */
     private TopicRegistryKernel topicKernel(AppChainConsensusProfile profile) {
         TopicRegistryKernel kernel = TopicRegistryKernel.forChain(config.chainId(), config.pluginSettings(),
-                () -> HexUtil.encodeHexString(stateBackend.identity().digest()), group, profile.maxMessageBytes(),
+                this::generationId, group, profile.maxMessageBytes(),
                 maxBlockMessages);
         Optional<TopicWire.Settings> seed = TopicChainSettings.genesisSeed(config.pluginSettings());
         if (kernel != null && seed.isPresent() && ledger.tipHeight() >= 1) {
-            // D1: the YAML is a genesis seed only; on a restart the committed configuration is the authority.
-            Optional<TopicWire.Settings> committed = ledger.stateGet(TopicKeys.config())
-                    .map(bytes -> TopicWireCodec.decodeConfig(bytes).settings());
-            if (!committed.equals(seed)) {
-                log.warn("App-chain '{}': the topics configuration in YAML differs from the committed topic "
-                        + "configuration; the committed configuration is used (ADR app-layer/039 D1)", config.chainId());
+            // D1: the YAML seed is read only while applying block 1; compare it with what block 1 wrote.
+            Optional<TopicWire.Settings> genesis = ledger.stateGet(TopicKeys.config())
+                    .map(TopicWireCodec::decodeConfig)
+                    .flatMap(current -> current.revision() == 1 ? Optional.of(current)
+                            : ledger.stateGet(TopicKeys.history(TopicKeys.CONFIG_HISTORY_NAME, 1))
+                                    .map(TopicWireCodec::decodeConfig))
+                    .map(TopicWire.Config::settings);
+            if (!genesis.equals(seed)) {
+                log.warn("App-chain '{}': the topics seed in YAML differs from the chain's genesis topic "
+                        + "configuration; it is ignored after block 1 (ADR app-layer/039 D1)", config.chainId());
             }
         }
         return kernel;

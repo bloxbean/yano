@@ -7,10 +7,8 @@ import org.yanoproject.api.appchain.topics.TopicWire.CommandStatement;
 import org.yanoproject.api.appchain.topics.TopicWire.Config;
 import org.yanoproject.api.appchain.topics.TopicWire.Create;
 import org.yanoproject.api.appchain.topics.TopicWire.Delegation;
-import org.yanoproject.api.appchain.topics.TopicWire.EffectiveOutcome;
 import org.yanoproject.api.appchain.topics.TopicWire.EntryRecord;
 import org.yanoproject.api.appchain.topics.TopicWire.KeySet;
-import org.yanoproject.api.appchain.topics.TopicWire.OutcomeKind;
 import org.yanoproject.api.appchain.topics.TopicWire.Policy;
 import org.yanoproject.api.appchain.topics.TopicWire.RegistryCommand;
 import org.yanoproject.api.appchain.topics.TopicWire.Revoke;
@@ -94,10 +92,6 @@ public final class TopicCommandRules {
         if (statement.expected() != null) {
             return Admission.refused(TopicRefusal.TOPIC_COMMAND_INVALID, "a creation names no head revision");
         }
-        Admission schema = checkSchema(create.policy(), create.schemaIr(), state, schemasStoredInBlock);
-        if (schema != null) {
-            return schema;
-        }
         KeySet signers;
         long epoch = 0;
         switch (authority) {
@@ -134,7 +128,11 @@ public final class TopicCommandRules {
                 epoch = active.get().ownersSince();
             }
         }
-        return signedBy(command, signers, epoch);
+        // Signatures before the schema: a forged command never reaches schema canonicalization
+        Admission signed = signedBy(command, signers, epoch);
+        Admission schema = signed.admitted()
+                ? checkSchema(create.policy(), create.schemaIr(), state, schemasStoredInBlock) : null;
+        return schema != null ? schema : signed;
     }
 
     /** Update, rotate and retire: the target itself or an ancestor namespace authorizes (D3). */
@@ -148,17 +146,14 @@ public final class TopicCommandRules {
                 && !(TopicNames.isNamespace(authority) && TopicNames.covers(authority, statement.target()))) {
             return Admission.refused(TopicRefusal.TOPIC_COMMAND_INVALID, "authority must be the target or an ancestor");
         }
-        if (statement.operation() instanceof Update update) {
-            Admission schema = checkSchema(update.policy(), update.schemaIr(), state, schemasStoredInBlock);
-            if (schema != null) {
-                return schema;
-            }
-        }
         Optional<ActiveRevision> active = activeRevision(state, authority);
         if (active.isEmpty()) {
             return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED, "authority has no active revision");
         }
-        return signedBy(command, active.get().content().owners(), active.get().ownersSince());
+        Admission signed = signedBy(command, active.get().content().owners(), active.get().ownersSince());
+        Admission schema = signed.admitted() && statement.operation() instanceof Update update
+                ? checkSchema(update.policy(), update.schemaIr(), state, schemasStoredInBlock) : null;
+        return schema != null ? schema : signed;
     }
 
     /** D8 revocation: the whole signed delegation, a bounded retention horizon, an authorized revoker. */
@@ -181,8 +176,7 @@ public final class TopicCommandRules {
         }
         String authority = statement.authority();
         if (TopicWire.AUTHORITY_ISSUER.equals(authority)) {
-            EffectiveOutcome outcome = state.outcome(delegation.scope());
-            if (outcome.kind() != OutcomeKind.POLICY || !outcome.policy().delegate().contains(delegation.issuer())) {
+            if (!TopicWriteRules.mayDelegate(state, delegation.scope(), delegation.issuer())) {
                 return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED,
                         "issuer is not an allowed delegator for the scope");
             }
@@ -204,7 +198,8 @@ public final class TopicCommandRules {
         for (Signature signature : command.signatures()) {
             if (!keys.keys().contains(signature.key())
                     || !StrictEd25519.verify(HexUtil.decodeHexString(signature.key()), signature.sig(), statement)) {
-                return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED, "signature is invalid or not by the authority");
+                return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED,
+                        "signature is invalid or not by the authority");
             }
         }
         if (command.signatures().size() < keys.threshold()) {
@@ -213,8 +208,11 @@ public final class TopicCommandRules {
         return new Admission(command, epoch, null, null);
     }
 
-    /** A schema hash must be stored already or come with matching IR bytes (D10). */
-    private static Admission checkSchema(Policy policy, byte[] schemaIr, TopicState state,
+    /**
+     * A schema hash must be stored already, before this block, or come with matching IR bytes (D10); null when
+     * the policy's schema reference is valid. Shared by owner commands and governance creation.
+     */
+    public static Admission checkSchema(Policy policy, byte[] schemaIr, TopicState state,
                                          Set<String> schemasStoredInBlock) {
         String schema = policy.schema();
         if (schemaIr != null) {

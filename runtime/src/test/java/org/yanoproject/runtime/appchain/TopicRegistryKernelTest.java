@@ -10,6 +10,7 @@ import org.yanoproject.api.appchain.AppChainConsensusProfile;
 import org.yanoproject.api.appchain.AppStateWriter;
 import org.yanoproject.api.appchain.FinalityCert;
 import org.yanoproject.api.appchain.codec.AppBlockCodec;
+import org.yanoproject.api.appchain.schema.CborSchema;
 import org.yanoproject.api.appchain.effects.EffectOutcomeCommitment;
 import org.yanoproject.api.appchain.effects.FinalityGate;
 import org.yanoproject.api.appchain.observation.ObservationProfileV1;
@@ -436,6 +437,136 @@ class TopicRegistryKernelTest {
     }
 
     @Test
+    void aStaleTicketOfACancelledCreationNeverActivatesItsSuccessor() {
+        Chain chain = chainWithAcme();
+        long head = chain.view().entry("acme/").orElseThrow().head();
+        TopicWire.GovRetire retire = new TopicWire.GovRetire("acme/child/");
+        AppMessage first = chain.command(create("acme/child/", "acme/", childOwner), ownerO);
+        AppMessage rotate = chain.command(statement("acme/", "acme/", head, new Rotate(keys(ownerN))), ownerO);
+        AppMessage again = chain.command(create("acme/child/", "acme/", childOwner), ownerO);
+        // One block: create, governance cancels it (freeing the name), the parent rotates, the old owners
+        // recreate the name. All activate at the same height; the first ticket must not install the second.
+        long at = chain.block(first, chain.governance(memberA, retire), chain.governance(memberB, retire),
+                rotate, again);
+        chain.blocksUntil(at + LAG);
+        assertThat(chain.view().entry("acme/").orElseThrow().active().content().owners()).isEqualTo(keys(ownerN));
+        assertThat(chain.view().entry("acme/child/")).as("recreated under the rotated-away owners").isEmpty();
+        assertThat(chain.receipt(again).code()).isEqualTo(TopicRefusal.TOPIC_COMMAND_SUPERSEDED.name());
+    }
+
+    @Test
+    void theYamlSeedIsReadOnlyForBlockOne() {
+        Chain chain = new Chain(null);
+        chain.block();
+        chain.block();
+        chain.restart(settings(null, false)); // a member restarts with topics.mode=enabled in its YAML
+        TopicWire.GovConfigure enable = new TopicWire.GovConfigure(settings(null, false));
+        long at = chain.block(chain.governance(memberA, enable), chain.governance(memberB, enable));
+        chain.blocksUntil(at + LAG);
+        assertThat(chain.view().config().orElseThrow().revision()).as("as on members without the YAML")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void anUnapprovedConfigurationLeavesNoReceipt() {
+        Chain chain = new Chain(null);
+        chain.block();
+        AppMessage alone = chain.governance(memberA, new TopicWire.GovConfigure(settings(null, false)));
+        chain.block(alone);
+        assertThat(chain.view().receipt(alone.getMessageIdHex())).isEmpty();
+        assertThat(chain.state.get(TopicKeys.expiryHead(TopicKeys.RECEIPT_QUEUE))).isEmpty();
+    }
+
+    @Test
+    void aMemberOpensABoundedNumberOfUnapprovedCommands() {
+        Chain chain = enabledChain();
+        int share = TopicRegistryKernel.MAX_GOVERNANCE_PENDING / 2; // two members
+        List<AppMessage> opened = new ArrayList<>();
+        for (int index = 0; index <= share; index++) {
+            opened.add(chain.governance(memberA, new TopicWire.GovRetire("x" + index + "/")));
+        }
+        AppMessage other = chain.governance(memberB, new TopicWire.GovRetire("y/"));
+        opened.add(other);
+        chain.block(opened.toArray(AppMessage[]::new));
+        assertThat(chain.receipt(opened.get(share)).code()).isEqualTo(TopicRefusal.TOPIC_COMMAND_LIMIT.name());
+        assertThat(chain.view().governancePending()).as("the other member still opens its own")
+                .hasSize(share + 1);
+    }
+
+    @Test
+    void refusedClaimsAndStaleCommandsLeaveNoState() {
+        Chain chain = new Chain(settings(null, true));
+        chain.block();
+        byte[] ir = CborSchema.of(CborSchema.IntegerNode.uint()).definition();
+        String schema = TopicWireCodec.blake2b256Hex(ir);
+        AppMessage claim = chain.command(create("neon/", TopicWire.AUTHORITY_CLAIM, ownerO), ownerO);
+        AppMessage rival = chain.command(statement("neon/", TopicWire.AUTHORITY_CLAIM, null,
+                new Create(keys(issuer), new Policy(null, null, null, schema, null), ir)), issuer);
+        chain.block(claim, rival);
+        assertThat(chain.receipt(claim).code()).isEqualTo("ACCEPTED");
+        assertThat(chain.view().receipt(rival.getMessageIdHex())).as("anyone can sign a claim").isEmpty();
+        assertThat(chain.view().hasSchema(schema)).as("a stale command stores no schema").isFalse();
+    }
+
+    @Test
+    void namespacesAreBoundedAndRetiredTopicsRefuseWrites() {
+        Chain chain = chainWithAcme();
+        List<AppMessage> children = new ArrayList<>();
+        for (int index = 0; index < 10; index++) {
+            children.add(chain.command(create("acme/c" + index, "acme/", childOwner), ownerO));
+        }
+        long at = chain.block(children.toArray(AppMessage[]::new));
+        assertThat(chain.receipt(children.getLast()).code()).as("max-entries-per-namespace (10, acme/ included)")
+                .isEqualTo(TopicRefusal.TOPIC_COMMAND_LIMIT.name());
+        chain.blocksUntil(at + LAG);
+        assertThat(chain.view().entry("acme/").orElseThrow().subtree()).isEqualTo(10);
+
+        long head = chain.view().entry("acme/c0").orElseThrow().head();
+        chain.blocksUntil(chain.block(chain.command(statement("acme/c0", "acme/c0", head, new TopicWire.Retire()),
+                childOwner)) + LAG);
+        assertThatThrownBy(() -> chain.block(chain.message(memberA, "acme/c0", new byte[] {1})))
+                .hasMessageContaining(TopicRefusal.TOPIC_RETIRED.name());
+    }
+
+    @Test
+    void pruningDrainsABacklogWithinItsBudget() {
+        Chain chain = new Chain(settings(null, false), new MemberGroup(Set.of(memberA.publicKeyHex(),
+                memberB.publicKeyHex()), 2), 1);
+        chain.block();
+        chain.block(chain.governance(memberA, govCreate("acme/", ownerO)),
+                chain.governance(memberB, govCreate("acme/", ownerO)));
+        chain.blocksUntil(chain.height + LAG);
+        long head = chain.view().entry("acme/").orElseThrow().head();
+        chain.blocksUntil(chain.block(chain.command(statement("acme/", "acme/", head, new Update(
+                new Policy(new Writers(keys(childOwner)), null, null, null, null), null)), ownerO)) + LAG);
+
+        long notAfter = chain.time + 60_000;
+        List<AppMessage> writes = new ArrayList<>();
+        for (int nonce = 0; nonce < 5; nonce++) {
+            writes.add(chain.message(memberA, "acme/x", frame("acme/x", new byte[] {(byte) nonce}, nonce, notAfter,
+                    null, childOwner)));
+        }
+        chain.block(writes.toArray(AppMessage[]::new));
+        assertThat(usedCount(chain)).isEqualTo(5);
+
+        chain.time = notAfter + 1;
+        List<Long> remaining = new ArrayList<>();
+        while (usedCount(chain) > 0) {
+            chain.block();
+            remaining.add(usedCount(chain));
+        }
+        // budget = 2 x max-block-messages = 2 deletions per block, the batch cursor carried between blocks
+        assertThat(remaining).containsExactly(3L, 1L, 0L);
+    }
+
+    /** Statements recorded as used: keys sharing the {@code used/} prefix (a key minus its 32-byte hash). */
+    private static long usedCount(Chain chain) {
+        String any = HexUtil.encodeHexString(TopicKeys.used("00".repeat(32)));
+        String prefix = any.substring(0, any.length() - 64);
+        return chain.state.values.keySet().stream().filter(key -> key.startsWith(prefix)).count();
+    }
+
+    @Test
     void anIssuerOutsideTheDelegateSetCannotRevoke() {
         Chain chain = chainWithAcme();
         Delegation delegation = delegation(sessionKey, chain.time + 60_000);
@@ -533,7 +664,9 @@ class TopicRegistryKernelTest {
     /** A chain of blocks over one in-memory state, driven through the kernel. */
     private final class Chain {
         private final MapState state = new MapState();
-        private final TopicRegistryKernel kernel;
+        private final MemberGroup group;
+        private final int maxBlockMessages;
+        private TopicRegistryKernel kernel;
         private long height;
         private long time = T0;
         private long sequence;
@@ -543,8 +676,18 @@ class TopicRegistryKernelTest {
         }
 
         Chain(Settings seed, Set<String> members, int threshold) {
-            kernel = new TopicRegistryKernel(CHAIN, () -> GENERATION, new MemberGroup(members, threshold), seed,
-                    65_536, 100);
+            this(seed, new MemberGroup(members, threshold), 100);
+        }
+
+        Chain(Settings seed, MemberGroup group, int maxBlockMessages) {
+            this.group = group;
+            this.maxBlockMessages = maxBlockMessages;
+            restart(seed);
+        }
+
+        /** A node restart with {@code seed} as its YAML: the state is unchanged. */
+        void restart(Settings seed) {
+            kernel = new TopicRegistryKernel(CHAIN, () -> GENERATION, group, seed, 65_536, maxBlockMessages);
         }
 
         TopicState view() {
