@@ -20,6 +20,10 @@
 //   -PengineBenchmark=true                             EngineLatencyBenchmarkTest: warm p50/p99 per engine on the
 //                                                       Amaru scenarios and the preprod/preview replay bundles
 //                                                       (ADR-057 Phase E; amaru-validator/README.md)
+//   ./gradlew :ledger-conformance:nodeDiversityReports  ADR-060: the Cardano node-diversity reports, written to
+//      -PnodeDiversityCorpora=<dir>                     build/node-diversity/yano-<version>-<yyyymmdd>-<scenario>.json
+//                                                       (or NODE_DIVERSITY_CORPORA; the corpora that
+//                                                       ledger-conformance/node-diversity/fetch-corpora.sh fetches)
 
 description = 'ADR-056 conformance harness: Amaru scenarios, coverage matrix, mutation matrix, engine baseline'
 
@@ -31,6 +35,10 @@ dependencies {
     testImplementation project(':scalus-bridge')
     // ADR-056 Phase 7c: the julc phase-2 evaluator of the java engine
     testImplementation project(':script-evaluators')
+    // ADR-060 §4-5: the UPLC reports call julc's CEK machine directly, as script-evaluators' JulcMachine does
+    testImplementation libs.julc.vm.java
+    // ADR-060 §6: the cbor-decoding report reads headers as chain sync and upstream header validation do
+    testImplementation project(':runtime')
     testImplementation libs.jackson.databind
     testImplementation libs.cardano.client.address
     if (withAmaru) {
@@ -53,6 +61,9 @@ def scenariosDir = providers.gradleProperty('amaruScenariosDir')
 def blueprintVectorsDir = providers.gradleProperty('blueprintVectors')
         .orElse(providers.environmentVariable('BLUEPRINT_VECTORS')).getOrElse('')
         ?: file('vectors/cardano-blueprint').absolutePath
+// ADR-060: the pinned corpora of the node-diversity reports (node-diversity/corpora.env).
+def nodeDiversityCorpora = providers.gradleProperty('nodeDiversityCorpora')
+        .orElse(providers.environmentVariable('NODE_DIVERSITY_CORPORA')).getOrElse('')
 // Strict since the ADR-056 Phase 5 gate: an in-scope constructor without a @Covers test fails the build.
 def strict = providers.gradleProperty('conformance.strict').getOrElse('true')
 // The Amaru module under test must report this crate version (amaru_version()'s crate= line); the reference engine
@@ -75,6 +86,14 @@ tasks.withType(Test).configureEach {
     systemProperty 'conformance.scan.dirs',
             project(':ledger-rules').layout.buildDirectory.dir('classes/java/test').get().asFile.absolutePath
     systemProperty 'conformance.report.dir', layout.buildDirectory.dir('conformance').get().asFile.absolutePath
+    if (nodeDiversityCorpora) {
+        systemProperty 'node.diversity.corpora', file(nodeDiversityCorpora).absolutePath
+    }
+    systemProperty 'node.diversity.report.dir', layout.buildDirectory.dir('node-diversity').get().asFile.absolutePath
+    // CborRuleTest's valid Conway block (runtime's test resources)
+    systemProperty 'node.diversity.conwayBlock',
+            rootProject.file('runtime/src/test/resources/wallet/eras/conway2.block').absolutePath
+    systemProperty 'node.diversity.version', project.version.toString()
     // ADR-057 Phase E engine latency benchmark (EngineLatencyBenchmarkTest): -PengineBenchmark=true, optionally
     // -PengineBenchmarkPasses=<n> (default 5) and -PengineBenchmarkWarmup=<n> (default 2); the public-network corpus runs
     // -PengineBenchmarkNetworkRepeat=<n> (default 20) times as many passes of each.
@@ -112,6 +131,34 @@ tasks.register('conformanceReport', Test) {
         if (!scenariosDir) {
             throw new GradleException('conformanceReport needs the Amaru scenarios: pass -PamaruScenariosDir=<dir> ' +
                     'or set AMARU_SCENARIOS_DIR (a clone of pragma-org/amaru at the tag in amaru-validator-wasm/AMARU_VERSION)')
+        }
+    }
+}
+
+// The report generators run only in nodeDiversityReports; their unit tests run in test.
+tasks.named('test', Test) {
+    filter {
+        excludeTestsMatching '*DiversityReportTest'
+    }
+}
+
+tasks.register('nodeDiversityReports', Test) {
+    group = 'verification'
+    description = 'ADR-060: writes the Cardano node-diversity conformance reports (needs -PnodeDiversityCorpora).'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    filter {
+        includeTestsMatching '*DiversityReportTest'
+    }
+    maxHeapSize = '4g'
+    testLogging {
+        showStandardStreams = true
+    }
+    doFirst {
+        if (!nodeDiversityCorpora) {
+            throw new GradleException('nodeDiversityReports needs the corpora: pass -PnodeDiversityCorpora=<dir> or '
+                    + 'set NODE_DIVERSITY_CORPORA (ledger-conformance/node-diversity/fetch-corpora.sh <dir> fetches '
+                    + 'them)')
         }
     }
 }

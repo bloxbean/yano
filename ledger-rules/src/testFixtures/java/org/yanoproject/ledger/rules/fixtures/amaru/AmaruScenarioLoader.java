@@ -113,6 +113,7 @@ public final class AmaruScenarioLoader {
     public static final int EXPECTED_SCENARIOS = 276;
 
     private static final String TRANSACTION_DATA = "crates/amaru-ledger/tests/data/transaction";
+    private static final String COMMON = "common/";
 
     // Haskell hardcodes these (Amaru's ProtocolParameters decoder defaults, INTERFACE.md request key 7).
     private static final long DEFAULT_MAX_REF_SCRIPT_SIZE_PER_TX = 200 * 1024;
@@ -133,7 +134,11 @@ public final class AmaruScenarioLoader {
 
     private final Path root;
 
-    /** @param root the {@code transaction} data directory (holding {@code scenarios/} and {@code common/}) */
+    /**
+     * @param root the {@code transaction} data directory (holding {@code scenarios/} and {@code common/}), or pragma's
+     *             {@code node-diversity-conformance/scenarios/ledger-rules/fixtures}, where the shared documents sit
+     *             beside {@code scenarios/} although the fixtures still name them {@code common/...}
+     */
     public AmaruScenarioLoader(Path root) {
         this.root = root;
     }
@@ -342,7 +347,11 @@ public final class AmaruScenarioLoader {
         if (value == null || !value.has("$ref")) {
             return value;
         }
-        JsonNode document = JSON.readTree(root.resolve(value.get("$ref").asText()).toFile());
+        String ref = value.get("$ref").asText();
+        if (ref.startsWith(COMMON) && !Files.isDirectory(root.resolve(COMMON))) {
+            ref = ref.substring(COMMON.length());
+        }
+        JsonNode document = JSON.readTree(root.resolve(ref).toFile());
         JsonNode overrides = value.get("$override");
         if (overrides != null && overrides.isObject()) {
             ObjectNode merged = ((ObjectNode) document).deepCopy();
