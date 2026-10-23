@@ -37,6 +37,8 @@ dependencies {
     testImplementation project(':script-evaluators')
     // ADR-060 §4-5: the UPLC reports call julc's CEK machine directly, as script-evaluators' JulcMachine does
     testImplementation libs.julc.vm.java
+    // ADR-060 §6: the cbor-decoding report reads headers as chain sync and upstream header validation do
+    testImplementation project(':runtime')
     testImplementation libs.jackson.databind
     testImplementation libs.cardano.client.address
     if (withAmaru) {
