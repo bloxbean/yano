@@ -194,11 +194,10 @@ yano.app-chain.chains[n].topics:
 ```
 
 With `mode: disabled` the topic registry does not run: no `~yano/topics/`
-keys are written and no frame is parsed. Whether a chain is byte-identical to
-today depends only on its consensus profile schema (D12, I1): a chain on
-today's profile schema 2 is unchanged; a chain on the new schema 3 differs
-only by the D12 time rules and its profile marker. Enabling topics requires
-profile schema 3 and chain-governed membership (`membership.mode: governed`,
+keys are written and no frame is parsed. Such a chain differs from today only
+by the D12 time rules, which every chain gets through the one consensus
+profile (D12, I1). Enabling topics requires chain-governed membership
+(`membership.mode: governed`,
 ADR-008.3): the governance commands of D5 — top-level creation in
 `governance` mode, owner recovery, registrar and configuration changes — use
 ADR-008.3 approval accounting, which today runs only in governed mode
@@ -882,25 +881,23 @@ a vote rule only; members catching up certified blocks do not re-apply it.
 generation: `ConsensusProfileGuard` writes it at height 1 and compares it
 byte-for-byte on every block and on restart. Today's profile is **schema
 version 2** (`AppChainConsensusProfile.SCHEMA_VERSION = 2`, marker
-`~yano/consensus-profile/v2`). D12 therefore ships as **profile schema 3**
-(marker `~yano/consensus-profile/v3`), chosen at genesis, which adds
-`block-time: { max-forward-skew-ms }` and the two rules above. The profile
-schema version is distinct from the block or consensus protocol version and
-from the topic formats (`yano-topic-*-v1`), none of which this changes.
+`~yano/consensus-profile/v2`). App chains are pre-release, so D12 changes
+that **one profile in place** instead of adding a second schema (OQ10,
+decided): schema 2 gains `block-time: { max-forward-skew-ms }` and the rules
+above, and remains the only profile any build accepts. The profile schema
+version is distinct from the block or consensus protocol version and from
+the topic formats (`yano-topic-*-v1`), none of which this changes.
 
-- New chains default to schema 3.
-- Schema-2 chains keep today's rule (`timestamp ≥ 0`); on the new build they
-  produce byte-identical blocks and roots and restart against their retained
-  schema-2 marker unchanged.
-- A retained schema-2 chain cannot switch in place (its marker would
-  mismatch); it adopts schema 3 only as a new chain generation. Retained
-  deployments are not migrated by this ADR.
-- Topics can be enabled only on schema-3 chains (D1), because delegation
-  windows and replay expiry need bounded time.
+- Every chain created by the new build has the time rules.
+- A chain created by an earlier preview build has a marker with different
+  bytes, so `ConsensusProfileGuard` refuses to start it (fail closed, "marker
+  does not match effective local profile"). Such chains are re-created from
+  genesis; there is no migration and no second accepted schema to maintain.
+- Topics need bounded time for delegation windows and replay expiry; every
+  chain has it.
 
-Keeping schema 2 accepted alongside schema 3 is a maintainer choice (OQ10).
 This decision is useful on its own: the games and any expiry logic built on
-certified time benefit on every schema-3 chain.
+certified time benefit on every chain.
 
 ### D13 — Rotation, recovery and history
 
@@ -916,7 +913,7 @@ certified time benefit on every schema-3 chain.
   its block height, so old messages stay verifiable after rotation (I11).
 - **Enabling on a running chain.** A governance command carrying the whole
   initial configuration switches `mode` to `enabled` at an activation height
-  (D1: governed-membership, schema-3 chains only). Messages before it were
+  (D1: governed-membership chains only). Messages before it were
   never subject to policies; nothing is re-judged.
 
 ### D14 — Unregistered and system topics
@@ -1081,7 +1078,7 @@ Threats and mitigations:
 
 | ID | Invariant | Decisions |
 |---|---|---|
-| I1 | A chain on consensus profile schema 2 (today's) has state roots, blocks and REST behaviour byte-identical to the pre-ADR implementation. A schema-3 chain with `mode: disabled` differs from that only by its profile marker and the D12 time rules. | D1, D12 |
+| I1 | A chain with `mode: disabled` differs from the pre-ADR implementation only by the D12 time rules and the profile's `block-time` field (and therefore its profile marker bytes); no `~yano/topics/` key is written and no frame is parsed. | D1, D12 |
 | I2 | `TopicPolicy.check` is a pure function of (message, parent committed state, block time, earlier messages in the block); every member computes the same result. | D11 |
 | I3 | A finalized block contains a message on a protected topic only if its writer proof satisfies the policy revision active at that height. | D6, D7, D11 |
 | I4 | No write-statement is accepted twice while its `notAfter` has not passed, whichever valid signatures accompany it; a delegated statement is valid only with the delegation whose hash it names. | D7, D9 |
@@ -1093,7 +1090,7 @@ Threats and mitigations:
 | I10 | Topic policies only add refusals; they never make a machine accept a message it would refuse. | D6, D11 |
 | I11 | Every historical message can be re-verified against the effective policy active at its height, given a `topic-policy-v1` proof for that height; a member can produce one while it retains the parent state, and a captured proof verifies forever. | D13, D15 |
 | I12 | Every `used/` and `revoked/` entry expires at most `max-delegation-ms` after the block that wrote it and is pruned deterministically through the `expiry/` index (at most `2 × max-block-messages` per block); live entries are those written in the last `max-delegation-ms` plus a backlog that shrinks every block. | D8, D9 |
-| I13 | On profile-schema-3 chains block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule); a proposer stamps `max(localNow, parent.timestamp)`. | D12 |
+| I13 | On every chain block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule); a proposer stamps `max(localNow, parent.timestamp)`. | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
 | I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks keep the framed bytes and message proofs resolve to them. | D7, D7a |
 | I16 | A `topic-policy-v1` proof verifies only if it covers the configuration record and the topic and every `/`-prefix of it, each with inclusion or absence, against one root, and its resolved outcome (including the unregistered fallback) matches `effectivePolicyDigest`. The active revisions and configuration committed in the root of block *h − 1* are exactly those that govern block *h*, for every *h* ≥ 1, after every D5a recheck and cancellation; on a genesis-enabled chain block 1 is governed as *disabled* and the seed governs from block 2. | D1, D5a, D15 |
@@ -1125,9 +1122,10 @@ Threats and mitigations:
 - **Yano X:** the authenticated map switches to the core schema evaluator
   with the same IR bytes, so existing collection schemas keep their
   meaning (companion ADR).
-- **Consensus profile:** schema 3 adds `block-time.max-forward-skew-ms`
-  (D12). Schema-2 chains (today's) keep running unchanged; a retained
-  schema-2 chain moves to schema 3 only as a new generation.
+- **Consensus profile:** the one profile (schema 2) gains
+  `block-time.max-forward-skew-ms` in place (D12, OQ10). Chains created by
+  earlier preview builds fail closed at start and are re-created from
+  genesis; nothing is migrated.
 
 ## 8. Alternatives considered
 
@@ -1166,13 +1164,13 @@ Threats and mitigations:
 
 | ID | Scope | Entry gate | Exit criteria |
 |---|---|---|---|
-| M0 | D12 certified time bounds as consensus profile schema 3, including the proposer clamp | ADR accepted | I13 tests, including a proposer whose clock is behind the parent's timestamp producing a valid block (no view change); a retained schema-2 chain replays and restarts byte-identically on the M0 build; schema-3 genesis commits the new field under `~yano/consensus-profile/v3`; a schema-2 marker refuses a schema-3 configuration and vice versa (fail closed); topics refuse to enable on schema 2; existing suites green |
+| M0 | D12 certified time bounds in the one consensus profile (schema 2 extended in place), including the proposer clamp | ADR accepted | I13 tests, including a proposer whose clock is behind the parent's timestamp producing a valid block (no view change); genesis commits the `block-time` field under `~yano/consensus-profile/v2`; a chain directory created by the previous build refuses to start (fail closed) with the marker-mismatch error; existing suites green after their fixtures are regenerated |
 | M1 | Freeze formats: config, entry, command statement, frame, delegation and delegation hash, write statement (all with `generationId`; write statement with the delegation hash), revocation command, expiry index key, effective-outcome digest; codes; the D7 signature rule set as one core verifier; vectors | M0 | Normative CDDL and test vectors committed; independent decoder agrees (V2); the core verifier matches libsodium on the speccheck vectors and rejects the small-order and non-canonical cases the default provider accepts (I20) |
 | M2 | Registry state, owner command admission (D5), owner and governance commands with D5a preconditions, activation of entries and configuration materialized at *a − 1*, revisions, genesis-seed handling (seed written while applying block 1, governing from block 2), subtree caps, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17, I19 tests; a block carrying an unauthorized command is rejected; a governed configuration change followed by a restart starts cleanly both with the original seed YAML and with YAML matching the current configuration (neither is used); a full resync or a member joining from genesis with non-seed YAML fails closed; on a genesis-enabled `reject` chain block 1 behaves as today and an unregistered write in block 2 is refused; multi-node replay and restart parity |
 | M3 | Writer proofs, delegations, revocation, replay guard, expiry index and pruning, follower block validity | M2 | I3, I4, I9, I12, I18, I20 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
 | M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects (with the configuration record) | M3, M4 | I15, I16 tests, including the V3 genesis-boundary vectors for heights 1 and 2 under `open` and `reject`: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
-| M6 | Qualification and showcase | M5 | I1 byte-identity on schema 2 and the stated schema-3 difference with `mode: disabled`; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; the V6 showcase runs end to end; performance budget for signature checks recorded |
+| M6 | Qualification and showcase | M5 | I1: with `mode: disabled`, only the stated D12 difference from the pre-ADR implementation; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; the V6 showcase runs end to end; performance budget for signature checks recorded |
 
 ## 11. Verification and test-vector strategy
 
@@ -1256,9 +1254,10 @@ Threats and mitigations:
   the same `VerifiedWriter` on every member.
 - **V4 — Schema parity.** The existing authenticated-map schema vectors pass
   unchanged against the core evaluator.
-- **V5 — Disabled parity.** A schema-2 chain produces the same blocks and
-  roots as `main` for the existing suites; a schema-3 chain with
-  `mode: disabled` differs only by its profile marker and time rules (I1).
+- **V5 — Disabled parity.** With `mode: disabled` the existing suites
+  produce the same messages, outcomes and machine state as `main`; blocks
+  and roots differ only by the profile's `block-time` field and the D12
+  time rules (I1).
 - **V6 — Showcase.** On a 3-member governed cluster with the production
   profile (D4): (1) a
   governance vote at the consensus threshold creates `acme/`, while a single
@@ -1305,7 +1304,7 @@ Threats and mitigations:
 | OQ7 | Quotas and anti-spam for open claims and writes | (a) `max-entries` and `max-entries-per-namespace` only; (b) per-namespace message quotas in consensus; (c) deposits | (a) now, (b) as a follow-up ADR. Many open claims by different claimants can still fill `max-entries`; v1 accepts that (open mode is for public or developer chains, and governance can retire abusive entries) |
 | OQ8 | Default `max-delegation-ms` | 1 hour vs 24 hours | 1 hour |
 | OQ9 | Can a parent namespace give up authority over a child (D3)? | (a) no: ancestors always keep authority; (b) a transfer command that makes a child independent | (a) for v1; (b) can be added later as a new command without changing existing entries |
-| OQ10 | Keep profile schema 2 accepted beside schema 3 (D12)? | (a) yes: retained schema-2 chains run unchanged without topics; (b) no: app chains are pre-release, so require schema 3 and re-create retained chains | (a): it protects retained chain identities at the cost of one extra accepted schema |
+| OQ10 | Keep today's profile accepted beside a new one for D12? | (a) yes: add schema 3 beside schema 2; (b) no: change the one profile in place and re-create preview chains | **Decided (maintainer, 2026-10-24): (b).** App chains are pre-release with no compatibility requirement; schema 2 is extended in place and stays the only accepted profile, so no second schema is maintained. Renumbering it (for example to 1) was not chosen: the code has no schema-1 remnants to clean up, so a renumber is churn without less debt |
 | OQ11 | Topics on static-membership chains (D1)? | (a) no: topics require `membership.mode: governed` in v1; (b) allow them without topic governance: no `governance` creation mode, no owner recovery, configuration fixed for the generation | **Decided (maintainer, 2026-10-23): (a).** Recovery is the only answer to lost owner keys, and ADR-008.3 approval accounting runs only in governed mode today. A chain that wants registrar-only creation runs governed membership with `creation.governance: false` or simply never votes on creations (D4). (b) can be added later without changing formats |
 
 ## 15. Related findings (out of scope)
@@ -1401,3 +1400,8 @@ Threats and mitigations:
   at the empty height-0 root, which matches enforcement. An authenticated height-0 configuration
   was rejected because framework state starts at height 1 (`ConsensusProfileGuard`). D1, D14,
   D15, threat model, I16, M2, M5 and V3 (heights 1 and 2 under `open` and `reject`) updated.
+- r11 (2026-10-24; maintainer decision after approval of `f13207952`, not a review response): OQ10
+  decided (b) — no second consensus profile. D12's `block-time` field and rules change the one
+  profile (schema 2, `~yano/consensus-profile/v2`) in place; chains created by earlier preview
+  builds fail closed and are re-created from genesis. D1, D12, D13, I1, I13, §7, M0, M6, V5 and
+  OQ10 updated; schema 3 removed throughout.
