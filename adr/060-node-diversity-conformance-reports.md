@@ -1,6 +1,6 @@
 # ADR-060: Node-Diversity Conformance Reports
 
-**Status:** Accepted. Implementation in progress (phases below).
+**Status:** Accepted. Phases 1–5 implemented; results and findings below.
 **Date:** 2026-10-23
 **Authors:** Claude Code (Opus 5.5)
 **Related:** ADR-056 (Conway Java ledger rules, `ledger-conformance` harness), ADR-057 (Amaru wasm validator),
@@ -161,19 +161,32 @@ For each corpus rule:
 
 - **valid** samples must pass both decoders and re-encode to the reference:
   - for the seven hashed rules (`auxiliary_data`, `header`, `native_script`, `plutus_data`, `redeemers`,
-    `transaction_body`, `transaction_witness_set`), byte for byte, from the preserved original bytes, as Haskell's
-    `MemoBytes` does;
+    `transaction_body`, `transaction_witness_set`), byte for byte, from the original bytes the node keeps, as
+    Haskell's `MemoBytes` does;
+  - for `datum_option`, from Yano's own reading (`RawOutput`): the datum hash, or the inline datum's original bytes,
+    which Yano keeps and hashes;
   - for every other rule, after re-encoding the decoded CCL model and normalizing it with the dataset's normalization
-    specification. The normalizer must reproduce the dataset's 20 normalization vectors.
+    specification (`CborNormalizer`). The normalizer reproduces the dataset's 20 normalization vectors, and the report
+    test checks it against them before every run.
 - **invalid-zap-0..3** samples must be rejected by the decoder pair.
 
-Rules no transaction path decodes on its own are decoded through their production entry point: `block` and `header`
-through CCL's `RawBlock`, as shadow sync decodes blocks. The report carries per-rule counts in the format of Amaru's
-report, `corpus: "conway-123-100"` and `protocol_version: "10.0"`.
+**How elements reach the decoders.** The strict readers are package-private. A test fixture in their package,
+`StrictElements` (`ledger-rules` test fixtures), exposes one method per element and adds no decoding of its own.
 
-The decoder sync uses (yaci's `BlockSerializer`) is lenient and is not what this scenario measures. Any divergence
-the corpus exposes in the validation decoders is fixed at its source in its own change. It is never masked in the
-harness.
+- An item the node reads only inside a larger structure is placed in a minimal, valid one first: a transaction for
+  `auxiliary_data`, `redeemer(s)`, `transaction_body`, `transaction_input`, `transaction_witness_set` and
+  `voting_procedure`; an output for `datum_option`; a proposal for `gov_action`; a parameter update for `cost_models`.
+- `block` goes through CCL's `RawBlock`, then every transaction as above, which is how shadow sync decodes blocks.
+- `header` and `header_body` go the way chain sync receives a header, wrapped in a byte string: yaci's
+  `BlockHeaderSerializer`, then the checks of upstream header validation (`ShelleyHeaderView`). Those checks run
+  only when header validation is enabled (`yano.upstream.validation.level`). With the default level, `none`, yaci's
+  lenient decoding alone stands.
+
+The report carries per-rule counts in the format of Amaru's report, with `corpus: "conway-123-100"` and
+`protocol_version: "11.0"`, the Conway decoder version.
+
+The decoder sync uses for block bodies (yaci's `BlockSerializer`) is lenient and is not what this scenario measures.
+Any divergence the corpus exposes is fixed at its source in its own change. It is never masked in the harness.
 
 ### 7. CI: a reusable workflow, called by the release
 
@@ -199,6 +212,51 @@ maintainers open it once a release carries the reports.
 | 3 | uplc-turbo report |
 | 4 | cbor-decoding report and normalizer |
 | 5 | CI workflow and release assets |
+
+## Results (2026-10-23, `main` a4e28babf, CCL 0.8.0-pre6, julc 0.1.0-pre19)
+
+Scored by the site's own builder (`score-reports.sh`), beside the cardano-node and Amaru reports:
+
+| Scenario | Yano | cardano-node | Amaru | Dingo |
+|---|---|---|---|---|
+| ledger-rules | 283 / 284 | 277 | 277 | 274 |
+| uplc-conformance | 1057 / 1064 | 1064 | 1064 | 1064 |
+| uplc-turbo | 3985 / 3997 | 3956 | 3995 | 3989 |
+| cbor-decoding | 8912 / 9200 | 9200 | 9200 | 9200 |
+| **overall** | **98.89%** | 99.13% | 99.37% | 99.07% |
+
+The cardano-node and Amaru ledger-rules reports predate the seven newest fixtures, which count as missing for them.
+
+Findings, none of them masked in the harness:
+
+1. **ledger-rules fixture 00280 (upstream).** It expects `OutputTooBigUTxO` for an output to a Byron address with
+   oversized attributes. Haskell reports only `OutputBootAddrAttrsTooBig`: `validateOutputTooBigUTxO` measures the
+   value. That is what Yano reports, and the scenario schema has no such predicate.
+2. **julc Flat decoder (consensus).** In `term/constr/constr-07` a `constr` tag is above 2^64-1. Haskell fails to
+   decode the program; julc decodes it and fails at evaluation. On chain, Haskell would reject such a script in phase
+   1 (malformed script) while Yano would admit the transaction and fail it in phase 2.
+3. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
+   Haskell rejects them. These are text-only: a `value` constant has no Flat form, so chain data is not affected.
+4. **julc performance.** Two turbo scripts are more than twice their CPU budget: `8100C5F1…` (315 ms, 1.6 GB
+   allocated; Amaru also fails it) and `12B28FF8…`. Ten small scripts allocate more than twice their memory budget
+   on the JVM. Every turbo budget agrees with cardano-node's and Amaru's.
+5. **CCL model decoders (production).** Almost all of the 288 cbor-decoding misses are valid samples that CCL
+   0.8.0-pre6 fails to decode. Yano's validation engine runs `Transaction.deserialize` first, so the node would refuse
+   such transactions. Causes:
+   - indefinite-length arrays, about 150 samples: cbor-java keeps the closing BREAK as an array element, and CCL's
+     decoders count it as a field. Affected: credentials, certificates, transaction inputs and outputs, datum
+     options, redeemers and protocol versions;
+   - cost models with an unknown language key, 95 samples. Haskell keeps them;
+   - a tag-30 rational over an indefinite array, 14 samples;
+   - a uint32 read as a signed `int`, 2 samples;
+   - an empty DNS name, 1 sample.
+
+   Another 27 valid samples re-encode differently. The causes are the BREAK again, and map order: Haskell orders a
+   `Map RewardAccount Coin` by its `Ord`, script credentials first.
+6. **Yano strict decoder.** One pool retirement with an epoch at or above 2^63 is rejected. Haskell's `EpochNo` is a
+   `Word64`, and the strict readers' unsigned reads are 63-bit.
+7. **Unexplained.** Two `proposal_procedure` generated samples (`invalid-zap-0` 00057 and 00078) are accepted by Yano
+   and CCL but rejected by Haskell. The cause needs a Haskell-side check.
 
 ## Consequences
 
