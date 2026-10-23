@@ -9,6 +9,9 @@ import java.math.BigInteger;
  * strings become definite, every head is minimal, a bignum (tags 2 and 3) whose value fits a native head becomes that
  * head and otherwise loses leading zero bytes, and a rational (tag 30) is reduced. Map order, duplicate keys, other
  * tags and float widths are kept.
+ *
+ * <p>It is not {@code ledger-rules}' {@code CborCanonical}, which is an equality key: that one sorts map entries and
+ * set elements and keeps bignums, where the dataset's normalization keeps order and folds bignums.</p>
  */
 final class CborNormalizer {
 

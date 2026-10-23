@@ -5,12 +5,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.julclang.core.Program;
 import org.julclang.core.flat.UplcFlatDecoder;
 import org.julclang.vm.LedgerEvaluationTarget;
-import org.julclang.vm.PlutusLanguage;
 import org.julclang.vm.ProtocolFeatureRegistry;
-import org.julclang.vm.ProtocolVersion;
 import org.julclang.vm.java.JavaVmProvider;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.diversity.NodeDiversity;
+import org.yanoproject.ledger.conformance.diversity.uplc.UplcEvaluation;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -49,8 +48,10 @@ class TurboDiversityReportTest {
             TurboSample sample = samples.get(i);
             TurboMeasurement m = TurboMeasurement.measure(provider, programs.get(i), target(sample));
             if (!m.succeeded()) {
+                // Left out of the report: the scenario counts a missing benchmark as failed.
                 failed++;
-                System.out.println("uplc-turbo: " + sample.bench() + " did not evaluate successfully");
+                System.out.println("uplc-turbo: " + sample.bench() + " did not evaluate successfully; left out");
+                continue;
             }
             benchmarks.addObject()
                     .put("bench", sample.bench())
@@ -64,7 +65,7 @@ class TurboDiversityReportTest {
         NodeDiversity.write(SCENARIO, report);
         System.out.printf("uplc-turbo: %d scripts measured, %d did not evaluate successfully%n", samples.size(),
                 failed);
-        assertThat(benchmarks).hasSize(samples.size()).isNotEmpty();
+        assertThat(benchmarks).hasSize(samples.size() - failed).isNotEmpty();
     }
 
     /** Decodes the Flat program as phase 2 decodes a script, outside the measurement. */
@@ -74,12 +75,7 @@ class TurboDiversityReportTest {
     }
 
     private static LedgerEvaluationTarget target(TurboSample sample) {
-        PlutusLanguage language = switch (sample.language()) {
-            case 1 -> PlutusLanguage.PLUTUS_V1;
-            case 2 -> PlutusLanguage.PLUTUS_V2;
-            default -> PlutusLanguage.PLUTUS_V3;
-        };
-        return new LedgerEvaluationTarget(language, new ProtocolVersion(sample.protocolMajor(), 0));
+        return UplcEvaluation.target(sample.language(), sample.protocolMajor());
     }
 
     private static ObjectNode machine() {

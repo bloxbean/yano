@@ -95,7 +95,9 @@ verifies them. Each report records the corpus it ran on where the schema allows 
   - when the fixture's expected predicate is among the engine's failures (Haskell name, through `AmaruCorpusNames`
     and its aliases), the result is that predicate;
   - otherwise the result is the first failure mapped to its corpus name, or its bare Haskell constructor when no
-    corpus name exists.
+    corpus name exists. A bare constructor is outside the schema's `result` enum. The site does not validate the
+    report against the schema, a mismatch scores the same either way, and the Haskell checker also emits strings
+    outside the enum.
 
   This rule matters because Haskell's STS ordering puts `UTXOW` failures before `CERTS` failures (`RuleFrame`). A
   fixture can name a predicate that Haskell reports second, and both Haskell's checker and pragma's own cardano-node
@@ -115,13 +117,16 @@ The harness follows Amaru's `crates/amaru-uplc/tests/conformance.rs`, which defi
 - **Ids and labels:** `<path below the Plutus-version folder, non-alphanumerics as _, lower case>_<v1|v2|v3>`, with
   the group (the grandparent path) and title (the folder name, `-`/`_` as spaces) taken from the path.
 - **Evaluation:**
-  - decode the vector's `.flat` program when it has one, as phase 2 decodes a script (`JulcScriptAdapter.toProgram`:
-    `UplcFlatDecoder` with the decoding limits of the protocol version and language). On chain, scripts are Flat, so
-    this is the decoder Yano depends on. A vector with no Flat form (a `value` constant) is parsed from its text;
+  - parse the textual program first, as the reference harness does; a text that does not parse is a
+    `"parse/decode error"`;
+  - then take the vector's `.flat` program when it has one, decoded as phase 2 decodes a script
+    (`JulcScriptAdapter.toProgram`: `UplcFlatDecoder` with the decoding limits of the protocol version and language).
+    On chain, scripts are Flat, so this is the decoder Yano depends on. A vector with no Flat form (a `value`
+    constant) keeps its text;
   - reject what the protocol version or Plutus version does not allow (program version 1.1.0 before protocol 11, and
     builtins unavailable for the language and protocol), as Haskell's decoder does (`ProgramValidator`);
-  - evaluate on `JavaVmProvider` with the corpus cost model for (protocol, language) and a budget of 10B CPU / 14M
-    memory.
+  - evaluate on `JavaVmProvider` with the corpus cost model for (protocol, language), a budget of 10B CPU / 14M
+    memory, and phase 2's evaluation options.
 - **Reporting:**
   - when the result term is alpha-equivalent to the parsed expected output, the report carries the expected text
     (Amaru does the same), and otherwise julc's printing of the result;
@@ -146,6 +151,8 @@ The harness follows Amaru's `crates/amaru-uplc/tests/conformance.rs`, which defi
   uses `ExBudget::max`). The scenario page names 10B / 10M, but that would stop five scripts that use more than 10M
   memory units. The cardano-node and Amaru reports carry those scripts' whole budgets, and the site checks each
   budget against the majority.
+- **Failures:** a script whose evaluation fails is left out of the report, which the scenario counts as failed,
+  rather than reported with the timings of a failed run. None fails today.
 - **Machine block:** OS, architecture, CPU, logical cores and memory, from `java.lang.management`.
 
 ### 6. cbor-decoding: Yano's transaction-validation decoder
@@ -179,8 +186,13 @@ For each corpus rule:
 - `block` goes through CCL's `RawBlock`, then every transaction as above, which is how shadow sync decodes blocks.
 - `header` and `header_body` go the way chain sync receives a header, wrapped in a byte string: yaci's
   `BlockHeaderSerializer`, then the checks of upstream header validation (`ShelleyHeaderView`). Those checks run
-  only when header validation is enabled (`yano.upstream.validation.level`). With the default level, `none`, yaci's
-  lenient decoding alone stands.
+  only when header validation is enabled (`yano.upstream.validation.level`), so the header rules describe that
+  configuration. With the default level, `none`, yaci's lenient decoding alone stands. The diagnostic below shows it
+  separately: it rejects 11 of 400 invalid headers and 2 of 400 invalid header bodies.
+
+A positive control (`CborRuleTest`) feeds a valid item from a real Conway block to each rule that the corpus tests
+only with items to reject (block, header, header body, transaction, body, witness set). A broken wrapper would
+otherwise reject everything and still score.
 
 The report carries per-rule counts in the format of Amaru's report, with `corpus: "conway-123-100"` and
 `protocol_version: "11.0"`, the Conway decoder version.
@@ -232,11 +244,14 @@ Findings, none of them masked in the harness:
 1. **ledger-rules fixture 00280 (upstream).** It expects `OutputTooBigUTxO` for an output to a Byron address with
    oversized attributes. Haskell reports only `OutputBootAddrAttrsTooBig`: `validateOutputTooBigUTxO` measures the
    value. That is what Yano reports, and the scenario schema has no such predicate.
-2. **julc Flat decoder (consensus).** In `term/constr/constr-07` a `constr` tag is above 2^64-1. Haskell fails to
-   decode the program; julc decodes it and fails at evaluation. On chain, Haskell would reject such a script in phase
-   1 (malformed script) while Yano would admit the transaction and fail it in phase 2.
-3. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
-   Haskell rejects them. These are text-only: a `value` constant has no Flat form, so chain data is not affected.
+2. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
+   Haskell rejects them. `verifySignature`, the legacy name of `verifyEd25519Signature`, is not recognized. All seven
+   are text-only: a `value` constant has no Flat form, and the alias vector's Flat program decodes and evaluates
+   correctly. Chain data is not affected.
+3. **Not a finding: `term/constr/constr-07`.** Its text has a negative `constr` tag and expects a parse error. Its
+   Flat form encodes the tag as 2^64-5, which Haskell's `Word64` decoder accepts, as julc does
+   (`Core/Instance/Flat.hs`). Parsing the text first, as the reference harness does, reports the expected parse
+   error.
 4. **julc performance.** Two turbo scripts are more than twice their CPU budget: `8100C5F1…` (315 ms, 1.6 GB
    allocated; Amaru also fails it) and `12B28FF8…`. Ten small scripts allocate more than twice their memory budget
    on the JVM. Every turbo budget agrees with cardano-node's and Amaru's.
@@ -265,7 +280,8 @@ Findings, none of them masked in the harness:
    encodings.
 
 The cbor-decoding report prints each decoder alone as a diagnostic: Yano's strict readers 865/866 valid and
-8039/8334 invalid, CCL 611/866 and 5521/8334. The report itself counts the two together, as the node runs them.
+8039/8334 invalid, the library decoders 611/866 and 5534/8334 (CCL, and yaci for headers). The report itself counts
+the two together, as the node runs them.
 
 ## Consequences
 
