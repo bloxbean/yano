@@ -1,7 +1,5 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import com.bloxbean.cardano.client.transaction.spec.Transaction;
-
 /**
  * The strict transaction decoder ({@link RawTransaction} and its readers) applied to one standalone CBOR item, for
  * conformance corpora that test decoding element by element (ADR-060 §6, cardano-cbor-dataset). Each method reads
@@ -15,13 +13,12 @@ public final class StrictElements {
     private StrictElements() {
     }
 
-    /** {@code transaction}, as the node reads one: CCL's decoding, then the strict reader over the same bytes. */
+    /**
+     * {@code transaction}. The node also decodes it with CCL ({@code Transaction.deserialize}) and passes that model
+     * along; the strict reader keeps it for structure only and decides nothing on it, so it is left out here.
+     */
     public static RawTransaction transaction(byte[] cbor) {
-        try {
-            return RawTransaction.parse(cbor, Transaction.deserialize(cbor));
-        } catch (Exception e) {
-            throw e instanceof RuntimeException runtime ? runtime : new TxDecodingException(e.getMessage(), e);
-        }
+        return RawTransaction.parse(cbor, null);
     }
 
     /** {@code certificate} */
