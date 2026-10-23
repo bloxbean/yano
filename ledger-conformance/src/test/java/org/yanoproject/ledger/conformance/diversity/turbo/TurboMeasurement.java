@@ -1,11 +1,11 @@
 package org.yanoproject.ledger.conformance.diversity.turbo;
 
 import org.julclang.core.Program;
-import org.julclang.vm.EvalOptions;
 import org.julclang.vm.EvalResult;
 import org.julclang.vm.ExBudget;
 import org.julclang.vm.LedgerEvaluationTarget;
 import org.julclang.vm.java.JavaVmProvider;
+import org.yanoproject.ledger.conformance.diversity.uplc.UplcEvaluation;
 
 import java.lang.management.ManagementFactory;
 import java.util.Arrays;
@@ -34,13 +34,12 @@ record TurboMeasurement(long cpuUs, long memBytes, ExBudget budget, boolean succ
      */
     static final ExBudget BUDGET = new ExBudget(Long.MAX_VALUE, Long.MAX_VALUE);
 
-    private static final EvalOptions OPTIONS = new EvalOptions(null, false, false);
     private static final com.sun.management.ThreadMXBean THREADS =
             (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
 
     /** Evaluates once, unmeasured (JIT warm-up). */
     static void evaluate(JavaVmProvider provider, Program program, LedgerEvaluationTarget target) {
-        provider.evaluate(program, target, BUDGET, OPTIONS);
+        provider.evaluate(program, target, BUDGET, UplcEvaluation.OPTIONS);
     }
 
     static TurboMeasurement measure(JavaVmProvider provider, Program program, LedgerEvaluationTarget target) {
@@ -53,7 +52,7 @@ record TurboMeasurement(long cpuUs, long memBytes, ExBudget budget, boolean succ
         for (int i = 0; i < SAMPLES; i++) {
             long allocated = THREADS.getCurrentThreadAllocatedBytes();
             long start = System.nanoTime();
-            result = provider.evaluate(program, target, BUDGET, OPTIONS);
+            result = provider.evaluate(program, target, BUDGET, UplcEvaluation.OPTIONS);
             nanos[i] = System.nanoTime() - start;
             bytes[i] = THREADS.getCurrentThreadAllocatedBytes() - allocated;
         }

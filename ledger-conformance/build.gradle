@@ -90,6 +90,9 @@ tasks.withType(Test).configureEach {
         systemProperty 'node.diversity.corpora', file(nodeDiversityCorpora).absolutePath
     }
     systemProperty 'node.diversity.report.dir', layout.buildDirectory.dir('node-diversity').get().asFile.absolutePath
+    // CborRuleTest's valid Conway block (runtime's test resources)
+    systemProperty 'node.diversity.conwayBlock',
+            rootProject.file('runtime/src/test/resources/wallet/eras/conway2.block').absolutePath
     systemProperty 'node.diversity.version', project.version.toString()
     // ADR-057 Phase E engine latency benchmark (EngineLatencyBenchmarkTest): -PengineBenchmark=true, optionally
     // -PengineBenchmarkPasses=<n> (default 5) and -PengineBenchmarkWarmup=<n> (default 2); the public-network corpus runs

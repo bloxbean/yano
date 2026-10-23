@@ -29,12 +29,14 @@ import java.util.List;
  * Evaluates one UPLC conformance vector on julc's CEK machine (ADR-060 §4) as Yano's phase 2 runs it
  * ({@code JulcMachine}): a {@link JavaVmProvider} configured with the cost model, no tracing.
  *
- * <p>A vector is evaluated from its Flat program when it has one (the form scripts take on chain), otherwise from its
- * text. The outcome is what the scenario reports: the result program (the expected text when the result is
- * alpha-equivalent to it, as Amaru reports it), or {@code "parse/decode error"} for a program the protocol and
- * language versions do not allow, {@code "out of budget"}, or {@code "evaluation failure"}.</p>
+ * <p>As the reference harness does (Amaru's {@code conformance.rs}), the textual program is parsed first, and a vector
+ * whose text does not parse is a {@code "parse/decode error"}. The program evaluated is then the vector's Flat program
+ * when it has one (the form scripts take on chain), otherwise the text. The outcome is what the scenario reports: the
+ * result program (the expected text when the result is alpha-equivalent to it, as Amaru reports it), or
+ * {@code "parse/decode error"} for a program the protocol and language versions do not allow, {@code "out of budget"},
+ * or {@code "evaluation failure"}.</p>
  */
-final class UplcEvaluation {
+public final class UplcEvaluation {
 
     static final String PARSE_ERROR = "parse/decode error";
     static final String OUT_OF_BUDGET = "out of budget";
@@ -43,7 +45,8 @@ final class UplcEvaluation {
     /** The scenario's budget: 10B CPU, 14M memory. */
     static final ExBudget BUDGET = new ExBudget(10_000_000_000L, 14_000_000L);
 
-    private static final EvalOptions OPTIONS = new EvalOptions(null, false, false);
+    /** Phase 2's options ({@code JulcMachine}): no source map, no tracing. */
+    public static final EvalOptions OPTIONS = new EvalOptions(null, false, false);
 
     /**
      * @param evaluation the result program or an error label
@@ -59,9 +62,9 @@ final class UplcEvaluation {
      * @param flatHex   the Flat-encoded program in hex, when the vector has one: decoded as phase 2 decodes a script
      *                  ({@code JulcScriptAdapter.toProgram}: the decoding limits of the protocol version and language);
      *                  null for a vector with only the textual program (a {@code value} constant has no Flat form)
-     * @param text      the textual program, parsed when there is no Flat program
+     * @param text      the textual program
      * @param expected  the expected output (a program, or an error label)
-     * @param costModel the cost model of the vector's protocol version and language
+     * @param costModel the cost model of the vector's protocol version and language, or null for julc's defaults
      */
     static Outcome evaluate(String flatHex, String text, String expected, int language, int protocolMajor,
                             long[] costModel) {
@@ -69,16 +72,19 @@ final class UplcEvaluation {
         ProtocolFeatureProfile profile = ProtocolFeatureRegistry.resolve(target);
         Program program;
         try {
-            program = flatHex != null
-                    ? UplcFlatDecoder.decodeProgram(HexFormat.of().parseHex(flatHex.trim()),
-                            profile.decodeLimits().toFlatDecodeLimits())
-                    : UplcParser.parseProgram(text);
+            program = UplcParser.parseProgram(text);
+            if (flatHex != null) {
+                program = UplcFlatDecoder.decodeProgram(HexFormat.of().parseHex(flatHex.trim()),
+                        profile.decodeLimits().toFlatDecodeLimits());
+            }
             ProgramValidator.validate(program, profile);
         } catch (RuntimeException e) {
             return new Outcome(PARSE_ERROR, null);
         }
         JavaVmProvider provider = new JavaVmProvider();
-        provider.setCostModelParams(costModel, target);
+        if (costModel != null) {
+            provider.setCostModelParams(costModel, target);
+        }
         return switch (provider.evaluate(program, target, BUDGET, OPTIONS)) {
             case EvalResult.Success success -> new Outcome(
                     output(new Program(program.major(), program.minor(), program.patch(), success.resultTerm()),
@@ -145,7 +151,8 @@ final class UplcEvaluation {
         }
     }
 
-    static LedgerEvaluationTarget target(int language, int protocolMajor) {
+    /** @return the ledger target of a Plutus language (1 to 3) at a protocol version */
+    public static LedgerEvaluationTarget target(int language, int protocolMajor) {
         PlutusLanguage plutus = switch (language) {
             case 1 -> PlutusLanguage.PLUTUS_V1;
             case 2 -> PlutusLanguage.PLUTUS_V2;
