@@ -12,11 +12,13 @@ import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.raw.RawBlock;
 import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
 import com.bloxbean.cardano.client.transaction.spec.cert.PoolRegistration;
+import com.bloxbean.cardano.client.transaction.spec.cert.Relay;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeCredential;
 import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.transaction.spec.governance.ProposalProcedure;
@@ -32,7 +34,6 @@ import java.io.ByteArrayOutputStream;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -40,19 +41,23 @@ import java.util.stream.Stream;
 /**
  * How Yano decodes and re-encodes one cardano-cbor-dataset rule (ADR-060 §6).
  *
- * <p>{@link #decoder} does what the node does with such an item: CCL's model decoding, which the node runs on every
- * transaction ({@code Transaction.deserialize}), and Yano's strict reader ({@link StrictElements}); either one
- * rejecting is a rejection. An item the node only reads inside a transaction, an output, a proposal or a parameter
- * update is placed in a minimal, valid one first. {@link #encoder} re-encodes the decoded model (CCL's, or Yano's for
- * {@code datum_option}); a hashed rule ({@link #hashed}) re-encodes as its original bytes, as Haskell's
- * {@code MemoBytes} does and as the node keeps them.</p>
+ * <p>The node decodes a transaction twice: CCL's model decoding ({@code Transaction.deserialize}), which the validation
+ * engine runs first and whose model the rules read, and Yano's strict reader ({@link StrictElements}), which applies
+ * Haskell's decoding rules. {@link #strict} and {@link #ccl} are those two decoders for one item; either one rejecting
+ * is the node rejecting. Apart, they show which side a difference from Haskell comes from. An item the node only reads
+ * inside a transaction, an output, a proposal or a parameter update is placed in a minimal, valid one first.</p>
+ *
+ * <p>{@link #encoder} re-encodes the decoded model (CCL's, or Yano's for {@code datum_option}); a hashed rule
+ * ({@link #hashed}) re-encodes as its original bytes, as Haskell's {@code MemoBytes} does and as the node keeps
+ * them.</p>
  *
  * @param name    the corpus rule
  * @param hashed  whether the item's bytes are a hash preimage (no normalization; the bytes must be reproduced)
- * @param decoder rejects by throwing; returns what {@code encoder} re-encodes
- * @param encoder the re-encoding of a decoded item
+ * @param strict  Yano's strict reading; rejects by throwing
+ * @param ccl     CCL's model decoding; rejects by throwing (accepts everything for headers, which no CCL model reads)
+ * @param encoder the re-encoding, from both decodings
  */
-record CborRule(String name, boolean hashed, Decoder decoder, Encoder encoder) {
+record CborRule(String name, boolean hashed, Decoder strict, Decoder ccl, Encoder encoder) {
 
     @FunctionalInterface
     interface Decoder {
@@ -61,7 +66,8 @@ record CborRule(String name, boolean hashed, Decoder decoder, Encoder encoder) {
 
     @FunctionalInterface
     interface Encoder {
-        byte[] encode(Object decoded) throws Exception;
+        /** @return a {@link DataItem} or the encoded bytes */
+        Object encode(Object strict, Object ccl) throws Exception;
     }
 
     // Known-good parts of the wrappers.
@@ -77,119 +83,136 @@ record CborRule(String name, boolean hashed, Decoder decoder, Encoder encoder) {
     /** @return the rules this harness knows, by name */
     static Map<String, CborRule> all() {
         return Stream.of(
-                hashed("auxiliary_data", cbor -> StrictElements.transaction(tx(MIN_BODY, "a0", cbor))),
-                hashed("block", CborRule::block),
-                model("certificate", cbor -> {
-                    StrictElements.certificate(cbor);
-                    return Certificate.deserialize((Array) item(cbor));
-                }, c -> ((Certificate) c).serialize()),
-                model("cost_models", cbor -> {
-                    StrictElements.paramUpdate(cat("a112", cbor));
-                    return CostMdls.deserialize(item(cbor));
-                }, c -> ((CostMdls) c).serialize()),
-                model("credential", cbor -> {
-                    StrictElements.credential(cbor);
-                    return StakeCredential.deserialize((Array) item(cbor));
-                }, c -> ((StakeCredential) c).serialize()),
-                model("datum_option", cbor -> {
-                    byte[] output = cat("a300" + ADDRESS + "0100" + "02", cbor);
-                    TransactionOutput.deserialize(item(output));
-                    return StrictElements.output(output);
-                }, CborRule::datumOption),
-                model("drep", cbor -> {
-                    StrictElements.drep(cbor);
-                    return DRep.deserialize(item(cbor));
-                }, c -> ((DRep) c).serialize()),
-                model("gov_action", cbor -> {
-                    StrictElements.proposal(cat("8400" + REWARD_ACCOUNT, cbor, "8260" + HASH32));
-                    return GovAction.deserialize((Array) item(cbor));
-                }, c -> ((GovAction) c).serialize()),
-                hashed("header", CborRule::header),
-                hashed("header_body", cbor -> header(cat("82", cbor, KES_SIGNATURE))),
-                hashed("native_script", cbor -> {
-                    StrictElements.nativeScript(cbor);
-                    return NativeScript.deserialize((Array) item(cbor));
-                }),
-                hashed("plutus_data", cbor -> {
-                    StrictElements.plutusData(cbor);
-                    return PlutusData.deserialize(cbor);
-                }),
-                model("proposal_procedure", cbor -> {
-                    StrictElements.proposal(cbor);
-                    return ProposalProcedure.deserialize(item(cbor));
-                }, c -> ((ProposalProcedure) c).serialize()),
-                model("protocol_param_update", cbor -> {
-                    StrictElements.paramUpdate(cbor);
-                    return ProtocolParamUpdate.deserialize(item(cbor));
-                }, c -> ((ProtocolParamUpdate) c).serialize()),
-                model("redeemer", cbor -> {
-                    StrictElements.transaction(tx(MIN_BODY, cat("a10581", cbor), null));
+                inTransaction("auxiliary_data", cbor -> tx(MIN_BODY, "a0", cbor)),
+                hashed("block", cbor -> block(cbor, StrictElements::transaction),
+                        cbor -> block(cbor, Transaction::deserialize)),
+                model("certificate", reads(StrictElements::certificate),
+                        cbor -> Certificate.deserialize((Array) item(cbor)), (s, c) -> ((Certificate) c).serialize()),
+                model("cost_models", reads(cbor -> StrictElements.paramUpdate(cat("a112", cbor))),
+                        cbor -> CostMdls.deserialize(item(cbor)), (s, c) -> ((CostMdls) c).serialize()),
+                model("credential", reads(StrictElements::credential),
+                        cbor -> StakeCredential.deserialize((Array) item(cbor)),
+                        (s, c) -> ((StakeCredential) c).serialize()),
+                model("datum_option", cbor -> StrictElements.output(datumOutput(cbor)),
+                        cbor -> TransactionOutput.deserialize(item(datumOutput(cbor))),
+                        (s, c) -> datumOption((RawOutput) s)),
+                model("drep", reads(StrictElements::drep), cbor -> DRep.deserialize(item(cbor)),
+                        (s, c) -> ((DRep) c).serialize()),
+                model("gov_action",
+                        reads(cbor -> StrictElements.proposal(cat("8400" + REWARD_ACCOUNT, cbor, "8260" + HASH32))),
+                        cbor -> GovAction.deserialize((Array) item(cbor)), (s, c) -> ((GovAction) c).serialize()),
+                hashed("header", CborRule::header, cbor -> null),
+                hashed("header_body", cbor -> header(cat("82", cbor, KES_SIGNATURE)), cbor -> null),
+                hashed("native_script", reads(StrictElements::nativeScript),
+                        cbor -> NativeScript.deserialize((Array) item(cbor))),
+                hashed("plutus_data", reads(StrictElements::plutusData), PlutusData::deserialize),
+                model("proposal_procedure", reads(StrictElements::proposal),
+                        cbor -> ProposalProcedure.deserialize(item(cbor)),
+                        (s, c) -> ((ProposalProcedure) c).serialize()),
+                model("protocol_param_update", reads(StrictElements::paramUpdate),
+                        cbor -> ProtocolParamUpdate.deserialize(item(cbor)),
+                        (s, c) -> ((ProtocolParamUpdate) c).serialize()),
+                model("redeemer", cbor -> StrictElements.transaction(redeemerTx(cbor)), cbor -> {
+                    Transaction.deserialize(redeemerTx(cbor));
                     return Redeemer.deserializePreConway((Array) item(cbor));
-                }, c -> ((Redeemer) c).serializePreConway()),
-                hashed("redeemers", cbor -> StrictElements.transaction(tx(MIN_BODY, cat("a105", cbor), null))),
-                model("relay", cbor -> {
-                    StrictElements.relay(cbor);
-                    return PoolRegistration.deserialize(item(cat("8a03" + HASH28 + HASH32 + "0000d81e820001"
-                            + REWARD_ACCOUNT + "8081", cbor, "f6"))).getRelays().getFirst();
-                }, c -> ((com.bloxbean.cardano.client.transaction.spec.cert.Relay) c).serialize()),
-                model("script", cbor -> {
-                    StrictElements.script(cbor);
-                    return ((Array) item(cbor)).getDataItems().getFirst().equals(new UnsignedInteger(0))
-                            ? NativeScript.deserializeScriptRef(cbor) : PlutusScript.deserializeScriptRef(cbor);
-                }, c -> c instanceof NativeScript n ? n.scriptRefBytes() : ((PlutusScript) c).scriptRefBytes()),
-                hashed("transaction", StrictElements::transaction),
-                hashed("transaction_body", cbor -> StrictElements.transaction(tx(cbor, "a0", null))),
-                model("transaction_input", cbor -> {
-                    StrictElements.transaction(tx(cat("a30081", cbor, "01800200"), "a0", null));
+                }, (s, c) -> ((Redeemer) c).serializePreConway()),
+                inTransaction("redeemers", cbor -> tx(MIN_BODY, cat("a105", cbor), null)),
+                model("relay", reads(StrictElements::relay), CborRule::relay, (s, c) -> ((Relay) c).serialize()),
+                model("script", reads(StrictElements::script),
+                        cbor -> ((Array) item(cbor)).getDataItems().getFirst().equals(new UnsignedInteger(0))
+                                ? NativeScript.deserializeScriptRef(cbor) : PlutusScript.deserializeScriptRef(cbor),
+                        (s, c) -> c instanceof NativeScript n ? n.scriptRefBytes()
+                                : ((PlutusScript) c).scriptRefBytes()),
+                inTransaction("transaction", cbor -> cbor),
+                inTransaction("transaction_body", cbor -> tx(cbor, "a0", null)),
+                model("transaction_input", cbor -> StrictElements.transaction(inputTx(cbor)), cbor -> {
+                    Transaction.deserialize(inputTx(cbor));
                     return TransactionInput.deserialize((Array) item(cbor));
-                }, c -> ((TransactionInput) c).serialize()),
-                model("transaction_output", cbor -> {
-                    StrictElements.output(cbor);
-                    return TransactionOutput.deserialize(item(cbor));
-                }, c -> ((TransactionOutput) c).serialize()),
-                hashed("transaction_witness_set", cbor -> StrictElements.transaction(tx(MIN_BODY, cbor, null))),
-                model("value", cbor -> {
-                    StrictElements.value(cbor);
-                    return Value.deserialize(item(cbor));
-                }, c -> ((Value) c).serialize()),
-                model("voting_procedure", cbor -> {
-                    StrictElements.transaction(tx(cat("a4" + MIN_BODY_ENTRIES + "13a1" + "8200" + HASH28 + "a1" + INPUT,
-                            cbor), "a0", null));
+                }, (s, c) -> ((TransactionInput) c).serialize()),
+                model("transaction_output", StrictElements::output, cbor -> TransactionOutput.deserialize(item(cbor)),
+                        (s, c) -> ((TransactionOutput) c).serialize()),
+                inTransaction("transaction_witness_set", cbor -> tx(MIN_BODY, cbor, null)),
+                model("value", reads(StrictElements::value), cbor -> Value.deserialize(item(cbor)),
+                        (s, c) -> ((Value) c).serialize()),
+                model("voting_procedure", cbor -> StrictElements.transaction(voteTx(cbor)), cbor -> {
+                    Transaction.deserialize(voteTx(cbor));
                     return VotingProcedure.deserialize((Array) item(cbor));
-                }, c -> ((VotingProcedure) c).serialize())
+                }, (s, c) -> ((VotingProcedure) c).serialize())
         ).collect(Collectors.toMap(CborRule::name, Function.identity()));
     }
 
-    /** @return the re-encoding, or empty when the node rejects the item; exceptions are rejections */
-    Optional<byte[]> decodeAndEncode(byte[] cbor) throws Exception {
-        Object decoded = decoder.decode(cbor);
-        return Optional.of(hashed ? cbor : encoder.encode(decoded));
+    /** @return the re-encoding when both decoders accept the item; an exception is a rejection */
+    byte[] decodeAndEncode(byte[] cbor) throws Exception {
+        Object strictItem = strict.decode(cbor);
+        Object cclItem = ccl.decode(cbor);
+        if (hashed) {
+            return cbor;
+        }
+        Object encoded = encoder.encode(strictItem, cclItem);
+        return encoded instanceof byte[] bytes ? bytes : CborSerializationUtil.serialize((DataItem) encoded);
     }
 
-    private static CborRule hashed(String name, Decoder decoder) {
-        return new CborRule(name, true, decoder, decoded -> {
+    private static CborRule model(String name, Decoder strict, Decoder ccl, Encoder encoder) {
+        return new CborRule(name, false, strict, ccl, encoder);
+    }
+
+    private static CborRule hashed(String name, Decoder strict, Decoder ccl) {
+        return new CborRule(name, true, strict, ccl, (s, c) -> {
             throw new IllegalStateException("a hashed rule re-encodes as its original bytes");
         });
     }
 
-    private static CborRule model(String name, Decoder decoder, DataItemEncoder encoder) {
-        return new CborRule(name, false, decoder, decoded -> {
-            Object encoded = encoder.encode(decoded);
-            return encoded instanceof byte[] bytes ? bytes : CborSerializationUtil.serialize((DataItem) encoded);
-        });
+    /** A hashed rule read inside (or as) a transaction: the strict reader and CCL's decoding of that transaction. */
+    private static CborRule inTransaction(String name, Wrapper wrapper) {
+        return hashed(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
+                cbor -> Transaction.deserialize(wrapper.wrap(cbor)));
+    }
+
+    /** A strict reader that only accepts or rejects. */
+    @FunctionalInterface
+    private interface Reader {
+        void read(byte[] cbor) throws Exception;
+    }
+
+    private static Decoder reads(Reader reader) {
+        return cbor -> {
+            reader.read(cbor);
+            return null;
+        };
     }
 
     @FunctionalInterface
-    private interface DataItemEncoder {
-        /** @return a {@link DataItem} or the encoded bytes */
-        Object encode(Object decoded) throws Exception;
+    private interface Wrapper {
+        byte[] wrap(byte[] cbor);
     }
 
-    /** A Conway block, as shadow sync reads one: CCL's raw view, then every transaction as the node reads it. */
-    private static Object block(byte[] cbor) {
+    /** CCL reads a relay only inside a pool registration. */
+    private static Relay relay(byte[] relay) throws Exception {
+        return PoolRegistration.deserialize(item(cat("8a03" + HASH28 + HASH32 + "0000d81e820001" + REWARD_ACCOUNT
+                + "8081", relay, "f6"))).getRelays().getFirst();
+    }
+
+    private static byte[] datumOutput(byte[] datumOption) {
+        return cat("a300" + ADDRESS + "0100" + "02", datumOption);
+    }
+
+    private static byte[] redeemerTx(byte[] redeemer) {
+        return tx(MIN_BODY, cat("a10581", redeemer), null);
+    }
+
+    private static byte[] inputTx(byte[] input) {
+        return tx(cat("a30081", input, "01800200"), "a0", null);
+    }
+
+    private static byte[] voteTx(byte[] votingProcedure) {
+        return tx(cat("a4" + MIN_BODY_ENTRIES + "13a1" + "8200" + HASH28 + "a1" + INPUT, votingProcedure), "a0", null);
+    }
+
+    /** A Conway block, as shadow sync reads one: CCL's raw view, then every transaction with {@code transaction}. */
+    private static Object block(byte[] cbor, Decoder transaction) throws Exception {
         RawBlock block = RawBlock.of(cbor, Era.Conway);
         for (int i = 0; i < block.txCount(); i++) {
-            StrictElements.transaction(block.txBytes(i));
+            transaction.decode(block.txBytes(i));
         }
         return block;
     }
@@ -207,8 +230,7 @@ record CborRule(String name, boolean hashed, Decoder decoder, Encoder encoder) {
      * {@code datum_option} from Yano's reading of it: {@code [0, hash]}, or {@code [1, #6.24(bytes)]} around the inline
      * datum's original bytes, which Yano keeps (as Haskell's {@code MemoBytes} does) and hashes.
      */
-    private static DataItem datumOption(Object decoded) {
-        RawOutput output = (RawOutput) decoded;
+    private static DataItem datumOption(RawOutput output) {
         Array option = new Array();
         if (output.datumHash() != null) {
             option.add(new UnsignedInteger(0));

@@ -240,23 +240,32 @@ Findings, none of them masked in the harness:
 4. **julc performance.** Two turbo scripts are more than twice their CPU budget: `8100C5F1…` (315 ms, 1.6 GB
    allocated; Amaru also fails it) and `12B28FF8…`. Ten small scripts allocate more than twice their memory budget
    on the JVM. Every turbo budget agrees with cardano-node's and Amaru's.
-5. **CCL model decoders (production).** Almost all of the 288 cbor-decoding misses are valid samples that CCL
-   0.8.0-pre6 fails to decode. Yano's validation engine runs `Transaction.deserialize` first, so the node would refuse
-   such transactions. Causes:
-   - indefinite-length arrays, about 150 samples: cbor-java keeps the closing BREAK as an array element, and CCL's
-     decoders count it as a field. Affected: credentials, certificates, transaction inputs and outputs, datum
-     options, redeemers and protocol versions;
+5. **CCL model decoders (production), cardano-client-lib#717.** 255 of the 288 cbor-decoding misses are valid samples
+   that CCL 0.8.0-pre6 fails to decode. Yano's validation engine runs `Transaction.deserialize` first, so the node
+   would refuse such transactions. Causes:
+   - indefinite-length arrays, about 120 samples: cbor-java keeps the closing BREAK as an array element, and CCL's
+     decoders count it as a field. Affected: credentials, certificates, transaction inputs and outputs, datum options,
+     redeemers and protocol versions;
    - cost models with an unknown language key, 95 samples. Haskell keeps them;
    - a tag-30 rational over an indefinite array, 14 samples;
-   - a uint32 read as a signed `int`, 2 samples;
-   - an empty DNS name, 1 sample.
+   - a uint32 read as a signed `int`, and an empty DNS name.
 
    Another 27 valid samples re-encode differently. The causes are the BREAK again, and map order: Haskell orders a
    `Map RewardAccount Coin` by its `Ord`, script credentials first.
-6. **Yano strict decoder.** One pool retirement with an epoch at or above 2^63 is rejected. Haskell's `EpochNo` is a
-   `Word64`, and the strict readers' unsigned reads are 63-bit.
-7. **Unexplained.** Two `proposal_procedure` generated samples (`invalid-zap-0` 00057 and 00078) are accepted by Yano
-   and CCL but rejected by Haskell. The cause needs a Haskell-side check.
+6. **Yano strict decoder, yano#202.** Measured alone, the strict readers accept 865/866 valid samples. They also
+   accept 295 invalid ones, which today the node rejects only because CCL's decoding fails on them by accident.
+   - **Records:** Haskell decodes records declared with Coders' `RecD` (`ProposalProcedure`, `VotingProcedure`,
+     `Anchor`, `GovActionId`, `ExUnits`, `Prices`, the voting thresholds) only in definite length.
+     `decodeCount (RecD cn)` reads the list header, including the end-of-list check, before the fields. The strict
+     readers also accept indefinite length for these records.
+   - **63-bit reads:** the strict readers' unsigned reads are 63-bit, so a pool retirement at an epoch at or above
+     2^63 is rejected, where Haskell's `EpochNo` is a `Word64`.
+
+   This fix has to land before, or with, CCL #717. Otherwise fixing CCL would make the node accept these 295
+   encodings.
+
+The cbor-decoding report prints each decoder alone as a diagnostic: Yano's strict readers 865/866 valid and
+8039/8334 invalid, CCL 611/866 and 5521/8334. The report itself counts the two together, as the node runs them.
 
 ## Consequences
 

@@ -39,13 +39,19 @@ class CborDecodingDiversityReportTest {
         Map<String, CborRule> rules = CborRule.all();
 
         Map<String, int[]> counts = new TreeMap<>();
+        Map<String, int[]> decoders = new TreeMap<>();
         ArrayNode failures = NodeDiversity.JSON.createArrayNode();
         for (Path sample : samples(conway)) {
             Path relative = conway.relativize(sample);
             String ruleName = relative.getName(0).toString();
             String category = relative.getName(1).toString();
             int[] c = counts.computeIfAbsent(ruleName, k -> new int[Field.values().length]);
-            Optional<String> failure = check(rules.get(ruleName), category, sample);
+            CborRule rule = rules.get(ruleName);
+            Optional<String> failure = check(rule, category, sample);
+            if (rule != null) {
+                tallyDecoders(decoders.computeIfAbsent(ruleName, k -> new int[DECODER_COLUMNS]), rule,
+                        category.equals("valid"), read(sample));
+            }
             Field expected = category.equals("valid") ? Field.DECODED_EXPECTED
                     : category.equals("invalid-zap-0") ? Field.GENERATED_REJECTED_EXPECTED
                     : Field.ZAP_REJECTED_EXPECTED;
@@ -75,7 +81,51 @@ class CborDecodingDiversityReportTest {
 
         counts.forEach((rule, c) -> System.out.printf("cbor-decoding %-24s %s%n", rule, summary(c)));
         System.out.printf("cbor-decoding %-24s %s%n", "TOTAL", summary(totals));
+        printDecoders(decoders);
         assertThat(counts).isNotEmpty();
+    }
+
+    /** valid accepted, valid total, invalid rejected, invalid total, for the strict reader and then for CCL. */
+    private static final int DECODER_COLUMNS = 8;
+
+    /** Each decoder on its own: which side of the node a difference from Haskell comes from (not reported). */
+    private static void tallyDecoders(int[] t, CborRule rule, boolean valid, byte[] input) {
+        tally(t, 0, valid, accepts(rule.strict(), input));
+        tally(t, 4, valid, accepts(rule.ccl(), input));
+    }
+
+    private static void tally(int[] t, int offset, boolean valid, boolean accepted) {
+        int column = offset + (valid ? 0 : 2);
+        t[column + 1]++;
+        if (valid == accepted) {
+            t[column]++;
+        }
+    }
+
+    private static boolean accepts(CborRule.Decoder decoder, byte[] input) {
+        try {
+            decoder.decode(input);
+            return true;
+        } catch (Exception | StackOverflowError e) {
+            return false;
+        }
+    }
+
+    private static void printDecoders(Map<String, int[]> decoders) {
+        int[] total = new int[DECODER_COLUMNS];
+        System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts them together):");
+        System.out.printf("cbor-decoding %-24s %-36s %s%n", "rule", "Yano strict: valid ok / invalid ok",
+                "CCL: valid ok / invalid ok");
+        decoders.forEach((rule, t) -> {
+            System.out.printf("cbor-decoding %-24s %s%n", rule, decoderSummary(t));
+            Arrays.setAll(total, i -> total[i] + t[i]);
+        });
+        System.out.printf("cbor-decoding %-24s %s%n", "TOTAL", decoderSummary(total));
+    }
+
+    private static String decoderSummary(int[] t) {
+        return String.format("%-36s %s", String.format("%d/%d / %d/%d", t[0], t[1], t[2], t[3]),
+                String.format("%d/%d / %d/%d", t[4], t[5], t[6], t[7]));
     }
 
     /**
@@ -87,7 +137,7 @@ class CborDecodingDiversityReportTest {
             return Optional.of("unsupported: no decoder for this rule");
         }
         byte[] input = read(sample);
-        Optional<byte[]> encoded;
+        byte[] encoded;
         try {
             encoded = rule.decodeAndEncode(input);
         } catch (Exception | StackOverflowError e) {
@@ -99,7 +149,7 @@ class CborDecodingDiversityReportTest {
         byte[] expected = read(sample.resolveSibling(sample.getFileName().toString()
                 .replace(".input.cbor", ".expected.cbor")));
         try {
-            byte[] actual = rule.hashed() ? encoded.orElseThrow() : CborNormalizer.normalize(encoded.orElseThrow());
+            byte[] actual = rule.hashed() ? encoded : CborNormalizer.normalize(encoded);
             return Arrays.equals(actual, expected) ? Optional.empty()
                     : Optional.of("encode: re-encoding differs from the reference");
         } catch (RuntimeException e) {
