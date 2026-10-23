@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed — design only, for review. No implementation is part of this ADR.
+Accepted (design approved at `f13207952`, 2026-10-23; the maintainer's OQ10
+decision was recorded afterwards in r11, 2026-10-24). Design only: no
+implementation is part of this ADR. Implementation follows milestones M0–M6
+(§10) and the production and audit gates (§12).
 
 The number is local to the `adr/app-layer` series. Root-level and
 `adr/in-progress` ADR numbers are separate series; in particular, this is not
