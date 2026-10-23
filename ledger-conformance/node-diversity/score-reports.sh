@@ -4,8 +4,9 @@
 #   score-reports.sh <reports-dir> <node-diversity-conformance checkout>
 #
 # <reports-dir> holds yano-<version>-<yyyymmdd>-<scenario>.json (build/node-diversity). The builder runs in preview
-# mode on a temporary copy of the checkout that lists Yano as its only node, so nothing is downloaded. Prints one line
-# per scenario, then the overall score.
+# mode on a temporary copy of the checkout, beside the nodes whose reports the checkout carries under
+# scenarios/*/preview (cardano-node and Amaru): uplc-turbo checks each budget against the majority of nodes. Nodes
+# without local reports are dropped, so nothing is downloaded. Prints one line per scenario, then the overall score.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -16,7 +17,22 @@ REPORTS=$(cd "$1" && pwd)
 SITE=$(mktemp -d)
 trap 'rm -rf "$SITE"' EXIT
 cp -R "$2/." "$SITE"
-rm -rf "$SITE/nodes"/* "$SITE"/scenarios/*/preview
+for node_dir in "$SITE"/nodes/*/; do
+    node=$(basename "$node_dir")
+    if compgen -G "$SITE/scenarios/*/preview/$node.json*" >/dev/null; then
+        python3 - "$node_dir/metadata.json" <<'PY'
+import json
+import sys
+
+metadata = json.load(open(sys.argv[1]))
+metadata["reports"] = {}
+json.dump(metadata, open(sys.argv[1], "w"))
+PY
+    else
+        rm -rf "$node_dir"
+    fi
+done
+rm -f "$SITE"/scenarios/*/preview/yano.json*
 mkdir -p "$SITE/nodes/yano"
 printf '{"id": "yano", "name": "Yano", "language": "Java", "reports": {}}\n' > "$SITE/nodes/yano/metadata.json"
 printf 'Yano\n' > "$SITE/nodes/yano/README.md"
