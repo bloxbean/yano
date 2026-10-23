@@ -203,7 +203,7 @@ ADR-008.3): the governance commands of D5 — top-level creation in
 `governance` mode, owner recovery, registrar and configuration changes — use
 ADR-008.3 approval accounting, which today runs only in governed mode
 (`GovernedMembership` is created only when `membership.mode` is `governed`).
-Static-membership chains therefore cannot enable topics in v1 (OQ11).
+Static-membership chains therefore cannot enable topics in v1 (OQ11, decided).
 Enabling is a genesis choice for new chains, or a governed height-activated
 change on an existing chain (D13).
 
@@ -272,7 +272,7 @@ Application machines cannot write under `~yano/` (ADR-016 reserved prefix).
 
 | Mode | Who creates a top-level namespace | Typical use |
 |---|---|---|
-| `governance` | threshold-many members submit the identical command (ADR-008.3) | consortium chains |
+| `governance` | members vote: the chain's consensus threshold of distinct members submit the identical command (ADR-008.3) | consortium chains |
 | `registrar` | k-of-n registrar keys declared in the topic configuration, rotated by governance | a platform team operating the chain |
 | `open` | anyone, first come, by a claim signed by the future owners (single-segment names only, D3) | public or developer chains |
 | `namespace-owner` | the owners of an existing namespace, for sub-namespaces and topics beneath it | always available once a namespace exists |
@@ -282,9 +282,9 @@ yano.app-chain.chains[n].topics:
   mode: enabled
   creation:
     governance: true
-    registrars: { threshold: 1, keys: [<hex32>, <hex32>] }
+    registrars: none                 # or: { threshold: k, keys: [<hex32>, ...] }
     open-claims: false
-  unregistered-topics: open          # or: reject (D14)
+  unregistered-topics: reject        # or: open (D14)
   max-delegation-ms: 3600000
   max-command-ms: 604800000          # D5a
   max-pending-per-entry: 4           # D5a
@@ -302,6 +302,25 @@ subtree cap stops one owner from filling the chain-wide cap with children
 and locking out governance and registrar creations. Many open claims by
 different claimants are the squatting case of OQ7.
 
+The three top-level modes are **independent switches**; any combination,
+including all three, may be on. `registrars: none` (or an absent registrar
+set) turns the registrar path off, and commands with authority `~registrars`
+are then refused with `TOPIC_COMMAND_DENIED`. With all three off, no new
+top-level entry can be created until a governance configuration change turns
+one on; governance itself is always available on a topics chain (D1).
+
+**Recommended profiles.**
+
+| Profile | `governance` | `registrars` | `open-claims` | `unregistered-topics` | Why |
+|---|---|---|---|---|---|
+| **Production** (default recommendation) | `true` | `none` | `false` | `reject` | No single key can create a top-level entry: each needs the same member threshold that finalizes blocks, so the design adds no trusted party. A vote is needed once per tenant; owners then run their subtree alone. `reject` closes the unregistered-topic gap (D14). |
+| **Devnet / showcase** | `true` | one key, `threshold: 1`, held by the operator | `false` | `reject` | One signed CLI call creates a namespace without coordinating votes; governance stays the backstop for recovery and configuration. |
+| **Public developer chain** | `true` | `none` | `true` | `open` | First-come self-service, bounded by the caps; squatting is OQ7. |
+
+A production chain that later wants registrars adds them with a governance
+configuration change; registrar keys in production should be k-of-n and held
+in hardware or a KMS.
+
 ![Namespaces, registry entries and the four creation modes](images/039/namespaces-and-creation.svg)
 
 ### D5 — Two command paths, both on reserved topics
@@ -318,9 +337,16 @@ different claimants are the squatting case of OQ7.
 2. **Governance commands** on `~governance/topics`: create a top-level
    namespace (governance mode), replace owners of any entry (recovery),
    change registrars, change the chain topic configuration, or retire an
-   abusive entry. These are approved exactly like membership changes:
-   threshold-many members submit the identical command within the approval
-   window, through the existing privileged admin path.
+   abusive entry. These are approved exactly like membership changes: once
+   distinct members numbering the chain's **consensus threshold** at that
+   height (`group.thresholdAt(height)` in ADR-008.3's `GovernedMembership`,
+   the same number of signatures that finalizes a block) have submitted the
+   identical command within the approval window. Each member submits through
+   its node's privileged admin path, which requires a configured full API key
+   (`AppChainApiKeyFilter`; without one the route answers `AUTH_UNAVAILABLE`)
+   and signs with that node's member key. There is no separate topic
+   threshold; a governed threshold change applies to topic governance from
+   its activation height.
 
 Entry and configuration changes take effect at `activation height =
 finalization height + lag` (default lag 10, minimum 1), so every member sees
@@ -858,11 +884,13 @@ certified time benefit on every schema-3 chain.
 
 ### D14 — Unregistered and system topics
 
-- `unregistered-topics: open` (the default when enabled): topics no entry
-  covers behave exactly as today. This allows gradual adoption.
-- `unregistered-topics: reject`: every topic must be registered first. This
-  closes the gap where a machine that ignores the topic (for example
-  `kv-registry`) could be reached through an arbitrary topic.
+- `unregistered-topics: reject` (the default when enabled): every topic must
+  be registered first. This closes the gap where a machine that ignores the
+  topic (for example `kv-registry`) could be reached through an arbitrary
+  topic.
+- `unregistered-topics: open`: topics no entry covers behave exactly as
+  today. Chosen explicitly, for example when enabling topics on a running
+  chain whose existing topics are registered gradually.
 - `~` system topics keep their own rules. `~topics/registry` and
   `~governance/topics` are handled by the framework; other `~` topics are
   unaffected.
@@ -990,6 +1018,12 @@ Threats and mitigations:
 - **Stolen issuer key** → owners rotate it out; outstanding delegations die at
   expiry or are revoked (D13).
 - **Stolen or lost owner keys** → governance recovery (D13).
+- **A stolen admin API key of one node** → casts at most that member's vote
+  on a governance command; approval needs the consensus threshold of
+  distinct members (D5). Privileged routes require a configured full API key
+  and are refused when none is configured; operators keep them off public
+  endpoints. Public read and submit endpoints are safe to expose because
+  every registry and protected write is checked against signatures.
 - **Namespace squatting / registry spam** in open mode → first-come plus
   `max-entries` and the per-subtree `max-entries-per-namespace`; quotas or
   deposits are OQ7.
@@ -1026,7 +1060,10 @@ Threats and mitigations:
 ## 7. Compatibility
 
 - **Pre-release.** App chains have not had a public release. There is no
-  compatibility mode; v1 formats start at version 1.
+  compatibility mode; v1 formats start at version 1. The v1 restrictions
+  recorded here (governed membership only, OQ11; no transfer of ancestor
+  authority, OQ9; single-key delegations, OQ5) can be relaxed later by
+  adding commands or modes, without changing the v1 formats.
 - **Envelope and transport:** unchanged (D7).
 - **Plugin API:** additive — `TopicMessageView` and the schema evaluator in
   core-api; this is a new API level (ADR-011). Machines that ignore it keep
@@ -1088,7 +1125,7 @@ Threats and mitigations:
 | M3 | Writer proofs, delegations, revocation, replay guard, expiry index and pruning, follower block validity | M2 | I3, I4, I9, I12, I18, I20 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
 | M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects (with the configuration record) | M3, M4 | I15, I16 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
-| M6 | Qualification | M5 | I1 byte-identity on schema 2 and the stated schema-3 difference with `mode: disabled`; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; performance budget for signature checks recorded |
+| M6 | Qualification and showcase | M5 | I1 byte-identity on schema 2 and the stated schema-3 difference with `mode: disabled`; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; the V6 showcase runs end to end; performance budget for signature checks recorded |
 
 ## 11. Verification and test-vector strategy
 
@@ -1167,6 +1204,19 @@ Threats and mitigations:
 - **V5 — Disabled parity.** A schema-2 chain produces the same blocks and
   roots as `main` for the existing suites; a schema-3 chain with
   `mode: disabled` differs only by its profile marker and time rules (I1).
+- **V6 — Showcase.** On a 3-member governed cluster with the production
+  profile (D4): (1) a
+  governance vote at the consensus threshold creates `acme/`, while a single
+  member's submission alone does not; (2) the owners create `acme/orders`
+  with a writer policy and a schema; (3) an issuer delegates a one-hour
+  session key to a browser, which writes directly to any member; (4) a
+  forged write, a write to another topic, a replayed write and a
+  schema-violating write are refused, and a block carrying a forged write is
+  rejected; (5) the session key is revoked and its next write is refused in
+  the next block; (6) the owners "lose" their keys, governance replaces
+  them, and the old owners' pending commands are cancelled; (7) an offline
+  verifier checks a message's authorship and effective policy against the
+  anchored root.
 
 ## 12. Production and audit gates
 
@@ -1201,7 +1251,7 @@ Threats and mitigations:
 | OQ8 | Default `max-delegation-ms` | 1 hour vs 24 hours | 1 hour |
 | OQ9 | Can a parent namespace give up authority over a child (D3)? | (a) no: ancestors always keep authority; (b) a transfer command that makes a child independent | (a) for v1; (b) can be added later as a new command without changing existing entries |
 | OQ10 | Keep profile schema 2 accepted beside schema 3 (D12)? | (a) yes: retained schema-2 chains run unchanged without topics; (b) no: app chains are pre-release, so require schema 3 and re-create retained chains | (a): it protects retained chain identities at the cost of one extra accepted schema |
-| OQ11 | Topics on static-membership chains (D1)? | (a) no: topics require `membership.mode: governed` in v1; (b) allow them without topic governance: no `governance` creation mode, no owner recovery, configuration fixed for the generation | (a): recovery is the only answer to lost owner keys, and ADR-008.3 approval accounting runs only in governed mode today; (b) can be added later without changing formats |
+| OQ11 | Topics on static-membership chains (D1)? | (a) no: topics require `membership.mode: governed` in v1; (b) allow them without topic governance: no `governance` creation mode, no owner recovery, configuration fixed for the generation | **Decided (maintainer, 2026-10-23): (a).** Recovery is the only answer to lost owner keys, and ADR-008.3 approval accounting runs only in governed mode today. A chain that wants registrar-only creation runs governed membership with `creation.governance: false` or simply never votes on creations (D4). (b) can be added later without changing formats |
 
 ## 15. Related findings (out of scope)
 
@@ -1274,3 +1324,11 @@ Threats and mitigations:
   retention horizon (`notAfter ≤ blockTime + max-delegation-ms`; delegation lifetime also capped
   by the chain maximum); I9, I12, V3. Editorial: D15 `topic-entry-v1` wording; I11 and D15 state
   the state-retention assumption.
+- r8 (2026-10-23; maintainer decisions, not a review response): OQ11 decided (a) — topics require
+  governed membership. D4: the three top-level creation modes are independent switches,
+  `registrars: none` is valid, and recommended profiles (production: governance only, no
+  registrars, no open claims, `unregistered-topics: reject`; devnet/showcase: plus one registrar
+  key; public developer chain). D5: governance approval is the chain's consensus threshold at that
+  height, through the API-key-protected privileged path; no separate topic threshold. D14: the
+  default becomes `reject`. Threat model: a stolen admin key of one node. §7: v1 restrictions
+  can be relaxed later without format changes. New V6 showcase; M6 runs it.
