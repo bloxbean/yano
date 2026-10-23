@@ -844,8 +844,9 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         lastProcessedSlot = slot;
         blocksProcessed++;
         long observedRemoteTipSlot = observedRemoteTipSlot();
-        if (syncPhase == SyncPhase.INITIAL_SYNC && !initialSyncComplete
-                && observedRemoteTipSlot >= 0) {
+        // Any phase: a restart near the tip reaches STEADY_STATE through the intersection timeout or the
+        // near-tip fast path, which do not set this flag.
+        if (!initialSyncComplete && observedRemoteTipSlot >= 0) {
             long distance = Math.max(0L, observedRemoteTipSlot - slot);
             if (distance <= 10) {
                 initialSyncComplete = true;
