@@ -393,7 +393,7 @@ final class TopicRegistryKernel {
     }
 
     /** Commands one member may have open with no other approver: an equal share of the record (D5). */
-    int proposalShare(long height) {
+    private int proposalShare(long height) {
         return Math.max(1, MAX_GOVERNANCE_PENDING / group.membersAt(height).size());
     }
 

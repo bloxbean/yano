@@ -216,8 +216,10 @@ topics at genesis, the seed is written to `~yano/topics/v1/config` while
 block 1 is applied, after its messages, like any configuration activation
 (D5a with *a* = 2). It therefore governs blocks from height 2. **Block 1 of a
 genesis-enabled chain is governed as *disabled*:** it behaves exactly as
-today. `~` topics are refused at REST, and no policy or `reject` fallback
-applies yet; no entry can exist before height 2 anyway. The alternative,
+today for writes and owner commands. `~` topics are refused at REST, and no
+policy or `reject` fallback applies yet; no entry can be active before height
+2 anyway. Governance commands in block 1 are the one exception: they are
+judged under the seed, so a vote in block 1 counts as it would in block 2. The alternative,
 an authenticated configuration in the parent state of block 1, does not
 exist today: framework state starts at height 1 (`ConsensusProfileGuard`
 refuses a marker before it), so height 0 has no committed configuration to
@@ -1524,6 +1526,8 @@ Threats and mitigations:
   delegate (I9); each member opens at most an equal share (64 ÷ members) of
   the unapproved governance commands; topic-registry writes are not
   charged to the snapshot budget; a follower rejects a proposal with a refused topic message with a
-  warning. Editorial: D1 (seed read only for block 1, replacing "refuses to start"), D2 (`config-pending`),
+  warning; an exception with a cyclic cause chain cannot hang that rejection; the conformance harness
+  uses one member identity everywhere, its membership view included. Editorial: D1 (seed read only for
+  block 1, replacing "refuses to start"; governance in block 1 is judged under the seed), D2 (`config-pending`),
   D4 YAML keys, D6 clamping, D11/I2 function names, I6 wording, D15 REST list, M5 (framed machine tests in
   Yano X), §13 and §15.

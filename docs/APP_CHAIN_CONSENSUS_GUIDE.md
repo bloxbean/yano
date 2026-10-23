@@ -324,8 +324,9 @@ changes.
 | `topics.activation-lag` | 10 | blocks between inclusion and activation |
 | `topics.governance-window-blocks` | 600 | approval window of topic governance |
 
-The YAML is a genesis seed: it is read only while applying block 1, so block 1
-is ungoverned and the seed governs from block 2. After that only committed
+The YAML is a genesis seed: it is read only while applying block 1, so writes
+and owner commands in block 1 are ungoverned (governance commands in block 1 are
+already judged under the seed) and the seed governs everything from block 2. After that only committed
 configuration counts; a restart with a different `topics:` block logs a warning
 and changes nothing. Governance changes the configuration with a `GovConfigure`
 command, and can enable topics on a running governed chain the same way.

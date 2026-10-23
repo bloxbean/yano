@@ -407,7 +407,7 @@ public final class StateMachineConformance {
             new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
             new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
             AppStateMachine machine = provider.create(
-                    contextFor(chainId, settings, profile, stateIdentity));
+                    contextFor(chainId, settings, profile, stateIdentity, member));
             machine.init(readerFor(store), new AppChainInfo(chainId, member, 1));
             for (AppBlock block : corpus) {
                 if (restartAt > 0 && block.height() == restartAt + 1) {
@@ -417,7 +417,7 @@ public final class StateMachineConformance {
                     new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
                     new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
                     machine = provider.create(
-                            contextFor(chainId, settings, profile, stateIdentity));
+                            contextFor(chainId, settings, profile, stateIdentity, member));
                     machine.init(readerFor(store), new AppChainInfo(chainId, member, 1));
                 }
                 if (snapshotAt > 0 && block.height() == snapshotAt + 1) {
@@ -428,7 +428,7 @@ public final class StateMachineConformance {
                     new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
                     new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
                     machine = provider.create(
-                            contextFor(chainId, settings, profile, stateIdentity));
+                            contextFor(chainId, settings, profile, stateIdentity, member));
                     machine.init(readerFor(store), new AppChainInfo(chainId, member, 1));
                 }
                 outcomes.put(block.height(), applyAndCommit(
@@ -477,7 +477,8 @@ public final class StateMachineConformance {
             String chainId,
             Map<String, String> settings,
             AppChainConsensusProfile profile,
-            StateCommitmentIdentity stateIdentity
+            StateCommitmentIdentity stateIdentity,
+            String member
     ) {
         return new AppStateMachineContext() {
             @Override public String chainId() { return chainId; }
@@ -491,8 +492,7 @@ public final class StateMachineConformance {
             @Override
             public Optional<org.yanoproject.api.appchain.AppChainMembershipView>
             membershipView() {
-                AppChainMembershipEpoch epoch = new AppChainMembershipEpoch(
-                        0, List.of("11".repeat(32)), 1);
+                AppChainMembershipEpoch epoch = new AppChainMembershipEpoch(0, List.of(member), 1);
                 return Optional.of(height -> epoch);
             }
         };

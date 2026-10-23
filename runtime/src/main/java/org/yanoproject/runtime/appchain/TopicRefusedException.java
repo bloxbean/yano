@@ -2,7 +2,10 @@ package org.yanoproject.runtime.appchain;
 
 import org.yanoproject.api.appchain.topics.TopicRefusal;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * A block carries a topic command or write that the registry refuses (ADR app-layer/039 D11, I19): the block
@@ -20,9 +23,10 @@ final class TopicRefusedException extends IllegalArgumentException {
         return refusal;
     }
 
-    /** The refusal behind a block-application failure, if that is what failed it. */
+    /** The refusal behind a block-application failure, if that is what failed it (cause cycles end the walk). */
     static Optional<TopicRefusedException> causeOf(Throwable failure) {
-        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable cause = failure; cause != null && seen.add(cause); cause = cause.getCause()) {
             if (cause instanceof TopicRefusedException refused) {
                 return Optional.of(refused);
             }

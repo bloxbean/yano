@@ -39,6 +39,7 @@ import org.yanoproject.api.appchain.topics.TopicWire.Writers;
 import org.yanoproject.api.appchain.topics.TopicWireCodec;
 import org.yanoproject.api.appchain.topics.TopicWriteRules;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -49,6 +50,7 @@ import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /** ADR app-layer/039 M2: the registry state transition, block by block. */
 class TopicRegistryKernelTest {
@@ -564,6 +566,19 @@ class TopicRegistryKernelTest {
         String any = HexUtil.encodeHexString(TopicKeys.used("00".repeat(32)));
         String prefix = any.substring(0, any.length() - 64);
         return chain.state.values.keySet().stream().filter(key -> key.startsWith(prefix)).count();
+    }
+
+    @Test
+    void aRefusalIsFoundBehindWrappersAndCauseCyclesEndTheWalk() {
+        TopicRefusedException refused = new TopicRefusedException("a refused topic write",
+                TopicRefusal.TOPIC_FRAME_INVALID, "detail");
+        assertThat(TopicRefusedException.causeOf(new RuntimeException(new RuntimeException(refused))))
+                .containsSame(refused);
+        RuntimeException first = new RuntimeException("first");
+        RuntimeException second = new RuntimeException("second", first);
+        first.initCause(second);
+        assertThat(assertTimeoutPreemptively(Duration.ofSeconds(1), () -> TopicRefusedException.causeOf(first)))
+                .isEmpty();
     }
 
     @Test
