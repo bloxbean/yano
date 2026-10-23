@@ -209,8 +209,17 @@ change on an existing chain (D13).
 
 **Configuration authority** (the ADR-008.3 §2.4 rule for member lists). The
 `topics:` YAML block is the **genesis seed only**. When a chain enables
-topics at genesis, the seed is committed under `~yano/topics/v1/config` at
-height 1. The YAML is compared with the seed **only when a node builds
+topics at genesis, the seed is written to `~yano/topics/v1/config` while
+block 1 is applied, after its messages, like any configuration activation
+(D5a with *a* = 2). It therefore governs blocks from height 2. **Block 1 of a
+genesis-enabled chain is governed as *disabled*:** it behaves exactly as
+today. `~` topics are refused at REST, and no policy or `reject` fallback
+applies yet; no entry can exist before height 2 anyway. The alternative,
+an authenticated configuration in the parent state of block 1, does not
+exist today: framework state starts at height 1 (`ConsensusProfileGuard`
+refuses a marker before it), so height 0 has no committed configuration to
+prove against, and an unproven YAML value must not stand in for one. The
+YAML is compared with the seed **only when a node builds
 height 1**: a new chain, a member joining from genesis, or a full resync.
 A YAML that differs then refuses to start, because it would compute a
 different height-1 root. Like ADR-008.3's genesis member list, the YAML
@@ -915,7 +924,8 @@ certified time benefit on every schema-3 chain.
 - `unregistered-topics: reject` (the default when enabled): every topic must
   be registered first. This closes the gap where a machine that ignores the
   topic (for example `kv-registry`) could be reached through an arbitrary
-  topic.
+  topic. Like every configuration value, it governs from the block after the
+  one that commits it: from block 2 on a genesis-enabled chain (D1).
 - `unregistered-topics: open`: topics no entry covers behave exactly as
   today. Chosen explicitly, for example when enabling topics on a running
   chain whose existing topics are registered gradually.
@@ -956,9 +966,12 @@ certified time benefit on every schema-3 chain.
   against `effectivePolicyDigest` = BLAKE2b-256 over the canonical outcome,
   the configuration revision, and the (entry, revision) pairs it came from.
   Configuration changes are materialized at *a − 1* exactly like entries
-  (D5a), and genesis enablement commits the configuration at height 1 (D1),
-  so the root at *h − 1* already holds the configuration that governs *h*
-  and the verifier never reads the activation queue. **Bounds:** an entry
+  (D5a), and genesis enablement writes the configuration while applying
+  block 1, so it governs blocks from height 2 (D1). The root at *h − 1*
+  therefore holds the configuration that governs *h* for every *h* ≥ 1:
+  for block 1 the proof shows configuration absence at the empty height-0
+  root (*disabled*), which is exactly what block 1 enforced. The verifier
+  never reads the activation queue. **Bounds:** an entry
   record
   holds only the active revision and head metadata, and a policy's key sets
   are capped (at most 16 keys and `threshold ≤ 16` per set, D6), so a record
@@ -1037,6 +1050,10 @@ Threats and mitigations:
 - **A partial unregistered-topic proof** (prefix absences shown without the
   fallback that decides them) → the configuration record is part of every
   effective-policy proof (D15, I16).
+- **Writes in block 1 of a new genesis-enabled chain** → ungoverned by
+  design, exactly as today: no entry can exist before block 2, and the seed
+  (including `reject`) governs from block 2. Proofs say so (*disabled* for
+  block 1), so nobody can claim block 1 was policy-checked (D1, D15).
 - **Stolen session key** → bounded by delegation lifetime and scope; early
   revocation takes effect from the next block (D8).
 - **State growth through revocations** (far-future delegations revoked to
@@ -1079,7 +1096,7 @@ Threats and mitigations:
 | I13 | On profile-schema-3 chains block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule); a proposer stamps `max(localNow, parent.timestamp)`. | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
 | I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks keep the framed bytes and message proofs resolve to them. | D7, D7a |
-| I16 | A `topic-policy-v1` proof verifies only if it covers the configuration record and the topic and every `/`-prefix of it, each with inclusion or absence, against one root, and its resolved outcome (including the unregistered fallback) matches `effectivePolicyDigest`. The active revisions and configuration committed in the root of block *h − 1* are exactly those that govern block *h*, after every D5a recheck and cancellation. | D1, D5a, D15 |
+| I16 | A `topic-policy-v1` proof verifies only if it covers the configuration record and the topic and every `/`-prefix of it, each with inclusion or absence, against one root, and its resolved outcome (including the unregistered fallback) matches `effectivePolicyDigest`. The active revisions and configuration committed in the root of block *h − 1* are exactly those that govern block *h*, for every *h* ≥ 1, after every D5a recheck and cancellation; on a genesis-enabled chain block 1 is governed as *disabled* and the seed governs from block 2. | D1, D5a, D15 |
 | I17 | Each signed registry command other than a revocation takes effect at most once: only if included by its `notAfter`, only on the head revision it names, only if authorized by its authority's active epoch at inclusion, and only if that epoch is still active immediately before it activates. Pending revisions never authorize. | D5a |
 | I18 | No signed write, delegation or registry command verifies on a chain generation other than the one it names. | D5a, D7, D8 |
 | I19 | A finalized block contains an owner command only if it decodes canonically, names this chain and generation, is within its `notAfter` range and carries valid signatures meeting the threshold of its authority's key set as D5 defines it for each authority (entry owners, `~registrars`, `~claim`, `~issuer`), so no key outside those sets can cause a framework write; only stale, over-limit and superseded outcomes are receipts. | D5, D11 |
@@ -1151,10 +1168,10 @@ Threats and mitigations:
 |---|---|---|---|
 | M0 | D12 certified time bounds as consensus profile schema 3, including the proposer clamp | ADR accepted | I13 tests, including a proposer whose clock is behind the parent's timestamp producing a valid block (no view change); a retained schema-2 chain replays and restarts byte-identically on the M0 build; schema-3 genesis commits the new field under `~yano/consensus-profile/v3`; a schema-2 marker refuses a schema-3 configuration and vice versa (fail closed); topics refuse to enable on schema 2; existing suites green |
 | M1 | Freeze formats: config, entry, command statement, frame, delegation and delegation hash, write statement (all with `generationId`; write statement with the delegation hash), revocation command, expiry index key, effective-outcome digest; codes; the D7 signature rule set as one core verifier; vectors | M0 | Normative CDDL and test vectors committed; independent decoder agrees (V2); the core verifier matches libsodium on the speccheck vectors and rejects the small-order and non-canonical cases the default provider accepts (I20) |
-| M2 | Registry state, owner command admission (D5), owner and governance commands with D5a preconditions, activation of entries and configuration materialized at *a − 1*, revisions, genesis-seed handling, subtree caps, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17, I19 tests; a block carrying an unauthorized command is rejected; a governed configuration change followed by a restart starts cleanly both with the original seed YAML and with YAML matching the current configuration (neither is used); a full resync or a member joining from genesis with non-seed YAML fails closed; multi-node replay and restart parity |
+| M2 | Registry state, owner command admission (D5), owner and governance commands with D5a preconditions, activation of entries and configuration materialized at *a − 1*, revisions, genesis-seed handling (seed written while applying block 1, governing from block 2), subtree caps, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17, I19 tests; a block carrying an unauthorized command is rejected; a governed configuration change followed by a restart starts cleanly both with the original seed YAML and with YAML matching the current configuration (neither is used); a full resync or a member joining from genesis with non-seed YAML fails closed; on a genesis-enabled `reject` chain block 1 behaves as today and an unregistered write in block 2 is refused; multi-node replay and restart parity |
 | M3 | Writer proofs, delegations, revocation, replay guard, expiry index and pruning, follower block validity | M2 | I3, I4, I9, I12, I18, I20 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
-| M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects (with the configuration record) | M3, M4 | I15, I16 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
+| M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects (with the configuration record) | M3, M4 | I15, I16 tests, including the V3 genesis-boundary vectors for heights 1 and 2 under `open` and `reject`: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
 | M6 | Qualification and showcase | M5 | I1 byte-identity on schema 2 and the stated schema-3 difference with `mode: disabled`; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; the V6 showcase runs end to end; performance budget for signature checks recorded |
 
 ## 11. Verification and test-vector strategy
@@ -1230,7 +1247,11 @@ Threats and mitigations:
   creation counts as absent; an omitted or tampered configuration record
   fails; a governed fallback switch from `open` to `reject` governs exactly
   the blocks from its activation height; a chain without topics proves
-  configuration absence (*disabled*); **threshold writers**: a signature
+  configuration absence (*disabled*); **genesis boundary**: on a
+  genesis-enabled chain with `reject` and with `open`, block 1 accepts an
+  unregistered topic and its proof (against the height-0 root) yields
+  *disabled*; from block 2 the same topic yields `unregistered-reject` (or
+  `unregistered-open`) and the runtime enforces it; **threshold writers**: a signature
   list out of bytewise key order is refused, and the canonical list yields
   the same `VerifiedWriter` on every member.
 - **V4 — Schema parity.** The existing authenticated-map schema vectors pass
@@ -1374,3 +1395,9 @@ Threats and mitigations:
   the YAML is compared with the seed only when a node builds height 1; a restart on existing state
   never compares it and never fails because of it; M2 restart test extended. Editorial → each
   authorization case named in D5, I19 and the code table.
+- r10 (2026-10-24; responds to reviewer 1's re-review of `864eb235a`): F17 completion (genesis
+  boundary) → genesis enablement writes the seed while applying block 1, so it governs from block
+  2 (D5a with *a* = 2); block 1 is governed as *disabled* and its proof shows configuration absence
+  at the empty height-0 root, which matches enforcement. An authenticated height-0 configuration
+  was rejected because framework state starts at height 1 (`ConsensusProfileGuard`). D1, D14,
+  D15, threat model, I16, M2, M5 and V3 (heights 1 and 2 under `open` and `reject`) updated.
