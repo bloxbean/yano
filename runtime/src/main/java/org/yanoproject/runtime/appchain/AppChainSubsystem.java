@@ -4335,6 +4335,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("maxBlockMessages", consensusProfile.maxBlockMessages());
         status.put("maxBlockBytes", consensusProfile.maxBlockBytes());
         status.put("l1StabilityDepth", consensusProfile.l1StabilityDepth());
+        status.put("blockMaxForwardSkewMs", consensusProfile.blockMaxForwardSkewMs());
         status.put("enforceSenderSeq", consensusProfile.enforceSenderSeq());
         status.put("effectsEnabled", consensusProfile.effectsEnabled());
         return status;

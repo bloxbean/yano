@@ -105,7 +105,7 @@ snapshot lifetime, and retry semantics.
 | `view` | certified-consensus view at this height |
 | `prevHash` | 32 zero bytes at height 1 |
 | `l1Slot`, `l1BlockHash` | the stable L1 reference (§6), 0/empty when disabled |
-| `timestamp` | proposer wall-clock millis — the ONLY time a state machine may use |
+| `timestamp` | millis stamped by the proposer as `max(localNow, parent.timestamp)` — the ONLY time a state machine may use. Every block's timestamp is ≥ its parent's (block validity, re-checked on catch-up), and a member votes for a fresh proposal only if it is at most `block-time.max-forward-skew-ms` (consensus profile, default 5,000, at most 600,000) ahead of its own clock; a re-proposed prepared value keeps its timestamp (ADR app-layer/039 D12) |
 | `messagesRoot` | binary blake2b-256 merkle root over the ordered **message ids** (odd width duplicates the last node; empty list = 32 zero bytes) |
 | `stateRoot` | MPF root AFTER applying this block (§7) |
 | `messages` | the full ordered message envelopes |

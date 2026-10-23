@@ -860,7 +860,9 @@ timestamp must be trustworthy within a bound. A follower votes for a
 proposal only if:
 
 - `timestamp ≥ parent.timestamp` (monotonic), and
-- `timestamp ≤ localNow + max-forward-skew-ms` (default 5,000).
+- `timestamp ≤ localNow + max-forward-skew-ms` (default 5,000; the profile
+  accepts 1 to 600,000, and a value outside that range makes the profile
+  invalid on every member).
 
 The proposer stamps a fresh proposal with `max(localNow, parent.timestamp)`
 instead of `localNow` alone. A proposer whose clock is behind the parent's

@@ -33,6 +33,7 @@ import java.util.function.BiFunction;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongFunction;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -57,6 +58,10 @@ final class AppChainEngine implements AutoCloseable {
     private final long roundTimeoutMs;
     private final int timeoutMaxExponent;
     private final long maxFutureViewLead;
+    /** ADR app-layer/039 D12: how far a fresh proposal's timestamp may lead the voter's clock. */
+    private final long maxForwardSkewMs;
+    /** Wall clock for block timestamps and the D12 forward bound (replaceable in tests). */
+    private volatile LongSupplier wallClock = System::currentTimeMillis;
     /** Partial rounds observed competing with our lock (008.2 §0 residual case). */
     private final java.util.concurrent.atomic.AtomicLong splitVotesObserved =
             new java.util.concurrent.atomic.AtomicLong();
@@ -431,6 +436,7 @@ final class AppChainEngine implements AutoCloseable {
         this.log = log;
         this.writeBatchFactory = Objects.requireNonNull(writeBatchFactory, "writeBatchFactory");
         this.effectsSettings = resolvedConsensus.settings();
+        this.maxForwardSkewMs = resolvedConsensus.profile().blockMaxForwardSkewMs();
         this.consensusProfileGuard = new ConsensusProfileGuard(
                 resolvedConsensus.profile());
         this.consensusProfileGuard.verifyRetained(ledger, config.chainId());
@@ -613,6 +619,12 @@ final class AppChainEngine implements AutoCloseable {
             log.warn("Catch-up block prev-hash mismatch at height {} — rejecting", block.height());
             return false;
         }
+        AppBlock parent = tipBlock();
+        if (block.timestamp() < timestampOf(parent)) {
+            log.warn("Catch-up block timestamp precedes its parent at height {} — rejecting",
+                    block.height());
+            return false;
+        }
         // Certified history is mode-independent (ADR 008.2 §2.4): the threshold
         // cert is the legitimacy proof; the proposer just has to be a member at
         // that height. Live window rules were enforced by the voters back then.
@@ -636,7 +648,7 @@ final class AppChainEngine implements AutoCloseable {
                     block.height());
             return false;
         }
-        if (!verifyCatchUpL1Ref(block)) {
+        if (!verifyCatchUpL1Ref(block, parent)) {
             return false;
         }
         AppBlockExecutionContext executionContext = executionContext(block, "Catch-up block");
@@ -786,7 +798,9 @@ final class AppChainEngine implements AutoCloseable {
                 if (candidates.isEmpty()) {
                     return;
                 }
-                timestamp = System.currentTimeMillis();
+                // D12: never stamp below the parent, or a proposer whose clock
+                // trails the parent's would build an invalid block.
+                timestamp = Math.max(wallClock.getAsLong(), timestampOf(tipBlock()));
                 candidate = buildCandidateBlock(height, prevHash, l1Ref, timestamp, candidates);
             }
             // Trim so the serialized block (which a proposal carries whole over
@@ -1185,12 +1199,28 @@ final class AppChainEngine implements AutoCloseable {
                     block.height());
             return;
         }
-        if (block.view() > 0 && !safeRecoveryProposal(block)) {
+        RecoveryProposal recovery = block.view() > 0
+                ? recoveryProposal(block) : RecoveryProposal.FRESH_VALUE;
+        if (recovery == RecoveryProposal.INVALID) {
             log.warn("Proposal at height {} view {} violates the prepared-value rule — rejecting",
                     block.height(), block.view());
             return;
         }
-        if (!verifyProposalL1Ref(envelope, block)) {
+        AppBlock parent = tipBlock();
+        if (block.timestamp() < timestampOf(parent)) {
+            log.warn("Proposal timestamp precedes its parent at height {} — rejecting", block.height());
+            return;
+        }
+        // D12 vote rule: a fresh value may lead this voter's clock by at most the
+        // profile skew. A re-proposed prepared value keeps its original timestamp,
+        // which already passed this bound when it was first voted.
+        if (block.timestamp() > wallClock.getAsLong() + maxForwardSkewMs
+                && recovery != RecoveryProposal.PREPARED_VALUE) {
+            log.warn("Proposal timestamp is more than {} ms ahead of the local clock at height {} "
+                    + "— rejecting", maxForwardSkewMs, block.height());
+            return;
+        }
+        if (!verifyProposalL1Ref(envelope, block, parent)) {
             return;
         }
         // Every message inside the block must be a valid, member-signed envelope
@@ -1627,30 +1657,52 @@ final class AppChainEngine implements AutoCloseable {
         }
     }
 
-    private boolean safeRecoveryProposal(AppBlock block) {
+    /** How a view&gt;0 proposal relates to the prepared-value rule of its new-view certificate. */
+    private enum RecoveryProposal { INVALID, FRESH_VALUE, PREPARED_VALUE }
+
+    private RecoveryProposal recoveryProposal(AppBlock block) {
         CertifiedConsensusCodec.NewViewCertificate certificate;
         try {
             certificate = CertifiedConsensusCodec.decodeNewView(block.justification());
         } catch (IllegalArgumentException malformed) {
-            return false;
+            return RecoveryProposal.INVALID;
         }
         if (certificate.height() != block.height()
                 || certificate.targetView() != block.view()
                 || !validateNewView(certificate)
                 || highestFinality(certificate) != null) {
-            return false;
+            return RecoveryProposal.INVALID;
         }
         CertifiedConsensusCodec.QuorumCertificate highest = highestPrepared(certificate);
         if (highest == null) {
-            return true;
+            return RecoveryProposal.FRESH_VALUE;
         }
+        boolean samePreparedValue = Arrays.equals(highest.valueHash(), AppBlockCodec.valueHash(block));
         byte[] encoded = ledger.metaBytes("consensus_prepared_value_" + block.height());
-        if (encoded == null) {
-            return Arrays.equals(highest.valueHash(), AppBlockCodec.valueHash(block));
+        if (encoded != null) {
+            AppBlock prepared = AppBlockCodec.deserializeCanonical(encoded, proposalMaxBytes);
+            samePreparedValue &= Arrays.equals(AppBlockCodec.blockHash(prepared), highest.blockHash());
         }
-        AppBlock prepared = AppBlockCodec.deserializeCanonical(encoded, proposalMaxBytes);
-        return Arrays.equals(AppBlockCodec.blockHash(prepared), highest.blockHash())
-                && Arrays.equals(highest.valueHash(), AppBlockCodec.valueHash(block));
+        return samePreparedValue ? RecoveryProposal.PREPARED_VALUE : RecoveryProposal.INVALID;
+    }
+
+    /** The committed tip, which is the parent of the next block; null before height 1. */
+    private AppBlock tipBlock() {
+        long tip = ledger.tipHeight();
+        if (tip == 0) {
+            return null;
+        }
+        return ledger.block(tip).orElseThrow(() ->
+                new IllegalStateException("Committed app-chain tip block is unavailable at height " + tip));
+    }
+
+    /** D12 parent timestamp: genesis (no parent) is 0. */
+    private static long timestampOf(AppBlock parent) {
+        return parent != null ? parent.timestamp() : 0L;
+    }
+
+    void setWallClock(LongSupplier wallClock) {
+        this.wallClock = Objects.requireNonNull(wallClock, "wallClock");
     }
 
     private CertifiedConsensusCodec.QuorumCertificate highestPrepared(
@@ -2231,11 +2283,11 @@ final class AppChainEngine implements AutoCloseable {
      * is within our observed window) are enforced. A ref ahead of the local L1
      * view stops the batch — the next catch-up tick retries after L1 advances.
      */
-    private boolean verifyCatchUpL1Ref(AppBlock block) {
+    private boolean verifyCatchUpL1Ref(AppBlock block, AppBlock parent) {
         if (config.l1StabilityDepth() <= 0 || block.l1Slot() <= 0) {
             return true; // refs unused, or a block from a pre-l1-ref era
         }
-        long prevSlot = ledger.block(ledger.tipHeight()).map(AppBlock::l1Slot).orElse(0L);
+        long prevSlot = parent != null ? parent.l1Slot() : 0L;
         if (block.l1Slot() < prevSlot) {
             log.warn("Catch-up block L1 ref moves backwards ({} < {}) at height {} — rejecting",
                     block.l1Slot(), prevSlot, block.height());
@@ -2420,7 +2472,7 @@ final class AppChainEngine implements AutoCloseable {
      *
      * @return true to continue proposal processing; false = rejected or deferred
      */
-    private boolean verifyProposalL1Ref(AppMessage envelope, AppBlock block) {
+    private boolean verifyProposalL1Ref(AppMessage envelope, AppBlock block, AppBlock parent) {
         if (config.l1StabilityDepth() <= 0) {
             return true; // chain runs without L1 refs
         }
@@ -2429,7 +2481,7 @@ final class AppChainEngine implements AutoCloseable {
                     block.height(), config.l1StabilityDepth());
             return false;
         }
-        long prevSlot = ledger.block(ledger.tipHeight()).map(AppBlock::l1Slot).orElse(0L);
+        long prevSlot = parent != null ? parent.l1Slot() : 0L;
         if (block.l1Slot() < prevSlot) {
             log.warn("Proposal L1 ref moves backwards ({} < {}) at height {} — rejecting",
                     block.l1Slot(), prevSlot, block.height());

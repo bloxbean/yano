@@ -16,7 +16,7 @@ import java.util.Objects;
 
 /** Canonical ADR-016 key, binary codec and domain-separated digest. */
 public final class AppChainConsensusProfileCommitment {
-    public static final int FIXED_BYTES = 57;
+    public static final int FIXED_BYTES = 65;
     public static final int MAX_BYTES = FIXED_BYTES + AppChainConfig.MAX_MEMBERS * 32;
 
     private static final byte FLAG_ENFORCE_SENDER_SEQ = 1;
@@ -61,6 +61,7 @@ public final class AppChainConsensusProfileCommitment {
         out.putLong(profile.maxBlockBytes());
         out.putInt(profile.l1StabilityDepth());
         out.putInt(profile.epochStabilityDepth());
+        out.putLong(profile.blockMaxForwardSkewMs());
         int flags = 0;
         if (profile.enforceSenderSeq()) {
             flags |= FLAG_ENFORCE_SENDER_SEQ;
@@ -103,6 +104,7 @@ public final class AppChainConsensusProfileCommitment {
             long maxBlockBytes = in.getLong();
             int l1StabilityDepth = in.getInt();
             int epochStabilityDepth = in.getInt();
+            long blockMaxForwardSkewMs = in.getLong();
             int flags = Byte.toUnsignedInt(in.get());
             if ((flags & ~KNOWN_FLAGS) != 0) {
                 throw new IllegalArgumentException("consensus profile contains unknown flag bits");
@@ -131,6 +133,7 @@ public final class AppChainConsensusProfileCommitment {
                     maxBlockBytes,
                     l1StabilityDepth,
                     epochStabilityDepth,
+                    blockMaxForwardSkewMs,
                     (flags & FLAG_ENFORCE_SENDER_SEQ) != 0,
                     (flags & FLAG_EFFECTS_ENABLED) != 0,
                     effectsMaxPerBlock,
