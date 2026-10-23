@@ -198,11 +198,28 @@ keys are written and no frame is parsed. Whether a chain is byte-identical to
 today depends only on its consensus profile schema (D12, I1): a chain on
 today's profile schema 2 is unchanged; a chain on the new schema 3 differs
 only by the D12 time rules and its profile marker. Enabling topics requires
-profile schema 3. It is a genesis choice for new chains, or a governed
-height-activated change on an existing schema-3 chain (D13). All members must agree;
-the effective topic configuration is committed under `~yano/topics/v1/config`
-at the activation height and verified on restart, the same way ADR-016
-treats the consensus profile.
+profile schema 3 and chain-governed membership (`membership.mode: governed`,
+ADR-008.3): the governance commands of D5 — top-level creation in
+`governance` mode, owner recovery, registrar and configuration changes — use
+ADR-008.3 approval accounting, which today runs only in governed mode
+(`GovernedMembership` is created only when `membership.mode` is `governed`).
+Static-membership chains therefore cannot enable topics in v1 (OQ11).
+Enabling is a genesis choice for new chains, or a governed height-activated
+change on an existing chain (D13).
+
+**Configuration authority** (the ADR-008.3 §2.4 rule for member lists). The
+`topics:` YAML block is the **genesis seed only**. When a chain enables
+topics at genesis, the seed is committed under `~yano/topics/v1/config` at
+height 1, and a member whose YAML seed differs refuses to start (it would
+otherwise compute a different height-1 root). From then on the committed
+`config` record is the only authority: governed changes (D5, D13) replace it
+at their activation height, every member reads it from state, and a YAML
+block that differs from the current committed configuration is logged and
+never used. A chain that enables topics later does so with a governance
+command that carries the whole initial configuration; its YAML `topics:`
+block is not used. Superseded configuration revisions are kept under
+`history/~config/<revision>`, so the seed and every later configuration stay
+provable.
 
 ### D2 — The registry is framework-authenticated state under `~yano/topics/v1/`
 
@@ -212,13 +229,14 @@ machinery. Illustrative key layout (normative encoding fixed in M1):
 
 | Key | Value |
 |---|---|
-| `~yano/topics/v1/config` | Effective chain-level topic configuration (D1, D4, D14). |
+| `~yano/topics/v1/config` | Effective chain-level topic configuration (D1, D4, D14), **bounded** (registrar set ≤ 16 keys): mode, creation modes, registrars, `unregistered-topics`, limits, and its revision number. Absent on a chain that has not enabled topics. |
 | `~yano/topics/v1/entry/<name>` | Namespace or exact-topic record, **bounded**: the active revision (owners, policy, status, revision number, `activeFrom`), materialized by the framework (D5a), plus small head metadata (head revision number, pending count). A record with no active revision yet (a pending creation) reserves the name but governs nothing. Pending revisions are never stored here. |
 | `~yano/topics/v1/queued/<name>/<revision>` | One pending revision: its content, activation height and recorded authority epoch. Removed when it activates or is cancelled. |
-| `~yano/topics/v1/history/<name>/<revision>` | Superseded revisions, kept so old messages stay verifiable (D13). |
+| `~yano/topics/v1/history/<name>/<revision>` | Superseded revisions, kept so old messages stay verifiable (D13). Configuration revisions use the name `~config` (D1). |
 | `~yano/topics/v1/schema/<irHash>` | Schema IR bytes, content-addressed (D10). |
 | `~yano/topics/v1/used/<statementHash>` | Replay guard: the hash of a used write-statement (not of its signatures), removed after its `notAfter` (D9). |
-| `~yano/topics/v1/revoked/<delegationHash>` | Early-revoked delegations, removed after their `notAfter` (D8). |
+| `~yano/topics/v1/revoked/<delegationHash>` | Early-revoked delegations, keyed by the hash of the unsigned delegation, removed after the delegation's `notAfter` (D8). |
+| `~yano/topics/v1/expiry/<notAfter>/<kind>/<hash>` | Expiry index for `used/` and `revoked/` (`notAfter` as 8-byte big-endian, so keys sort by time); pruning walks it from the front (D9). |
 | `~yano/topics/v1/pending/<commandHash>` | Governance approvals in progress (reusing ADR-008.3 accounting). |
 
 Application machines cannot write under `~yano/` (ADR-016 reserved prefix).
@@ -271,13 +289,18 @@ yano.app-chain.chains[n].topics:
   max-command-ms: 604800000          # D5a
   max-pending-per-entry: 4           # D5a
   max-entries: 100000
+  max-entries-per-namespace: 1000    # entries in one top-level subtree, itself included
 ```
 
 `namespace-owner` is not a switch; it is how every namespace grows. An
 **open claim** makes the claimant's keys the owners of a new top-level
 namespace; from then on only those owners create sub-topics and rotate keys,
-exactly as for any other namespace. Squatting and spam in open mode are
-bounded by `max-entries` and OQ7.
+exactly as for any other namespace. A creation that would exceed
+`max-entries` or the `max-entries-per-namespace` cap of its top-level subtree
+is refused with `TOPIC_COMMAND_LIMIT`. Pending creations count toward both caps. The
+subtree cap stops one owner from filling the chain-wide cap with children
+and locking out governance and registrar creations. Many open claims by
+different claimants are the squatting case of OQ7.
 
 ![Namespaces, registry entries and the four creation modes](images/039/namespaces-and-creation.svg)
 
@@ -299,11 +322,35 @@ bounded by `max-entries` and OQ7.
    threshold-many members submit the identical command within the approval
    window, through the existing privileged admin path.
 
-Both kinds of command take effect at `activation height = finalization
-height + lag` (default lag 10, minimum 1), so every member sees a change
-coming and a policy never changes inside the block that carried the command
-(I5). Commands are canonical CBOR; a command that fails a check is a
-deterministic no-op with a receipt, never a stall.
+Entry and configuration changes take effect at `activation height =
+finalization height + lag` (default lag 10, minimum 1), so every member sees
+a change coming and a policy never changes inside the block that carried the
+command (I5). Revocations are the exception: they only forbid, so they take
+effect from the next block (D8).
+
+**Admission of owner commands (I19).** Commands are canonical CBOR. Owner
+commands go through the same three places as writes (D11, same effects:
+refused at ingress, dropped by the proposer, block rejected by followers)
+for every check that is decided by the parent state and the block time
+alone:
+
+- decode and canonical form, a known operation, and the D3 structural rules
+  (single-segment top-level names, an authority that is the target, an
+  ancestor of it, or `~registrars`; for a revocation, the D8 rules) →
+  `TOPIC_COMMAND_INVALID`;
+- `chainId` and `generationId` of this chain → `TOPIC_COMMAND_INVALID`;
+- `notAfter` within range (D5a) → `TOPIC_COMMAND_EXPIRED`;
+- valid signatures (D7) from distinct keys of the authority's active
+  revision meeting its threshold, and a creation mode the configuration
+  allows → `TOPIC_COMMAND_DENIED`.
+
+So a command enters a block only if it is authentic and authorized; junk
+is never stored. Only outcomes that depend on what other authorized
+commands did become a deterministic **no-op with a receipt**:
+`TOPIC_COMMAND_STALE` and `TOPIC_COMMAND_LIMIT` at inclusion (another command
+won the head revision or the name, or a queue or cap is full) and
+`TOPIC_COMMAND_SUPERSEDED` at activation. Governance commands keep
+ADR-008.3 handling (privileged admin path, approval accounting).
 
 #### D5a — Command identity, freshness and ordering
 
@@ -334,7 +381,7 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   so a replayed command — an old policy update relayed again in a new
   envelope — names a stale revision and becomes a no-op with
   `TOPIC_COMMAND_STALE`. Revocations change no entry; they are idempotent, so
-  replaying one has no further effect.
+  replaying one has no further effect and never extends its retention (D8).
 - **Freshness is an inclusion deadline.** `notAfter` bounds how long a
   signed, unsubmitted command stays usable: it must be ≥ the including
   block's time and at most `max-command-ms` (chain configuration, default
@@ -347,8 +394,9 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   (default 4) pending revisions. A command that would exceed it is refused
   at inclusion with `TOPIC_COMMAND_LIMIT`, a deterministic no-op with a
   receipt. Pending revisions live under their own `queued/` keys, never in
-  the entry record (D2), so a queue — however it fills and drains — never
-  changes the size of the record an effective-policy proof carries.
+  the entry record (D2). The record keeps only a pending count in its head
+  metadata, so its encoded bytes change as a queue fills and drains, but it
+  never grows past `max-entry-record-bytes` (D15).
 - **Deterministic order.** Commands are judged in block order. Within a
   block the first command naming a head revision wins and later ones are
   stale. Pending revisions activate at their activation heights in inclusion
@@ -368,7 +416,8 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
   activates it while applying block *a − 1*, after that block's messages,
   in the same atomic commit (D11): it runs the recheck below, then writes
   the outcome — the new active revision, or the cancellation — into the
-  entry record (or the registrar set in `config`). The committed root of
+  entry record (or, for a configuration change, the `config` record,
+  including its registrar set and `unregistered-topics`). The committed root of
   block *a − 1*, which is the parent state every check for block *a* uses,
   therefore already holds the effective registry for *a*; nobody, member or
   verifier, has to replay activation to know which revision governs a
@@ -391,8 +440,8 @@ The authority's owners (k-of-n) sign its canonical CBOR with Ed25519.
     `acme/` that activates first cancels them.
   - *Registrar* commands record the registrar-set epoch; a governance change
     of registrars that activates first cancels them.
-  - An issuer revoking its own delegation is authorized by the delegation's
-    `issuer` key alone and has no epoch to recheck.
+  - Revocations (D8) take effect from the next block, so there is no
+    activation and no epoch to recheck.
 - **Governance overrides.** A governance command on an entry (recovery or
   retirement) names no revision and is not epoch-checked. When it is
   approved it cancels the entry's pending revisions
@@ -452,12 +501,47 @@ writer-proof = [
 ]
 write-statement = [ "yano-topic-write-v1", chainId : tstr,
                     generationId : bstr .size 32, topic : tstr,
-                    payloadHash : bstr .size 32, nonce, notAfter ]
+                    payloadHash : bstr .size 32, nonce, notAfter,
+                    delegation : bstr .size 32 / null ]   ; delegationHash (D8); null = direct
 ```
 
 Each signature is Ed25519 (RFC 8032 §5.1.6–5.1.7) over the canonical CBOR
 (RFC 8949 §4.2.1) of `write-statement`. `payloadHash` is BLAKE2b-256 of
-`payload`.
+`payload`. A delegated write's statement names the hash of the delegation it
+relies on, and a direct write's names `null`. A relay therefore cannot swap
+in another delegation or credit another issuer (`VerifiedWriter.issuer` is
+attested by the session key's signature).
+
+**Signature rules (I20).** Client- and owner-chosen keys make signature
+validity a block-validity rule, and the verifier behind
+`CryptoConfiguration`'s signing provider is pluggable. Every signature in
+this ADR (writes, delegations, owner and registrar commands) is therefore
+verified under one pinned rule set, independent of the provider:
+
+- `S` is an integer below the group order `L` (RFC 8032 §5.1.7 step 1);
+- `A` and `R` are canonical encodings (`y < p`; `x = 0` only with sign bit
+  0), so an equivalent point never verifies under a second encoding;
+- `A` and `R` are not of small order (order dividing 8); keys with a
+  torsion component that are not small ("mixed order") are allowed;
+- the **cofactorless** equation `[S]B = R + [k]A`.
+
+This is the rule set libsodium's `crypto_sign_verify_detached` applies. On
+the 12 edge-case vectors of `novifinancial/ed25519-speccheck` (commit
+`65519336fda7`, the test set of Chalkias et al., "Taming the many EdDSAs",
+SSR 2020) it accepts only vector 3. Checked 2026-10-23: PyNaCl 1.6.2
+(libsodium) accepted vector 3 only. The default provider today
+(`EdDSASigningProvider`, the `com.bloxbean.cardano:net-i2p-crypto-eddsa:0.3.1`
+fork) accepted vectors 0, 1, 2, 3 and 10: it takes small-order and
+non-canonical keys, and with the identity point as public key a signature
+`R = identity, S = 0` verifies for any message. A session key chosen as
+such a point would turn its delegation into a bearer token anyone could
+use. The topic verifier therefore runs these checks itself before (or
+instead of) calling the provider (M1).
+
+Signature lists in frames and registry commands are sorted bytewise by key
+and contain no duplicate key; a list that repeats a key or is out of order
+is refused (`TOPIC_FRAME_INVALID` or `TOPIC_COMMAND_INVALID`). Thresholds
+count distinct keys of the governing key set, so one key never counts twice.
 
 **Generation binding.** `chainId` is a human-chosen label: two chain
 generations (for example a devnet reset with a fresh genesis id) can share
@@ -530,22 +614,30 @@ delegation = [
   delegate  : bstr .size 32,  ; the session key
   scope     : tstr,           ; an exact topic or a namespace prefix ending in "/"
   notBefore : uint,           ; ms
-  notAfter  : uint,           ; ms; notAfter - notBefore ≤ policy maxDelegationMs
+  notAfter  : uint,           ; ms; lifetime limits in rule 3 below
   issuer    : bstr .size 32,
   sig       : bstr .size 64,  ; issuer's Ed25519 over the canonical array without sig,
 ]                             ;   prefixed by "yano-topic-delegation-v1", chainId
                               ;   and generationId (D7)
 ```
 
+The **delegation hash** is BLAKE2b-256 of exactly the bytes the issuer signs
+(the prefixed array without `sig`). It does not depend on the signature
+encoding, so every valid signature over the same delegation shares one hash,
+one revocation and one write-statement binding (D7).
+
 A message with a delegation is valid when, under the policy active at the
 block height:
 
 1. `issuer` is listed in the policy's `delegate` set for the message's topic;
 2. `scope` covers the topic, and is within what the issuer may write (I9);
-3. `notBefore ≤ blockTime ≤ notAfter` for the delegation, and
-   `blockTime ≤ notAfter` of the writer proof;
+3. `notBefore ≤ blockTime ≤ notAfter` for the delegation, its lifetime
+   `notAfter − notBefore` is at most both the policy's `maxDelegationMs` and
+   the chain's current `max-delegation-ms`, and `blockTime ≤ notAfter` of
+   the writer proof;
 4. the delegation hash is not in `~yano/topics/v1/revoked/`;
-5. the session key's signature over `write-statement` verifies;
+5. the session key's signature over `write-statement` verifies, and the
+   statement names this delegation's hash;
 6. the write-statement's hash is not in `~yano/topics/v1/used/` (D9).
 
 A policy with `writers: {threshold k > 1}` does not accept delegated writes
@@ -558,9 +650,36 @@ directly to any member:
 
 ![Delegation flow: from app login to a verified write](images/039/delegation-flow.svg)
 
-Revocation is by expiry first (keep lifetimes short); an issuer or the
-namespace owners can also revoke a delegation early with an owner command,
-which lands in `revoked/` until the delegation would have expired anyway.
+**Revocation.** Revocation is by expiry first (keep lifetimes short). An
+issuer or the owners can also revoke a delegation early with a revocation
+command on `~topics/registry`:
+
+- The command carries the **whole signed delegation**. The framework checks
+  the delegation's signature, `chainId` and `generationId` exactly as for a
+  write, so it knows the issuer, scope and `notAfter` from verified bytes,
+  never from a bare hash.
+- It is signed either by the delegation's `issuer` (authority `~issuer`), or
+  by the owners of the active entry that governs the delegation's `scope` or
+  of one of its ancestor namespaces (the D5a authority rules).
+- **Retention horizon.** It is accepted only if `blockTime ≤
+  delegation.notAfter ≤ blockTime + max-delegation-ms`, using the
+  configuration in force at the including block. A delegation that has
+  already expired needs no revocation (`TOPIC_COMMAND_EXPIRED`). A
+  delegation whose `notAfter` is further ahead is refused for now
+  (`TOPIC_COMMAND_INVALID`). It is not usable yet either, because
+  `notAfter − notBefore ≤ max-delegation-ms` puts its `notBefore` after the
+  current block time. It can be revoked once it comes within the horizon,
+  which is before it can be used. Every delegation usable at the including
+  block is therefore always revocable, and no `revoked/` entry is ever kept
+  for more than `max-delegation-ms` after the block that wrote it.
+- **Timing.** A revocation is not lag-delayed: the framework writes
+  `revoked/<delegationHash>` (and its `expiry/` index key) while applying
+  the including block, so every message in later blocks is checked against
+  it. A stolen session key is usable for at most the time until the
+  revocation is finalized.
+- **Idempotent.** Revoking an already revoked delegation is a no-op. Its
+  retention comes from the delegation's own `notAfter`, so a replay never
+  extends it.
 
 ### D9 — Replay protection is bounded by time
 
@@ -570,19 +689,33 @@ intent. The write-statement can: it names the chain, topic, payload hash,
 nonce and `notAfter`, so it identifies one intended write exactly.
 
 The **replay identity is BLAKE2b-256 of the canonical write-statement**, and
-deliberately *not* of the signature bundle or the delegation. Hashing the
-signatures would let a relay replay one signed intent by attaching a
-different valid set: under a 2-of-3 policy, signatures A+B and A+C give two
-different proofs for the same statement. With the statement as the identity,
-any second message carrying the same statement is refused, whatever valid
-signatures or delegation accompany it.
+deliberately *not* of the signature bundle. Hashing the signatures would let
+a relay replay one signed intent by attaching a different valid set: under a
+2-of-3 policy, signatures A+B and A+C give two different proofs for the same
+statement. With the statement as the identity, any second message carrying
+the same statement is refused, whatever valid signatures accompany it. A
+delegated statement also names its delegation's hash (D7), so a relay cannot
+attach a different delegation at all.
 
 The statement hash is recorded in `~yano/topics/v1/used/` when the message is
-applied and removed once `blockTime > notAfter`. A message is refused if its
-statement hash is present, if the same statement appears twice in one block,
-or if `notAfter` is more than `max-delegation-ms` ahead of the block time.
-State is therefore bounded by the write rate times the maximum lifetime
-(I12).
+applied. A message is refused if its statement hash is present, if the same
+statement appears twice in one block, or if `notAfter` is more than
+`max-delegation-ms` ahead of the block time.
+
+**Expiry and pruning.** Every `used/` and `revoked/` entry is written
+together with an `expiry/<notAfter>/<kind>/<hash>` index key (D2). While
+applying each block, after its messages, the framework walks `expiry/` from
+the front and removes entries with `notAfter < blockTime`, together with
+their index keys, at most `2 × max-block-messages` entries per block. Each
+message adds at most one such entry, so a block removes at least as many
+expired entries as it can add. An expired backlog (left, for example, by an
+idle period with no blocks) shrinks by at least `max-block-messages` per
+block. Pruning is a deterministic part of the state transition, so every
+member removes the same keys. Validity never depends on whether pruning has
+run: an expired statement or delegation is refused by its time check before
+`used/` or `revoked/` is consulted. Live entries are therefore at most those
+written during the last `max-delegation-ms` of block time plus that
+shrinking backlog (I12).
 
 ### D10 — Schemas use the existing IR, moved into core
 
@@ -624,14 +757,18 @@ Order of checks — first failure wins:
 
 The follower-side rejection is what makes the policy a consensus rule; the
 ingress and proposer checks only avoid wasted work. During apply the
-framework records used write-statement hashes and pending registry commands **before** the
-machine sees the block and, after the block's messages, materializes the
-revisions that activate at the next height (D5a), all in the same atomic
-commit (as ADR-008.3 does for membership).
+framework records used write-statement hashes, revocations and pending
+registry commands **before** the machine sees the block and, after the
+block's messages, materializes the revisions that activate at the next
+height (D5a) and prunes expired entries (D9), all in the same atomic commit
+(as ADR-008.3 does for membership). Owner commands on `~topics/registry` are
+admitted in the same three places with the same effects (D5, I19).
 
 ![The validation pipeline and where each check runs](images/039/validation-pipeline.svg)
 
-Refusal codes (HTTP 400 at ingress, receipts for registry commands):
+Refusal codes (HTTP 400 at ingress; only `TOPIC_COMMAND_STALE`,
+`TOPIC_COMMAND_LIMIT` and `TOPIC_COMMAND_SUPERSEDED` also appear as receipts
+for commands already in a block, D5):
 
 | Code | Meaning |
 |---|---|
@@ -644,9 +781,11 @@ Refusal codes (HTTP 400 at ingress, receipts for registry commands):
 | `TOPIC_PROOF_REPLAYED` | this write-statement was already used (with any signatures) |
 | `TOPIC_PAYLOAD_TOO_LARGE` | above `maxPayloadBytes` |
 | `TOPIC_SCHEMA_REJECTED` | not canonical CBOR, or the schema refused it |
+| `TOPIC_COMMAND_INVALID` | a registry command is malformed, non-canonical, for another chain or generation, breaks the D3 structural rules, lists signatures out of order or twice, or revokes a delegation beyond the retention horizon (D5, D8) |
+| `TOPIC_COMMAND_DENIED` | a registry command's signatures are invalid or do not meet the authority's active threshold, or the configuration does not allow its creation mode (D5) |
 | `TOPIC_COMMAND_STALE` | a registry command named a head revision that is no longer the head, or a taken name (D5a) |
-| `TOPIC_COMMAND_EXPIRED` | a registry command's `notAfter` passed or is too far ahead (D5a) |
-| `TOPIC_COMMAND_LIMIT` | the entry already has `max-pending-per-entry` pending revisions (D5a) |
+| `TOPIC_COMMAND_EXPIRED` | a registry command's `notAfter` passed or is too far ahead (D5a), or it revokes an already expired delegation (D8) |
+| `TOPIC_COMMAND_LIMIT` | the entry already has `max-pending-per-entry` pending revisions, or a creation would exceed `max-entries` or `max-entries-per-namespace` (D4, D5a) |
 | `TOPIC_COMMAND_SUPERSEDED` | a pending command was cancelled by governance or by a change of its authorizing owners (D5a) |
 
 ### D12 — Certified block time gets bounds (prerequisite)
@@ -657,6 +796,16 @@ proposal only if:
 
 - `timestamp ≥ parent.timestamp` (monotonic), and
 - `timestamp ≤ localNow + max-forward-skew-ms` (default 5,000).
+
+The proposer stamps a fresh proposal with `max(localNow, parent.timestamp)`
+instead of `localNow` alone. A proposer whose clock is behind the parent's
+timestamp — the parent's proposer ran up to `max-forward-skew-ms` fast,
+which the vote rule permits, or the local clock was stepped back — would
+otherwise build an invalid proposal and force a view change in turn. When
+the clamp applies, the proposal carries `parent.timestamp`, which a voter
+accepts unless its own clock is more than `max-forward-skew-ms` behind the
+parent's timestamp. Such a voter would refuse every valid timestamp, so the
+clamp never makes a proposal less acceptable than a valid unclamped one.
 
 Recovery proposals that re-propose a prepared value keep their original
 timestamp and are exempt from the forward bound (they already passed it).
@@ -702,9 +851,10 @@ certified time benefit on every schema-3 chain.
 - **History.** Every change writes a new revision; the previous revision
   moves to `history/`. A message is always judged by the revision active at
   its block height, so old messages stay verifiable after rotation (I11).
-- **Enabling on a running chain.** A governance command switches `mode` to
-  `enabled` at an activation height. Messages before it were never subject
-  to policies; nothing is re-judged.
+- **Enabling on a running chain.** A governance command carrying the whole
+  initial configuration switches `mode` to `enabled` at an activation height
+  (D1: governed-membership, schema-3 chains only). Messages before it were
+  never subject to policies; nothing is re-judged.
 
 ### D14 — Unregistered and system topics
 
@@ -721,14 +871,20 @@ certified time benefit on every schema-3 chain.
 
 - REST, read-only: `GET .../topics/entries/{name}`, `GET .../topics/resolve?topic=`
   (the effective policy and the entry it came from), `GET .../topics/schemas/{hash}`.
-- **`topic-entry-v1`** proves one entry record (its active revision and its
-  pending revisions) at a committed root. It says nothing about whether that
-  entry governs a given topic.
-- **`topic-policy-v1`** proves the **effective policy** of topic *t* for a
+- **`topic-entry-v1`** proves one entry record (its active revision and head
+  metadata) at a committed root. Pending revisions are separate `queued/`
+  keys and are not part of it. It says nothing about whether that entry
+  governs a given topic.
+- **`topic-policy-v1`** proves the **effective outcome** of topic *t* for a
   message in block *h*. It is one multi-proof against the single committed
-  root at *h − 1* (the parent state the check used) containing, for *t*
-  itself and for every prefix of *t* ending in `/`, either that entry's
-  inclusion proof or an absence proof. Authenticated snapshot proof bundles
+  root at *h − 1* (the parent state the check used) containing the
+  `~yano/topics/v1/config` record (inclusion, or absence when the chain has
+  not enabled topics) and, for *t* itself and for every prefix of *t* ending
+  in `/`, either that entry's inclusion proof or an absence proof. The
+  configuration is needed because prefix absence alone does not decide an
+  unregistered topic: with every entry absent, `unregistered-topics: open`
+  admits the message as an open topic and `reject` refuses it with
+  `TOPIC_UNREGISTERED`. Authenticated snapshot proof bundles
   already carry absence proofs (`AuthenticatedSnapshotProofBundleCodec`), and
   the witness is bounded by the topic's segments (topic ≤ 256 bytes). The
   verifier reads each proven entry's **active** revision as committed in
@@ -737,21 +893,38 @@ certified time benefit on every schema-3 chain.
   revisions, so it needs no registrar configuration, epochs or activation
   order and never replays activation. A record with no active revision
   counts as absent. It then applies the D3 resolution itself (exact entry,
-  longest prefix, inheritance) and checks the result against
-  `effectivePolicyDigest` = BLAKE2b-256 over the canonical resolved policy
-  and the (entry, revision) pairs it came from. **Bounds:** an entry record
+  longest prefix, inheritance) and, when no entry applies, the committed
+  `unregistered-topics` fallback. The outcome is one of: *disabled* (no
+  configuration; today's behaviour), *policy* (a resolved policy),
+  *unregistered-open* or *unregistered-reject*. The verifier checks it
+  against `effectivePolicyDigest` = BLAKE2b-256 over the canonical outcome,
+  the configuration revision, and the (entry, revision) pairs it came from.
+  Configuration changes are materialized at *a − 1* exactly like entries
+  (D5a), and genesis enablement commits the configuration at height 1 (D1),
+  so the root at *h − 1* already holds the configuration that governs *h*
+  and the verifier never reads the activation queue. **Bounds:** an entry
+  record
   holds only the active revision and head metadata, and a policy's key sets
   are capped (at most 16 keys and `threshold ≤ 16` per set, D6), so a record
   is at most `max-entry-record-bytes` (4,096 bytes; an estimate, frozen in
-  M1). Proof size and verification work are therefore at most one proof
-  path and one bounded record decode per prefix, independent of how many
-  revisions are queued. A record above the bound is refused when written
-  and fails verification if presented. An omitted override or ancestor, a
-  second root or height, a stale revision, or a missing prefix fails closed
-  (I16).
+  M1); the configuration record has the same bound (D2). Proof size and
+  verification work are therefore at most one proof path and one bounded
+  record decode per prefix plus one for the configuration, independent of
+  how many revisions are queued. A record above the bound is refused when
+  written and fails verification if presented. An omitted or substituted
+  configuration, an omitted override or ancestor, a second root or height,
+  a stale revision, or a missing prefix fails closed (I16).
 - Authorship of a message on a protected topic is provable with the existing
   finalized-message proof (the frame is in the body), the chain's generation
   id, and a `topic-policy-v1` proof for the message's topic and height.
+- **Retention.** A member can produce a `topic-policy-v1` proof for height
+  *h* only while it still retains the state at *h − 1*. Historical state is
+  kept only as long as the member's state backend retains a snapshot for
+  that height; outside that window today's historical reads already fail
+  ("state root is no longer retained"). A proof captured while the root was
+  retained verifies offline forever against the anchored root. Re-verifying
+  a message after its parent state is pruned needs a proof captured earlier
+  or an archive member that keeps that state (I11).
 
 ---
 
@@ -772,8 +945,18 @@ to a member; members verify public keys only.
 
 Threats and mitigations:
 
-- **Forged writes** through any member → signatures checked by every member;
-  block rejected otherwise (D11, I3).
+- **Forged writes** through any member → signatures checked by every member
+  under one pinned verification rule; block rejected otherwise (D7, D11, I3,
+  I20).
+- **Weak or degenerate keys** (small-order or non-canonical points chosen as
+  writer, owner or session keys, including a session key whose signatures
+  verify for any message) → refused by the D7 signature rules (I20).
+- **Junk on `~topics/registry`** (unsigned, mis-signed, wrong-generation or
+  unauthorized commands relayed to have them stored) → refused at ingress
+  and a block containing one is rejected; only authenticated, authorized
+  commands can become receipts (D5, I19).
+- **A relay choosing the issuer** credited for a delegated write → the
+  write-statement binds the delegation hash (D7).
 - **Replay** of a signed write through another member, topic or chain, or
   with a different valid signature subset or delegation → the statement binds
   chain and topic; the replay identity is the statement itself, not its
@@ -795,13 +978,21 @@ Threats and mitigations:
   the block (D11).
 - **Time manipulation** to revive expired delegations → monotonic time and a
   forward-skew bound; the remaining exposure is OQ2 (D12).
+- **A partial unregistered-topic proof** (prefix absences shown without the
+  fallback that decides them) → the configuration record is part of every
+  effective-policy proof (D15, I16).
 - **Stolen session key** → bounded by delegation lifetime and scope; early
-  revocation (D8).
+  revocation takes effect from the next block (D8).
+- **State growth through revocations** (far-future delegations revoked to
+  pin entries) → revocations are accepted only within `max-delegation-ms`
+  of their delegation's expiry, and expired entries are pruned through the
+  expiry index (D8, D9, I12).
 - **Stolen issuer key** → owners rotate it out; outstanding delegations die at
   expiry or are revoked (D13).
 - **Stolen or lost owner keys** → governance recovery (D13).
 - **Namespace squatting / registry spam** in open mode → first-come plus
-  `max-entries`; quotas or deposits are OQ7.
+  `max-entries` and the per-subtree `max-entries-per-namespace`; quotas or
+  deposits are OQ7.
 - **Schema evaluation as a DoS** → IR limits and the step bound; payload
   bounded by `maxPayloadBytes` (I8).
 - **Signature verification cost** → bounded by messages per block and
@@ -814,21 +1005,23 @@ Threats and mitigations:
 | I1 | A chain on consensus profile schema 2 (today's) has state roots, blocks and REST behaviour byte-identical to the pre-ADR implementation. A schema-3 chain with `mode: disabled` differs from that only by its profile marker and the D12 time rules. | D1, D12 |
 | I2 | `TopicPolicy.check` is a pure function of (message, parent committed state, block time, earlier messages in the block); every member computes the same result. | D11 |
 | I3 | A finalized block contains a message on a protected topic only if its writer proof satisfies the policy revision active at that height. | D6, D7, D11 |
-| I4 | No write-statement is accepted twice while its `notAfter` has not passed, whichever valid signatures or delegation accompany it. | D9 |
-| I5 | Registry changes take effect only at `finalization height + lag (≥ 1)`; no change is retroactive. | D5, D13 |
+| I4 | No write-statement is accepted twice while its `notAfter` has not passed, whichever valid signatures accompany it; a delegated statement is valid only with the delegation whose hash it names. | D7, D9 |
+| I5 | Entry and configuration changes take effect only at `finalization height + lag (≥ 1)`; revocations take effect from the block after the one that includes them; no change is retroactive. | D5, D8, D13 |
 | I6 | Top-level entries are single-segment; every deeper entry is created by the owners of its nearest ancestor namespace, counting pending creations. Ownership of overlapping prefixes is always a parent and the children it created, never two unrelated owners. | D3, D4, D5a |
 | I7 | Every registry record, revision and schema is under `~yano/topics/v1/` in the committed state root and is provable. | D2, D15 |
 | I8 | Schema evaluation terminates within the IR step bound on any input up to `maxPayloadBytes`. | D10 |
-| I9 | A delegation's scope is within its issuer's writable scope; its lifetime is ≤ `maxDelegationMs`; it is honoured only inside its window on block time. | D8 |
+| I9 | A delegation's scope is within its issuer's writable scope; its lifetime is ≤ both the policy's `maxDelegationMs` and the chain's `max-delegation-ms`; it is honoured only inside its window on block time. | D8 |
 | I10 | Topic policies only add refusals; they never make a machine accept a message it would refuse. | D6, D11 |
-| I11 | Every historical message can be re-verified against the effective policy active at its height. | D13, D15 |
-| I12 | `used/` and `revoked/` entries are removed after expiry; their size is bounded by rate × maximum lifetime. | D8, D9 |
-| I13 | On profile-schema-3 chains block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule). | D12 |
+| I11 | Every historical message can be re-verified against the effective policy active at its height, given a `topic-policy-v1` proof for that height; a member can produce one while it retains the parent state, and a captured proof verifies forever. | D13, D15 |
+| I12 | Every `used/` and `revoked/` entry expires at most `max-delegation-ms` after the block that wrote it and is pruned deterministically through the `expiry/` index (at most `2 × max-block-messages` per block); live entries are those written in the last `max-delegation-ms` plus a backlog that shrinks every block. | D8, D9 |
+| I13 | On profile-schema-3 chains block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule); a proposer stamps `max(localNow, parent.timestamp)`. | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
 | I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks keep the framed bytes and message proofs resolve to them. | D7, D7a |
-| I16 | A `topic-policy-v1` proof verifies only if it covers the topic and every `/`-prefix of it, with inclusion or absence, against one root, and its resolved policy matches `effectivePolicyDigest`. The active revisions committed in the root of block *h − 1* are exactly the revisions that govern block *h*, after every D5a recheck and cancellation. | D5a, D15 |
-| I17 | Each signed registry command takes effect at most once: only if included by its `notAfter`, only on the head revision it names, only if authorized by its authority's active epoch at inclusion, and only if that epoch is still active immediately before it activates. Pending revisions never authorize. | D5a |
+| I16 | A `topic-policy-v1` proof verifies only if it covers the configuration record and the topic and every `/`-prefix of it, each with inclusion or absence, against one root, and its resolved outcome (including the unregistered fallback) matches `effectivePolicyDigest`. The active revisions and configuration committed in the root of block *h − 1* are exactly those that govern block *h*, after every D5a recheck and cancellation. | D1, D5a, D15 |
+| I17 | Each signed registry command other than a revocation takes effect at most once: only if included by its `notAfter`, only on the head revision it names, only if authorized by its authority's active epoch at inclusion, and only if that epoch is still active immediately before it activates. Pending revisions never authorize. | D5a |
 | I18 | No signed write, delegation or registry command verifies on a chain generation other than the one it names. | D5a, D7, D8 |
+| I19 | A finalized block contains an owner command only if it decodes canonically, names this chain and generation, is within its `notAfter` range and carries valid signatures meeting its authority's active threshold; only stale, over-limit and superseded outcomes are receipts. | D5, D11 |
+| I20 | Every signature under this ADR is accepted exactly when the D7 rule set accepts it (`S < L`, canonical non-small-order `A` and `R`, cofactorless), whatever signing provider is configured; key lists are sorted and duplicate-free and thresholds count distinct keys. | D7 |
 
 ## 7. Compatibility
 
@@ -839,9 +1032,12 @@ Threats and mitigations:
   core-api; this is a new API level (ADR-011). Machines that ignore it keep
   working, including on protected topics, because they receive the payload as
   the body (D7a).
-- **Chain identity:** the effective topic configuration is committed at its
-  activation height (D1); a member started with a different configuration
-  fails closed on restart, like ADR-016.
+- **Chain identity:** the `topics:` YAML is a genesis seed only (D1, the
+  ADR-008.3 §2.4 rule). A member whose seed differs from the committed seed
+  fails closed on start; after genesis the committed configuration is the
+  authority, so governed changes never make members' YAML a restart hazard.
+- **Membership mode:** enabling topics requires `membership.mode: governed`
+  (D1, OQ11).
 - **Yano X:** the authenticated map switches to the core schema evaluator
   with the same IR bytes, so existing collection schemas keep their
   meaning (companion ADR).
@@ -886,12 +1082,12 @@ Threats and mitigations:
 
 | ID | Scope | Entry gate | Exit criteria |
 |---|---|---|---|
-| M0 | D12 certified time bounds as consensus profile schema 3 | ADR accepted | I13 tests; a retained schema-2 chain replays and restarts byte-identically on the M0 build; schema-3 genesis commits the new field under `~yano/consensus-profile/v3`; a schema-2 marker refuses a schema-3 configuration and vice versa (fail closed); topics refuse to enable on schema 2; existing suites green |
-| M1 | Freeze formats: config, entry, command statement, frame, delegation, write statement (all with `generationId`), effective-policy digest; codes; vectors | M0 | Normative CDDL and test vectors committed; independent decoder agrees (V2) |
-| M2 | Registry state, owner and governance commands with D5a preconditions, activation materialized at *a − 1*, revisions, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17 tests; multi-node replay and restart parity |
-| M3 | Writer proofs, delegations, replay guard, follower block validity | M2 | I3, I4, I9, I12, I18 tests; adversarial vectors (V3) pass on a 3-node cluster |
+| M0 | D12 certified time bounds as consensus profile schema 3, including the proposer clamp | ADR accepted | I13 tests, including a proposer whose clock is behind the parent's timestamp producing a valid block (no view change); a retained schema-2 chain replays and restarts byte-identically on the M0 build; schema-3 genesis commits the new field under `~yano/consensus-profile/v3`; a schema-2 marker refuses a schema-3 configuration and vice versa (fail closed); topics refuse to enable on schema 2; existing suites green |
+| M1 | Freeze formats: config, entry, command statement, frame, delegation and delegation hash, write statement (all with `generationId`; write statement with the delegation hash), revocation command, expiry index key, effective-outcome digest; codes; the D7 signature rule set as one core verifier; vectors | M0 | Normative CDDL and test vectors committed; independent decoder agrees (V2); the core verifier matches libsodium on the speccheck vectors and rejects the small-order and non-canonical cases the default provider accepts (I20) |
+| M2 | Registry state, owner command admission (D5), owner and governance commands with D5a preconditions, activation of entries and configuration materialized at *a − 1*, revisions, genesis-seed handling, subtree caps, REST reads | M1 | I2, I5, I6, I7, I11, I14, I17, I19 tests; a block carrying an unauthorized command is rejected; a governed configuration change followed by a restart with the original YAML starts cleanly; a different genesis seed fails closed; multi-node replay and restart parity |
+| M3 | Writer proofs, delegations, revocation, replay guard, expiry index and pruning, follower block validity | M2 | I3, I4, I9, I12, I18, I20 tests; adversarial vectors (V3) pass on a 3-node cluster |
 | M4 | Schema evaluator in core-api; topic schemas | M1 | I8 tests; Yano X authenticated-map vectors pass unchanged against the core evaluator (V4) |
-| M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects | M3, M4 | I15, I16 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
+| M5 | Payload view for machine hooks (D7a), `TopicMessageView` at admission and apply, API level, `topic-entry-v1` and `topic-policy-v1` proof subjects (with the configuration record) | M3, M4 | I15, I16 tests: a framed `balances` command and a framed composite command decode and apply correctly at admission and in apply; the finalized-message index resolves each original message id; plugin compatibility tests; effective-policy proofs verified offline, including the V3 negative cases |
 | M6 | Qualification | M5 | I1 byte-identity on schema 2 and the stated schema-3 difference with `mode: disabled`; a multi-node cluster with rotation, recovery, enabling on a running chain, restart and catch-up; performance budget for signature checks recorded |
 
 ## 11. Verification and test-vector strategy
@@ -902,15 +1098,37 @@ Threats and mitigations:
   vectors are produced by an independent implementation (a small script
   using a separate CBOR library and Ed25519 implementation), never by the
   code under test, and checked against RFC 8032 §7.1 test vectors.
+  Signature edge cases: the 12 vectors of `novifinancial/ed25519-speccheck`
+  at commit `65519336fda7`, with the expected outcome taken from libsodium
+  (PyNaCl), not from the code under test: only vector 3 is accepted (I20).
 - **V3 — Adversarial cases.** Forged signature, wrong chain or topic in the
   statement, threshold not met, scope widening, expired and not-yet-valid
   delegations, revoked delegations, replay through a second member, replay
   in the same block, the same write-statement resubmitted with a different
-  valid signature subset (A+B, then A+C under 2-of-3) or a different
-  delegation, non-canonical CBOR, oversized payload, schema bombs,
-  a malicious proposer including a bad message, a proposer with a skewed
-  clock, sub-namespace creation by a non-owner; **generation**: the same
-  write, delegation and command signed for generation A presented on
+  valid signature subset (A+B, then A+C under 2-of-3), a delegated write
+  relayed with a second valid delegation from another issuer (refused: the
+  statement names the first), non-canonical CBOR, oversized payload, schema
+  bombs, a malicious proposer including a bad message, a proposer with a
+  skewed clock, a proposer whose clock is behind the parent's timestamp
+  (it stamps the parent's timestamp and the block is valid), sub-namespace
+  creation by a non-owner, a frame listing the same key twice to meet a
+  threshold, a session key that is the identity point (or another
+  small-order point) with `R = identity, S = 0`;
+  **registry ingress**: unsigned, mis-signed, wrong-generation, expired and
+  unauthorized commands are refused at ingress, and a block carrying one is
+  rejected; a stale command from an authorized signer becomes a receipt;
+  **revocation**: a revocation that names only a hash (refused), a
+  far-future one-hour delegation (`notBefore` a century ahead) whose
+  revocation is refused until it comes within the horizon, revocation at
+  both horizon boundaries, revocation of an expired delegation, a repeated
+  revocation (no-op, retention unchanged), a revocation followed in the next
+  block by a write using the revoked delegation (refused), and actual
+  removal of the entry after expiry; **pruning**: an idle gap that leaves
+  more than one block's worth of expired entries drains over the following
+  blocks, and no outcome changes while it drains;
+  **caps**: one owner filling its subtree to `max-entries-per-namespace`
+  cannot block a governance or registrar creation elsewhere;
+  **generation**: the same write, delegation and command signed for generation A presented on
   generation B with identical `chainId`, keys, topic and times;
   **commands**: an old policy update replayed after a newer one, two
   conflicting commands on one head revision in one block, an expired command,
@@ -930,13 +1148,20 @@ Threats and mitigations:
   runtime enforced, and a proof that presents the cancelled revision fails;
   **proof bounds**: an owner fills an entry's queue to the limit (the next
   command is refused with `TOPIC_COMMAND_LIMIT`), the queued revisions are
-  then cancelled by a rotation, and throughout the effective policy and the
-  `topic-policy-v1` proof bytes for a topic beneath it stay unchanged and
-  within the per-prefix bound;
+  then cancelled by a rotation; throughout, the resolved active policy for a
+  topic beneath it stays unchanged, and each `topic-policy-v1` proof
+  verifies against its own root and stays within the per-prefix size and
+  work bound (its bytes change with the pending count and the root);
   **effective-policy proofs**: an
   omitted exact override, an omitted ancestor, inclusion proofs from two
-  roots or heights, a stale revision; **threshold writers**: the same signer
-  set in different proof orders yields the same `VerifiedWriter`.
+  roots or heights, a stale revision; with every prefix absent, an `open`
+  and a `reject` configuration yield different outcomes; a pending-only
+  creation counts as absent; an omitted or tampered configuration record
+  fails; a governed fallback switch from `open` to `reject` governs exactly
+  the blocks from its activation height; a chain without topics proves
+  configuration absence (*disabled*); **threshold writers**: a signature
+  list out of bytewise key order is refused, and the canonical list yields
+  the same `VerifiedWriter` on every member.
 - **V4 — Schema parity.** The existing authenticated-map schema vectors pass
   unchanged against the core evaluator.
 - **V5 — Disabled parity.** A schema-2 chain produces the same blocks and
@@ -959,7 +1184,8 @@ Threats and mitigations:
 | Owners lose keys | governance recovery (D13); guidance to use k-of-n owners |
 | Time skew rejects honest proposals | conservative default skew; monitoring of rejected proposals |
 | Clients mis-implement frames | reference client libraries and vectors (Yano X ADR) |
-| Registry growth in open mode | `max-entries`; OQ7 quotas or deposits |
+| Registry growth in open mode | `max-entries`, `max-entries-per-namespace`; OQ7 quotas or deposits |
+| Members disagree on a signature because providers differ | one pinned rule set run by core before any provider (D7, I20); speccheck vectors in V2 |
 
 ## 14. Open questions
 
@@ -971,10 +1197,11 @@ Threats and mitigations:
 | OQ4 | Should `ordered-log`'s per-message record include the verified writer key | (a) no, the frame in the body is enough; (b) yes, for cheaper queries | (a) for v1 |
 | OQ5 | Delegated writes under k > 1 writer thresholds | (a) refuse (v1); (b) delegations carry k issuer signatures | (a) |
 | OQ6 | Key schemes beyond Ed25519 (CIP-8 wallet signatures, secp256k1) | add later as new `scheme` values | later |
-| OQ7 | Quotas and anti-spam for open claims and writes | (a) `max-entries` only; (b) per-namespace message quotas in consensus; (c) deposits | (a) now, (b) as a follow-up ADR |
+| OQ7 | Quotas and anti-spam for open claims and writes | (a) `max-entries` and `max-entries-per-namespace` only; (b) per-namespace message quotas in consensus; (c) deposits | (a) now, (b) as a follow-up ADR. Many open claims by different claimants can still fill `max-entries`; v1 accepts that (open mode is for public or developer chains, and governance can retire abusive entries) |
 | OQ8 | Default `max-delegation-ms` | 1 hour vs 24 hours | 1 hour |
 | OQ9 | Can a parent namespace give up authority over a child (D3)? | (a) no: ancestors always keep authority; (b) a transfer command that makes a child independent | (a) for v1; (b) can be added later as a new command without changing existing entries |
 | OQ10 | Keep profile schema 2 accepted beside schema 3 (D12)? | (a) yes: retained schema-2 chains run unchanged without topics; (b) no: app chains are pre-release, so require schema 3 and re-create retained chains | (a): it protects retained chain identities at the cost of one extra accepted schema |
+| OQ11 | Topics on static-membership chains (D1)? | (a) no: topics require `membership.mode: governed` in v1; (b) allow them without topic governance: no `governance` creation mode, no owner recovery, configuration fixed for the generation | (a): recovery is the only answer to lost owner keys, and ADR-008.3 approval accounting runs only in governed mode today; (b) can be added later without changing formats |
 
 ## 15. Related findings (out of scope)
 
@@ -982,6 +1209,13 @@ Threats and mitigations:
   certified time; D12 fixes it, and could ship ahead of the rest.
 - Member-edge controls (API keys, CORS) remain useful for DoS protection and
   are not replaced by topic policies.
+- **The default Ed25519 provider is permissive.** `EdDSASigningProvider`
+  (`com.bloxbean.cardano:net-i2p-crypto-eddsa:0.3.1`) accepted speccheck
+  vectors 0, 1, 2, 3 and 10 on 2026-10-23, including a small-order public key
+  for which `R = identity, S = 0` verifies any message. Today's app-chain
+  uses verify member keys taken from configuration or governance, not keys
+  chosen by clients, but the behaviour deserves its own issue (reject
+  small-order keys when members are configured or added).
 
 ## Revision history
 
@@ -1020,3 +1254,23 @@ Threats and mitigations:
   to their own `queued/<name>/<revision>` keys; the entry record holds only the active revision and
   head metadata, capped at `max-entry-record-bytes`; `max-pending-per-entry` with
   `TOPIC_COMMAND_LIMIT`; D15 states proof-size and work bounds; D2, D5a, D11 codes and V3 updated.
+- r7 (2026-10-23; responds to the independent review and the re-review of `471db7aa8`): F8 →
+  D5a and V3 say the record's bytes change with the pending count but stay within the bound, and
+  each proof verifies against its own root. F9 → D12 proposer stamps `max(localNow,
+  parent.timestamp)`; I13, M0, V3. F10 → D5 owner-command admission: state-independent failures
+  are refused at ingress and reject the block, and only stale, limit and superseded outcomes are
+  receipts; new codes `TOPIC_COMMAND_INVALID` and `TOPIC_COMMAND_DENIED`, I19, M2, V3, two
+  diagram labels. F11 → D8 delegation hash over the unsigned bytes, revocations carry the whole
+  signed delegation, take effect from the next block and are idempotent; I5, I17. F12 → D1
+  genesis-seed rule (ADR-008.3 §2.4), topics require governed membership (new OQ11); D13,
+  compatibility, M2. F13 → D7 pinned signature rules (libsodium's), checked against the speccheck
+  vectors: the default provider accepts small-order and non-canonical keys; sorted,
+  duplicate-free key lists; I20, M1, M3, V2, V3, risks, related findings. F14 → D2 and D9
+  `expiry/` index with deterministic pruning capped at `2 × max-block-messages` per block; I12.
+  F15 → D4 `max-entries-per-namespace`; OQ7. F16 → D7 write-statement binds the delegation hash;
+  D8, D9, I4, topic-frame diagram. F17 → D15 `topic-policy-v1` covers the configuration record,
+  and the outcome and digest include the unregistered fallback and configuration revision;
+  configuration changes materialize at *a − 1*; D2, D5a, I16, M5, V3. F18 → D8 revocation
+  retention horizon (`notAfter ≤ blockTime + max-delegation-ms`; delegation lifetime also capped
+  by the chain maximum); I9, I12, V3. Editorial: D15 `topic-entry-v1` wording; I11 and D15 state
+  the state-retention assumption.
