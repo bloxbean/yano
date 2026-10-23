@@ -35,6 +35,8 @@ dependencies {
     testImplementation project(':scalus-bridge')
     // ADR-056 Phase 7c: the julc phase-2 evaluator of the java engine
     testImplementation project(':script-evaluators')
+    // ADR-060 §4-5: the UPLC reports call julc's CEK machine directly, as script-evaluators' JulcMachine does
+    testImplementation libs.julc.vm.java
     testImplementation libs.jackson.databind
     testImplementation libs.cardano.client.address
     if (withAmaru) {
