@@ -271,13 +271,21 @@ jobs:
             npm publish "./npm/${package_dir}" --access public --provenance --tag "$NPM_TAG"
           done
 
+  # ADR-060: the node-diversity conformance reports, attached to the release beside the zips.
+  conformance-reports:
+    needs: validate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/node-diversity-reports.yml
+
   release:
-    needs: [validate, jar-dist, native-dist, npm-publish]
+    needs: [validate, jar-dist, native-dist, npm-publish, conformance-reports]
     # Gated by github_release in gradle.properties. npm-publish is skipped when
     # npm_publish is false, and a skipped dependency would otherwise skip this
     # job too, so it is checked by result rather than by default behaviour: the
     # release still ships the jar and native distributions when npm publishing is
-    # off, and only a genuine npm failure blocks it.
+    # off, and only a genuine npm failure blocks it. The conformance reports
+    # never block it: a release whose reports failed ships without them.
     if: >-
       !cancelled()
       && needs.validate.outputs.github_release == 'true'
@@ -300,7 +308,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/yano-*.json
           generate_release_notes: false
           prerelease: ${{ needs.validate.outputs.is_final != 'true' }}
           # Latest is decided by semantic version and date, so a maintenance release does not take the
