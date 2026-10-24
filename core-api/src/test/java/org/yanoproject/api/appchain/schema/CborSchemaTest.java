@@ -81,6 +81,24 @@ class CborSchemaTest {
     }
 
     @Test
+    void aTermOnlyEvaluatesItemsAReachableStartCanConsume() {
+        // four required fields and a long tail: scanning the whole tail for each field exhausted the step budget
+        List<CborSchema.Occurrence> terms = new ArrayList<>();
+        for (int field = 0; field < 4; field++) {
+            terms.add(CborSchema.Occurrence.required(CborSchema.IntegerNode.uint()));
+        }
+        terms.add(new CborSchema.Occurrence(0, 65_532, CborSchema.IntegerNode.uint()));
+        CborSchema.Schema schema = CborSchema.of(new CborSchema.ArrayNode(terms));
+        byte[] zeros = new byte[3 + 32_768]; // array(32768) of 0
+        zeros[0] = (byte) 0x99;
+        zeros[1] = (byte) 0x80;
+
+        assertThat(schema.accepts(zeros)).isTrue();
+        zeros[zeros.length - 1] = (byte) 0xf6; // a null in the tail
+        assertThat(schema.accepts(zeros)).isFalse();
+    }
+
+    @Test
     void evaluatesExactMapsBoundsChoicesAndOptionalFields() {
         CborSchema.Schema schema = productSchema();
 

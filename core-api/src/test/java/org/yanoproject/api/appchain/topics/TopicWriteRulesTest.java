@@ -68,6 +68,25 @@ class TopicWriteRulesTest {
     }
 
     @Test
+    void aLargeTupleWithARepeatedTailMeetsItsSchema() {
+        List<CborSchema.Occurrence> terms = new ArrayList<>();
+        for (int field = 0; field < 4; field++) {
+            terms.add(CborSchema.Occurrence.required(CborSchema.IntegerNode.uint()));
+        }
+        terms.add(new CborSchema.Occurrence(0, 65_532, CborSchema.IntegerNode.uint()));
+        byte[] ir = CborSchema.of(new CborSchema.ArrayNode(terms)).definition();
+        String schema = TopicWireCodec.blake2b256Hex(ir);
+        State state = new State().config(true);
+        state.schema(schema, ir);
+        state.entry("acme/", new Policy(Writers.OPEN, null, null, schema, null), false);
+        byte[] zeros = new byte[3 + 32_768]; // array(32768) of 0
+        zeros[0] = (byte) 0x99;
+        zeros[1] = (byte) 0x80;
+
+        assertThat(check(state, zeros).allowed()).isTrue();
+    }
+
+    @Test
     void directThresholdWritesAndReplays() {
         State state = new State().config(true);
         state.entry("acme/", new Policy(new Writers(keys(2, a, b, c)), null, null, null, null), false);

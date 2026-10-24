@@ -5,7 +5,7 @@
 Accepted (design approved at `f13207952`, 2026-10-23; the maintainer's OQ10
 decision was recorded afterwards in r11, 2026-10-24). At the maintainer's
 direction, milestones M0–M6 (§10) are implemented in the same PR; the
-implementation notes are revisions r12–r18. The production and audit gates
+implementation notes are revisions r12–r19. The production and audit gates
 (§12) remain open.
 
 The number is local to the `adr/app-layer` series. Root-level and
@@ -1545,3 +1545,7 @@ Threats and mitigations:
   the topic kernel (one `MemberGroup` rule); a removed member's pending topic approvals are dropped (D2, D5).
   F23 → each member's approvals are on at most an equal share of the pending commands, so members who approve
   each other's commands no longer escape the share (D2, D5).
+- r19 (2026-10-24; responds to reviewer 1's re-review of `09a573054`): F24 → each array term evaluates an
+  item only when a walk from a reachable position reaches it (at most once per term), instead of scanning the
+  whole remaining payload per term, which exhausted the step budget on a fixed prefix with a long repeated tail
+  and refused payloads the `f953b723b` evaluator accepted (D10, I8).

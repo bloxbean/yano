@@ -621,8 +621,9 @@ public final class CborSchema {
         /**
          * Iterative so that recursion depth follows schema depth only, never the number of terms: the result
          * cannot depend on a member's thread stack size. {@code reachable[i]} says the terms consumed so far can
-         * cover exactly the first {@code i} items; each term moves every reachable position forward by
-         * {@code minimum..maximum} consecutive items its value matches.
+         * cover exactly the first {@code i} items; each term walks forward from every reachable position over at
+         * most {@code maximum} consecutive items its value matches. An item is evaluated only when a walk reaches
+         * it, at most once per term.
          */
         private boolean matchesArray(ArrayNode schema, DataItem value) {
             if (!(value instanceof Array array)) return false;
@@ -632,20 +633,23 @@ public final class CborSchema {
             reachable[0] = true;
             int first = 0;
             for (Occurrence term : schema.terms()) {
-                // run[i]: how many consecutive items from i match the term's value, capped at its maximum
-                int[] run = new int[size + 1];
-                for (int i = size - 1; i >= first && term.maximum() > 0; i--) {
-                    if (++steps > MAX_EVALUATION_STEPS) return false;
-                    run[i] = matches(term.value(), items.get(i)) ? Math.min(term.maximum(), run[i + 1] + 1) : 0;
-                }
+                byte[] known = new byte[size]; // 0: not evaluated, 1: matches, 2: does not
                 boolean[] next = new boolean[size + 1];
                 int nextFirst = -1;
-                for (int i = first; i <= size; i++) {
-                    if (!reachable[i]) continue;
-                    for (int count = term.minimum(); count <= run[i]; count++) {
+                for (int start = first; start <= size; start++) {
+                    if (!reachable[start]) continue;
+                    int end = start + Math.min(term.maximum(), size - start);
+                    for (int at = start; ; at++) {
                         if (++steps > MAX_EVALUATION_STEPS) return false;
-                        next[i + count] = true;
-                        nextFirst = nextFirst < 0 ? i + count : Math.min(nextFirst, i + count);
+                        if (at - start >= term.minimum()) {
+                            next[at] = true;
+                            nextFirst = nextFirst < 0 ? at : Math.min(nextFirst, at);
+                        }
+                        if (at == end) break;
+                        if (known[at] == 0) {
+                            known[at] = matches(term.value(), items.get(at)) ? (byte) 1 : (byte) 2;
+                        }
+                        if (known[at] == 2) break;
                     }
                 }
                 if (nextFirst < 0) return false;
