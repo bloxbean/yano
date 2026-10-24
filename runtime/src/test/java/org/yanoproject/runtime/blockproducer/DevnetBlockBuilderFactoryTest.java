@@ -29,7 +29,7 @@ class DevnetBlockBuilderFactoryTest {
                 new InMemoryChainState(),
                 slot -> {
                     requestedSlot.set(slot);
-                    return new ProtocolVersion(11, 0);
+                    return new ProtocolVersion(11, 3);
                 },
                 new AtomicReference<>());
 
@@ -70,7 +70,7 @@ class DevnetBlockBuilderFactoryTest {
                 new InMemoryChainState(),
                 slot -> {
                     requestedSlot.set(slot);
-                    return new ProtocolVersion(11, 0);
+                    return new ProtocolVersion(11, 3);
                 },
                 replayService);
 

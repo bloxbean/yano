@@ -472,11 +472,13 @@ public class DevnetBlockBuilder {
 
     /**
      * The protocol version in the header of a block Yano produces: the effective major version, with
-     * {@link #BLOCK_HEADER_MINOR_VERSION} as the minor. The ledger does not validate the header's version (only the
-     * ledger's own, against the node's maximum); producers use it to say which node built the block.
+     * {@link #BLOCK_HEADER_MINOR_VERSION} as the minor. The ledger never checks the header's minor version, and its
+     * major only against the ledger's own: at most one more (Conway BBODY {@code HeaderProtVerTooHigh}). Producers use
+     * the minor to say which node built the block.
      */
     protected ProtocolVersion resolveProtocolVersion(long slot) {
-        return new ProtocolVersion(protocolVersionSupplier.getProtocolVersion(slot).major(), BLOCK_HEADER_MINOR_VERSION);
+        long major = protocolVersionSupplier.getProtocolVersion(slot).major();
+        return new ProtocolVersion(major, BLOCK_HEADER_MINOR_VERSION);
     }
 
     /**
