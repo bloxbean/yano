@@ -56,6 +56,14 @@ public final class TopicKeys {
         return key("entry/", nameHash(name));
     }
 
+    /**
+     * The head revision a name had when its pending creation was cancelled; a later creation continues from it,
+     * so a change signed for the earlier incarnation never matches the new one (D3).
+     */
+    public static byte[] freed(String name) {
+        return key("freed/", nameHash(name));
+    }
+
     public static byte[] queued(String name, long revision) {
         return key("queued/", nameHash(name), u64(revision));
     }

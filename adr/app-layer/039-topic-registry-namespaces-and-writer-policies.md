@@ -5,7 +5,7 @@
 Accepted (design approved at `f13207952`, 2026-10-23; the maintainer's OQ10
 decision was recorded afterwards in r11, 2026-10-24). At the maintainer's
 direction, milestones M0–M6 (§10) are implemented in the same PR; the
-implementation notes are revisions r12–r21. The production and audit gates
+implementation notes are revisions r12–r22. The production and audit gates
 (§12) remain open.
 
 The number is local to the `adr/app-layer` series. Root-level and
@@ -249,6 +249,7 @@ machinery. Illustrative key layout (normative encoding fixed in M1):
 | Key | Value |
 |---|---|
 | `~yano/topics/v1/config` | Effective chain-level topic configuration (D1, D4, D14), **bounded** (registrar set ≤ 16 keys): mode, creation modes, registrars, `unregistered-topics`, limits, and its revision number. Absent on a chain that has not enabled topics. |
+| `~yano/topics/v1/freed/<name>` | The head revision of a name whose pending creation was cancelled, so a later creation continues the numbering and a change signed for the earlier incarnation never matches the new one (D3). Removed when the name is created again. |
 | `~yano/topics/v1/entry/<name>` | Namespace or exact-topic record, **bounded**: the active revision (owners, policy, status, revision number, `activeFrom`), materialized by the framework (D5a), plus small head metadata (head revision number, pending count). A record with no active revision yet (a pending creation) reserves the name but governs nothing. Pending revisions are never stored here. |
 | `~yano/topics/v1/queued/<name>/<revision>` | One pending revision: its content, activation height and recorded authority epoch. Removed when it activates or is cancelled. |
 | `~yano/topics/v1/history/<name>/<revision>` | Superseded revisions, kept so old messages stay verifiable (D13). Configuration revisions use the name `~config` (D1). |
@@ -287,9 +288,11 @@ under the 256-byte proof-key bound; the normative layout is
   overlapping prefixes. Name checks count pending creations as taken (D5a).
   Entries are retired, never deleted, so an active name is never freed; the
   one exception is a pending creation cancelled before it activates (D5a),
-  which frees its name. Command statements are single-use (D9), so a
-  cancelled creation cannot be relayed again, and a change queued for it
-  never applies to a later creation of the name.
+  which frees its name. Its revision numbers are never reused: a later
+  creation of the name continues from the cancelled head (`freed/`, D2), so
+  a change signed for the earlier incarnation, even one withheld and never
+  included, names a head the new entry never has. Command statements are
+  also single-use (D9), so a cancelled creation cannot be relayed again.
 - **Authority.** The owners of an ancestor namespace keep authority over the
   entries beneath it: they may update, rotate or retire a descendant with a
   command whose `authority` is the ancestor (D5a). A child's own owners act
@@ -829,20 +832,23 @@ latest `notAfter` of its items. While applying each block, after its
 messages, the framework takes batches from the front of each queue and
 removes their items once block time has passed the batch's latest
 `notAfter`, at most `2 × max-block-messages` items per queue per block.
-Each message adds at most one item to a queue, so a block removes at least
-as many expired items as it can add. Within the credential queue every item
-expires at most `max-delegation-ms` after its block, so an earlier batch
-never holds a later one back beyond that bound; receipts, which live for
-`max-command-ms`, have their own queue for the same reason, which also holds
-the used statements of owner commands (they expire by `notAfter`, at most
-`max-command-ms` after inclusion). An expired backlog (left, for example, by an
-idle period with no blocks) shrinks by at least `max-block-messages` per
-block. Pruning is a deterministic part of the state transition, so every
+A message adds at most two items to a queue: a write adds its used statement
+to the credential queue; an owner command adds its receipt and its used
+statement to the receipt queue (a revocation also adds its `revoked/` entry to
+the credential queue). A block therefore never adds more items to a queue than
+it can remove, and an expired backlog (left, for example, by an idle period
+with no blocks) never grows and shrinks on every block that adds fewer: by at
+least `max-block-messages` items per block when its messages are writes.
+Within the credential queue every item expires at most `max-delegation-ms`
+after its block, so an earlier batch never holds a later one back beyond that
+bound; the receipt queue's items (receipts and the used statements of owner
+commands) expire at most `max-command-ms` after their block, and that queue is
+separate for the same reason. Pruning is a deterministic part of the state transition, so every
 member removes the same keys. Validity never depends on whether pruning has
 run: an expired statement or delegation is refused by its time check before
 `used/` or `revoked/` is consulted. Live entries are therefore at most those
-written during the last `max-delegation-ms` of block time plus that
-shrinking backlog (I12).
+written during the last `max-delegation-ms` (writes) or `max-command-ms`
+(owner commands) of block time plus that backlog (I12).
 
 ### D10 — Schemas use the existing IR, moved into core
 
@@ -1168,7 +1174,7 @@ Threats and mitigations:
 | I9 | A delegation's scope is a valid entry name (D3), as a revocation's target must be, and is within what its issuer may delegate (the issuer is in the `delegate` set of the scope's effective policy, so it can revoke it); its lifetime is ≤ both the policy's `maxDelegationMs` and the chain's `max-delegation-ms`; it is honoured only inside its window on block time. | D8 |
 | I10 | Topic policies only add refusals; they never make a machine accept a message it would refuse. | D6, D11 |
 | I11 | Every historical message can be re-verified against the effective policy active at its height, given a `topic-policy-v1` proof for that height; a member can produce one while it retains the parent state, and a captured proof verifies forever. | D13, D15 |
-| I12 | Every `used/` and `revoked/` entry expires at most `max-delegation-ms` after the block that wrote it and is pruned deterministically through the `expiry/` index (at most `2 × max-block-messages` per block); live entries are those written in the last `max-delegation-ms` plus a backlog that shrinks every block. | D8, D9 |
+| I12 | Every write's `used/` entry and every `revoked/` entry expires at most `max-delegation-ms` after the block that wrote it, and every owner command's `used/` entry and receipt at most `max-command-ms` after; all are pruned deterministically through the `expiry/` index (at most `2 × max-block-messages` per queue per block, never fewer than a block adds); live entries are those written within those horizons plus an expired backlog that never grows. | D8, D9 |
 | I13 | On every chain block timestamps are monotonic (block validity) and at most `max-forward-skew-ms` ahead of the voter's clock when voted (vote rule); a proposer stamps `max(localNow, parent.timestamp)`. | D12 |
 | I14 | Application machines cannot read-modify `~yano/topics/` keys. | D2 |
 | I15 | On a protected topic every machine hook receives the verified payload as the body, with the original `messageId`; finalized blocks keep the framed bytes and message proofs resolve to them. | D7, D7a |
@@ -1606,3 +1612,9 @@ Threats and mitigations:
   no longer passed under a key the REST rejection drops; F34 → `StrictEd25519` returns false only for a key
   that is not a curve point and rethrows environment failures, and D3 says any active ancestor creates.
   F32 and the remaining F33/F34 items are recorded in §15.
+- r22 (2026-10-24; responds to reviewer 1's re-review of `bce24973f`, which reviewer 2 confirmed): F25
+  completed → a name freed by a cancelled pending creation keeps its head revision (`freed/`), and a later
+  creation continues from it, so a change signed for the earlier incarnation and withheld until after the
+  recreation is stale (D2, D3); F27 completed → byte literals are compared against the stored array, with no
+  per-match copy, and charged when a comparison reads them (I8); F35 → D9 and I12 count two items per owner
+  command in the receipt queue and the `max-command-ms` horizon of command statements.

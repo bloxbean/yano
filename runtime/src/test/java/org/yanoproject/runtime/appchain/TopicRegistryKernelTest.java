@@ -328,13 +328,35 @@ class TopicRegistryKernelTest {
         assertThat(chain.view().entry("acme/x/")).isEmpty();
 
         long recreated = chain.block(chain.command(create("acme/x/", "acme/", ownerN), ownerO));
-        assertThat(chain.view().entry("acme/x/").orElseThrow().head()).isEqualTo(1);
+        assertThat(chain.view().entry("acme/x/").orElseThrow().head()).as("after the cancelled 1 and 2")
+                .isEqualTo(3);
         AppMessage relayed = chain.message(memberB, TopicCommandRules.TOPIC, update.getBody());
         assertThatThrownBy(() -> chain.block(relayed))
                 .hasMessageContaining(TopicRefusal.TOPIC_PROOF_REPLAYED.name());
         chain.blocksUntil(recreated + LAG);
         assertThat(chain.view().entry("acme/x/").orElseThrow().active().content().policy())
                 .isEqualTo(Policy.INHERIT);
+    }
+
+    @Test
+    void aChangeWithheldUntilANameIsRecreatedNeverAppliesToIt() {
+        Chain chain = chainWithAcme();
+        chain.block(chain.command(create("acme/x/", "acme/", childOwner), ownerO));
+        // signed for the first incarnation (head 1) but withheld: never included, so never used
+        AppMessage withheld = chain.command(statement("acme/x/", "acme/", 1L, new Update(openPolicy(), null)),
+                ownerO);
+        TopicWire.GovRetire retire = new TopicWire.GovRetire("acme/x/");
+        chain.block(chain.governance(memberA, retire), chain.governance(memberB, retire));
+        assertThat(chain.view().entry("acme/x/")).isEmpty();
+
+        Policy restricted = new Policy(new Writers(keys(ownerN)), null, null, null, null);
+        long recreated = chain.block(chain.command(new CommandStatement(CHAIN, GENERATION, "acme/x/", "acme/", null,
+                nonce(2), T0 + 3_000_000, new Create(keys(ownerN), restricted, null)), ownerO));
+        assertThat(chain.view().entry("acme/x/").orElseThrow().head()).as("revision numbers continue").isEqualTo(2);
+        chain.block(withheld);
+        assertThat(chain.receipt(withheld).code()).isEqualTo(TopicRefusal.TOPIC_COMMAND_STALE.name());
+        chain.blocksUntil(recreated + LAG);
+        assertThat(chain.view().entry("acme/x/").orElseThrow().active().content().policy()).isEqualTo(restricted);
     }
 
     @Test

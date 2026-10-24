@@ -201,8 +201,8 @@ public final class TopicWire {
 
     /**
      * An activation ticket: an entry name, or {@link TopicKeys#CONFIG_HISTORY_NAME}. {@code messageId} is the
-     * command that queued the revision: a ticket left behind by a cancelled creation never matches a later
-     * creation that reuses the freed name and revision number.
+     * command that queued the revision: a ticket left behind by a cancelled creation never installs a later
+     * creation of the freed name.
      */
     public record Activation(String name, long revision, String messageId) {
         public Activation {

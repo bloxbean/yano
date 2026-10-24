@@ -148,6 +148,27 @@ class CborSchemaTest {
     }
 
     @Test
+    void aLargeByteLiteralIsNotCopiedPerMatch() {
+        // a 60,000-byte literal with broad bounds, tried against 8,192 one-byte strings: copying the literal
+        // per attempt allocated about 1 GB for a 16 KiB payload, none of it charged to the budget
+        CborSchema.Schema schema = CborSchema.of(new CborSchema.ArrayNode(List.of(
+                new CborSchema.Occurrence(0, 8192, CborSchema.BytesNode.any()),
+                CborSchema.Occurrence.required(new CborSchema.BytesNode(0, 60_000, new byte[60_000])))));
+        byte[] payload = new byte[3 + 2 * 8192]; // array(8192) of h'00'
+        payload[0] = (byte) 0x99;
+        payload[1] = 0x20;
+        for (int item = 0; item < 8192; item++) {
+            payload[3 + 2 * item] = 0x41;
+        }
+        com.sun.management.ThreadMXBean threads =
+                (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        long before = threads.getCurrentThreadAllocatedBytes();
+
+        assertThat(schema.accepts(payload)).isFalse();
+        assertThat(threads.getCurrentThreadAllocatedBytes() - before).isLessThan(64L * 1024 * 1024);
+    }
+
+    @Test
     void evaluatesExactMapsBoundsChoicesAndOptionalFields() {
         CborSchema.Schema schema = productSchema();
 

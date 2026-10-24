@@ -597,9 +597,10 @@ public final class CborSchema {
         private boolean matchesBytes(BytesNode schema, DataItem value) {
             if (!(value instanceof ByteString bytes)) return false;
             byte[] decoded = bytes.getBytes();
-            return decoded.length >= schema.minimumBytes()
-                    && decoded.length <= schema.maximumBytes()
-                    && (schema.literal() == null || charge(decoded.length) && Arrays.equals(schema.literal(), decoded));
+            if (decoded.length < schema.minimumBytes() || decoded.length > schema.maximumBytes()) return false;
+            byte[] literal = schema.literal; // the stored array: the public accessor copies it on every call
+            return literal == null
+                    || literal.length == decoded.length && charge(decoded.length) && Arrays.equals(literal, decoded);
         }
 
         private boolean matchesBoolean(BooleanNode schema, DataItem value) {

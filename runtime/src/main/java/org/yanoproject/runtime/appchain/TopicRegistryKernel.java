@@ -270,13 +270,16 @@ final class TopicRegistryKernel {
             return new Receipt(TopicRefusal.TOPIC_COMMAND_LIMIT.name(), 0);
         }
         long activation = block.height() + config.settings().activationLag();
-        putRecord(state, new EntryRecord(name, null, 1, 1, topLevel ? 1 : 0));
+        // revision numbers continue past an earlier, cancelled creation of the name (D3)
+        long revision = state.get(TopicKeys.freed(name)).map(TopicKeys::u64).orElse(0L) + 1;
+        state.delete(TopicKeys.freed(name));
+        putRecord(state, new EntryRecord(name, null, revision, 1, topLevel ? 1 : 0));
         if (!topLevel) {
             putRecord(state, new EntryRecord(top, topRecord.active(), topRecord.head(), topRecord.pending(),
                     topRecord.subtree() + 1));
         }
         state.put(TopicKeys.count(), TopicKeys.u64(count + 1));
-        queue(state, name, new QueuedRevision(1, activation, authority, epoch, content, messageId));
+        queue(state, name, new QueuedRevision(revision, activation, authority, epoch, content, messageId));
         return new Receipt(Receipt.ACCEPTED, activation);
     }
 
@@ -475,7 +478,7 @@ final class TopicRegistryKernel {
         EntryRecord record = maybe.get();
         if (record.active() == null) {
             if (edit.apply(view.headContent(record).orElseThrow()).retired()) {
-                cancelFrom(record, 1, state);
+                cancelFrom(record, record.head() - record.pending() + 1, state);
                 return new Receipt(Receipt.ACCEPTED, block.height() + 1);
             }
             return new Receipt(TopicRefusal.TOPIC_COMMAND_STALE.name(), 0);
@@ -579,7 +582,8 @@ final class TopicRegistryKernel {
     /**
      * Cancel revision {@code revision} and every later queued revision of the entry: they were built on
      * its content (D5a, cancellation cascades). Each gets a SUPERSEDED receipt; revision numbers are never
-     * reused, so the head stays. A pending creation that is cancelled frees its name.
+     * reused, so the head stays. A pending creation that is cancelled frees its name and records its head, so
+     * a later creation of the name continues the numbering (D3).
      */
     private void cancelFrom(EntryRecord record, long revision, AppStateWriter state) {
         for (long cancelled = revision; cancelled <= record.head(); cancelled++) {
@@ -587,6 +591,7 @@ final class TopicRegistryKernel {
         }
         if (record.active() == null) {
             state.delete(TopicKeys.entry(record.name()));
+            state.put(TopicKeys.freed(record.name()), TopicKeys.u64(record.head()));
             TopicState view = new TopicState(state, maxMessageBytes);
             state.put(TopicKeys.count(), TopicKeys.u64(view.count() - 1));
             String top = TopicNames.topLevel(record.name());
