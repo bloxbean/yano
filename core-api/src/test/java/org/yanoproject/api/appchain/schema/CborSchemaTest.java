@@ -99,6 +99,27 @@ class CborSchemaTest {
     }
 
     @Test
+    void overlappingRepeatedTermsFindASplitWithinTheBudget() {
+        // after a variable-length term ~1,000 positions are reachable; walking the next repeated term from each
+        // one exhausted the budget, while the greedy search finds 999 + 1 + null at once
+        CborSchema.Schema schema = CborSchema.of(new CborSchema.ArrayNode(List.of(
+                new CborSchema.Occurrence(1, 1000, new CborSchema.IntegerNode(
+                        CborSchema.INTEGER_UINT, BigInteger.ZERO, BigInteger.TEN)),
+                new CborSchema.Occurrence(1, 1000, new CborSchema.IntegerNode(
+                        CborSchema.INTEGER_UINT, BigInteger.ZERO, BigInteger.valueOf(20))),
+                CborSchema.Occurrence.required(new CborSchema.NullNode()))));
+        byte[] payload = new byte[3 + 1000 + 1]; // array(1001): 1,000 zeros, then null
+        payload[0] = (byte) 0x99;
+        payload[1] = 0x03;
+        payload[2] = (byte) 0xe9;
+        payload[payload.length - 1] = (byte) 0xf6;
+
+        assertThat(schema.accepts(payload)).isTrue();
+        payload[payload.length - 1] = (byte) 0xf5; // true is no null
+        assertThat(schema.accepts(payload)).isFalse();
+    }
+
+    @Test
     void evaluatesExactMapsBoundsChoicesAndOptionalFields() {
         CborSchema.Schema schema = productSchema();
 

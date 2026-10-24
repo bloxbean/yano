@@ -15,9 +15,11 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -619,44 +621,79 @@ public final class CborSchema {
         }
 
         /**
-         * Iterative so that recursion depth follows schema depth only, never the number of terms: the result
-         * cannot depend on a member's thread stack size. {@code reachable[i]} says the terms consumed so far can
-         * cover exactly the first {@code i} items; each term walks forward from every reachable position over at
-         * most {@code maximum} consecutive items its value matches. An item is evaluated only when a walk reaches
-         * it, at most once per term.
+         * Greedy, memoized search for a split of the items over the terms: each term takes the most items its
+         * value matches, then backs off one at a time down to its minimum. The search keeps its own stack, so
+         * recursion depth follows schema depth only, never the number of terms, and the result cannot depend
+         * on a member's thread stack size. Steps are charged per search call and per split tried.
          */
         private boolean matchesArray(ArrayNode schema, DataItem value) {
             if (!(value instanceof Array array)) return false;
+            List<Occurrence> terms = schema.terms();
             List<DataItem> items = array.getDataItems();
-            int size = items.size();
-            boolean[] reachable = new boolean[size + 1];
-            reachable[0] = true;
-            int first = 0;
-            for (Occurrence term : schema.terms()) {
-                byte[] known = new byte[size]; // 0: not evaluated, 1: matches, 2: does not
-                boolean[] next = new boolean[size + 1];
-                int nextFirst = -1;
-                for (int start = first; start <= size; start++) {
-                    if (!reachable[start]) continue;
-                    int end = start + Math.min(term.maximum(), size - start);
-                    for (int at = start; ; at++) {
-                        if (++steps > MAX_EVALUATION_STEPS) return false;
-                        if (at - start >= term.minimum()) {
-                            next[at] = true;
-                            nextFirst = nextFirst < 0 ? at : Math.min(nextFirst, at);
-                        }
-                        if (at == end) break;
-                        if (known[at] == 0) {
-                            known[at] = matches(term.value(), items.get(at)) ? (byte) 1 : (byte) 2;
-                        }
-                        if (known[at] == 2) break;
+            java.util.Map<Long, Boolean> memo = new HashMap<>();
+            ArrayDeque<Split> stack = new ArrayDeque<>();
+            int termIndex = 0;
+            int itemIndex = 0;
+            while (true) {
+                boolean result = false;
+                Boolean known;
+                long key = (long) termIndex << 32 | itemIndex & 0xffff_ffffL;
+                if (++steps > MAX_EVALUATION_STEPS) {
+                    result = false;
+                } else if (termIndex == terms.size()) {
+                    result = itemIndex == items.size();
+                } else if ((known = memo.get(key)) != null) {
+                    result = known;
+                } else {
+                    Occurrence term = terms.get(termIndex);
+                    int available = Math.min(term.maximum(), items.size() - itemIndex);
+                    int matched = 0;
+                    while (matched < available && matches(term.value(), items.get(itemIndex + matched))) {
+                        matched++;
                     }
+                    stack.push(new Split(termIndex, itemIndex, key, matched));
                 }
-                if (nextFirst < 0) return false;
-                reachable = next;
-                first = nextFirst;
+                boolean descend = false;
+                while (!stack.isEmpty()) {
+                    Split split = stack.peek();
+                    if (split.awaiting) {
+                        split.awaiting = false;
+                        if (result) {
+                            memo.put(split.key, true);
+                            stack.pop();
+                            continue;
+                        }
+                        split.count--;
+                    }
+                    if (split.count >= terms.get(split.term).minimum() && ++steps <= MAX_EVALUATION_STEPS) {
+                        split.awaiting = true;
+                        termIndex = split.term + 1;
+                        itemIndex = split.item + split.count;
+                        descend = true;
+                        break;
+                    }
+                    memo.put(split.key, false);
+                    stack.pop();
+                    result = false;
+                }
+                if (!descend) return result;
             }
-            return reachable[size];
+        }
+    }
+
+    /** One term's place in the array search: how many items it takes now, and whether it awaits the rest. */
+    private static final class Split {
+        private final int term;
+        private final int item;
+        private final long key;
+        private int count;
+        private boolean awaiting;
+
+        private Split(int term, int item, long key, int count) {
+            this.term = term;
+            this.item = item;
+            this.key = key;
+            this.count = count;
         }
     }
 

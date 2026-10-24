@@ -5,7 +5,7 @@
 Accepted (design approved at `f13207952`, 2026-10-23; the maintainer's OQ10
 decision was recorded afterwards in r11, 2026-10-24). At the maintainer's
 direction, milestones M0–M6 (§10) are implemented in the same PR; the
-implementation notes are revisions r12–r19. The production and audit gates
+implementation notes are revisions r12–r20. The production and audit gates
 (§12) remain open.
 
 The number is local to the `adr/app-layer` series. Root-level and
@@ -1394,8 +1394,8 @@ Threats and mitigations:
   core `CborSchema` copy was fixed in this PR (each option encoded once); the
   Yano X original needs the same fix, or the switch to the core evaluator. The
   same applies to its array matching, which recurses once per array term, so a
-  valid nested-array value can overflow a small thread stack (fixed in core,
-  r18).
+  valid nested-array value can overflow a small thread stack (fixed in core by
+  running the same search on an explicit stack, r20).
 - Gossip ingress judges a message against the local tip, so a member one
   block behind an activation does not relay a write that is valid at the
   proposer's tip (liveness only; the writer resubmits).
@@ -1549,3 +1549,8 @@ Threats and mitigations:
   item only when a walk from a reachable position reaches it (at most once per term), instead of scanning the
   whole remaining payload per term, which exhausted the step budget on a fixed prefix with a long repeated tail
   and refused payloads the `f953b723b` evaluator accepted (D10, I8).
+- r20 (2026-10-24; responds to reviewer 1's re-review of `92b7334b8`): F24 completed → array matching is the
+  greedy, memoized search of `f953b723b` (each term takes the most matching items, then backs off to its
+  minimum), run on an explicit stack instead of recursion. Results and step charges equal that evaluator's,
+  so overlapping repeated terms no longer exhaust the budget, and recursion still follows schema depth only
+  (F21). r18–r19's reachable-position pass is withdrawn (D10, I8).

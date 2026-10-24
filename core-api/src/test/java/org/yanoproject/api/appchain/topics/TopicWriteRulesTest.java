@@ -14,6 +14,7 @@ import org.yanoproject.api.appchain.topics.TopicTestFixtures.Key;
 import org.yanoproject.api.appchain.topics.TopicTestFixtures.State;
 import org.yanoproject.api.appchain.topics.TopicWriteRules.Result;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -84,6 +85,27 @@ class TopicWriteRulesTest {
         zeros[1] = (byte) 0x80;
 
         assertThat(check(state, zeros).allowed()).isTrue();
+    }
+
+    @Test
+    void overlappingRepeatedTermsMeetTheirSchema() {
+        byte[] ir = CborSchema.of(new CborSchema.ArrayNode(List.of(
+                new CborSchema.Occurrence(1, 1000, new CborSchema.IntegerNode(
+                        CborSchema.INTEGER_UINT, BigInteger.ZERO, BigInteger.TEN)),
+                new CborSchema.Occurrence(1, 1000, new CborSchema.IntegerNode(
+                        CborSchema.INTEGER_UINT, BigInteger.ZERO, BigInteger.valueOf(20))),
+                CborSchema.Occurrence.required(new CborSchema.NullNode())))).definition();
+        String schema = TopicWireCodec.blake2b256Hex(ir);
+        State state = new State().config(true);
+        state.schema(schema, ir);
+        state.entry("acme/", new Policy(Writers.OPEN, null, null, schema, null), false);
+        byte[] payload = new byte[3 + 1000 + 1]; // array(1001): 1,000 zeros, then null
+        payload[0] = (byte) 0x99;
+        payload[1] = 0x03;
+        payload[2] = (byte) 0xe9;
+        payload[payload.length - 1] = (byte) 0xf6;
+
+        assertThat(check(state, payload).allowed()).isTrue();
     }
 
     @Test
