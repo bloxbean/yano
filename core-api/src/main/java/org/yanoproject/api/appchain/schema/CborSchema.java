@@ -21,6 +21,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -42,12 +43,18 @@ public final class CborSchema {
 
     public static final int MAX_SCHEMA_IR_BYTES = 65_536;
     public static final int MAX_SCHEMA_NODES = 2_048;
+    /**
+     * Node depth bound. The IR's CBOR nesting is also bounded at 32 levels, and each choice adds two levels and
+     * each array or map three, so the effective bound is 15 nested choices or 10 nested arrays or maps.
+     */
     public static final int MAX_SCHEMA_DEPTH = 32;
     public static final int MAX_CHOICE_OPTIONS = 32;
     public static final int MAX_MAP_FIELDS = 256;
     public static final int MAX_ARRAY_TERMS = 256;
     public static final int MAX_OCCURRENCE = 65_536;
     public static final int MAX_EVALUATION_STEPS = 262_144;
+    /** Text or byte-string bytes one evaluation step covers: steps grow with the bytes touched (I8). */
+    public static final int EVALUATION_BYTES_PER_STEP = 64;
     /** Largest value (and text or byte string) a schema evaluates. */
     public static final int MAX_VALUE_BYTES = 1_048_576;
 
@@ -79,7 +86,7 @@ public final class CborSchema {
         if (definition.length > MAX_SCHEMA_IR_BYTES) {
             throw invalid("schema IR exceeds " + MAX_SCHEMA_IR_BYTES + " bytes");
         }
-        return new Schema(root, definition);
+        return decode(definition); // a schema built here is one decode() admits, CBOR nesting bound included
     }
 
     /** Strictly decode and re-freeze canonical schema IR bytes. */
@@ -535,6 +542,14 @@ public final class CborSchema {
 
     private static final class Evaluation {
         private int steps;
+        /** UTF-8 sizes of text items already measured, so a text is measured once however often it is tried. */
+        private final IdentityHashMap<UnicodeString, Integer> textBytes = new IdentityHashMap<>();
+
+        /** Charge the bytes about to be touched; false once the budget is spent. */
+        private boolean charge(int bytes) {
+            steps += bytes / EVALUATION_BYTES_PER_STEP;
+            return steps <= MAX_EVALUATION_STEPS;
+        }
 
         private boolean matches(Node schema, DataItem value) {
             if (++steps > MAX_EVALUATION_STEPS) return false;
@@ -569,9 +584,14 @@ public final class CborSchema {
         private boolean matchesText(TextNode schema, DataItem value) {
             if (!(value instanceof UnicodeString text)) return false;
             String decoded = text.getString();
-            int bytes = decoded.getBytes(StandardCharsets.UTF_8).length;
+            Integer bytes = textBytes.get(text);
+            if (bytes == null) {
+                if (!charge(decoded.length())) return false;
+                bytes = decoded.getBytes(StandardCharsets.UTF_8).length;
+                textBytes.put(text, bytes);
+            }
             return bytes >= schema.minimumBytes() && bytes <= schema.maximumBytes()
-                    && (schema.literal() == null || schema.literal().equals(decoded));
+                    && (schema.literal() == null || charge(bytes) && schema.literal().equals(decoded));
         }
 
         private boolean matchesBytes(BytesNode schema, DataItem value) {
@@ -579,7 +599,7 @@ public final class CborSchema {
             byte[] decoded = bytes.getBytes();
             return decoded.length >= schema.minimumBytes()
                     && decoded.length <= schema.maximumBytes()
-                    && (schema.literal() == null || Arrays.equals(schema.literal(), decoded));
+                    && (schema.literal() == null || charge(decoded.length) && Arrays.equals(schema.literal(), decoded));
         }
 
         private boolean matchesBoolean(BooleanNode schema, DataItem value) {

@@ -109,7 +109,8 @@ final class TopicRegistryKernel {
     }
 
     /** The D11 verdict on one message: a refusal, or the message the machine's admission receives (D7a). */
-    record Verdict(TopicRefusal refusal, String detail, AppMessage machineMessage, TopicWriteRules.Result write) {
+    record Verdict(TopicRefusal refusal, String detail, AppMessage machineMessage, TopicWriteRules.Result write,
+                   String command) {
         boolean allowed() {
             return refusal == null;
         }
@@ -119,24 +120,27 @@ final class TopicRegistryKernel {
      * D11 for one message against committed (parent) state, as REST and gossip ingress and the proposer judge
      * it: registry commands get command admission, other {@code ~} topics pass, ordinary topics the write check.
      *
-     * @param earlierStatements statement hashes of protected writes earlier in the candidate block (D9)
+     * @param earlierStatements statement hashes of commands and protected writes earlier in the candidate block
+     *                          (D9); a kept command adds {@link Verdict#command()}, a kept framed write its
+     *                          statement hash
      */
     static Verdict judge(AppMessage message, String chainId, String generationId, long blockTime, TopicState state,
                          Set<String> earlierStatements) {
         String topic = message.getTopic() != null ? message.getTopic() : "";
         if (TopicCommandRules.TOPIC.equals(topic)) {
             TopicCommandRules.Admission admission = TopicCommandRules.admit(message.getBody(), chainId, generationId,
-                    blockTime, state, Set.of());
-            return admission.admitted() ? new Verdict(null, null, message, null)
-                    : new Verdict(admission.refusal(), admission.detail(), null, null);
+                    blockTime, state, Set.of(), earlierStatements);
+            return admission.admitted() ? new Verdict(null, null, message, null,
+                    TopicCommandRules.statementHash(admission.command().statement()))
+                    : new Verdict(admission.refusal(), admission.detail(), null, null, null);
         }
         if (topic.startsWith("~")) {
-            return new Verdict(null, null, message, null);
+            return new Verdict(null, null, message, null, null);
         }
         TopicWriteRules.Result write = TopicWriteRules.check(topic, message.getBody(), chainId, generationId,
                 blockTime, state, earlierStatements);
-        return write.allowed() ? new Verdict(null, null, TopicPayloadMessage.of(message, write), write)
-                : new Verdict(write.refusal(), write.detail(), null, null);
+        return write.allowed() ? new Verdict(null, null, TopicPayloadMessage.of(message, write), write, null)
+                : new Verdict(write.refusal(), write.detail(), null, null, null);
     }
 
     /**
@@ -154,7 +158,7 @@ final class TopicRegistryKernel {
             AppMessage message = block.messages().get(index);
             String topic = message.getTopic() != null ? message.getTopic() : "";
             if (TopicCommandRules.TOPIC.equals(topic)) {
-                include(block, message, state, schemasStoredInBlock, revokedInBlock);
+                include(block, message, state, schemasStoredInBlock, statementsInBlock, revokedInBlock);
             } else if (TopicCommandRules.GOVERNANCE_TOPIC.equals(topic)) {
                 govern(block, message, state, schemasStoredInBlock);
             } else if (enabled && !topic.startsWith("~")) {
@@ -167,7 +171,8 @@ final class TopicRegistryKernel {
         // D8: a revocation governs from the next block, so the block's own messages were judged without it.
         revokedInBlock.forEach((hash, notAfter) -> {
             state.put(TopicKeys.revoked(hash), new byte[] {1});
-            addExpiry(block.height(), new ExpiryItem(ExpiryItem.REVOKED, hash), notAfter, state);
+            addExpiry(block.height(), TopicKeys.CREDENTIAL_QUEUE, new ExpiryItem(ExpiryItem.REVOKED, hash), notAfter,
+                    state);
         });
         return payloadViews.isEmpty() ? context : context.withPayloadViews(payloadViews);
     }
@@ -182,8 +187,8 @@ final class TopicRegistryKernel {
         if (result.framed()) {
             statementsInBlock.add(result.statementHash());
             state.put(TopicKeys.used(result.statementHash()), new byte[] {1});
-            addExpiry(block.height(), new ExpiryItem(ExpiryItem.USED, result.statementHash()),
-                    result.statementNotAfter(), state);
+            addExpiry(block.height(), TopicKeys.CREDENTIAL_QUEUE,
+                    new ExpiryItem(ExpiryItem.USED, result.statementHash()), result.statementNotAfter(), state);
         }
         return TopicPayloadMessage.of(message, result);
     }
@@ -200,10 +205,10 @@ final class TopicRegistryKernel {
     // ------------------------------------------------------------------ owner commands (D5, D5a)
 
     private void include(AppBlock block, AppMessage message, AppStateWriter state, Set<String> schemasStoredInBlock,
-                         Map<String, Long> revokedInBlock) {
+                         Set<String> statementsInBlock, Map<String, Long> revokedInBlock) {
         TopicState view = new TopicState(state, maxMessageBytes);
         TopicCommandRules.Admission admission = TopicCommandRules.admit(message.getBody(), chainId,
-                generationId.get(), block.timestamp(), view, schemasStoredInBlock);
+                generationId.get(), block.timestamp(), view, schemasStoredInBlock, statementsInBlock);
         if (!admission.admitted()) {
             // The proposer never selects it (I19); a follower rejects the proposal on this refusal.
             throw new TopicRefusedException("an inadmissible topic command", admission.refusal(),
@@ -227,9 +232,16 @@ final class TopicRegistryKernel {
             case Retire ignored -> change(block, statement, epoch, config, messageId, state,
                     content -> new EntryContent(content.owners(), content.policy(), true));
         };
-        // Claim signers choose their own keys, so a refused claim leaves no receipt (state anyone could mint)
+        String statementHash = TopicCommandRules.statementHash(statement);
+        statementsInBlock.add(statementHash);
+        // Claim signers choose their own keys, so a refused claim leaves no receipt or used statement (state
+        // anyone could mint); every other included command is single-use until its notAfter (D9)
         if (receipt.code().equals(Receipt.ACCEPTED) || !TopicWire.AUTHORITY_CLAIM.equals(statement.authority())) {
             writeReceipt(block, messageId, receipt, config.settings().maxCommandMs(), state);
+            state.put(TopicKeys.used(statementHash), new byte[] {1});
+            // in the receipt queue: its retention (max-command-ms) never holds back the shorter write proofs
+            addExpiry(block.height(), TopicKeys.RECEIPT_QUEUE, new ExpiryItem(ExpiryItem.USED, statementHash),
+                    statement.notAfter(), state);
         }
     }
 
@@ -544,8 +556,8 @@ final class TopicRegistryKernel {
             state.put(TopicKeys.history(name, record.active().revision()),
                     TopicWireCodec.encodeActiveRevision(record.active()));
         }
-        // The entry's authority epoch advances only when its owners change (D5a).
-        long ownersSince = record.active() != null
+        // The entry's authority epoch advances when its owners change or a governance override activates (D5a).
+        long ownersSince = record.active() != null && !GOVERNANCE_AUTHORITY.equals(queued.authority())
                 && record.active().content().owners().equals(queued.content().owners())
                 ? record.active().ownersSince() : revision;
         putRecord(state, new EntryRecord(name, new ActiveRevision(revision, activationHeight, ownersSince,
@@ -607,8 +619,8 @@ final class TopicRegistryKernel {
     private void writeReceipt(AppBlock block, String messageId, Receipt receipt, long maxCommandMs,
                               AppStateWriter state) {
         state.put(TopicKeys.receipt(messageId), TopicWireCodec.encodeReceipt(receipt));
-        addExpiry(block.height(), new ExpiryItem(ExpiryItem.RECEIPT, messageId), block.timestamp() + maxCommandMs,
-                state);
+        addExpiry(block.height(), TopicKeys.RECEIPT_QUEUE, new ExpiryItem(ExpiryItem.RECEIPT, messageId),
+                block.timestamp() + maxCommandMs, state);
     }
 
     private static String messageId(AppMessage message) {
@@ -616,8 +628,7 @@ final class TopicRegistryKernel {
     }
 
     /** Append to this block's batch of the item's queue; batches are linked in height order for FIFO pruning. */
-    private void addExpiry(long height, ExpiryItem item, long notAfter, AppStateWriter state) {
-        int queue = item.kind() == ExpiryItem.RECEIPT ? TopicKeys.RECEIPT_QUEUE : TopicKeys.CREDENTIAL_QUEUE;
+    private void addExpiry(long height, int queue, ExpiryItem item, long notAfter, AppStateWriter state) {
         byte[] key = TopicKeys.expiryBatch(queue, height);
         Optional<ExpiryBatch> existing = state.get(key).map(TopicWireCodec::decodeExpiryBatch);
         if (existing.isEmpty()) {

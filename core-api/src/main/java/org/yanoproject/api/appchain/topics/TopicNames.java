@@ -21,8 +21,9 @@ public final class TopicNames {
 
     /** Today's topic rule: 1..256 UTF-8 bytes, no NUL, not reserved ({@code ~}). */
     public static boolean isValidTopic(String topic) {
-        if (topic == null || topic.isEmpty() || topic.startsWith("~") || topic.indexOf('\0') >= 0) {
-            return false;
+        if (topic == null || topic.isEmpty() || topic.startsWith("~") || topic.indexOf('\0') >= 0
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(topic)) {
+            return false; // a lone surrogate has no UTF-8 encoding: it would hash as '?' on the proof paths
         }
         return topic.getBytes(StandardCharsets.UTF_8).length <= AppChainConfig.MAX_TOPIC_BYTES;
     }

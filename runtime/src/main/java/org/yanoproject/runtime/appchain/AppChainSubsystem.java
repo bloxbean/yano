@@ -768,6 +768,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     String submitGovernance(String topic, byte[] commandBody) {
         if (!running.get())
             throw new IllegalStateException("App chain is not running");
+        if (commandBody.length == 0 || commandBody.length > config.maxMessageBytes())
+            throw new IllegalArgumentException("Governance command is outside the message limit");
         AppMessage message = buildSigned(topic, commandBody,
                 config.defaultTtlSeconds());
         AppMsgPool.AddResult added = pool.add(message);
@@ -2129,7 +2131,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (verdict.refusal() != null) {
             context.expire();
             admissionRejectedCount.incrementAndGet();
-            throw new AppSubmissionRejectedException(verdict.refusal().name(), Map.of("detail", verdict.detail()));
+            throw new AppSubmissionRejectedException(verdict.refusal().name()); // the code is the reason (#153)
         }
         if (TopicCommandRules.TOPIC.equals(message.getTopic())) {
             context.expire();

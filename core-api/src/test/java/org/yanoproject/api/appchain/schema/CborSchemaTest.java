@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigInteger;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Random;
@@ -120,6 +121,33 @@ class CborSchemaTest {
     }
 
     @Test
+    void textWorkIsBoundedByTheStepBudget() throws Exception {
+        // 255 overlapping text terms over 32 multi-byte texts of 1,900 bytes and no closing null: the search
+        // tries each text many times; it is measured once, and every byte touched is charged to the budget
+        List<CborSchema.Occurrence> terms = new ArrayList<>();
+        for (int term = 0; term < 255; term++) {
+            terms.add(new CborSchema.Occurrence(0, 32, new CborSchema.TextNode(0, 4096, null)));
+        }
+        terms.add(CborSchema.Occurrence.required(new CborSchema.NullNode()));
+        CborSchema.Schema schema = CborSchema.of(new CborSchema.ArrayNode(terms));
+        co.nstant.in.cbor.model.Array texts = new co.nstant.in.cbor.model.Array();
+        for (int item = 0; item < 32; item++) {
+            texts.add(new co.nstant.in.cbor.model.UnicodeString("\u00e9".repeat(950)));
+        }
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        new co.nstant.in.cbor.CborEncoder(out).encode(texts);
+        byte[] payload = out.toByteArray();
+
+        assertThat(assertTimeoutPreemptively(Duration.ofSeconds(1), () -> schema.accepts(payload))).isFalse();
+        byte[] closed = Arrays.copyOf(payload, payload.length + 1);
+        closed[0] = (byte) 0x98; // array(33): the same texts, then null
+        closed[1] = 33;
+        System.arraycopy(payload, 2, closed, 2, payload.length - 2);
+        closed[closed.length - 1] = (byte) 0xf6;
+        assertThat(schema.accepts(closed)).isTrue();
+    }
+
+    @Test
     void evaluatesExactMapsBoundsChoicesAndOptionalFields() {
         CborSchema.Schema schema = productSchema();
 
@@ -201,6 +229,13 @@ class CborSchemaTest {
         assertThatThrownBy(() -> CborSchema.of(tooDeep))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("depth");
+        // within the node bound but beyond the IR's 32 CBOR levels: of() refuses what decode() would
+        CborSchema.Node arrays = new CborSchema.NullNode();
+        for (int depth = 0; depth < 11; depth++) {
+            arrays = new CborSchema.ArrayNode(List.of(CborSchema.Occurrence.required(arrays)));
+        }
+        CborSchema.Node elevenArrays = arrays;
+        assertThatThrownBy(() -> CborSchema.of(elevenArrays)).isInstanceOf(IllegalArgumentException.class);
 
         List<CborSchema.Node> choices = java.util.stream.IntStream
                 .range(0, CborSchema.MAX_CHOICE_OPTIONS + 1)

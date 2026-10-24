@@ -4,6 +4,7 @@ import org.yanoproject.api.appchain.AppChainConfig;
 import org.yanoproject.api.appchain.AppChainConsensusProfile;
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.topics.TopicChainSettings;
+import org.yanoproject.api.appchain.topics.TopicWire;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 
@@ -429,17 +430,19 @@ public final class AppChainPropertyRegistry {
         definitions.add(coreParsed(TopicChainSettings.UNREGISTERED_TOPICS, PropertyType.STRING, "reject",
                 null, null, Set.of("reject", "open"), "Treatment of topics no registry entry covers"));
         definitions.add(coreParsed(TopicChainSettings.MAX_DELEGATION_MS, PropertyType.LONG, "3600000", 1L,
-                null, Set.of(), "Maximum delegation lifetime and write-proof horizon in ms"));
+                TopicWire.Settings.MAX_RETENTION_MS, Set.of(),
+                "Maximum delegation lifetime and write-proof horizon in ms"));
         definitions.add(coreParsed(TopicChainSettings.MAX_COMMAND_MS, PropertyType.LONG, "604800000", 1L,
-                null, Set.of(), "Maximum registry-command inclusion window in ms"));
+                TopicWire.Settings.MAX_RETENTION_MS, Set.of(), "Maximum registry-command inclusion window in ms"));
         definitions.add(coreParsed(TopicChainSettings.MAX_PENDING_PER_ENTRY, PropertyType.LONG, "4", 1L,
                 null, Set.of(), "Pending revisions allowed per registry entry"));
         definitions.add(coreParsed(TopicChainSettings.MAX_ENTRIES, PropertyType.LONG, "100000", 1L, null,
                 Set.of(), "Registry entries allowed on the chain, pending creations included"));
         definitions.add(coreParsed(TopicChainSettings.MAX_ENTRIES_PER_NAMESPACE, PropertyType.LONG, "1000",
                 1L, null, Set.of(), "Registry entries allowed in one top-level subtree"));
-        definitions.add(coreParsed(TopicChainSettings.ACTIVATION_LAG, PropertyType.LONG, "10", 1L, null,
-                Set.of(), "Blocks between a registry change's finalization and its activation"));
+        definitions.add(coreParsed(TopicChainSettings.ACTIVATION_LAG, PropertyType.LONG, "10", 1L,
+                TopicWire.Settings.MAX_ACTIVATION_LAG, Set.of(),
+                "Blocks between a registry change's finalization and its activation"));
         definitions.add(coreParsed(TopicChainSettings.GOVERNANCE_WINDOW_BLOCKS, PropertyType.LONG, "600", 1L,
                 null, Set.of(), "Blocks within which members' identical topic-governance commands are counted"));
         definitions.sort(Comparator.comparing(AppChainPropertyDefinition::key));

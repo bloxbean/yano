@@ -182,6 +182,18 @@ class TopicWriteRulesTest {
     }
 
     @Test
+    void aDelegationScopeMustBeAnEntryNameItsIssuerCanRevoke() {
+        State state = new State().config(true);
+        state.entry("acme/", new Policy(new Writers(keys(1, issuer)), List.of(issuer.hex()), null, null, null), false);
+        for (String scope : List.of("acme/Foo/", "acme//", "acme/a b/")) {
+            Delegation delegation = delegation(issuer, session.hex(), scope, NOW - 1, NOW + 60_000);
+            byte[] body = frame(scope, GENERATION, NOW + 30_000, delegation, session);
+            assertThat(TopicWriteRules.check(scope, body, CHAIN, GENERATION, NOW, state.view(), Set.of()).refusal())
+                    .as(scope).isEqualTo(TopicRefusal.TOPIC_DELEGATION_INVALID);
+        }
+    }
+
+    @Test
     void degenerateSessionKeysAndOtherGenerationsAreRefused() {
         State state = new State().config(true);
         state.entry("acme/", new Policy(new Writers(keys(1, issuer)), List.of(issuer.hex()), null, null, null), false);
@@ -209,9 +221,13 @@ class TopicWriteRulesTest {
     }
 
     private byte[] frame(String generation, long notAfter, Delegation delegation, Key... signers) {
+        return frame(TOPIC, generation, notAfter, delegation, signers);
+    }
+
+    private byte[] frame(String topic, String generation, long notAfter, Delegation delegation, Key... signers) {
         String delegationHash = delegation == null ? null
                 : TopicWireCodec.delegationHash(CHAIN, generation, delegation);
-        byte[] statement = TopicWireCodec.encodeWriteStatement(new WriteStatement(CHAIN, generation, TOPIC,
+        byte[] statement = TopicWireCodec.encodeWriteStatement(new WriteStatement(CHAIN, generation, topic,
                 TopicWireCodec.blake2b256Hex(PAYLOAD), nonce(), notAfter, delegationHash));
         List<Signature> signatures = new ArrayList<>();
         Arrays.stream(signers).sorted((x, y) -> x.hex().compareTo(y.hex()))

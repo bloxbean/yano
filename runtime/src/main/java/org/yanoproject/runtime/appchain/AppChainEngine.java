@@ -984,6 +984,9 @@ final class AppChainEngine implements AutoCloseable {
                 pool.remove(List.of(m));
                 return true;
             }
+            if (verdict.command() != null) {
+                statementsInBlock.add(verdict.command()); // a registry command is single-use (D9)
+            }
             if (m.getTopic() != null && m.getTopic().startsWith("~")) {
                 return false;
             }

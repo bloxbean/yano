@@ -21,6 +21,8 @@ class TopicNamesTest {
         assertThat(TopicNames.isValidEntryName("~topics/registry")).isFalse();
         assertThat(TopicNames.isValidEntryName("a".repeat(257))).isFalse();
         assertThat(TopicNames.isValidEntryName("a\0b")).isFalse();
+        assertThat(TopicNames.isValidTopic("x\uD800")).as("a lone surrogate hashes as '?'").isFalse();
+        assertThat(TopicNames.isValidTopic("x\uD83D\uDE00")).isTrue();
     }
 
     @Test

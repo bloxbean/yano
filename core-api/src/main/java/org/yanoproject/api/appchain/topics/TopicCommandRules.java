@@ -49,11 +49,13 @@ public final class TopicCommandRules {
      * @param state                 the parent state, or the block's candidate state during apply
      * @param schemasStoredInBlock  schema hashes stored by earlier commands of the same block; they do not
      *                              count as known, so every caller reaches the parent-state verdict
+     * @param earlierStatements     statement hashes of commands and protected writes earlier in the same block
      */
     public static Admission admit(byte[] body, String chainId, String generationId, long blockTime,
-                                  TopicState state, Set<String> schemasStoredInBlock) {
+                                  TopicState state, Set<String> schemasStoredInBlock, Set<String> earlierStatements) {
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(schemasStoredInBlock, "schemasStoredInBlock");
+        Objects.requireNonNull(earlierStatements, "earlierStatements");
         Optional<Config> maybeConfig = state.config();
         if (maybeConfig.isEmpty()) {
             return Admission.refused(TopicRefusal.TOPIC_COMMAND_INVALID, "topics are not enabled on this chain");
@@ -76,6 +78,12 @@ public final class TopicCommandRules {
         String target = statement.target();
         if (!TopicNames.isValidEntryName(target)) {
             return Admission.refused(TopicRefusal.TOPIC_COMMAND_INVALID, "invalid target name");
+        }
+        // A command statement is single-use until its notAfter, so an included command cannot be relayed
+        // again: not after a cancellation frees its name, nor onto a later creation of that name (D9)
+        String statementHash = statementHash(statement);
+        if (earlierStatements.contains(statementHash) || state.used(statementHash)) {
+            return Admission.refused(TopicRefusal.TOPIC_PROOF_REPLAYED, "command statement already used");
         }
         return switch (statement.operation()) {
             case Create create -> admitCreate(command, create, config, state, schemasStoredInBlock);
@@ -121,8 +129,9 @@ public final class TopicCommandRules {
                             "a deeper entry is created by an ancestor namespace");
                 }
                 Optional<ActiveRevision> active = activeRevision(state, authority);
-                if (active.isEmpty()) {
-                    return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED, "authority has no active revision");
+                if (active.isEmpty() || active.get().content().retired()) {
+                    return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED,
+                            "authority has no active, unretired revision");
                 }
                 signers = active.get().content().owners();
                 epoch = active.get().ownersSince();
@@ -147,8 +156,8 @@ public final class TopicCommandRules {
             return Admission.refused(TopicRefusal.TOPIC_COMMAND_INVALID, "authority must be the target or an ancestor");
         }
         Optional<ActiveRevision> active = activeRevision(state, authority);
-        if (active.isEmpty()) {
-            return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED, "authority has no active revision");
+        if (active.isEmpty() || active.get().content().retired()) {
+            return Admission.refused(TopicRefusal.TOPIC_COMMAND_DENIED, "authority has no active, unretired revision");
         }
         Admission signed = signedBy(command, active.get().content().owners(), active.get().ownersSince());
         Admission schema = signed.admitted() && statement.operation() instanceof Update update
@@ -231,6 +240,11 @@ public final class TopicCommandRules {
     public static boolean validSchemaIr(String schemaHash, byte[] ir) {
         return schemaHash != null && !schemaHash.isEmpty() && ir.length > 0
                 && schemaHash.equals(TopicWireCodec.blake2b256Hex(ir)) && CborSchema.isCanonicalDefinition(ir);
+    }
+
+    /** The replay-guard key of a command: the hash of its signed statement (D9). */
+    public static String statementHash(CommandStatement statement) {
+        return TopicWireCodec.blake2b256Hex(TopicWireCodec.encodeCommandStatement(statement));
     }
 
     private static Optional<ActiveRevision> activeRevision(TopicState state, String name) {

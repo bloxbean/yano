@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class TopicKeys {
     public static final String PREFIX = "~yano/topics/v1/";
+    private static final byte[] PREFIX_BYTES = PREFIX.getBytes(StandardCharsets.US_ASCII);
 
     private static final byte[] CONFIG = ascii(PREFIX + "config");
     private static final byte[] COUNT = ascii(PREFIX + "count");
@@ -24,6 +25,12 @@ public final class TopicKeys {
     public static final String CONFIG_HISTORY_NAME = "~config";
 
     private TopicKeys() {
+    }
+
+    /** A key of the topic registry's own state, under {@link #PREFIX}. */
+    public static boolean isRegistryKey(byte[] key) {
+        return key != null && key.length >= PREFIX_BYTES.length
+                && java.util.Arrays.equals(key, 0, PREFIX_BYTES.length, PREFIX_BYTES, 0, PREFIX_BYTES.length);
     }
 
     public static byte[] config() {

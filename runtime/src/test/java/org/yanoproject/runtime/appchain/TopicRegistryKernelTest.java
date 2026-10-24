@@ -302,6 +302,78 @@ class TopicRegistryKernelTest {
     }
 
     @Test
+    void aCancelledCreationCannotBeRelayedAgain() {
+        Chain chain = new Chain(settings(null, true));
+        chain.block();
+        AppMessage claim = chain.command(create("spam/", TopicWire.AUTHORITY_CLAIM, issuer), issuer);
+        chain.block(claim);
+        TopicWire.GovRetire retire = new TopicWire.GovRetire("spam/");
+        chain.block(chain.governance(memberA, retire), chain.governance(memberB, retire));
+        assertThat(chain.view().entry("spam/")).isEmpty();
+
+        AppMessage relayed = chain.message(memberB, TopicCommandRules.TOPIC, claim.getBody());
+        assertThatThrownBy(() -> chain.block(relayed))
+                .hasMessageContaining(TopicRefusal.TOPIC_PROOF_REPLAYED.name());
+        assertThat(chain.view().entry("spam/")).isEmpty();
+    }
+
+    @Test
+    void aChangeQueuedForACancelledCreationNeverReachesALaterCreation() {
+        Chain chain = chainWithAcme();
+        AppMessage created = chain.command(create("acme/x/", "acme/", childOwner), ownerO);
+        AppMessage update = chain.command(statement("acme/x/", "acme/", 1L, new Update(openPolicy(), null)), ownerO);
+        chain.block(created, update);
+        TopicWire.GovRetire retire = new TopicWire.GovRetire("acme/x/");
+        chain.block(chain.governance(memberA, retire), chain.governance(memberB, retire));
+        assertThat(chain.view().entry("acme/x/")).isEmpty();
+
+        long recreated = chain.block(chain.command(create("acme/x/", "acme/", ownerN), ownerO));
+        assertThat(chain.view().entry("acme/x/").orElseThrow().head()).isEqualTo(1);
+        AppMessage relayed = chain.message(memberB, TopicCommandRules.TOPIC, update.getBody());
+        assertThatThrownBy(() -> chain.block(relayed))
+                .hasMessageContaining(TopicRefusal.TOPIC_PROOF_REPLAYED.name());
+        chain.blocksUntil(recreated + LAG);
+        assertThat(chain.view().entry("acme/x/").orElseThrow().active().content().policy())
+                .isEqualTo(Policy.INHERIT);
+    }
+
+    @Test
+    void aCommandIsIncludedOnceInABlockAsTheProposerJudgesIt() {
+        Chain chain = chainWithAcme();
+        AppMessage first = chain.command(create("acme/x/", "acme/", childOwner), ownerO);
+        AppMessage copy = chain.message(memberB, TopicCommandRules.TOPIC, first.getBody());
+        assertThatThrownBy(() -> chain.block(first, copy))
+                .hasMessageContaining(TopicRefusal.TOPIC_PROOF_REPLAYED.name());
+
+        long blockTime = chain.time + 1_000;
+        TopicRegistryKernel.Verdict kept = TopicRegistryKernel.judge(first, CHAIN, GENERATION, blockTime,
+                chain.view(), Set.of());
+        assertThat(kept.allowed()).isTrue();
+        assertThat(TopicRegistryKernel.judge(copy, CHAIN, GENERATION, blockTime, chain.view(),
+                Set.of(kept.command())).refusal()).isEqualTo(TopicRefusal.TOPIC_PROOF_REPLAYED);
+    }
+
+    @Test
+    void aGovernanceOverrideAdvancesTheEpochAndARetiredAuthorityCreatesNothing() {
+        Chain chain = chainWithAcme();
+        TopicWire.GovRetire retire = new TopicWire.GovRetire("acme/");
+        long retiredAt = chain.block(chain.governance(memberA, retire), chain.governance(memberB, retire));
+        AppMessage queuedBefore = chain.command(create("acme/x/", "acme/", childOwner), ownerO);
+        long queuedAt = chain.block(queuedBefore);
+        chain.blocksUntil(queuedAt + LAG);
+        assertThat(chain.view().entry("acme/").orElseThrow().active().ownersSince())
+                .as("same owners, but a governance revision").isEqualTo(chain.view().entry("acme/").orElseThrow()
+                        .active().revision());
+        assertThat(chain.view().entry("acme/x/")).as("queued under the earlier epoch").isEmpty();
+        assertThat(chain.receipt(queuedBefore).code()).isEqualTo(TopicRefusal.TOPIC_COMMAND_SUPERSEDED.name());
+        assertThat(retiredAt + LAG).isLessThan(queuedAt + LAG);
+
+        AppMessage afterRetire = chain.command(create("acme/y/", "acme/", childOwner), ownerO);
+        assertThatThrownBy(() -> chain.block(afterRetire))
+                .hasMessageContaining(TopicRefusal.TOPIC_COMMAND_DENIED.name());
+    }
+
+    @Test
     void aCancelledPendingCreationFreesItsName() {
         Chain chain = new Chain(settings(keys(registrar), false));
         chain.block();
@@ -445,9 +517,11 @@ class TopicRegistryKernelTest {
         TopicWire.GovRetire retire = new TopicWire.GovRetire("acme/child/");
         AppMessage first = chain.command(create("acme/child/", "acme/", childOwner), ownerO);
         AppMessage rotate = chain.command(statement("acme/", "acme/", head, new Rotate(keys(ownerN))), ownerO);
-        AppMessage again = chain.command(create("acme/child/", "acme/", childOwner), ownerO);
+        AppMessage again = chain.command(new CommandStatement(CHAIN, GENERATION, "acme/child/", "acme/", null,
+                nonce(2), T0 + 3_000_000, new Create(keys(childOwner), Policy.INHERIT, null)), ownerO);
         // One block: create, governance cancels it (freeing the name), the parent rotates, the old owners
-        // recreate the name. All activate at the same height; the first ticket must not install the second.
+        // recreate the name with a new statement. All activate at the same height; the first ticket must not
+        // install the second.
         long at = chain.block(first, chain.governance(memberA, retire), chain.governance(memberB, retire),
                 rotate, again);
         chain.blocksUntil(at + LAG);
@@ -590,6 +664,7 @@ class TopicRegistryKernelTest {
         long head = chain.view().entry("acme/").orElseThrow().head();
         chain.blocksUntil(chain.block(chain.command(statement("acme/", "acme/", head, new Update(
                 new Policy(new Writers(keys(childOwner)), null, null, null, null), null)), ownerO)) + LAG);
+        long commands = usedCount(chain); // the update's statement, kept until its own notAfter
 
         long notAfter = chain.time + 60_000;
         List<AppMessage> writes = new ArrayList<>();
@@ -598,13 +673,13 @@ class TopicRegistryKernelTest {
                     null, childOwner)));
         }
         chain.block(writes.toArray(AppMessage[]::new));
-        assertThat(usedCount(chain)).isEqualTo(5);
+        assertThat(usedCount(chain) - commands).isEqualTo(5);
 
         chain.time = notAfter + 1;
         List<Long> remaining = new ArrayList<>();
-        while (usedCount(chain) > 0) {
+        while (usedCount(chain) > commands) {
             chain.block();
-            remaining.add(usedCount(chain));
+            remaining.add(usedCount(chain) - commands);
         }
         // budget = 2 x max-block-messages = 2 deletions per block, the batch cursor carried between blocks
         assertThat(remaining).containsExactly(3L, 1L, 0L);

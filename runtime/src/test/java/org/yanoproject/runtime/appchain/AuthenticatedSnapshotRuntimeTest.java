@@ -9,11 +9,11 @@ import org.yanoproject.api.appchain.snapshot.SnapshotCanonicalCodec;
 import org.yanoproject.api.appchain.snapshot.SnapshotBuildTokenV1;
 import org.yanoproject.api.appchain.snapshot.SnapshotDescriptorV1;
 import org.yanoproject.api.appchain.snapshot.SnapshotEntry;
-import org.yanoproject.api.appchain.topics.TopicKeys;
 import org.yanoproject.api.appchain.snapshot.SnapshotSourceBoundary;
 import org.yanoproject.api.appchain.state.CandidateState;
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.api.appchain.topics.TopicKeys;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.rocksdb.WriteBatch;
@@ -311,6 +311,11 @@ class AuthenticatedSnapshotRuntimeTest {
             // Framework state (the topic registry's pruning, ADR app-layer/039) is not application state
             session.writer().put(TopicKeys.count(), TopicKeys.u64(1));
             session.writer().delete(TopicKeys.count());
+            // only the registry: other framework writes, e.g. observations, stay charged as on chains without topics
+            org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                    session.writer().put(bytes("~yano/obs/key"), bytes("value")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("shared block limits");
         }
     }
 

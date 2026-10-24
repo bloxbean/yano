@@ -97,6 +97,8 @@ public final class TopicWire {
         public static final long DEFAULT_GOVERNANCE_WINDOW_BLOCKS = 600;
         /** Retention bound of credentials and receipts (365 days), so no setting pins an expiry queue (D9). */
         public static final long MAX_RETENTION_MS = 31_536_000_000L;
+        /** Activation-lag bound in blocks, so {@code height + lag} can never overflow. */
+        public static final long MAX_ACTIVATION_LAG = 1_000_000;
 
         public Settings {
             if (maxDelegationMs < 1 || maxCommandMs < 1 || maxPendingPerEntry < 1 || maxEntries < 1
@@ -105,6 +107,9 @@ public final class TopicWire {
             }
             if (maxDelegationMs > MAX_RETENTION_MS || maxCommandMs > MAX_RETENTION_MS) {
                 throw new IllegalArgumentException("topic retention settings exceed " + MAX_RETENTION_MS + " ms");
+            }
+            if (activationLag > MAX_ACTIVATION_LAG) {
+                throw new IllegalArgumentException("topic activation lag exceeds " + MAX_ACTIVATION_LAG + " blocks");
             }
         }
     }
@@ -195,8 +200,9 @@ public final class TopicWire {
     }
 
     /**
-     * An activation ticket: an entry name, or {@link TopicKeys#CONFIG_HISTORY_NAME}. {@code messageId} is the command that queued the revision: a ticket left behind by a
-     * cancelled creation never matches a later creation that reuses the freed name and revision number.
+     * An activation ticket: an entry name, or {@link TopicKeys#CONFIG_HISTORY_NAME}. {@code messageId} is the
+     * command that queued the revision: a ticket left behind by a cancelled creation never matches a later
+     * creation that reuses the freed name and revision number.
      */
     public record Activation(String name, long revision, String messageId) {
         public Activation {

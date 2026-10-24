@@ -77,7 +77,11 @@ public final class TopicChainSettings {
         }
         List<String> sorted = Arrays.stream(keys.split("\\s*,\\s*"))
                 .map(key -> key.toLowerCase(Locale.ROOT)).sorted().toList();
-        return new KeySet((int) positive(values, REGISTRAR_THRESHOLD, 1), sorted);
+        long threshold = positive(values, REGISTRAR_THRESHOLD, 1);
+        if (threshold > TopicWire.MAX_KEYS) {
+            throw new IllegalArgumentException(REGISTRAR_THRESHOLD + " must be at most " + TopicWire.MAX_KEYS);
+        }
+        return new KeySet((int) threshold, sorted);
     }
 
     private static boolean bool(Map<String, String> values, String key, boolean fallback) {

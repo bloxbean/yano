@@ -45,12 +45,14 @@ class TopicCommandRulesTest {
                 .as("topics disabled").isEqualTo(TopicRefusal.TOPIC_COMMAND_INVALID);
 
         State state = withAcme();
-        assertThat(TopicCommandRules.admit(new byte[] {1}, CHAIN, GENERATION, NOW, state.view(), Set.of())
+        assertThat(TopicCommandRules.admit(new byte[] {1}, CHAIN, GENERATION, NOW, state.view(), Set.of(), Set.of())
                 .refusal()).as("malformed").isEqualTo(TopicRefusal.TOPIC_COMMAND_INVALID);
         byte[] body = command("acme/orders", "acme/", null, create, owner);
-        assertThat(TopicCommandRules.admit(body, "other-chain", GENERATION, NOW, state.view(), Set.of()).refusal())
+        assertThat(TopicCommandRules.admit(body, "other-chain", GENERATION, NOW, state.view(), Set.of(), Set.of())
+                .refusal())
                 .isEqualTo(TopicRefusal.TOPIC_COMMAND_INVALID);
-        assertThat(TopicCommandRules.admit(body, CHAIN, "cd".repeat(32), NOW, state.view(), Set.of()).refusal())
+        assertThat(TopicCommandRules.admit(body, CHAIN, "cd".repeat(32), NOW, state.view(), Set.of(), Set.of())
+                .refusal())
                 .isEqualTo(TopicRefusal.TOPIC_COMMAND_INVALID);
         assertThat(admit(state, signed(statement("acme/orders", "acme/", null, NOW - 1, create), owner)).refusal())
                 .as("past notAfter").isEqualTo(TopicRefusal.TOPIC_COMMAND_EXPIRED);
@@ -135,7 +137,8 @@ class TopicCommandRulesTest {
         state.schema(hash, ir);
         byte[] byHash = command("acme/orders", "acme/", null, new Create(keys(1, owner), schemaPolicy, null), owner);
         assertThat(admit(state, byHash).admitted()).isTrue();
-        assertThat(TopicCommandRules.admit(byHash, CHAIN, GENERATION, NOW, state.view(), Set.of(hash)).refusal())
+        assertThat(TopicCommandRules.admit(byHash, CHAIN, GENERATION, NOW, state.view(), Set.of(hash), Set.of())
+                .refusal())
                 .as("stored earlier in the same block").isEqualTo(TopicRefusal.TOPIC_COMMAND_INVALID);
     }
 
@@ -168,7 +171,7 @@ class TopicCommandRulesTest {
         assertThat(admit(state, issuerRevoke("acme/orders/", forged)).refusal())
                 .isEqualTo(TopicRefusal.TOPIC_COMMAND_INVALID);
         assertThat(TopicCommandRules.admit(issuerRevoke("acme/orders/", delegation), CHAIN, GENERATION,
-                NOW + 60_001, state.view(), Set.of()).refusal()).as("already expired")
+                NOW + 60_001, state.view(), Set.of(), Set.of()).refusal()).as("already expired")
                 .isEqualTo(TopicRefusal.TOPIC_COMMAND_EXPIRED);
         assertThat(admit(state, issuerRevoke("acme/orders/", delegation("acme/orders/", NOW + 3_600_001)))
                 .refusal()).as("beyond the retention horizon").isEqualTo(TopicRefusal.TOPIC_COMMAND_INVALID);
@@ -194,7 +197,7 @@ class TopicCommandRulesTest {
     }
 
     private static Admission admit(State state, byte[] body) {
-        return TopicCommandRules.admit(body, CHAIN, GENERATION, NOW, state.view(), Set.of());
+        return TopicCommandRules.admit(body, CHAIN, GENERATION, NOW, state.view(), Set.of(), Set.of());
     }
 
     private static CommandStatement statement(String target, String authority, Long expected, long notAfter,

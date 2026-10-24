@@ -5,7 +5,6 @@ import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.jmt.JellyfishMerkleTree;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
-import org.yanoproject.api.appchain.AppChainConsensusProfileCommitment;
 import org.yanoproject.api.appchain.AppStateCapabilities;
 import org.yanoproject.api.appchain.AppStateWriter;
 import org.yanoproject.api.appchain.snapshot.AuthenticatedSnapshotPlanCollector;
@@ -22,6 +21,7 @@ import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
 import org.yanoproject.api.appchain.state.StateProof;
 import org.yanoproject.api.appchain.state.StateSnapshot;
+import org.yanoproject.api.appchain.topics.TopicKeys;
 import org.rocksdb.WriteBatch;
 
 import java.io.DataInputStream;
@@ -681,23 +681,23 @@ final class AuthenticatedSnapshotRuntime {
         }
 
         /**
-         * The block's writer. Framework state under {@code ~yano/} (consensus profile, topic registry) is not
-         * charged to the application budget: the machine cannot write it (FxKernel rejects the prefix) and its
-         * per-block volume is bounded by the framework itself, e.g. the topic registry's prune budget.
+         * The block's writer. Topic-registry state ({@code ~yano/topics/v1/}) is not charged to the application
+         * budget: the machine cannot write it (FxKernel rejects the prefix) and the registry bounds its own
+         * per-block volume, e.g. by its prune budget. Other framework writes are charged as before.
          */
         AppStateWriter writer() {
             return new AppStateWriter() {
                 @Override public AppStateCapabilities capabilities() { return capabilities; }
                 @Override public void put(byte[] key, byte[] value) {
                     requireApplicationKey(key);
-                    if (!AppChainConsensusProfileCommitment.isReserved(key)) {
+                    if (!TopicKeys.isRegistryKey(key)) {
                         chargeApplication(key.length + Objects.requireNonNull(value, "value").length);
                     }
                     delegate.put(key, value);
                 }
                 @Override public void delete(byte[] key) {
                     requireApplicationKey(key);
-                    if (!AppChainConsensusProfileCommitment.isReserved(key)) {
+                    if (!TopicKeys.isRegistryKey(key)) {
                         chargeApplication(key.length);
                     }
                     delegate.delete(key);

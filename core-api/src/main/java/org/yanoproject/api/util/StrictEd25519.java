@@ -1,5 +1,6 @@
 package org.yanoproject.api.util;
 
+import com.bloxbean.cardano.client.crypto.CryptoException;
 import com.bloxbean.cardano.client.crypto.api.SigningProvider;
 import com.bloxbean.cardano.client.crypto.api.impl.EdDSASigningProvider;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -71,9 +72,11 @@ public final class StrictEd25519 {
         }
         try {
             return EQUATION.verify(signature, message, publicKey);
-        } catch (RuntimeException e) {
-            // A key that does not decode to a curve point (ge25519_frombytes_negate_vartime fails).
-            return false;
+        } catch (CryptoException e) {
+            if (e.getCause() instanceof IllegalArgumentException) {
+                return false; // A is not a curve point (ge25519_frombytes_negate_vartime fails)
+            }
+            throw e; // an environment failure, such as a missing SHA-512 provider, is not an invalid signature
         }
     }
 

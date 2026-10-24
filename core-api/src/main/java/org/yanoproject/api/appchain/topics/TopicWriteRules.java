@@ -143,7 +143,9 @@ public final class TopicWriteRules {
                                                 ResolvedPolicy policy, long blockTime, String chainId,
                                                 String generationId, TopicState state) {
         byte[] signed = TopicWireCodec.delegationSignedBytes(chainId, generationId, delegation);
+        // The scope is an entry name, as a revocation's target must be, so every usable delegation is revocable
         boolean valid = policy.delegate().contains(delegation.issuer())
+                && TopicNames.isValidEntryName(delegation.scope())
                 && TopicNames.covers(delegation.scope(), topic)
                 && mayDelegate(state, delegation.scope(), delegation.issuer())
                 && delegation.notBefore() <= blockTime && blockTime <= delegation.notAfter()
