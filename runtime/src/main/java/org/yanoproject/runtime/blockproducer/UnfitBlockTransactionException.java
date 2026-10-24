@@ -2,8 +2,9 @@ package org.yanoproject.runtime.blockproducer;
 
 /**
  * A selected transaction cannot be placed in any block: it cannot fit an otherwise empty block under the
- * effective protocol limits, or it claims {@code isValid=false}, which the builder cannot encode (ADR-056 §6).
- * Retrying the same selection cannot progress, so producers invalidate the transaction and its dependents.
+ * effective protocol limits, it claims {@code isValid=false}, which the builder does not forge (ADR-056 §6), or
+ * its bytes cannot be read as submitted. Retrying the same selection cannot progress, so producers invalidate the
+ * transaction and its dependents.
  */
 public final class UnfitBlockTransactionException extends IllegalStateException {
     private final String transactionHash;

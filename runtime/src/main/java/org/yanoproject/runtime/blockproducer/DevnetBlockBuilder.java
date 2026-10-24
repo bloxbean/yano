@@ -23,7 +23,8 @@ import java.util.Objects;
  * No real cryptography — uses dummy zero-filled byte arrays of correct lengths.
  * <p>
  * Produces two outputs per block:
- * - Full block CBOR for ChainState.storeBlock(): [6, [header, tx_bodies, witnesses, aux_data, invalid_txs]]
+ * - Full block CBOR for ChainState.storeBlock(): [7, [header, tx_bodies, witnesses, aux_data, invalid_txs]], each
+ *   transaction as submitted (CCL RawBlockBody)
  * - Wrapped header CBOR for ChainState.storeBlockHeader(): [6, 24(h'serialized_header_array')]
  */
 @Slf4j
