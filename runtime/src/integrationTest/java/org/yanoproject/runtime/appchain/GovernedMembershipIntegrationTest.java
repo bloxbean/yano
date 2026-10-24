@@ -10,7 +10,18 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.AppSubmissionRejectedException;
 import org.yanoproject.api.appchain.MembershipChangeRejectedException;
+import org.yanoproject.api.appchain.schema.CborSchema;
+import org.yanoproject.api.appchain.topics.TopicCommandRules;
+import org.yanoproject.api.appchain.topics.TopicKeys;
+import org.yanoproject.api.appchain.topics.TopicPolicyProof;
+import org.yanoproject.api.appchain.topics.TopicWire;
+import org.yanoproject.api.appchain.topics.TopicWire.Policy;
+import org.yanoproject.api.appchain.topics.TopicWire.Writers;
+import org.yanoproject.api.appchain.topics.TopicWireCodec;
+import org.yanoproject.api.util.StrictEd25519;
+import org.yanoproject.appchain.proof.TopicPolicyProofVerifier;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -46,12 +57,16 @@ class GovernedMembershipIntegrationTest {
     private static final byte[] KEY_B = seed(72);
     private static final byte[] KEY_C = seed(73); // added via governance
     private static final byte[] KEY_D = seed(74); // fourth member, never started
+    /** Long enough that governance can override a pending change before it activates (V6 step 6). */
+    private static final long SHOWCASE_LAG = 10;
 
     @TempDir
     Path tempDir;
 
     private final List<NodeServer> servers = new ArrayList<>();
     private final List<AppChainSubsystem> nodes = new ArrayList<>();
+    /** Server ports of the topic cluster's A, B and C. */
+    private int[] topicPorts;
 
     @AfterEach
     void tearDown() {
@@ -135,8 +150,8 @@ class GovernedMembershipIntegrationTest {
         // ... and a command that still reaches the chain activates VOID on every node
         byte[] command = GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
                 null, 5, GovernedMembership.DEFAULT_ACTIVATION_LAG);
-        nodeA.submitGovernance(command);
-        nodeB.submitGovernance(command);
+        nodeA.submitGovernance(GovernedMembership.TOPIC, command);
+        nodeB.submitGovernance(GovernedMembership.TOPIC, command);
         awaitTrue("both commands finalized", () -> nodeA.tipHeight() >= 1 && nodeB.tipHeight() >= 1);
 
         String id = nodeA.submit("t", "still-alive".getBytes(StandardCharsets.UTF_8));
@@ -169,8 +184,8 @@ class GovernedMembershipIntegrationTest {
         assertQuorumRejected(() -> nodeA.addMember(pubD));
         byte[] add = GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
                 HexUtil.decodeHexString(pubD), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG);
-        nodeA.submitGovernance(add);
-        nodeB.submitGovernance(add);
+        nodeA.submitGovernance(GovernedMembership.TOPIC, add);
+        nodeB.submitGovernance(GovernedMembership.TOPIC, add);
         long approvalHeight = awaitFinalizedTraffic(nodeA, cluster, "after-add");
         // Past every height where a 2-of-4 epoch could have started
         long target = approvalHeight + GovernedMembership.DEFAULT_ACTIVATION_LAG + 2;
@@ -359,6 +374,317 @@ class GovernedMembershipIntegrationTest {
                 .build();
     }
 
+    /**
+     * ADR app-layer/039 M6 (V6 core): topics enabled at genesis on a governed 2-of-3 chain. Governance
+     * creates a namespace at the consensus threshold, its owner creates a protected child topic, a framed
+     * write finalizes on every member with the verified writer, unframed, forged and replayed writes are
+     * refused at ingress, and a member that was down catches up through the protected writes it missed.
+     */
+    @Test
+    void topicRegistryGovernsProtectedWritesAcrossMembers() throws Exception {
+        Map<String, String> topics = Map.of("topics.mode", "enabled", "topics.activation-lag", "1");
+        List<AppChainSubsystem> cluster = startTopicCluster(topics);
+        AppChainSubsystem nodeA = cluster.get(0);
+        AppChainSubsystem nodeB = cluster.get(1);
+        AppChainSubsystem nodeC = cluster.get(2);
+        String generation = generation(nodeA);
+        byte[] owner = seed(81);
+        byte[] writer = seed(82);
+
+        // Block 1 is ungoverned by design (D1): the seed governs from block 2.
+        awaitFinalizedTraffic(nodeA, cluster, "genesis");
+        assertThatThrownBy(() -> nodeA.submit("loose", new byte[] {1}))
+                .isInstanceOfSatisfying(AppSubmissionRejectedException.class,
+                        rejected -> assertThat(rejected.code()).isEqualTo("TOPIC_UNREGISTERED"));
+
+        byte[] governance = governance(generation, 0,
+                new TopicWire.GovCreate("acme/", keys(owner), Policy.INHERIT, null));
+        nodeA.submitTopicGovernance(governance);
+        nodeB.submitTopicGovernance(governance);
+        awaitTrue("acme/ active everywhere", () -> cluster.stream().allMatch(node -> active(node, "acme/")));
+
+        TopicWire.CommandStatement child = new TopicWire.CommandStatement(CHAIN_ID, generation, "acme/orders/",
+                "acme/", null, "01".repeat(16), System.currentTimeMillis() + 600_000, new TopicWire.Create(
+                keys(owner), new Policy(new Writers(keys(writer)), null, null, null, null), null));
+        nodeB.submit(TopicCommandRules.TOPIC, signed(child, owner));
+        awaitTrue("acme/orders/ active everywhere",
+                () -> cluster.stream().allMatch(node -> active(node, "acme/orders/")));
+
+        byte[] frame = frame(generation, "acme/orders/new", new byte[] {7}, writer);
+        byte[] id = HexUtil.decodeHexString(nodeA.submit("acme/orders/new", frame));
+        awaitTrue("protected write finalized everywhere",
+                () -> cluster.stream().allMatch(node -> node.messageHeight(id).isPresent()));
+        assertRefused(() -> nodeB.submit("acme/orders/new", frame), "TOPIC_PROOF_REPLAYED");
+        assertRefused(() -> nodeB.submit("acme/orders/new", new byte[] {7}), "TOPIC_FRAME_INVALID");
+        assertRefused(() -> nodeB.submit("acme/orders/new",
+                frame(generation, "acme/orders/new", new byte[] {8}, owner)), "TOPIC_WRITER_DENIED");
+
+        nodeC.stop();
+        nodes.remove(nodeC);
+        byte[] whileDown = HexUtil.decodeHexString(nodeA.submit("acme/orders/new",
+                frame(generation, "acme/orders/new", new byte[] {9}, writer)));
+        awaitTrue("write finalized while C is down", () -> nodeA.messageHeight(whileDown).isPresent());
+        AppChainSubsystem restarted = restartC(nodeA, nodeC, topics);
+        long revision = restarted.readTopics(state -> state.entry("acme/orders/").orElseThrow().active().revision());
+        assertThat(revision).isEqualTo(1L);
+    }
+
+    /**
+     * ADR app-layer/039 V6 showcase on a 3-member governed cluster with the production profile (D4: governance
+     * only, no registrars, unregistered topics refused). A block carrying a forged write is rejected by the
+     * transition itself (TopicRegistryKernelTest); here every refusal happens at ingress.
+     */
+    @Test
+    void topicShowcaseRunsEndToEnd() throws Exception {
+        List<AppChainSubsystem> cluster = startTopicCluster(
+                Map.of("topics.mode", "enabled", "topics.activation-lag", String.valueOf(SHOWCASE_LAG)));
+        AppChainSubsystem nodeA = cluster.get(0);
+        AppChainSubsystem nodeB = cluster.get(1);
+        AppChainSubsystem nodeC = cluster.get(2);
+        awaitFinalizedTraffic(nodeA, cluster, "genesis");
+        String generation = generation(nodeA);
+        byte[] owner = seed(91);
+        byte[] recovered = seed(92);
+        byte[] ordersOwner = seed(93);
+        byte[] rotatedOrdersOwner = seed(94);
+        byte[] issuer = seed(95);
+        byte[] session = seed(96);
+        long now = System.currentTimeMillis();
+
+        // (1) one member's vote alone creates nothing; the second reaches the consensus threshold
+        byte[] createAcme = governance(generation, 1, new TopicWire.GovCreate("acme/", keys(owner),
+                new Policy(new Writers(keys(owner)), null, null, null, null), null));
+        byte[] firstVote = HexUtil.decodeHexString(nodeA.submitTopicGovernance(createAcme));
+        awaitTrue("first vote finalized", () -> nodeA.messageHeight(firstVote).isPresent());
+        boolean createdByOneVote = nodeA.readTopics(state -> state.entry("acme/").isPresent());
+        assertThat(createdByOneVote).isFalse();
+        nodeB.submitTopicGovernance(createAcme);
+        awaitWithBlocks("acme/ active everywhere", nodeC,
+                () -> cluster.stream().allMatch(node -> active(node, "acme/")));
+
+        // (2) the owners create acme/orders with a writer policy and a schema, then rotate its owners
+        byte[] schemaIr = CborSchema.of(CborSchema.IntegerNode.uint()).definition();
+        Policy orders = new Policy(new Writers(keys(issuer)), List.of(pubHex(issuer)), null,
+                TopicWireCodec.blake2b256Hex(schemaIr), null);
+        nodeC.submit(TopicCommandRules.TOPIC, signed(new TopicWire.CommandStatement(CHAIN_ID, generation,
+                "acme/orders", "acme/", null, nonce(2), now + 600_000,
+                new TopicWire.Create(keys(ordersOwner), orders, schemaIr)), owner));
+        awaitWithBlocks("acme/orders active everywhere", nodeC,
+                () -> cluster.stream().allMatch(node -> active(node, "acme/orders")));
+        long ordersHead = nodeA.readTopics(state -> state.entry("acme/orders").orElseThrow().head());
+        nodeA.submit(TopicCommandRules.TOPIC, signed(new TopicWire.CommandStatement(CHAIN_ID, generation,
+                "acme/orders", "acme/orders", ordersHead, nonce(3), now + 600_000,
+                new TopicWire.Rotate(keys(rotatedOrdersOwner))), ordersOwner));
+        awaitWithBlocks("acme/orders owners rotated", nodeC, () -> cluster.stream().allMatch(node ->
+                node.readTopics(state -> state.entry("acme/orders").orElseThrow().active().content().owners()
+                        .equals(keys(rotatedOrdersOwner)))));
+
+        // (3) the issuer delegates a session key, which writes directly to any member
+        TopicWire.Delegation delegation = delegation(generation, issuer, session, "acme/orders",
+                now - 60_000, now + 1_800_000);
+        byte[] write = delegatedFrame(generation, "acme/orders", new byte[] {0x07}, 4, delegation, session);
+        byte[] writeId = HexUtil.decodeHexString(nodeB.submit("acme/orders", write));
+        awaitTrue("delegated write finalized everywhere",
+                () -> cluster.stream().allMatch(node -> node.messageHeight(writeId).isPresent()));
+
+        // (4) forged, misdirected, replayed and schema-violating writes are refused
+        assertRefused(() -> nodeC.submit("acme/orders", frame(generation, "acme/orders", new byte[] {0x07},
+                seed(97))), "TOPIC_WRITER_DENIED");
+        assertRefused(() -> nodeC.submit("acme/other", delegatedFrame(generation, "acme/other", new byte[] {0x07},
+                5, delegation, session)), "TOPIC_DELEGATION_INVALID");
+        assertRefused(() -> nodeC.submit("acme/orders", write), "TOPIC_PROOF_REPLAYED");
+        assertRefused(() -> nodeC.submit("acme/orders", delegatedFrame(generation, "acme/orders",
+                new byte[] {0x60}, 6, delegation, session)), "TOPIC_SCHEMA_REJECTED");
+
+        // (5) the issuer revokes the session key; its next write is refused once the revocation is final
+        byte[] revoke = HexUtil.decodeHexString(nodeA.submit(TopicCommandRules.TOPIC, signed(
+                new TopicWire.CommandStatement(CHAIN_ID, generation, "acme/orders", TopicWire.AUTHORITY_ISSUER, null,
+                        nonce(7), now + 600_000, new TopicWire.Revoke(delegation)), issuer)));
+        awaitTrue("revocation final everywhere",
+                () -> cluster.stream().allMatch(node -> node.messageHeight(revoke).isPresent()));
+        assertRefused(() -> nodeB.submit("acme/orders", delegatedFrame(generation, "acme/orders",
+                new byte[] {0x08}, 8, delegation, session)), "TOPIC_DELEGATION_INVALID");
+
+        // (6) the owners "lose" their keys: governance replaces them and cancels their pending change
+        long acmeHead = nodeA.readTopics(state -> state.entry("acme/").orElseThrow().head());
+        String stale = nodeA.submit(TopicCommandRules.TOPIC, signed(new TopicWire.CommandStatement(CHAIN_ID,
+                generation, "acme/", "acme/", acmeHead, nonce(9), now + 600_000,
+                new TopicWire.Update(new Policy(Writers.OPEN, null, null, null, null), null)), owner));
+        awaitTrue("old owners' change pending",
+                () -> nodeA.readTopics(state -> state.entry("acme/").orElseThrow().pending() > 0));
+        byte[] recover = governance(generation, 10, new TopicWire.GovRecover("acme/", keys(recovered)));
+        nodeA.submitTopicGovernance(recover);
+        nodeB.submitTopicGovernance(recover);
+        awaitWithBlocks("acme/ recovered everywhere", nodeC, () -> cluster.stream().allMatch(node ->
+                node.readTopics(state -> state.entry("acme/").orElseThrow().active().content().owners()
+                        .equals(keys(recovered)))));
+        String staleReceipt = nodeC.readTopics(state -> state.receipt(stale).orElseThrow().code());
+        assertThat(staleReceipt).isEqualTo("TOPIC_COMMAND_SUPERSEDED");
+        boolean openedByStaleChange = nodeC.readTopics(state -> state.entry("acme/").orElseThrow().active()
+                .content().policy().writers().open());
+        assertThat(openedByStaleChange).as("the cancelled change never governs").isFalse();
+
+        // (7) offline: the effective policy of the write's height, proven against another member's root
+        long height = nodeA.messageHeight(writeId).orElseThrow();
+        TopicPolicyProof proof = nodeA.topicPolicyProof("acme/orders", height).orElseThrow();
+        byte[] anchoredRoot = nodeC.stateProofEnvelopeAtHeight(height - 1, TopicKeys.config()).orElseThrow()
+                .proof().snapshot().stateRoot();
+        TopicWire.EffectiveOutcome outcome = TopicPolicyProofVerifier.verify(proof, anchoredRoot).orElseThrow();
+        assertThat(outcome.kind()).isEqualTo(TopicWire.OutcomeKind.POLICY);
+        assertThat(outcome.policy().delegate()).containsExactly(pubHex(issuer));
+        assertThat(nodeB.messageInclusionProof(writeId).orElseThrow().verifiesRoot()).isTrue();
+        // authorship: the session key signed the write statement under the issuer's delegation
+        TopicWire.Frame frame = TopicWireCodec.decodeFrame(write);
+        byte[] statement = TopicWireCodec.encodeWriteStatement(new TopicWire.WriteStatement(CHAIN_ID, generation,
+                "acme/orders", TopicWireCodec.blake2b256Hex(frame.payload()), frame.proof().nonce(),
+                frame.proof().notAfter(), TopicWireCodec.delegationHash(CHAIN_ID, generation, delegation)));
+        assertThat(StrictEd25519.verify(HexUtil.decodeHexString(pubHex(session)),
+                frame.proof().signatures().getFirst().sig(), statement)).isTrue();
+        assertThat(StrictEd25519.verify(HexUtil.decodeHexString(delegation.issuer()), delegation.sig(),
+                TopicWireCodec.delegationSignedBytes(CHAIN_ID, generation, delegation))).isTrue();
+    }
+
+    /**
+     * ADR app-layer/039 D1, M6: governance enables topics on a running chain. A member restarted with
+     * {@code topics.mode: enabled} in its YAML before the vote computes the same state (the seed is read only
+     * for block 1), and a member restarted after it agrees.
+     */
+    @Test
+    void governanceEnablesTopicsOnARunningChain() throws Exception {
+        List<AppChainSubsystem> started = startTopicCluster(Map.of());
+        AppChainSubsystem nodeA = started.get(0);
+        AppChainSubsystem nodeB = started.get(1);
+        awaitFinalizedTraffic(nodeA, started, "before topics");
+        byte[] loose = HexUtil.decodeHexString(nodeB.submit("loose", new byte[] {1}));
+        awaitTrue("unregistered write finalized", () -> nodeA.messageHeight(loose).isPresent());
+        AppChainSubsystem seeded = restartC(nodeA, started.get(2), Map.of("topics.mode", "enabled"));
+        List<AppChainSubsystem> cluster = List.of(nodeA, nodeB, seeded);
+
+        byte[] enable = governance(generation(nodeA), 1, new TopicWire.GovConfigure(new TopicWire.Settings(true,
+                null, false, true, 3_600_000, 604_800_000, 4, 100_000, 1_000, 2, 600)));
+        nodeA.submitTopicGovernance(enable);
+        nodeB.submitTopicGovernance(enable);
+        awaitWithBlocks("topics enabled everywhere", nodeA, () -> cluster.stream().allMatch(node ->
+                node.readTopics(state -> state.config().isPresent())));
+        assertRefused(() -> nodeB.submit("loose", new byte[] {2}), "TOPIC_UNREGISTERED");
+        awaitTrue("roots agree", () -> cluster.stream().allMatch(node -> node.tipHeight() == nodeA.tipHeight()
+                && Arrays.equals(node.stateRoot(), nodeA.stateRoot())));
+
+        AppChainSubsystem restarted = restartC(nodeA, seeded, Map.of());
+        long configRevision = restarted.readTopics(state -> state.config().orElseThrow().revision());
+        assertThat(configRevision).isEqualTo(1L);
+    }
+
+    /**
+     * Waits for a registry activation. Activations happen at block heights and an idle chain produces no
+     * blocks, so this keeps blocks coming: each nudge is one member's vote that never reaches the threshold
+     * (beyond that member's share of open commands it is refused with a receipt, which still makes a block).
+     * Nudge through a member that casts no real vote later, or its votes would hit its share.
+     */
+    private static void awaitWithBlocks(String what, AppChainSubsystem node, BooleanSupplier condition)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 60_000;
+        for (int nudge = 0; System.currentTimeMillis() < deadline; nudge++) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            node.submitTopicGovernance(governance(generation(node), 10_000 + nudge,
+                    new TopicWire.GovRetire("nudge/")));
+            Thread.sleep(500);
+        }
+        throw new AssertionError("Timed out waiting for: " + what);
+    }
+
+    /** Governed 2-of-3 cluster on KEY_A..KEY_C (A proposes) with the given topic settings. */
+    private List<AppChainSubsystem> startTopicCluster(Map<String, String> topics) throws Exception {
+        Set<String> genesis = Set.of(pubHex(KEY_A), pubHex(KEY_B), pubHex(KEY_C));
+        topicPorts = new int[] {freePort(), freePort(), freePort()};
+        AppChainSubsystem nodeA = start("a", KEY_A, genesis, topicPorts[0],
+                List.of(peer(topicPorts[1]), peer(topicPorts[2])), 600, topics);
+        AppChainSubsystem nodeB = start("b", KEY_B, genesis, topicPorts[1],
+                List.of(peer(topicPorts[0]), peer(topicPorts[2])), 600, topics);
+        AppChainSubsystem nodeC = start("c", KEY_C, genesis, topicPorts[2],
+                List.of(peer(topicPorts[0]), peer(topicPorts[1])), 600, topics);
+        List<AppChainSubsystem> cluster = List.of(nodeA, nodeB, nodeC);
+        awaitTrue("cluster connected", () -> cluster.stream().allMatch(GovernedMembershipIntegrationTest::connected));
+        return cluster;
+    }
+
+    /** Restart C on its own ledger and wait until it has caught up with A. */
+    private AppChainSubsystem restartC(AppChainSubsystem nodeA, AppChainSubsystem nodeC, Map<String, String> topics)
+            throws Exception {
+        if (nodes.remove(nodeC)) {
+            nodeC.stop();
+        }
+        AppChainSubsystem restarted = start("c", KEY_C, Set.of(pubHex(KEY_A), pubHex(KEY_B), pubHex(KEY_C)), 0,
+                List.of(peer(topicPorts[0]), peer(topicPorts[1])), 600, topics);
+        awaitTrue("restarted C caught up", () -> restarted.tipHeight() == nodeA.tipHeight()
+                && Arrays.equals(restarted.stateRoot(), nodeA.stateRoot()));
+        return restarted;
+    }
+
+    private static String generation(AppChainSubsystem node) {
+        return HexUtil.encodeHexString(node.stateCommitmentIdentity().orElseThrow().digest());
+    }
+
+    private static byte[] governance(String generation, int nonce, TopicWire.GovernanceOperation operation) {
+        return TopicWireCodec.encodeGovernanceCommand(
+                new TopicWire.GovernanceCommand(CHAIN_ID, generation, nonce(nonce), operation));
+    }
+
+    private static String nonce(int value) {
+        return String.format("%032x", value);
+    }
+
+    private static TopicWire.Delegation delegation(String generation, byte[] issuer, byte[] delegate, String scope,
+                                                   long notBefore, long notAfter) {
+        TopicWire.Delegation unsigned = new TopicWire.Delegation(pubHex(delegate), scope, notBefore, notAfter,
+                pubHex(issuer), new byte[64]);
+        byte[] signed = TopicWireCodec.delegationSignedBytes(CHAIN_ID, generation, unsigned);
+        return new TopicWire.Delegation(unsigned.delegate(), scope, notBefore, notAfter, unsigned.issuer(),
+                new AppMessageSigner(HexUtil.encodeHexString(issuer)).sign(signed));
+    }
+
+    /** A write signed by the session key under {@code delegation}. */
+    private static byte[] delegatedFrame(String generation, String topic, byte[] payload, int nonce,
+                                         TopicWire.Delegation delegation, byte[] sessionKey) {
+        long notAfter = System.currentTimeMillis() + 600_000;
+        byte[] statement = TopicWireCodec.encodeWriteStatement(new TopicWire.WriteStatement(CHAIN_ID, generation,
+                topic, TopicWireCodec.blake2b256Hex(payload), nonce(nonce), notAfter,
+                TopicWireCodec.delegationHash(CHAIN_ID, generation, delegation)));
+        return TopicWireCodec.encodeFrame(new TopicWire.Frame(payload, new TopicWire.WriterProof(nonce(nonce),
+                notAfter, List.of(new TopicWire.Signature(pubHex(sessionKey),
+                new AppMessageSigner(HexUtil.encodeHexString(sessionKey)).sign(statement))), delegation)));
+    }
+
+    private static boolean active(AppChainSubsystem node, String name) {
+        return node.readTopics(state -> state.entry(name).map(record -> record.active() != null).orElse(false));
+    }
+
+    private static void assertRefused(ThrowingCallable submit, String code) {
+        assertThatThrownBy(submit).isInstanceOfSatisfying(AppSubmissionRejectedException.class,
+                rejected -> assertThat(rejected.code()).isEqualTo(code));
+    }
+
+    private static TopicWire.KeySet keys(byte[] privateKey) {
+        return new TopicWire.KeySet(1, List.of(pubHex(privateKey)));
+    }
+
+    private static byte[] signed(TopicWire.CommandStatement statement, byte[] key) {
+        byte[] bytes = TopicWireCodec.encodeCommandStatement(statement);
+        return TopicWireCodec.encodeRegistryCommand(new TopicWire.RegistryCommand(statement, List.of(
+                new TopicWire.Signature(pubHex(key), new AppMessageSigner(HexUtil.encodeHexString(key)).sign(bytes)))));
+    }
+
+    private static byte[] frame(String generation, String topic, byte[] payload, byte[] key) {
+        long notAfter = System.currentTimeMillis() + 600_000;
+        byte[] statement = TopicWireCodec.encodeWriteStatement(new TopicWire.WriteStatement(CHAIN_ID, generation,
+                topic, TopicWireCodec.blake2b256Hex(payload), "02".repeat(16), notAfter, null));
+        return TopicWireCodec.encodeFrame(new TopicWire.Frame(payload, new TopicWire.WriterProof("02".repeat(16),
+                notAfter, List.of(new TopicWire.Signature(pubHex(key),
+                new AppMessageSigner(HexUtil.encodeHexString(key)).sign(statement))), null)));
+    }
+
     private static void assertQuorumRejected(ThrowingCallable change) {
         assertThatThrownBy(change)
                 .isInstanceOfSatisfying(MembershipChangeRejectedException.class, rejected ->
@@ -379,6 +705,16 @@ class GovernedMembershipIntegrationTest {
     private AppChainSubsystem start(String name, byte[] key, Set<String> members, int serverPort,
                                     List<AppChainConfig.AppPeer> peers, long approvalWindow)
             throws Exception {
+        return start(name, key, members, serverPort, peers, approvalWindow, Map.of());
+    }
+
+    private AppChainSubsystem start(String name, byte[] key, Set<String> members, int serverPort,
+                                    List<AppChainConfig.AppPeer> peers, long approvalWindow,
+                                    Map<String, String> extraSettings)
+            throws Exception {
+        Map<String, String> settings = new HashMap<>(extraSettings);
+        settings.put("membership.mode", "governed");
+        settings.put("membership.approval-window-blocks", String.valueOf(approvalWindow));
         AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
                 .signingKeyHex(HexUtil.encodeHexString(key))
                 .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
@@ -387,9 +723,7 @@ class GovernedMembershipIntegrationTest {
                 .proposerKeyHex(pubHex(KEY_A))
                 .threshold(2)
                 .blockIntervalMs(500)
-                .pluginSettings(Map.of(
-                        "membership.mode", "governed",
-                        "membership.approval-window-blocks", String.valueOf(approvalWindow)))
+                .pluginSettings(settings)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), null, log);

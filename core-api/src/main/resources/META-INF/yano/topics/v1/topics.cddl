@@ -1,0 +1,151 @@
+; Normative wire formats of the topic registry, version 1 (ADR app-layer/039, frozen in M1).
+;
+; Every structure is deterministically encoded CBOR (RFC 8949 §4.2.1): definite lengths, shortest
+; integer and length forms, no tags, no floats, no maps. Decoders refuse indefinite lengths and
+; otherwise reject any other encoding by re-encoding and comparing bytes. Unsigned values fit in
+; 63 bits. An entry record and the configuration record are at most 4,096 bytes (D15). Every signature is Ed25519 under the D7 rule set (I20):
+; S < L, canonical non-small-order A and R, cofactorless equation. Every hash is BLAKE2b-256.
+
+key        = bstr .size 32
+sig        = bstr .size 64
+hash32     = bstr .size 32
+nonce      = bstr .size 16
+ms         = uint                      ; milliseconds of certified block time
+signature  = [key, sig]
+signatures = [+ signature]             ; sorted bytewise by key, no key repeated
+
+; Names (D3). A namespace is one or more segments [a-z0-9._-]{1,64}, each followed by "/".
+; An exact topic is any valid topic (1..256 UTF-8 bytes, no NUL, not starting with "~").
+name       = tstr
+
+; ---------------------------------------------------------------- key sets and policies (D6)
+
+key-set    = [threshold: uint, keys: [+ key]]   ; 1 <= threshold <= len(keys) <= 16; keys sorted, unique
+
+; A policy as stored on one entry. null means "inherit from the nearest ancestor that sets it".
+policy     = [
+  writers:         null / 0 / key-set,          ; 0 = open
+  delegate:        null / [* key],              ; sorted, unique, at most 16
+  maxDelegationMs: null / uint,                 ; >= 1
+  schema:          null / h'' / hash32,         ; h'' = explicitly no schema
+  maxPayloadBytes: null / uint                  ; >= 1
+]
+
+; The policy that governs a topic after resolution (D3, D15).
+resolved-policy = [
+  writers:         0 / key-set,
+  delegate:        [* key],                     ; empty unless writers has threshold 1 (D8)
+  maxDelegationMs: uint,
+  schema:          h'' / hash32,
+  maxPayloadBytes: uint,
+  retired:         bool                         ; true if the entry or any ancestor is retired
+]
+
+; ---------------------------------------------------------------- configuration (D1, D4, D14)
+
+topic-settings = [
+  governance:             bool,
+  registrars:             null / key-set,
+  openClaims:             bool,
+  unregisteredReject:     bool,
+  maxDelegationMs:        uint,                 ; 1..31536000000 (365 days)
+  maxCommandMs:           uint,                 ; 1..31536000000 (365 days)
+  maxPendingPerEntry:     uint,                 ; >= 1
+  maxEntries:             uint,                 ; >= 1
+  maxEntriesPerNamespace: uint,                 ; >= 1
+  activationLag:          uint,                 ; >= 1 (blocks)
+  governanceWindowBlocks: uint                  ; >= 1 (blocks; approval window of topic governance)
+]
+topic-config = [1, revision: uint, registrarsSince: uint, settings: topic-settings]
+; 1 <= registrarsSince <= revision: the revision at which the registrar set took effect (~registrars epoch)
+
+; ---------------------------------------------------------------- registry state (D2)
+
+entry-content   = [owners: key-set, policy: policy, retired: bool]
+active-revision = [revision: uint, activeFrom: uint, ownersSince: uint, content: entry-content]
+; all >= 1; ownersSince <= revision is the revision at which the owners took effect (the authority epoch)
+entry-record    = [
+  1,
+  name:     name,
+  active:   null / active-revision,             ; null = pending creation (reserves the name)
+  head:     uint,                               ; latest revision, active or pending; >= 1, >= active revision
+  pending:  uint,                               ; number of queued revisions; >= 1 when active is null
+  subtree:  uint                                ; top-level entries: entries in the subtree, itself included; else 0
+]
+queued-revision = [
+  revision:       uint,                         ; >= 1
+  activation:     uint,                         ; height at which it governs; >= 1
+  authority:      tstr,
+  authorityEpoch: uint,                         ; 0 for governance, "~claim" and "~issuer"
+  content:        entry-content,
+  messageId:      hash32                        ; the command whose receipt reports the outcome
+]
+; Two FIFO queues of per-block batches with uniform retention: credentials (used, revoked) and receipts.
+; A batch header is stored per (queue, height); each item under its own key, indexed 0..count-1.
+expiry-batch    = [maxNotAfter: ms, next: uint, count: uint, pruned: uint]   ; next = next batch height, 0 = none;
+                                                                            ; 1 <= count, 0 <= pruned < count
+expiry-item     = [kind: 0 / 1 / 2, hash32]                 ; used, revoked, receipt (hash = message id)
+; activation/<height> holds the count of revisions activating there; each under its own index key.
+activation      = [name, revision: uint, messageId: hash32] ; "~config" names a configuration revision;
+                                                            ; messageId = the command that queued it
+receipt         = [code: tstr, activation: uint]            ; "ACCEPTED" or a refusal code; 0 = none
+governance-pending = [* [commandHash: hash32, firstSeen: uint, approvers: [+ key]]]   ; firstSeen >= 1;
+                                                                                      ; 1..32 approvers, sorted
+
+; ---------------------------------------------------------------- owner commands on ~topics/registry (D5, D5a)
+
+command-statement = [
+  "yano-topic-command-v1", chainId: tstr, generationId: hash32,
+  target:    name,
+  authority: tstr,                              ; an entry name, "~registrars", "~claim" or "~issuer"
+  expected:  null / uint,                       ; target's head revision (>= 1); null = create or revoke
+  nonce:     nonce,
+  notAfter:  ms,
+  operation: operation
+]
+operation = create / update / rotate / retire / revoke
+create    = [0, owners: key-set, policy: policy, schemaIr: null / bstr]
+update    = [1, policy: policy, schemaIr: null / bstr]
+rotate    = [2, owners: key-set]
+retire    = [3]
+revoke    = [4, delegation: delegation]         ; target = the delegation's scope
+registry-command = [1, statement: command-statement, signatures: signatures]
+
+; ---------------------------------------------------------------- governance commands on ~governance/topics (D5)
+
+governance-command = [
+  "yano-topic-governance-v1", chainId: tstr, generationId: hash32, nonce: nonce,
+  operation: gov-create / gov-recover / gov-retire / gov-configure
+]
+gov-create    = [0, name: name, owners: key-set, policy: policy, schemaIr: null / bstr]
+gov-recover   = [1, name: name, owners: key-set]
+gov-retire    = [2, name: name]
+gov-configure = [3, settings: topic-settings]
+
+; ---------------------------------------------------------------- writes (D7, D8, D9)
+
+delegation = [1, delegate: key, scope: name, notBefore: ms, notAfter: ms, issuer: key, sig: sig]
+; The issuer signs, and delegationHash is the hash of, the canonical CBOR of:
+delegation-signed = [
+  "yano-topic-delegation-v1", chainId: tstr, generationId: hash32,
+  1, delegate: key, scope: name, notBefore: ms, notAfter: ms, issuer: key
+]
+
+write-statement = [
+  "yano-topic-write-v1", chainId: tstr, generationId: hash32, topic: name,
+  payloadHash: hash32, nonce: nonce, notAfter: ms,
+  delegation: null / hash32                     ; delegationHash; null = direct write
+]
+writer-proof = [nonce: nonce, notAfter: ms, signatures: signatures, delegation: null / delegation]
+topic-frame  = [1, payload: bstr, proof: writer-proof]
+
+; ---------------------------------------------------------------- effective outcome (D15)
+
+effective-outcome = [
+  "yano-topic-outcome-v1",
+  kind:           0 / 1 / 2 / 3,                ; disabled, policy, unregistered-open, unregistered-reject
+  policy:         null / resolved-policy,       ; present only for kind 1
+  configRevision: null / uint,                  ; null only for kind 0
+  sources:        [* [name, revision: uint]]    ; entries the policy resolved from, nearest last
+]
+; effectivePolicyDigest = BLAKE2b-256(canonical CBOR of effective-outcome)

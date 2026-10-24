@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.conway.utxow;
 
 import com.bloxbean.cardano.client.util.HexUtil;
 
+import org.yanoproject.api.util.StrictEd25519;
 import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.conway.CheckLabel;
@@ -232,7 +233,7 @@ public final class UtxowChecks {
             byte[] txId = raw.txId();
             List<String> failed = new ArrayList<>();
             for (VKeyWitness w : new TreeSet<>(raw.vkeyWitnesses())) {
-                if (!Ed25519.verify(w.vkey(), w.signature(), txId)) {
+                if (!StrictEd25519.verify(w.vkey(), w.signature(), txId)) {
                     failed.add(w.toString());
                 }
             }
@@ -240,7 +241,7 @@ public final class UtxowChecks {
             SortedMap<String, BootstrapWitness> bootstrap = new TreeMap<>();
             raw.bootstrapWitnesses().forEach(w -> bootstrap.put(w.keyHashHex(), w));
             for (BootstrapWitness w : bootstrap.values()) {
-                if (!Ed25519.verify(w.vkey(), w.signature(), txId)) {
+                if (!StrictEd25519.verify(w.vkey(), w.signature(), txId)) {
                     failed.add(w.toString());
                 }
             }

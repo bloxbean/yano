@@ -21,6 +21,7 @@ import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
 import org.yanoproject.api.appchain.state.StateProof;
 import org.yanoproject.api.appchain.state.StateSnapshot;
+import org.yanoproject.api.appchain.topics.TopicKeys;
 import org.rocksdb.WriteBatch;
 
 import java.io.DataInputStream;
@@ -679,17 +680,26 @@ final class AuthenticatedSnapshotRuntime {
             this.capabilities = capabilities;
         }
 
+        /**
+         * The block's writer. Topic-registry state ({@code ~yano/topics/v1/}) is not charged to the application
+         * budget: the machine cannot write it (FxKernel rejects the prefix) and the registry bounds its own
+         * per-block volume, e.g. by its prune budget. Other framework writes are charged as before.
+         */
         AppStateWriter writer() {
             return new AppStateWriter() {
                 @Override public AppStateCapabilities capabilities() { return capabilities; }
                 @Override public void put(byte[] key, byte[] value) {
                     requireApplicationKey(key);
-                    chargeApplication(key.length + Objects.requireNonNull(value, "value").length);
+                    if (!TopicKeys.isRegistryKey(key)) {
+                        chargeApplication(key.length + Objects.requireNonNull(value, "value").length);
+                    }
                     delegate.put(key, value);
                 }
                 @Override public void delete(byte[] key) {
                     requireApplicationKey(key);
-                    chargeApplication(key.length);
+                    if (!TopicKeys.isRegistryKey(key)) {
+                        chargeApplication(key.length);
+                    }
                     delegate.delete(key);
                 }
                 @Override public Optional<byte[]> get(byte[] key) { return delegate.get(key); }

@@ -34,7 +34,8 @@ public final class AppChainTestProfiles {
             return new AppChainConsensusProfile(
                     AppChainConsensusProfile.SCHEMA_VERSION,
                     AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES, 1,
-                    AppChainConfig.DEFAULT_BLOCK_MAX_BYTES, 0, 0, false,
+                    AppChainConfig.DEFAULT_BLOCK_MAX_BYTES, 0, 0,
+                    AppChainConsensusProfile.blockMaxForwardSkewMs(values), false,
                     false, 0, 0, 0, 0, FinalityGate.APP_FINAL,
                     EffectOutcomeCommitment.PER_EFFECT, true, List.of());
         }
@@ -62,7 +63,8 @@ public final class AppChainTestProfiles {
         return new AppChainConsensusProfile(
                 AppChainConsensusProfile.SCHEMA_VERSION,
                 AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES, 1,
-                AppChainConfig.DEFAULT_BLOCK_MAX_BYTES, 0, 0, false,
+                AppChainConfig.DEFAULT_BLOCK_MAX_BYTES, 0, 0,
+                AppChainConsensusProfile.blockMaxForwardSkewMs(values), false,
                 true, maxPerBlock, maxPayloadBytes, maxExpiryBlocks,
                 resultWindowBlocks, gate, outcome, true, List.of());
     }
@@ -81,6 +83,7 @@ public final class AppChainTestProfiles {
                 AppChainConfig.DEFAULT_BLOCK_MAX_BYTES,
                 0,
                 0,
+                AppChainConsensusProfile.DEFAULT_BLOCK_MAX_FORWARD_SKEW_MS,
                 false,
                 true,
                 effectsMaxPerBlock,

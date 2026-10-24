@@ -1,7 +1,10 @@
 package org.yanoproject.appchain.config;
 
 import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.AppChainConsensusProfile;
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.api.appchain.topics.TopicChainSettings;
+import org.yanoproject.api.appchain.topics.TopicWire;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 
@@ -47,6 +50,8 @@ public final class AppChainPropertyRegistry {
             dynamic("observation.", OWNER_CORE, "L1 observation consensus identity"),
             dynamic("observations.", OWNER_CORE, "Certified generic observations"),
             dynamic("consensus.", OWNER_CORE, "Consensus fault bounds and view changes"),
+            dynamicFull("block-time.", OWNER_CORE, "Certified block-time bounds (consensus profile)"),
+            dynamicFull("topics.", OWNER_CORE, "Topic registry genesis seed (ADR app-layer/039)"),
             dynamic("observers.", "extension/observers", "L1/external observers"),
             dynamic("transport.", "yano-core/transport", "App-message transport"),
             dynamicFull("effects.result.", "yano-core/effects",
@@ -407,8 +412,57 @@ public final class AppChainPropertyRegistry {
                 ChangePolicy.NEW_CHAIN_REQUIRED, false, true,
                 ConstraintProvenance.RUNTIME_PARSER_TEST, ValidationCoverage.FULL,
                 "Optional member keys allowed to attest effect results"));
+        definitions.add(coreParsed(AppChainConsensusProfile.BLOCK_MAX_FORWARD_SKEW_SETTING,
+                PropertyType.LONG, "5000", 1L,
+                AppChainConsensusProfile.MAX_BLOCK_MAX_FORWARD_SKEW_MS, Set.of(),
+                "Maximum ms a fresh proposal's timestamp may lead the voter's clock (ADR app-layer/039 D12)"));
+        definitions.add(coreParsed(TopicChainSettings.MODE, PropertyType.STRING, "disabled", null, null,
+                Set.of("disabled", "enabled"),
+                "Enable the topic registry at genesis; requires membership.mode=governed (ADR app-layer/039 D1)"));
+        definitions.add(coreParsed(TopicChainSettings.GOVERNANCE, PropertyType.BOOLEAN, "true", null, null,
+                Set.of(), "Members may create top-level topic namespaces by governance vote"));
+        definitions.add(coreParsed(TopicChainSettings.REGISTRAR_THRESHOLD, PropertyType.INTEGER, "1", 1L,
+                16L, Set.of(), "Registrar signatures required for a top-level creation"));
+        definitions.add(coreParsed(TopicChainSettings.REGISTRAR_KEYS, PropertyType.STRING_LIST, null, null,
+                null, Set.of(), "Registrar keys (comma-separated 32-byte hex); empty or 'none' disables registrars"));
+        definitions.add(coreParsed(TopicChainSettings.OPEN_CLAIMS, PropertyType.BOOLEAN, "false", null,
+                null, Set.of(), "Anyone may claim a single-segment top-level namespace"));
+        definitions.add(coreParsed(TopicChainSettings.UNREGISTERED_TOPICS, PropertyType.STRING, "reject",
+                null, null, Set.of("reject", "open"), "Treatment of topics no registry entry covers"));
+        definitions.add(coreParsed(TopicChainSettings.MAX_DELEGATION_MS, PropertyType.LONG, "3600000", 1L,
+                TopicWire.Settings.MAX_RETENTION_MS, Set.of(),
+                "Maximum delegation lifetime and write-proof horizon in ms"));
+        definitions.add(coreParsed(TopicChainSettings.MAX_COMMAND_MS, PropertyType.LONG, "604800000", 1L,
+                TopicWire.Settings.MAX_RETENTION_MS, Set.of(), "Maximum registry-command inclusion window in ms"));
+        definitions.add(coreParsed(TopicChainSettings.MAX_PENDING_PER_ENTRY, PropertyType.LONG, "4", 1L,
+                null, Set.of(), "Pending revisions allowed per registry entry"));
+        definitions.add(coreParsed(TopicChainSettings.MAX_ENTRIES, PropertyType.LONG, "100000", 1L, null,
+                Set.of(), "Registry entries allowed on the chain, pending creations included"));
+        definitions.add(coreParsed(TopicChainSettings.MAX_ENTRIES_PER_NAMESPACE, PropertyType.LONG, "1000",
+                1L, null, Set.of(), "Registry entries allowed in one top-level subtree"));
+        definitions.add(coreParsed(TopicChainSettings.ACTIVATION_LAG, PropertyType.LONG, "10", 1L,
+                TopicWire.Settings.MAX_ACTIVATION_LAG, Set.of(),
+                "Blocks between a registry change's finalization and its activation"));
+        definitions.add(coreParsed(TopicChainSettings.GOVERNANCE_WINDOW_BLOCKS, PropertyType.LONG, "600", 1L,
+                null, Set.of(), "Blocks within which members' identical topic-governance commands are counted"));
         definitions.sort(Comparator.comparing(AppChainPropertyDefinition::key));
         return List.copyOf(definitions);
+    }
+
+    /** A consensus-shared, runtime-parsed setting fixed for a chain generation. */
+    private static AppChainPropertyDefinition coreParsed(
+            String suffix,
+            PropertyType type,
+            String defaultValue,
+            Long minimum,
+            Long maximum,
+            Set<String> allowedValues,
+            String description) {
+        return new AppChainPropertyDefinition(
+                APP_CHAIN_PREFIX + suffix, OWNER_CORE, type, defaultValue,
+                minimum, maximum, null, null, null, allowedValues, PropertyScope.CONSENSUS_SHARED,
+                ChangePolicy.NEW_CHAIN_REQUIRED, false, true,
+                ConstraintProvenance.RUNTIME_PARSER_TEST, ValidationCoverage.FULL, description);
     }
 
     private static AppChainPropertyDefinition runtimeParsed(

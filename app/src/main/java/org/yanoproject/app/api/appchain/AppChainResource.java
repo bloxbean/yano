@@ -21,6 +21,7 @@ import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.app.api.ApiGroup;
 import org.yanoproject.appchain.proof.AppChainProofVerifier;
+import org.yanoproject.appchain.proof.TopicPolicyProofVerifier;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonParser;
@@ -39,6 +40,11 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
+import org.yanoproject.api.appchain.topics.TopicState;
+import org.yanoproject.api.appchain.topics.TopicWire;
+import org.yanoproject.api.appchain.topics.TopicWireCodec;
+import org.yanoproject.api.appchain.topics.TopicNames;
+import org.yanoproject.api.appchain.topics.TopicPolicyProof;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
 import java.io.InputStream;
@@ -1552,6 +1558,133 @@ public class AppChainResource {
             return stateLookup(keyHex, parseProofHeight(height), false);
         }
 
+        /** ADR app-layer/039: the committed topic configuration, or {@code enabled: false}. */
+        @GET
+        @Path("topics/config")
+        public Response topicConfig() {
+            return topicRead(state -> state.config()
+                    .<Map<String, Object>>map(config -> Map.of("enabled", true, "config", config))
+                    .orElse(Map.of("enabled", false)));
+        }
+
+        @GET
+        @Path("topics/entries/{name: .+}")
+        public Response topicEntry(@PathParam("name") String name) {
+            return topicRead(state -> state.entry(name).<Object>map(record -> record).orElse(null));
+        }
+
+        /** The effective outcome of a topic at the committed tip and its {@code effectivePolicyDigest} (D15). */
+        @GET
+        @Path("topics/resolve")
+        public Response topicResolve(@QueryParam("topic") String topic) {
+            if (!TopicNames.isValidTopic(topic)) {
+                return badRequest("'topic' must be a valid topic (1..256 UTF-8 bytes, not reserved)");
+            }
+            return topicRead(state -> {
+                TopicWire.EffectiveOutcome outcome = state.outcome(topic);
+                return Map.of("topic", topic, "outcome", outcome,
+                        "effectivePolicyDigest", TopicWireCodec.outcomeDigest(outcome));
+            });
+        }
+
+        @GET
+        @Path("topics/schemas/{hash}")
+        public Response topicSchema(@PathParam("hash") String hash) {
+            if (hash == null || !hash.matches("[0-9a-fA-F]{64}")) {
+                return badRequest("schema hash must be 32 bytes of hex");
+            }
+            return topicRead(state -> state.schema(hash.toLowerCase(Locale.ROOT))
+                    .<Object>map(ir -> Map.of("hash", hash.toLowerCase(Locale.ROOT),
+                            "irHex", HexUtil.encodeHexString(ir)))
+                    .orElse(null));
+        }
+
+        /** The receipt of a registry or governance command, kept until {@code max-command-ms} after inclusion. */
+        @GET
+        @Path("topics/receipts/{messageId}")
+        public Response topicReceipt(@PathParam("messageId") String messageId) {
+            if (messageId == null || !messageId.matches("[0-9a-fA-F]{64}")) {
+                return badRequest("message id must be 32 bytes of hex");
+            }
+            return topicRead(state -> state.receipt(messageId.toLowerCase(Locale.ROOT))
+                    .<Object>map(receipt -> receipt).orElse(null));
+        }
+
+        /**
+         * {@code topic-policy-v1} (ADR app-layer/039 D15): key proofs, against the committed root of block
+         * {@code height - 1}, of everything that decides the topic's effective outcome for block {@code height}
+         * (default: the next block). The outcome is resolved by the same offline verifier clients run.
+         */
+        @GET
+        @Path("topics/proof")
+        public Response topicPolicyProof(@QueryParam("topic") String topic, @QueryParam("height") String height) {
+            if (!TopicNames.isValidTopic(topic)) {
+                return badRequest("'topic' must be a valid topic (1..256 UTF-8 bytes, not reserved)");
+            }
+            Long requested = parseProofHeight(height);
+            long blockHeight = requested != null ? requested : gateway.tipHeight() + 1;
+            if (blockHeight < 2) {
+                return badRequest("height must be at least 2 (block 1 has no committed parent state)");
+            }
+            Optional<TopicPolicyProof> proven = gateway.topicPolicyProof(topic, blockHeight);
+            if (proven.isEmpty()) {
+                return jsonError(Response.Status.NOT_FOUND,
+                        "state at height " + (blockHeight - 1) + " is not retained").getResponse();
+            }
+            TopicPolicyProof bundle = proven.get();
+            Optional<TopicWire.EffectiveOutcome> outcome = TopicPolicyProofVerifier.verify(bundle, bundle.parentRoot());
+            if (outcome.isEmpty()) {
+                return jsonError(Response.Status.INTERNAL_SERVER_ERROR,
+                        "topic policy proof does not verify against its own root").getResponse();
+            }
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("topic", topic);
+            result.put("height", blockHeight);
+            result.put("profile", bundle.profile());
+            result.put("parentRootHex", HexUtil.encodeHexString(bundle.parentRoot()));
+            result.put("proofs", bundle.proofs().stream().map(proof -> {
+                Map<String, Object> view = new LinkedHashMap<>();
+                view.put("keyHex", HexUtil.encodeHexString(proof.key()));
+                view.put("presence", proof.presence());
+                view.put("valueHex", proof.value() == null ? null : HexUtil.encodeHexString(proof.value()));
+                view.put("proofWireHex", HexUtil.encodeHexString(proof.proofWire()));
+                return view;
+            }).toList());
+            result.put("outcome", outcome.get());
+            result.put("effectivePolicyDigest", TopicWireCodec.outcomeDigest(outcome.get()));
+            return Response.ok(result).build();
+        }
+
+        /** Submit this member's copy of a topic-governance command (privileged; ADR app-layer/039 D5). */
+        @POST
+        @Path("admin/topics/governance")
+        public Response submitTopicGovernance(TopicGovernanceRequest request) {
+            if (request == null || isBlank(request.commandHex())) {
+                return badRequest("'commandHex' is required");
+            }
+            try {
+                String messageId = gateway.submitTopicGovernance(HexUtil.decodeHexString(request.commandHex()));
+                return Response.accepted(Map.of("messageId", messageId)).build();
+            } catch (IllegalArgumentException e) {
+                return badRequest(e.getMessage());
+            } catch (IllegalStateException | UnsupportedOperationException e) {
+                return jsonError(Response.Status.CONFLICT, e.getMessage()).getResponse();
+            }
+        }
+
+        public record TopicGovernanceRequest(String commandHex) {
+        }
+
+        private Response topicRead(java.util.function.Function<TopicState, Object> read) {
+            try {
+                Object result = gateway.readTopics(read);
+                return result == null ? jsonError(Response.Status.NOT_FOUND, "not found").getResponse()
+                        : Response.ok(result).build();
+            } catch (UnsupportedOperationException e) {
+                return jsonError(Response.Status.SERVICE_UNAVAILABLE, e.getMessage()).getResponse();
+            }
+        }
+
         private static Long parseProofHeight(String height) {
             if (height == null || height.isBlank()) {
                 return null;
@@ -2126,6 +2259,8 @@ public class AppChainResource {
                 result.put("implementation", implementation);
             });
             result.put("genesisId", HexUtil.encodeHexString(identity.genesisId()));
+            // Every client- or owner-signed topic statement binds this id (ADR app-layer/039 D7).
+            result.put("generationId", HexUtil.encodeHexString(identity.digest()));
             result.put("version", version);
             result.put("stateRoot", HexUtil.encodeHexString(stateRoot));
             result.put("oldestProvableHeight", oldestProvableHeight);

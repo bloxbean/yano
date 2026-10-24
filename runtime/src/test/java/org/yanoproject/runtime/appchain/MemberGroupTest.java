@@ -204,6 +204,22 @@ class MemberGroupTest {
                 .containsExactly(new GovernedMembership.EpochEffect(2, Set.of(KEY_A, KEY_B, KEY_C), 3));
     }
 
+    /** ADR-008.3 §2.2: approvals count against the membership at the activating height. */
+    @Test
+    void aRemovedMembersPendingApprovalNoLongerCounts() {
+        MemberGroup group = new MemberGroup(Set.of(KEY_A, KEY_B, KEY_C, KEY_D), 3);
+        GovernedMembership governed = governed(group, 0);
+        byte[] thresholdThree = GovernedMembership.encodeCommand(
+                GovernedMembership.OP_SET_THRESHOLD, null, 3, 1);
+
+        assertThat(governed.processBlock(governanceBlock(1, thresholdThree, KEY_D)).effects()).isEmpty();
+        group.appendEpoch(2, Set.of(KEY_A, KEY_B, KEY_C), 2); // D leaves
+        assertThat(governed.processBlock(governanceBlock(2, thresholdThree, KEY_A)).effects())
+                .as("D's earlier approval is not a current member's").isEmpty();
+        assertThat(governed.processBlock(governanceBlock(3, thresholdThree, KEY_B)).effects())
+                .containsExactly(new GovernedMembership.EpochEffect(4, Set.of(KEY_A, KEY_B, KEY_C), 3));
+    }
+
     @Test
     void containsFromCoversTheActiveAndEveryScheduledEpoch() {
         MemberGroup group = new MemberGroup(Set.of(KEY_A, KEY_B, KEY_C), 2);

@@ -4,11 +4,13 @@ import org.yanoproject.api.appchain.AppChainConfig;
 import org.yanoproject.api.appchain.consensus.ConsensusQuorum;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Height-versioned membership (ADR app-layer/006 E4.5): an ordered list of
@@ -121,6 +123,16 @@ final class MemberGroup {
 
     int thresholdAt(long height) {
         return epochAt(height).threshold();
+    }
+
+    /**
+     * The approvers that are members at {@code height}. Governance approvals count against the membership at
+     * the counting height (ADR-008.3 §2.2), so a removed member's pending approval no longer counts.
+     */
+    Set<String> currentApprovers(Collection<String> approvers, long height) {
+        Set<String> current = new TreeSet<>(approvers);
+        current.retainAll(membersAt(height));
+        return current;
     }
 
     boolean containsAt(String publicKeyHex, long height) {

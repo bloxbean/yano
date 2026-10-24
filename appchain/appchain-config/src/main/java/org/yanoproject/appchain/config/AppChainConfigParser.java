@@ -1,7 +1,9 @@
 package org.yanoproject.appchain.config;
 
 import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.AppChainConsensusProfile;
 import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.api.appchain.topics.TopicChainSettings;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -31,7 +33,8 @@ public final class AppChainConfigParser {
 
     private static final List<String> DYNAMIC_PREFIXES = List.of(
             "sinks.", "zk.", "machines.", "state.", "sequencer.", "membership.",
-            "observation.", "observations.", "consensus.", "observers.", "transport.", "effects.", "capabilities.");
+            "observation.", "observations.", "consensus.", "observers.", "transport.", "effects.", "capabilities.",
+            "block-time.", TopicChainSettings.PREFIX);
 
     /*
      * Narrow ownership domains whose complete key set is parsed and parity-tested by Yano.
@@ -39,6 +42,8 @@ public final class AppChainConfigParser {
      */
     private static final Map<String, Set<String>> STRICT_OWNERSHIP_DOMAINS = Map.of(
             "effects.result.", Set.of("effects.result.signers"),
+            "block-time.", Set.of(AppChainConsensusProfile.BLOCK_MAX_FORWARD_SKEW_SETTING),
+            TopicChainSettings.PREFIX, TopicChainSettings.KEYS,
             "state.", Set.of(
                     StateCommitmentIdentity.PROFILE_SETTING,
                     StateCommitmentIdentity.FINGERPRINT_SETTING,
