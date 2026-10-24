@@ -174,7 +174,7 @@ class DevnetBlockProducerTest {
     void producerLimitsSelectedTransactionsToEffectiveMaxBlockSize() {
         byte[] tx = buildSampleTxCbor();
         DevnetBlockBuilder sizingBuilder = new DevnetBlockBuilder();
-        long oneTransactionBodySize = sizingBuilder.computeBlockBody(List.of(tx)).bodySize();
+        long oneTransactionBodySize = sizingBuilder.computeBlockBody(List.of(tx)).size();
         DevnetBlockBuilder limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2), slot -> oneTransactionBodySize);
         BlockTransactionSelector selector = new BlockTransactionSelector() {
@@ -231,7 +231,7 @@ class DevnetBlockProducerTest {
             }
         };
         DevnetBlockBuilder sizingBuilder = new DevnetBlockBuilder();
-        long emptyBlockBodySize = sizingBuilder.computeBlockBody(List.of()).bodySize();
+        long emptyBlockBodySize = sizingBuilder.computeBlockBody(List.of()).size();
         DevnetBlockBuilder limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2), slot -> emptyBlockBodySize);
         blockProducer = DevnetBlockProducer.withTransactionSelector(
