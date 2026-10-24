@@ -496,6 +496,55 @@ class TopicRegistryKernelTest {
     }
 
     @Test
+    void aRemovedMembersPendingVoteNoLongerCounts() {
+        AppMessageSigner memberC = signer(9);
+        MemberGroup group = new MemberGroup(Set.of(memberA.publicKeyHex(), memberB.publicKeyHex(),
+                memberC.publicKeyHex()), 2);
+        Chain chain = new Chain(settings(null, false), group, 100);
+        chain.block();
+        chain.block(chain.governance(memberB, govCreate("recovered/", ownerO)));
+        group.appendEpoch(3, Set.of(memberA.publicKeyHex(), memberC.publicKeyHex()), 2); // B leaves
+        chain.restart(settings(null, false)); // the rule reads only committed state and the membership epochs
+
+        AppMessage afterRemoval = chain.governance(memberA, govCreate("recovered/", ownerO));
+        chain.block(afterRemoval);
+        assertThat(chain.view().entry("recovered/")).as("B's vote is not a current member's").isEmpty();
+        assertThat(chain.view().governancePending()).singleElement()
+                .satisfies(pending -> assertThat(pending.approvers()).containsExactly(memberA.publicKeyHex()));
+
+        AppMessage completing = chain.governance(memberC, govCreate("recovered/", ownerO));
+        long approved = chain.block(completing);
+        assertThat(chain.receipt(completing)).isEqualTo(new TopicWire.Receipt("ACCEPTED", approved + LAG));
+    }
+
+    @Test
+    void theFaultyMinorityCannotFillTheRecordAgainstAnHonestQuorum() {
+        List<AppMessageSigner> members = new ArrayList<>();
+        for (int seed = 20; seed < 27; seed++) {
+            members.add(signer(seed));
+        }
+        Chain chain = new Chain(settings(null, false),
+                Set.copyOf(members.stream().map(AppMessageSigner::publicKeyHex).toList()), 5); // 5-of-7, f = 2
+        chain.block();
+        // the two faulty members approve each other's commands, so none of them has a single approver
+        for (int batch = 0; batch < 2; batch++) {
+            List<AppMessage> votes = new ArrayList<>();
+            for (int index = batch * 32; index < (batch + 1) * 32; index++) {
+                votes.add(chain.governance(members.get(index % 2), govCreate("x" + index + "/", ownerO)));
+                votes.add(chain.governance(members.get(1 - index % 2), govCreate("x" + index + "/", ownerO)));
+            }
+            chain.block(votes.toArray(AppMessage[]::new));
+        }
+        assertThat(chain.view().governancePending()).as("each faulty member holds at most its share")
+                .hasSize(TopicRegistryKernel.MAX_GOVERNANCE_PENDING / 7);
+
+        AppMessage[] honest = members.subList(2, 7).stream()
+                .map(member -> chain.governance(member, govCreate("fresh/", ownerO))).toArray(AppMessage[]::new);
+        long approved = chain.block(honest);
+        assertThat(chain.receipt(honest[4])).isEqualTo(new TopicWire.Receipt("ACCEPTED", approved + LAG));
+    }
+
+    @Test
     void refusedClaimsAndStaleCommandsLeaveNoState() {
         Chain chain = new Chain(settings(null, true));
         chain.block();

@@ -5,7 +5,7 @@
 Accepted (design approved at `f13207952`, 2026-10-23; the maintainer's OQ10
 decision was recorded afterwards in r11, 2026-10-24). At the maintainer's
 direction, milestones M0–M6 (§10) are implemented in the same PR; the
-implementation notes are revisions r12–r16. The production and audit gates
+implementation notes are revisions r12–r18. The production and audit gates
 (§12) remain open.
 
 The number is local to the `adr/app-layer` series. Root-level and
@@ -256,7 +256,7 @@ machinery. Illustrative key layout (normative encoding fixed in M1):
 | `~yano/topics/v1/used/<statementHash>` | Replay guard: the hash of a used write-statement (not of its signatures), removed after its `notAfter` (D9). |
 | `~yano/topics/v1/revoked/<delegationHash>` | Early-revoked delegations, keyed by the hash of the unsigned delegation, removed after the delegation's `notAfter` (D8). |
 | `~yano/topics/v1/expiry/<queue>/<height>`, `expiry-item/<queue>/<height>/<index>`, `expiry-head/<queue>`, `expiry-tail/<queue>` | Expiry batches (D9): a fixed-size header per block (latest `notAfter`, next batch, item count, pruned count) and one key per item, linked in height order, in two queues of uniform retention: credentials (`used/`, `revoked/`) and receipts. The state API has no ordered key scan, so the index is a linked list rather than a key range; no record grows with the number of messages in a block. |
-| `~yano/topics/v1/governance` | Governance approvals in progress: one bounded record (at most 64 commands; of those nobody else has approved yet, each member opens at most an equal share, 64 ÷ members) of command hash, first-seen height and approvers, using ADR-008.3 accounting (consensus threshold, approval window). |
+| `~yano/topics/v1/governance` | Governance approvals in progress: one bounded record (at most 64 commands; each member's approvals are on at most an equal share of them, 64 ÷ members) of command hash, first-seen height and approvers, using ADR-008.3 accounting (consensus threshold at the counting height, approval window; a removed member's approvals are dropped). |
 | `~yano/topics/v1/config-pending` | The revision of the one pending configuration change, if any (D5). |
 | `~yano/topics/v1/activation/<height>`, `activation-item/<height>/<index>` | How many revisions activate at that height, and each one (entry name and revision, or `~config`, with the id of the command that queued it) in inclusion order; materialized while applying block *height − 1* (D5a). A ticket installs only the revision its command queued, so a ticket left by a cancelled creation never installs a later creation of the freed name. |
 | `~yano/topics/v1/receipt/<messageId>` | The outcome of a registry or governance command (`ACCEPTED` with its activation height, or a receipt code), kept for `max-command-ms` after inclusion. |
@@ -381,10 +381,14 @@ in hardware or a KMS.
    threshold; a governed threshold change applies to topic governance from
    its activation height. At most one configuration change is pending at a
    time (a second is a `TOPIC_COMMAND_LIMIT` receipt), and at most 64
-   governance commands are being approved at once. Of the commands nobody else
-   has approved yet, each member opens at most an equal share of the record
-   (64 ÷ members; beyond it, `TOPIC_COMMAND_LIMIT`), so one member cannot deny
-   governance to the others. Receipts are written
+   governance commands are being approved at once. Each member's approvals
+   are on at most an equal share of the pending commands (64 ÷ members;
+   beyond it, a new vote is a `TOPIC_COMMAND_LIMIT` receipt, unless it
+   completes the threshold), so the faulty members together hold at most
+   *f* shares even when they approve each other's commands, and an honest
+   quorum can always vote. Approvals count against the membership at the
+   counting height (ADR-008.3 §2.2): a removed member's pending approvals
+   no longer count, for membership and topic governance alike. Receipts are written
    only under a governing configuration: a command on a chain without topics
    leaves none, so no unapproved command chooses its own retention. The
    command format is `yano-topic-governance-v1` in `topics.cddl`.
@@ -1141,7 +1145,7 @@ Threats and mitigations:
 | I5 | Entry and configuration changes take effect only at `finalization height + lag (≥ 1)`; revocations take effect from the block after the one that includes them; no change is retroactive. | D5, D8, D13 |
 | I6 | Top-level entries are single-segment; every deeper entry is created by the owners of an ancestor namespace with an active revision (D3), counting pending creations. Ownership of overlapping prefixes is always a parent and the children it created, never two unrelated owners. | D3, D4, D5a |
 | I7 | Every registry record, revision and schema is under `~yano/topics/v1/` in the committed state root and is provable. | D2, D15 |
-| I8 | Schema evaluation terminates within the IR step bound on any input up to `maxPayloadBytes`. | D10 |
+| I8 | Schema evaluation terminates within the IR step bound on any input up to `maxPayloadBytes`, and its result does not depend on the thread stack: recursion follows schema depth only (at most 32), never the number of array terms or items. | D10 |
 | I9 | A delegation's scope is within what its issuer may delegate (the issuer is in the `delegate` set of the scope's effective policy, so it can revoke it); its lifetime is ≤ both the policy's `maxDelegationMs` and the chain's `max-delegation-ms`; it is honoured only inside its window on block time. | D8 |
 | I10 | Topic policies only add refusals; they never make a machine accept a message it would refuse. | D6, D11 |
 | I11 | Every historical message can be re-verified against the effective policy active at its height, given a `topic-policy-v1` proof for that height; a member can produce one while it retains the parent state, and a captured proof verifies forever. | D13, D15 |
@@ -1388,7 +1392,10 @@ Threats and mitigations:
 - **Yano X `AuthenticatedMapSchema` canonicalization is exponential** in
   nested choice depth (each level re-encodes its subtree per comparison). The
   core `CborSchema` copy was fixed in this PR (each option encoded once); the
-  Yano X original needs the same fix, or the switch to the core evaluator.
+  Yano X original needs the same fix, or the switch to the core evaluator. The
+  same applies to its array matching, which recurses once per array term, so a
+  valid nested-array value can overflow a small thread stack (fixed in core,
+  r18).
 - Gossip ingress judges a message against the local tip, so a member one
   block behind an activation does not relay a write that is valid at the
   proposer's tip (liveness only; the writer resubmits).
@@ -1531,3 +1538,10 @@ Threats and mitigations:
   block 1, replacing "refuses to start"; governance in block 1 is judged under the seed), D2 (`config-pending`),
   D4 YAML keys, D6 clamping, D11/I2 function names, I6 wording, D15 REST list, M5 (framed machine tests in
   Yano X), §13 and §15.
+- r18 (2026-10-24; responds to reviewer 1's implementation review of `f953b723b`): F21 → array matching
+  is iterative (positions reachable after each term), so the result no longer depends on the thread stack;
+  the `StackOverflowError` catches are removed, since an overflow is not a schema verdict (I8, §15). F22 →
+  approvals count against the membership at the counting height in both ADR-008.3 `GovernedMembership` and
+  the topic kernel (one `MemberGroup` rule); a removed member's pending topic approvals are dropped (D2, D5).
+  F23 → each member's approvals are on at most an equal share of the pending commands, so members who approve
+  each other's commands no longer escape the share (D2, D5).

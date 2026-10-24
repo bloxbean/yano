@@ -336,9 +336,9 @@ command, and can enable topics on a running governed chain the same way.
   registry at REST and gossip ingress, and judged again in the block.
 - **Governance** rides `~governance/topics` through
   `POST …/admin/topics/governance` (privileged API key); each member submits its
-  copy and the command applies at the consensus threshold. Of the commands
-  nobody else has approved yet, a member may open an equal share of the 64-slot
-  record (64 ÷ members).
+  copy and the command applies at the consensus threshold, counted over current
+  members. A member's approvals may be on an equal share of the 64 pending
+  commands (64 ÷ members).
 - **Writes** to a protected topic carry a frame (`topics.cddl`) with the
   writers' signatures or a session-key signature under an issuer's delegation.
   Machines receive the verified payload under the original message id

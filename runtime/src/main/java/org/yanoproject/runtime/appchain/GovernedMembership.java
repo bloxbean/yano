@@ -184,7 +184,7 @@ final class GovernedMembership {
             touched |= entry.approvers.add(approver);
 
             int required = group.thresholdAt(height);
-            if (entry.approvers.size() >= required) {
+            if (group.currentApprovers(entry.approvers, height).size() >= required) {
                 pending.remove(commandHex);
                 touched = true;
                 EpochEffect effect = activate(command, height);

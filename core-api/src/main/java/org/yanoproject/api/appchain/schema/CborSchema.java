@@ -18,7 +18,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -107,7 +106,7 @@ public final class CborSchema {
             return new Schema(root, copy);
         } catch (IllegalArgumentException failure) {
             throw failure;
-        } catch (Exception | StackOverflowError failure) {
+        } catch (Exception failure) {
             throw invalid("schema IR cannot be decoded");
         }
     }
@@ -152,7 +151,7 @@ public final class CborSchema {
                 decoder.setMaxPreallocationSize(MAX_VALUE_BYTES);
                 List<DataItem> roots = decoder.decode();
                 return roots.size() == 1 && new Evaluation().matches(root, roots.getFirst());
-            } catch (Exception | StackOverflowError failure) {
+            } catch (Exception failure) {
                 return false;
             }
         }
@@ -544,8 +543,7 @@ public final class CborSchema {
                 case BooleanNode bool -> matchesBoolean(bool, value);
                 case NullNode ignored -> value instanceof SimpleValue simple
                         && simple.getSimpleValueType() == SimpleValueType.NULL;
-                case ChoiceNode choice -> choice.options().stream()
-                        .anyMatch(option -> matches(option, value));
+                case ChoiceNode choice -> matchesChoice(choice, value);
                 case MapNode map -> matchesMap(map, value);
                 case ArrayNode array -> matchesArray(array, value);
             };
@@ -613,43 +611,48 @@ public final class CborSchema {
             return present == map.getKeys().size();
         }
 
+        private boolean matchesChoice(ChoiceNode schema, DataItem value) {
+            for (Node option : schema.options()) {
+                if (matches(option, value)) return true;
+            }
+            return false;
+        }
+
+        /**
+         * Iterative so that recursion depth follows schema depth only, never the number of terms: the result
+         * cannot depend on a member's thread stack size. {@code reachable[i]} says the terms consumed so far can
+         * cover exactly the first {@code i} items; each term moves every reachable position forward by
+         * {@code minimum..maximum} consecutive items its value matches.
+         */
         private boolean matchesArray(ArrayNode schema, DataItem value) {
             if (!(value instanceof Array array)) return false;
             List<DataItem> items = array.getDataItems();
-            return arrayTerms(schema.terms(), items, 0, 0, new HashMap<>());
-        }
-
-        private boolean arrayTerms(
-                List<Occurrence> terms,
-                List<DataItem> items,
-                int termIndex,
-                int itemIndex,
-                java.util.Map<Long, Boolean> memo
-        ) {
-            if (++steps > MAX_EVALUATION_STEPS) return false;
-            if (termIndex == terms.size()) return itemIndex == items.size();
-            long key = (long) termIndex << 32 | itemIndex & 0xffff_ffffL;
-            Boolean known = memo.get(key);
-            if (known != null) return known;
-
-            Occurrence term = terms.get(termIndex);
-            int available = Math.min(term.maximum(), items.size() - itemIndex);
-            int matched = 0;
-            while (matched < available
-                    && matches(term.value(), items.get(itemIndex + matched))) {
-                matched++;
-            }
-            boolean accepted = false;
-            for (int count = matched; count >= term.minimum(); count--) {
-                if (++steps > MAX_EVALUATION_STEPS) break;
-                if (arrayTerms(terms, items, termIndex + 1,
-                        itemIndex + count, memo)) {
-                    accepted = true;
-                    break;
+            int size = items.size();
+            boolean[] reachable = new boolean[size + 1];
+            reachable[0] = true;
+            int first = 0;
+            for (Occurrence term : schema.terms()) {
+                // run[i]: how many consecutive items from i match the term's value, capped at its maximum
+                int[] run = new int[size + 1];
+                for (int i = size - 1; i >= first && term.maximum() > 0; i--) {
+                    if (++steps > MAX_EVALUATION_STEPS) return false;
+                    run[i] = matches(term.value(), items.get(i)) ? Math.min(term.maximum(), run[i + 1] + 1) : 0;
                 }
+                boolean[] next = new boolean[size + 1];
+                int nextFirst = -1;
+                for (int i = first; i <= size; i++) {
+                    if (!reachable[i]) continue;
+                    for (int count = term.minimum(); count <= run[i]; count++) {
+                        if (++steps > MAX_EVALUATION_STEPS) return false;
+                        next[i + count] = true;
+                        nextFirst = nextFirst < 0 ? i + count : Math.min(nextFirst, i + count);
+                    }
+                }
+                if (nextFirst < 0) return false;
+                reachable = next;
+                first = nextFirst;
             }
-            memo.put(key, accepted);
-            return accepted;
+            return reachable[size];
         }
     }
 

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Random;
@@ -52,6 +53,31 @@ class CborSchemaTest {
                 Duration.ofSeconds(1), () -> CborSchema.of(deepest).definition());
         assertThat(assertTimeoutPreemptively(Duration.ofSeconds(1),
                 () -> CborSchema.isCanonicalDefinition(definition))).isTrue();
+    }
+
+    @Test
+    void nestedArraysOfManyTermsEvaluateTheSameOnASmallStack() throws Exception {
+        // 7 arrays of 255 zero-occurrence terms and one required term: within every bound, but recursing
+        // once per term overflowed a 256 KiB stack and turned a valid write into a refusal
+        CborSchema.Node node = new CborSchema.NullNode();
+        for (int level = 0; level < 7; level++) {
+            List<CborSchema.Occurrence> terms = new ArrayList<>();
+            for (int term = 0; term < 255; term++) {
+                terms.add(new CborSchema.Occurrence(0, 0, new CborSchema.NullNode()));
+            }
+            terms.add(CborSchema.Occurrence.required(node));
+            node = new CborSchema.ArrayNode(terms);
+        }
+        CborSchema.Schema schema = CborSchema.decode(CborSchema.of(node).definition());
+        boolean[] accepted = new boolean[2];
+        Thread small = new Thread(null, () -> {
+            accepted[0] = schema.accepts(hex("81818181818181f6"));
+            accepted[1] = schema.accepts(hex("81818181818181f5"));
+        }, "small-stack", 256 * 1024);
+        small.start();
+        small.join();
+
+        assertThat(accepted).containsExactly(true, false);
     }
 
     @Test

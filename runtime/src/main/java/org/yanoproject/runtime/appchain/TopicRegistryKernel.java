@@ -358,10 +358,13 @@ final class TopicRegistryKernel {
         long maxCommandMs = config.map(c -> c.settings().maxCommandMs()).orElse(0L);
         List<GovernanceApproval> pending = new ArrayList<>();
         GovernanceApproval current = null;
-        for (GovernanceApproval approval : view.governancePending()) {
-            if (height - approval.firstSeen() > window) {
-                continue; // expired half-approved command
+        for (GovernanceApproval stored : view.governancePending()) {
+            Set<String> members = group.currentApprovers(stored.approvers(), height);
+            if (height - stored.firstSeen() > window || members.isEmpty()) {
+                continue; // expired, or only removed members approved it
             }
+            GovernanceApproval approval = new GovernanceApproval(stored.commandHash(), stored.firstSeen(),
+                    List.copyOf(members));
             if (approval.commandHash().equals(hash)) {
                 current = approval;
             } else {
@@ -369,17 +372,21 @@ final class TopicRegistryKernel {
             }
         }
         TreeSet<String> approvers = new TreeSet<>(current == null ? List.of() : current.approvers());
-        approvers.add(sender);
+        boolean newVote = approvers.add(sender);
         boolean approved = approvers.size() >= group.thresholdAt(height);
         Receipt receipt = null;
         if (!approved) {
-            // Each member has an equal share of the bounded record for commands nobody else has approved yet,
-            // so one member cannot fill it and deny governance to the others.
-            long opened = pending.stream().filter(approval -> approval.approvers().equals(List.of(sender))).count();
-            if (current != null || pending.size() < MAX_GOVERNANCE_PENDING && opened < proposalShare(height)) {
+            // Each member's votes hold at most an equal share of the bounded record, so the faulty minority
+            // cannot fill it, even by approving each other's commands, and deny governance to an honest quorum.
+            long held = pending.stream().filter(approval -> approval.approvers().contains(sender)).count();
+            if (!newVote || (current != null || pending.size() < MAX_GOVERNANCE_PENDING)
+                    && held < proposalShare(height)) {
                 pending.add(new GovernanceApproval(hash, current == null ? height : current.firstSeen(),
                         List.copyOf(approvers)));
             } else {
+                if (current != null) {
+                    pending.add(current); // the vote is refused; the command keeps its approvals
+                }
                 receipt = new Receipt(TopicRefusal.TOPIC_COMMAND_LIMIT.name(), 0);
             }
         }
@@ -392,7 +399,7 @@ final class TopicRegistryKernel {
         }
     }
 
-    /** Commands one member may have open with no other approver: an equal share of the record (D5). */
+    /** Pending commands one member may have approved: an equal share of the record (D5). */
     private int proposalShare(long height) {
         return Math.max(1, MAX_GOVERNANCE_PENDING / group.membersAt(height).size());
     }
