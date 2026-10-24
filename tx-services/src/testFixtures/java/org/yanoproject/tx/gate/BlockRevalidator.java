@@ -1,13 +1,7 @@
 package org.yanoproject.tx.gate;
 
-import co.nstant.in.cbor.model.Array;
-import co.nstant.in.cbor.model.DataItem;
-import co.nstant.in.cbor.model.Map;
-import co.nstant.in.cbor.model.SimpleValue;
-import co.nstant.in.cbor.model.UnsignedInteger;
-import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.transaction.raw.RawBlock;
 import org.yanoproject.api.ChainQuery;
-import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
@@ -30,6 +24,7 @@ import org.yanoproject.runtime.ledger.canonical.TickedLedgerView;
 import org.yanoproject.runtime.validation.ValidationEnvFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -138,30 +133,10 @@ public final class BlockRevalidator implements AutoCloseable {
 
     private BlockCheck check(CanonicalSnapshot pre, byte[] blockBytes, long slot, long blockNumber,
                              List<String> eventIds) {
-        Array root = (Array) CborSerializationUtil.deserializeOne(blockBytes);
-        List<DataItem> items = root.getDataItems();
-        List<DataItem> content = items.size() == 2 && items.get(0) instanceof UnsignedInteger
-                ? ((Array) items.get(1)).getDataItems() : items;
-        List<DataItem> bodies = ((Array) content.get(1)).getDataItems();
-        List<DataItem> witnesses = ((Array) content.get(2)).getDataItems();
-        Map aux = (Map) content.get(3);
-        List<Integer> invalid = new ArrayList<>();
-        for (DataItem index : ((Array) content.get(4)).getDataItems()) {
-            invalid.add(((UnsignedInteger) index).getValue().intValue());
-        }
-        List<byte[]> txs = new ArrayList<>();
-        List<String> ids = new ArrayList<>();
-        for (int i = 0; i < bodies.size(); i++) {
-            Array tx = new Array();
-            tx.add(bodies.get(i));
-            tx.add(witnesses.get(i));
-            tx.add(invalid.contains(i) ? SimpleValue.FALSE : SimpleValue.TRUE);
-            DataItem auxData = aux.get(new UnsignedInteger(i));
-            tx.add(auxData != null ? auxData : SimpleValue.NULL);
-            txs.add(CborSerializationUtil.serialize(tx));
-            ids.add(HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(
-                    CborSerializationUtil.serialize(bodies.get(i)))));
-        }
+        BlockTxs block = BlockTxs.read(blockBytes);
+        List<byte[]> txs = block.txs();
+        List<String> ids = block.ids();
+        List<Integer> invalid = block.invalid();
         java.util.Map<String, List<String>> failures = new LinkedHashMap<>();
         List<List<TxEffects>> effectsByEngine = new ArrayList<>();
         try (CanonicalLedgerView canonical = CanonicalLedgerView.over(pre);
@@ -191,6 +166,23 @@ public final class BlockRevalidator implements AutoCloseable {
         }
         boolean agree = effectsByEngine.stream().allMatch(e -> e.equals(effectsByEngine.getFirst()));
         return new BlockCheck(blockNumber, slot, ids, failures, agree, invalid, ids.equals(eventIds));
+    }
+
+    /**
+     * A stored block's transactions as the node carries them: each as its original bytes, with its id and the
+     * block's invalid indexes, read with CCL's {@link RawBlock} (never re-encoded).
+     */
+    record BlockTxs(List<byte[]> txs, List<String> ids, List<Integer> invalid) {
+        static BlockTxs read(byte[] blockBytes) {
+            RawBlock block = RawBlock.of(blockBytes);
+            List<byte[]> txs = new ArrayList<>();
+            List<String> ids = new ArrayList<>();
+            for (int i = 0; i < block.txCount(); i++) {
+                txs.add(block.txBytes(i));
+                ids.add(HexUtil.encodeHexString(block.tx(i).txId()));
+            }
+            return new BlockTxs(txs, ids, Arrays.stream(block.invalidTxIndexes()).boxed().toList());
+        }
     }
 
     /** Waits until every block handed to the worker so far has been re-validated. */

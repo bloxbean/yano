@@ -14,6 +14,7 @@ import com.bloxbean.cardano.client.crypto.kes.Sum6KesSigner;
 import com.bloxbean.cardano.client.crypto.vrf.VrfResult;
 import com.bloxbean.cardano.client.crypto.vrf.VrfVerifier;
 import com.bloxbean.cardano.client.crypto.vrf.cardano.CardanoVrfInput;
+import com.bloxbean.cardano.client.transaction.raw.RawBlock;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.runtime.chain.InMemoryChainState;
@@ -110,6 +111,17 @@ class SignedBlockBuilderTest {
                 com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE.deserialize(result.blockCbor());
         assertThat(block).isNotNull();
         assertThat(block.getTransactionBodies()).isEmpty();
+    }
+
+    @Test
+    void buildBlock_carriesEveryTransactionAsSubmitted() {
+        SignedBlockBuilder freshBuilder = createFreshBuilder();
+        List<byte[]> txs = BlockTestUtil.transactionsInNonCanonicalEncodings();
+
+        var result = freshBuilder.buildBlock(1, 10, new byte[32], txs);
+        freshBuilder.commitPendingNonceState();
+
+        BlockTestUtil.assertCarriesTransactionsAsSubmitted(result.blockCbor(), txs);
     }
 
     @Test
@@ -448,18 +460,12 @@ class SignedBlockBuilderTest {
         // =====================================================================
         System.out.println("STEP 6: Body hash verification (two-level)");
 
-        // Extract body components from the block
-        Array txBodiesArray = (Array) blockContent.getDataItems().get(1);
-        Array txWitnessesArray = (Array) blockContent.getDataItems().get(2);
-        // auxData could be a Map
-        DataItem auxDataDI = blockContent.getDataItems().get(3);
-        Array invalidTxsArray = (Array) blockContent.getDataItems().get(4);
-
-        // Serialize each component
-        byte[] txBodiesBytes = CborSerializationUtil.serialize(txBodiesArray);
-        byte[] txWitnessesBytes = CborSerializationUtil.serialize(txWitnessesArray);
-        byte[] auxDataBytes = CborSerializationUtil.serialize(auxDataDI);
-        byte[] invalidTxsBytes = CborSerializationUtil.serialize(invalidTxsArray);
+        // Extract body components from the block as encoded, as Haskell hashes them
+        RawBlock rawBlock = RawBlock.of(result.blockCbor());
+        byte[] txBodiesBytes = rawBlock.transactionBodies().bytes();
+        byte[] txWitnessesBytes = rawBlock.transactionWitnessSets().bytes();
+        byte[] auxDataBytes = rawBlock.auxiliaryDataSet().bytes();
+        byte[] invalidTxsBytes = rawBlock.invalidTransactions().orElseThrow().bytes();
 
         // Compute two-level hash:
         // 1. Hash each component individually

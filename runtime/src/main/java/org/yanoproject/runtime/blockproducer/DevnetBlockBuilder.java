@@ -2,8 +2,12 @@ package org.yanoproject.runtime.blockproducer;
 
 import co.nstant.in.cbor.model.*;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.plutus.spec.ExUnits;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
+import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.RawBlockBody;
+import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
@@ -19,23 +23,17 @@ import java.util.Objects;
  * No real cryptography — uses dummy zero-filled byte arrays of correct lengths.
  * <p>
  * Produces two outputs per block:
- * - Full block CBOR for ChainState.storeBlock(): [6, [header, tx_bodies, witnesses, aux_data, invalid_txs]]
+ * - Full block CBOR for ChainState.storeBlock(): [7, [header, tx_bodies, witnesses, aux_data, invalid_txs]], each
+ *   transaction as submitted (CCL RawBlockBody)
  * - Wrapped header CBOR for ChainState.storeBlockHeader(): [6, 24(h'serialized_header_array')]
  */
 @Slf4j
 public class DevnetBlockBuilder {
 
-    // Cardano N2N wire format uses TWO different era numbering schemes:
-    //
-    // BlockType (used in BlockFetch MsgBlock / Serialised blk):
-    //   Byron EBB=0, Byron Main=1, Shelley=2, Allegra=3, Mary=4, Alonzo=5, Babbage=6, Conway=7
-    //
     // BlockHeaderType (used in ChainSync MsgRollForward / SerialisedHeader):
     //   Byron=0, Shelley=1, Allegra=2, Mary=3, Alonzo=4, Babbage=5, Conway=6
-    //
-    // The difference exists because Byron has 2 block sub-types (EBB + Main) but 1 header type.
-    // This matches gouroboros constants: BlockTypeConway=7, BlockHeaderTypeConway=6.
-    protected static final int CONWAY_BLOCK_TYPE = 7;       // For BlockFetch blocks
+    // It differs from the BlockType of the block envelope (Conway=7, RawBlockBody.block) because Byron has two block
+    // sub-types (EBB + Main) but one header type. This matches gouroboros: BlockHeaderTypeConway=6.
     protected static final int CONWAY_HEADER_TYPE = 6;      // For ChainSync headers
     private static final int HASH_LENGTH = 32;
     private static final int VKEY_LENGTH = 32;
@@ -97,11 +95,11 @@ public class DevnetBlockBuilder {
     public BlockBuildResult buildBlock(long blockNumber, long slot, byte[] prevHash,
                                        List<byte[]> transactions) {
         // 1. Compute block body
-        BlockBodyResult body = computeBlockBody(transactions);
-        enforceBlockLimits(slot, body.bodySize(), transactions);
+        RawBlockBody body = computeBlockBody(transactions);
+        enforceBlockLimits(slot, body.size(), transactions);
 
         // 2. Build header array: [[header_body], signature]
-        Array headerArray = buildHeaderArray(blockNumber, slot, prevHash, body.bodySize(), body.bodyHash());
+        Array headerArray = buildHeaderArray(blockNumber, slot, prevHash, body.size(), body.hash());
 
         // 3-5. Compute block hash, assemble full block and wrapped header
         return assembleBlock(headerArray, body, blockNumber, slot, transactions != null ? transactions.size() : 0);
@@ -124,15 +122,30 @@ public class DevnetBlockBuilder {
             return List.copyOf(transactions);
         }
 
-        BodySizeAccumulator size = new BodySizeAccumulator();
+        // The longest prefix within the limits. Each limit grows with the prefix, so the prefix that fits is found by
+        // a binary search over its length, each step measuring the exact encoded body.
+        BigInteger[] memory = new BigInteger[transactions.size() + 1];
+        BigInteger[] steps = new BigInteger[transactions.size() + 1];
+        memory[0] = BigInteger.ZERO;
+        steps[0] = BigInteger.ZERO;
+        for (int i = 0; i < transactions.size(); i++) {
+            requireReadable(transactions.get(i));
+            ExecutionUnitTotal units = measureExecutionUnits(transactions.get(i));
+            memory[i + 1] = memory[i].add(units.memory());
+            steps[i + 1] = steps[i].add(units.steps());
+        }
         int accepted = 0;
-        for (byte[] transaction : transactions) {
-            TransactionComponentSize componentSize = measureTransaction(transaction, accepted);
-            if (!size.canAdd(componentSize, limits)) {
-                break;
+        int rejected = transactions.size() + 1;
+        while (rejected - accepted > 1) {
+            int count = (accepted + rejected) >>> 1;
+            boolean fits = !exceeds(memory[count], limits.maxExecutionMemory())
+                    && !exceeds(steps[count], limits.maxExecutionSteps())
+                    && RawBlockBody.of(Era.Conway, transactions.subList(0, count)).size() <= limits.maxBodyBytes();
+            if (fits) {
+                accepted = count;
+            } else {
+                rejected = count;
             }
-            size.add(componentSize);
-            accepted++;
         }
 
         if (accepted == transactions.size()) {
@@ -154,32 +167,21 @@ public class DevnetBlockBuilder {
      * Compute block hash, assemble full block CBOR and wrapped header CBOR from a header array and body.
      *
      * @param headerArray  the CBOR header array [headerBody, signature]
-     * @param body         the block body result
+     * @param body         the block body
      * @param blockNumber  the block number (for logging and result)
      * @param slot         the slot number (for logging and result)
      * @param txCount      transaction count (for logging)
      * @return BlockBuildResult with full block, wrapped header, and computed block hash
      */
-    protected BlockBuildResult assembleBlock(Array headerArray, BlockBodyResult body,
+    protected BlockBuildResult assembleBlock(Array headerArray, RawBlockBody body,
                                               long blockNumber, long slot, int txCount) {
         // Compute block hash = blake2b-256(serialized header array)
         byte[] headerArrayBytes = CborSerializationUtil.serialize(headerArray);
         byte[] blockHash = Blake2bUtil.blake2bHash256(headerArrayBytes);
 
-        // Build block content array: [header, tx_bodies, witnesses, aux_data, invalid_txs]
-        Array blockContentArray = new Array();
-        blockContentArray.add(headerArray);
-        blockContentArray.add(body.txBodiesArray());
-        blockContentArray.add(body.txWitnessesArray());
-        blockContentArray.add(body.auxDataMap());
-        blockContentArray.add(body.invalidTxsArray());
-
-        // Block format: [blockType, [header, tx_bodies, witnesses, aux_data, invalid_txs]]
-        // blockType=7 for Conway (BlockType numbering includes Byron EBB=0 + Main=1)
-        Array fullBlock = new Array();
-        fullBlock.add(new UnsignedInteger(CONWAY_BLOCK_TYPE));
-        fullBlock.add(blockContentArray);
-        byte[] blockCbor = CborSerializationUtil.serialize(fullBlock);
+        // Block format: [blockType, [header, tx_bodies, witnesses, aux_data, invalid_txs]], blockType 7 for Conway
+        // (BlockType numbering includes Byron EBB=0 + Main=1), with every transaction as its original bytes
+        byte[] blockCbor = body.block(headerArrayBytes);
 
         // Build wrapped header (ChainSync format):
         //    [headerType, 24(h'<serialized_header_array>')]
@@ -192,64 +194,48 @@ public class DevnetBlockBuilder {
         byte[] wrappedHeaderCbor = CborSerializationUtil.serialize(wrappedHeader);
 
         log.debug("Built block #{} at slot {} with {} txs, bodySize={}, blockHash={}",
-                blockNumber, slot, txCount, body.bodySize(), HexUtil.encodeHexString(blockHash));
+                blockNumber, slot, txCount, body.size(), HexUtil.encodeHexString(blockHash));
 
         return new BlockBuildResult(blockCbor, wrappedHeaderCbor, blockHash, blockNumber, slot);
     }
 
     /**
-     * Result of computing the block body from transactions.
+     * Compute the block body from a list of transactions: each transaction's body, witness set and aux data as its
+     * original bytes (CCL {@link RawBlockBody}), never re-serialised, so the block carries every transaction exactly as
+     * it was signed.
+     *
+     * @param transactions list of complete transaction CBOR bytes
+     * @return the block body, with the size and hash the header declares
      */
-    public record BlockBodyResult(
-            Array txBodiesArray,
-            Array txWitnessesArray,
-            Map auxDataMap,
-            Array invalidTxsArray,
-            long bodySize,
-            byte[] bodyHash
-    ) {
+    protected RawBlockBody computeBlockBody(List<byte[]> transactions) {
+        List<byte[]> txs = transactions != null ? transactions : List.of();
+        txs.forEach(DevnetBlockBuilder::requireReadable);
+        RawBlockBody body = RawBlockBody.of(Era.Conway, txs);
+        // ADR-056 §6 guard: phase-2-invalid transactions are rejected at admission and never selected, so the body
+        // never needs invalid_txs. One that reaches the builder is refused as unfit (the producer invalidates it and
+        // its dependents).
+        int[] invalid = body.invalidTxIndexes();
+        if (invalid.length > 0) {
+            String hash = TransactionUtil.getTxHash(txs.get(invalid[0]));
+            throw new UnfitBlockTransactionException(hash, "Selected transaction " + hash + " at index " + invalid[0]
+                    + " claims isValid=false; the block builder does not forge invalid_txs (ADR-056 §6)");
+        }
+        return body;
     }
 
     /**
-     * Compute the block body arrays and body hash from a list of transactions.
-     *
-     * @param transactions list of complete transaction CBOR bytes
-     * @return BlockBodyResult with parallel arrays and computed body hash
+     * A selected transaction the raw view cannot read as submitted (admission decodes with CCL's model, which accepts
+     * some encodings the raw view rejects, such as a repeated map key) is refused as unfit: the producer invalidates
+     * it and its dependents instead of failing the same selection every slot.
      */
-    protected BlockBodyResult computeBlockBody(List<byte[]> transactions) {
-        Array txBodiesArray = new Array();
-        Array txWitnessesArray = new Array();
-        Map auxDataMap = new Map();
-        Array invalidTxsArray = new Array();
-
-        if (transactions != null) {
-            for (int i = 0; i < transactions.size(); i++) {
-                splitTransaction(transactions.get(i), i, txBodiesArray, txWitnessesArray, auxDataMap);
-            }
+    private static void requireReadable(byte[] transaction) {
+        try {
+            RawTx.of(transaction);
+        } catch (CborRuntimeException e) {
+            String hash = TransactionUtil.getTxHash(transaction);
+            throw new UnfitBlockTransactionException(hash, "Selected transaction " + hash
+                    + " cannot be put in a block as submitted: " + e.getMessage());
         }
-
-        // Alonzo/Conway segregated witness body hash (two-level):
-        // 1. Hash each component individually
-        // 2. Concatenate the four 32-byte hashes
-        // 3. Hash the 128-byte concatenation
-        byte[] txBodiesBytes = CborSerializationUtil.serialize(txBodiesArray);
-        byte[] txWitnessesBytes = CborSerializationUtil.serialize(txWitnessesArray);
-        byte[] auxDataBytes = CborSerializationUtil.serialize(auxDataMap);
-        byte[] invalidTxsBytes = CborSerializationUtil.serialize(invalidTxsArray);
-
-        byte[] h1 = Blake2bUtil.blake2bHash256(txBodiesBytes);
-        byte[] h2 = Blake2bUtil.blake2bHash256(txWitnessesBytes);
-        byte[] h3 = Blake2bUtil.blake2bHash256(auxDataBytes);
-        byte[] h4 = Blake2bUtil.blake2bHash256(invalidTxsBytes);
-        byte[] combined = new byte[128];
-        System.arraycopy(h1, 0, combined, 0, 32);
-        System.arraycopy(h2, 0, combined, 32, 32);
-        System.arraycopy(h3, 0, combined, 64, 32);
-        System.arraycopy(h4, 0, combined, 96, 32);
-        byte[] bodyHash = Blake2bUtil.blake2bHash256(combined);
-        long bodySize = txBodiesBytes.length + txWitnessesBytes.length + auxDataBytes.length + invalidTxsBytes.length;
-
-        return new BlockBodyResult(txBodiesArray, txWitnessesArray, auxDataMap, invalidTxsArray, bodySize, bodyHash);
     }
 
     protected long resolveMaxBlockBodySize(long slot) {
@@ -285,82 +271,6 @@ public class DevnetBlockBuilder {
             throw new IllegalStateException("Block execution steps " + total.steps()
                     + " exceeds effective maxBlockExSteps " + limits.maxExecutionSteps()
                     + " at slot " + slot);
-        }
-    }
-
-    private TransactionComponentSize measureTransaction(byte[] txCbor, int index) {
-        try {
-            DataItem txDI = CborSerializationUtil.deserializeOne(txCbor);
-            Array txArray = (Array) txDI;
-            List<DataItem> items = txArray.getDataItems();
-            int bodyBytes = CborSerializationUtil.serialize(items.get(0)).length;
-            int witnessBytes = CborSerializationUtil.serialize(items.get(1)).length;
-            int auxiliaryEntries = 0;
-            int auxiliaryBytes = 0;
-            if (items.size() > 3 && items.get(3).getMajorType() != MajorType.SPECIAL) {
-                auxiliaryEntries = 1;
-                auxiliaryBytes = CborSerializationUtil.serialize(new UnsignedInteger(index)).length
-                        + CborSerializationUtil.serialize(items.get(3)).length;
-            }
-            ExecutionUnitTotal executionUnits = measureExecutionUnits(txCbor);
-            return new TransactionComponentSize(
-                    bodyBytes, witnessBytes, auxiliaryEntries, auxiliaryBytes,
-                    executionUnits.memory(), executionUnits.steps());
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Failed to size selected transaction at index " + index, e);
-        }
-    }
-
-    private record TransactionComponentSize(
-            int bodyBytes,
-            int witnessBytes,
-            int auxiliaryEntries,
-            int auxiliaryBytes,
-            BigInteger executionMemory,
-            BigInteger executionSteps) {
-    }
-
-    private static final class BodySizeAccumulator {
-        private int transactions;
-        private int auxiliaryEntries;
-        private long bodyBytes;
-        private long witnessBytes;
-        private long auxiliaryBytes;
-        private BigInteger executionMemory = BigInteger.ZERO;
-        private BigInteger executionSteps = BigInteger.ZERO;
-
-        boolean canAdd(TransactionComponentSize addition, BlockProductionLimits limits) {
-            int projectedTransactions = transactions + 1;
-            int projectedAuxiliaryEntries = auxiliaryEntries + addition.auxiliaryEntries();
-            long projected = cborCollectionHeaderSize(projectedTransactions) * 2L
-                    + bodyBytes + addition.bodyBytes()
-                    + witnessBytes + addition.witnessBytes()
-                    + cborCollectionHeaderSize(projectedAuxiliaryEntries)
-                    + auxiliaryBytes + addition.auxiliaryBytes()
-                    + cborCollectionHeaderSize(0); // invalid transaction index array
-            return projected <= limits.maxBodyBytes()
-                    && !exceeds(executionMemory.add(addition.executionMemory()),
-                    limits.maxExecutionMemory())
-                    && !exceeds(executionSteps.add(addition.executionSteps()),
-                    limits.maxExecutionSteps());
-        }
-
-        void add(TransactionComponentSize addition) {
-            transactions++;
-            auxiliaryEntries += addition.auxiliaryEntries();
-            bodyBytes += addition.bodyBytes();
-            witnessBytes += addition.witnessBytes();
-            auxiliaryBytes += addition.auxiliaryBytes();
-            executionMemory = executionMemory.add(addition.executionMemory());
-            executionSteps = executionSteps.add(addition.executionSteps());
-        }
-
-        private static int cborCollectionHeaderSize(long entries) {
-            if (entries <= 23) return 1;
-            if (entries <= 0xffL) return 2;
-            if (entries <= 0xffffL) return 3;
-            if (entries <= 0xffff_ffffL) return 5;
-            return 9;
         }
     }
 
@@ -470,47 +380,5 @@ public class DevnetBlockBuilder {
 
     protected ProtocolVersion resolveProtocolVersion(long slot) {
         return protocolVersionSupplier.getProtocolVersion(slot);
-    }
-
-    /**
-     * Split a complete transaction CBOR into the parallel block arrays.
-     * Each tx is CBOR-encoded as: [body, witnesses, is_valid, aux_data]
-     */
-    protected void splitTransaction(byte[] txCbor, int index,
-                                  Array txBodiesArray, Array txWitnessesArray,
-                                  Map auxDataMap) {
-        boolean phase2Invalid = false;
-        try {
-            DataItem txDI = CborSerializationUtil.deserializeOne(txCbor);
-            Array txArray = (Array) txDI;
-            List<DataItem> items = txArray.getDataItems();
-            phase2Invalid = items.size() > 2 && SimpleValue.FALSE.equals(items.get(2));
-
-            // tx_body (index 0)
-            txBodiesArray.add(items.get(0));
-
-            // witnesses (index 1)
-            txWitnessesArray.add(items.get(1));
-
-            // is_valid (index 2): must be true (checked below), so invalid_txs stays empty.
-
-            // aux_data (index 3) - add to map if not null
-            if (items.size() > 3 && items.get(3).getMajorType() != MajorType.SPECIAL) {
-                auxDataMap.put(new UnsignedInteger(index), items.get(3));
-            }
-        } catch (Exception e) {
-            log.warn("Failed to split transaction at index {}: {}", index, e.getMessage());
-            // Add empty placeholders to maintain alignment
-            txBodiesArray.add(new Map()); // empty tx body
-            txWitnessesArray.add(new Map()); // empty witnesses
-        }
-        // ADR-056 §6 guard: phase-2-invalid transactions are rejected at admission and never selected, so the body
-        // never needs invalid_txs. One that reaches the builder is refused as unfit (the producer invalidates it and
-        // its dependents); forging it would give a block Haskell rejects.
-        if (phase2Invalid) {
-            String hash = TransactionUtil.getTxHash(txCbor);
-            throw new UnfitBlockTransactionException(hash, "Selected transaction " + hash + " at index " + index
-                    + " claims isValid=false; the block builder cannot encode invalid_txs (ADR-056 §6)");
-        }
     }
 }

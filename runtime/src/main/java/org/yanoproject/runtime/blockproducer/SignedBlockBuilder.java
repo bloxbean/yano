@@ -3,6 +3,7 @@ package org.yanoproject.runtime.blockproducer;
 import co.nstant.in.cbor.model.*;
 import com.bloxbean.cardano.client.crypto.BlockProducerKeys;
 import com.bloxbean.cardano.client.crypto.kes.OpCert;
+import com.bloxbean.cardano.client.transaction.raw.RawBlockBody;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -14,7 +15,7 @@ import java.util.List;
  * Block builder that produces cryptographically valid Conway-era blocks
  * with real VRF proofs, KES signatures, and operational certificates.
  * <p>
- * Extends {@link DevnetBlockBuilder} to reuse transaction-splitting logic.
+ * Extends {@link DevnetBlockBuilder} to reuse its block body (each transaction as submitted) and block assembly.
  * When key files are not configured, the system falls back to the parent class
  * which uses dummy zero-filled crypto material.
  */
@@ -117,12 +118,12 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
                                                  List<byte[]> transactions,
                                                  BlockSigner.VrfSignResult vrfResult) {
         // 1. Compute block body
-        BlockBodyResult body = computeBlockBody(transactions);
-        enforceBlockBodySize(slot, body.bodySize());
+        RawBlockBody body = computeBlockBody(transactions);
+        enforceBlockBodySize(slot, body.size());
 
         // 2. Build header body CBOR array
         Array headerBody = buildSignedHeaderBody(blockNumber, slot, prevHash,
-                body.bodySize(), body.bodyHash(), vrfResult);
+                body.size(), body.hash(), vrfResult);
 
         // 3. Serialize header body for KES signing
         byte[] headerBodyCborBytes = CborSerializationUtil.serialize(headerBody);
