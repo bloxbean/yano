@@ -1,7 +1,8 @@
 package org.yanoproject.runtime.blockproducer;
 
 /**
- * Protocol version stamped into produced block headers.
+ * A protocol version. Produced block headers carry its major version (see
+ * {@code DevnetBlockBuilder.resolveProtocolVersion}).
  */
 public record ProtocolVersion(long major, long minor) {
     public ProtocolVersion {

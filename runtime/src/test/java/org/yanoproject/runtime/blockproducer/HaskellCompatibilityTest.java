@@ -308,9 +308,10 @@ class HaskellCompatibilityTest {
 
         System.out.println("  protocolVersion = [" + major + ", " + minor + "]");
         assertEquals(10, major, "Protocol major version must be 10");
-        assertEquals(2, minor, "Protocol minor version must be 2");
+        assertEquals(DevnetBlockBuilder.BLOCK_HEADER_MINOR_VERSION, minor,
+                "Protocol minor version must be Yano's header minor version");
 
-        System.out.println("=== STEP 7 PASSED: Protocol version [10, 2] verified ===");
+        System.out.println("=== STEP 7 PASSED: Protocol version [10, " + minor + "] verified ===");
 
         // =====================================================================
         // STEP 8: Verify wrapped header format [era, 24(h'<serialized_header_array>')]

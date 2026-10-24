@@ -285,10 +285,10 @@ Add or update tests for these scenarios:
    produced-block protocol version.
 4. Tracking-enabled block production fails clearly if the effective snapshot for
    the block epoch is still unavailable.
-5. `DevnetBlockBuilder` stamps the supplier-resolved protocol version into the
-   produced block header.
-6. `SignedBlockBuilder` stamps the supplier-resolved protocol version into the
-   produced block header.
+5. `DevnetBlockBuilder` stamps the supplier-resolved major protocol version into
+   the produced block header, with the fixed minor `BLOCK_HEADER_MINOR_VERSION`.
+6. `SignedBlockBuilder` stamps the same version (it inherits
+   `DevnetBlockBuilder.resolveProtocolVersion`).
 7. Fallback `DevnetBlockBuilder` path with no operator keys and tracking enabled
    stamps the epoch-effective protocol version, not the hardcoded `10.2`
    default.
