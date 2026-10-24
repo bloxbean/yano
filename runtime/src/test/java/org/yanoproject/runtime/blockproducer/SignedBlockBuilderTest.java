@@ -113,11 +113,11 @@ class SignedBlockBuilderTest {
     }
 
     @Test
-    void buildBlock_usesProtocolVersionSupplierForHeader() {
+    void buildBlock_headerCarriesTheSuppliedMajorAndYanosMinorVersion() {
         AtomicLong requestedSlot = new AtomicLong(-1);
         SignedBlockBuilder freshBuilder = createFreshBuilder(null, slot -> {
             requestedSlot.set(slot);
-            return new ProtocolVersion(11, 0);
+            return new ProtocolVersion(11, 3);
         });
 
         var result = freshBuilder.buildBlock(1, 77, new byte[32], List.of());
@@ -125,7 +125,7 @@ class SignedBlockBuilderTest {
 
         assertThat(requestedSlot).hasValue(77);
         assertThat(BlockTestUtil.protocolVersionFromBlockCbor(result.blockCbor()))
-                .isEqualTo(new ProtocolVersion(11, 0));
+                .isEqualTo(new ProtocolVersion(11, DevnetBlockBuilder.BLOCK_HEADER_MINOR_VERSION));
     }
 
     @Test

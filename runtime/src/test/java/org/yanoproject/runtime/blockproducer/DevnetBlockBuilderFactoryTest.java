@@ -39,7 +39,7 @@ class DevnetBlockBuilderFactoryTest {
         var result = builder.buildBlock(1, 77, new byte[32], List.of());
         assertThat(requestedSlot).hasValue(77);
         assertThat(BlockTestUtil.protocolVersionFromBlockCbor(result.blockCbor()))
-                .isEqualTo(new ProtocolVersion(11, 0));
+                .isEqualTo(new ProtocolVersion(11, DevnetBlockBuilder.BLOCK_HEADER_MINOR_VERSION));
     }
 
     @Test
@@ -82,7 +82,7 @@ class DevnetBlockBuilderFactoryTest {
         ((SignedBlockBuilder) builder).commitPendingNonceState();
         assertThat(requestedSlot).hasValue(5);
         assertThat(BlockTestUtil.protocolVersionFromBlockCbor(result.blockCbor()))
-                .isEqualTo(new ProtocolVersion(11, 0));
+                .isEqualTo(new ProtocolVersion(11, DevnetBlockBuilder.BLOCK_HEADER_MINOR_VERSION));
     }
 
     @Test

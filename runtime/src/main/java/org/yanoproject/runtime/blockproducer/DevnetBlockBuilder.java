@@ -44,6 +44,8 @@ public class DevnetBlockBuilder {
     private static final int VRF_OUTPUT_LENGTH = 64;
     private static final int KES_SIGNATURE_LENGTH = 448;
     private static final int OPCERT_SIGMA_LENGTH = 64;
+    /** The minor protocol version Yano stamps in the headers of the blocks it produces. */
+    static final long BLOCK_HEADER_MINOR_VERSION = 0;
 
     // Backward-compatible default for isolated tests and standalone callers.
     // Production Yano wiring passes a runtime ProtocolVersionSupplier.
@@ -468,8 +470,13 @@ public class DevnetBlockBuilder {
         return headerArray;
     }
 
+    /**
+     * The protocol version in the header of a block Yano produces: the effective major version, with
+     * {@link #BLOCK_HEADER_MINOR_VERSION} as the minor. The ledger does not validate the header's version (only the
+     * ledger's own, against the node's maximum); producers use it to say which node built the block.
+     */
     protected ProtocolVersion resolveProtocolVersion(long slot) {
-        return protocolVersionSupplier.getProtocolVersion(slot);
+        return new ProtocolVersion(protocolVersionSupplier.getProtocolVersion(slot).major(), BLOCK_HEADER_MINOR_VERSION);
     }
 
     /**
