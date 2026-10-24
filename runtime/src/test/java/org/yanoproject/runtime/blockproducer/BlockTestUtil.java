@@ -27,10 +27,11 @@ final class BlockTestUtil {
     }
 
     /**
-     * Valid transactions in encodings a re-serialisation would change, each of which a block must carry as submitted:
+     * Transactions in valid encodings a re-serialisation would change, each of which a block must carry as submitted:
      * <ul>
-     *     <li>chunked metadata strings, each chunk at most 64 bytes: merged into one string the ledger's decoder rejects
-     *     the block ({@code ByteString exceeds 64 bytes}), and the aux data hash no longer matches;</li>
+     *     <li>Plutus data bytes over 64 bytes, which Plutus data allows only as chunks of at most 64: merged into one
+     *     string, the ledger's decoder rejects the block ({@code ByteString exceeds 64 bytes});</li>
+     *     <li>chunked metadata strings (at most 64 bytes in total): merged, the aux data hash no longer matches;</li>
      *     <li>integers not in their shortest form in the body: re-encoded, the transaction id changes and the witnesses
      *     no longer verify;</li>
      *     <li>indefinite-length arrays and maps, set tags (258) and tagged (259) aux data;</li>
@@ -38,8 +39,9 @@ final class BlockTestUtil {
      * </ul>
      */
     static List<byte[]> transactionsInNonCanonicalEncodings() {
-        String chunkedBytes = "5f" + "5840" + "00".repeat(64) + "5824" + "00".repeat(36) + "ff";
-        String chunkedText = "7f" + "7840" + "61".repeat(64) + "6461616161" + "ff";
+        String chunkedPlutusBytes = "5f" + "5840" + "00".repeat(64) + "5824" + "00".repeat(36) + "ff";
+        String chunkedBytes = "5f" + "5828" + "00".repeat(40) + "54" + "00".repeat(20) + "ff";
+        String chunkedText = "7f" + "781e" + "61".repeat(30) + "6a" + "61".repeat(10) + "ff";
         String nonShortestBody = "a3" + "0080" + "0181" + "82" + "581d61" + "00".repeat(28) + "1b0000000000000001"
                 + "02" + "1a00000005";
         String input = "82" + "5820" + "11".repeat(32) + "00";
@@ -47,6 +49,7 @@ final class BlockTestUtil {
         String indefiniteWitnesses = "bf" + "01" + "9f" + "8200" + "581c" + "22".repeat(28) + "ff" + "ff";
         String taggedAux = "d90103" + "bf" + "00" + "bf" + "01" + "9f" + "01" + "02" + "ff" + "ff" + "ff";
         return List.of(
+                tx(BODY, "a1" + "04" + "81" + chunkedPlutusBytes, null),
                 tx(BODY, "a0", "a2" + "01" + chunkedBytes + "02" + chunkedText),
                 tx(nonShortestBody, "a0", null),
                 tx(indefiniteBody, indefiniteWitnesses, taggedAux),
