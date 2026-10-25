@@ -1,0 +1,27 @@
+# Slot-leader block producer profile for a public network.
+# Combine with a network profile, for example: preview,bp
+# Put the pool's VRF key, KES key and operational certificate in config/keys/ (or change the paths below).
+# Run exactly one producer per pool key set.
+
+yano:
+  block-producer:
+    enabled: true
+    slot-leader-mode: true
+    vrf-skey-file: config/keys/vrf.skey
+    kes-skey-file: config/keys/kes.skey
+    opcert-file: config/keys/opcert.cert
+#  # Follow your own relay instead of the network profile's default upstream.
+#  remote:
+#    host: 127.0.0.1
+#    port: 3001
+#  server:
+#    port: 13337
+#  # Bind outbound dials to an OS-assigned source port instead of the server port.
+#  relay:
+#    connection:
+#      source-port-reuse: false
+#
+#quarkus:
+#  http:
+#    # Keep the REST API local to the producer host.
+#    host: 127.0.0.1

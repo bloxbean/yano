@@ -84,6 +84,23 @@ This is equivalent to:
 Profile names may contain letters, numbers, dot, underscore, and dash. Profile
 lists use commas between profile names.
 
+## Validation profiles
+
+Two bundled profiles add validation on top of a network profile:
+
+- `praos-ledger`: Praos header validation (KES and op-cert signatures, VRF proof, ledger-view checks, op-cert
+  counters in compat mode). It enforces: a header that fails is rejected.
+- `shadow-sync`: observe-only block validation. Every applied Conway block's transactions and block body rules
+  are re-validated with the Java ledger rules and mismatches are reported in the log summary and the
+  `yano_validation_shadow_sync_*` metrics. It never rejects a block; when validation falls behind, block
+  application waits for it. Set `yano.validation.shadow-sync-report` to a writable file for a JSONL line per
+  finding.
+
+```bash
+./yano.sh start:preview,shadow-sync
+./yano.sh start:preview,praos-ledger,shadow-sync
+```
+
 ## State directories
 
 The jar and native zip distributions keep L1 and app-chain RocksDB state in
