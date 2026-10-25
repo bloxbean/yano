@@ -1230,6 +1230,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     private volatile java.util.function.Supplier<com.bloxbean.cardano.client.api.model.ProtocolParams>
             anchorProtocolParamsSupplier;
+    private volatile org.yanoproject.ledger.rules.phase2.ForecastHorizon forecastHorizon;
 
     /**
      * Wire the node's full protocol parameters (cardano-client-lib model) for
@@ -1239,6 +1240,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     public void wireAnchorProtocolParams(
             java.util.function.Supplier<com.bloxbean.cardano.client.api.model.ProtocolParams> supplier) {
         this.anchorProtocolParamsSupplier = supplier;
+    }
+
+    /** Wire the ledger's forecast horizon, which bounds the validity interval of script-anchor transactions. */
+    public void wireForecastHorizon(org.yanoproject.ledger.rules.phase2.ForecastHorizon forecastHorizon) {
+        this.forecastHorizon = forecastHorizon;
     }
 
     public void wireL1(java.util.function.Function<byte[], String> txSubmitter,
@@ -5097,6 +5103,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 return supplier != null ? supplier.get() : null;
                             },
                             anchorPointSupplier);
+                    scriptService.wireForecastHorizon(forecastHorizon);
                     // A follower's confirmation must not run ahead of delivery: the loop rolls back only from
                     // recorded points, so an L1 fact above the cursor would survive a fork there (ADR-038 D3).
                     scriptService.wireCanonicalHashAtSlot(slot -> {

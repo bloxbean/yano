@@ -53,7 +53,12 @@ public record NetworkParameters(long networkMagic, NetworkId networkId, long sec
 
     /** @return {@code 3k/f} slots (129600 on mainnet and preprod) */
     public long stabilityWindow() {
-        return 3 * securityParam * activeSlotsCoeffInverse();
+        return stabilityWindow(securityParam, activeSlotsCoeff);
+    }
+
+    /** @return {@code 3k/f} slots, with {@code 1/f} rounded to the nearest integer */
+    public static long stabilityWindow(long securityParam, double activeSlotsCoeff) {
+        return 3 * securityParam * Math.round(1.0 / activeSlotsCoeff);
     }
 
     /** @return the number of Byron epochs before {@link #firstNonByronSlot()} */

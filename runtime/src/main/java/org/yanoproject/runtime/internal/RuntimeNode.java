@@ -53,8 +53,10 @@ import org.yanoproject.api.model.TxEvaluationResult;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
+import org.yanoproject.ledger.rules.NetworkParameters;
 import org.yanoproject.ledger.rules.TransactionEvaluator;
 import org.yanoproject.ledger.rules.TransactionValidator;
+import org.yanoproject.ledger.rules.phase2.ForecastHorizon;
 import org.yanoproject.api.bootstrap.BootstrapDataProvider;
 import org.yanoproject.api.bootstrap.BootstrapOutpoint;
 import org.yanoproject.runtime.bootstrap.BootstrapResult;
@@ -955,6 +957,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             subsystem.wireTxEvaluation(this);
             subsystem.wireAnchorFees(this::anchorFeeParams);
             subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
+            subsystem.wireForecastHorizon(this::forecastHorizonUpperSlot);
             subsystems.add(subsystem);
         }
         return new org.yanoproject.runtime.appchain.AppChainManager(subsystems, log);
@@ -1048,6 +1051,21 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      * ({@code yano.genesis.protocol-parameters-file}). Returns {@code null} only
      * when neither source is available — the anchor then fails closed.
      */
+    /**
+     * The ledger's forecast horizon for a transaction validated at {@code validationSlot}, as the phase-2 evaluators
+     * compute it ({@link ForecastHorizon#of}); unbounded until the Shelley genesis and epoch geometry are known.
+     */
+    private long forecastHorizonUpperSlot(long validationSlot) {
+        GenesisConfig genesis = genesisConfig;
+        EpochParamProvider provider = getEpochParamProvider();
+        if (genesis == null || genesis.getShelleyGenesisData() == null || provider == null) {
+            return Long.MAX_VALUE;
+        }
+        var shelley = genesis.getShelleyGenesisData();
+        long stabilityWindow = NetworkParameters.stabilityWindow(shelley.securityParam(), shelley.activeSlotsCoeff());
+        return ForecastHorizon.of(() -> stabilityWindow, provider.getEpochSlotCalc()).exclusiveUpperSlot(validationSlot);
+    }
+
     private com.bloxbean.cardano.client.api.model.ProtocolParams anchorCclProtocolParams() {
         try {
             int epoch = Math.max(epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0, 0);

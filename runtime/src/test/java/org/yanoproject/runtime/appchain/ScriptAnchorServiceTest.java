@@ -211,6 +211,30 @@ class ScriptAnchorServiceTest {
     }
 
     @Test
+    void bootstrapValidityEndsBeforeTheForecastHorizon() throws Exception {
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+        // a horizon closer than the validity window, as on a devnet with short epochs (L1 tip at slot 500)
+        leader.wireForecastHorizon(validationSlot -> validationSlot + 99);
+
+        leader.bootstrap();
+
+        Transaction bootstrapTx = Transaction.deserialize(submitted.getFirst());
+        assertThat(bootstrapTx.getBody().getTtl()).isEqualTo(599);
+    }
+
+    @Test
+    void bootstrapValidityUsesTheConfiguredWindowWithinTheHorizon() throws Exception {
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+        leader.wireForecastHorizon(validationSlot -> Long.MAX_VALUE);
+
+        leader.bootstrap();
+
+        Transaction bootstrapTx = Transaction.deserialize(submitted.getFirst());
+        assertThat(bootstrapTx.getBody().getTtl())
+                .isEqualTo(500 + AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS);
+    }
+
+    @Test
     void bootstrap_thenCosignedAdvance_endToEnd() throws Exception {
         // --- Bootstrap: fund the leader wallet, mint the thread NFT
         utxoState.put(leader.anchorAddress(), List.of(
