@@ -136,6 +136,11 @@ public class ValidationEngineMetrics {
                         v -> v.status().report().backpressureWaitMillis())
                 .description("Time block application waited for shadow-sync validation")
                 .register(registry);
+        FunctionCounter.builder("yano.validation.shadow.sync.validation.ms.total", sync,
+                        v -> v.status().report().validationMillis())
+                .description("Time spent validating synced blocks, all engines (per block: divide by "
+                        + "blocks_total{outcome=validated})")
+                .register(registry);
         Gauge.builder("yano.validation.shadow.sync.in.flight", sync, v -> v.status().inFlight())
                 .description("Synced blocks queued or being validated by shadow sync")
                 .register(registry);
