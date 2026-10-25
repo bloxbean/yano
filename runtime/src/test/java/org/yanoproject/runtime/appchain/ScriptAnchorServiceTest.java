@@ -211,27 +211,13 @@ class ScriptAnchorServiceTest {
     }
 
     @Test
-    void bootstrapValidityEndsBeforeTheForecastHorizon() throws Exception {
+    void bootstrapHasNoValidityUpperBound() throws Exception {
         utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
-        // a horizon closer than the validity window, as on a devnet with short epochs (L1 tip at slot 500)
-        leader.wireForecastHorizon(validationSlot -> validationSlot + 99);
 
         leader.bootstrap();
 
-        Transaction bootstrapTx = Transaction.deserialize(submitted.getFirst());
-        assertThat(bootstrapTx.getBody().getTtl()).isEqualTo(599);
-    }
-
-    @Test
-    void bootstrapValidityUsesTheConfiguredWindowWithinTheHorizon() throws Exception {
-        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
-        leader.wireForecastHorizon(validationSlot -> Long.MAX_VALUE);
-
-        leader.bootstrap();
-
-        Transaction bootstrapTx = Transaction.deserialize(submitted.getFirst());
-        assertThat(bootstrapTx.getBody().getTtl())
-                .isEqualTo(500 + AppChainConfig.AnchorConfig.DEFAULT_VALIDITY_SLOTS);
+        // a TTL past the ledger's forecast horizon would make the Plutus script context untranslatable
+        assertThat(Transaction.deserialize(submitted.getFirst()).getBody().getTtl()).isZero();
     }
 
     @Test
@@ -291,6 +277,7 @@ class ScriptAnchorServiceTest {
 
         assertThat(submitted).hasSize(2);
         Transaction advanceTx = Transaction.deserialize(submitted.get(1));
+        assertThat(advanceTx.getBody().getTtl()).isZero(); // no validity upper bound (forecast horizon)
 
         // Datum advanced to the follower-verified tip
         TransactionOutput nextOut = outputTo(advanceTx, scriptAddress);

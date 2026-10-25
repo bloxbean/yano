@@ -43,7 +43,6 @@ import org.yanoproject.api.rollback.RollbackCapableStore;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.runtime.util.LifecycleFailures;
-import org.yanoproject.ledger.rules.phase2.ForecastHorizon;
 import org.slf4j.Logger;
 import org.rocksdb.WriteBatch;
 
@@ -183,7 +182,6 @@ final class ScriptAnchorService {
 
     /** Node-tracked protocol params (CCL model); null values → Conway defaults. */
     private volatile Supplier<ProtocolParams> protocolParamsSupplier;
-    private volatile ForecastHorizon forecastHorizon;
     /** Raw canonical L1 point; reconciliation requires the UTxO store to match it exactly. */
     private volatile Supplier<AppChainEngine.L1Ref> currentL1PointSupplier;
     /** QuickTx sees the node's own UTxO store — we ARE the backend. */
@@ -268,10 +266,6 @@ final class ScriptAnchorService {
                        Supplier<AppChainEngine.L1Ref> currentL1Point) {
         this.protocolParamsSupplier = protocolParams;
         this.currentL1PointSupplier = currentL1Point;
-    }
-
-    void wireForecastHorizon(ForecastHorizon forecastHorizon) {
-        this.forecastHorizon = forecastHorizon;
     }
 
     void wireCanonicalHashAtSlot(LongFunction<byte[]> canonicalHashAtSlot) {
@@ -705,10 +699,9 @@ final class ScriptAnchorService {
                 .withTxEvaluator(new JulcTransactionEvaluator(
                         cclUtxoSupplier, this::effectiveProtocolParams, scriptHash -> java.util.Optional.empty()))
                 .withSigner(SignerProviders.signerFrom(walletKey));
-        long ttl = txTtl();
-        if (ttl > 0) {
-            context = context.validTo(ttl);
-        }
+        // No validity upper bound: the anchor scripts do not read the validity range, and a bound would have to stay
+        // within the ledger's forecast horizon to be convertible to time (TimeTranslationPastHorizon), which on a
+        // network with short epochs is closer than any fixed window. Spending the thread UTxO orders anchor txs.
         return context;
     }
 
@@ -1985,17 +1978,6 @@ final class ScriptAnchorService {
                 .filter(u -> u.assets() == null || u.assets().isEmpty())
                 .sorted(Comparator.comparing((Utxo u) -> u.lovelace()).reversed())
                 .toList();
-    }
-
-    private long txTtl() {
-        AppChainEngine.L1Ref currentPoint = observedL1TipPoint();
-        if (currentPoint == null || currentPoint.slot() <= 0)
-            return 0;
-        long ttl = currentPoint.slot() + anchorConfig.validitySlots();
-        // The ledger converts a Plutus transaction's validity bounds to time only up to its forecast horizon
-        // (TimeTranslationPastHorizon): on a network with short epochs that can be closer than validitySlots
-        ForecastHorizon horizon = forecastHorizon;
-        return horizon != null ? Math.min(ttl, horizon.exclusiveUpperSlot(currentPoint.slot() + 1) - 1) : ttl;
     }
 
     private static boolean carriesThreadToken(Value value, byte[] policyId) {
