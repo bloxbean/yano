@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * CCL {@link JmtStore} over the app ledger's column families.
@@ -144,18 +145,19 @@ final class SharedRocksDbJmtStore implements JmtStore {
         }
     }
 
-    long pruneWatermark() {
+    @Override
+    public OptionalLong pruneWatermark() {
         try {
             byte[] encoded = db.get(metadataCf, PRUNE_WATERMARK_KEY);
             if (encoded == null) {
-                return -1;
+                return OptionalLong.empty();
             }
             if (encoded.length != Long.BYTES) {
                 throw new JmtFormatMismatchException("Malformed JMT prune watermark");
             }
             long watermark = ByteBuffer.wrap(encoded).getLong();
             requireVersion(watermark);
-            return watermark;
+            return OptionalLong.of(watermark);
         } catch (RocksDBException failure) {
             throw new RuntimeException("Failed to read JMT prune watermark", failure);
         }
