@@ -9,8 +9,7 @@
 #   ./yano.sh start:preprod,projection # Preprod with the optional history archive
 #   ./yano.sh start:mainnet        # Mainnet relay alias
 #   ./yano.sh start:<profiles>     # Custom comma-separated Quarkus profiles
-#   ./yano.sh appchain config ...  # App-chain configuration tooling
-#   ./yano.sh appchain cluster ... # Local cluster launcher
+#   ./yano.sh appchain ...         # App-chain tooling (ships with Yano X)
 #   ./yano.sh observability start  # Optional persistent metrics history
 #
 
@@ -49,16 +48,9 @@ Examples:
   YANO_FILTERS_UTXO_ADDRESSES=addr_test1... \
       ./yano.sh start:preprod,selective-utxo
   ./yano.sh start:mydevnet
-  ./yano.sh appchain config validate --mode template \\
-      --template-contract builtin:cluster config/application-appchain.yml
-  ./yano.sh appchain config explain block.max-bytes
-  ./yano.sh appchain init --recipe owned-registry --network devnet --members 3
-  ./yano.sh appchain render ./owned-registry
-  ./yano.sh appchain config validate --mode project ./owned-registry
-  ./yano.sh appchain doctor ./owned-registry --distribution ./yano-release.zip
-  ./yano.sh appchain cluster start 3
-  ./yano.sh appchain cluster effect demo "order 42 approved"
-  ./yano.sh appchain cluster node join 3
+  ./yano.sh appchain try
+  ./yano.sh appchain new
+  ./yano.sh appchain help
   ./yano.sh observability start
   ./yano.sh observability status
 
@@ -84,44 +76,9 @@ appchain_usage() {
     cat <<'EOF'
 Usage: ./yano.sh appchain <command> [args...]
 
-Discover capabilities:
-  recipes                         List out-of-box app-chain recipes
-  capabilities                    List selectable components and integrations
-  config explain <property>       Explain a supported configuration property
-
-Create and update a project:
-  init [options]                  Generate appchain.yaml and derived YAML config
-  render [project-directory]      Regenerate safely from appchain.yaml
-  migrate [project-directory]     Inspect or apply a tooling migration
-
-Validate and operate:
-  config validate|effective ...   Validate or inspect effective configuration
-  doctor [project] [options]      Check project/distribution readiness
-  diff <old.lock> <new.lock>      Classify a proposed configuration change
-  drift [project] --peer <url>    Compare redacted live node identities
-  gitops [project] [options]      Export Helm or Kustomize deployment files
-  plugin inspect|validate|sign|scaffold ...
-                                  Work with signed custom component catalogs
-  metadata verify ...             Verify custom-plugin metadata signatures
-  role ...                        Encode/sign role commands offline (seed files only)
-  authenticated-map ...           Assemble governed map actions/evidence offline
-  validity key generate ...       Create an encrypted local L2 session key
-  validity ...                    Operate an experimental EUTxO ZeroJ testnet lifecycle
-
-Run a local cluster:
-  cluster start [members]         Start or resume a same-machine cluster
-  cluster status|stop|clean       Inspect, stop, or clean the local cluster
-  cluster node join <index>       Start a previously staged additional node
-  cluster effect demo [message]   Submit and approve a demonstration effect
-
-Examples:
-  ./yano.sh appchain init --recipe owned-registry --network devnet --members 3
-  ./yano.sh appchain config validate --mode project ./owned-registry
-  ./yano.sh appchain cluster start 3
-  ./yano.sh appchain validity key generate --output l2-session-key.enc --password-env YANO_L2_KEY_PASSWORD
-  ./yano.sh appchain validity status --project ./payments-zk
-
-Use './yano.sh appchain <command> --help' for command-specific options.
+App-chain commands come from the app-chain tooling in the Yano X
+distribution, which was not found here. Install the release-matched Yano X
+JVM distribution; advanced users may set YANO_APPCHAIN_CLI.
 EOF
 }
 
@@ -173,16 +130,26 @@ appchain_cli() {
     printf '%s\n' "$found"
 }
 
+# The tooling owns the command list, so help always matches the installed
+# commands; without the tooling, explain where the commands come from.
+appchain_help() {
+    local cli
+    if cli="$(appchain_cli 2>/dev/null)"; then
+        cd "$CALLER_DIR"
+        exec "$cli" help
+    fi
+    appchain_usage
+    exit 0
+}
+
 dispatch_appchain() {
     shift
     if [ "$#" -eq 0 ]; then
-        appchain_usage
-        exit 0
+        appchain_help
     fi
     case "$1" in
         help|-h|--help)
-            appchain_usage
-            exit 0
+            appchain_help
             ;;
     esac
     if [ "$1" = "cluster" ]; then
