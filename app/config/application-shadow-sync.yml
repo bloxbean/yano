@@ -1,0 +1,11 @@
+# Observe-only block validation profile.
+# Every applied Conway block's transactions and block body rules are re-validated with the Java ledger rules,
+# and any mismatch is reported (INFO summary, yano_validation_shadow_sync_* metrics). It never rejects or changes
+# what the node applies; when validation falls behind, block application waits for it.
+# Combine with a network profile, for example: preview,shadow-sync or preview,praos-ledger,shadow-sync.
+# Set yano.validation.shadow-sync-report to a writable file for one JSONL line per finding.
+
+yano:
+  validation:
+    shadow-sync: true
+    shadow-sync-engines: java-julc
