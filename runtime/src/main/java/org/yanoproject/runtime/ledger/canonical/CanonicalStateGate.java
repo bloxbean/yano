@@ -146,7 +146,7 @@ public final class CanonicalStateGate {
     // ------------------------------------------------------------------ configuration
 
     /**
-     * Installs the slot-to-epoch function used for {@link CanonicalTip#epoch()} and republishes the
+     * Installs the slot-to-epoch function used for {@link CanonicalTip#tipSlotEpoch()} and republishes the
      * current tip (same generation) via {@link #refreshTip()}.
      */
     public void configureEpochCalculator(LongToIntFunction slotToEpoch) {
