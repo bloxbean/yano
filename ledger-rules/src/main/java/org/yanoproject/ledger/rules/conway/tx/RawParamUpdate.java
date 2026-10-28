@@ -39,9 +39,10 @@ import java.util.TreeSet;
  *       ({@code decodeCostModelsLenient}, Plutus/CostModels.hs:302-316; unknown languages are kept, and plutus-ledger-api
  *       1.65 accepts any length for a known one, {@code tagWithParamNames});</li>
  *   <li>19 {@code Prices}: {@code [NonNegativeInterval, NonNegativeInterval]}; 20, 21 {@code ExUnits}:
- *       {@code [mem, steps]}, each at most {@code maxBound :: Int64} (Plutus/ExUnits.hs:195-231);</li>
- *   <li>25 {@code PoolVotingThresholds}: five {@code UnitInterval}s; 26 {@code DRepVotingThresholds}: ten
- *       (Conway/PParams.hs:366-374, 519-532).</li>
+ *       {@code [mem, steps]}, each at most {@code maxBound :: Int64}; both {@code RecD} records, so definite-length
+ *       arrays (Plutus/ExUnits.hs:195-231, {@link StrictCbor#definiteArray});</li>
+ *   <li>25 {@code PoolVotingThresholds}: five {@code UnitInterval}s; 26 {@code DRepVotingThresholds}: ten; read with
+ *       {@code decodeRecordNamed}, so definite or indefinite (Conway/PParams.hs:366-374, 519-532).</li>
  * </ul>
  */
 public final class RawParamUpdate {
@@ -85,9 +86,9 @@ public final class RawParamUpdate {
                 case 9, 33 -> BoundedFields.boundedRational(value, "PParamsUpdate key " + key, false);
                 case 10, 11 -> BoundedFields.boundedRational(value, "PParamsUpdate key " + key, true);
                 case 18 -> costModels(value);
-                case 19 -> fixedArray(value, 2, "Prices").forEach(
+                case 19 -> StrictCbor.definiteArray(value, 2, "Prices has 2 elements").forEach(
                         price -> BoundedFields.boundedRational(price, "price", false));
-                case 20, 21 -> fixedArray(value, 2, "ExUnits").forEach(units -> bounded(units, INT64_MAX, key));
+                case 20, 21 -> BoundedFields.exUnits(value, "PParamsUpdate key " + key + " ExUnits");
                 case 25 -> fixedArray(value, 5, "PoolVotingThresholds").forEach(
                         threshold -> BoundedFields.boundedRational(threshold, "pool voting threshold", true));
                 case 26 -> fixedArray(value, 10, "DRepVotingThresholds").forEach(

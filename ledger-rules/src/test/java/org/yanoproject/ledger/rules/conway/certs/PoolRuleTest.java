@@ -1,11 +1,17 @@
 package org.yanoproject.ledger.rules.conway.certs;
 
+import co.nstant.in.cbor.model.Array;
+import co.nstant.in.cbor.model.ByteString;
+import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.common.model.Networks;
+import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
 import com.bloxbean.cardano.client.transaction.spec.cert.PoolRegistration;
 import com.bloxbean.cardano.client.transaction.spec.cert.PoolRetirement;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
+import org.yanoproject.ledger.rules.TxValidationOutcome;
+import org.yanoproject.ledger.rules.conway.EngineTestSupport;
 import org.yanoproject.ledger.rules.fixtures.conformance.Covers;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TestKey;
@@ -18,6 +24,7 @@ import static org.yanoproject.ledger.rules.conway.certs.CertTestSupport.ada;
 import static org.yanoproject.ledger.rules.conway.certs.CertTestSupport.balanced;
 import static org.yanoproject.ledger.rules.conway.certs.CertTestSupport.run;
 import static org.yanoproject.ledger.rules.conway.certs.CertTestSupport.spec;
+import static org.yanoproject.ledger.rules.conway.certs.CertTestSupport.validate;
 import static org.yanoproject.ledger.rules.fixtures.tx.MutationWorld.FRESH_VRF;
 import static org.yanoproject.ledger.rules.fixtures.tx.MutationWorld.MIN_POOL_COST;
 import static org.yanoproject.ledger.rules.fixtures.tx.MutationWorld.NETWORK;
@@ -62,6 +69,36 @@ class PoolRuleTest {
         // Both failures, in execution order.
         assertThat(run(spec(new PoolRetirement(HexUtil.decodeHexString(TestKey.DEV_42.keyHash()), 19))))
                 .containsExactly("POOL.StakePoolNotRegisteredOnKeyPOOL", "POOL.StakePoolRetirementWrongEpochPOOL");
+    }
+
+    /** A retirement at a {@code Word64} epoch, which CCL's {@code long} cannot hold, encoded as Haskell's. */
+    private static PoolRetirement retireAt(byte[] pool, BigInteger epoch) {
+        return new PoolRetirement(pool, epoch.longValue()) {
+            @Override
+            public Array serialize(Era era) {
+                Array certificate = new Array();
+                certificate.add(new UnsignedInteger(4));
+                certificate.add(new ByteString(pool));
+                certificate.add(new UnsignedInteger(epoch));
+                return certificate;
+            }
+        };
+    }
+
+    @Test
+    @Covers("POOL.StakePoolRetirementWrongEpochPOOL")
+    void aRetirementEpochIsAWord64ThatPoolRejectsBeyondEMax() {
+        // EpochNo is a Word64: Haskell decodes cardano-cbor-dataset's certificate/valid/00012 (epoch
+        // 17069553666615204442) and POOL rejects it, as for any epoch beyond cEpoch + eMax (yano #202).
+        byte[] pool = HexUtil.decodeHexString(TestKey.DEV_77.keyHash());
+        for (String epoch : List.of("9223372036854775808", "17069553666615204442", "18446744073709551615")) {
+            TxValidationOutcome outcome = validate(spec(retireAt(pool, new BigInteger(epoch)), TestKey.DEV_77),
+                    MutationWorld.view(10), 10);
+            assertThat(EngineTestSupport.names(outcome)).as(epoch)
+                    .containsExactly("POOL.StakePoolRetirementWrongEpochPOOL");
+            assertThat(((TxValidationOutcome.Invalid) outcome).failures().getFirst().detail())
+                    .contains("mismatchSupplied = EpochNo " + epoch + ", mismatchExpected = EpochNo 0}");
+        }
     }
 
     @Test

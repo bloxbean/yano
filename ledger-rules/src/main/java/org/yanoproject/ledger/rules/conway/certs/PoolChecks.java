@@ -131,8 +131,9 @@ public final class PoolChecks {
         protected String detail(CertSubject s) {
             long currentEpoch = s.ctx().env().currentEpoch();
             long limit = currentEpoch + s.params().eMax();
-            long epoch = s.raw().epoch();
-            return currentEpoch < epoch && epoch <= limit ? null
+            BigInteger epoch = s.raw().epoch(); // a Word64 EpochNo, which may exceed Long.MAX_VALUE
+            return epoch.compareTo(BigInteger.valueOf(currentEpoch)) > 0
+                    && epoch.compareTo(BigInteger.valueOf(limit)) <= 0 ? null
                     : "Mismatch {mismatchSupplied = EpochNo " + epoch + ", mismatchExpected = EpochNo "
                     + currentEpoch + "} Mismatch {mismatchSupplied = EpochNo " + epoch
                     + ", mismatchExpected = EpochNo " + limit + "}";

@@ -41,7 +41,9 @@ import java.util.TreeSet;
  * the major at most {@code succVersion (ProtVerHigh ConwayEra)} = 12, BaseTypes.hs:253-262), maps and sets without
  * duplicates ({@code decodeMap}/{@code decodeSet} from version 9, Decoder.hs:801-976; a set optionally tagged 258),
  * committee expiry epochs {@code Word64}, the quorum a {@code UnitInterval}, script hashes 28 bytes, anchors per
- * {@link BoundedFields}.</p>
+ * {@link BoundedFields}. The procedure, a {@code GovActionId} and a {@code Constitution} are {@code RecD} records,
+ * so definite-length arrays ({@link StrictCbor#definiteArray}; Procedures.hs:182-190, 520-535, 984-995); the action
+ * is a sum and the protocol version a {@code CBORGroup}, which accept either length.</p>
  */
 public final class RawProposal {
 
@@ -240,7 +242,7 @@ public final class RawProposal {
     static RawProposal read(CborSpan item, int index) {
         Builder b = new Builder();
         b.index = index;
-        List<CborSpan> fields = StrictCbor.array(item, 4, "a proposal procedure has 4 elements");
+        List<CborSpan> fields = StrictCbor.definiteArray(item, 4, "a proposal procedure has 4 elements");
         b.deposit = StrictCbor.unsigned(fields.get(0));
         b.returnAccount = accountAddress(fields.get(1), "proposal return account");
         List<CborSpan> action = StrictCbor.array(fields.get(2));
@@ -311,7 +313,7 @@ public final class RawProposal {
 
     /** {@code gov_action_id = [transaction_id, Word16]}. */
     static GovActionId govActionId(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.array(item, 2, "a governance action id has 2 elements");
+        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, "a governance action id has 2 elements");
         byte[] txId = StrictCbor.definiteBytes(fields.get(0));
         if (txId.length != 32) {
             throw new TxDecodingException("a governance action id's transaction id of " + txId.length + " bytes");
@@ -385,7 +387,7 @@ public final class RawProposal {
 
     /** {@code constitution = [anchor, script_hash / null]}: @return the script hash, or null */
     private static byte[] constitution(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.array(item, 2, "a constitution has 2 elements");
+        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, "a constitution has 2 elements");
         BoundedFields.anchor(fields.get(0), "constitution");
         return scriptHashOrNull(fields.get(1), "constitution guardrails script hash");
     }

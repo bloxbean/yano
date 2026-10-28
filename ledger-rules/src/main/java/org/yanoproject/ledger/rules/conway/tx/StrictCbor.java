@@ -75,6 +75,26 @@ public final class StrictCbor {
         return items;
     }
 
+    /**
+     * Reads a record Haskell decodes with {@code RecD} or as a tuple, which below decoder version 12 must be a
+     * definite-length array: {@code RecD} checks for the end of an indefinite list before it reads any field
+     * ({@code decodeCount (RecD cn)}, Coders.hs:482, and {@code decodeListLikeT}, Decoder.hs:700-709: "Excess terms in
+     * array"), and a tuple reads its length with {@code decodeListLenOf} (DecCBOR.hs:238-245). Sums
+     * ({@code decodeRecordSum}) and records read with {@code decodeRecordNamed} accept either length; use
+     * {@link #array} for those.
+     *
+     * @return the items of an untagged definite-length array of exactly {@code size} items, else fails with
+     *         {@code message}
+     */
+    public static List<CborSpan> definiteArray(CborSpan item, int size, String message) {
+        expect(item, MAJOR_ARRAY, "an array");
+        if (item.isIndefinite()) {
+            throw new TxDecodingException("an indefinite-length array at " + item.offset() + " (" + message
+                    + ", definite only below decoder version 12)");
+        }
+        return array(item, size, message);
+    }
+
     /** @return the entries of an untagged map, definite or indefinite, in encoded order with any repeated key */
     public static List<Map.Entry<CborSpan, CborSpan>> map(CborSpan item) {
         expect(item, MAJOR_MAP, "a map");

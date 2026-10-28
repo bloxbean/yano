@@ -156,12 +156,15 @@ public record RawOutput(int index, CborSpan span, byte[] address, LedgerValue va
         return RawScript.readScript(StrictCbor.span(StrictCbor.definiteBytes(item.untag())));
     }
 
-    /** Reads a {@code value}: {@code coin} or {@code [coin, multiasset<positive_coin>]}. */
+    /**
+     * Reads a {@code value}: {@code coin} or {@code [coin, multiasset<positive_coin>]}, the pair a definite-length
+     * {@code RecD} record below decoder version 12 ({@code decodeValuePair}, Mary/Value.hs:298-310).
+     */
     static LedgerValue readValue(CborSpan item) {
         if (StrictCbor.major(item) == 0) {
             return LedgerValue.ofCoin(StrictCbor.unsigned(item));
         }
-        List<CborSpan> fields = StrictCbor.array(item, 2, "a multi-asset value is a two-element array");
+        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, "a multi-asset value is a two-element array");
         return new LedgerValue(StrictCbor.unsigned(fields.get(0)), MultiAssets.read(fields.get(1), false));
     }
 }

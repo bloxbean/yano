@@ -28,11 +28,12 @@ import java.util.Objects;
  * @param hot        the committee hot credential for tag 14, else null
  * @param delegatee  the delegation target for tags 2 and 9–13, else null
  * @param coin       the stated deposit (tags 7, 11–13, 16) or refund (8, 17), else null
- * @param epoch      the retirement epoch for tag 4, else null
+ * @param epoch      the retirement epoch for tag 4 (a {@code Word64} {@code EpochNo}), else null
  * @param pool       the pool parameters the rules check for tag 3, else null
  */
 public record RawCertificate(int index, int tag, RawCredential credential, byte[] poolId, List<byte[]> poolOwners,
-                             RawCredential hot, Delegatee delegatee, BigInteger coin, Long epoch, PoolParams pool) {
+                             RawCredential hot, Delegatee delegatee, BigInteger coin, BigInteger epoch,
+                             PoolParams pool) {
 
     public static final int STAKE_REGISTRATION = 0;
     public static final int STAKE_DEREGISTRATION = 1;
@@ -234,7 +235,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
         byte[] targetPool = null;
         DRep drep = null;
         BigInteger coin = null;
-        Long epoch = null;
+        BigInteger epoch = null;
         PoolParams pool = null;
         switch ((int) tag) {
             case 0, 1 -> credential = RawCredential.read(f.get(1));
@@ -317,7 +318,7 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             default -> {
                 // 4: pool retirement
                 poolId = keyHash(StrictCbor.definiteBytes(f.get(1)), "pool id");
-                epoch = StrictCbor.unsignedLong(f.get(2));
+                epoch = StrictCbor.unsigned(f.get(2));
             }
         }
         Delegatee delegatee = targetPool != null || drep != null ? new Delegatee(targetPool, drep) : null;
