@@ -42,7 +42,7 @@ POOL.VRFKeyHashAlreadyRegistered | check | dynamic | 11 | certs.PoolChecks$VrfKe
 
 [POOL.RetirePool]
 POOL.StakePoolNotRegisteredOnKeyPOOL | check | dynamic | 9 | certs.PoolChecks$NotRegisteredOnKey | 50bd385de02e05c8 |  | Shelley/Rules/Pool.hs:308 (RetirePool)
-POOL.StakePoolRetirementWrongEpochPOOL | check | dynamic | 9 | certs.PoolChecks$RetirementWrongEpoch | 8ebb3d85a7291cb5 |  | Shelley/Rules/Pool.hs:309-322: cEpoch < e ≤ cEpoch + eMax
+POOL.StakePoolRetirementWrongEpochPOOL | check | dynamic | 9 | certs.PoolChecks$RetirementWrongEpoch | 3c183a6a281a856b |  | Shelley/Rules/Pool.hs:309-322: cEpoch < e ≤ cEpoch + eMax
 
 [GOVCERT.ConwayRegDRep]
 GOVCERT.ConwayDRepAlreadyRegistered | check | dynamic | 9 | certs.GovCertChecks$DRepAlreadyRegistered | 956f8bd2e0510aea |  | Conway/Rules/GovCert.hs:210-212

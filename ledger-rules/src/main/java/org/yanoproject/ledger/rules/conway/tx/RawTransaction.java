@@ -612,8 +612,9 @@ public final class RawTransaction {
         /**
          * {@code voting_procedures = {+ voter => {+ gov_action_id => voting_procedure}}}: {@code decodeMap} rejects
          * duplicate voters from version 9; each voter's map is non-empty without duplicate action ids
-         * (Procedures.hs:408-416), {@code voting_procedure = [vote, anchor / null]} with the vote 0–2
-         * ({@code decodeEnumBounded}) and the anchor with its bounds.
+         * (Procedures.hs:408-416), {@code voting_procedure = [vote, anchor / null]}, a definite-length {@code RecD}
+         * record (Procedures.hs:455-466), with the vote 0–2 ({@code decodeEnumBounded}) and the anchor with its
+         * bounds.
          */
         private void readVotes(CborSpan field) {
             TreeSet<RawVoter> seen = new TreeSet<>();
@@ -628,7 +629,7 @@ public final class RawTransaction {
                     if (ids.containsKey(id)) {
                         throw new TxDecodingException("duplicate governance action id " + id + " for " + voter);
                     }
-                    List<CborSpan> procedure = StrictCbor.array(action.getValue(), 2,
+                    List<CborSpan> procedure = StrictCbor.definiteArray(action.getValue(), 2,
                             "a voting procedure has 2 elements");
                     long vote = StrictCbor.unsignedLong(procedure.get(0));
                     if (vote > 2) {
@@ -802,8 +803,10 @@ public final class RawTransaction {
          * ({@code "Expected redeemers map to be non-empty"}, {@code decodeNonEmptyList}); both end in
          * {@code Map.fromList} of the entries in encoded order (the map form reverses its accumulator first), so a
          * later duplicate key replaces an earlier one. A key is a {@code Word8} tag 0–5 and a {@code Word32}
-         * index; the data is plutus-core's {@code decodeData}. CCL's redeemer view is lenient about these bounds, so
-         * the field is read here.
+         * index; the data is plutus-core's {@code decodeData}. A list element and a map key accept either length
+         * ({@code decodeRecordNamed}, {@code CBORGroup}); a map value {@code [data, ex_units]} is a tuple and
+         * {@code ex_units} a {@code RecD} record, both definite-length. CCL's redeemer view is lenient about these
+         * bounds, so the field is read here.
          */
         private void readRedeemers(CborSpan field) {
             TreeMap<Long, RawRedeemer> byKey = new TreeMap<>();
@@ -811,7 +814,7 @@ public final class RawTransaction {
             if (StrictCbor.major(field) == 5) {
                 for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(field)) {
                     List<CborSpan> key = StrictCbor.array(entry.getKey(), 2, "a redeemer key is [tag, index]");
-                    List<CborSpan> value = StrictCbor.array(entry.getValue(), 2,
+                    List<CborSpan> value = StrictCbor.definiteArray(entry.getValue(), 2,
                             "a redeemer value is [data, ex_units]");
                     RawRedeemer redeemer = redeemer(key.get(0), key.get(1), value.get(0), value.get(1));
                     byKey.put(redeemer.key(), redeemer);
@@ -835,16 +838,14 @@ public final class RawTransaction {
             long tag = StrictCbor.unsignedLong(tagItem);
             long index = StrictCbor.unsignedLong(indexItem);
             PlutusData.validate(data.bytes()); // data: plutus-core's decodeData
-            List<CborSpan> units = StrictCbor.array(exUnits, 2, "ex_units is [mem, steps]");
-            BigInteger mem = StrictCbor.unsigned(units.get(0));
-            BigInteger steps = StrictCbor.unsigned(units.get(1));
+            BigInteger[] units = BoundedFields.exUnits(exUnits, "ex_units");
             if (tag > 5) {
                 throw new TxDecodingException("redeemer tag " + tag);
             }
             if (index > 0xFFFF_FFFFL) {
                 throw new TxDecodingException("redeemer index " + index + " exceeds Word32");
             }
-            return new RawRedeemer((int) tag, index, mem, steps, data);
+            return new RawRedeemer((int) tag, index, units[0], units[1], data);
         }
     }
 }
