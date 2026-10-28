@@ -46,6 +46,7 @@ public final class AmaruCorpusNames {
             entry("FeeTooSmallUTxO", name(LedgerRuleName.UTXO, "FeeTooSmallUTxO")),
             entry("GovActionsDoNotExist", name(LedgerRuleName.GOV, "GovActionsDoNotExist")),
             entry("IncorrectDepositDELEG", name(LedgerRuleName.DELEG, "IncorrectDepositDELEG")),
+            entry("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit")),
             entry("IncorrectTotalCollateralField", name(LedgerRuleName.UTXO, "IncorrectTotalCollateralField")),
             entry("InputSetEmptyUTxO", name(LedgerRuleName.UTXO, "InputSetEmptyUTxO")),
             entry("InsufficientCollateral", name(LedgerRuleName.UTXO, "InsufficientCollateral")),

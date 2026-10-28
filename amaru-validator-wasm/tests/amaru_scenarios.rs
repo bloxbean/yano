@@ -319,6 +319,7 @@ fn haskell_name(corpus: &str) -> Option<(&'static str, &'static str)> {
         "FeeTooSmallUTxO" => ("UTXO", "FeeTooSmallUTxO"),
         "GovActionsDoNotExist" => ("GOV", "GovActionsDoNotExist"),
         "IncorrectDepositDELEG" => ("DELEG", "IncorrectDepositDELEG"),
+        "IncorrectDepositDRep" => ("GOVCERT", "ConwayDRepIncorrectDeposit"),
         "IncorrectTotalCollateralField" => ("UTXO", "IncorrectTotalCollateralField"),
         "InputSetEmptyUTxO" => ("UTXO", "InputSetEmptyUTxO"),
         "InsufficientCollateral" => ("UTXO", "InsufficientCollateral"),
