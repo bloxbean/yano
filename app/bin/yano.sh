@@ -131,9 +131,15 @@ appchain_cli() {
 }
 
 # The tooling owns the command list, so help always matches the installed
-# commands; without the tooling, explain where the commands come from.
+# commands; without the tooling, explain where the commands come from. An
+# explicit YANO_APPCHAIN_CLI that cannot run reports its own error.
 appchain_help() {
     local cli
+    if [ -n "${YANO_APPCHAIN_CLI:-}" ]; then
+        cli="$(appchain_cli)" || exit 1
+        cd "$CALLER_DIR"
+        exec "$cli" help
+    fi
     if cli="$(appchain_cli 2>/dev/null)"; then
         cd "$CALLER_DIR"
         exec "$cli" help
