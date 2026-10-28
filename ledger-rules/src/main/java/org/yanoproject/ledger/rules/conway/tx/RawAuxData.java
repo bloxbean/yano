@@ -18,7 +18,8 @@ import java.util.Set;
  *
  * <ul>
  *   <li>a map: Shelley metadata only;</li>
- *   <li>an array: Allegra {@code [metadata, [native_script]]} (exactly two fields);</li>
+ *   <li>an array: Allegra {@code [metadata, [native_script]]}, a {@code RecD} record: exactly two fields, definite
+ *       length only;</li>
  *   <li>tag 259: a sparse keyed map, no duplicate key: 0 metadata, 1 native scripts, 2/3/4 Plutus V1/V2/V3 scripts
  *       ({@code guardPlutus}: PlutusV4, key 5, is not a Conway language), any other key is invalid.</li>
  * </ul>
@@ -51,10 +52,7 @@ public final class RawAuxData {
         switch (StrictCbor.major(auxData)) {
             case 5 -> metadata(auxData);
             case 4 -> {
-                List<CborSpan> fields = StrictCbor.array(auxData);
-                if (fields.size() != 2) {
-                    throw new TxDecodingException("Allegra auxiliary data has 2 elements, found " + fields.size());
-                }
+                List<CborSpan> fields = StrictCbor.definiteArray(auxData, 2, "Allegra auxiliary data has 2 elements");
                 metadata(fields.get(0));
                 StrictCbor.array(fields.get(1));
             }

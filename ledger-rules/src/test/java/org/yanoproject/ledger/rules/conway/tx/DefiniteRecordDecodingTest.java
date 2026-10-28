@@ -186,6 +186,17 @@ class DefiniteRecordDecodingTest {
     }
 
     @Test
+    void allegraAuxiliaryDataIsARecD() {
+        // RecD AlonzoTxAuxDataRaw below version 12 (Alonzo/TxAuxData.hs:245-251); decodeRecordNamed only from 12.
+        // cardano-cbor-dataset labels auxiliary_data/valid/00003 and 00025, indefinite [metadata, scripts], valid:
+        // its labels come from the test-only decoder (testlib Test/Cardano/Ledger/Alonzo/Binary/Annotator.hs:118-136).
+        decodes(() -> RawAuxData.validate(span("82a080")));
+        refuses(() -> RawAuxData.validate(span("9fa080ff")));
+        // the metadata map and the script list inside it may be indefinite (decodeMap, decodeStrictSeq)
+        decodes(() -> RawAuxData.validate(span("82bf01a0ff9fff")));
+    }
+
+    @Test
     void aRetirementEpochIsAWord64() {
         // EpochNo is a Word64 (cardano-slotting): corpus certificate/valid/00012 retires at 17069553666615204442.
         String retire = "8304581cb61ff172da09387f7ce3475fae789c28651358088e404c79e7e96cff";
