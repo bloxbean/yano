@@ -699,10 +699,9 @@ final class ScriptAnchorService {
                 .withTxEvaluator(new JulcTransactionEvaluator(
                         cclUtxoSupplier, this::effectiveProtocolParams, scriptHash -> java.util.Optional.empty()))
                 .withSigner(SignerProviders.signerFrom(walletKey));
-        long ttl = txTtl();
-        if (ttl > 0) {
-            context = context.validTo(ttl);
-        }
+        // No validity upper bound: the anchor scripts do not read the validity range, and a bound would have to stay
+        // within the ledger's forecast horizon to be convertible to time (TimeTranslationPastHorizon), which on a
+        // network with short epochs is closer than any fixed window. Spending the thread UTxO orders anchor txs.
         return context;
     }
 
@@ -1979,12 +1978,6 @@ final class ScriptAnchorService {
                 .filter(u -> u.assets() == null || u.assets().isEmpty())
                 .sorted(Comparator.comparing((Utxo u) -> u.lovelace()).reversed())
                 .toList();
-    }
-
-    private long txTtl() {
-        AppChainEngine.L1Ref currentPoint = observedL1TipPoint();
-        return currentPoint != null && currentPoint.slot() > 0
-                ? currentPoint.slot() + anchorConfig.validitySlots() : 0;
     }
 
     private static boolean carriesThreadToken(Value value, byte[] policyId) {
