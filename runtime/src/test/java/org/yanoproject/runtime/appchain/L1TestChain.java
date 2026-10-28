@@ -5,7 +5,10 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.Map;
 import co.nstant.in.cbor.model.SimpleValue;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.transaction.raw.RawBlockBody;
+import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
@@ -16,6 +19,7 @@ import org.yanoproject.api.ChainBlockReader;
 import org.yanoproject.runtime.blockproducer.DevnetBlockBuilder;
 import org.yanoproject.runtime.chain.InMemoryChainState;
 
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -205,20 +209,33 @@ final class L1TestChain {
         };
     }
 
-    /** Marks chosen transaction indexes phase-2 invalid, as a real block's invalid_transactions list would. */
+    /**
+     * Marks chosen transaction indexes phase-2 invalid, as a real block's invalid_transactions list would: their
+     * isValid flag is set false and the body is built without the producer's guard against such transactions.
+     */
     private static final class InvalidMarkingBuilder extends DevnetBlockBuilder {
         private Set<Integer> invalid = Set.of();
 
         @Override
-        protected BlockBodyResult computeBlockBody(List<byte[]> transactions) {
-            BlockBodyResult body = super.computeBlockBody(transactions);
+        protected RawBlockBody computeBlockBody(List<byte[]> transactions) {
             if (invalid.isEmpty()) {
-                return body;
+                return super.computeBlockBody(transactions);
             }
-            Array invalidTransactions = new Array();
-            invalid.stream().sorted().forEach(index -> invalidTransactions.add(new UnsignedInteger(index)));
-            return new BlockBodyResult(body.txBodiesArray(), body.txWitnessesArray(), body.auxDataMap(),
-                    invalidTransactions, body.bodySize(), body.bodyHash());
+            List<byte[]> marked = new ArrayList<>(transactions);
+            invalid.forEach(index -> marked.set(index, phase2Invalid(transactions.get(index))));
+            return RawBlockBody.of(com.bloxbean.cardano.client.spec.Era.Conway, marked);
+        }
+
+        /** The transaction as {@code [body, witnesses, false, aux / null]}. */
+        private static byte[] phase2Invalid(byte[] transaction) {
+            RawTx tx = RawTx.of(transaction);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(0x84);
+            out.writeBytes(tx.body().bytes());
+            out.writeBytes(tx.witnessSet().bytes());
+            out.write(0xf4);
+            out.writeBytes(tx.auxData().map(CborSpan::bytes).orElse(new byte[]{(byte) 0xf6}));
+            return out.toByteArray();
         }
     }
 }

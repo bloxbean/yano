@@ -5,10 +5,12 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.Map;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.ExUnits;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
+import com.bloxbean.cardano.client.transaction.raw.RawBlock;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.yaci.core.model.Block;
@@ -172,7 +174,7 @@ class DevnetBlockBuilderTest {
     void fitTransactionsUsesExactEncodedBodySizeAndKeepsInsertionOrderedPrefix() throws Exception {
         byte[] tx = buildSampleTxCbor();
         List<byte[]> candidates = IntStream.range(0, 30).mapToObj(ignored -> tx).toList();
-        long exactLimit = builder.computeBlockBody(candidates.subList(0, 24)).bodySize();
+        long exactLimit = builder.computeBlockBody(candidates.subList(0, 24)).size();
         AtomicLong requestedSlot = new AtomicLong(-1);
         var limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2),
@@ -185,14 +187,14 @@ class DevnetBlockBuilderTest {
 
         assertThat(requestedSlot).hasValue(321);
         assertThat(selected).hasSize(24).containsExactlyElementsOf(candidates.subList(0, 24));
-        assertThat(limitedBuilder.computeBlockBody(selected).bodySize()).isEqualTo(exactLimit);
+        assertThat(limitedBuilder.computeBlockBody(selected).size()).isEqualTo(exactLimit);
         assertThat(limitedBuilder.buildBlock(1, 321, new byte[32], selected).blockCbor()).isNotEmpty();
     }
 
     @Test
     void buildBlockRejectsBodyAboveEffectiveProtocolLimit() throws Exception {
         byte[] tx = buildSampleTxCbor();
-        long oneTransactionSize = builder.computeBlockBody(List.of(tx)).bodySize();
+        long oneTransactionSize = builder.computeBlockBody(List.of(tx)).size();
         var limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2), slot -> oneTransactionSize);
 
@@ -206,7 +208,7 @@ class DevnetBlockBuilderTest {
         byte[] first = buildTransactionWithExUnits(30, 40);
         byte[] second = buildTransactionWithExUnits(20, 30);
         byte[] third = buildTransactionWithExUnits(1, 1);
-        long bodyLimit = builder.computeBlockBody(List.of(first, second, third)).bodySize();
+        long bodyLimit = builder.computeBlockBody(List.of(first, second, third)).size();
         var limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2),
                 limits(bodyLimit, 50, 70));
@@ -223,7 +225,7 @@ class DevnetBlockBuilderTest {
     void buildBlockRejectsAggregateExecutionUnitsWhenFitIsBypassed() throws Exception {
         byte[] first = buildTransactionWithExUnits(30, 40);
         byte[] second = buildTransactionWithExUnits(21, 31);
-        long bodyLimit = builder.computeBlockBody(List.of(first, second)).bodySize();
+        long bodyLimit = builder.computeBlockBody(List.of(first, second)).size();
         var limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2),
                 limits(bodyLimit, 50, 70));
@@ -239,7 +241,7 @@ class DevnetBlockBuilderTest {
     void fitTransactionsAcceptsExactExecutionUnitBoundary() throws Exception {
         byte[] first = buildTransactionWithExUnits(30, 40);
         byte[] second = buildTransactionWithExUnits(20, 30);
-        long bodyLimit = builder.computeBlockBody(List.of(first, second)).bodySize();
+        long bodyLimit = builder.computeBlockBody(List.of(first, second)).size();
         var limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2),
                 limits(bodyLimit, 50, 70));
@@ -251,7 +253,7 @@ class DevnetBlockBuilderTest {
     @Test
     void fitTransactionsIdentifiesFirstTransactionThatCannotFitEmptyBlock() throws Exception {
         byte[] transaction = buildTransactionWithExUnits(51, 1);
-        long bodyLimit = builder.computeBlockBody(List.of(transaction)).bodySize();
+        long bodyLimit = builder.computeBlockBody(List.of(transaction)).size();
         var limitedBuilder = new DevnetBlockBuilder(
                 ProtocolVersionSupplier.fixed(10, 2),
                 limits(bodyLimit, 50, 70));
@@ -263,18 +265,96 @@ class DevnetBlockBuilderTest {
                         .getTxHash(transaction));
     }
 
+    @Test
+    void buildBlockCarriesEveryTransactionAsSubmitted() {
+        List<byte[]> txs = BlockTestUtil.transactionsInNonCanonicalEncodings();
+
+        var result = builder.buildBlock(1, 100, new byte[32], txs);
+
+        BlockTestUtil.assertCarriesTransactionsAsSubmitted(result.blockCbor(), txs);
+        assertArrayEquals(Blake2bUtil.blake2bHash256(RawBlock.of(result.blockCbor()).header().bytes()),
+                result.blockHash());
+    }
+
+    @Test
+    void realConwayBlocksRebuiltFromTheirTransactionsHaveTheirOriginalBody() throws Exception {
+        for (String name : List.of("conway2.block", "conway3.block", "conway4.block")) {
+            RawBlock original;
+            try (var stream = DevnetBlockBuilderTest.class.getResourceAsStream("/wallet/eras/" + name)) {
+                original = RawBlock.of(HexUtil.decodeHexString(new String(stream.readAllBytes()).trim()));
+            }
+            List<byte[]> txs = IntStream.range(0, original.txCount()).mapToObj(original::txBytes).toList();
+
+            var body = builder.computeBlockBody(txs);
+
+            assertThat(body.hash()).as(name).isEqualTo(original.bodyHash());
+            var result = builder.buildBlock(1, 100, new byte[32], txs);
+            BlockTestUtil.assertCarriesTransactionsAsSubmitted(result.blockCbor(), txs);
+        }
+    }
+
+    @Test
+    void fitTransactionsIsExactAcrossContainerEncodings() throws Exception {
+        // 300 distinct transactions: the body arrays turn indefinite-length above 23 entries
+        List<byte[]> candidates = IntStream.range(0, 300)
+                .mapToObj(i -> HexUtil.decodeHexString("84" + "a3" + "0080" + "0180" + "02" + "19"
+                        + String.format("%04x", i) + "a0" + "f5" + (i % 3 == 0 ? "a10000" : "f6")))
+                .toList();
+        for (int fitting : new int[]{23, 24, 257, 300}) {
+            long limit = builder.computeBlockBody(candidates.subList(0, fitting)).size();
+            DevnetBlockBuilder limited = new DevnetBlockBuilder(ProtocolVersionSupplier.fixed(10, 2),
+                    limits(limit, Long.MAX_VALUE, Long.MAX_VALUE));
+            DevnetBlockBuilder oneByteShort = new DevnetBlockBuilder(ProtocolVersionSupplier.fixed(10, 2),
+                    limits(limit - 1, Long.MAX_VALUE, Long.MAX_VALUE));
+
+            assertThat(limited.fitTransactions(1, candidates)).as("limit of %d transactions", fitting)
+                    .hasSize(fitting);
+            assertThat(oneByteShort.fitTransactions(1, candidates)).as("a byte short of %d", fitting)
+                    .hasSize(fitting - 1);
+            // the ledger's layout: definite-length up to 23 entries, indefinite above
+            RawBlock block = RawBlock.of(builder.buildBlock(1, 100, new byte[32], candidates.subList(0, fitting))
+                    .blockCbor());
+            assertThat(block.transactionBodies().isIndefinite()).isEqualTo(fitting > 23);
+            assertThat(block.auxiliaryDataSet().isIndefinite()).isEqualTo((fitting + 2) / 3 > 23);
+        }
+    }
+
+    @Test
+    void aTransactionTheRawViewCannotReadIsRefusedAsUnfit() {
+        // a body repeating key 2: CCL's model (used at admission) keeps the last value; the raw view rejects it
+        byte[] repeatedKey = HexUtil.decodeHexString("84" + "a4" + "0080" + "0180" + "0200" + "0201" + "a0" + "f5" + "f6");
+        String hash = com.bloxbean.cardano.client.transaction.util.TransactionUtil.getTxHash(repeatedKey);
+        DevnetBlockBuilder limited = new DevnetBlockBuilder(ProtocolVersionSupplier.fixed(10, 2),
+                limits(90_000, Long.MAX_VALUE, Long.MAX_VALUE));
+
+        assertThatThrownBy(() -> builder.buildBlock(1, 100, new byte[32], List.of(repeatedKey)))
+                .isInstanceOf(UnfitBlockTransactionException.class)
+                .extracting(failure -> ((UnfitBlockTransactionException) failure).transactionHash())
+                .isEqualTo(hash);
+        assertThatThrownBy(() -> limited.fitTransactions(1, List.of(repeatedKey)))
+                .isInstanceOf(UnfitBlockTransactionException.class)
+                .extracting(failure -> ((UnfitBlockTransactionException) failure).transactionHash())
+                .isEqualTo(hash);
+    }
+
+    @Test
+    void phase2InvalidTransactionIsRefusedAsUnfit() throws Exception {
+        byte[] valid = buildSampleTxCbor();
+        byte[] invalid = valid.clone();
+        invalid[invalid.length - 2] = (byte) 0xf4; // [body, witnesses, true, null] -> isValid false
+
+        assertThatThrownBy(() -> builder.buildBlock(1, 100, new byte[32], List.of(valid, invalid)))
+                .isInstanceOf(UnfitBlockTransactionException.class)
+                .extracting(failure -> ((UnfitBlockTransactionException) failure).transactionHash())
+                .isEqualTo(com.bloxbean.cardano.client.transaction.util.TransactionUtil.getTxHash(invalid));
+    }
+
     /**
      * Same as extractRawBytesAndCompare but uses a non-canonically encoded transaction
-     * (map keys in descending order, which canonical mode will re-sort).
-     * This simulates real-world tx submission where wallets produce non-canonical CBOR.
+     * (map keys in descending order), as wallets produce.
      *
-     * The Haskell node's decodeWithBytes captures the bytes AS-IS from the block CBOR stream.
-     * If computeBlockBody re-serializes components (canonical mode), but the block CBOR
-     * was also serialized canonical, they should still match -- unless the CBOR library
-     * produces different canonical forms for nested vs standalone serialization.
-     *
-     * More critically: if we ever embed raw (non-canonical) tx bytes directly into the
-     * block rather than round-tripping through DataItem, this would break.
+     * The Haskell node's decodeWithBytes captures the bytes AS-IS from the block CBOR stream and hashes them, so the
+     * block must carry the transaction's original bytes and the body hash must be computed over the same bytes.
      */
     @Test
     void extractRawBytesAndCompare_nonCanonicalTx() throws Exception {
@@ -292,12 +372,10 @@ class DevnetBlockBuilderTest {
             System.out.println("  Re-serialized: " + HexUtil.encodeHexString(reserializedTx));
         }
 
-        // Now build a block with this non-canonical tx
-        // DevnetBlockBuilder.splitTransaction deserializes the tx and adds DataItems to arrays.
-        // Then computeBlockBody serializes each array canonically.
-        // The full block is also serialized canonically.
-        // So both paths go through canonical serialization and should match.
+        // Build a block with this non-canonical tx: it carries the original bytes, and the body hash covers them
         extractAndCompareForBlock(List.of(nonCanonicalTx));
+        BlockTestUtil.assertCarriesTransactionsAsSubmitted(
+                builder.buildBlock(1, 100, new byte[32], List.of(nonCanonicalTx)).blockCbor(), List.of(nonCanonicalTx));
     }
 
     /**
@@ -553,12 +631,13 @@ class DevnetBlockBuilderTest {
 
         assertEquals(innerBytes.length, ipos, "Should have consumed all inner bytes");
 
-        // ---- Step 2: Get standalone serialization bytes (what computeBlockBody uses for hash) ----
+        // ---- Step 2: The body parts as CCL's RawBlock reads them, and the body computeBlockBody hashes ----
         var body = builder.computeBlockBody(txs);
-        byte[] standaloneTxBodies = CborSerializationUtil.serialize(body.txBodiesArray());
-        byte[] standaloneWitnesses = CborSerializationUtil.serialize(body.txWitnessesArray());
-        byte[] standaloneAuxData = CborSerializationUtil.serialize(body.auxDataMap());
-        byte[] standaloneInvalidTxs = CborSerializationUtil.serialize(body.invalidTxsArray());
+        RawBlock rawBlock = RawBlock.of(blockCbor);
+        byte[] standaloneTxBodies = rawBlock.transactionBodies().bytes();
+        byte[] standaloneWitnesses = rawBlock.transactionWitnessSets().bytes();
+        byte[] standaloneAuxData = rawBlock.auxiliaryDataSet().bytes();
+        byte[] standaloneInvalidTxs = rawBlock.invalidTransactions().orElseThrow().bytes();
 
         // ---- Step 3: Compare ----
         System.out.println("\n--- Comparison ---");
@@ -607,7 +686,7 @@ class DevnetBlockBuilderTest {
         System.arraycopy(rawH4, 0, rawCombined, 96, 32);
         byte[] rawBodyHash = com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash256(rawCombined);
 
-        byte[] declaredBodyHash = body.bodyHash();
+        byte[] declaredBodyHash = body.hash();
 
         System.out.println("\nBody hash from raw extracted bytes: " + HexUtil.encodeHexString(rawBodyHash));
         System.out.println("Body hash from standalone (header): " + HexUtil.encodeHexString(declaredBodyHash));
@@ -857,16 +936,17 @@ class DevnetBlockBuilderTest {
 
         // Dump the body component bytes individually
         var body = builder.computeBlockBody(List.of());
-        byte[] txBodiesBytes = CborSerializationUtil.serialize(body.txBodiesArray());
-        byte[] witnessesBytes = CborSerializationUtil.serialize(body.txWitnessesArray());
-        byte[] auxDataBytes = CborSerializationUtil.serialize(body.auxDataMap());
-        byte[] invalidTxsBytes = CborSerializationUtil.serialize(body.invalidTxsArray());
+        RawBlock rawBlock = RawBlock.of(result.blockCbor());
+        byte[] txBodiesBytes = rawBlock.transactionBodies().bytes();
+        byte[] witnessesBytes = rawBlock.transactionWitnessSets().bytes();
+        byte[] auxDataBytes = rawBlock.auxiliaryDataSet().bytes();
+        byte[] invalidTxsBytes = rawBlock.invalidTransactions().orElseThrow().bytes();
         System.out.println("txBodies_hex=" + HexUtil.encodeHexString(txBodiesBytes));
         System.out.println("witnesses_hex=" + HexUtil.encodeHexString(witnessesBytes));
         System.out.println("auxData_hex=" + HexUtil.encodeHexString(auxDataBytes));
         System.out.println("invalidTxs_hex=" + HexUtil.encodeHexString(invalidTxsBytes));
-        System.out.println("bodyHash=" + HexUtil.encodeHexString(body.bodyHash()));
-        System.out.println("bodySize=" + body.bodySize());
+        System.out.println("bodyHash=" + HexUtil.encodeHexString(body.hash()));
+        System.out.println("bodySize=" + body.size());
     }
 
 }
