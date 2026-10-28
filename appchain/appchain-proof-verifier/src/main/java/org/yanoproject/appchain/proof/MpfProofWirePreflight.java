@@ -5,6 +5,9 @@ package org.yanoproject.appchain.proof;
  * upstream verifier. It accepts the serializer's definite-length v1 grammar
  * (plus legacy untagged branch steps) and rejects nested or trailing data
  * before a general-purpose recursive CBOR decoder sees untrusted bytes.
+ *
+ * <p>Proofs follow the Aiken library's canonical steps: a branch whose only
+ * other child is a leaf is a {@code Leaf} step, wherever it is on the path.
  */
 public final class MpfProofWirePreflight {
     private static final long TAG_BRANCH = 121;
@@ -34,7 +37,7 @@ public final class MpfProofWirePreflight {
             int consumedNibbles = 0;
             for (int index = 0; index < steps; index++) {
                 int remainingNibbles = MAX_PATH_NIBBLES - consumedNibbles;
-                int skip = parser.readStep(index == steps - 1, remainingNibbles);
+                int skip = parser.readStep(remainingNibbles);
                 consumedNibbles += 1 + skip;
             }
             return parser.offset == wire.length;
@@ -43,7 +46,7 @@ public final class MpfProofWirePreflight {
         }
     }
 
-    private int readStep(boolean last, int remainingNibbles) {
+    private int readStep(int remainingNibbles) {
         long tag = readOptionalTag();
         int fields = readContainerLength(4);
         if (tag == -1 || tag == TAG_BRANCH) {
@@ -77,7 +80,7 @@ public final class MpfProofWirePreflight {
             return skip;
         }
         if (tag == TAG_LEAF) {
-            if (!last || fields != 3) {
+            if (fields != 3) {
                 throw malformed();
             }
             int skip = readSkip(remainingNibbles);
