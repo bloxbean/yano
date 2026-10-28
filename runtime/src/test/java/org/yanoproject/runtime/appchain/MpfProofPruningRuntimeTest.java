@@ -79,11 +79,14 @@ class MpfProofPruningRuntimeTest {
                 executor.shutdownNow();
             }
 
+            // CCL's mark-set names: 0.8.0-pre7 onwards, and 0.8.0-pre6.
             try (ColumnFamilyOptions options = new ColumnFamilyOptions();
-                 ColumnFamilyHandle ignored = ledger.mpfNodeStore().db().createColumnFamily(
+                 ColumnFamilyHandle current = ledger.mpfNodeStore().db().createColumnFamily(
+                         new ColumnFamilyDescriptor(bytes("__vds_gc_marks_1234567890"), options));
+                 ColumnFamilyHandle legacy = ledger.mpfNodeStore().db().createColumnFamily(
                          new ColumnFamilyDescriptor(
                                  bytes("marks_interrupted_process_test"), options))) {
-                // Closing the handle without dropping the family simulates process death after
+                // Closing the handles without dropping the families simulates process death after
                 // CCL created its on-disk mark set.
             }
         }
@@ -97,7 +100,7 @@ class MpfProofPruningRuntimeTest {
         try (Options options = new Options()) {
             assertThat(RocksDB.listColumnFamilies(options, path.toString()).stream()
                     .map(name -> new String(name, StandardCharsets.UTF_8)))
-                    .noneMatch(name -> name.startsWith("marks_"));
+                    .noneMatch(name -> name.startsWith("marks_") || name.startsWith("__vds_gc_marks_"));
         }
     }
 
