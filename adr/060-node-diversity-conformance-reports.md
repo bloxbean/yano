@@ -102,13 +102,14 @@ verifies them. Each report records the corpus it ran on where the schema allows 
   This rule matters because Haskell's STS ordering puts `UTXOW` failures before `CERTS` failures (`RuleFrame`). A
   fixture can name a predicate that Haskell reports second, and both Haskell's checker and pragma's own cardano-node
   report treat "among the failures" as a match.
-- **Loader changes:** the corpus-name table gains the two names the newest fixtures use (`DRepNotRegistered`,
-  `StakeKeyNotRegistered`). The loader also accepts pragma's layout, where shared documents sit beside `scenarios/`
-  rather than under `common/`.
-- **Expected score:** 283/284. Fixture 00280 expects `OutputTooBigUTxO` for a Byron address with oversized
-  attributes. In Haskell that transaction fails only `OutputBootAddrAttrsTooBig`: `validateOutputTooBigUTxO` measures
-  the serialized *value* (`Alonzo/Rules/Utxo.hs`), and Babbage/Conway run both checks. Yano agrees with Haskell. The
-  fixture is reported upstream rather than worked around.
+- **Loader changes:** the corpus-name table gains the names the newest fixtures use (`DRepNotRegistered`,
+  `StakeKeyNotRegistered`, and from corpus `e02a9e1c` `IncorrectDepositDRep`, Haskell's GOVCERT
+  `ConwayDRepIncorrectDeposit`). The loader also accepts pragma's layout, where shared documents sit beside
+  `scenarios/` rather than under `common/`.
+- **Expected score:** 289/290 at corpus `e02a9e1c` (283/284 at `9d14fd8c`). Fixture 00280 expects `OutputTooBigUTxO` for
+  a Byron address with oversized attributes. In Haskell that transaction fails only `OutputBootAddrAttrsTooBig`:
+  `validateOutputTooBigUTxO` measures the serialized *value* (`Alonzo/Rules/Utxo.hs`), and Babbage/Conway run both
+  checks. Yano agrees with Haskell. The fixture is to be raised upstream rather than worked around.
 
 ### 4. uplc-conformance: julc, as phase 2 runs it
 
@@ -239,22 +240,33 @@ Scored by the site's own builder (`score-reports.sh`), beside the cardano-node a
 
 The cardano-node and Amaru ledger-rules reports predate the seven newest fixtures, which count as missing for them.
 
+At corpus `e02a9e1c` (2026-10-28, `main` 7f92fbe6a, same libraries) Yano scores ledger-rules 289/290 (the six new
+fixtures pass); uplc-conformance, uplc-turbo and cbor-decoding are unchanged, for 98.90% overall under the site's
+scoring rules.
+
 Findings, none of them masked in the harness:
 
 1. **ledger-rules fixture 00280 (upstream).** It expects `OutputTooBigUTxO` for an output to a Byron address with
    oversized attributes. Haskell reports only `OutputBootAddrAttrsTooBig`: `validateOutputTooBigUTxO` measures the
-   value. That is what Yano reports, and the scenario schema has no such predicate.
+   value. That is what Yano reports, and the scenario schema has no such predicate. The fixture's two outputs carry
+   plain lovelace and `max_value_size` is 5,000, so `OutputTooBigUTxO` cannot fire, yet pragma's cardano-node and
+   Amaru reports both give `OutputTooBigUTxO`. Yano's result is not mapped to match them; the question goes to the
+   corpus maintainers.
 2. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
-   Haskell rejects them. `verifySignature`, the legacy name of `verifyEd25519Signature`, is not recognized. All seven
-   are text-only: a `value` constant has no Flat form, and the alias vector's Flat program decodes and evaluates
-   correctly. Chain data is not affected.
+   Haskell rejects them (plutus `conValue` requires canonical form): bloxbean/julc#260. `verifySignature`, the legacy
+   name of `verifyEd25519Signature`, is not recognized; plutus master's parser does not recognize it either (names
+   come from `display`), so it is not counted as a julc bug. All seven are text-only: a `value` constant has no Flat
+   form, and the alias vector's Flat program decodes and evaluates correctly. Chain data is not affected.
 3. **Not a finding: `term/constr/constr-07`.** Its text has a negative `constr` tag and expects a parse error. Its
    Flat form encodes the tag as 2^64-5, which Haskell's `Word64` decoder accepts, as julc does
    (`Core/Instance/Flat.hs`). Parsing the text first, as the reference harness does, reports the expected parse
    error.
 4. **julc performance.** Two turbo scripts are more than twice their CPU budget: `8100C5F1…` (315 ms, 1.6 GB
    allocated; Amaru also fails it) and `12B28FF8…`. Ten small scripts allocate more than twice their memory budget
-   on the JVM. Every turbo budget agrees with cardano-node's and Amaru's.
+   on the JVM. Every turbo budget agrees with cardano-node's and Amaru's. Both are bloxbean/julc#259, part 2. Part 1
+   (bloxbean/julc#261, `JavaVmProvider.prepare`) lets the harness time CEK evaluation alone, as the scenario
+   requires; measured with a local build it changes no budget and gives 3986/3997, and the harness moves to it once
+   it is released.
 5. **CCL model decoders (production), cardano-client-lib#717.** 255 of the 288 cbor-decoding misses are valid samples
    that CCL 0.8.0-pre6 fails to decode. Yano's validation engine runs `Transaction.deserialize` first, so the node
    would refuse such transactions. Causes:
