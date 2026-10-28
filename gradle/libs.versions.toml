@@ -1,6 +1,6 @@
 [versions]
 yaci = "0.5.0-pre14"
-cardano-client-lib = "0.8.0-pre7-SNAPSHOT"
+cardano-client-lib = "0.8.0-pre7"
 julc="0.1.0-pre19"
 zeroj = "0.1.0-pre13"
 bouncycastle = "1.84"
