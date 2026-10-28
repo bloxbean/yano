@@ -36,6 +36,7 @@ public final class AmaruCorpusNames {
             entry("ConwayTreasuryValueMismatch", name(LedgerRuleName.LEDGER, "ConwayTreasuryValueMismatch")),
             entry("ConwayTxRefScriptsSizeTooBig", name(LedgerRuleName.LEDGER, "ConwayTxRefScriptsSizeTooBig")),
             entry("ConwayWdrlNotDelegatedToDRep", name(LedgerRuleName.LEDGER, "ConwayWdrlNotDelegatedToDRep")),
+            entry("DRepNotRegistered", name(LedgerRuleName.GOVCERT, "ConwayDRepNotRegistered")),
             entry("DRepAlreadyRegistered", name(LedgerRuleName.GOVCERT, "ConwayDRepAlreadyRegistered")),
             entry("DelegateeDRepNotRegistered", name(LedgerRuleName.DELEG, "DelegateeDRepNotRegisteredDELEG")),
             entry("DelegateeStakePoolNotRegistered",
@@ -45,6 +46,7 @@ public final class AmaruCorpusNames {
             entry("FeeTooSmallUTxO", name(LedgerRuleName.UTXO, "FeeTooSmallUTxO")),
             entry("GovActionsDoNotExist", name(LedgerRuleName.GOV, "GovActionsDoNotExist")),
             entry("IncorrectDepositDELEG", name(LedgerRuleName.DELEG, "IncorrectDepositDELEG")),
+            entry("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit")),
             entry("IncorrectTotalCollateralField", name(LedgerRuleName.UTXO, "IncorrectTotalCollateralField")),
             entry("InputSetEmptyUTxO", name(LedgerRuleName.UTXO, "InputSetEmptyUTxO")),
             entry("InsufficientCollateral", name(LedgerRuleName.UTXO, "InsufficientCollateral")),
@@ -77,6 +79,7 @@ public final class AmaruCorpusNames {
             entry("StakeKeyHasNonZeroAccountBalance",
                     name(LedgerRuleName.DELEG, "StakeKeyHasNonZeroAccountBalanceDELEG")),
             entry("StakeKeyRegistered", name(LedgerRuleName.DELEG, "StakeKeyRegisteredDELEG")),
+            entry("StakeKeyNotRegistered", name(LedgerRuleName.DELEG, "StakeKeyNotRegisteredDELEG")),
             entry("StakePoolCostTooLowPOOL", name(LedgerRuleName.POOL, "StakePoolCostTooLowPOOL")),
             entry("StakePoolNotRegisteredOnKeyPOOL", name(LedgerRuleName.POOL, "StakePoolNotRegisteredOnKeyPOOL")),
             entry("StakePoolRetirementWrongEpochPOOL",
@@ -123,5 +126,21 @@ public final class AmaruCorpusNames {
     /** @return the Haskell name for a corpus predicate, or empty when the table has no entry */
     public static Optional<HaskellName> haskellName(String corpusName) {
         return Optional.ofNullable(NAMES.get(corpusName));
+    }
+
+    /**
+     * The corpus name for a Haskell {@code RULE.Constructor}, aliases included. Where several corpus names share one
+     * Haskell constructor ({@code StakeKeyNotRegisteredDELEG}), the first in alphabetical order, which is also the
+     * default of Amaru's Haskell checker ({@code normalizeDelegFailure}).
+     *
+     * @return the corpus name, or empty when no corpus name maps to the constructor
+     */
+    public static Optional<String> corpusName(String qualifiedName) {
+        return NAMES.entrySet().stream()
+                .filter(e -> (e.getValue().rule() + "." + e.getValue().constructor()).equals(qualifiedName)
+                        || aliases(e.getKey()).contains(qualifiedName))
+                .map(Map.Entry::getKey)
+                .sorted()
+                .findFirst();
     }
 }
