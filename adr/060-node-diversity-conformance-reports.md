@@ -117,16 +117,18 @@ The harness follows Amaru's `crates/amaru-uplc/tests/conformance.rs`, which defi
 
 - **Ids and labels:** `<path below the Plutus-version folder, non-alphanumerics as _, lower case>_<v1|v2|v3>`, with
   the group (the grandparent path) and title (the folder name, `-`/`_` as spaces) taken from the path.
-- **Evaluation:**
-  - parse the textual program first, as the reference harness does; a text that does not parse is a
-    `"parse/decode error"`;
-  - then take the vector's `.flat` program when it has one, decoded as phase 2 decodes a script
+- **Evaluation**, in the order the reference report is produced (Amaru's `tests/conformance/run-haskell.sh`, which
+  runs Plutus' `uplc`):
+  - the vector's `.flat` program first, when it has one, decoded as phase 2 decodes a script
     (`JulcScriptAdapter.toProgram`: `UplcFlatDecoder` with the decoding limits of the protocol version and language).
-    On chain, scripts are Flat, so this is the decoder Yano depends on. A vector with no Flat form (a `value`
-    constant) keeps its text;
-  - reject what the protocol version or Plutus version does not allow (program version 1.1.0 before protocol 11, and
-    builtins unavailable for the language and protocol), as Haskell's decoder does (`ProgramValidator`);
-  - evaluate on `JavaVmProvider` with the corpus cost model for (protocol, language), a budget of 10B CPU / 14M
+    On chain, scripts are Flat, so this is the decoder Yano depends on. If it evaluates successfully, that result is
+    reported;
+  - otherwise (no Flat form, as for a `value` constant; a Flat program that does not decode; or one whose evaluation
+    fails) the textual program, whose outcome is reported; a text that does not parse is a `"parse/decode error"`;
+  - each program is first checked against what the protocol version or Plutus version allows (program version 1.1.0
+    before protocol 11, and builtins unavailable for the language and protocol), as Haskell's decoder does
+    (`ProgramValidator`);
+  - evaluation is on `JavaVmProvider` with the corpus cost model for (protocol, language), a budget of 10B CPU / 14M
     memory, and phase 2's evaluation options.
 - **Reporting:**
   - when the result term is alpha-equivalent to the parsed expected output, the report carries the expected text
@@ -241,8 +243,9 @@ Scored by the site's own builder (`score-reports.sh`), beside the cardano-node a
 The cardano-node and Amaru ledger-rules reports predate the seven newest fixtures, which count as missing for them.
 
 At corpus `e02a9e1c` (2026-10-28, `main` 7f92fbe6a, same libraries) Yano scores ledger-rules 289/290 (the six new
-fixtures pass); uplc-conformance, uplc-turbo and cbor-decoding are unchanged, for 98.90% overall under the site's
-scoring rules.
+fixtures pass) and, with the Flat-first evaluation order (§4), uplc-conformance 1058/1064; uplc-turbo and
+cbor-decoding are unchanged, for 98.92% overall under the site's scoring rules. With a local build of julc #261 and
+#262: uplc-conformance 1064/1064 and uplc-turbo 3986/3997, every other result identical, for 99.06%.
 
 Findings, none of them masked in the harness:
 
@@ -253,14 +256,14 @@ Findings, none of them masked in the harness:
    Amaru reports both give `OutputTooBigUTxO`. Yano's result is not mapped to match them; the question goes to the
    corpus maintainers.
 2. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
-   Haskell rejects them (plutus `conValue` requires canonical form): bloxbean/julc#260. `verifySignature`, the legacy
-   name of `verifyEd25519Signature`, is not recognized; plutus master's parser does not recognize it either (names
-   come from `display`), so it is not counted as a julc bug. All seven are text-only: a `value` constant has no Flat
-   form, and the alias vector's Flat program decodes and evaluates correctly. Chain data is not affected.
+   Haskell rejects them (plutus `conValue` requires canonical form, plutus #7816): bloxbean/julc#260, fixed by
+   bloxbean/julc#262. Text-only: a `value` constant has no Flat form, and chain data is not affected.
+   `legacy-alias-test-vector-25` (an Amaru vector) names `verifyEd25519Signature` by its old text name
+   `verifySignature`, which julc and plutus master's parser reject (Amaru's parser accepts it); its Flat program,
+   evaluated first as above, passes.
 3. **Not a finding: `term/constr/constr-07`.** Its text has a negative `constr` tag and expects a parse error. Its
-   Flat form encodes the tag as 2^64-5, which Haskell's `Word64` decoder accepts, as julc does
-   (`Core/Instance/Flat.hs`). Parsing the text first, as the reference harness does, reports the expected parse
-   error.
+   Flat form encodes the tag as 2^64-5, which julc decodes (`Core/Instance/Flat.hs` reads a `Word64`); that program
+   fails on its `error` field, so its text is evaluated, and reports the expected parse error.
 4. **julc performance.** Two turbo scripts are more than twice their CPU budget: `8100C5F1…` (315 ms, 1.6 GB
    allocated; Amaru also fails it) and `12B28FF8…`. Ten small scripts allocate more than twice their memory budget
    on the JVM. Every turbo budget agrees with cardano-node's and Amaru's. Both are bloxbean/julc#259, part 2. Part 1

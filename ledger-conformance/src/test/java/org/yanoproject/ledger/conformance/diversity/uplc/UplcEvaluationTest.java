@@ -1,6 +1,10 @@
 package org.yanoproject.ledger.conformance.diversity.uplc;
 
+import org.julclang.core.flat.UplcFlatEncoder;
+import org.julclang.core.text.UplcParser;
 import org.junit.jupiter.api.Test;
+
+import java.util.HexFormat;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,10 +42,21 @@ class UplcEvaluationTest {
     }
 
     @Test
-    void aTextThatDoesNotParseIsADecodeErrorEvenWithAFlatProgram() {
-        // the reference harness parses the text first (constr-07: a negative tag in text, 2^64 - 5 in Flat)
-        assertThat(UplcEvaluation.evaluate("010000200101", "(program 1.1.0 (constr -5))", "parse/decode error", 3,
-                11, DEFAULTS).evaluation()).isEqualTo(UplcEvaluation.PARSE_ERROR);
+    void aSuccessfulFlatEvaluationStandsEvenWhenTheTextDoesNotParse() {
+        // legacy-alias-test-vector-25: the text names a builtin the parser does not know; its Flat program evaluates
+        assertThat(UplcEvaluation.evaluate("010000200101", "(program 1.0.0 (builtin verifySignature))",
+                "(program 1.0.0 (lam x x))", 3, 11, DEFAULTS).evaluation()).isEqualTo("(program 1.0.0 (lam x x))");
+    }
+
+    @Test
+    void aFailedFlatEvaluationFallsBackToTheText() {
+        // constr-07: its Flat program decodes (tag 2^64 - 5) but fails; its text, with a negative tag, does not parse
+        String flat = HexFormat.of().formatHex(UplcFlatEncoder.encodeProgram(UplcParser.parseProgram(
+                "(program 1.1.0 (constr 18446744073709551611 (con integer 1) (error)))")));
+        assertThat(UplcEvaluation.evaluate(flat, "(program 1.1.0 (constr -5 (con integer 1) (error)))",
+                "parse/decode error", 3, 11, DEFAULTS).evaluation()).isEqualTo(UplcEvaluation.PARSE_ERROR);
+        assertThat(UplcEvaluation.evaluate(flat, "(program 1.1.0 (error))", "evaluation failure", 3, 11, DEFAULTS)
+                .evaluation()).isEqualTo(UplcEvaluation.EVALUATION_FAILURE);
     }
 
     @Test

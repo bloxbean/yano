@@ -24,17 +24,19 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Evaluates one UPLC conformance vector on julc's CEK machine (ADR-060 §4) as Yano's phase 2 runs it
  * ({@code JulcMachine}): a {@link JavaVmProvider} configured with the cost model, no tracing.
  *
- * <p>As the reference harness does (Amaru's {@code conformance.rs}), the textual program is parsed first, and a vector
- * whose text does not parse is a {@code "parse/decode error"}. The program evaluated is then the vector's Flat program
- * when it has one (the form scripts take on chain), otherwise the text. The outcome is what the scenario reports: the
- * result program (the expected text when the result is alpha-equivalent to it, as Amaru reports it), or
- * {@code "parse/decode error"} for a program the protocol and language versions do not allow, {@code "out of budget"},
- * or {@code "evaluation failure"}.</p>
+ * <p>As the reference report is produced (Amaru's {@code run-haskell.sh}, which runs Plutus' {@code uplc}): the
+ * vector's Flat program, the form scripts take on chain, is evaluated first when it has one, and its result stands if
+ * it evaluates successfully; otherwise (no Flat program, a Flat program that does not decode, or one whose evaluation
+ * fails) the outcome is the textual program's. The outcome is what the scenario reports: the result program (the
+ * expected text when the result is alpha-equivalent to it, as Amaru reports it), or {@code "parse/decode error"} for a
+ * program that does not parse or decode or that the protocol and language versions do not allow,
+ * {@code "out of budget"}, or {@code "evaluation failure"}.</p>
  */
 public final class UplcEvaluation {
 
@@ -70,20 +72,29 @@ public final class UplcEvaluation {
                             long[] costModel) {
         LedgerEvaluationTarget target = target(language, protocolMajor);
         ProtocolFeatureProfile profile = ProtocolFeatureRegistry.resolve(target);
-        Program program;
-        try {
-            program = UplcParser.parseProgram(text);
-            if (flatHex != null) {
-                program = UplcFlatDecoder.decodeProgram(HexFormat.of().parseHex(flatHex.trim()),
-                        profile.decodeLimits().toFlatDecodeLimits());
-            }
-            ProgramValidator.validate(program, profile);
-        } catch (RuntimeException e) {
-            return new Outcome(PARSE_ERROR, null);
-        }
         JavaVmProvider provider = new JavaVmProvider();
         if (costModel != null) {
             provider.setCostModelParams(costModel, target);
+        }
+        if (flatHex != null) {
+            Outcome flat = run(provider, target, profile, expected, () -> UplcFlatDecoder.decodeProgram(
+                    HexFormat.of().parseHex(flatHex.trim()), profile.decodeLimits().toFlatDecodeLimits()));
+            if (flat.budget() != null) {
+                return flat;
+            }
+        }
+        return run(provider, target, profile, expected, () -> UplcParser.parseProgram(text));
+    }
+
+    /** @return the outcome of one program; a successful evaluation is the only one with a budget */
+    private static Outcome run(JavaVmProvider provider, LedgerEvaluationTarget target, ProtocolFeatureProfile profile,
+                               String expected, Supplier<Program> source) {
+        Program program;
+        try {
+            program = source.get();
+            ProgramValidator.validate(program, profile);
+        } catch (RuntimeException e) {
+            return new Outcome(PARSE_ERROR, null);
         }
         return switch (provider.evaluate(program, target, BUDGET, OPTIONS)) {
             case EvalResult.Success success -> new Outcome(
