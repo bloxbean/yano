@@ -72,7 +72,8 @@ final class AppLedgerStore implements AutoCloseable {
             "app_snapshot_builds_v1".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CF_SNAPSHOT_LIFECYCLE =
             "app_snapshot_lifecycle_v1".getBytes(StandardCharsets.UTF_8);
-    private static final String CF_MPF_GC_MARKS_PREFIX = "marks_";
+    /** CCL's temporary MPF GC mark sets: {@code __vds_gc_marks_<digits>}, and 0.8.0-pre6's {@code marks_<nanoTime>}. */
+    private static final List<String> CF_MPF_GC_MARKS_PREFIXES = List.of("__vds_gc_marks_", "marks_");
     private static final int STANDARD_COLUMN_FAMILY_COUNT = 20;
 
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
@@ -562,14 +563,17 @@ final class AppLedgerStore implements AutoCloseable {
         }
         try (Options options = new Options()) {
             return RocksDB.listColumnFamilies(options, path).stream()
-                    .filter(name -> new String(name, StandardCharsets.UTF_8)
-                            .startsWith(CF_MPF_GC_MARKS_PREFIX))
+                    .filter(name -> isMpfGcMarksColumnFamily(new String(name, StandardCharsets.UTF_8)))
                     .map(byte[]::clone)
                     .toList();
         } catch (RocksDBException failure) {
             throw new RuntimeException(
                     "Failed to inspect app ledger column families at " + path, failure);
         }
+    }
+
+    private static boolean isMpfGcMarksColumnFamily(String name) {
+        return CF_MPF_GC_MARKS_PREFIXES.stream().anyMatch(name::startsWith);
     }
 
     /** Recover a process death during CCL's on-disk mark phase before normal use. */
