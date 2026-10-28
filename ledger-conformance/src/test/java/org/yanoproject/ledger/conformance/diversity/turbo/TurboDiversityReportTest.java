@@ -7,6 +7,7 @@ import org.julclang.core.flat.UplcFlatDecoder;
 import org.julclang.vm.LedgerEvaluationTarget;
 import org.julclang.vm.ProtocolFeatureRegistry;
 import org.julclang.vm.java.JavaVmProvider;
+import org.julclang.vm.java.PreparedProgram;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.diversity.NodeDiversity;
 import org.yanoproject.ledger.conformance.diversity.uplc.UplcEvaluation;
@@ -33,11 +34,10 @@ class TurboDiversityReportTest {
     @Test
     void writesTheReport() {
         List<TurboSample> samples = TurboSample.list(NodeDiversity.requireCorpus("turbo"));
-        List<Program> programs = samples.stream().map(TurboDiversityReportTest::decode).toList();
         JavaVmProvider provider = new JavaVmProvider();
-        for (int i = 0; i < samples.size(); i++) {
-            TurboMeasurement.evaluate(provider, programs.get(i), target(samples.get(i)));
-        }
+        List<PreparedProgram> programs = samples.stream()
+                .map(sample -> provider.prepare(decode(sample), target(sample))).toList();
+        programs.forEach(TurboMeasurement::evaluate);
 
         ObjectNode report = NodeDiversity.report(SCENARIO);
         ((ObjectNode) report.get("implementation")).put("language", "Java");
@@ -46,7 +46,7 @@ class TurboDiversityReportTest {
         int failed = 0;
         for (int i = 0; i < samples.size(); i++) {
             TurboSample sample = samples.get(i);
-            TurboMeasurement m = TurboMeasurement.measure(provider, programs.get(i), target(sample));
+            TurboMeasurement m = TurboMeasurement.measure(programs.get(i));
             if (!m.succeeded()) {
                 // Left out of the report: the scenario counts a missing benchmark as failed.
                 failed++;

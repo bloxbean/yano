@@ -1,10 +1,8 @@
 package org.yanoproject.ledger.conformance.diversity.turbo;
 
-import org.julclang.core.Program;
 import org.julclang.vm.EvalResult;
 import org.julclang.vm.ExBudget;
-import org.julclang.vm.LedgerEvaluationTarget;
-import org.julclang.vm.java.JavaVmProvider;
+import org.julclang.vm.java.PreparedProgram;
 import org.yanoproject.ledger.conformance.diversity.uplc.UplcEvaluation;
 
 import java.lang.management.ManagementFactory;
@@ -12,8 +10,9 @@ import java.util.Arrays;
 
 /**
  * Measures one script (ADR-060 §5): {@value #WARMUP} unmeasured evaluations, then {@value #SAMPLES}, of which the best
- * {@value #RETAINED} of each dimension are averaged, as the scenario prescribes. Time is {@link System#nanoTime()}
- * around the evaluation alone; memory is what the evaluating thread allocated
+ * {@value #RETAINED} of each dimension are averaged, as the scenario prescribes. The program is checked and costed
+ * beforehand ({@link org.julclang.vm.java.JavaVmProvider#prepare}), so time is {@link System#nanoTime()} around CEK
+ * evaluation alone; memory is what the evaluating thread allocated
  * ({@link com.sun.management.ThreadMXBean#getCurrentThreadAllocatedBytes()}).
  *
  * @param cpuUs     mean evaluation time in microseconds, rounded up
@@ -38,13 +37,13 @@ record TurboMeasurement(long cpuUs, long memBytes, ExBudget budget, boolean succ
             (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
 
     /** Evaluates once, unmeasured (JIT warm-up). */
-    static void evaluate(JavaVmProvider provider, Program program, LedgerEvaluationTarget target) {
-        provider.evaluate(program, target, BUDGET, UplcEvaluation.OPTIONS);
+    static void evaluate(PreparedProgram program) {
+        program.evaluate(BUDGET, UplcEvaluation.OPTIONS);
     }
 
-    static TurboMeasurement measure(JavaVmProvider provider, Program program, LedgerEvaluationTarget target) {
+    static TurboMeasurement measure(PreparedProgram program) {
         for (int i = 0; i < WARMUP; i++) {
-            evaluate(provider, program, target);
+            evaluate(program);
         }
         long[] nanos = new long[SAMPLES];
         long[] bytes = new long[SAMPLES];
@@ -52,7 +51,7 @@ record TurboMeasurement(long cpuUs, long memBytes, ExBudget budget, boolean succ
         for (int i = 0; i < SAMPLES; i++) {
             long allocated = THREADS.getCurrentThreadAllocatedBytes();
             long start = System.nanoTime();
-            result = provider.evaluate(program, target, BUDGET, UplcEvaluation.OPTIONS);
+            result = program.evaluate(BUDGET, UplcEvaluation.OPTIONS);
             nanos[i] = System.nanoTime() - start;
             bytes[i] = THREADS.getCurrentThreadAllocatedBytes() - allocated;
         }

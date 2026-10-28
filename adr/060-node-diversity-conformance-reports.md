@@ -244,8 +244,8 @@ The cardano-node and Amaru ledger-rules reports predate the seven newest fixture
 
 At corpus `e02a9e1c` (2026-10-28, `main` 7f92fbe6a, same libraries) Yano scores ledger-rules 289/290 (the six new
 fixtures pass) and, with the Flat-first evaluation order (§4), uplc-conformance 1058/1064; uplc-turbo and
-cbor-decoding are unchanged, for 98.92% overall under the site's scoring rules. With a local build of julc #261 and
-#262: uplc-conformance 1064/1064 and uplc-turbo 3986/3997, every other result identical, for 99.06%.
+cbor-decoding are unchanged, for 98.92% overall under the site's scoring rules. With julc 0.1.0-pre20 (#261 and #262):
+uplc-conformance 1064/1064 and uplc-turbo 3986/3997, every other result identical, for 99.06%.
 
 Findings, none of them masked in the harness:
 
@@ -257,7 +257,7 @@ Findings, none of them masked in the harness:
    corpus maintainers.
 2. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
    Haskell rejects them (plutus `conValue` requires canonical form, plutus #7816): bloxbean/julc#260, fixed by
-   bloxbean/julc#262. Text-only: a `value` constant has no Flat form, and chain data is not affected.
+   bloxbean/julc#262 (julc 0.1.0-pre20). Text-only: a `value` constant has no Flat form, and chain data is not affected.
    `legacy-alias-test-vector-25` (an Amaru vector) names `verifyEd25519Signature` by its old text name
    `verifySignature`, which julc and plutus master's parser reject (Amaru's parser accepts it); its Flat program,
    evaluated first as above, passes.
@@ -268,8 +268,7 @@ Findings, none of them masked in the harness:
    allocated; Amaru also fails it) and `12B28FF8…`. Ten small scripts allocate more than twice their memory budget
    on the JVM. Every turbo budget agrees with cardano-node's and Amaru's. Both are bloxbean/julc#259, part 2. Part 1
    (bloxbean/julc#261, `JavaVmProvider.prepare`) lets the harness time CEK evaluation alone, as the scenario
-   requires; measured with a local build it changes no budget and gives 3986/3997, and the harness moves to it once
-   it is released.
+   requires; released in julc 0.1.0-pre20, which the harness uses: it changes no budget and gives 3986/3997.
 5. **CCL model decoders (production), cardano-client-lib#717.** 255 of the 288 cbor-decoding misses are valid samples
    that CCL 0.8.0-pre6 fails to decode. Yano's validation engine runs `Transaction.deserialize` first, so the node
    would refuse such transactions. Causes:
