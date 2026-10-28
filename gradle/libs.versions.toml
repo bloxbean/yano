@@ -1,7 +1,7 @@
 [versions]
-yaci = "0.5.0-pre14"
-cardano-client-lib = "0.8.0-pre7-SNAPSHOT"
-julc="0.1.0-pre19"
+yaci = "0.5.0-pre15"
+cardano-client-lib = "0.8.0-pre7"
+julc="0.1.0-pre20"
 zeroj = "0.1.0-pre13"
 bouncycastle = "1.84"
 aws-sdk = "2.48.0"
@@ -46,7 +46,7 @@ julc-cardano-client-lib={ module = "org.julclang:julc-cardano-client-lib", versi
 
 cbor = "co.nstant.in:cbor:0.9"
 bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
-# Keep standalone library compilation aligned with the Yaci 0.5.0-pre14
+# Keep standalone library compilation aligned with the Yaci 0.5.0-pre15
 # runtime line. The Quarkus application resolves its independently managed
 # patched Netty line from the Quarkus BOM and is verified as a final image.
 netty = "io.netty:netty-all:4.1.131.Final"

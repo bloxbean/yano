@@ -278,6 +278,7 @@ public final class StateMachineConformance {
 
     private Result execute() {
         List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, messageGenerator);
+        String member = HexUtil.encodeHexString(harnessMember(seed));
         List<Map<Long, HeightOutcome>> outcomesPerRun = new ArrayList<>();
         try {
             Path workDir = Files.createTempDirectory("appchain-conformance");
@@ -286,12 +287,12 @@ public final class StateMachineConformance {
                 long restartAt = run == runs - 1
                         ? (restartAtHeight > 0 ? restartAtHeight : Math.max(1, blocks / 2))
                         : -1;
-                outcomesPerRun.add(applyCorpus(provider, settings, chainId, corpus,
+                outcomesPerRun.add(applyCorpus(provider, settings, chainId, member, corpus,
                         workDir.resolve("run-" + run), restartAt, -1, stateProbes,
                         messagesPerBlock));
             }
             if (snapshotAtHeight > 0) {
-                outcomesPerRun.add(applyCorpus(provider, settings, chainId, corpus,
+                outcomesPerRun.add(applyCorpus(provider, settings, chainId, member, corpus,
                         workDir.resolve("snapshot-run"), -1, snapshotAtHeight, stateProbes,
                         messagesPerBlock));
             }
@@ -334,12 +335,21 @@ public final class StateMachineConformance {
         return null;
     }
 
+    /**
+     * The harness's single member: it signs every corpus message, is the chain info's member and the
+     * membership the system kernels judge senders against, so governance-topic corpora behave as in production.
+     */
+    private static byte[] harnessMember(long seed) {
+        byte[] member = new byte[32];
+        new Random(seed ^ 0x5EED).nextBytes(member);
+        return member;
+    }
+
     /** Identical envelopes/blocks for every run: all inputs derive from the seed. */
     private static List<AppBlock> buildCorpus(String chainId, int blocks, int messagesPerBlock,
                                               long seed, MessageGenerator messageGenerator) {
         Random random = new Random(seed);
-        byte[] sender = new byte[32];
-        new Random(seed ^ 0x5EED).nextBytes(sender);
+        byte[] sender = harnessMember(seed);
         long expiresAt = 4_000_000_000L; // fixed far-future — never expires, identical everywhere
 
         List<AppBlock> corpus = new ArrayList<>(blocks);
@@ -382,6 +392,7 @@ public final class StateMachineConformance {
     private static Map<Long, HeightOutcome> applyCorpus(AppStateMachineProvider provider,
                                                         Map<String, String> settings,
                                                         String chainId,
+                                                        String member,
                                                         List<AppBlock> corpus,
                                                         Path dir, long restartAt,
                                                         long snapshotAt,
@@ -396,8 +407,8 @@ public final class StateMachineConformance {
             new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
             new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
             AppStateMachine machine = provider.create(
-                    contextFor(chainId, settings, profile, stateIdentity));
-            machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
+                    contextFor(chainId, settings, profile, stateIdentity, member));
+            machine.init(readerFor(store), new AppChainInfo(chainId, member, 1));
             for (AppBlock block : corpus) {
                 if (restartAt > 0 && block.height() == restartAt + 1) {
                     // Kill-and-reopen replay: crash recovery must not change roots
@@ -406,8 +417,8 @@ public final class StateMachineConformance {
                     new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
                     new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
                     machine = provider.create(
-                            contextFor(chainId, settings, profile, stateIdentity));
-                    machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
+                            contextFor(chainId, settings, profile, stateIdentity, member));
+                    machine.init(readerFor(store), new AppChainInfo(chainId, member, 1));
                 }
                 if (snapshotAt > 0 && block.height() == snapshotAt + 1) {
                     Path checkpoint = dir.resolveSibling(dir.getFileName() + "-checkpoint");
@@ -417,11 +428,12 @@ public final class StateMachineConformance {
                     new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
                     new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
                     machine = provider.create(
-                            contextFor(chainId, settings, profile, stateIdentity));
-                    machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
+                            contextFor(chainId, settings, profile, stateIdentity, member));
+                    machine.init(readerFor(store), new AppChainInfo(chainId, member, 1));
                 }
                 outcomes.put(block.height(), applyAndCommit(
-                        store, machine, settings, profile, block, stateProbes));
+                        store, machine, settings, profile, stateIdentity, member, block, stateProbes,
+                        maxBlockMessages));
             }
         } finally {
             store.close();
@@ -433,11 +445,17 @@ public final class StateMachineConformance {
     private static HeightOutcome applyAndCommit(AppLedgerStore store, AppStateMachine machine,
                                                 Map<String, String> settings,
                                                 AppChainConsensusProfile profile,
+                                                StateCommitmentIdentity stateIdentity,
+                                                String member,
                                                 AppBlock block,
-                                                List<StateProbe> stateProbes) {
+                                                List<StateProbe> stateProbes,
+                                                int maxBlockMessages) {
+        TopicRegistryKernel topics = TopicRegistryKernel.forChain(block.chainId(), settings,
+                () -> HexUtil.encodeHexString(stateIdentity.digest()), new MemberGroup(Set.of(member), 1),
+                profile.maxMessageBytes(), Math.max(1, maxBlockMessages));
         SystemInputKernel kernel = new SystemInputKernel(
                 EffectsSettings.fromSettings(settings), new ConsensusProfileGuard(profile),
-                new ObservationProfileGuard(ObservationProfileV1.disabled()));
+                new ObservationProfileGuard(ObservationProfileV1.disabled()), null, topics);
         FxBlockApplier.Applied applied = FxBlockApplier.applyAndCommit(store, kernel, machine, block);
         List<String> effectHashes = new ArrayList<>(applied.fx().emitted().size());
         for (FxKernel.StagedEffect staged : applied.fx().emitted()) {
@@ -459,7 +477,8 @@ public final class StateMachineConformance {
             String chainId,
             Map<String, String> settings,
             AppChainConsensusProfile profile,
-            StateCommitmentIdentity stateIdentity
+            StateCommitmentIdentity stateIdentity,
+            String member
     ) {
         return new AppStateMachineContext() {
             @Override public String chainId() { return chainId; }
@@ -473,8 +492,7 @@ public final class StateMachineConformance {
             @Override
             public Optional<org.yanoproject.api.appchain.AppChainMembershipView>
             membershipView() {
-                AppChainMembershipEpoch epoch = new AppChainMembershipEpoch(
-                        0, List.of("11".repeat(32)), 1);
+                AppChainMembershipEpoch epoch = new AppChainMembershipEpoch(0, List.of(member), 1);
                 return Optional.of(height -> epoch);
             }
         };
@@ -595,16 +613,17 @@ public final class StateMachineConformance {
                 }
             }
             List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, messageGenerator);
+            String member = HexUtil.encodeHexString(harnessMember(seed));
             Map<String, String> upgraded = new LinkedHashMap<>(baseSettings);
             upgraded.put(activationKey(newProvider.id()), String.valueOf(activationHeight));
             try {
                 Path workDir = Files.createTempDirectory("appchain-upgrade-conformance");
-                Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, baseSettings, chainId,
+                Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, baseSettings, chainId, member,
                         corpus, workDir.resolve("baseline"), -1, -1, List.of(),
                         messagesPerBlock);
                 List<Map<Long, HeightOutcome>> newRuns = new ArrayList<>();
                 for (int run = 0; run < runs; run++) {
-                    newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
+                    newRuns.add(applyCorpus(newProvider, upgraded, chainId, member, corpus,
                             workDir.resolve("upgraded-" + run), -1, -1, List.of(),
                             messagesPerBlock));
                 }
@@ -620,7 +639,7 @@ public final class StateMachineConformance {
                 }
                 int restartRun = 0;
                 for (long restartAt : restartPoints) {
-                    newRuns.add(applyCorpus(newProvider, upgraded, chainId, corpus,
+                    newRuns.add(applyCorpus(newProvider, upgraded, chainId, member, corpus,
                             workDir.resolve("upgraded-restart-" + restartRun++), restartAt, -1,
                             List.of(), messagesPerBlock));
                 }

@@ -112,9 +112,21 @@ class AppChainConfigParserTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("effects.result.signerz");
         assertThat(AppChainConfigParser.strictOwnershipDomains())
-                .containsExactlyInAnyOrder("effects.result.", "state.");
+                .containsExactlyInAnyOrder("effects.result.", "state.", "block-time.", "topics.");
 
         settings.remove("effects.result.signerz");
+        settings.put("block-time.max-forward-skew-ms", "2000");
+        settings.put("topics.mode", "enabled");
+        settings.put("topics.creation.registrars.keys", MEMBER);
+        AppChainConfigParser.validateStrict(settings);
+        for (String unknown : new String[] {"block-time.skew", "topics.creation.registrars.keys[0]"}) {
+            settings.put(unknown, "1");
+            assertThatThrownBy(() -> AppChainConfigParser.validateStrict(settings))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(unknown);
+            settings.remove(unknown);
+        }
+
         settings.put("state.genesis-idd", "ab".repeat(32));
         assertThatThrownBy(() -> AppChainConfigParser.parse(settings))
                 .isInstanceOf(IllegalArgumentException.class)

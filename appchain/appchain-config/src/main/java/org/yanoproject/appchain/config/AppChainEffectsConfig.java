@@ -110,6 +110,7 @@ public record AppChainEffectsConfig(
                 AppChainConsensusProfile.SCHEMA_VERSION,
                 config.maxMessageBytes(), config.maxBlockMessages(), config.blockMaxBytes(),
                 config.l1StabilityDepth(), config.epochStabilityDepth(),
+                AppChainConsensusProfile.blockMaxForwardSkewMs(config.pluginSettings()),
                 config.enforceSenderSeq(), enabled, maxPerBlock,
                 maxPayloadBytes, maxExpiryBlocks, resultWindowBlocks, defaultGate,
                 outcomeCommitment, strictReservedPrefix,

@@ -4,6 +4,7 @@ import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.api.appchain.state.StateCommitmentValues;
 
 /**
  * Product-neutral, release-matched verification of native app-chain proofs.
@@ -41,6 +42,12 @@ public final class AppChainProofVerifier {
     ) {
         if (profile == null || presence == null
                 || (presence == Presence.ABSENT) != (value == null)) {
+            return false;
+        }
+        // A tombstone is classic JMT's committed delete marker and nothing else: a relabelled inclusion of a
+        // real value would otherwise read as absent.
+        if ((presence == Presence.TOMBSTONED) != (JMT_BLAKE2B256_V1.equals(profile)
+                && StateCommitmentValues.isClassicJmtTombstone(value))) {
             return false;
         }
         boolean inclusion = presence != Presence.ABSENT;

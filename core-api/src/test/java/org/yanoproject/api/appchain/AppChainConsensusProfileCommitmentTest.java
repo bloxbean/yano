@@ -14,11 +14,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AppChainConsensusProfileCommitmentTest {
     private static final String SIGNER_1 = "11".repeat(32);
     private static final String SIGNER_2 = "22".repeat(32);
+    // Derived outside the code under test (a one-off Python encoder of the field layout + SHA-256 over the
+    // v2 domain; not kept as a script), ADR app-layer/039 D12.
     private static final String GOLDEN_BYTES = "0000000200010000000000400000000000400000"
-            + "000000050000000507000000800000400000000000000186a000000000000186a001000002"
+            + "0000000500000005" + "0000000000001388"
+            + "07000000800000400000000000000186a000000000000186a001000002"
             + SIGNER_1 + SIGNER_2;
     private static final String GOLDEN_DIGEST =
-            "2307f63829e8b5309a71f921b58c5983a409d5e56bdc354ba011aed8cdca3438";
+            "23f28f835fde84322f122ac49debacd5bea9d22cf2c03c1f6068a82be6620c05";
 
     @Test
     void freezesCanonicalKeyBytesAndDigest() {
@@ -42,14 +45,14 @@ class AppChainConsensusProfileCommitmentTest {
                 enabledProfile(List.of(SIGNER_1, SIGNER_2)));
 
         byte[] unknownFlags = encoded.clone();
-        unknownFlags[28] |= (byte) 0x80;
+        unknownFlags[36] |= (byte) 0x80;
         assertThatThrownBy(() -> AppChainConsensusProfileCommitment.decode(unknownFlags))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("unknown flag");
 
         byte[] reversedSigners = encoded.clone();
-        System.arraycopy(encoded, 57 + 32, reversedSigners, 57, 32);
-        System.arraycopy(encoded, 57, reversedSigners, 57 + 32, 32);
+        System.arraycopy(encoded, 65 + 32, reversedSigners, 65, 32);
+        System.arraycopy(encoded, 65, reversedSigners, 65 + 32, 32);
         assertThatThrownBy(() -> AppChainConsensusProfileCommitment.decode(reversedSigners))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("canonically encoded");
@@ -64,7 +67,7 @@ class AppChainConsensusProfileCommitmentTest {
     void enforcesCanonicalDisabledEffectProfile() {
         AppChainConsensusProfile disabled = new AppChainConsensusProfile(
                 AppChainConsensusProfile.SCHEMA_VERSION,
-                65_536, 64, 4_194_304, 0, 0, false,
+                65_536, 64, 4_194_304, 0, 0, 5_000, false,
                 false, 0, 0, 0, 0,
                 FinalityGate.APP_FINAL, EffectOutcomeCommitment.PER_EFFECT,
                 true, List.of());
@@ -73,12 +76,33 @@ class AppChainConsensusProfileCommitmentTest {
                 AppChainConsensusProfileCommitment.encode(disabled))).isEqualTo(disabled);
         assertThatThrownBy(() -> new AppChainConsensusProfile(
                 AppChainConsensusProfile.SCHEMA_VERSION,
-                65_536, 64, 4_194_304, 0, 0, false,
+                65_536, 64, 4_194_304, 0, 0, 5_000, false,
                 false, 1, 0, 0, 0,
                 FinalityGate.APP_FINAL, EffectOutcomeCommitment.PER_EFFECT,
                 true, List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("disabled effect profile");
+    }
+
+    @Test
+    void boundsAndParsesBlockMaxForwardSkew() {
+        assertThat(AppChainConsensusProfile.blockMaxForwardSkewMs(Map.of())).isEqualTo(5_000);
+        assertThat(AppChainConsensusProfile.blockMaxForwardSkewMs(
+                Map.of("block-time.max-forward-skew-ms", " 750 "))).isEqualTo(750);
+        assertThatThrownBy(() -> AppChainConsensusProfile.blockMaxForwardSkewMs(
+                Map.of("block-time.max-forward-skew-ms", "fast")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("block-time.max-forward-skew-ms");
+        for (long invalid : new long[] {0, -1, 600_001}) {
+            assertThatThrownBy(() -> new AppChainConsensusProfile(
+                    AppChainConsensusProfile.SCHEMA_VERSION,
+                    65_536, 64, 4_194_304, 0, 0, invalid, false,
+                    false, 0, 0, 0, 0,
+                    FinalityGate.APP_FINAL, EffectOutcomeCommitment.PER_EFFECT,
+                    true, List.of()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("blockMaxForwardSkewMs");
+        }
     }
 
     @Test
@@ -110,6 +134,7 @@ class AppChainConsensusProfileCommitmentTest {
                 4_194_304,
                 5,
                 5,
+                5_000,
                 true,
                 true,
                 128,

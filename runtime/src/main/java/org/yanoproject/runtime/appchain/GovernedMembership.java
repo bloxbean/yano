@@ -57,6 +57,18 @@ final class GovernedMembership {
     static final int OP_REMOVE = 1;
     static final int OP_SET_THRESHOLD = 2;
     static final long DEFAULT_APPROVAL_WINDOW_BLOCKS = 600;
+
+    /** Chain-governed membership selected ({@code membership.mode: governed}, ADR 008.3)? Default: static. */
+    static boolean selected(java.util.Map<String, String> settings) {
+        return "governed".equalsIgnoreCase(settings.getOrDefault("membership.mode", "static"));
+    }
+
+    /** {@code membership.approval-window-blocks}; topic governance has its own committed window (D5). */
+    static long approvalWindowBlocks(AppChainConfig config) {
+        long value = Long.parseLong(config.pluginSettings().getOrDefault("membership.approval-window-blocks",
+                String.valueOf(DEFAULT_APPROVAL_WINDOW_BLOCKS)).trim());
+        return value > 0 ? value : DEFAULT_APPROVAL_WINDOW_BLOCKS;
+    }
     static final long DEFAULT_ACTIVATION_LAG = 10;
 
     private static final String META_PENDING = "gov_pending";
@@ -172,7 +184,7 @@ final class GovernedMembership {
             touched |= entry.approvers.add(approver);
 
             int required = group.thresholdAt(height);
-            if (entry.approvers.size() >= required) {
+            if (group.currentApprovers(entry.approvers, height).size() >= required) {
                 pending.remove(commandHex);
                 touched = true;
                 EpochEffect effect = activate(command, height);

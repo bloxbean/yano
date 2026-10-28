@@ -51,7 +51,7 @@ class ConsensusProfileGuardTest {
                     profile.schemaVersion(), profile.maxMessageBytes(),
                     profile.maxBlockMessages() + 1, profile.maxBlockBytes(),
                     profile.l1StabilityDepth(), profile.epochStabilityDepth(),
-                    profile.enforceSenderSeq(),
+                    profile.blockMaxForwardSkewMs(), profile.enforceSenderSeq(),
                     profile.effectsEnabled(), profile.effectsMaxPerBlock(),
                     profile.effectsMaxPayloadBytes(), profile.effectsMaxExpiryBlocks(),
                     profile.effectsResultWindowBlocks(), profile.effectsDefaultGate(),

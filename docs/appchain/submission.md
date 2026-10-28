@@ -49,7 +49,12 @@ not a malformed-command or business-rejection result.
 Explicit diffusion-only configurations do not create an application ledger or
 candidate block. They retain the transport-only submission behavior and skip
 the application callback. Reserved framework commands have separate privileged
-entry points; ordinary submission cannot use `~` topics.
+entry points; ordinary submission cannot use `~` topics, except
+`~topics/registry`, which carries owner-signed topic-registry commands (ADR
+app-layer/039). On a chain with topics enabled, every submission is first
+checked against the committed registry (command admission, or the write check
+on ordinary topics); a refusal returns its `TOPIC_*` code and the message is
+neither pooled nor relayed.
 
 ## Accepted is not finalized
 

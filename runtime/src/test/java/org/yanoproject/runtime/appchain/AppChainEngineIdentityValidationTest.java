@@ -16,6 +16,12 @@ import org.yanoproject.api.appchain.observation.ObservationTopics;
 import org.yanoproject.api.appchain.l1view.L1Observation;
 import org.yanoproject.api.appchain.sequencer.SequencerContext;
 import org.yanoproject.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.api.appchain.topics.TopicChainSettings;
+import org.yanoproject.api.appchain.topics.TopicCommandRules;
+import org.yanoproject.api.appchain.topics.TopicKeys;
+import org.yanoproject.api.appchain.topics.TopicRefusal;
+import org.yanoproject.api.appchain.topics.TopicWire;
+import org.yanoproject.api.appchain.topics.TopicWireCodec;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,9 +33,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -370,6 +379,270 @@ class AppChainEngineIdentityValidationTest {
         }
     }
 
+    @Test
+    void enforcesCertifiedBlockTimeOnProposalAndCatchUpPaths(@TempDir Path directory)
+            throws Exception {
+        AppMessageSigner proposer = new AppMessageSigner(HexUtil.encodeHexString(filled(51)));
+        AppMessageSigner follower = new AppMessageSigner(HexUtil.encodeHexString(filled(52)));
+        Set<String> members = Set.of(proposer.publicKeyHex(), follower.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(52)))
+                .memberKeysHex(members)
+                .proposerKeyHex(proposer.publicKeyHex())
+                .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        Logger logger = mock(Logger.class);
+        AppLedgerStore ledger = new AppLedgerStore(
+                directory.resolve("ledger").toString(), logger);
+        CountDownLatch voted = new CountDownLatch(1);
+        AppChainEngine engine = new AppChainEngine(
+                config, ledger, new AppMsgPool(10), new NoOpMachine(), follower,
+                new MemberGroup(members, 1), new AlwaysSequencer(), 60_000, 10,
+                config.blockMaxBytes(), (topic, body) -> {
+                    if (ConsensusCodec.TOPIC_PREPARE.equals(topic)) {
+                        voted.countDown();
+                    }
+                    return null;
+                }, logger);
+        AtomicLong now = new AtomicLong(100_000);
+        engine.setWallClock(now::get);
+        try {
+            AppBlock first = certify(withConsensusProfileRoot(atTime(block(
+                    AppBlock.BLOCK_VERSION, CHAIN, List.of(), proposer.publicKey()), 50_000),
+                    config, ledger), proposer);
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(first)));
+            awaitTip(ledger, 1);
+
+            AppBlock earlier = nextBlock(first, 49_999, proposer.publicKey());
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(certify(earlier, proposer))));
+            verify(logger, timeout(5_000)).warn(
+                    "Catch-up block timestamp precedes its parent at height {} — rejecting", 2L);
+            engine.onConsensusMessage(proposal(proposer, earlier, 1));
+            verify(logger, timeout(5_000)).warn(
+                    "Proposal timestamp precedes its parent at height {} — rejecting", 2L);
+
+            engine.onConsensusMessage(proposal(proposer,
+                    nextBlock(first, 105_001, proposer.publicKey()), 2));
+            verify(logger, timeout(5_000)).warn(
+                    "Proposal timestamp is more than {} ms ahead of the local clock at height {} "
+                            + "— rejecting", 5_000L, 2L);
+            assertThat(voted.getCount()).isEqualTo(1);
+            assertThat(ledger.tipHeight()).isEqualTo(1);
+
+            // Exactly at the bound and equal-to-parent are both valid.
+            engine.onConsensusMessage(proposal(proposer,
+                    nextBlock(first, 105_000, proposer.publicKey()), 3));
+            assertThat(voted.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            engine.close();
+            engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            ledger.close();
+        }
+    }
+
+    /** ADR app-layer/039 D11, I19: a follower rejects a proposal carrying a refused topic command. */
+    @Test
+    void rejectsAProposalCarryingARefusedTopicCommand(@TempDir Path directory) throws Exception {
+        AppMessageSigner proposer = new AppMessageSigner(HexUtil.encodeHexString(filled(71)));
+        AppMessageSigner follower = new AppMessageSigner(HexUtil.encodeHexString(filled(72)));
+        Set<String> members = Set.of(proposer.publicKeyHex(), follower.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(72)))
+                .memberKeysHex(members)
+                .proposerKeyHex(proposer.publicKeyHex())
+                .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .pluginSettings(Map.of("membership.mode", "governed", "topics.mode", "enabled"))
+                .build();
+        Logger logger = mock(Logger.class);
+        AppLedgerStore ledger = new AppLedgerStore(
+                directory.resolve("ledger").toString(), logger);
+        CountDownLatch voted = new CountDownLatch(1);
+        AppChainEngine engine = new AppChainEngine(
+                config, ledger, new AppMsgPool(10), new NoOpMachine(), follower,
+                new MemberGroup(members, 1), new AlwaysSequencer(), 60_000, 10,
+                config.blockMaxBytes(), (topic, body) -> {
+                    if (ConsensusCodec.TOPIC_PREPARE.equals(topic)) {
+                        voted.countDown();
+                    }
+                    return null;
+                }, logger);
+        try {
+            AppBlock first = certify(withConsensusProfileRoot(block(
+                    AppBlock.BLOCK_VERSION, CHAIN, List.of(), proposer.publicKey()), config, ledger), proposer);
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(first)));
+            awaitTip(ledger, 1);
+
+            AppMessage forged = signedMessage(proposer, CHAIN, TopicCommandRules.TOPIC, new byte[] {1}, 1);
+            AppBlock carrying = new AppBlock(AppBlock.BLOCK_VERSION, CHAIN, 2, AppBlockCodec.blockHash(first), 0,
+                    new byte[0], first.timestamp(), AppBlockCodec.messagesRoot(List.of(forged)), first.stateRoot(),
+                    List.of(forged), proposer.publicKey(), FinalityCert.empty());
+            engine.onConsensusMessage(proposal(proposer, carrying, 2));
+            verify(logger, timeout(5_000)).warn(
+                    "Proposal at height {} carries a refused topic message ({}) — rejecting",
+                    2L, TopicRefusal.TOPIC_COMMAND_INVALID);
+            assertThat(voted.getCount()).isEqualTo(1);
+            assertThat(ledger.tipHeight()).isEqualTo(1);
+        } finally {
+            engine.close();
+            engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            ledger.close();
+        }
+    }
+
+    @Test
+    void proposerStampsAtLeastTheParentTimestampWhenItsClockTrails(@TempDir Path directory)
+            throws Exception {
+        AppMessageSigner proposer = new AppMessageSigner(HexUtil.encodeHexString(filled(61)));
+        AppMessageSigner other = new AppMessageSigner(HexUtil.encodeHexString(filled(62)));
+        Set<String> members = Set.of(proposer.publicKeyHex(), other.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(61)))
+                .memberKeysHex(members)
+                .proposerKeyHex(proposer.publicKeyHex())
+                .threshold(2)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        Logger logger = mock(Logger.class);
+        AppLedgerStore ledger = new AppLedgerStore(
+                directory.resolve("ledger").toString(), logger);
+        AppMsgPool pool = new AppMsgPool(10);
+        AtomicReference<AppBlock> proposed = new AtomicReference<>();
+        CountDownLatch published = new CountDownLatch(1);
+        AppChainEngine engine = new AppChainEngine(
+                config, ledger, pool, new NoOpMachine(), proposer,
+                new MemberGroup(members, 1), new AlwaysSequencer(), 60_000, 10,
+                config.blockMaxBytes(), (topic, body) -> {
+                    if (ConsensusCodec.TOPIC_PROPOSE.equals(topic)) {
+                        proposed.set(AppBlockCodec.deserialize(body));
+                        published.countDown();
+                    }
+                    return null;
+                }, logger);
+        try {
+            AppBlock first = certify(withConsensusProfileRoot(atTime(block(
+                    AppBlock.BLOCK_VERSION, CHAIN, List.of(), proposer.publicKey()), 50_000),
+                    config, ledger), proposer);
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(first)));
+            awaitTip(ledger, 1);
+
+            engine.setWallClock(() -> 40_000);
+            assertThat(pool.add(signedMessage(proposer, CHAIN, "payload", 1)))
+                    .isEqualTo(AppMsgPool.AddResult.ADDED);
+            engine.proposeTick();
+
+            assertThat(published.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(proposed.get().height()).isEqualTo(2);
+            assertThat(proposed.get().timestamp()).isEqualTo(50_000);
+        } finally {
+            engine.close();
+            engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            ledger.close();
+        }
+    }
+
+    @Test
+    void preparedValueKeepsItsTimestampBeyondTheForwardBoundAndCatchUpIgnoresIt(
+            @TempDir Path directory) throws Exception {
+        AppMessageSigner proposer = new AppMessageSigner(HexUtil.encodeHexString(filled(71)));
+        AppMessageSigner follower = new AppMessageSigner(HexUtil.encodeHexString(filled(72)));
+        Set<String> members = Set.of(proposer.publicKeyHex(), follower.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(72)))
+                .memberKeysHex(members)
+                .proposerKeyHex(proposer.publicKeyHex())
+                .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        Logger logger = mock(Logger.class);
+        AppLedgerStore ledger = new AppLedgerStore(
+                directory.resolve("ledger").toString(), logger);
+        CountDownLatch voted = new CountDownLatch(1);
+        AppChainEngine engine = new AppChainEngine(
+                config, ledger, new AppMsgPool(10), new NoOpMachine(), follower,
+                new MemberGroup(members, 1), new AlwaysSequencer("fixed"), 60_000, 10,
+                config.blockMaxBytes(), (topic, body) -> {
+                    if (ConsensusCodec.TOPIC_PREPARE.equals(topic)) {
+                        voted.countDown();
+                    }
+                    return null;
+                }, logger);
+        engine.setWallClock(() -> 100_000);
+        try {
+            AppBlock first = certify(withConsensusProfileRoot(atTime(block(
+                    AppBlock.BLOCK_VERSION, CHAIN, List.of(), proposer.publicKey()), 50_000),
+                    config, ledger), proposer);
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(first)));
+            awaitTip(ledger, 1);
+            byte[] context = new byte[32];
+
+            // View 1 (leader: the follower) with no prepared value: a fresh value is bounded.
+            AppBlock fresh = atView(nextBlock(first, 200_000, follower.publicKey()), 1,
+                    newView(proposer, context, new byte[0]));
+            engine.onConsensusMessage(proposal(follower, fresh, 1));
+            verify(logger, timeout(5_000)).warn(
+                    "Proposal timestamp is more than {} ms ahead of the local clock at height {} "
+                            + "— rejecting", 5_000L, 2L);
+            assertThat(voted.getCount()).isEqualTo(1);
+
+            // The same far-future value prepared at view 0 may be re-proposed at view 1.
+            AppBlock prepared = nextBlock(first, 200_000, proposer.publicKey());
+            CertifiedConsensusCodec.QuorumCertificate preparedQc =
+                    new CertifiedConsensusCodec.QuorumCertificate(
+                            CertifiedConsensusCodec.Phase.PREPARE, 2, 0, context,
+                            AppBlockCodec.blockHash(prepared), AppBlockCodec.valueHash(prepared),
+                            List.of(new FinalityCert.Signature(proposer.publicKey(),
+                                    proposer.sign(CertifiedConsensusCodec.signingDigest(
+                                            CertifiedConsensusCodec.Phase.PREPARE, 2, 0, context,
+                                            AppBlockCodec.blockHash(prepared),
+                                            AppBlockCodec.valueHash(prepared))))));
+            AppBlock recovery = atView(nextBlock(first, 200_000, follower.publicKey()), 1,
+                    newView(proposer, context, CertifiedConsensusCodec.encodeQc(preparedQc)));
+            engine.onConsensusMessage(proposal(follower, recovery, 2));
+            assertThat(voted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            // Certified history is not re-judged against the voter's clock.
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(certify(recovery, proposer))));
+            awaitTip(ledger, 2);
+        } finally {
+            engine.close();
+            engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            ledger.close();
+        }
+    }
+
+    private static byte[] newView(AppMessageSigner signer, byte[] context, byte[] preparedQc) {
+        byte[] digest = CertifiedConsensusCodec.timeoutSigningDigest(2, 1, context, preparedQc,
+                new byte[0]);
+        CertifiedConsensusCodec.Timeout timeout = new CertifiedConsensusCodec.Timeout(
+                2, 1, context, preparedQc, new byte[0], signer.sign(digest));
+        return CertifiedConsensusCodec.encodeNewView(new CertifiedConsensusCodec.NewViewCertificate(
+                2, 1, context, List.of(new CertifiedConsensusCodec.SignedTimeout(
+                signer.publicKey(), timeout))));
+    }
+
+    private static AppBlock atView(AppBlock block, long view, byte[] justification) {
+        return new AppBlock(block.version(), block.chainId(), block.height(),
+                block.consensusContextDigest(), view, block.prevHash(), block.l1Slot(),
+                block.l1BlockHash(), block.timestamp(), block.messagesRoot(), block.stateRoot(),
+                block.messages(), block.proposer(), justification, block.cert());
+    }
+
+    private static AppBlock atTime(AppBlock block, long timestamp) {
+        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
+                block.l1Slot(), block.l1BlockHash(), timestamp, block.messagesRoot(),
+                block.stateRoot(), block.messages(), block.proposer(), block.cert());
+    }
+
+    /** An empty block after {@code parent}; its state root is the parent's (nothing changes). */
+    private static AppBlock nextBlock(AppBlock parent, long timestamp, byte[] proposer) {
+        return new AppBlock(AppBlock.BLOCK_VERSION, CHAIN, parent.height() + 1,
+                AppBlockCodec.blockHash(parent), 0, new byte[0], timestamp,
+                AppBlockCodec.messagesRoot(List.of()), parent.stateRoot(), List.of(),
+                proposer, FinalityCert.empty());
+    }
+
     private static AppBlock block(int version, String chainId,
                                   List<AppMessage> messages, byte[] proposer) {
         return new AppBlock(version, chainId, 1, AppBlock.GENESIS_PREV_HASH,
@@ -388,6 +661,9 @@ class AppChainEngineIdentityValidationTest {
         new ConsensusProfileGuard(EffectsSettings.from(config).consensusProfile(config))
                 .apply(1, writer);
         new ObservationProfileGuard(ObservationProfileV1.disabled()).apply(1, writer);
+        // A genesis-enabled topic registry writes its seed while applying block 1 (ADR app-layer/039 D1)
+        TopicChainSettings.genesisSeed(config.pluginSettings()).ifPresent(seed ->
+                writer.put(TopicKeys.config(), TopicWireCodec.encodeConfig(new TopicWire.Config(1, 1, seed))));
         return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
                 block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
                 trie.getRootHash(), block.messages(), block.proposer(), block.cert());
@@ -522,9 +798,20 @@ class AppChainEngineIdentityValidationTest {
     }
 
     private static final class AlwaysSequencer implements SequencerMode {
+        private final String id;
+
+        AlwaysSequencer() {
+            this("identity-test");
+        }
+
+        /** {@code "fixed"} makes the engine use deterministic leaders (view 0: the proposer). */
+        AlwaysSequencer(String id) {
+            this.id = id;
+        }
+
         @Override
         public String id() {
-            return "identity-test";
+            return id;
         }
 
         @Override

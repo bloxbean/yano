@@ -105,7 +105,10 @@ class TxSubmissionDiffusionIntegrationTest {
 
             Message nextRequest = agent.buildNextMessage();
             assertThat(nextRequest).isInstanceOf(RequestTxIds.class);
-            assertThat(((RequestTxIds) nextRequest).getAckTxIds()).isEqualTo((short) 1);
+            // Yaci acknowledges every announced id, the known, requested and capacity-skipped ones. A Haskell node would
+            // acknowledge 2 and keep the capacity-skipped id to request in a later round (TxSubmission Inbound V1
+            // availableTxids, V2 txIdAckable).
+            assertThat(((RequestTxIds) nextRequest).getAckTxIds()).isEqualTo((short) 3);
         } finally {
             agent.shutdown();
             handler.onClientDisconnected("peer-1");

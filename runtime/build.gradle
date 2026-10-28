@@ -49,6 +49,8 @@ dependencies {
     // ADR-056 Phase 6a: the mempool gates validate real Conway transactions with the java engine
     testImplementation testFixtures(project(':ledger-rules'))
     testImplementation libs.netty
+    // ADR app-layer/039 V6: the showcase verifies topic-policy proofs offline
+    integrationTestImplementation project(':appchain-proof-verifier')
 
     // Generate @DomainEventListener bindings at build time
     annotationProcessor libs.yaci.events.processor

@@ -211,6 +211,16 @@ class ScriptAnchorServiceTest {
     }
 
     @Test
+    void bootstrapHasNoValidityUpperBound() throws Exception {
+        utxoState.put(leader.anchorAddress(), List.of(walletUtxo("cc".repeat(32), 0, 100_000_000)));
+
+        leader.bootstrap();
+
+        // a TTL past the ledger's forecast horizon would make the Plutus script context untranslatable
+        assertThat(Transaction.deserialize(submitted.getFirst()).getBody().getTtl()).isZero();
+    }
+
+    @Test
     void bootstrap_thenCosignedAdvance_endToEnd() throws Exception {
         // --- Bootstrap: fund the leader wallet, mint the thread NFT
         utxoState.put(leader.anchorAddress(), List.of(
@@ -267,6 +277,7 @@ class ScriptAnchorServiceTest {
 
         assertThat(submitted).hasSize(2);
         Transaction advanceTx = Transaction.deserialize(submitted.get(1));
+        assertThat(advanceTx.getBody().getTtl()).isZero(); // no validity upper bound (forecast horizon)
 
         // Datum advanced to the follower-verified tip
         TransactionOutput nextOut = outputTo(advanceTx, scriptAddress);
