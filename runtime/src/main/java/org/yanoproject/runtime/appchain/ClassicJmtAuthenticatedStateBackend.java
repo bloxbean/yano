@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /** Prepared classic radix-16 Blake2b-256 CCL JMT backend (ADR-025 Phase 3). */
 final class ClassicJmtAuthenticatedStateBackend implements AuthenticatedStateBackend {
@@ -169,7 +170,7 @@ final class ClassicJmtAuthenticatedStateBackend implements AuthenticatedStateBac
         if (ledger.tipHeight() == 0) {
             return 0;
         }
-        return Math.max(1, store.pruneWatermark());
+        return Math.max(1, store.pruneWatermark().orElse(1));
     }
 
     @Override
@@ -178,11 +179,11 @@ final class ClassicJmtAuthenticatedStateBackend implements AuthenticatedStateBac
             throw new IllegalArgumentException(
                     "JMT retain-from height must be within the finalized chain");
         }
-        long currentWatermark = store.pruneWatermark();
-        if (currentWatermark >= 0 && retainFromHeight < currentWatermark) {
+        OptionalLong currentWatermark = store.pruneWatermark();
+        if (currentWatermark.isPresent() && retainFromHeight < currentWatermark.getAsLong()) {
             throw new IllegalArgumentException(
                     "JMT retain-from height cannot move behind the prune watermark "
-                            + currentWatermark);
+                            + currentWatermark.getAsLong());
         }
         return store.pruneUpTo(retainFromHeight);
     }

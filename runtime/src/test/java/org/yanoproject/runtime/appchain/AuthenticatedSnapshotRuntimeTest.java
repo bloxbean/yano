@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -172,8 +173,14 @@ class AuthenticatedSnapshotRuntimeTest {
             @TempDir Path directory) throws Exception {
         try (AppLedgerStore ledger = ledger(directory.resolve("mpf-integrity-ledger"))) {
             var runtime = runtime(ledger, directory.resolve("archives"), false);
-            SnapshotDescriptorV1 descriptor = buildSnapshot(
-                    ledger, runtime, bytes("account/orphan"), bytes("450"));
+            // Enough entries that some reachable nodes stay outside the identity proof: an Aiken-canonical proof
+            // also reads a branch's lone sibling (its Leaf or Fork step), which covers every node of a tiny trie.
+            List<SnapshotEntry> entries = new ArrayList<>();
+            for (int i = 0; i < 7; i++) {
+                entries.add(new SnapshotEntry(bytes("account/a%02d".formatted(i)), bytes("4" + i)));
+            }
+            entries.add(new SnapshotEntry(bytes("account/orphan"), bytes("450")));
+            SnapshotDescriptorV1 descriptor = buildSnapshot(ledger, runtime, entries);
             byte[] storagePrefix = runtime.stateProof(descriptor, bytes("account/orphan"))
                     .orElseThrow().snapshot().identity().genesisId();
             ledger.importSnapshotNodeBatch(storagePrefix, List.of(
@@ -437,13 +444,18 @@ class AuthenticatedSnapshotRuntimeTest {
     private static SnapshotDescriptorV1 buildSnapshot(
             AppLedgerStore ledger, AuthenticatedSnapshotRuntime runtime,
             byte[] account, byte[] value) {
+        return buildSnapshot(ledger, runtime, List.of(new SnapshotEntry(account, value)));
+    }
+
+    private static SnapshotDescriptorV1 buildSnapshot(
+            AppLedgerStore ledger, AuthenticatedSnapshotRuntime runtime, List<SnapshotEntry> entries) {
         CandidateState candidate = ledger.stateBackend().beginCandidate(0, new byte[32], 1);
         new StateCommitmentGuard(IDENTITY).apply(1, candidate);
         var session = runtime.beginBlock(candidate);
         var handle = session.writer().capabilities().snapshotSeries("daily").orElseThrow();
         var token = handle.begin(0, "daily-0", new SnapshotSourceBoundary.AppHeight(1),
-                0, 0, 1, repeated(4), 1, 1);
-        handle.appendChunk(token, 0, List.of(new SnapshotEntry(account, value)));
+                0, 0, 1, repeated(4), 1, entries.size());
+        handle.appendChunk(token, 0, entries);
         handle.seal(token);
         try (WriteBatch batch = new WriteBatch()) {
             session.execute(batch, 1);
