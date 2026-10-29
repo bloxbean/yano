@@ -9,21 +9,14 @@ import javax.inject.Inject
 // Where the wasm comes from (task prepareWasm):
 //   -PamaruBuild=local               build it with ../amaru-validator-wasm/scripts/build-wasm.sh
 //                                    (rustup + zig or WASI_SDK_PATH + wasm-opt; see that crate's README)
-//   -PamaruWasm=/path/to/module.wasm use that file (checked against <file>.sha256 when one is next to it)
-//   (neither)                        download the Yano release asset pinned below and verify its sha256
+//   -PamaruWasm=/path/to/module.wasm use that file (checked against <file>.sha256 when one is next to it),
+//                                    e.g. the amaru-validator-wasm artifact of an amaru-wasm.yml run
 //
 // The module is then compiled ahead of time to JVM bytecode by Endive's build-time compiler (task
 // generateAmaruAot). Only the build-time AOT classes and the stripped .meta module ship: the runtime
 // compiler is never on the classpath, so the same jar works in a GraalVM native image.
 
 description = 'Optional Amaru WebAssembly transaction validator (ADR-057)'
-
-// The release that carries the pinned module (amaru-wasm.yml attaches amaru_validator.wasm and its
-// .sha256 to Yano's GitHub release). No release has published the module yet: until one does, both
-// stay empty and prepareWasm asks for -PamaruBuild=local or -PamaruWasm.
-def pinnedWasmReleaseTag = providers.gradleProperty('amaruWasmReleaseTag').getOrElse('')
-def pinnedWasmSha256 = providers.gradleProperty('amaruWasmSha256').getOrElse('')
-def wasmReleaseUrlPattern = 'https://github.com/bloxbean/yano/releases/download/%s/amaru_validator.wasm'
 
 def amaruBuild = providers.gradleProperty('amaruBuild').getOrElse('')
 def amaruWasmPath = providers.gradleProperty('amaruWasm').getOrElse('')
@@ -58,9 +51,6 @@ abstract class PrepareAmaruWasm extends DefaultTask {
     @Optional @InputFile @PathSensitive(PathSensitivity.NONE) abstract RegularFileProperty getSourceFile()
     @Optional @InputFile @PathSensitive(PathSensitivity.NONE) abstract RegularFileProperty getSourceSidecar()
     @Internal abstract Property<String> getSourcePath()
-    @Input abstract Property<String> getReleaseTag()
-    @Input abstract Property<String> getPinnedSha256()
-    @Input abstract Property<String> getUrlPattern()
     @Internal abstract DirectoryProperty getCrateDir()
     @OutputFile abstract RegularFileProperty getWasm()
 
@@ -97,33 +87,9 @@ abstract class PrepareAmaruWasm extends DefaultTask {
                 copy(given, target)
                 break
             default:
-                if (releaseTag.get().isBlank() || pinnedSha256.get().isBlank()) {
-                    throw new GradleException('No released amaru_validator.wasm is pinned yet ' +
-                            '(amaruWasmReleaseTag / amaruWasmSha256 are empty). Build the module locally with ' +
-                            '-PamaruBuild=local (needs rustup, zig or WASI_SDK_PATH, and wasm-opt; see ' +
-                            'amaru-validator-wasm/README.md) or pass a built module with ' +
-                            '-PamaruWasm=/path/to/amaru_validator.wasm.')
-                }
-                def url = String.format(urlPattern.get(), releaseTag.get())
-                logger.lifecycle("Downloading ${url}")
-                def partial = new File(target.parentFile, target.name + '.part')
-                try {
-                    def connection = URI.create(url).toURL().openConnection()
-                    connection.connectTimeout = 30_000
-                    connection.readTimeout = 120_000
-                    connection.inputStream.withCloseable { input -> partial.withOutputStream { it << input } }
-                } catch (IOException e) {
-                    partial.delete()
-                    throw new GradleException("Cannot download ${url}: ${e.message}. Build the module " +
-                            'locally with -PamaruBuild=local or pass -PamaruWasm=/path/to/amaru_validator.wasm.', e)
-                }
-                def actual = sha256(partial)
-                if (actual != pinnedSha256.get().toLowerCase(Locale.ROOT)) {
-                    partial.delete()
-                    throw new GradleException("sha256 mismatch for ${url}: expected ${pinnedSha256.get()}, got ${actual}")
-                }
-                copy(partial, target)
-                partial.delete()
+                throw new GradleException('-PwithAmaru=true needs the module: build it with -PamaruBuild=local ' +
+                        '(needs rustup, zig or WASI_SDK_PATH, and wasm-opt; see amaru-validator-wasm/README.md) ' +
+                        'or pass a built module with -PamaruWasm=/path/to/amaru_validator.wasm.')
         }
         logger.lifecycle("amaru_validator.wasm: ${target.length()} bytes, sha256 ${sha256(target)}")
     }
@@ -150,8 +116,8 @@ abstract class PrepareAmaruWasm extends DefaultTask {
 
 def prepareWasm = tasks.register('prepareWasm', PrepareAmaruWasm) {
     group = 'build'
-    description = 'Provides amaru_validator.wasm: local cargo build, a given file, or the pinned release asset.'
-    mode = amaruBuild == 'local' ? 'local' : (amaruWasmPath ? 'file' : 'release')
+    description = 'Provides amaru_validator.wasm: a local cargo build or a given file.'
+    mode = amaruBuild == 'local' ? 'local' : (amaruWasmPath ? 'file' : 'none')
     sourcePath = amaruWasmPath
     if (amaruWasmPath && new File(amaruWasmPath).isFile()) {
         sourceFile = new File(amaruWasmPath)
@@ -160,9 +126,6 @@ def prepareWasm = tasks.register('prepareWasm', PrepareAmaruWasm) {
             sourceSidecar = sidecar
         }
     }
-    releaseTag = pinnedWasmReleaseTag
-    pinnedSha256 = pinnedWasmSha256
-    urlPattern = wasmReleaseUrlPattern
     crateDir = wasmCrateDir
     wasm = layout.buildDirectory.file('amaru-wasm/amaru_validator.wasm')
 }
