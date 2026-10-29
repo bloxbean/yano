@@ -1,6 +1,6 @@
 {
-  "sourceRevision": "f5e1260749c02af3ba39d1299dd5c5c2c8e93e20",
-  "version": "0.1.0-pre19-SNAPSHOT",
+  "sourceRevision": "6273869188bc5fb66002b08ac3f87d1e1ab649e0",
+  "version": "0.1.0-pre19",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
     {
@@ -1098,6 +1098,32 @@
       ]
     },
     {
+      "source": "app/config/application-bp.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.block-producer.enabled",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.slot-leader-mode",
+          "value": true
+        },
+        {
+          "key": "yano.block-producer.vrf-skey-file",
+          "value": "config/keys/vrf.skey"
+        },
+        {
+          "key": "yano.block-producer.kes-skey-file",
+          "value": "config/keys/kes.skey"
+        },
+        {
+          "key": "yano.block-producer.opcert-file",
+          "value": "config/keys/opcert.cert"
+        }
+      ]
+    },
+    {
       "source": "app/config/application-devnet.yml",
       "profile": null,
       "values": [
@@ -1842,6 +1868,20 @@
         {
           "key": "yano.governance.enabled",
           "value": false
+        }
+      ]
+    },
+    {
+      "source": "app/config/application-shadow-sync.yml",
+      "profile": null,
+      "values": [
+        {
+          "key": "yano.validation.shadow-sync",
+          "value": true
+        },
+        {
+          "key": "yano.validation.shadow-sync-engines",
+          "value": "java-julc"
         }
       ]
     },

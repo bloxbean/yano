@@ -1,6 +1,6 @@
 {
-  "sourceRevision": "f5e1260749c02af3ba39d1299dd5c5c2c8e93e20",
-  "version": "0.1.0-pre19-SNAPSHOT",
+  "sourceRevision": "6273869188bc5fb66002b08ac3f87d1e1ab649e0",
+  "version": "0.1.0-pre19",
   "apiPrefix": "/api/v1",
   "note": "Static literal JAX-RS annotation inventory. Not OpenAPI; excludes generated/dynamic plugin routes and does not encode schemas, authentication, feature gates, or availability. Obtain /q/openapi?format=json from your actual artifact.",
   "routes": [
@@ -365,6 +365,13 @@
       "method": "POST",
       "path": "/api/v1/app-chain/admin/threshold",
       "handler": "setThreshold",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/app-chain/admin/topics/governance",
+      "handler": "submitTopicGovernance",
       "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
       "hidden": false
     },
@@ -862,6 +869,48 @@
       "method": "GET",
       "path": "/api/v1/app-chain/tip",
       "handler": "tip",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/topics/config",
+      "handler": "topicConfig",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/topics/entries/{name: .+}",
+      "handler": "topicEntry",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/topics/proof",
+      "handler": "topicPolicyProof",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/topics/receipts/{messageId}",
+      "handler": "topicReceipt",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/topics/resolve",
+      "handler": "topicResolve",
+      "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
+      "hidden": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/app-chain/topics/schemas/{hash}",
+      "handler": "topicSchema",
       "source": "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java",
       "hidden": false
     },
