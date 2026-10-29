@@ -17,6 +17,10 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public class JulcTxEvaluator implements TransactionEvaluator {
+    static {
+        JulcPlutusDataInit.ensureInitialized();
+    }
+
     private final ProtocolParamsSupplier protocolParamsSupplier;
     private final ScriptSupplier scriptSupplier;
     private final SlotConfigSupplier slotConfigSupplier;

@@ -20,6 +20,7 @@ import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseResult;
 import org.yanoproject.ledger.rules.view.model.Outpoints;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
+import org.yanoproject.ledger.scripteval.JulcPlutusDataInit;
 import org.yanoproject.ledger.scripteval.phase2.ConwayTxInfoTranslator.Redeemer;
 
 import java.util.ArrayList;
@@ -48,6 +49,10 @@ import java.util.function.Function;
  * case. Thread-safe.</p>
  */
 public final class JulcScriptPhaseEvaluator implements ScriptPhaseEvaluator {
+
+    static {
+        JulcPlutusDataInit.ensureInitialized();
+    }
 
     private final ForecastHorizon horizon;
     private final JulcMachine machine = new JulcMachine();
