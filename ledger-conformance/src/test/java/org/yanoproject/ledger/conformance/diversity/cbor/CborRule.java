@@ -25,7 +25,15 @@ import com.bloxbean.cardano.client.transaction.spec.governance.ProposalProcedure
 import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedure;
 import com.bloxbean.cardano.client.transaction.spec.governance.actions.GovAction;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
+import com.bloxbean.cardano.yaci.core.model.serializers.AuxDataSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockHeaderSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.CertificateSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.StakeCredentialSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.TransactionBodySerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.TransactionInputSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.TransactionOutputSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.WitnessesSerializer;
 import org.yanoproject.ledger.rules.conway.tx.RawOutput;
 import org.yanoproject.ledger.rules.conway.tx.StrictElements;
 import org.yanoproject.runtime.sync.validation.ShelleyHeaderView;
@@ -37,6 +45,8 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import static com.bloxbean.cardano.yaci.core.util.CborSerializationUtil.deserializeOne;
 
 /**
  * How Yano decodes and re-encodes one cardano-cbor-dataset rule (ADR-060 §6).
@@ -143,15 +153,46 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
         ).collect(Collectors.toMap(CborRule::name, Function.identity()));
     }
 
-    /** @return the re-encoding when both decoders accept the item; an exception is a rejection */
-    byte[] decodeAndEncode(byte[] cbor) throws Exception {
-        Object strictItem = strict.decode(cbor);
-        Object libraryItem = library.decode(cbor);
+    /**
+     * @return yaci's decoder for the rules it has one for, apart from headers, which {@link #library} already decodes
+     *         with yaci. Sync decodes with yaci by default, so this gives the sync path a number. It is a diagnostic:
+     *         the report measures transaction admission, which does not use these. As in sync, an item yaci recovers
+     *         from (a block, witness set or auxiliary data with a datum or metadata it cannot parse) counts as
+     *         accepted.
+     */
+    static Map<String, Decoder> yaciDecoders() {
+        return Map.of(
+                "auxiliary_data", AuxDataSerializer.INSTANCE::deserialize,
+                "block", cbor -> BlockSerializer.INSTANCE.deserialize(cat("8207", cbor)),
+                "certificate", cbor -> CertificateSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
+                "credential", cbor -> StakeCredentialSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
+                "transaction_body",
+                cbor -> TransactionBodySerializer.INSTANCE.deserializeDI(deserializeOne(cbor), cbor),
+                "transaction_input", cbor -> TransactionInputSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
+                "transaction_output", cbor -> TransactionOutputSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
+                "transaction_witness_set", WitnessesSerializer.INSTANCE::deserialize);
+    }
+
+    /** One item as both decoders read it. */
+    record Decoded(byte[] cbor, Object strict, Object library) {
+    }
+
+    /** @return the item when both decoders accept it; an exception is a rejection */
+    Decoded decode(byte[] cbor) throws Exception {
+        return new Decoded(cbor, strict.decode(cbor), library.decode(cbor));
+    }
+
+    /**
+     * @return the re-encoding of an accepted item. Not the canonical form, which would sort a Plutus {@code Data} map:
+     *         that is an association list, whose order Haskell keeps. An exception here is an encoder failure, not a
+     *         rejection.
+     */
+    byte[] encode(Decoded item) throws Exception {
         if (hashed) {
-            return cbor;
+            return item.cbor();
         }
-        Object encoded = encoder.encode(strictItem, libraryItem);
-        return encoded instanceof byte[] bytes ? bytes : CborSerializationUtil.serialize((DataItem) encoded);
+        Object encoded = encoder.encode(item.strict(), item.library());
+        return encoded instanceof byte[] bytes ? bytes : CborSerializationUtil.serialize((DataItem) encoded, false);
     }
 
     private static CborRule model(String name, Decoder strict, Decoder library, Encoder encoder) {

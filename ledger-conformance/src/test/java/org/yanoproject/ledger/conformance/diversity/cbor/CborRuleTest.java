@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.raw.RawBlock;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -45,7 +46,27 @@ class CborRuleTest {
         accepts("auxiliary_data", HexFormat.of().parseHex("a0"));
     }
 
+    @Test
+    void plutusMapKeepsItsOrderWhenReEncoded() throws Exception {
+        byte[] redeemer = HexFormat.of().parseHex("840000a203040102820101");
+        CborRule rule = RULES.get("redeemer");
+
+        assertThat(rule.encode(rule.decode(redeemer))).isEqualTo(redeemer);
+    }
+
+    @Test
+    void encoderFailureIsNotARejection(@TempDir Path dir) throws IOException {
+        CborRule rule = new CborRule("rule", false, cbor -> cbor, cbor -> cbor, (strict, library) -> {
+            throw new IllegalStateException("encoder failure");
+        });
+        Path sample = Files.write(dir.resolve("sample.input.cbor"), new byte[]{0});
+
+        assertThat(CborDecodingDiversityReportTest.check(rule, "invalid-zap-0", sample))
+                .contains("decode: succeeded when expected to fail");
+    }
+
     private static void accepts(String rule, byte[] item) {
-        assertThatCode(() -> RULES.get(rule).decodeAndEncode(item)).as(rule).doesNotThrowAnyException();
+        CborRule cborRule = RULES.get(rule);
+        assertThatCode(() -> cborRule.encode(cborRule.decode(item))).as(rule).doesNotThrowAnyException();
     }
 }
