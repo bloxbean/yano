@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.BytesPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.CostMdls;
+import com.bloxbean.cardano.client.plutus.spec.Language;
 import com.bloxbean.cardano.client.plutus.spec.PlutusData;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
@@ -21,6 +22,7 @@ import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedure;
 import org.yanoproject.ledger.rules.conway.tx.RawOutput;
 import org.yanoproject.ledger.rules.conway.tx.StrictElements;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -182,8 +184,7 @@ final class CborPlacedRules {
                     return Redeemer.deserializePreConway((Array) item(redeemer));
                 }, (s, c) -> at(((Redeemer) c).serializePreConway(), 3)),
                 model("language", reads(cbor -> StrictElements.paramUpdate(cat("a112a1", cbor, "80"))),
-                        cbor -> CostMdls.deserialize(item(cat("a1", cbor, "80"))),
-                        (s, c) -> at(((CostMdls) c).serialize(), KEY)),
+                        CborPlacedRules::language, (s, c) -> at(((CostMdls) c).serialize(), KEY)),
                 model("vote", cbor -> StrictElements.transaction(voteTx(cat("82", cbor, "f6"))), cbor -> {
                     byte[] procedure = cat("82", cbor, "f6");
                     Transaction.deserialize(voteTx(procedure));
@@ -284,6 +285,15 @@ final class CborPlacedRules {
         Wrapper wrapper = cbor -> tx(hex(MIN_BODY), hex("a0"), cat(prefix, cbor, suffix));
         return kept(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
                 cbor -> Transaction.deserialize(wrapper.wrap(cbor)));
+    }
+
+    /** A cost model keeps a key it does not know, as Haskell's does, but {@code Language} has only the known ones. */
+    private static CostMdls language(byte[] cbor) throws Exception {
+        BigInteger key = ((UnsignedInteger) item(cbor)).getValue();
+        if (Stream.of(Language.values()).noneMatch(language -> BigInteger.valueOf(language.getKey()).equals(key))) {
+            throw new IllegalArgumentException("unknown language " + key);
+        }
+        return CostMdls.deserialize(item(cat("a1", cbor, "80")));
     }
 
     /**

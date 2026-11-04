@@ -193,7 +193,8 @@ For each corpus rule:
   where the node reads it, and a valid one has to come back out: it is taken from the re-encoded model, at the path it
   was placed, so a value the model drops or changes fails. Where the parent also takes another type, such as a
   nullable position, the rule first checks the item's CBOR type; that item is not one of the rule's, though the parent
-  would accept it.
+  would accept it. A `language` is also checked against CCL's `Language`, because a cost model keeps a key it does
+  not know, as Haskell's does.
 - `block` goes through CCL's `RawBlock`, then every transaction as above, which is how shadow sync decodes blocks.
 - `header` and `header_body` go the way chain sync receives a header, wrapped in a byte string: yaci's
   `BlockHeaderSerializer`, then the checks of upstream header validation (`ShelleyHeaderView`). Those checks run
@@ -337,9 +338,18 @@ The 3,114 cbor-decoding misses, by cause, none of them masked in the harness:
 The two invalid samples accepted are `block_number` and `kes_period` of -1: `ShelleyHeaderView` reads those fields with
 a check that accepts a negative value.
 
-With the unreleased CCL fixes of ADR 0002 (cardano-client-lib#734 to #745) the same harness scores 41425 / 42675
-(97.07%): 9694 valid, 31731 invalid. Those fixes were measured on the old dataset, and this one shows they still need
-work: some rejected committee terms are valid, and 30 more invalid samples get through.
+With the unreleased CCL fixes of ADR 0002 (cardano-client-lib#734 to #745), run from a local build, the same harness
+scores 41528 / 42675 (97.31%): 9770 valid, 31758 invalid. CCL then refuses no valid sample. The 1,147 samples left:
+
+| Samples | Cause | Where |
+|---:|---|---|
+| 461 | CCL writes asset names and withdrawals in CIP-21's order, for hardware wallets; the dataset expects Haskell's | CCL: needs a decision |
+| 226 | Set order inside arrays: the dataset expects Haskell's sorted `Set` | CCL |
+| 3 | A Plutus constructor written in another form | CCL |
+| 388 | The header checks of `ShelleyHeaderView` | Yano |
+| 64 | Allegra auxiliary data in indefinite length, refused by the strict reader | Yano |
+| 3 | Invalid samples accepted: the two above, and `certificate/manual-invalid/pool-owners-repeated`, which pre7 refused by accident and the strict reader accepts | Yano |
+| 2 | An empty `%multiasset<positive_coin>`: CCL's `Value` writes no map to read back | Harness |
 
 ## Consequences
 
