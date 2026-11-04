@@ -221,6 +221,11 @@ Any divergence the corpus exposes is fixed at its source in its own change. It i
   - uploads the JSON files as artifact `node-diversity-reports`.
 - `release-dist.yml` calls it on release tags, and its `release` job attaches `dist/yano-*-*.json` beside the zips.
 - A manual dispatch on any branch produces the reports without releasing, to check scores before a release.
+- `publish-conformance-reports.yml` (`workflow_dispatch`, `main` only) calls it and replaces the files of one
+  pre-release, tag `conformance-reports`. The site takes the newest date in a file name across all releases, so a new
+  corpus reaches it without a Yano release and without a change to the site's metadata. Moving to a new corpus is then:
+  a PR that bumps `corpora.env` (it runs this workflow, so its scores show before the merge), the merge, and a dispatch.
+  The reports then describe `main`, not a released version; `implementation_commit` names the commit.
 
 ### 8. Publication (outside this ADR's implementation)
 
