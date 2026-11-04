@@ -16,10 +16,10 @@ cardano-node, Amaru and Dingo are listed today.
 
 | Scenario | Kind | Corpus | Report entry |
 |---|---|---|---|
-| `ledger-rules` | functional | 284 transaction fixtures in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
+| `ledger-rules` | functional | 290 transaction fixtures in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
 | `uplc-conformance` | functional | 1,064 UPLC vectors (`uplc-conformance.tar.zst`), protocol versions 10 and 11, cost models included | `{id, title, group, plutus_version, protocol_version, evaluation, budget}` |
 | `uplc-turbo` | performance | 3,997 Flat-encoded mainnet scripts (`turbo.tar.zst`), by epoch | per script: `cpu_us`, `mem_bytes`, `budget_cpu`, `budget_mem`, plus the machine |
-| `cbor-decoding` | functional | `r2rationality/cardano-cbor-dataset`, `dataset/conway`: 25 CDDL rules, 866 valid and 8,334 invalid samples | per-rule and total `*_expected` / `*_actual` counts |
+| `cbor-decoding` | functional | `r2rationality/cardano-cbor-dataset`, `dataset/conway`: 97 rules, 10,914 valid and 31,761 invalid samples | format version 2: the outcome of every sample, and the dataset and node commits |
 
 ### How the other nodes do it
 
@@ -169,16 +169,19 @@ The scenario is meant to exercise the decoder the node relies on. In Yano that i
 
 For each corpus rule:
 
-- **valid** samples must pass both decoders and re-encode to the reference:
-  - for the seven hashed rules (`auxiliary_data`, `header`, `native_script`, `plutus_data`, `redeemers`,
-    `transaction_body`, `transaction_witness_set`), byte for byte, from the original bytes the node keeps, as
-    Haskell's `MemoBytes` does;
+- **valid** samples (`valid`, `manual-valid`) must pass both decoders and re-encode to the reference:
+  - for the seven rules the dataset compares exactly (`mkByteExactRule` in its `EraSpec.hs`: `auxiliary_data`,
+    `header`, `native_script`, `plutus_data`, `redeemers`, `transaction_body`, `transaction_witness_set`), byte for
+    byte, from the original bytes the node keeps, as Haskell's `MemoBytes` does;
   - for `datum_option`, from Yano's own reading (`RawOutput`): the datum hash, or the inline datum's original bytes,
     which Yano keeps and hashes;
-  - for every other rule, after re-encoding the decoded CCL model and normalizing it with the dataset's normalization
-    specification (`CborNormalizer`). The normalizer reproduces the dataset's 20 normalization vectors, and the report
+  - for items the node keeps as bytes and does not re-encode (`block`, `transaction`, `header_body`, the parts of a
+    header, and the forms and parts of auxiliary data), from those bytes, with both sides normalized. These valid
+    samples are scored on acceptance alone, as nothing is re-encoded: the node hashes the bytes it received;
+  - for every other rule, after re-encoding the decoded CCL model, with both sides normalized by the dataset's
+    specification (`CborNormalizer`). The normalizer reproduces the dataset's normalization vectors, and the report
     test checks it against them before every run.
-- **invalid-zap-0..3** samples must be rejected by the decoder pair.
+- **every other sample** (`invalid-zap-<n>`, `manual-invalid`) must be rejected by the decoder pair.
 
 **How elements reach the decoders.** The strict readers are package-private. A test fixture in their package,
 `StrictElements` (`ledger-rules` test fixtures), exposes one method per element and adds no decoding of its own.
@@ -186,19 +189,25 @@ For each corpus rule:
 - An item the node reads only inside a larger structure is placed in a minimal, valid one first: a transaction for
   `auxiliary_data`, `redeemer(s)`, `transaction_body`, `transaction_input`, `transaction_witness_set` and
   `voting_procedure`; an output for `datum_option`; a proposal for `gov_action`; a parameter update for `cost_models`.
+- The dataset's other rules are parts of those items, down to `hash28` and `coin` (`CborPlacedRules`). Each is placed
+  where the node reads it, and a valid one has to come back out: it is taken from the re-encoded model, at the path it
+  was placed, so a value the model drops or changes fails. Where the parent also takes another type, such as a
+  nullable position, the rule first checks the item's CBOR type; that item is not one of the rule's, though the parent
+  would accept it.
 - `block` goes through CCL's `RawBlock`, then every transaction as above, which is how shadow sync decodes blocks.
 - `header` and `header_body` go the way chain sync receives a header, wrapped in a byte string: yaci's
   `BlockHeaderSerializer`, then the checks of upstream header validation (`ShelleyHeaderView`). Those checks run
   only when header validation is enabled (`yano.upstream.validation.level`), so the header rules describe that
   configuration. With the default level, `none`, yaci's lenient decoding alone stands. The diagnostic below shows it
-  separately: it rejects 11 of 400 invalid headers and 2 of 400 invalid header bodies.
+  separately: it rejects 16 of 408 invalid headers and 12 of 416 invalid header bodies.
 
-A positive control (`CborRuleTest`) feeds a valid item from a real Conway block to each rule that the corpus tests
-only with items to reject (block, header, header body, transaction, body, witness set). A broken wrapper would
-otherwise reject everything and still score.
+Positive controls (`CborRuleTest`) feed a valid item from a real Conway block to the whole-item rules, and a valid
+item to each placed rule, which must come back out unchanged. A broken wrapper would otherwise look like a decoder
+difference. The test lists the placed rules CCL does not yet return, and fails when that list changes.
 
-The report carries per-rule counts in the format of Amaru's report, with `corpus: "conway-123-100"` and
-`protocol_version: "11.0"`, the Conway decoder version.
+The report follows the dataset's format, version 2: `protocol_version: "11.0"`, the Conway decoder version,
+`dataset_commit` from `corpora.env`, `implementation_commit` from git, and one outcome per sample in `results`: `true`,
+or a message starting with `decode: ` or `encode: `. A rule in the dataset with no decoder fails the run.
 
 The decoder sync uses for block bodies (yaci's `BlockSerializer`) is lenient and is not what this scenario measures.
 Any divergence the corpus exposes is fixed at its source in its own change. It is never masked in the harness.
@@ -296,6 +305,41 @@ Findings, none of them masked in the harness:
 The cbor-decoding report prints each decoder alone as a diagnostic: Yano's strict readers 865/866 valid and
 8039/8334 invalid, the library decoders 611/866 and 5534/8334 (CCL, and yaci for headers). The report itself counts
 the two together, as the node runs them.
+
+## Results on the regenerated dataset (2026-11-05, `main` dc1a2ac4e with this harness, CCL 0.8.0-pre7)
+
+The dataset grew on 2026-10-30, to 42,675 Conway samples in 97 rules. The site divides by the largest total of any
+node, so the 8,912 of pre19's report on the old 9,200 samples shows as 20.88% there. Dataset `95e9e7c2`, site builder
+`00be740c`:
+
+| Scenario | Yano |
+|---|---|
+| ledger-rules | 289 / 290 |
+| uplc-conformance | 1064 / 1064 |
+| uplc-turbo | 3986 / 3997 |
+| cbor-decoding | 39561 / 42675 (92.70%): 7802 / 10914 valid, 31759 / 31761 invalid |
+| **overall** | **98.02%** |
+
+The 3,114 cbor-decoding misses, by cause, none of them masked in the harness:
+
+| Samples | Cause | Where |
+|---:|---|---|
+| 680 | The re-encoding differs from the reference, for example in map order | CCL |
+| 467 | An indefinite-length credential | CCL |
+| 393 | A tag-30 rational CCL refuses | CCL |
+| 388 | The header checks of `ShelleyHeaderView`: an indefinite array counts its BREAK, a value at or above 2^63 is refused, and a VRF output other than 64 bytes is refused | Yano |
+| 360 | CCL's decoding fails, mostly on an indefinite array | CCL |
+| 221 | A cost model with an unknown language key | CCL |
+| 218 | A 64-bit value read as a signed `long` | CCL |
+| 64 | Allegra auxiliary data in indefinite length, refused by the strict reader | Yano |
+| 323 | Smaller causes: datum options, protocol versions and others | Mostly CCL |
+
+The two invalid samples accepted are `block_number` and `kes_period` of -1: `ShelleyHeaderView` reads those fields with
+a check that accepts a negative value.
+
+With the unreleased CCL fixes of ADR 0002 (cardano-client-lib#734 to #745) the same harness scores 41425 / 42675
+(97.07%): 9694 valid, 31731 invalid. Those fixes were measured on the old dataset, and this one shows they still need
+work: some rejected committee terms are valid, and 30 more invalid samples get through.
 
 ## Consequences
 

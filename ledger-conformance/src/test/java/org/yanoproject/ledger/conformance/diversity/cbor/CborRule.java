@@ -58,18 +58,18 @@ import static com.bloxbean.cardano.yaci.core.util.CborSerializationUtil.deserial
  * only reads inside a transaction, an output, a proposal or a parameter update is placed in a minimal, valid one
  * first.</p>
  *
- * <p>{@link #encoder} re-encodes the decoded model (CCL's, or Yano's for {@code datum_option}); a hashed rule
- * ({@link #hashed}) re-encodes as its original bytes, as Haskell's {@code MemoBytes} does and as the node keeps
- * them.</p>
+ * <p>{@link #encoder} re-encodes the decoded model (CCL's, or Yano's for {@code datum_option}). Without one, the rule
+ * re-encodes as its original bytes, as Haskell's {@code MemoBytes} does and as the node keeps them.</p>
  *
  * @param name    the corpus rule
- * @param hashed  whether the item's bytes are a hash preimage (no normalization; the bytes must be reproduced)
+ * @param exact   whether the dataset compares the bytes exactly ({@code mkByteExactRule} in its {@code EraSpec.hs});
+ *                otherwise both sides are normalized
  * @param strict  Yano's strict reading; rejects by throwing
  * @param library CCL's model decoding, or for headers yaci's (the only header decoding with header validation off,
  *                the default); rejects by throwing
  * @param encoder the re-encoding, from both decodings
  */
-record CborRule(String name, boolean hashed, Decoder strict, Decoder library, Encoder encoder) {
+record CborRule(String name, boolean exact, Decoder strict, Decoder library, Encoder encoder) {
 
     @FunctionalInterface
     interface Decoder {
@@ -83,20 +83,27 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
     }
 
     // Known-good parts of the wrappers.
-    private static final String HASH28 = "581c" + "00".repeat(28);
-    private static final String HASH32 = "5820" + "00".repeat(32);
-    private static final String ADDRESS = "581d60" + "00".repeat(28);
-    private static final String REWARD_ACCOUNT = "581de0" + "00".repeat(28);
-    private static final String INPUT = "82" + HASH32 + "00";
-    private static final String MIN_BODY_ENTRIES = "0081" + INPUT + "0180" + "0200";
-    private static final String MIN_BODY = "a3" + MIN_BODY_ENTRIES;
+    static final String HASH28 = "581c" + "00".repeat(28);
+    static final String HASH32 = "5820" + "00".repeat(32);
+    static final String ADDRESS = "581d60" + "00".repeat(28);
+    static final String REWARD_ACCOUNT = "581de0" + "00".repeat(28);
+    static final String INPUT = "82" + HASH32 + "00";
+    static final String MIN_BODY_ENTRIES = "0081" + INPUT + "0180" + "0200";
+    static final String MIN_BODY = "a3" + MIN_BODY_ENTRIES;
     private static final String KES_SIGNATURE = "5901c0" + "00".repeat(448);
 
     /** @return the rules this harness knows, by name */
     static Map<String, CborRule> all() {
+        Map<String, CborRule> base = base();
+        return Stream.concat(base.values().stream(), CborPlacedRules.all(base))
+                .collect(Collectors.toMap(CborRule::name, Function.identity()));
+    }
+
+    /** @return the rules for items the node reads as they are, or with one wrapper */
+    static Map<String, CborRule> base() {
         return Stream.of(
                 inTransaction("auxiliary_data", cbor -> tx(hex(MIN_BODY), hex("a0"), cbor)),
-                hashed("block", cbor -> block(cbor, StrictElements::transaction),
+                kept("block", cbor -> block(cbor, StrictElements::transaction),
                         cbor -> block(cbor, Transaction::deserialize)),
                 model("certificate", reads(StrictElements::certificate),
                         cbor -> Certificate.deserialize((Array) item(cbor)), (s, c) -> ((Certificate) c).serialize()),
@@ -114,7 +121,7 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
                         reads(cbor -> StrictElements.proposal(cat("8400" + REWARD_ACCOUNT, cbor, "8260" + HASH32))),
                         cbor -> GovAction.deserialize((Array) item(cbor)), (s, c) -> ((GovAction) c).serialize()),
                 hashed("header", CborRule::header, CborRule::yaciHeader),
-                hashed("header_body", cbor -> header(headerOf(cbor)), cbor -> yaciHeader(headerOf(cbor))),
+                kept("header_body", cbor -> header(headerOf(cbor)), cbor -> yaciHeader(headerOf(cbor))),
                 hashed("native_script", reads(StrictElements::nativeScript),
                         cbor -> NativeScript.deserialize((Array) item(cbor))),
                 hashed("plutus_data", reads(StrictElements::plutusData), PlutusData::deserialize),
@@ -135,7 +142,7 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
                                 ? NativeScript.deserializeScriptRef(cbor) : PlutusScript.deserializeScriptRef(cbor),
                         (s, c) -> c instanceof NativeScript n ? n.scriptRefBytes()
                                 : ((PlutusScript) c).scriptRefBytes()),
-                inTransaction("transaction", cbor -> cbor),
+                kept("transaction", StrictElements::transaction, Transaction::deserialize),
                 inTransaction("transaction_body", cbor -> tx(cbor, hex("a0"), null)),
                 model("transaction_input", cbor -> StrictElements.transaction(inputTx(cbor)), cbor -> {
                     Transaction.deserialize(inputTx(cbor));
@@ -188,21 +195,25 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
      *         rejection.
      */
     byte[] encode(Decoded item) throws Exception {
-        if (hashed) {
+        if (encoder == null) {
             return item.cbor();
         }
         Object encoded = encoder.encode(item.strict(), item.library());
         return encoded instanceof byte[] bytes ? bytes : CborSerializationUtil.serialize((DataItem) encoded, false);
     }
 
-    private static CborRule model(String name, Decoder strict, Decoder library, Encoder encoder) {
+    static CborRule model(String name, Decoder strict, Decoder library, Encoder encoder) {
         return new CborRule(name, false, strict, library, encoder);
     }
 
+    /** The dataset compares the bytes exactly, and the node keeps them. */
     private static CborRule hashed(String name, Decoder strict, Decoder library) {
-        return new CborRule(name, true, strict, library, (s, c) -> {
-            throw new IllegalStateException("a hashed rule re-encodes as its original bytes");
-        });
+        return new CborRule(name, true, strict, library, null);
+    }
+
+    /** The node keeps the bytes, and the dataset compares them normalized. */
+    static CborRule kept(String name, Decoder strict, Decoder library) {
+        return new CborRule(name, false, strict, library, null);
     }
 
     /** A hashed rule read inside (or as) a transaction: the strict reader and CCL's decoding of that transaction. */
@@ -213,11 +224,11 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
 
     /** A strict reader that only accepts or rejects. */
     @FunctionalInterface
-    private interface Reader {
+    interface Reader {
         void read(byte[] cbor) throws Exception;
     }
 
-    private static Decoder reads(Reader reader) {
+    static Decoder reads(Reader reader) {
         return cbor -> {
             reader.read(cbor);
             return null;
@@ -225,21 +236,21 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
     }
 
     @FunctionalInterface
-    private interface Wrapper {
+    interface Wrapper {
         byte[] wrap(byte[] cbor);
     }
 
     /** CCL reads a relay only inside a pool registration. */
-    private static Relay relay(byte[] relay) throws Exception {
+    static Relay relay(byte[] relay) throws Exception {
         return PoolRegistration.deserialize(item(cat("8a03" + HASH28 + HASH32 + "0000d81e820001" + REWARD_ACCOUNT
                 + "8081", relay, "f6"))).getRelays().getFirst();
     }
 
-    private static byte[] datumOutput(byte[] datumOption) {
+    static byte[] datumOutput(byte[] datumOption) {
         return cat("a300" + ADDRESS + "0100" + "02", datumOption);
     }
 
-    private static byte[] redeemerTx(byte[] redeemer) {
+    static byte[] redeemerTx(byte[] redeemer) {
         return tx(hex(MIN_BODY), cat("a10581", redeemer), null);
     }
 
@@ -247,7 +258,7 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
         return tx(cat("a30081", input, "01800200"), hex("a0"), null);
     }
 
-    private static byte[] voteTx(byte[] votingProcedure) {
+    static byte[] voteTx(byte[] votingProcedure) {
         return tx(cat("a4" + MIN_BODY_ENTRIES + "13a1" + "8200" + HASH28 + "a1" + INPUT, votingProcedure), hex("a0"),
                 null);
     }
@@ -265,13 +276,13 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
      * A header as chain sync receives one (wrapped in a byte string): yaci's decoding, then the header checks of
      * upstream header validation ({@link ShelleyHeaderView}), which a node runs when header validation is on.
      */
-    private static Object header(byte[] cbor) throws Exception {
+    static Object header(byte[] cbor) throws Exception {
         byte[] wrapped = wrapped(cbor);
         return ShelleyHeaderView.from(BlockHeaderSerializer.INSTANCE.deserialize(wrapped), wrapped);
     }
 
     /** A header as chain sync decodes one with header validation off: yaci's decoding alone. */
-    private static Object yaciHeader(byte[] cbor) throws Exception {
+    static Object yaciHeader(byte[] cbor) throws Exception {
         return BlockHeaderSerializer.INSTANCE.deserialize(wrapped(cbor));
     }
 
@@ -280,7 +291,7 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
     }
 
     /** {@code [header_body, kes_signature]} */
-    private static byte[] headerOf(byte[] headerBody) {
+    static byte[] headerOf(byte[] headerBody) {
         return cat(hex("82"), headerBody, hex(KES_SIGNATURE));
     }
 
@@ -288,7 +299,7 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
      * {@code datum_option} from Yano's reading of it: {@code [0, hash]}, or {@code [1, #6.24(bytes)]} around the inline
      * datum's original bytes, which Yano keeps (as Haskell's {@code MemoBytes} does) and hashes.
      */
-    private static DataItem datumOption(RawOutput output) {
+    static DataItem datumOption(RawOutput output) {
         Array option = new Array();
         if (output.datumHash() != null) {
             option.add(new UnsignedInteger(0));
@@ -302,24 +313,24 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
         return option;
     }
 
-    private static DataItem item(byte[] cbor) {
+    static DataItem item(byte[] cbor) {
         return CborSerializationUtil.deserialize(cbor);
     }
 
     /** {@code [body, witness_set, true, auxiliary_data / null]} */
-    private static byte[] tx(byte[] body, byte[] witnessSet, byte[] auxData) {
+    static byte[] tx(byte[] body, byte[] witnessSet, byte[] auxData) {
         return cat(hex("84"), body, witnessSet, auxData == null ? hex("f5f6") : cat(hex("f5"), auxData));
     }
 
-    private static byte[] cat(String prefix, byte[] item) {
+    static byte[] cat(String prefix, byte[] item) {
         return cat(hex(prefix), item);
     }
 
-    private static byte[] cat(String prefix, byte[] item, String suffix) {
+    static byte[] cat(String prefix, byte[] item, String suffix) {
         return cat(hex(prefix), item, hex(suffix));
     }
 
-    private static byte[] cat(byte[]... parts) {
+    static byte[] cat(byte[]... parts) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (byte[] part : List.of(parts)) {
             out.writeBytes(part);
@@ -327,7 +338,7 @@ record CborRule(String name, boolean hashed, Decoder strict, Decoder library, En
         return out.toByteArray();
     }
 
-    private static byte[] hex(String hex) {
+    static byte[] hex(String hex) {
         return HexFormat.of().parseHex(hex);
     }
 }
