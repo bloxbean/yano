@@ -3,7 +3,6 @@ package org.yanoproject.ledger.rules.conway.tx;
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.spec.Era;
-import com.bloxbean.cardano.client.transaction.raw.CertKind;
 import com.bloxbean.cardano.client.transaction.raw.FieldSpec;
 import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.FormatPolicy;
@@ -41,7 +40,7 @@ import java.util.Set;
 public final class HaskellPolicy implements FormatPolicy {
 
     /** Conway's decoder versions, 9 to 11, reject alike. */
-    static final HaskellPolicy CONWAY = new HaskellPolicy(9);
+    public static final HaskellPolicy CONWAY = new HaskellPolicy(9);
 
     private static final int FIRST_KNOWN_VERSION = 9;
     private static final int VERSION_12 = 12;
@@ -99,8 +98,12 @@ public final class HaskellPolicy implements FormatPolicy {
         }
     }
 
-    /** Walks one record of a Conway transaction with this policy. */
-    void walk(RecordSpec record, CborSpan value) {
+    /**
+     * Walks one record of a Conway transaction with this policy: the reader of a CDDL rule that has a table.
+     *
+     * @throws TxDecodingException when Haskell would not decode it
+     */
+    public void walk(RecordSpec record, CborSpan value) {
         try {
             record.walk(value, Era.Conway, this);
         } catch (CborRuntimeException e) {
@@ -108,10 +111,17 @@ public final class HaskellPolicy implements FormatPolicy {
         }
     }
 
-    /** Walks one value of a type: its rule, then its table. */
-    void walk(FieldType type, CborSpan value) {
+    /**
+     * Walks one value of a type: its rule, then its table if it has one. The reader of a CDDL rule that is one type,
+     * not a collection (a collection's rules, such as being non-empty, are its parent's).
+     *
+     * @throws RuntimeException when Haskell would not decode it, normally a {@link TxDecodingException}
+     */
+    public void walk(FieldType type, CborSpan value) {
         check(type, value, Era.Conway);
-        walk(type.record(), value);
+        if (type.record() != null) {
+            walk(type.record(), value);
+        }
     }
 
     /**

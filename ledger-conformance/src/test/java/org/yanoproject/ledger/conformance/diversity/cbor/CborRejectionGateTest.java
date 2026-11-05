@@ -51,6 +51,7 @@ class CborRejectionGateTest {
     void theBaselineHoldsBothSets() {
         Baseline baseline = CborRejectionGate.baseline();
         assertThat(baseline.reportMisses()).hasSize(69);
-        assertThat(baseline.strictAccepts()).hasSize(79);
+        // Yano's reader rejects every invalid sample since each rule is read directly (ADR 0003 M6).
+        assertThat(baseline.strictAccepts()).isEmpty();
     }
 }

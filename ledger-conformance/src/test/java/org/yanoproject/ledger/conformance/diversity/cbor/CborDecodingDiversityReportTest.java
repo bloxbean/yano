@@ -150,7 +150,7 @@ class CborDecodingDiversityReportTest {
 
     private static void printDecoders(Map<String, int[]> decoders) {
         int[] total = new int[DECODER_COLUMNS];
-        System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts them together):");
+        System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts Yano's alone):");
         System.out.printf("cbor-decoding %-28s %-36s %-56s %s%n", "rule", "Yano strict: valid ok / invalid ok",
                 "library (CCL; yaci for headers): valid ok / invalid ok", "yaci (sync): valid ok / invalid ok");
         decoders.forEach((rule, t) -> {
@@ -173,9 +173,8 @@ class CborDecodingDiversityReportTest {
      */
     static Optional<String> check(CborRule rule, boolean valid, Path sample) {
         byte[] input = read(sample);
-        CborRule.Decoded decoded;
         try {
-            decoded = rule.decode(input);
+            rule.read(input);
         } catch (Error e) {
             return Optional.of("decode: crash: " + e);
         } catch (Exception e) {
@@ -187,7 +186,7 @@ class CborDecodingDiversityReportTest {
         try {
             byte[] expected = read(sample.resolveSibling(sample.getFileName().toString()
                     .replace(".input.cbor", ".expected.cbor")));
-            byte[] encoded = rule.encode(decoded);
+            byte[] encoded = rule.encode(input);
             boolean same = rule.exact() ? Arrays.equals(encoded, expected)
                     : Arrays.equals(CborNormalizer.normalize(encoded), CborNormalizer.normalize(expected));
             return same ? Optional.empty() : Optional.of("encode: re-encoding differs from the reference");

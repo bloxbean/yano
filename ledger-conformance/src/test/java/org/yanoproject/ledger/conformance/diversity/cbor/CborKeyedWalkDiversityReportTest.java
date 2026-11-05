@@ -1,8 +1,14 @@
 package org.yanoproject.ledger.conformance.diversity.cbor;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.FieldSpec;
+import com.bloxbean.cardano.client.transaction.raw.FormatPolicy;
+import com.bloxbean.cardano.client.transaction.raw.RawTx;
+import com.bloxbean.cardano.client.transaction.raw.RecordSpec;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.diversity.NodeDiversity;
-import org.yanoproject.ledger.rules.conway.tx.StrictElements;
+import org.yanoproject.ledger.rules.conway.tx.HaskellPolicy;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -28,6 +34,24 @@ class CborKeyedWalkDiversityReportTest {
             "transaction_body", cbor -> CborRule.tx(cbor, CborRule.hex("a0"), null),
             "transaction_witness_set", cbor -> CborRule.tx(CborRule.hex(CborRule.MIN_BODY), cbor, null));
 
+    /** {@link HaskellPolicy} with only its rules on structure: no rule on a value's type. */
+    private static final FormatPolicy STRUCTURE = new FormatPolicy() {
+        @Override
+        public void enter(RecordSpec record, CborSpan container, Era era) {
+            HaskellPolicy.CONWAY.enter(record, container, era);
+        }
+
+        @Override
+        public void entry(RecordSpec record, FieldSpec field, CborSpan key, CborSpan value, int occurrence, Era era) {
+            HaskellPolicy.CONWAY.entry(record, field, key, value, occurrence, era);
+        }
+
+        @Override
+        public void missing(RecordSpec record, FieldSpec field, CborSpan container, Era era) {
+            HaskellPolicy.CONWAY.missing(record, field, container, era);
+        }
+    };
+
     @Test
     void comparesTheWalkWithTheReader() throws IOException {
         Path conway = NodeDiversity.requireCorpus(CborDecodingDiversityReportTest.DATASET).resolve("conway");
@@ -48,9 +72,9 @@ class CborKeyedWalkDiversityReportTest {
         for (Path sample : inputs(samples)) {
             byte[] tx = RULES.get(rule).apply(Files.readAllBytes(sample));
             total++;
-            String readerRejects = rejection(StrictElements::transaction, tx);
-            boolean structureRejects = rejection(StrictElements::walkStructure, tx) != null;
-            boolean walkRejects = rejection(StrictElements::walk, tx) != null;
+            String readerRejects = rejection(CborRule::transaction, tx);
+            boolean structureRejects = rejection(cbor -> RawTx.walk(cbor, Era.Conway, STRUCTURE), tx) != null;
+            boolean walkRejects = rejection(cbor -> RawTx.walk(cbor, Era.Conway, HaskellPolicy.CONWAY), tx) != null;
             reader += readerRejects != null ? 1 : 0;
             structure += structureRejects ? 1 : 0;
             walk += walkRejects ? 1 : 0;

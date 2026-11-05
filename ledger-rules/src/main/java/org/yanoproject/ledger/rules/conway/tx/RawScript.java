@@ -100,8 +100,8 @@ public final class RawScript {
         return readScript(ref);
     }
 
-    /** Reads {@code [language, script]}. */
-    static RawScript readScript(CborSpan script) {
+    /** Reads {@code script = [language, script]}, the reader of that CDDL rule. */
+    public static RawScript readScript(CborSpan script) {
         List<CborSpan> fields = StrictCbor.array(script, 2, "a script is [language, script]");
         long language = StrictCbor.unsignedLong(fields.get(0));
         if (language > PLUTUS_V3) {
