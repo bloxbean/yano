@@ -75,21 +75,24 @@ final class HaskellPolicy implements FormatPolicy {
     /** No unknown field, none outside its era, none repeated ({@code invalidField}, {@code decodeRecordSum}). */
     @Override
     public void entry(RecordSpec record, FieldSpec field, CborSpan key, CborSpan value, int occurrence, Era era) {
-        String at = record + (key != null ? " key " + describe(key) : " item at " + value.offset());
         if (field == null) {
-            throw new TxDecodingException("unknown " + at);
+            throw new TxDecodingException("unknown " + at(record, key, value));
         }
         if (!field.validIn(era)) {
-            throw new TxDecodingException(at + " is not in " + era);
+            throw new TxDecodingException(at(record, key, value) + " is not in " + era);
         }
         if (occurrence > 0) {
-            throw new TxDecodingException("repeated " + at);
+            throw new TxDecodingException("repeated " + at(record, key, value));
         }
     }
 
     // A key can be any item, of any size.
-    private static String describe(CborSpan key) {
-        return key.length() <= MAX_KEY_SHOWN ? HexUtil.encodeHexString(key.bytes()) : "at " + key.offset();
+    private static String at(RecordSpec record, CborSpan key, CborSpan value) {
+        if (key == null) {
+            return record + " item at " + value.offset();
+        }
+        return record + " key " + (key.length() <= MAX_KEY_SHOWN ? HexUtil.encodeHexString(key.bytes())
+                : "at " + key.offset());
     }
 
     /** A record has every field required in its era; a positional one, every item. */
@@ -186,9 +189,14 @@ final class HaskellPolicy implements FormatPolicy {
     private void certificates(CborSpan value, Era era) {
         List<CborSpan> items = StrictCbor.set(value);
         nonEmpty(items.isEmpty(), "Certificates");
+        for (CborSpan item : items) {
+            CertKind.RECORD.walk(item, era, this);
+        }
+        if (items.size() == 1) {
+            return;
+        }
         Set<String> seen = new HashSet<>();
         for (int i = 0; i < items.size(); i++) {
-            CertKind.RECORD.walk(items.get(i), era, this);
             EqualityKey key = new EqualityKey();
             CertKind.RECORD.walk(items.get(i), era, key);
             if (!seen.add(key.toString())) {

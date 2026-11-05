@@ -13,8 +13,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * {@link HaskellPolicy}: M1's keyed-record proof (ADR 0003 I13), where the walk and {@link RawTransaction}'s reader must
- * agree, and the rules the decoder version decides.
+ * {@link HaskellPolicy}: M1's keyed-record proof (ADR 0003 I13), where the walk and {@link RawTransaction}'s reader
+ * must agree, and the rules the decoder version decides.
  */
 class HaskellPolicyTest {
 
