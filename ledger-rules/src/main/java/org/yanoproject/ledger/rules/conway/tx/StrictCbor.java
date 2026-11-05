@@ -113,6 +113,12 @@ public final class StrictCbor {
         return value >= 0 ? BigInteger.valueOf(value) : BigInteger.valueOf(value).add(TWO_64);
     }
 
+    /** @return the 64 bits of an untagged unsigned integer, unsigned, so that checking one allocates nothing */
+    public static long word64(CborSpan item) {
+        expect(item, MAJOR_UNSIGNED, "an unsigned integer");
+        return argument(item);
+    }
+
     /** @return the value of an untagged unsigned integer that fits 63 bits */
     public static long unsignedLong(CborSpan item) {
         expect(item, MAJOR_UNSIGNED, "an unsigned integer");

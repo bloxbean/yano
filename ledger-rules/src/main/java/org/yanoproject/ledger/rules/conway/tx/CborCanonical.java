@@ -16,8 +16,15 @@ import java.util.List;
  */
 final class CborCanonical {
 
+    /**
+     * The deepest item compared: no value of Conway the ledger compares for equality, a set's item or a proposal, nests
+     * near it, so a deeper one is not a value Haskell decodes, and the recursion stays within any thread's stack.
+     */
+    private static final int MAX_DEPTH = 64;
+
     private final byte[] data;
     private int pos;
+    private int depth;
 
     private CborCanonical(byte[] data, int pos) {
         this.data = data;
@@ -26,6 +33,9 @@ final class CborCanonical {
 
     /** @return the canonical encoding of {@code item} */
     static byte[] of(CborSpan item) {
+        if (shortestScalarLength(item.buffer(), item.offset()) == item.length()) {
+            return item.bytes();
+        }
         CborCanonical c = new CborCanonical(item.buffer(), item.offset());
         byte[] out = c.item();
         c.requireEnd(item);
@@ -48,6 +58,36 @@ final class CborCanonical {
         return out;
     }
 
+    /**
+     * @return the length of the item at {@code at} if it is an integer or a definite string whose head is the shortest,
+     *         which is its own canonical encoding; else -1
+     */
+    private static int shortestScalarLength(byte[] data, int at) {
+        int initial = data[at] & 0xff;
+        int major = initial >>> 5;
+        int info = initial & 0x1f;
+        if (major > 3 || info > 27) {
+            return -1;
+        }
+        int head = 1 + (info < 24 ? 0 : 1 << (info - 24));
+        if (at + head > data.length) {
+            return -1;
+        }
+        long value = info;
+        if (info >= 24) {
+            value = 0;
+            for (int i = 1; i < head; i++) {
+                value = value << 8 | data[at + i] & 0xff;
+            }
+            // the smallest value of each head length: 24, 2^8, 2^16, 2^32
+            if (Long.compareUnsigned(value, info == 24 ? 24 : 1L << (8 << (info - 25))) < 0) {
+                return -1;
+            }
+        }
+        long length = head + (major < 2 ? 0 : value);
+        return value >= 0 && at + length <= data.length ? (int) length : -1;
+    }
+
     private void requireEnd(CborSpan item) {
         if (pos != item.offset() + item.length()) {
             throw new TxDecodingException("CBOR item at " + item.offset() + " has trailing bytes");
@@ -62,7 +102,21 @@ final class CborCanonical {
     }
 
     private byte[] item() {
+        if (++depth > MAX_DEPTH) {
+            throw new TxDecodingException("CBOR item nested more than " + MAX_DEPTH + " deep at " + pos);
+        }
+        byte[] out = itemHere();
+        depth--;
+        return out;
+    }
+
+    private byte[] itemHere() {
         int head = peek();
+        int scalar = shortestScalarLength(data, pos);
+        if (scalar > 0) {
+            pos += scalar;
+            return Arrays.copyOfRange(data, pos - scalar, pos);
+        }
         int major = head >>> 5;
         int info = head & 0x1f;
         ByteArrayOutputStream out = new ByteArrayOutputStream();

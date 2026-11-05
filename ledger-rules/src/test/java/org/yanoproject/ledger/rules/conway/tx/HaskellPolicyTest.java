@@ -306,6 +306,7 @@ class HaskellPolicyTest {
     void anItemOfASetTooDeepForARecursiveReaderIsRejected() {
         String deep = "81".repeat(200_000) + "00";
         bothReject("a3" + "0082" + deep + deep + OUTPUTS + FEE, "a0", "");
+        bothReject("a3" + "0082" + "82" + deep + "00" + "82" + deep + "00" + OUTPUTS + FEE, "a0", "nested");
     }
 
     @Test

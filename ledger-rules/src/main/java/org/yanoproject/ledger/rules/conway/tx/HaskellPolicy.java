@@ -185,12 +185,12 @@ public final class HaskellPolicy implements FormatPolicy {
     @Override
     public void check(FieldType type, CborSpan value, Era era) {
         switch (type) {
-            case UINT, COIN, SEQUENCE_NUMBER, KES_PERIOD -> StrictCbor.unsigned(value);
+            case UINT, COIN, SEQUENCE_NUMBER, KES_PERIOD -> StrictCbor.word64(value);
             case UINT16 -> atMost(value, MAX_WORD16);
             case UINT32, MINOR_PROTOCOL_VERSION -> atMost(value, MAX_WORD32);
             case MAJOR_PROTOCOL_VERSION -> atMost(value, MAX_VERSION);
             case POSITIVE_COIN -> {
-                if (StrictCbor.unsigned(value).signum() == 0) {
+                if (StrictCbor.word64(value) == 0) {
                     throw new TxDecodingException("a positive coin is zero at " + value.offset());
                 }
             }
@@ -366,16 +366,15 @@ public final class HaskellPolicy implements FormatPolicy {
     }
 
     /**
-     * {@code decodeSet} and {@code decodeOSet} reject two equal items, equal as decoded values. Each item is walked
-     * first: that bounds its depth, which {@link CborCanonical}'s recursion relies on.
+     * {@code decodeSet} and {@code decodeOSet} reject two equal items, equal as decoded values. The walk checks each
+     * item afterwards; an item it would reject has a key all the same, or is too deep for one.
      */
-    private void distinct(List<CborSpan> items, RecordSpec record, Era era) {
+    private static void distinct(List<CborSpan> items, RecordSpec record, Era era) {
         if (items.size() < 2) {
             return;
         }
         Set<ByteBuffer> seen = new HashSet<>();
         for (CborSpan item : items) {
-            record.walk(item, era, this);
             if (!seen.add(EqualityKey.of(item, record, era))) {
                 throw new TxDecodingException("duplicate " + record + " at " + item.offset());
             }
@@ -389,23 +388,36 @@ public final class HaskellPolicy implements FormatPolicy {
     }
 
     /**
-     * The value a record that passed this policy decodes to: its entries' canonical encodings ({@link CborCanonical}),
+     * The value a record that passes this policy decodes to: its entries' canonical encodings ({@link CborCanonical}),
      * with a set of key hashes in sorted order. An entry nested in another repeats part of it, which changes no
      * comparison.
      */
     private static final class EqualityKey implements FormatPolicy {
         private final ByteArrayOutputStream key = new ByteArrayOutputStream();
 
-        /** @return the key of an item the policy accepted; one the walk does not enter is a leaf, its own key */
+        /** @return the key of an item; one the walk does not enter is a leaf, its own key */
         static ByteBuffer of(CborSpan item, RecordSpec record, Era era) {
+            if (ofLeaves(record)) {
+                return ByteBuffer.wrap(CborCanonical.of(item));
+            }
             EqualityKey walked = new EqualityKey();
             record.walk(item, era, walked);
             return ByteBuffer.wrap(walked.key.size() == 0 ? CborCanonical.of(item) : walked.key.toByteArray());
         }
 
+        // A record of leaves, none a set, decodes to equal values exactly when it has one canonical encoding.
+        private static boolean ofLeaves(RecordSpec record) {
+            for (FieldSpec field : record.fields()) {
+                if (field.record() != null || field.type() == FieldType.KEY_HASH_SET) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         @Override
         public void entry(RecordSpec record, FieldSpec field, CborSpan tag, CborSpan value, int occurrence, Era era) {
-            key.writeBytes(field.type() == FieldType.KEY_HASH_SET ? CborCanonical.set(value)
+            key.writeBytes(field != null && field.type() == FieldType.KEY_HASH_SET ? CborCanonical.set(value)
                     : CborCanonical.of(tag != null ? tag : value));
         }
     }
