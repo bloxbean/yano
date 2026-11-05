@@ -1,7 +1,5 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import com.bloxbean.cardano.client.common.cbor.CborSpan;
-import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.util.Arrays;
@@ -36,12 +34,6 @@ public record RawCredential(boolean script, byte[] hash) implements Comparable<R
 
     public String hashHex() {
         return HexUtil.encodeHexString(hash);
-    }
-
-    /** Reads {@code credential = [0, addr_keyhash] / [1, script_hash]}. */
-    static RawCredential read(CborSpan item) {
-        HaskellPolicy.CONWAY.walk(FieldType.CREDENTIAL.record(), item);
-        return of(com.bloxbean.cardano.client.transaction.raw.RawCredential.of(item));
     }
 
     /** @return the credential that CCL's reader read, which {@link HaskellPolicy} has accepted */

@@ -1,8 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
-import com.bloxbean.cardano.client.spec.Era;
-import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.ProtocolParamField;
 import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
 
@@ -44,12 +42,6 @@ public final class RawParamUpdate {
     private RawParamUpdate(SortedSet<Integer> keys, SortedMap<Integer, BigInteger> integers) {
         this.keys = Collections.unmodifiableSortedSet(keys);
         this.integers = Collections.unmodifiableSortedMap(integers);
-    }
-
-    /** Reads a {@code protocol_param_update}. */
-    static RawParamUpdate read(CborSpan item) {
-        HaskellPolicy.CONWAY.walk(FieldType.PROTOCOL_PARAM_UPDATE, item);
-        return accepted(RawProtocolParamUpdate.of(item, Era.Conway));
     }
 
     /**

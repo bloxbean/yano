@@ -1,5 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.CertKind;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +26,9 @@ class CertificateDecodingTest {
     }
 
     private static RawCertificate read(String certificate) {
-        return RawCertificate.read(StrictCbor.span(HexUtil.decodeHexString(certificate)), 0);
+        CborSpan item = StrictCbor.span(HexUtil.decodeHexString(certificate));
+        HaskellPolicy.CONWAY.walk(CertKind.RECORD, item);
+        return RawCertificate.accepted(com.bloxbean.cardano.client.transaction.raw.RawCertificate.of(item), 0);
     }
 
     private static void decodes(String certificate) {
@@ -156,5 +160,19 @@ class CertificateDecodingTest {
         assertThat(registration.pool().vrfKeyHash()).hasSize(32);
         assertThat(registration.pool().cost()).isEqualTo(BigInteger.ZERO);
         assertThat(registration.pool().rewardAccountNetwork()).isZero();
+    }
+
+    @Test
+    void aRetirementEpochIsAWord64() {
+        // EpochNo is a Word64 (cardano-slotting): corpus certificate/valid/00012 retires at 17069553666615204442.
+        String retire = "8304581cb61ff172da09387f7ce3475fae789c28651358088e404c79e7e96cff";
+        assertThat(read(retire + "1bece33c9f1510da5a").epoch())
+                .isEqualTo(new BigInteger("17069553666615204442"));
+        assertThat(read(retire + "1b8000000000000000").epoch())
+                .isEqualTo(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE));
+        assertThat(read(retire + "1bffffffffffffffff").epoch())
+                .isEqualTo(BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE));
+        assertThat(read(retire + "12").epoch()).isEqualTo(BigInteger.valueOf(18));
+        refuses(retire + "c249010000000000000000"); // 2^64: a bignum
     }
 }

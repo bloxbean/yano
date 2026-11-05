@@ -1,7 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
-import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.RawValue;
 
 import java.util.Objects;
@@ -64,12 +63,6 @@ public record RawOutput(int index, CborSpan span, byte[] address, LedgerValue va
         return span.length();
     }
 
-    /** Reads one output: {@link HaskellPolicy} decides whether it decodes, CCL's reader reads it. */
-    static RawOutput read(CborSpan item, int index, boolean collateralReturn) {
-        HaskellPolicy.CONWAY.walk(FieldType.TRANSACTION_OUTPUT, item);
-        return accepted(com.bloxbean.cardano.client.transaction.raw.RawOutput.of(item), index, collateralReturn);
-    }
-
     /** The output at {@code index}, which {@link HaskellPolicy} has accepted. */
     static RawOutput accepted(com.bloxbean.cardano.client.transaction.raw.RawOutput output, int index,
                               boolean collateralReturn) {
@@ -77,12 +70,6 @@ public record RawOutput(int index, CborSpan span, byte[] address, LedgerValue va
                 value(RawValue.of(output.value())), collateralReturn, output.datumHash().orElse(null),
                 output.inlineDatumBytes().orElse(null),
                 output.scriptRefBytes().map(script -> RawScript.readScript(StrictCbor.span(script))).orElse(null));
-    }
-
-    /** Reads a {@code value}: {@link HaskellPolicy} decides whether it decodes, CCL's reader reads it. */
-    static LedgerValue readValue(CborSpan item) {
-        HaskellPolicy.CONWAY.walk(FieldType.VALUE, item);
-        return value(RawValue.of(item));
     }
 
     private static LedgerValue value(RawValue value) {

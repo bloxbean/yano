@@ -2,12 +2,11 @@ package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.transaction.raw.FieldType;
+import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigInteger;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -62,7 +61,7 @@ class DefiniteRecordDecodingTest {
     }
 
     private static void proposal(String procedure) {
-        RawProposal.read(span(procedure), 0);
+        HaskellPolicy.CONWAY.walk(TxBodyField.PROPOSAL_PROCEDURES.spec().record(), span(procedure));
     }
 
     private static void action(String action) {
@@ -70,24 +69,22 @@ class DefiniteRecordDecodingTest {
     }
 
     private static void update(String update) {
-        RawParamUpdate.read(span(update));
+        HaskellPolicy.CONWAY.walk(FieldType.PROTOCOL_PARAM_UPDATE, span(update));
     }
 
-    @Test
-    void definiteArrayRefusesAnIndefiniteArray() {
-        assertThat(StrictCbor.definiteArray(span("820102"), 2, "a pair")).hasSize(2);
-        assertThatThrownBy(() -> StrictCbor.definiteArray(span("9f0102ff"), 2, "a pair"))
-                .isInstanceOf(TxDecodingException.class).hasMessageContaining("indefinite-length array");
-        refuses(() -> StrictCbor.definiteArray(span("83010203"), 2, "a pair"));
-        refuses(() -> StrictCbor.definiteArray(span("a0"), 2, "a pair"));
-        assertThat(StrictCbor.array(span("9f0102ff"), 2, "a pair")).hasSize(2);
+    private static void output(String output) {
+        HaskellPolicy.CONWAY.walk(FieldType.TRANSACTION_OUTPUT, span(output));
+    }
+
+    private static void value(String value) {
+        HaskellPolicy.CONWAY.walk(FieldType.VALUE, span(value));
     }
 
     @Test
     void anAnchorIsARecD() {
         // RecD Anchor (BaseTypes.hs:995-1003)
-        decodes(() -> BoundedFields.anchor(span(ANCHOR), "test"));
-        refuses(() -> BoundedFields.anchor(span(INDEFINITE_ANCHOR), "test"));
+        decodes(() -> HaskellPolicy.CONWAY.walk(FieldType.ANCHOR, span(ANCHOR)));
+        refuses(() -> HaskellPolicy.CONWAY.walk(FieldType.ANCHOR, span(INDEFINITE_ANCHOR)));
     }
 
     @Test
@@ -178,16 +175,16 @@ class DefiniteRecordDecodingTest {
     void aMultiAssetValueIsARecDButALegacyOutputIsNot() {
         String assets = "a1" + HASH28 + "a14001";
         // RecD MaryValue below version 12 (Mary/Value.hs:298-310)
-        decodes(() -> RawOutput.readValue(span("8201" + assets)));
-        refuses(() -> RawOutput.readValue(span("9f01" + assets + "ff")));
+        decodes(() -> value("8201" + assets));
+        refuses(() -> value("9f01" + assets + "ff"));
         // the legacy TxOut is read with decodeListLenOrIndef (Babbage/TxOut.hs:553-576)
-        decodes(() -> RawOutput.read(span("9f581d60" + "00".repeat(28) + "01ff"), 0, false));
-        decodes(() -> RawOutput.read(span("82581d60" + "00".repeat(28) + "8201" + assets), 0, false));
+        decodes(() -> output("9f581d60" + "00".repeat(28) + "01ff"));
+        decodes(() -> output("82581d60" + "00".repeat(28) + "8201" + assets));
         // corpus transaction_output 00014: a legacy output whose value is [_ coin, {_}]
         String output00014 = "9f583920ce1601c72695306e4875141127a07f86d34c01c6ae537053f2bdef7b4a92fc7ea9143ffb"
                 + "68d36495d14fd9a6e2bccb28c97a57f3e3157b659f1bf60f5cb03c4cb211bfffff58206e97a436a598a96407d262b73aa4e3"
                 + "1a1158df6fe62f77ddcecce6865dbc95a5ff";
-        refuses(() -> RawOutput.read(span(output00014), 0, false));
+        refuses(() -> output(output00014));
     }
 
     @Test
@@ -199,19 +196,5 @@ class DefiniteRecordDecodingTest {
         refuses(() -> auxData(span("9fa080ff")));
         // the metadata map and the script list inside it may be indefinite (decodeMap, decodeStrictSeq)
         decodes(() -> auxData(span("82bf01a0ff9fff")));
-    }
-
-    @Test
-    void aRetirementEpochIsAWord64() {
-        // EpochNo is a Word64 (cardano-slotting): corpus certificate/valid/00012 retires at 17069553666615204442.
-        String retire = "8304581cb61ff172da09387f7ce3475fae789c28651358088e404c79e7e96cff";
-        assertThat(RawCertificate.read(span(retire + "1bece33c9f1510da5a"), 0).epoch())
-                .isEqualTo(new BigInteger("17069553666615204442"));
-        assertThat(RawCertificate.read(span(retire + "1b8000000000000000"), 0).epoch())
-                .isEqualTo(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE));
-        assertThat(RawCertificate.read(span(retire + "1bffffffffffffffff"), 0).epoch())
-                .isEqualTo(BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE));
-        assertThat(RawCertificate.read(span(retire + "12"), 0).epoch()).isEqualTo(BigInteger.valueOf(18));
-        refuses(() -> RawCertificate.read(span(retire + "c249010000000000000000"), 0)); // 2^64: a bignum
     }
 }

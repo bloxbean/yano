@@ -1,8 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.transaction.raw.CertKind;
-import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.RawDRep;
 import com.bloxbean.cardano.client.util.HexUtil;
 
@@ -70,11 +68,6 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             if ((kind <= 1) != (credential != null)) {
                 throw new IllegalArgumentException("a credential is required exactly for DRep kinds 0 and 1");
             }
-        }
-
-        static DRep read(CborSpan item) {
-            HaskellPolicy.CONWAY.walk(FieldType.DREP.record(), item);
-            return of(RawDRep.of(item));
         }
 
         private static DRep of(RawDRep drep) {
@@ -198,12 +191,6 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             return null;
         }
         return credential.hash();
-    }
-
-    /** Reads one certificate: {@link HaskellPolicy} decides whether it decodes, CCL's reader reads it. */
-    static RawCertificate read(CborSpan item, int index) {
-        HaskellPolicy.CONWAY.walk(CertKind.RECORD, item);
-        return accepted(com.bloxbean.cardano.client.transaction.raw.RawCertificate.of(item), index);
     }
 
     /** The certificate at {@code index}, which {@link HaskellPolicy} has accepted. */

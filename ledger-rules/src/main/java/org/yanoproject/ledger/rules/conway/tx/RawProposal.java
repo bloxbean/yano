@@ -1,14 +1,12 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
-import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.spec.UnitInterval;
 import com.bloxbean.cardano.client.transaction.raw.RawGovAction;
 import com.bloxbean.cardano.client.transaction.raw.RawGovActionId;
 import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
 import com.bloxbean.cardano.client.transaction.raw.RawProtocolVersion;
 import com.bloxbean.cardano.client.transaction.raw.RawWithdrawal;
-import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.view.model.GovActionId;
@@ -234,12 +232,6 @@ public final class RawProposal {
     /** @return a {@code NewConstitution}'s guardrails script hash, or null (none, or another action) */
     public byte[] constitutionScript() {
         return constitutionScript != null ? constitutionScript.clone() : null;
-    }
-
-    /** Reads a proposal procedure, as one item of a transaction's. */
-    static RawProposal read(CborSpan item, int index) {
-        HaskellPolicy.CONWAY.walk(TxBodyField.PROPOSAL_PROCEDURES.spec().record(), item);
-        return accepted(com.bloxbean.cardano.client.transaction.raw.RawProposal.of(item, Era.Conway), index);
     }
 
     /** @return the proposal that CCL's reader read, which {@link HaskellPolicy} has accepted */

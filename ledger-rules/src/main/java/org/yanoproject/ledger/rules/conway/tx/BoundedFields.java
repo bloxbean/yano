@@ -17,8 +17,6 @@ import java.util.List;
  * <ul>
  *   <li>{@code Url} and {@code DnsName}: UTF-8 text (each chunk valid, {@code decodeString}) of at most 128 bytes
  *       ({@code textDecCBOR 128}, BaseTypes.hs:678-697).</li>
- *   <li>{@code Anchor}: {@code [url, hash]}, the hash a 32-byte {@code SafeHash} (BaseTypes.hs:996-1004, the
- *       record form below decoder version 12).</li>
  *   <li>{@code UnitInterval}: tag 30, two integers (bignums tagged 2/3 too), a non-zero denominator, the reduced ratio in [0, 1] with
  *       numerator and denominator in {@code Word64} ({@code decodeRationalWithTag}, Plain.hs:159-167;
  *       {@code boundRational}, BaseTypes.hs:386-402).</li>
@@ -28,7 +26,6 @@ final class BoundedFields {
 
     /** {@code textDecCBOR 128} at decoder version 9 and later. */
     static final int MAX_TEXT_BYTES = 128;
-    static final int ANCHOR_HASH_LENGTH = 32;
     private static final BigInteger WORD64_MAX = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
 
     private BoundedFields() {
@@ -55,16 +52,6 @@ final class BoundedFields {
         int length = text.length;
         if (length > MAX_TEXT_BYTES) {
             throw new TxDecodingException(what + " exceeds " + MAX_TEXT_BYTES + " bytes: " + length);
-        }
-    }
-
-    /** Reads an {@code Anchor}. */
-    static void anchor(CborSpan item, String what) {
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, what + " anchor is a two-element array");
-        url(fields.get(0), what + " anchor");
-        byte[] hash = StrictCbor.definiteBytes(fields.get(1));
-        if (hash.length != ANCHOR_HASH_LENGTH) {
-            throw new TxDecodingException(what + " anchor data hash of " + hash.length + " bytes");
         }
     }
 
