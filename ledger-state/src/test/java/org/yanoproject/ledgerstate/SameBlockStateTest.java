@@ -1,9 +1,6 @@
 package org.yanoproject.ledgerstate;
 
-import co.nstant.in.cbor.CborDecoder;
-import co.nstant.in.cbor.CborEncoder;
-import co.nstant.in.cbor.model.Array;
-import co.nstant.in.cbor.model.DataItem;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.Credential;
 import com.bloxbean.cardano.yaci.core.model.Era;
@@ -50,7 +47,6 @@ import org.yanoproject.ledgerstate.governance.ratification.EnactmentProcessor;
 import org.yanoproject.ledgerstate.test.TestRocksDBHelper;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -661,12 +657,10 @@ class SameBlockStateTest {
 
     private static TransactionBody decodeBody(String txHash, String txCborHex) {
         try {
-            byte[] txBytes = HexFormat.of().parseHex(txCborHex);
-            Array tx = (Array) CborDecoder.decode(txBytes).getFirst();
-            DataItem body = tx.getDataItems().getFirst();
-            ByteArrayOutputStream bodyBytes = new ByteArrayOutputStream();
-            new CborEncoder(bodyBytes).nonCanonical().encode(body);
-            TransactionBody decoded = TransactionBodySerializer.INSTANCE.deserializeDI(body, bodyBytes.toByteArray());
+            byte[] body = CborSpan.of(HexFormat.of().parseHex(txCborHex)).items().getFirst().bytes();
+            // preprod Conway transactions; yaci's Era is imported here
+            TransactionBody decoded = TransactionBodySerializer.INSTANCE.read(body,
+                    com.bloxbean.cardano.client.spec.Era.Conway);
             assertThat(decoded.getCertificates()).as("certificates of %s", txHash).isNotEmpty();
             return decoded;
         } catch (Exception e) {

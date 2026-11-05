@@ -411,7 +411,8 @@ class ShelleyHeaderValidatorTest {
         }
 
         BlockHeader blockHeader() {
-            return BlockHeaderSerializer.INSTANCE.getBlockHeaderFromHeaderArray(headerArray);
+            return BlockHeaderSerializer.INSTANCE.deserializeDI(
+                    new ByteString(CborSerializationUtil.serialize(headerArray)));
         }
 
         long opcertCounter() {
