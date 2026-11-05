@@ -726,7 +726,7 @@ class GovRuleTest {
             procedure.getDataItems().set(0, new UnsignedInteger(3));
         });
         assertThatThrownBy(() -> RawTransaction.parse(badVote, built.tx())).isInstanceOf(TxDecodingException.class)
-                .hasMessageContaining("unknown vote 3");
+                .hasMessageContaining("unsigned integer 3 exceeds 2");
         byte[] noVotes = editVotes(built.cbor(), byVoter -> byVoter.put(byVoter.getKeys().iterator().next(),
                 new co.nstant.in.cbor.model.Map()));
         assertThatThrownBy(() -> RawTransaction.parse(noVotes, built.tx())).isInstanceOf(TxDecodingException.class)

@@ -315,6 +315,71 @@ class HaskellPolicyTest {
         bothReject("a3" + "0081" + "82" + HASH32 + "1a00010000" + OUTPUTS + FEE, "a0", "exceeds");
     }
 
+    private static final String ACCOUNT = "581de0" + "44".repeat(28);
+    private static final String ACTION_ID = "82" + HASH32 + "00";
+
+    /** A body with one proposal of {@code action}. */
+    private static String proposing(String action) {
+        return "a4" + INPUTS + OUTPUTS + FEE + "1481" + "8400" + ACCOUNT + action + ANCHOR;
+    }
+
+    @Test
+    void votersAndActionIdsRepeatNoKeyHoweverItIsEncoded() {
+        String voter = "8202" + HASH28;
+        String longVoter = "820259001c" + "11".repeat(28);
+        String vote = "8200f6";
+        String votes = "a4" + INPUTS + OUTPUTS + FEE + "13";
+        bothAccept(votes + "a1" + voter + "a1" + ACTION_ID + vote, "a0");
+        bothReject(votes + "a2" + voter + "a1" + ACTION_ID + vote + longVoter + "a1" + ACTION_ID + vote, "a0",
+                "duplicate voter");
+        bothReject(votes + "a1" + voter + "a2" + ACTION_ID + vote + "82" + "590020" + "22".repeat(32) + "00" + vote,
+                "a0", "duplicate gov_action_id");
+        bothReject(votes + "a1" + voter + "a1" + ACTION_ID + "8203f6", "a0", "exceeds 2");
+        bothReject(votes + "a1" + voter + "a0", "a0", "must be non-empty");
+        bothReject(votes + "a1" + voter + "a1" + ACTION_ID + "9f00f6ff", "a0", "VOTING_PROCEDURE is a RecD record");
+    }
+
+    @Test
+    void proposalsRepeatNoneAsDecodedValues() {
+        String cred = "8200" + HASH28;
+        String other = "8200581c" + "33".repeat(28);
+        String body = "a4" + INPUTS + OUTPUTS + FEE + "1482";
+        String removals = "8400" + ACCOUNT + "8504f6" + "82" + cred + other + "a0d81e820101" + ANCHOR;
+        String reordered = "8400" + ACCOUNT + "8504f6" + "82" + other + cred + "a0d81e820101" + ANCHOR;
+        bothReject(body + removals + reordered, "a0", "duplicate proposal_procedure");
+        String update = "8400" + ACCOUNT + "8400f6" + "a2" + "0301" + "0401" + "f6" + ANCHOR;
+        String updateReordered = "8400" + ACCOUNT + "8400f6" + "a2" + "0401" + "0301" + "f6" + ANCHOR;
+        bothReject(body + update + updateReordered, "a0", "duplicate proposal_procedure");
+        bothAccept(body + removals + update, "a0");
+    }
+
+    @Test
+    void aGovernanceActionIsReadWithHaskellsBounds() {
+        String cred = "8200" + HASH28;
+        bothAccept(proposing("8301f6" + "820c00"), "a0");
+        bothReject(proposing("8301f6" + "820d00"), "a0", "exceeds the maximum expected version of 12");
+        bothReject(proposing("8504f6" + "82" + cred + "820059001c" + "11".repeat(28) + "a0d81e820101"), "a0",
+                "duplicate credential");
+        bothReject(proposing("8504f6" + "80" + "a2" + cred + "01" + "820059001c" + "11".repeat(28) + "01"
+                + "d81e820101"), "a0", "duplicate credential");
+        bothReject(proposing("8302" + "a1" + ACCOUNT + "01" + "5820" + "33".repeat(32)), "a0", "script hash");
+        bothReject(proposing("8305f6" + "9f" + ANCHOR + "f6" + "ff"), "a0", "CONSTITUTION is a RecD record");
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "1481" + "9f00" + ACCOUNT + "8106" + ANCHOR + "ff", "a0",
+                "proposal_procedure is a RecD record");
+    }
+
+    @Test
+    void aParameterUpdateIsReadByItsTable() {
+        bothAccept(proposing("8400f6" + "a0" + "f6"), "a0");
+        bothReject(proposing("8400f6" + "a1" + "0e" + "820a00" + "f6"), "a0", "is not in Conway");
+        bothReject(proposing("8400f6" + "a1" + "12" + "a1" + "190100" + "80" + "f6"), "a0", "exceeds 255");
+        bothReject(proposing("8400f6" + "a1" + "12" + "a1" + "00" + "81" + "1b8000000000000000" + "f6"), "a0",
+                "overflow");
+        bothReject(proposing("8400f6" + "a1" + "13" + "9f" + "d81e820101" + "d81e820101" + "ff" + "f6"), "a0",
+                "EX_UNIT_PRICES is a RecD record");
+        bothReject(proposing("8400f6" + "a1" + "09" + "d81e820100" + "f6"), "a0", "denominator");
+    }
+
     @Test
     void decoderVersionsBelowConwayAreNotKnown() {
         assertThatThrownBy(() -> new HaskellPolicy(8)).isInstanceOf(IllegalArgumentException.class);

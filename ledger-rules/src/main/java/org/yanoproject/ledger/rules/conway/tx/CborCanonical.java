@@ -7,12 +7,13 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A canonical re-encoding of a CBOR item, used as the equality key of decoded values: two encodings Haskell decodes
  * to equal values give the same key. Definite lengths, shortest heads, byte and text strings with their chunks
  * joined, map entries sorted by key, a tag-258 set's elements sorted (the tag dropped), and a tag-30 rational reduced
- * (Haskell keeps {@code BoundedRatio} normalised). Untagged sets are sorted by the caller ({@link #set}).
+ * (Haskell keeps {@code BoundedRatio} normalised). An untagged set is sorted where the caller says one is.
  */
 final class CborCanonical {
 
@@ -23,12 +24,18 @@ final class CborCanonical {
     private static final int MAX_DEPTH = 64;
 
     private final byte[] data;
+    private final Set<Integer> sets;
     private int pos;
     private int depth;
 
     private CborCanonical(byte[] data, int pos) {
+        this(data, pos, Set.of());
+    }
+
+    private CborCanonical(byte[] data, int pos, Set<Integer> sets) {
         this.data = data;
         this.pos = pos;
+        this.sets = sets;
     }
 
     /** @return the canonical encoding of {@code item} */
@@ -36,24 +43,16 @@ final class CborCanonical {
         if (shortestScalarLength(item.buffer(), item.offset()) == item.length()) {
             return item.bytes();
         }
-        CborCanonical c = new CborCanonical(item.buffer(), item.offset());
-        byte[] out = c.item();
-        c.requireEnd(item);
-        return out;
+        return of(item, Set.of());
     }
 
-    /** @return the canonical encoding of an array or set item as a set: its elements' encodings sorted */
-    static byte[] set(CborSpan item) {
-        CborCanonical c = new CborCanonical(item.buffer(), item.offset());
-        int head = c.peek();
-        if (head >>> 5 == 6) {
-            c.pos++;
-            BigInteger tag = c.argument(head & 0x1f);
-            if (!tag.equals(BigInteger.valueOf(258))) {
-                throw new TxDecodingException("expected a set, found tag " + tag);
-            }
-        }
-        byte[] out = c.sortedArray();
+    /**
+     * @param sets the offsets in the item's buffer of the arrays inside it that are sets
+     * @return the canonical encoding of {@code item}, with those arrays' elements sorted as a tag-258 set's are
+     */
+    static byte[] of(CborSpan item, Set<Integer> sets) {
+        CborCanonical c = new CborCanonical(item.buffer(), item.offset(), sets);
+        byte[] out = c.item();
         c.requireEnd(item);
         return out;
     }
@@ -131,6 +130,9 @@ final class CborCanonical {
                 out.writeBytes(content);
             }
             case 4 -> {
+                if (!sets.isEmpty() && sets.contains(pos)) {
+                    return sortedArray();
+                }
                 List<byte[]> items = array();
                 head(out, 4, BigInteger.valueOf(items.size()));
                 items.forEach(out::writeBytes);

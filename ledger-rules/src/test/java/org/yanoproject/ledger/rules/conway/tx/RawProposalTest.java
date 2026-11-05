@@ -96,7 +96,7 @@ class RawProposalTest {
     @Test
     void refusesDuplicateKeysAndOutOfRangeValues() {
         assertThatThrownBy(() -> update("a2" + "0301" + "0302")).isInstanceOf(TxDecodingException.class)
-                .hasMessageContaining("duplicate");
+                .hasMessageContaining("repeated");
         assertThatThrownBy(() -> update("a1" + "04" + "1a00010000")).isInstanceOf(TxDecodingException.class); // Word16
         assertThatThrownBy(() -> update("a1" + "02" + "1b0000000100000000")).isInstanceOf(TxDecodingException.class);
         assertThatThrownBy(() -> update("a1" + "0a" + "d81e820302")).isInstanceOf(TxDecodingException.class); // > 1

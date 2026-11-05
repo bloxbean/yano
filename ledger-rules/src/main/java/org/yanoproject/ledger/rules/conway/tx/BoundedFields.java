@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
- * Decoders for the bounded Conway field types that {@link HaskellPolicy}, proposals and votes check, with the bounds
+ * Decoders for the bounded Conway field types that {@link HaskellPolicy} checks, with the bounds
  * Haskell's decoders enforce at decoder version 9 and later (cardano-ledger {@code f649f975}); anything else is a
  * {@link TxDecodingException} ({@code ENGINE.DecodingFailure}).
  *
@@ -18,8 +18,6 @@ import java.util.List;
  *   <li>{@code Url} and {@code DnsName}: UTF-8 text (each chunk valid, {@code decodeString}) of at most 128 bytes
  *       ({@code textDecCBOR 128}, BaseTypes.hs:678-697).</li>
  *   <li>{@code Anchor}: {@code [url, hash]}, the hash a 32-byte {@code SafeHash} (BaseTypes.hs:996-1004, the
- *       record form below decoder version 12).</li>
- *   <li>{@code ExUnits}: {@code [mem, steps]}, each at most {@code maxBound :: Int64} (Plutus/ExUnits.hs:195-218, the
  *       record form below decoder version 12).</li>
  *   <li>{@code UnitInterval}: tag 30, two integers (bignums tagged 2/3 too), a non-zero denominator, the reduced ratio in [0, 1] with
  *       numerator and denominator in {@code Word64} ({@code decodeRationalWithTag}, Plain.hs:159-167;
@@ -32,7 +30,6 @@ final class BoundedFields {
     static final int MAX_TEXT_BYTES = 128;
     static final int ANCHOR_HASH_LENGTH = 32;
     private static final BigInteger WORD64_MAX = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
-    private static final BigInteger INT64_MAX = BigInteger.valueOf(Long.MAX_VALUE);
 
     private BoundedFields() {
     }
@@ -69,34 +66,6 @@ final class BoundedFields {
         if (hash.length != ANCHOR_HASH_LENGTH) {
             throw new TxDecodingException(what + " anchor data hash of " + hash.length + " bytes");
         }
-    }
-
-    /**
-     * Reads {@code ExUnits}.
-     *
-     * @return the memory and the steps
-     */
-    static BigInteger[] exUnits(CborSpan item, String what) {
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, what + " is [mem, steps]");
-        BigInteger[] units = {StrictCbor.unsigned(fields.get(0)), StrictCbor.unsigned(fields.get(1))};
-        for (BigInteger value : units) {
-            if (value.compareTo(INT64_MAX) > 0) {
-                throw new TxDecodingException(what + " value " + value + " exceeds maxBound :: Int64");
-            }
-        }
-        return units;
-    }
-
-    /** Reads {@code anchor / null}. */
-    static void anchorOrNull(CborSpan item, String what) {
-        if (!item.isNull()) {
-            anchor(item, what);
-        }
-    }
-
-    /** Reads a {@code UnitInterval}. */
-    static void unitInterval(CborSpan item, String what) {
-        boundedRational(item, what, true);
     }
 
     /**

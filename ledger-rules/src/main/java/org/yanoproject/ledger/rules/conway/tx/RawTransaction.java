@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.transaction.raw.RawExUnits;
 import com.bloxbean.cardano.client.transaction.raw.RawInput;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.raw.RawTxBody;
+import com.bloxbean.cardano.client.transaction.raw.RawVotingProcedures;
 import com.bloxbean.cardano.client.transaction.raw.RawWitnessSet;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.util.HexUtil;
@@ -17,13 +18,11 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
-import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
 import java.util.TreeMap;
@@ -36,10 +35,10 @@ import java.util.TreeSet;
  * every field are spans of the received transaction, so everything the rules hash or size comes from the original
  * bytes, never from a re-serialisation: the transaction id ({@link #txId()}, blake2b-256 of the body bytes), the size
  * ({@link #size()}), each output's encoded size, the witness-set fields (redeemers, datums) and the auxiliary data.
- * Over those spans the body is walked by CCL with {@link HaskellPolicy} and read through CCL's views, and the rest is
- * decoded here with Haskell's bounds ({@link StrictCbor}), so the checks see exactly what Haskell decodes (for example
- * whether a validity bound is present at all) and bytes Haskell would not decode are a {@link TxDecodingException}. The
- * decoded CCL {@link Transaction} is kept for the structure the rules do not need byte-exact.</p>
+ * Over those spans the transaction is walked by CCL with {@link HaskellPolicy} and read through CCL's views, so the
+ * checks see exactly what Haskell decodes (for example whether a validity bound is present at all) and bytes Haskell
+ * would not decode are a {@link TxDecodingException}. The decoded CCL {@link Transaction} is kept for the structure the
+ * rules do not need byte-exact.</p>
  *
  * <p>Definite and indefinite encodings and tag-258 sets are accepted wherever Conway accepts them; redeemers
  * may be the list form or the Conway map form.</p>
@@ -445,8 +444,7 @@ public final class RawTransaction {
 
         /**
          * The body through CCL's view, which {@link HaskellPolicy} has walked (Conway's body decoder at protocol
-         * version 9+, {@code ConwayTxBodyRaw} {@code DecCBOR}, Conway/TxBody.hs:186-260). The governance fields are
-         * leaves of the walk, which holds only that they are non-empty: their items are read here.
+         * version 9+, {@code ConwayTxBodyRaw} {@code DecCBOR}, Conway/TxBody.hs:180-265).
          */
         private void readBody() {
             RawTxBody body = tx.body(Era.Conway);
@@ -474,9 +472,10 @@ public final class RawTransaction {
             for (var certificate : body.certificates()) {
                 certificates.add(RawCertificate.accepted(certificate, certificates.size()));
             }
-            body.votingProcedures().ifPresent(view -> readVotes(view.span()));
-            body.proposalProcedures()
-                    .ifPresent(views -> readProposals(views.stream().map(view -> view.span()).toList()));
+            body.votingProcedures().ifPresent(this::readVotes);
+            body.proposalProcedures().ifPresent(views -> views
+                    .forEach(view -> proposals.add(RawProposal.accepted(view, proposals.size()))));
+            proposalCount = proposals.size();
         }
 
         private static BigInteger unsigned(OptionalLong value) {
@@ -491,83 +490,14 @@ public final class RawTransaction {
             return result;
         }
 
-        /** An OSet too: two equal proposal procedures do not decode. */
-        private void readProposals(List<CborSpan> items) {
-            Set<String> seen = new HashSet<>();
-            for (int i = 0; i < items.size(); i++) {
-                RawProposal proposal = RawProposal.read(items.get(i), i);
-                // [deposit, account, gov_action, anchor]; an update-committee action [4, prev, set, map, q]
-                // holds a set at position 2
-                if (!seen.add(key(items.get(i), proposal.actionTag() == 4 ? 2 : -1))) {
-                    throw new TxDecodingException("duplicate proposal procedure " + i);
-                }
-                proposals.add(proposal);
-            }
-            proposalCount = proposals.size();
-        }
-
-        /**
-         * {@code voting_procedures = {+ voter => {+ gov_action_id => voting_procedure}}}: {@code decodeMap} rejects
-         * duplicate voters from version 9; each voter's map is non-empty without duplicate action ids
-         * (Procedures.hs:408-416), {@code voting_procedure = [vote, anchor / null]}, a definite-length {@code RecD}
-         * record (Procedures.hs:455-466), with the vote 0–2 ({@code decodeEnumBounded}) and the anchor with its
-         * bounds.
-         */
-        private void readVotes(CborSpan field) {
-            TreeSet<RawVoter> seen = new TreeSet<>();
-            for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(field)) {
-                RawVoter voter = RawVoter.read(entry.getKey());
-                if (!seen.add(voter)) {
-                    throw new TxDecodingException("duplicate voter " + voter);
-                }
+        /** Each voter's votes, voters in {@code Ord Voter} order and each one's actions in {@code Ord GovActionId}. */
+        private void readVotes(RawVotingProcedures view) {
+            for (RawVotingProcedures.Votes voter : view.voters()) {
                 TreeMap<GovActionId, Integer> ids = new TreeMap<>(GOV_ACTION_ID_ORDER);
-                for (Map.Entry<CborSpan, CborSpan> action : StrictCbor.map(entry.getValue())) {
-                    GovActionId id = RawProposal.govActionId(action.getKey());
-                    if (ids.containsKey(id)) {
-                        throw new TxDecodingException("duplicate governance action id " + id + " for " + voter);
-                    }
-                    List<CborSpan> procedure = StrictCbor.definiteArray(action.getValue(), 2,
-                            "a voting procedure has 2 elements");
-                    long vote = StrictCbor.unsignedLong(procedure.get(0));
-                    if (vote > 2) {
-                        throw new TxDecodingException("unknown vote " + vote);
-                    }
-                    ids.put(id, (int) vote);
-                    BoundedFields.anchorOrNull(procedure.get(1), "vote");
-                }
-                if (ids.isEmpty()) {
-                    throw new TxDecodingException("VotingProcedures require votes, but Voter: " + voter
-                            + " didn't have any");
-                }
-                votes.put(voter, Collections.unmodifiableSortedMap(ids));
+                voter.votes().forEach(vote -> ids.put(RawProposal.govActionId(vote.getKey()), vote.getValue().vote()));
+                votes.put(RawVoter.of(voter.voter()), Collections.unmodifiableSortedMap(ids));
             }
-            voters.addAll(seen);
-        }
-
-        /**
-         * The equality key of a decoded proposal ({@link CborCanonical}): its canonical encoding, with an untagged set
-         * sorted too at position {@code actionSetAt} of its governance action (an update committee's removals).
-         */
-        private static String key(CborSpan item, int actionSetAt) {
-            if (actionSetAt < 0) {
-                return HexUtil.encodeHexString(CborCanonical.of(item));
-            }
-            StringBuilder key = new StringBuilder();
-            List<CborSpan> elements = StrictCbor.array(item);
-            for (int i = 0; i < elements.size(); i++) {
-                CborSpan element = elements.get(i);
-                if (i == 2) {
-                    List<CborSpan> parts = StrictCbor.array(element);
-                    for (int j = 0; j < parts.size(); j++) {
-                        key.append(HexUtil.encodeHexString(j == actionSetAt ? CborCanonical.set(parts.get(j))
-                                : CborCanonical.of(parts.get(j)))).append(',');
-                    }
-                } else {
-                    key.append(HexUtil.encodeHexString(CborCanonical.of(element)));
-                }
-                key.append('|');
-            }
-            return key.toString();
+            voters.addAll(votes.keySet());
         }
 
         /**

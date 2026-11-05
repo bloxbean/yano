@@ -7,16 +7,19 @@ import com.bloxbean.cardano.client.transaction.raw.CertKind;
 import com.bloxbean.cardano.client.transaction.raw.FieldSpec;
 import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.FormatPolicy;
+import com.bloxbean.cardano.client.transaction.raw.GovActionKind;
 import com.bloxbean.cardano.client.transaction.raw.RawHeader;
+import com.bloxbean.cardano.client.transaction.raw.RawProtocolVersion;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.raw.RecordSpec;
+import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
 import com.bloxbean.cardano.client.util.HexUtil;
 
-import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -26,11 +29,11 @@ import java.util.Set;
  *
  * <p>The decoder version decides three rules (cardano-ledger {@code f649f975}). Below 12 a byte string is definite
  * ({@code decodeBytes}, Decoder.hs:355-361) and a {@code RecD} record or a tuple, such as an anchor, a value's pair,
- * ex units or a redeemer's value, is a definite-length array (BaseTypes.hs:996-1004, Value.hs:298-310, ExUnits.hs:208-
- * 216, DecCBOR.hs:288-300); from 12 a {@code UnitInterval}'s numbers are
- * {@code Word64}s and no longer bignums ({@code decodeIntegralRational},
- * BaseTypes.hs:417-428). Below 9 a text has at most 64 bytes and a set no tag or rule against duplicates, which this
- * class does not hold.
+ * ex units, a redeemer's value, prices, a proposal, a vote, a governance action id or a constitution, is a
+ * definite-length array (BaseTypes.hs:996-1004, Value.hs:298-310, ExUnits.hs:208-216, 235-243, DecCBOR.hs:288-300,
+ * Procedures.hs:181-190, 487-497, 559-570, 1036-1046); from 12 a rational's numbers are {@code Word64}s and no longer
+ * bignums ({@code decodeIntegralRational}, BaseTypes.hs:417-428). Below 9 a text has at most 64 bytes and a set no
+ * tag or rule against duplicates, which this class does not hold.
  *
  * <p>A type this class does not name has no rule yet: its values are read by {@link RawTransaction}. Its rules stand
  * for a transaction at Conway's decoder versions and for a block header of any era, which no version below 12 changes.
@@ -67,6 +70,16 @@ public final class HaskellPolicy implements FormatPolicy {
     private static final long NO_TAG = -1;
     /** Conway's {@code PlutusPurpose}, spending to proposing (Conway/Scripts.hs:292-300). */
     private static final long MAX_REDEEMER_TAG = 5;
+    /** {@code Vote}'s {@code decodeEnumBounded}: no, yes, abstain (Procedures.hs:418-427). */
+    private static final long MAX_VOTE = 2;
+    /** A cost model's language is a {@code Word8} ({@code Map Word8 [Int64]}, Plutus/CostModels.hs:302-304). */
+    private static final long MAX_LANGUAGE = 0xFF;
+    /** {@code succVersion (ProtVerHigh ConwayEra)}, Conway's highest major version being 11 (Era.hs:133). */
+    private static final long MAX_HARD_FORK_MAJOR = 12;
+    /** A proposal procedure, an item of the body's set of them. */
+    private static final RecordSpec PROPOSAL = TxBodyField.PROPOSAL_PROCEDURES.spec().record();
+    /** A hard fork initiation, the member of the governance action union. */
+    private static final RecordSpec HARD_FORK = GovActionKind.HARD_FORK_INITIATION.member().record();
 
     private final int decoderVersion;
 
@@ -121,10 +134,14 @@ public final class HaskellPolicy implements FormatPolicy {
 
     /**
      * A record is in no tag, as Haskell does not look through one, or in its own: the aux data map's 259
-     * ({@code TagD 259}, Alonzo/TxAuxData.hs:269-271).
+     * ({@code TagD 259}, Alonzo/TxAuxData.hs:269-271). A proposal procedure, an item of a set, is a {@code RecD}
+     * record (Procedures.hs:559-570).
      */
     @Override
     public void enter(RecordSpec record, CborSpan container, Era era) {
+        if (record == PROPOSAL) {
+            recD(container, record.name());
+        }
         CborSpan content = container;
         if (record.tag() != NO_TAG) {
             if (container.tag() != record.tag()) {
@@ -140,8 +157,10 @@ public final class HaskellPolicy implements FormatPolicy {
     }
 
     /**
-     * No unknown field, none outside its era, none repeated ({@code invalidField}, {@code decodeRecordSum}), but a
-     * redeemer's key: the map of redeemers keeps its last value ({@code Map.fromList}, Alonzo/TxWits.hs:566-573).
+     * No unknown field, none outside its era, none repeated ({@code invalidField}, {@code decodeRecordSum},
+     * {@code decodeMapByKey}), but a redeemer's key: the map of redeemers keeps its last value ({@code Map.fromList},
+     * Alonzo/TxWits.hs:566-573). A hard fork's major version is at most {@code succVersion (ProtVerHigh ConwayEra)}
+     * ({@code decodeProtVer @ConwayEra}, BaseTypes.hs:253-263, Procedures.hs:938-940); a header's may be one more.
      */
     @Override
     public void entry(RecordSpec record, FieldSpec field, CborSpan key, CborSpan value, int occurrence, Era era) {
@@ -156,12 +175,27 @@ public final class HaskellPolicy implements FormatPolicy {
         }
         if (field.record() != null && isSet(field.type())) {
             distinct(StrictCbor.set(value), field.record(), era);
+        } else if (field.record() != null && hasRecordKeys(field.record())) {
+            distinct(StrictCbor.map(value).stream().map(Map.Entry::getKey).toList(), field.record().keyType().record(),
+                    era);
         }
+        if (record == HARD_FORK && field.type() == FieldType.PROTOCOL_VERSION) {
+            int major = RawProtocolVersion.of(value).major();
+            if (major > MAX_HARD_FORK_MAJOR) {
+                throw new TxDecodingException("Protocol version " + major + " exceeds the maximum expected version of "
+                        + MAX_HARD_FORK_MAJOR);
+            }
+        }
+    }
+
+    // A map whose keys are records, such as voters: CCL counts a repeated key by its items' bytes.
+    private static boolean hasRecordKeys(RecordSpec map) {
+        return map.keyType() != null && map.keyType().record() != null;
     }
 
     private static boolean isSet(FieldType type) {
         return switch (type) {
-            case SET, NONEMPTY_SET, NONEMPTY_CERTIFICATE_SET -> true;
+            case SET, NONEMPTY_SET, NONEMPTY_CERTIFICATE_SET, CREDENTIAL_SET -> true;
             default -> false;
         };
     }
@@ -252,9 +286,10 @@ public final class HaskellPolicy implements FormatPolicy {
                             + value.offset());
                 }
             }
-            case REDEEMER_VALUE, EX_UNITS -> {
-                if (decoderVersion < VERSION_12) {
-                    definite(value, type + " (decodeTuple, RecD ExUnits)");
+            case REDEEMER_VALUE, EX_UNITS, EX_UNIT_PRICES, ANCHOR, OPTIONAL_ANCHOR, GOV_ACTION_ID,
+                 OPTIONAL_GOV_ACTION_ID, VOTING_PROCEDURE, CONSTITUTION -> {
+                if (!value.isNull()) {
+                    recD(value, type.name());
                 }
             }
             // ExUnits' decNat: at most maxBound :: Int64
@@ -262,7 +297,12 @@ public final class HaskellPolicy implements FormatPolicy {
             case REWARD_ACCOUNT -> rewardAccount(value);
             case URL -> BoundedFields.url(value, "ledger record");
             case DNS_NAME -> BoundedFields.dnsName(value);
-            case UNIT_INTERVAL -> unitInterval(value);
+            case UNIT_INTERVAL -> rational(value, true);
+            case NONNEGATIVE_INTERVAL -> rational(value, false);
+            case OPTIONAL_HASH28 -> sizedOrNull(value, KEY_HASH_LENGTH, "script hash");
+            case VOTE -> atMost(value, MAX_VOTE);
+            case LANGUAGE -> atMost(value, MAX_LANGUAGE);
+            case COST_MODEL -> StrictCbor.array(value).forEach(HaskellPolicy::int64);
             case OPTIONAL_PORT -> {
                 if (!value.isNull() && StrictCbor.unsignedLong(value) > MAX_PORT) {
                     throw new TxDecodingException("relay port exceeds Word16");
@@ -270,14 +310,8 @@ public final class HaskellPolicy implements FormatPolicy {
             }
             case OPTIONAL_IPV4 -> sizedOrNull(value, IPV4_LENGTH, "IPv4 address");
             case OPTIONAL_IPV6 -> sizedOrNull(value, IPV6_LENGTH, "IPv6 address");
-            case OPTIONAL_ANCHOR -> {
-                if (decoderVersion < VERSION_12 && !value.isNull() && value.isIndefinite()) {
-                    throw new TxDecodingException("an indefinite-length array at " + value.offset()
-                            + " (an anchor is definite only below decoder version 12)");
-                }
-            }
             case LIST, RELAY_LIST -> StrictCbor.array(value);
-            case SET -> StrictCbor.set(value);
+            case SET, CREDENTIAL_SET -> StrictCbor.set(value);
             case NONEMPTY_LIST, NONEMPTY_SET -> nonEmpty(StrictCbor.set(value).isEmpty(), type.name());
             case NONEMPTY_MAP -> nonEmpty(StrictCbor.map(value).isEmpty(), type.name());
             case KEY_HASH_SET -> keyHashes(value);
@@ -302,6 +336,13 @@ public final class HaskellPolicy implements FormatPolicy {
         }
     }
 
+    /** A {@code RecD} record or a tuple: a definite-length array below version 12, either from 12. */
+    private void recD(CborSpan value, String what) {
+        if (decoderVersion < VERSION_12) {
+            definite(value, what + " is a RecD record below decoder version 12");
+        }
+    }
+
     /** A definite-length array, as {@code decodeListLen} reads one. */
     private static void definite(CborSpan value, String what) {
         if (value.isIndefinite()) {
@@ -316,7 +357,10 @@ public final class HaskellPolicy implements FormatPolicy {
         }
     }
 
-    /** {@code decodeIntegerBounded64} (Mary/Value.hs:310-335): an integer, not a bignum, within {@code Int64}. */
+    /**
+     * {@code decodeIntegerBounded64} (Mary/Value.hs:310-335) and a cost model's {@code Int64}: an integer, not a
+     * bignum, within {@code Int64}.
+     */
     private static BigInteger int64(CborSpan value) {
         BigInteger found = StrictCbor.integer(value);
         if (found.compareTo(MIN_INT64) < 0 || found.compareTo(MAX_INT64) > 0) {
@@ -347,8 +391,9 @@ public final class HaskellPolicy implements FormatPolicy {
         }
     }
 
-    private void unitInterval(CborSpan value) {
-        BoundedFields.unitInterval(value, "unit interval");
+    /** A {@code UnitInterval} or a {@code NonNegativeInterval} ({@link BoundedFields#boundedRational}). */
+    private void rational(CborSpan value, boolean unit) {
+        BoundedFields.boundedRational(value, unit ? "unit interval" : "non-negative interval", unit);
         if (decoderVersion >= VERSION_12) {
             StrictCbor.array(value.untag()).forEach(StrictCbor::unsigned);
         }
@@ -366,8 +411,9 @@ public final class HaskellPolicy implements FormatPolicy {
     }
 
     /**
-     * {@code decodeSet} and {@code decodeOSet} reject two equal items, equal as decoded values. The walk checks each
-     * item afterwards; an item it would reject has a key all the same, or is too deep for one.
+     * {@code decodeSet} and {@code decodeOSet} reject two equal items, and {@code decodeMap} two equal keys, equal as
+     * decoded values. The walk checks each item afterwards; an item it would reject has a key all the same, or is too
+     * deep for one.
      */
     private static void distinct(List<CborSpan> items, RecordSpec record, Era era) {
         if (items.size() < 2) {
@@ -388,12 +434,11 @@ public final class HaskellPolicy implements FormatPolicy {
     }
 
     /**
-     * The value a record that passes this policy decodes to: its entries' canonical encodings ({@link CborCanonical}),
-     * with a set of key hashes in sorted order. An entry nested in another repeats part of it, which changes no
-     * comparison.
+     * The value a record that passes this policy decodes to: its canonical encoding ({@link CborCanonical}), with the
+     * sets its table names sorted, tagged or not.
      */
     private static final class EqualityKey implements FormatPolicy {
-        private final ByteArrayOutputStream key = new ByteArrayOutputStream();
+        private final Set<Integer> sets = new HashSet<>();
 
         /** @return the key of an item; one the walk does not enter is a leaf, its own key */
         static ByteBuffer of(CborSpan item, RecordSpec record, Era era) {
@@ -402,23 +447,28 @@ public final class HaskellPolicy implements FormatPolicy {
             }
             EqualityKey walked = new EqualityKey();
             record.walk(item, era, walked);
-            return ByteBuffer.wrap(walked.key.size() == 0 ? CborCanonical.of(item) : walked.key.toByteArray());
+            return ByteBuffer.wrap(CborCanonical.of(item, walked.sets));
         }
 
         // A record of leaves, none a set, decodes to equal values exactly when it has one canonical encoding.
         private static boolean ofLeaves(RecordSpec record) {
             for (FieldSpec field : record.fields()) {
-                if (field.record() != null || field.type() == FieldType.KEY_HASH_SET) {
+                if ((field.record() != null && !ofLeaves(field.record())) || isSetOf(field.type())) {
                     return false;
                 }
             }
             return true;
         }
 
+        private static boolean isSetOf(FieldType type) {
+            return type == FieldType.KEY_HASH_SET || isSet(type);
+        }
+
         @Override
-        public void entry(RecordSpec record, FieldSpec field, CborSpan tag, CborSpan value, int occurrence, Era era) {
-            key.writeBytes(field != null && field.type() == FieldType.KEY_HASH_SET ? CborCanonical.set(value)
-                    : CborCanonical.of(tag != null ? tag : value));
+        public void check(FieldType type, CborSpan value, Era era) {
+            if (isSetOf(type)) {
+                sets.add(value.offset());
+            }
         }
     }
 }

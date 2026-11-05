@@ -1,10 +1,8 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -46,14 +44,16 @@ public record RawVoter(int tag, byte[] hash) implements Comparable<RawVoter> {
         return tag == 4;
     }
 
-    /** Reads a voter. */
-    static RawVoter read(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.array(item, 2, "a voter is a two-element array");
-        long tag = StrictCbor.unsignedLong(fields.get(0));
-        if (tag > 4) {
-            throw new TxDecodingException("unknown voter tag " + tag);
-        }
-        return new RawVoter((int) tag, StrictCbor.definiteBytes(fields.get(1)));
+    /** @return the voter that CCL's reader read, which {@link HaskellPolicy} has accepted */
+    static RawVoter of(com.bloxbean.cardano.client.transaction.raw.RawVoter voter) {
+        int tag = switch (voter.kind()) {
+            case COMMITTEE_HOT_KEY_HASH -> 0;
+            case COMMITTEE_HOT_SCRIPT_HASH -> 1;
+            case DREP_KEY_HASH -> 2;
+            case DREP_SCRIPT_HASH -> 3;
+            case STAKING_POOL_KEY_HASH -> 4;
+        };
+        return new RawVoter(tag, voter.hash());
     }
 
     private int kind() {
