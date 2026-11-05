@@ -86,10 +86,10 @@ public final class BlockProducerHelper {
     /**
      * Store a locally produced block and finalize any nonce state staged while building it.
      * <p>
-     * {@link SignedBlockBuilder} mutates its in-memory nonce state during block assembly, but
-     * defers durable nonce snapshot writes until after the ChainState header/body cursor has
-     * advanced. Producer code must use this method so nonce state cannot move ahead of the
-     * durable block cursor if header/body storage fails.
+     * {@link SignedBlockBuilder} only stages its nonce evolution during block assembly and applies
+     * it here, after the ChainState header/body cursor has advanced. Producer code must use this
+     * method, inside its write section, so nonce state cannot move ahead of the durable block
+     * cursor or interleave with a synced block.
      * <p>
      * For unsigned devnet builders, this method is equivalent to storing the header and body.
      */
@@ -231,7 +231,7 @@ public final class BlockProducerHelper {
 
     /**
      * Discards a built block that must not be stored because the canonical state moved since it was built: the
-     * section stays unchanged and the nonce state staged by the build is restored.
+     * section stays unchanged and the nonce evolution staged by the build is forgotten.
      *
      * @return the exception for the caller to throw
      */
