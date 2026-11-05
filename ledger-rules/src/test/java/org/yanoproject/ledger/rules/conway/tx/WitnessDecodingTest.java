@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.junit.jupiter.api.Test;
@@ -96,10 +97,10 @@ class WitnessDecodingTest {
         assertDecodingFailure("a101c249010000000000000000", "Unsupported");
         // no duplicate label; no PlutusV4 (key 5) or unknown key; Allegra form has exactly two fields
         assertDecodingFailure("a201010101", "duplicate metadata label");
-        assertDecodingFailure("d90103a1" + "0580", "PlutusV4");
-        assertDecodingFailure("d90103a1" + "0680", "unknown auxiliary data key");
-        assertDecodingFailure("d90103a2" + "00a0" + "00a0", "Duplicate key");
-        assertDecodingFailure("83a08080", "2 elements");
+        assertDecodingFailure("d90103a1" + "0580", "unknown auxiliary_data_map key 05");
+        assertDecodingFailure("d90103a1" + "0680", "unknown auxiliary_data_map key 06");
+        assertDecodingFailure("d90103a2" + "00a0" + "00a0", "repeated auxiliary_data_map key 00");
+        assertDecodingFailure("83a08080", "unknown auxiliary_data_array item");
     }
 
     @Test
@@ -112,7 +113,7 @@ class WitnessDecodingTest {
     }
 
     private static void validate(String hex) {
-        RawAuxData.validate(StrictCbor.span(HexUtil.decodeHexString(hex)));
+        HaskellPolicy.CONWAY.walk(FieldType.OPTIONAL_AUXILIARY_DATA, StrictCbor.span(HexUtil.decodeHexString(hex)));
     }
 
     private static void assertDecodingFailure(String hex, String message) {

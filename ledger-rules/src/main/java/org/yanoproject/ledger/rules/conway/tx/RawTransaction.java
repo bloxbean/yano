@@ -3,12 +3,11 @@ package org.yanoproject.ledger.rules.conway.tx;
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.spec.Era;
-import com.bloxbean.cardano.client.transaction.raw.RawDatum;
+import com.bloxbean.cardano.client.transaction.raw.RawExUnits;
 import com.bloxbean.cardano.client.transaction.raw.RawInput;
-import com.bloxbean.cardano.client.transaction.raw.RawItems;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.raw.RawTxBody;
-import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
+import com.bloxbean.cardano.client.transaction.raw.RawWitnessSet;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.util.HexUtil;
 
@@ -18,7 +17,6 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -51,19 +49,6 @@ public final class RawTransaction {
     /** Haskell's derived {@code Ord GovActionId}: the transaction id's bytes, then the index. */
     public static final Comparator<GovActionId> GOV_ACTION_ID_ORDER =
             Comparator.comparing(GovActionId::txHashHex).thenComparingInt(GovActionId::index);
-
-    /** Witness-set keys. */
-    public static final int WITNESS_VKEYS = 0;
-    public static final int WITNESS_NATIVE_SCRIPTS = 1;
-    public static final int WITNESS_BOOTSTRAP = 2;
-    public static final int WITNESS_PLUTUS_V1 = 3;
-    public static final int WITNESS_DATUMS = 4;
-    public static final int WITNESS_REDEEMERS = 5;
-    public static final int WITNESS_PLUTUS_V2 = 6;
-    public static final int WITNESS_PLUTUS_V3 = 7;
-
-    private static final int VKEY_LENGTH = 32;
-    private static final int SIGNATURE_LENGTH = 64;
 
     /** A withdrawal: the reward account bytes and the amount. */
     public record Withdrawal(byte[] rewardAccount, BigInteger amount) {
@@ -451,27 +436,19 @@ public final class RawTransaction {
                 throw new TxDecodingException("empty transaction bytes");
             }
             tx = RawTx.of(txCbor);
-            int length = tx.span().size();
-            if (length != 4) {
-                throw new TxDecodingException("a Conway transaction has 4 elements, found " + length);
-            }
+            HaskellPolicy.CONWAY.walk(tx);
             readBody();
             readWitnessSet();
-            tx.auxData().ifPresent(auxData -> {
-                RawAuxData.validate(auxData);
-                // the scripts, read once with CCL's view and decoded as Haskell does
-                tx.auxScripts().forEach(script -> auxScripts.add(RawScript.of(script.type(), script.span())));
-            });
+            tx.auxData(Era.Conway).ifPresent(auxData -> auxData.scripts()
+                    .forEach(script -> auxScripts.add(RawScript.accepted(script))));
         }
 
         /**
-         * The body through CCL's walk and view: {@link HaskellPolicy} decides whether it decodes (Conway's body decoder
-         * at protocol version 9+, {@code ConwayTxBodyRaw} {@code DecCBOR}, Conway/TxBody.hs:186-260), and the view
-         * reads it. The governance fields are leaves of the walk, which holds only that they are non-empty: their items
-         * are read here.
+         * The body through CCL's view, which {@link HaskellPolicy} has walked (Conway's body decoder at protocol
+         * version 9+, {@code ConwayTxBodyRaw} {@code DecCBOR}, Conway/TxBody.hs:186-260). The governance fields are
+         * leaves of the walk, which holds only that they are non-empty: their items are read here.
          */
         private void readBody() {
-            HaskellPolicy.CONWAY.walk(TxBodyField.RECORD, tx.body());
             RawTxBody body = tx.body(Era.Conway);
             inputs = inputs(body.inputs());
             collateralInputs = body.collateral().map(Builder::inputs).orElse(List.of());
@@ -492,13 +469,14 @@ public final class RawTransaction {
             collateralReturn = body.collateralReturn()
                     .map(output -> RawOutput.accepted(output, Math.min(outputs.size(), 0xFFFF), true)).orElse(null);
             totalCollateral = body.totalCollateral().orElse(null);
-            currentTreasuryValue = body.currentTreasury().map(RawItems::unsigned).orElse(null);
-            donation = body.donation().map(RawItems::unsigned).orElse(BigInteger.ZERO);
+            currentTreasuryValue = body.currentTreasury().orElse(null);
+            donation = body.donation().orElse(BigInteger.ZERO);
             for (var certificate : body.certificates()) {
                 certificates.add(RawCertificate.accepted(certificate, certificates.size()));
             }
-            body.votingProcedures().ifPresent(this::readVotes);
-            body.proposalProcedures().ifPresent(this::readProposals);
+            body.votingProcedures().ifPresent(view -> readVotes(view.span()));
+            body.proposalProcedures()
+                    .ifPresent(views -> readProposals(views.stream().map(view -> view.span()).toList()));
         }
 
         private static BigInteger unsigned(OptionalLong value) {
@@ -514,9 +492,8 @@ public final class RawTransaction {
         }
 
         /** An OSet too: two equal proposal procedures do not decode. */
-        private void readProposals(CborSpan field) {
+        private void readProposals(List<CborSpan> items) {
             Set<String> seen = new HashSet<>();
-            List<CborSpan> items = StrictCbor.set(field);
             for (int i = 0; i < items.size(); i++) {
                 RawProposal proposal = RawProposal.read(items.get(i), i);
                 // [deposit, account, gov_action, anchor]; an update-committee action [4, prev, set, map, q]
@@ -593,129 +570,35 @@ public final class RawTransaction {
             return key.toString();
         }
 
+        /**
+         * The witness set through CCL's view, which {@link HaskellPolicy} has walked ({@code AlonzoTxWitsRaw} at
+         * protocol version 9+, Alonzo/TxWits.hs:603-700).
+         */
         private void readWitnessSet() {
-            Set<Integer> keys = new HashSet<>();
-            for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(tx.witnessSet())) {
-                long key = StrictCbor.unsignedLong(entry.getKey());
-                // AlonzoTxWits: keys 0-7, anything else is invalidField (Alonzo/TxWits.hs:650-675)
-                if (key > WITNESS_PLUTUS_V3) {
-                    throw new TxDecodingException("unknown witness set key " + key);
-                }
-                if (!keys.add((int) key)) {
-                    throw new TxDecodingException("duplicate witness set key " + key);
-                }
-            }
-            // Version 9+: vkey and bootstrap witnesses, native scripts and datums are non-empty lists or tag-258
-            // sets (addrWitsSetDecoder, nativeScriptsDecoder, TxDatsRaw: decodeNonEmptyList; TxWits.hs:613-700, 334-352).
-            for (int key : new int[]{WITNESS_VKEYS, WITNESS_NATIVE_SCRIPTS, WITNESS_BOOTSTRAP, WITNESS_DATUMS}) {
-                if (keys.contains(key) && tx.witnessSetItems(key).isEmpty()) {
-                    throw new TxDecodingException("witness set key " + key + " is an empty list");
-                }
-            }
-            // scriptDecoderV9 (Alonzo/TxWits.hs:741-751): a list or tag-258 set of Plutus binaries, not empty.
-            for (int key : new int[]{WITNESS_PLUTUS_V1, WITNESS_PLUTUS_V2, WITNESS_PLUTUS_V3}) {
-                if (keys.contains(key) && tx.witnessSetItems(key).isEmpty()) {
-                    throw new TxDecodingException("Empty list of scripts is not allowed");
-                }
-            }
-            for (CborSpan witness : tx.vkeyWitnesses()) {
-                List<CborSpan> parts = StrictCbor.array(witness, 2,
-                        "a vkey witness at " + witness.offset() + " is [vkey, signature]");
-                vkeyWitnesses.add(new VKeyWitness(
-                        checkLength(StrictCbor.definiteBytes(parts.get(0)), VKEY_LENGTH, "vkey"),
-                        checkLength(StrictCbor.definiteBytes(parts.get(1)), SIGNATURE_LENGTH,
-                                "vkey witness signature")));
-            }
-            for (CborSpan witness : tx.bootstrapWitnesses()) {
-                List<CborSpan> parts = StrictCbor.array(witness, 4,
-                        "a bootstrap witness at " + witness.offset() + " is [vkey, signature, chain_code, attributes]");
-                // The chain code is checked to be 32 bytes only from protocol version 12 (Keys/Bootstrap.hs:72-78).
-                bootstrapWitnesses.add(new BootstrapWitness(
-                        checkLength(StrictCbor.definiteBytes(parts.get(0)), VKEY_LENGTH, "bootstrap witness vkey"),
-                        checkLength(StrictCbor.definiteBytes(parts.get(1)), SIGNATURE_LENGTH,
-                                "bootstrap witness signature"),
-                        StrictCbor.definiteBytes(parts.get(2)),
-                        StrictCbor.definiteBytes(parts.get(3))));
-            }
-            // Native scripts (nativeScriptsDecoder at version 9: duplicates collapse in Map.fromList), then Plutus
-            // V1-V3 with no two scripts of the same hash (decodeMapLikeEnforceNoDuplicates).
-            Map<Integer, Set<String>> plutusHashes = new HashMap<>();
-            for (var view : tx.scripts()) {
-                RawScript script = RawScript.of(view.type(), view.span());
-                if (script.isPlutus() && !plutusHashes.computeIfAbsent(script.language(), l -> new HashSet<>())
-                        .add(script.hashHex())) {
-                    throw new TxDecodingException("duplicate PlutusV" + script.language() + " script "
-                            + script.hashHex());
-                }
-                witnessScripts.add(script);
-            }
-            for (RawDatum datum : tx.witnessDatums()) {
-                // DecCBOR (PlutusData era) = Cborg.decode (Plutus/Data.hs:99-103)
-                PlutusData.validate(datum.span().bytes());
-                datumHashes.add(datum.hash());
-            }
-            tx.witnessField(WITNESS_REDEEMERS).ifPresent(this::readRedeemers);
+            RawWitnessSet witnesses = tx.witnessSet(Era.Conway);
+            witnesses.vkeyWitnesses().ifPresent(views -> views
+                    .forEach(w -> vkeyWitnesses.add(new VKeyWitness(w.vkey(), w.signature()))));
+            witnesses.bootstrapWitnesses().ifPresent(views -> views.forEach(w -> bootstrapWitnesses
+                    .add(new BootstrapWitness(w.publicKey(), w.signature(), w.chainCode(), w.attributes()))));
+            witnesses.scripts().forEach(script -> witnessScripts.add(RawScript.accepted(script)));
+            witnesses.datums().ifPresent(views -> views.forEach(datum -> datumHashes.add(datum.hash())));
+            witnesses.redeemers().ifPresent(this::readRedeemers);
         }
 
         /**
-         * Haskell decodes VKeys and signatures at their fixed sizes; any other length is a decoding failure
-         * ({@code VKey}/{@code SignedDSIGN} {@code DecCBOR}; Amaru scenarios 00077, 00078, 00080).
+         * Haskell's {@code Redeemers}, of either form, is {@code Map.fromList} of the entries in encoded order (the
+         * map form reverses its accumulator first, Alonzo/TxWits.hs:552-590), so a later duplicate key replaces an
+         * earlier one.
          */
-        private static byte[] checkLength(byte[] value, int expected, String what) {
-            if (value.length != expected) {
-                throw new TxDecodingException(what + " of " + value.length + " bytes, expected " + expected);
-            }
-            return value;
-        }
-
-        /**
-         * {@code RedeemersRaw} at version 9+ (Alonzo/TxWits.hs:548-598): the map form or the list form, never empty
-         * ({@code "Expected redeemers map to be non-empty"}, {@code decodeNonEmptyList}); both end in
-         * {@code Map.fromList} of the entries in encoded order (the map form reverses its accumulator first), so a
-         * later duplicate key replaces an earlier one. A key is a {@code Word8} tag 0–5 and a {@code Word32}
-         * index; the data is plutus-core's {@code decodeData}. A list element and a map key accept either length
-         * ({@code decodeRecordNamed}, {@code CBORGroup}); a map value {@code [data, ex_units]} is a tuple and
-         * {@code ex_units} a {@code RecD} record, both definite-length. CCL's redeemer view is lenient about these
-         * bounds, so the field is read here.
-         */
-        private void readRedeemers(CborSpan field) {
+        private void readRedeemers(List<com.bloxbean.cardano.client.transaction.raw.RawRedeemer> views) {
             TreeMap<Long, RawRedeemer> byKey = new TreeMap<>();
-            int count = 0;
-            if (StrictCbor.major(field) == 5) {
-                for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(field)) {
-                    List<CborSpan> key = StrictCbor.array(entry.getKey(), 2, "a redeemer key is [tag, index]");
-                    List<CborSpan> value = StrictCbor.definiteArray(entry.getValue(), 2,
-                            "a redeemer value is [data, ex_units]");
-                    RawRedeemer redeemer = redeemer(key.get(0), key.get(1), value.get(0), value.get(1));
-                    byKey.put(redeemer.key(), redeemer);
-                    count++;
-                }
-            } else {
-                for (CborSpan item : StrictCbor.array(field)) {
-                    List<CborSpan> parts = StrictCbor.array(item, 4, "a redeemer is [tag, index, data, ex_units]");
-                    RawRedeemer redeemer = redeemer(parts.get(0), parts.get(1), parts.get(2), parts.get(3));
-                    byKey.put(redeemer.key(), redeemer);
-                    count++;
-                }
-            }
-            if (count == 0) {
-                throw new TxDecodingException("Expected redeemers to be non-empty");
+            for (var view : views) {
+                RawExUnits units = view.units();
+                RawRedeemer redeemer = new RawRedeemer(view.tag(), view.index(), units.mem(), units.steps(),
+                        view.data());
+                byKey.put(redeemer.key(), redeemer);
             }
             redeemers.addAll(byKey.values());
-        }
-
-        private static RawRedeemer redeemer(CborSpan tagItem, CborSpan indexItem, CborSpan data, CborSpan exUnits) {
-            long tag = StrictCbor.unsignedLong(tagItem);
-            long index = StrictCbor.unsignedLong(indexItem);
-            PlutusData.validate(data.bytes()); // data: plutus-core's decodeData
-            BigInteger[] units = BoundedFields.exUnits(exUnits, "ex_units");
-            if (tag > 5) {
-                throw new TxDecodingException("redeemer tag " + tag);
-            }
-            if (index > 0xFFFF_FFFFL) {
-                throw new TxDecodingException("redeemer index " + index + " exceeds Word32");
-            }
-            return new RawRedeemer((int) tag, index, units[0], units[1], data);
         }
     }
 }

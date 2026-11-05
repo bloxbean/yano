@@ -42,7 +42,10 @@ class HaskellPolicyTest {
 
     /** The walk and the reader agree, and the walk says why it rejects. */
     private static void bothReject(String body, String witnesses, String walkReason) {
-        byte[] tx = tx(body, witnesses);
+        bothReject(tx(body, witnesses), walkReason);
+    }
+
+    private static void bothReject(byte[] tx, String walkReason) {
         assertThat(rejects(raw -> RawTransaction.parse(raw, null), tx)).as("the reader").isTrue();
         assertThatThrownBy(() -> RawTx.walk(tx, Era.Conway, HaskellPolicy.CONWAY))
                 .isInstanceOf(TxDecodingException.class).hasMessageContaining(walkReason);
@@ -119,6 +122,35 @@ class HaskellPolicyTest {
     void aTaggedRecord() {
         bothReject("d81e" + BODY, "a0", "transaction_body at 1 is not an untagged map");
         bothReject(BODY, "d81ea0", "transaction_witness_set at");
+    }
+
+    @Test
+    void auxDataInItsTag() {
+        byte[] tagged = HexUtil.decodeHexString("84" + BODY + "a0" + "f5" + "d90103a100a0");
+        assertThatCode(() -> RawTransaction.parse(tagged, null)).doesNotThrowAnyException();
+        bothReject(HexUtil.decodeHexString("84" + BODY + "a0" + "f5" + "d90104a100a0"), "expected a map");
+        bothReject(HexUtil.decodeHexString("84" + BODY + "a0" + "f5" + "d90103d90103a100a0"),
+                "auxiliary_data_map at");
+        bothReject(HexUtil.decodeHexString("84" + BODY + "a0" + "f5" + "d90103a10580"),
+                "unknown auxiliary_data_map key 05");
+        bothReject(HexUtil.decodeHexString("84" + BODY + "a0" + "f5" + "9fa080ff"), "RecD");
+    }
+
+    @Test
+    void aRedeemerKeyMayRepeat() {
+        // [0, 0] and [0, 1800] are one key, and Map.fromList keeps the last value
+        String redeemers = "a105a2" + "820000" + "82008201" + "01" + "82001800" + "82008202" + "02";
+        bothAccept(BODY, redeemers);
+        assertThat(RawTransaction.parse(tx(BODY, redeemers), null).redeemers()).singleElement()
+                .satisfies(r -> assertThat(r.mem().intValue()).isEqualTo(2));
+        bothReject(BODY, "a105a1" + "820600" + "82008201" + "01", "redeemer tag 6");
+        bothReject(BODY, "a105a1" + "820000" + "9f00820101ff", "REDEEMER_VALUE");
+        bothReject(BODY, "a105d9010281" + "84000000820101", "redeemers at");
+    }
+
+    @Test
+    void aTransactionWithoutItsValidityFlag() {
+        bothReject(HexUtil.decodeHexString("83" + BODY + "a0" + "f6"), "pre_alonzo_transaction item at 1 is not in");
     }
 
     @Test

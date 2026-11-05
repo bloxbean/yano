@@ -113,18 +113,18 @@ class BoundedFieldsTest {
         String account = "581de0" + "44".repeat(28);
         String info = "841a000f4240" + account + "8106";
         decodes(tx("14", "81" + info + anchor(text(128), 32)));
-        fails(tx("14", "81" + info + anchor(text(129), 32)), "proposal anchor url exceeds 128");
-        fails(tx("14", "81" + info + anchor(text(8), 31)), "proposal anchor data hash");
+        fails(tx("14", "81" + info + anchor(text(129), 32)), "url exceeds 128");
+        fails(tx("14", "81" + info + anchor(text(8), 31)), "hash of 31 bytes");
         // NewConstitution [5, prev, [anchor, script_hash / null]]
         String constitution = "841a000f4240" + account + "8305f6" + "82" + anchor(text(8), 31) + "f6";
-        fails(tx("14", "81" + constitution + anchor(text(8), 32)), "constitution anchor data hash");
+        fails(tx("14", "81" + constitution + anchor(text(8), 32)), "hash of 31 bytes");
 
         String voter = "8200581c" + "77".repeat(28);
         String actionId = "825820" + "00".repeat(32) + "00";
         decodes(tx("13", "a1" + voter + "a1" + actionId + "8201f6"));
         decodes(tx("13", "a1" + voter + "a1" + actionId + "8201" + anchor(text(128), 32)));
-        fails(tx("13", "a1" + voter + "a1" + actionId + "8201" + anchor(text(129), 32)), "vote anchor url exceeds");
-        fails(tx("13", "a1" + voter + "a1" + actionId + "8301f600"), "voting procedure has 2 elements");
+        fails(tx("13", "a1" + voter + "a1" + actionId + "8201" + anchor(text(129), 32)), "url exceeds 128");
+        fails(tx("13", "a1" + voter + "a1" + actionId + "8301f600"), "unknown voting_procedure item");
         assertThat(RawTransaction.parse(tx("13", "a1" + voter + "a1" + actionId + "8200f6"), null).voters())
                 .hasSize(1);
     }

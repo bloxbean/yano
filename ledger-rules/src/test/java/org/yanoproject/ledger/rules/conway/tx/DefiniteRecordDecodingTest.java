@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +34,10 @@ class DefiniteRecordDecodingTest {
 
     private static CborSpan span(String hex) {
         return StrictCbor.span(HexUtil.decodeHexString(hex));
+    }
+
+    private static void auxData(CborSpan auxData) {
+        HaskellPolicy.CONWAY.walk(FieldType.OPTIONAL_AUXILIARY_DATA, auxData);
     }
 
     private static void decodes(Runnable read) {
@@ -190,10 +195,10 @@ class DefiniteRecordDecodingTest {
         // RecD AlonzoTxAuxDataRaw below version 12 (Alonzo/TxAuxData.hs:245-251); decodeRecordNamed only from 12.
         // cardano-cbor-dataset labels auxiliary_data/valid/00003 and 00025, indefinite [metadata, scripts], valid:
         // its labels come from the test-only decoder (testlib Test/Cardano/Ledger/Alonzo/Binary/Annotator.hs:118-136).
-        decodes(() -> RawAuxData.validate(span("82a080")));
-        refuses(() -> RawAuxData.validate(span("9fa080ff")));
+        decodes(() -> auxData(span("82a080")));
+        refuses(() -> auxData(span("9fa080ff")));
         // the metadata map and the script list inside it may be indefinite (decodeMap, decodeStrictSeq)
-        decodes(() -> RawAuxData.validate(span("82bf01a0ff9fff")));
+        decodes(() -> auxData(span("82bf01a0ff9fff")));
     }
 
     @Test

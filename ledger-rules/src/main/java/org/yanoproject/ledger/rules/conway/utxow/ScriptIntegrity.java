@@ -3,6 +3,7 @@ package org.yanoproject.ledger.rules.conway.utxow;
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.WitnessSetField;
 import org.yanoproject.ledger.rules.conway.tx.Hashes;
 import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
@@ -52,8 +53,8 @@ final class ScriptIntegrity {
      * @return the preimage, or empty when Haskell's {@code mkScriptIntegrity} is {@code SNothing}
      */
     static Optional<byte[]> preimage(RawTransaction raw, Set<Integer> languages, ProtocolParams params) {
-        CborSpan redeemers = raw.rawTx().witnessField(RawTransaction.WITNESS_REDEEMERS).orElse(null);
-        CborSpan datums = raw.rawTx().witnessField(RawTransaction.WITNESS_DATUMS).orElse(null);
+        CborSpan redeemers = field(raw, WitnessSetField.REDEEMERS_FIELD).orElse(null);
+        CborSpan datums = field(raw, WitnessSetField.PLUTUS_DATA).orElse(null);
         if (redeemers == null && datums == null && languages.isEmpty()) {
             return Optional.empty();
         }
@@ -64,6 +65,10 @@ final class ScriptIntegrity {
         }
         out.writeBytes(languageViews(languages, params));
         return Optional.of(out.toByteArray());
+    }
+
+    private static Optional<CborSpan> field(RawTransaction raw, WitnessSetField field) {
+        return raw.rawTx().witnessField((int) field.key());
     }
 
     /** @return blake2b-256 of the preimage */

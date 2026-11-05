@@ -56,11 +56,25 @@ public final class RawScript {
         if (language < NATIVE || language > PLUTUS_V3) {
             throw new TxDecodingException("script language " + language + " is not a Conway language");
         }
-        var view = new com.bloxbean.cardano.client.transaction.raw.RawScript(language, span);
         if (language != NATIVE) {
-            return new RawScript(view, StrictCbor.definiteBytes(span), null);
+            StrictCbor.definiteLength(span);
+        } else {
+            requireDefiniteByteStrings(span);
         }
-        requireDefiniteByteStrings(span);
+        return accepted(new com.bloxbean.cardano.client.transaction.raw.RawScript(language, span));
+    }
+
+    /**
+     * A script {@link HaskellPolicy} has accepted: a Plutus script's bytes, or a native script decoded.
+     *
+     * @param view CCL's view of the script
+     * @throws TxDecodingException when a native script does not decode
+     */
+    static RawScript accepted(com.bloxbean.cardano.client.transaction.raw.RawScript view) {
+        CborSpan span = view.span();
+        if (view.type() != NATIVE) {
+            return new RawScript(view, span.byteString(), null);
+        }
         try {
             return new RawScript(view, span.bytes(), (NativeScript) RawModels.toScript(view));
         } catch (CborDeserializationException | CborRuntimeException e) {

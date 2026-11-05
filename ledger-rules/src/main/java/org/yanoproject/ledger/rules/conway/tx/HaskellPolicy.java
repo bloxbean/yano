@@ -8,6 +8,7 @@ import com.bloxbean.cardano.client.transaction.raw.FieldSpec;
 import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.FormatPolicy;
 import com.bloxbean.cardano.client.transaction.raw.RawHeader;
+import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.raw.RecordSpec;
 import com.bloxbean.cardano.client.util.HexUtil;
 
@@ -24,8 +25,9 @@ import java.util.Set;
  * or a position. Anything rejected is a {@link TxDecodingException} ({@code ENGINE.DecodingFailure}).
  *
  * <p>The decoder version decides three rules (cardano-ledger {@code f649f975}). Below 12 a byte string is definite
- * ({@code decodeBytes}, Decoder.hs:355-361) and a {@code RecD} record, such as an anchor or a value's pair, is a
- * definite-length array (BaseTypes.hs:996-1004, Value.hs:298-310); from 12 a {@code UnitInterval}'s numbers are
+ * ({@code decodeBytes}, Decoder.hs:355-361) and a {@code RecD} record or a tuple, such as an anchor, a value's pair,
+ * ex units or a redeemer's value, is a definite-length array (BaseTypes.hs:996-1004, Value.hs:298-310, ExUnits.hs:208-
+ * 216, DecCBOR.hs:288-300); from 12 a {@code UnitInterval}'s numbers are
  * {@code Word64}s and no longer bignums ({@code decodeIntegralRational},
  * BaseTypes.hs:417-428). Below 9 a text has at most 64 bytes and a set no tag or rule against duplicates, which this
  * class does not hold.
@@ -62,6 +64,9 @@ public final class HaskellPolicy implements FormatPolicy {
     private static final int MAX_KEY_SHOWN = 9;
     private static final int MAJOR_ARRAY = 4;
     private static final int MAJOR_MAP = 5;
+    private static final long NO_TAG = -1;
+    /** Conway's {@code PlutusPurpose}, spending to proposing (Conway/Scripts.hs:292-300). */
+    private static final long MAX_REDEEMER_TAG = 5;
 
     private final int decoderVersion;
 
@@ -70,6 +75,15 @@ public final class HaskellPolicy implements FormatPolicy {
             throw new IllegalArgumentException("no rules for decoder version " + decoderVersion);
         }
         this.decoderVersion = decoderVersion;
+    }
+
+    /** Walks a Conway transaction with this policy: its array, body, witness set, validity flag and aux data. */
+    void walk(RawTx tx) {
+        try {
+            RawTx.walk(tx.span(), Era.Conway, this);
+        } catch (CborRuntimeException e) {
+            throw new TxDecodingException(e.getMessage(), e);
+        }
     }
 
     /** Walks one record of a Conway transaction with this policy. */
@@ -105,17 +119,30 @@ public final class HaskellPolicy implements FormatPolicy {
         }
     }
 
-    /** A record is never tagged: Haskell does not look through a tag. */
+    /**
+     * A record is in no tag, as Haskell does not look through one, or in its own: the aux data map's 259
+     * ({@code TagD 259}, Alonzo/TxAuxData.hs:269-271).
+     */
     @Override
     public void enter(RecordSpec record, CborSpan container, Era era) {
+        CborSpan content = container;
+        if (record.tag() != NO_TAG) {
+            if (container.tag() != record.tag()) {
+                throw new TxDecodingException(record + " at " + container.offset() + " is not in tag " + record.tag());
+            }
+            content = container.untag();
+        }
         boolean map = record.shape() == RecordSpec.Shape.KEYED;
-        if (StrictCbor.major(container) != (map ? MAJOR_MAP : MAJOR_ARRAY)) {
+        if (StrictCbor.major(content) != (map ? MAJOR_MAP : MAJOR_ARRAY)) {
             throw new TxDecodingException(record + " at " + container.offset() + " is not an untagged "
                     + (map ? "map" : "array"));
         }
     }
 
-    /** No unknown field, none outside its era, none repeated ({@code invalidField}, {@code decodeRecordSum}). */
+    /**
+     * No unknown field, none outside its era, none repeated ({@code invalidField}, {@code decodeRecordSum}), but a
+     * redeemer's key: the map of redeemers keeps its last value ({@code Map.fromList}, Alonzo/TxWits.hs:566-573).
+     */
     @Override
     public void entry(RecordSpec record, FieldSpec field, CborSpan key, CborSpan value, int occurrence, Era era) {
         if (field == null) {
@@ -124,7 +151,7 @@ public final class HaskellPolicy implements FormatPolicy {
         if (!field.validIn(era)) {
             throw new TxDecodingException(at(record, key, value) + " is not in " + era);
         }
-        if (occurrence > 0) {
+        if (occurrence > 0 && field.type() != FieldType.REDEEMER_VALUE) {
             throw new TxDecodingException("repeated " + at(record, key, value));
         }
         if (field.record() != null && isSet(field.type())) {
@@ -204,7 +231,34 @@ public final class HaskellPolicy implements FormatPolicy {
             }
             case DATA -> PlutusData.validate(embedded(value, "an inline datum"));
             case SCRIPT_REF -> RawScript.readScript(StrictCbor.span(embedded(value, "a script reference")));
-            case BYTES -> bytes(value);
+            case PLUTUS_DATA -> PlutusData.validate(value);
+            case NATIVE_SCRIPT -> RawScript.of(RawScript.NATIVE, value);
+            case PLUTUS_SCRIPT, BYTES -> length(value);
+            case METADATA -> Metadata.validate(value);
+            case OPTIONAL_AUXILIARY_DATA -> {
+                if (decoderVersion < VERSION_12 && !value.isNull() && StrictCbor.major(value) == MAJOR_ARRAY) {
+                    definite(value, "auxiliary data [metadata, scripts] (RecD)");
+                }
+            }
+            case BOOL -> value.asBoolean();
+            case REDEEMERS -> {
+                if (value.isTagged()) {
+                    throw new TxDecodingException("redeemers at " + value.offset() + " are in a tag");
+                }
+            }
+            case REDEEMER_TAG -> {
+                if (StrictCbor.unsignedLong(value) > MAX_REDEEMER_TAG) {
+                    throw new TxDecodingException("redeemer tag " + StrictCbor.unsigned(value) + " at "
+                            + value.offset());
+                }
+            }
+            case REDEEMER_VALUE, EX_UNITS -> {
+                if (decoderVersion < VERSION_12) {
+                    definite(value, type + " (decodeTuple, RecD ExUnits)");
+                }
+            }
+            // ExUnits' decNat: at most maxBound :: Int64
+            case EX_UNIT -> StrictCbor.unsignedLong(value);
             case REWARD_ACCOUNT -> rewardAccount(value);
             case URL -> BoundedFields.url(value, "ledger record");
             case DNS_NAME -> BoundedFields.dnsName(value);
@@ -330,7 +384,7 @@ public final class HaskellPolicy implements FormatPolicy {
 
     private static void nonEmpty(boolean empty, String field) {
         if (empty) {
-            throw new TxDecodingException("TxBody: '" + field + "' must be non-empty when supplied");
+            throw new TxDecodingException("'" + field + "' must be non-empty when supplied");
         }
     }
 
