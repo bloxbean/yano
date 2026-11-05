@@ -1,0 +1,58 @@
+name: Publish Conformance Reports
+
+# ADR-060: publishes the node-diversity reports of main without a Yano release, so a new corpus reaches the site
+# (https://pragma-org.github.io/node-diversity-conformance/) as soon as its corpora.env pin is merged. The reports go
+# to one pre-release, tag `conformance-reports`, which never becomes Latest. The site takes the newest date in a file
+# name across all releases, whatever the tag, so nothing changes in its metadata. It rebuilds daily at 06:00 UTC.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reports:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/node-diversity-reports.yml
+
+  publish:
+    needs: reports
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: conformance-reports
+    steps:
+      - name: Download the reports
+        uses: actions/download-artifact@v4
+        with:
+          name: node-diversity-reports
+          path: reports
+
+      - name: Point the release at this commit
+        run: |
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" > /dev/null
+          fi
+          notes="**Not a release.** Conformance reports of \`main\` at $GITHUB_SHA, for the node-diversity site."
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --notes "$notes" --prerelease --latest=false
+          else
+            gh release create "$TAG" --title "Conformance reports" --notes "$notes" --prerelease --latest=false \
+              --verify-tag
+          fi
+
+      # The new files go up before the old ones go, so the site always finds a report.
+      - name: Replace the reports
+        run: |
+          gh release upload "$TAG" reports/yano-*.json --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r name; do
+            if [ ! -e "reports/$name" ]; then
+              gh release delete-asset "$TAG" "$name" --yes
+            fi
+          done

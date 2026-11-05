@@ -1,7 +1,5 @@
 package org.yanoproject.ledger.conformance.diversity.cbor;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.diversity.NodeDiversity;
@@ -20,10 +18,10 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * ADR-060 §6: the {@code cbor-decoding} report over cardano-cbor-dataset's Conway corpus. Every {@code *.input.cbor}
- * under {@code valid/} must decode and re-encode to its {@code .expected.cbor} (normalized, except for hashed rules,
- * which must reproduce the input), and every one under {@code invalid-zap-<n>/} must be rejected. Counts follow
- * Amaru's report: {@code generated_*} are the valid and {@code invalid-zap-0} samples, {@code zap_*} the mutations.
+ * ADR-060 §6: the {@code cbor-decoding} report over cardano-cbor-dataset's Conway corpus, in the dataset's report
+ * format, version 2. Every {@code *.input.cbor} under {@code valid/} or {@code manual-valid/} must decode and re-encode
+ * to its {@code .expected.cbor} (both normalized, except for the rules the dataset compares exactly), and every other
+ * one must be rejected.
  */
 class CborDecodingDiversityReportTest {
 
@@ -37,61 +35,75 @@ class CborDecodingDiversityReportTest {
         normalizerMatchesTheDatasetVectors(dataset.resolve("normalization"));
         Path conway = dataset.resolve("conway");
         Map<String, CborRule> rules = CborRule.all();
+        Map<String, CborRule.Decoder> yaci = CborRule.yaciDecoders();
 
         Map<String, int[]> counts = new TreeMap<>();
         Map<String, int[]> decoders = new TreeMap<>();
-        ArrayNode failures = NodeDiversity.JSON.createArrayNode();
+        ObjectNode results = NodeDiversity.JSON.createObjectNode();
         for (Path sample : samples(conway)) {
             Path relative = conway.relativize(sample);
             String ruleName = relative.getName(0).toString();
-            String category = relative.getName(1).toString();
-            int[] c = counts.computeIfAbsent(ruleName, k -> new int[Field.values().length]);
+            boolean valid = isValid(relative.getName(1).toString());
+            int[] c = counts.computeIfAbsent(ruleName, k -> new int[COUNTS]);
             CborRule rule = rules.get(ruleName);
-            Optional<String> failure = check(rule, category, sample);
-            if (rule != null) {
-                tallyDecoders(decoders.computeIfAbsent(ruleName, k -> new int[DECODER_COLUMNS]), rule,
-                        category.equals("valid"), read(sample));
-            }
-            Field expected = category.equals("valid") ? Field.DECODED_EXPECTED
-                    : category.equals("invalid-zap-0") ? Field.GENERATED_REJECTED_EXPECTED
-                    : Field.ZAP_REJECTED_EXPECTED;
-            c[expected.ordinal()]++;
+            assertThat(rule).as("the harness must have a decoder for rule %s", ruleName).isNotNull();
+            Optional<String> failure = check(rule, valid, sample);
+            tallyDecoders(decoders.computeIfAbsent(ruleName, k -> new int[DECODER_COLUMNS]), rule, yaci.get(ruleName),
+                    valid, read(sample));
+            int offset = valid ? 0 : 2;
+            c[offset + 1]++;
+            String name = relative.toString().replace('\\', '/');
             if (failure.isEmpty()) {
-                c[expected.ordinal() + 1]++;
+                c[offset]++;
+                results.put(name, true);
             } else {
-                failures.addObject().put("sample", relative.toString().replace('\\', '/'))
-                        .put("reason", failure.get());
+                results.put(name, failure.get());
             }
         }
+        assertThat(counts).isNotEmpty();
 
-        ObjectNode report = NodeDiversity.report(SCENARIO);
-        report.put("corpus", corpus(dataset));
+        ObjectNode report = NodeDiversity.JSON.createObjectNode();
+        report.put("version", "2");
+        report.put("generated_at", System.currentTimeMillis());
         report.put("protocol_version", PROTOCOL_VERSION);
-        int[] totals = new int[Field.values().length];
-        ObjectNode ruleNodes = NodeDiversity.JSON.createObjectNode();
-        counts.forEach((rule, c) -> {
-            ruleNodes.set(rule, fields(c));
-            Arrays.setAll(totals, i -> totals[i] + c[i]);
-        });
-        report.put("successful", failures.isEmpty());
-        report.set("totals", fields(totals));
-        report.set("rules", ruleNodes);
-        report.set("failures", failures);
+        report.put("dataset_commit", commit("node.diversity.cborDatasetCommit"));
+        report.put("implementation_commit", commit("node.diversity.commit"));
+        report.set("results", results);
         NodeDiversity.write(SCENARIO, report);
 
-        counts.forEach((rule, c) -> System.out.printf("cbor-decoding %-24s %s%n", rule, summary(c)));
-        System.out.printf("cbor-decoding %-24s %s%n", "TOTAL", summary(totals));
+        int[] totals = new int[COUNTS];
+        counts.forEach((rule, c) -> {
+            System.out.printf("cbor-decoding %-28s %s%n", rule, summary(c));
+            Arrays.setAll(totals, i -> totals[i] + c[i]);
+        });
+        System.out.printf("cbor-decoding %-28s %s%n", "TOTAL", summary(totals));
         printDecoders(decoders);
-        assertThat(counts).isNotEmpty();
     }
 
-    /** valid accepted, valid total, invalid rejected, invalid total, for the strict reader and then the library. */
-    private static final int DECODER_COLUMNS = 8;
+    /** valid passed, valid total, invalid rejected, invalid total. */
+    private static final int COUNTS = 4;
+
+    /** @return whether a sample in this directory must decode; the dataset's other directories must be rejected */
+    static boolean isValid(String category) {
+        return category.equals("valid") || category.equals("manual-valid");
+    }
+
+    private static String commit(String property) {
+        String commit = System.getProperty(property, "");
+        assertThat(commit).as(property).matches("[0-9a-f]{40}");
+        return commit;
+    }
+
+    /** valid accepted, valid total, invalid rejected, invalid total, for the strict reader, the library and yaci. */
+    private static final int DECODER_COLUMNS = 12;
 
     /** Each decoder on its own: which side of the node a difference from Haskell comes from (not reported). */
-    private static void tallyDecoders(int[] t, CborRule rule, boolean valid, byte[] input) {
+    private static void tallyDecoders(int[] t, CborRule rule, CborRule.Decoder yaci, boolean valid, byte[] input) {
         tally(t, 0, valid, accepts(rule.strict(), input));
         tally(t, 4, valid, accepts(rule.library(), input));
+        if (yaci != null) {
+            tally(t, 8, valid, accepts(yaci, input));
+        }
     }
 
     /** {@code accepted} is null for a crash, which meets no expectation. */
@@ -108,7 +120,7 @@ class CborDecodingDiversityReportTest {
         try {
             decoder.decode(input);
             return true;
-        } catch (StackOverflowError e) {
+        } catch (Error e) {
             return null;
         } catch (Exception e) {
             return false;
@@ -118,47 +130,49 @@ class CborDecodingDiversityReportTest {
     private static void printDecoders(Map<String, int[]> decoders) {
         int[] total = new int[DECODER_COLUMNS];
         System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts them together):");
-        System.out.printf("cbor-decoding %-24s %-36s %s%n", "rule", "Yano strict: valid ok / invalid ok",
-                "library (CCL; yaci for headers): valid ok / invalid ok");
+        System.out.printf("cbor-decoding %-28s %-36s %-56s %s%n", "rule", "Yano strict: valid ok / invalid ok",
+                "library (CCL; yaci for headers): valid ok / invalid ok", "yaci (sync): valid ok / invalid ok");
         decoders.forEach((rule, t) -> {
-            System.out.printf("cbor-decoding %-24s %s%n", rule, decoderSummary(t));
+            System.out.printf("cbor-decoding %-28s %s%n", rule, decoderSummary(t));
             Arrays.setAll(total, i -> total[i] + t[i]);
         });
-        System.out.printf("cbor-decoding %-24s %s%n", "TOTAL", decoderSummary(total));
+        System.out.printf("cbor-decoding %-28s %s%n", "TOTAL", decoderSummary(total));
     }
 
     private static String decoderSummary(int[] t) {
-        return String.format("%-36s %s", String.format("%d/%d / %d/%d", t[0], t[1], t[2], t[3]),
-                String.format("%d/%d / %d/%d", t[4], t[5], t[6], t[7]));
+        return String.format("%-36s %-56s %s", String.format("%d/%d / %d/%d", t[0], t[1], t[2], t[3]),
+                String.format("%d/%d / %d/%d", t[4], t[5], t[6], t[7]),
+                t[9] + t[11] == 0 ? "-" : String.format("%d/%d / %d/%d", t[8], t[9], t[10], t[11]));
     }
 
     /**
-     * @return empty when the sample meets its expectation, otherwise why not: a valid sample must decode and
-     *         re-encode to the reference, an invalid one must be rejected
+     * @return empty when the sample meets its expectation, otherwise why not, as {@code decode: } or
+     *         {@code encode: } and a message: a valid sample must decode and re-encode to the reference, an invalid
+     *         one must be rejected
      */
-    static Optional<String> check(CborRule rule, String category, Path sample) {
-        if (rule == null) {
-            return Optional.of("unsupported: no decoder for this rule");
-        }
+    static Optional<String> check(CborRule rule, boolean valid, Path sample) {
         byte[] input = read(sample);
-        byte[] encoded;
+        CborRule.Decoded decoded;
         try {
-            encoded = rule.decodeAndEncode(input);
-        } catch (StackOverflowError e) {
-            return Optional.of("crash: " + e);
+            decoded = rule.decode(input);
+        } catch (Error e) {
+            return Optional.of("decode: crash: " + e);
         } catch (Exception e) {
-            return category.equals("valid") ? Optional.of("decode: " + e) : Optional.empty();
+            return valid ? Optional.of("decode: " + e) : Optional.empty();
         }
-        if (!category.equals("valid")) {
+        if (!valid) {
             return Optional.of("decode: succeeded when expected to fail");
         }
-        byte[] expected = read(sample.resolveSibling(sample.getFileName().toString()
-                .replace(".input.cbor", ".expected.cbor")));
         try {
-            byte[] actual = rule.hashed() ? encoded : CborNormalizer.normalize(encoded);
-            return Arrays.equals(actual, expected) ? Optional.empty()
-                    : Optional.of("encode: re-encoding differs from the reference");
-        } catch (RuntimeException e) {
+            byte[] expected = read(sample.resolveSibling(sample.getFileName().toString()
+                    .replace(".input.cbor", ".expected.cbor")));
+            byte[] encoded = rule.encode(decoded);
+            boolean same = rule.exact() ? Arrays.equals(encoded, expected)
+                    : Arrays.equals(CborNormalizer.normalize(encoded), CborNormalizer.normalize(expected));
+            return same ? Optional.empty() : Optional.of("encode: re-encoding differs from the reference");
+        } catch (Error e) {
+            return Optional.of("encode: crash: " + e);
+        } catch (Exception e) {
             return Optional.of("encode: " + e);
         }
     }
@@ -175,12 +189,6 @@ class CborDecodingDiversityReportTest {
         }
     }
 
-    /** @return the corpus id, {@code <era>-<seed>-<samples>} from {@code corpus.json} */
-    private static String corpus(Path dataset) throws IOException {
-        JsonNode config = NodeDiversity.JSON.readTree(dataset.resolve("corpus.json").toFile());
-        return "conway-" + config.get("seed").asText() + "-" + config.get("samples").asText();
-    }
-
     private static List<Path> samples(Path conway) throws IOException {
         try (Stream<Path> files = Files.walk(conway)) {
             return files.filter(p -> p.getFileName().toString().endsWith(".input.cbor")).sorted().toList();
@@ -195,34 +203,7 @@ class CborDecodingDiversityReportTest {
         }
     }
 
-    /** The report's per-rule counts, each expected count followed by its actual count. */
-    private enum Field {
-        DECODED_EXPECTED("generated_decoded_reencoded_expected"),
-        DECODED_ACTUAL("generated_decoded_reencoded_actual"),
-        GENERATED_REJECTED_EXPECTED("generated_must_be_rejected_expected"),
-        GENERATED_REJECTED_ACTUAL("generated_must_be_rejected_actual"),
-        ZAP_REJECTED_EXPECTED("zap_must_be_rejected_expected"),
-        ZAP_REJECTED_ACTUAL("zap_must_be_rejected_actual");
-
-        final String key;
-
-        Field(String key) {
-            this.key = key;
-        }
-    }
-
-    private static ObjectNode fields(int[] c) {
-        ObjectNode node = NodeDiversity.JSON.createObjectNode();
-        node.put("generated_total", c[Field.DECODED_EXPECTED.ordinal()]
-                + c[Field.GENERATED_REJECTED_EXPECTED.ordinal()]);
-        for (Field field : Field.values()) {
-            node.put(field.key, c[field.ordinal()]);
-        }
-        return node;
-    }
-
     private static String summary(int[] c) {
-        return String.format("valid %d/%d  generated rejected %d/%d  zapped rejected %d/%d",
-                c[1], c[0], c[3], c[2], c[5], c[4]);
+        return String.format("valid %d/%d  invalid %d/%d", c[0], c[1], c[2], c[3]);
     }
 }

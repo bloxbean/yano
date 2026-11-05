@@ -6,6 +6,7 @@ name: Node-Diversity Reports
 # :ledger-conformance:nodeDiversityReports, scores them with the site's own builder (job summary) and uploads them as
 # artifact node-diversity-reports. release-dist.yml calls it on release tags and attaches the reports to the GitHub
 # release, where the site's github_releases lookup finds them. Dispatch it on any branch to check the scores first.
+# publish-conformance-reports.yml calls it to publish main's reports without a release.
 # A score below 100% never fails the run; a harness failure does. Pull requests that change the harness run it too.
 
 on:

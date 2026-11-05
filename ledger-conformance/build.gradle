@@ -88,6 +88,11 @@ tasks.withType(Test).configureEach {
     systemProperty 'conformance.report.dir', layout.buildDirectory.dir('conformance').get().asFile.absolutePath
     if (nodeDiversityCorpora) {
         systemProperty 'node.diversity.corpora', file(nodeDiversityCorpora).absolutePath
+        // The cbor-decoding report names both commits.
+        systemProperty 'node.diversity.cborDatasetCommit',
+                (file('node-diversity/corpora.env').text =~ /(?m)^CBOR_DATASET_REVISION=(\S+)/)[0][1]
+        systemProperty 'node.diversity.commit',
+                providers.exec { commandLine 'git', 'rev-parse', 'HEAD' }.standardOutput.asText.get().trim()
     }
     systemProperty 'node.diversity.report.dir', layout.buildDirectory.dir('node-diversity').get().asFile.absolutePath
     // CborRuleTest's valid Conway block (runtime's test resources)
