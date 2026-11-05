@@ -42,6 +42,7 @@ class CborDecodingDiversityReportTest {
         Map<String, int[]> decoders = new TreeMap<>();
         ObjectNode results = NodeDiversity.JSON.createObjectNode();
         List<String> outcomes = new ArrayList<>();
+        List<CborRejectionGate.Sample> gated = new ArrayList<>();
         for (Path sample : samples(conway)) {
             Path relative = conway.relativize(sample);
             String ruleName = relative.getName(0).toString();
@@ -56,6 +57,8 @@ class CborDecodingDiversityReportTest {
             int offset = valid ? 0 : 2;
             c[offset + 1]++;
             String name = relative.toString().replace('\\', '/');
+            boolean strictRejected = Boolean.FALSE.equals(accepts(rule.strict(), read(sample)));
+            gated.add(new CborRejectionGate.Sample(name, valid, strictRejected, failure.isEmpty()));
             if (failure.isEmpty()) {
                 c[offset]++;
                 results.put(name, true);
@@ -85,6 +88,7 @@ class CborDecodingDiversityReportTest {
         });
         System.out.printf("cbor-decoding %-28s %s%n", "TOTAL", summary(totals));
         printDecoders(decoders);
+        assertThat(CborRejectionGate.violations(CborRejectionGate.baseline(), gated)).isEmpty();
     }
 
     /** valid passed, valid total, invalid rejected, invalid total. */
