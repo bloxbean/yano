@@ -171,6 +171,9 @@ public final class HaskellPolicy implements FormatPolicy {
      * {@code decodeMapByKey}), but a redeemer's key: the map of redeemers keeps its last value ({@code Map.fromList},
      * Alonzo/TxWits.hs:566-573). A hard fork's major version is at most {@code succVersion (ProtVerHigh ConwayEra)}
      * ({@code decodeProtVer @ConwayEra}, BaseTypes.hs:253-263, Procedures.hs:938-940); a header's may be one more.
+     * The form a value takes, where it may take more than one (a record by major type, such as a value, an output,
+     * auxiliary data or redeemers), is checked for its era only: its items are checked where its parent's entry is,
+     * and a map of redeemers keeps a repeated key.
      */
     @Override
     public void entry(RecordSpec record, FieldSpec field, CborSpan key, CborSpan value, int occurrence, Era era) {
@@ -179,6 +182,9 @@ public final class HaskellPolicy implements FormatPolicy {
         }
         if (!field.validIn(era)) {
             throw new TxDecodingException(at(record, key, value) + " is not in " + era);
+        }
+        if (record.shape() == RecordSpec.Shape.BY_MAJOR_TYPE) {
+            return;
         }
         if (occurrence > 0 && field.type() != FieldType.REDEEMER_VALUE) {
             throw new TxDecodingException("repeated " + at(record, key, value));
@@ -323,6 +329,7 @@ public final class HaskellPolicy implements FormatPolicy {
             case LIST, RELAY_LIST -> StrictCbor.array(value);
             case SET, CREDENTIAL_SET -> StrictCbor.set(value);
             case NONEMPTY_LIST, NONEMPTY_SET -> nonEmpty(StrictCbor.set(value).isEmpty(), type.name());
+            case NONEMPTY_ARRAY -> nonEmpty(StrictCbor.array(value).isEmpty(), type.name());
             case NONEMPTY_MAP -> nonEmpty(StrictCbor.map(value).isEmpty(), type.name());
             case KEY_HASH_SET -> keyHashes(value);
             case NONEMPTY_CERTIFICATE_SET -> nonEmpty(StrictCbor.set(value).isEmpty(), "Certificates");
