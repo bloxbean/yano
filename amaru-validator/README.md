@@ -55,18 +55,17 @@ WASI_SDK_PATH=/opt/wasi-sdk scripts/build-wasm.sh  # or: ZIG=/path/to/zig script
 it at startup (`Amaru validator ready: … module tag=… commit=… toolchain=… crate=…`).
 
 CI (`.github/workflows/amaru-wasm.yml`) builds the same module on Linux with wasi-sdk. It
-publishes the module and a bundle with licences as a workflow artifact, and attaches them to `v*`
-releases.
+publishes the module and a bundle with licences as a workflow artifact (`amaru-validator-wasm`).
+They are not attached to Yano releases.
 
 ## 2. Build Yano with it
 
-Add `-PwithAmaru=true`. The task `prepareWasm` then provides the module in one of three ways:
+Add `-PwithAmaru=true`. The task `prepareWasm` then provides the module in one of two ways:
 
 | Property | Source of the module |
 |---|---|
 | `-PamaruWasm=/abs/path/amaru_validator.wasm` | A module you built or downloaded. If `<file>.sha256` sits next to it, the module is checked against it. Use an absolute path. |
 | `-PamaruBuild=local` | Runs `amaru-validator-wasm/scripts/build-wasm.sh` (needs the toolchains above), then checks the `.sha256` it writes. |
-| neither | Downloads the release asset pinned by `amaruWasmReleaseTag` and `amaruWasmSha256`. **No release carries the module yet**, so both are empty and the task fails, naming the two options above. |
 
 `generateAmaruAot` then compiles the module to JVM bytecode with Endive's build-time compiler
 (about 3.4 MB of classes plus a 1.7 MB `.meta` resource, packaged in the jar). Four functions
@@ -237,8 +236,7 @@ pick the tag, bump `Cargo.toml` and `AMARU_VERSION`, re-check `[patch]` sections
      `AmaruKnownDivergencesTest` fails; shrink the allow-list.
    - `:ledger-conformance:test`, then `conformanceReport` to regenerate the baseline, and the
      blueprint known-failure list (`amaru-known-failures.txt`) against the new checkout.
-4. Once a release carries the module, set `amaruWasmReleaseTag` and `amaruWasmSha256` to it.
-5. The release notes name the Amaru tag and commit.
+4. The release notes name the Amaru tag and commit.
 
 ## Benchmarks
 

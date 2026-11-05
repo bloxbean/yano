@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
   push:
     # Branch pushes run only when the crate, the conformance harness, the engines it measures or this
-    # workflow change. Path filters are not evaluated for tag pushes, so every v* release tag builds and
-    # attaches the module.
+    # workflow change. Path filters are not evaluated for tag pushes, so every v* release tag builds the
+    # module as a workflow artifact. It is not attached to the Yano release.
     branches:
       - '**'
     tags:
@@ -266,61 +266,3 @@ jobs:
           path: ledger-conformance/build/conformance/
           if-no-files-found: warn
           retention-days: 30
-
-  release:
-    # On a Yano release tag, attach the bundle and the module to the GitHub release. The release is
-    # created by release-dist.yml (softprops/action-gh-release) only: this job never creates one, so
-    # the two workflows cannot race on creation. It waits for the release to exist, then uploads.
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Read release flags
-        id: flags
-        shell: bash
-        run: |
-          set -euo pipefail
-          github_release=$(awk -F' *= *' '$1 == "github_release" { print $2; exit }' gradle.properties)
-          echo "github_release=${github_release:-false}" >> "$GITHUB_OUTPUT"
-          echo "GitHub release: ${github_release:-false}"
-
-      - name: Download the bundle
-        if: steps.flags.outputs.github_release == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: amaru-validator-wasm
-          path: dist
-
-      - name: Wait for the release, then attach the files
-        if: steps.flags.outputs.github_release == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # release-dist.yml builds the distributions before it creates the release.
-          for attempt in $(seq 1 120); do
-            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              break
-            fi
-            if [[ "$attempt" == 120 ]]; then
-              echo "::error::release $TAG did not appear within 120 minutes (release-dist.yml)"
-              exit 1
-            fi
-            sleep 60
-          done
-          ls -l dist
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            dist/amaru-validator-wasm-*.tar.gz \
-            dist/amaru-validator-wasm-*.tar.gz.sha256 \
-            dist/amaru_validator.wasm \
-            dist/amaru_validator.wasm.sha256
