@@ -2,6 +2,8 @@ package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
+import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.RawDatum;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
@@ -576,17 +578,11 @@ public final class RawTransaction {
                 throw new TxDecodingException("TxBody: 'Treasury Donation' must be non-zero when supplied");
             }
             if (optional(BODY_CERTS)) {
-                // An OSet: decodeOSet rejects two equal certificates (decodeSetLikeEnforceNoDuplicates).
-                Set<String> seen = new HashSet<>();
+                HaskellPolicy.CONWAY.check(FieldType.NONEMPTY_CERTIFICATE_SET, field(BODY_CERTS), Era.Conway);
                 List<CborSpan> items = tx.bodySetItems(BODY_CERTS);
                 for (int i = 0; i < items.size(); i++) {
-                    RawCertificate cert = RawCertificate.read(items.get(i), i);
-                    if (!seen.add(key(items.get(i), cert.tag() == 3 ? 7 : -1, -1))) {
-                        throw new TxDecodingException("duplicate certificate " + i);
-                    }
-                    certificates.add(cert);
+                    certificates.add(RawCertificate.accepted(items.get(i), i));
                 }
-                nonEmpty(certificates.isEmpty(), "Certificates");
             }
             if (optional(BODY_VOTING_PROCEDURES)) {
                 readVotes(field(BODY_VOTING_PROCEDURES));
@@ -599,7 +595,7 @@ public final class RawTransaction {
                     RawProposal proposal = RawProposal.read(items.get(i), i);
                     // [deposit, account, gov_action, anchor]; an update-committee action [4, prev, set, map, q]
                     // holds a set at position 2
-                    if (!seen.add(key(items.get(i), -1, proposal.actionTag() == 4 ? 2 : -1))) {
+                    if (!seen.add(key(items.get(i), proposal.actionTag() == 4 ? 2 : -1))) {
                         throw new TxDecodingException("duplicate proposal procedure " + i);
                     }
                     proposals.add(proposal);
@@ -649,21 +645,18 @@ public final class RawTransaction {
         }
 
         /**
-         * The equality key of a decoded certificate or proposal ({@link CborCanonical}): its canonical encoding,
-         * with an untagged set sorted too — at position {@code setAt} of the item (a pool registration's owners), or
-         * at position {@code actionSetAt} of the proposal's governance action (an update committee's removals).
+         * The equality key of a decoded proposal ({@link CborCanonical}): its canonical encoding, with an untagged set
+         * sorted too at position {@code actionSetAt} of its governance action (an update committee's removals).
          */
-        private static String key(CborSpan item, int setAt, int actionSetAt) {
-            if (setAt < 0 && actionSetAt < 0) {
+        private static String key(CborSpan item, int actionSetAt) {
+            if (actionSetAt < 0) {
                 return HexUtil.encodeHexString(CborCanonical.of(item));
             }
             StringBuilder key = new StringBuilder();
             List<CborSpan> elements = StrictCbor.array(item);
             for (int i = 0; i < elements.size(); i++) {
                 CborSpan element = elements.get(i);
-                if (i == setAt) {
-                    key.append(HexUtil.encodeHexString(CborCanonical.set(element)));
-                } else if (i == 2 && actionSetAt >= 0) {
+                if (i == 2) {
                     List<CborSpan> parts = StrictCbor.array(element);
                     for (int j = 0; j < parts.size(); j++) {
                         key.append(HexUtil.encodeHexString(j == actionSetAt ? CborCanonical.set(parts.get(j))

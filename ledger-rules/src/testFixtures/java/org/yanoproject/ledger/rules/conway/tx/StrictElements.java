@@ -1,5 +1,13 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.FieldSpec;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
+import com.bloxbean.cardano.client.transaction.raw.FormatPolicy;
+import com.bloxbean.cardano.client.transaction.raw.RawTx;
+import com.bloxbean.cardano.client.transaction.raw.RecordSpec;
+
 /**
  * The strict transaction decoder ({@link RawTransaction} and its readers) applied to one standalone CBOR item, for
  * conformance corpora that test decoding element by element (ADR-060 §6, cardano-cbor-dataset). Each method reads
@@ -19,6 +27,32 @@ public final class StrictElements {
      */
     public static RawTransaction transaction(byte[] cbor) {
         return RawTransaction.parse(cbor, null);
+    }
+
+    /** ADR 0003 I13: the body and the witness set, walked by CCL's reader with {@link HaskellPolicy}. */
+    public static void walk(byte[] cbor) {
+        RawTx.walk(cbor, Era.Conway, HaskellPolicy.CONWAY);
+    }
+
+    /** {@link #walk} with only the policy's rules on structure: no rule on a value's type. */
+    public static void walkStructure(byte[] cbor) {
+        RawTx.walk(cbor, Era.Conway, new FormatPolicy() {
+            @Override
+            public void enter(RecordSpec record, CborSpan container, Era era) {
+                HaskellPolicy.CONWAY.enter(record, container, era);
+            }
+
+            @Override
+            public void entry(RecordSpec record, FieldSpec field, CborSpan key, CborSpan value, int occurrence,
+                              Era era) {
+                HaskellPolicy.CONWAY.entry(record, field, key, value, occurrence, era);
+            }
+
+            @Override
+            public void missing(RecordSpec record, FieldSpec field, CborSpan container, Era era) {
+                HaskellPolicy.CONWAY.missing(record, field, container, era);
+            }
+        });
     }
 
     /** {@code certificate} */
@@ -63,7 +97,7 @@ public final class StrictElements {
 
     /** {@code relay} */
     public static void relay(byte[] cbor) {
-        BoundedFields.relay(StrictCbor.span(cbor));
+        HaskellPolicy.CONWAY.walk(FieldType.RELAY_LIST.record(), StrictCbor.span(cbor));
     }
 
     /** {@code transaction_output} */
