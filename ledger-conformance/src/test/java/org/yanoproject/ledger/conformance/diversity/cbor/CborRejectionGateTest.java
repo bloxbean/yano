@@ -50,7 +50,7 @@ class CborRejectionGateTest {
     @Test
     void theBaselineHoldsBothSets() {
         Baseline baseline = CborRejectionGate.baseline();
-        assertThat(baseline.reportMisses()).hasSize(448);
-        assertThat(baseline.strictAccepts()).hasSize(82);
+        assertThat(baseline.reportMisses()).hasSize(69);
+        assertThat(baseline.strictAccepts()).hasSize(79);
     }
 }
