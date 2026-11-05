@@ -169,6 +169,84 @@ class HaskellPolicyTest {
         assertThatThrownBy(() -> certificate(new HaskellPolicy(12), pool)).isInstanceOf(TxDecodingException.class);
     }
 
+    private static final String KEY = "5820" + "55".repeat(32);
+    private static final String SIGMA = "5840" + "66".repeat(64);
+    private static final String VRF = "82" + "5840" + "33".repeat(64) + "5850" + "44".repeat(80);
+    private static final String OPCERT = "84" + KEY + "00" + "00" + SIGMA;
+    private static final String KES_SIGNATURE = "5901c0" + "77".repeat(448);
+
+    /** {@code [block_number, slot, prev_hash, issuer, vrf_vkey, vrf_result, size, hash, opcert, protocol_version]} */
+    private static String nestedBody(String number, String prev, String vrf, String size, String opcert,
+                                      String version) {
+        return "8a" + number + "00" + prev + KEY + KEY + vrf + size + HASH32 + opcert + version;
+    }
+
+    private static final String BODY_10 = nestedBody("00", "f6", VRF, "00", OPCERT, "820a00");
+
+    private static void decodes(String header) {
+        assertThatCode(() -> HaskellPolicy.header(StrictCbor.span(HexUtil.decodeHexString(header))))
+                .doesNotThrowAnyException();
+    }
+
+    private static void refuses(String header, String reason) {
+        assertThatThrownBy(() -> HaskellPolicy.header(StrictCbor.span(HexUtil.decodeHexString(header))))
+                .isInstanceOf(TxDecodingException.class).hasMessageContaining(reason);
+    }
+
+    @Test
+    void aHeaderIsReadWithHaskellsBounds() {
+        decodes("82" + BODY_10 + KES_SIGNATURE);
+        decodes("82" + nestedBody("00", HASH32, VRF, "1affffffff", OPCERT, "820d1affffffff") + KES_SIGNATURE);
+        decodes("82" + nestedBody("1bffffffffffffffff", "f6", VRF, "00",
+                "84" + KEY + "1bffffffffffffffff" + "1bffffffffffffffff" + SIGMA, "820a00") + KES_SIGNATURE);
+
+        refuses("82" + nestedBody("20", "f6", VRF, "00", OPCERT, "820a00") + KES_SIGNATURE, "unsigned integer");
+        refuses("82" + nestedBody("00", "40", VRF, "00", OPCERT, "820a00") + KES_SIGNATURE, "hash of 0 bytes");
+        refuses("82" + nestedBody("00", "f6", VRF, "1b0000000100000000", OPCERT, "820a00") + KES_SIGNATURE, "exceeds");
+        refuses("82" + nestedBody("00", "f6", VRF, "00", OPCERT, "820e00") + KES_SIGNATURE, "exceeds");
+        refuses("82" + nestedBody("00", "f6", VRF, "00", OPCERT, "820a1b0000000100000000") + KES_SIGNATURE, "exceeds");
+        refuses("82" + BODY_10 + "5901bf" + "77".repeat(447), "KES signature of 447 bytes");
+        refuses("8a" + BODY_10.substring(2), "");
+    }
+
+    /** The regression of ADR 0003 M2: a key in chunks has the right length once joined, and Haskell refuses it. */
+    @Test
+    void aHeadersByteStringsAreDefinite() {
+        String chunkedKey = "5f" + KEY + "ff";
+        refuses("82" + nestedBody("00", "f6", VRF, "00", "84" + chunkedKey + "0000" + SIGMA, "820a00") + KES_SIGNATURE,
+                "indefinite-length byte string");
+        refuses("82" + "8a" + "00" + "00" + "f6" + KEY + chunkedKey + VRF + "00" + HASH32 + OPCERT + "820a00"
+                + KES_SIGNATURE, "indefinite-length byte string");
+        refuses("82" + nestedBody("00", "f6", VRF, "00", "84" + KEY + "0000" + "5f" + SIGMA + "ff", "820a00")
+                + KES_SIGNATURE, "indefinite-length byte string");
+    }
+
+    /** {@code OutputVRF} takes any byte string (DecCBOR.hs:564-566); the proof is fixed in size, the pair definite. */
+    @Test
+    void aVrfResultHasAnyOutputAndAFixedProof() {
+        decodes("82" + nestedBody("00", "f6", "82" + "40" + "5850" + "44".repeat(80), "00", OPCERT, "820a00")
+                + KES_SIGNATURE);
+        refuses("82" + nestedBody("00", "f6", "82" + "40" + "584f" + "44".repeat(79), "00", OPCERT, "820a00")
+                + KES_SIGNATURE, "VRF proof of 79 bytes");
+        refuses("82" + nestedBody("00", "f6", "9f" + "40" + "5850" + "44".repeat(80) + "ff", "00", OPCERT, "820a00")
+                + KES_SIGNATURE, "VRF result");
+    }
+
+    /** {@code decodeRecordNamed} at cardano-ledger 6176e413, of which the dataset holds such headers as valid. */
+    @Test
+    void aHeaderAndItsBodyMayBeOfEitherLength() {
+        decodes("9f" + BODY_10 + KES_SIGNATURE + "ff");
+        decodes("82" + "9f" + BODY_10.substring(2) + "ff" + KES_SIGNATURE);
+    }
+
+    @Test
+    void aHeaderHasTheLayoutItsBodyHas() {
+        decodes("82" + "8f" + "00" + "00" + "f6" + KEY + KEY + VRF + VRF + "00" + HASH32 + KEY + "00" + "00" + SIGMA
+                + "0200" + KES_SIGNATURE);
+        refuses("82" + "89" + BODY_10.substring(2, BODY_10.length() - "820a00".length()) + KES_SIGNATURE, "15 or 10");
+        refuses("82" + "8a" + "00".repeat(8) + "00" + "00" + KES_SIGNATURE, "");
+    }
+
     @Test
     void decoderVersionsBelowConwayAreNotKnown() {
         assertThatThrownBy(() -> new HaskellPolicy(8)).isInstanceOf(IllegalArgumentException.class);

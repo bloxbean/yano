@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.transaction.raw.CertKind;
 import com.bloxbean.cardano.client.transaction.raw.FieldSpec;
 import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.FormatPolicy;
+import com.bloxbean.cardano.client.transaction.raw.RawHeader;
 import com.bloxbean.cardano.client.transaction.raw.RecordSpec;
 import com.bloxbean.cardano.client.util.HexUtil;
 
@@ -24,9 +25,10 @@ import java.util.Set;
  * from 12 a {@code UnitInterval}'s numbers are {@code Word64}s and no longer bignums ({@code decodeIntegralRational},
  * BaseTypes.hs:417-428). Below 9 a text has at most 64 bytes and a set no tag, which this class does not hold.
  *
- * <p>A type this class does not name has no rule yet: its values are read by {@link RawTransaction}.
+ * <p>A type this class does not name has no rule yet: its values are read by {@link RawTransaction}. Its rules stand
+ * for a transaction at Conway's decoder versions and for a block header of any era, which no version below 12 changes.
  */
-final class HaskellPolicy implements FormatPolicy {
+public final class HaskellPolicy implements FormatPolicy {
 
     /** Conway's decoder versions, 9 to 11, reject alike. */
     static final HaskellPolicy CONWAY = new HaskellPolicy(9);
@@ -38,6 +40,13 @@ final class HaskellPolicy implements FormatPolicy {
     private static final int IPV4_LENGTH = 4;
     private static final int IPV6_LENGTH = 16;
     private static final int REWARD_ACCOUNT_LENGTH = 29;
+    private static final int VKEY_LENGTH = 32;
+    private static final int SIGNATURE_LENGTH = 64;
+    private static final int VRF_PROOF_LENGTH = 80;
+    private static final int KES_SIGNATURE_LENGTH = 448;
+    private static final long MAX_WORD32 = 0xFFFF_FFFFL;
+    /** {@code MaxVersion}, Version.hs:63. */
+    private static final long MAX_VERSION = 13;
     private static final int MAX_PORT = 0xFFFF;
     private static final int MAX_NETWORK_ID = 1;
     private static final int MAX_KEY_SHOWN = 9;
@@ -57,6 +66,24 @@ final class HaskellPolicy implements FormatPolicy {
     void walk(RecordSpec record, CborSpan value) {
         try {
             record.walk(value, Era.Conway, this);
+        } catch (CborRuntimeException e) {
+            throw new TxDecodingException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Whether a block header decodes, in either layout. No decoder version below 12 changes a header's rules, so they
+     * are read at Conway's. A header and its body may be of either length: {@code decodeRecordNamed} at the dataset's
+     * cardano-ledger {@code 6176e413} (Praos/BlockHeader.hs:204-226), later than the {@code RecD} of {@code f649f975}.
+     *
+     * @param header a header as encoded
+     * @return CCL's view of it
+     * @throws TxDecodingException when Haskell would not decode it
+     */
+    public static RawHeader header(CborSpan header) {
+        try {
+            RawHeader.walk(header, CONWAY);
+            return RawHeader.of(header);
         } catch (CborRuntimeException e) {
             throw new TxDecodingException(e.getMessage(), e);
         }
@@ -104,7 +131,9 @@ final class HaskellPolicy implements FormatPolicy {
     @Override
     public void check(FieldType type, CborSpan value, Era era) {
         switch (type) {
-            case UINT, COIN -> StrictCbor.unsigned(value);
+            case UINT, COIN, SEQUENCE_NUMBER, KES_PERIOD -> StrictCbor.unsigned(value);
+            case UINT32, MINOR_PROTOCOL_VERSION -> atMost(value, MAX_WORD32);
+            case MAJOR_PROTOCOL_VERSION -> atMost(value, MAX_VERSION);
             case POSITIVE_COIN -> {
                 if (StrictCbor.unsigned(value).signum() == 0) {
                     throw new TxDecodingException("a positive coin is zero at " + value.offset());
@@ -117,6 +146,16 @@ final class HaskellPolicy implements FormatPolicy {
             }
             case HASH28 -> sized(value, KEY_HASH_LENGTH, "key hash");
             case HASH32 -> sized(value, HASH32_LENGTH, "hash");
+            case OPTIONAL_HASH32 -> sizedOrNull(value, HASH32_LENGTH, "hash");
+            case VKEY, VRF_VKEY, KES_VKEY -> sized(value, VKEY_LENGTH, "verification key");
+            case SIGNATURE -> sized(value, SIGNATURE_LENGTH, "signature");
+            case KES_SIGNATURE -> sized(value, KES_SIGNATURE_LENGTH, "KES signature");
+            case VRF_PROOF -> sized(value, VRF_PROOF_LENGTH, "VRF proof");
+            case VRF_CERT -> {
+                if (decoderVersion < VERSION_12) {
+                    definite(value, "a VRF result (enforceSize)");
+                }
+            }
             case BYTES -> bytes(value);
             case REWARD_ACCOUNT -> rewardAccount(value);
             case URL -> BoundedFields.url(value, "ledger record");
@@ -158,6 +197,20 @@ final class HaskellPolicy implements FormatPolicy {
         int found = bytes(value).length;
         if (found != length) {
             throw new TxDecodingException(what + " of " + found + " bytes, expected " + length);
+        }
+    }
+
+    /** A definite-length array, as {@code decodeListLen} reads one. */
+    private static void definite(CborSpan value, String what) {
+        if (value.isIndefinite()) {
+            throw new TxDecodingException("an indefinite-length array at " + value.offset() + " (" + what + ")");
+        }
+    }
+
+    private static void atMost(CborSpan value, long max) {
+        long found = StrictCbor.unsignedLong(value);
+        if (found > max) {
+            throw new TxDecodingException("unsigned integer " + found + " exceeds " + max + " at " + value.offset());
         }
     }
 

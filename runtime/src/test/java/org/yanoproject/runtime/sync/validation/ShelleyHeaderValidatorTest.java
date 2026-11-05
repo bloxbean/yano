@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.crypto.BlockProducerKeys;
 import com.bloxbean.cardano.yaci.core.model.BlockHeader;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockHeaderSerializer;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.config.UpstreamValidationConfig;
 import org.yanoproject.runtime.blockproducer.BlockSigner;
 import org.yanoproject.runtime.blockproducer.DevnetBlockBuilder;
@@ -271,6 +272,40 @@ class ShelleyHeaderValidatorTest {
         assertThat(validator.snapshot().rejectedHeaders()).isEqualTo(1);
     }
 
+    /** A key in chunks has the right length once joined; Haskell's {@code decodeBytes} refuses it below version 12. */
+    @Test
+    void structuralValidationRejectsAKeyInChunks() {
+        HeaderFixture fixture = validHeader();
+        String key = "5820" + HexUtil.encodeHexString(((ByteString) ((Array) ((Array) fixture.headerArray().getDataItems()
+                .get(0)).getDataItems().get(8)).getDataItems().get(0)).getBytes());
+        String header = HexUtil.encodeHexString(CborSerializationUtil.serialize(fixture.headerArray()));
+        byte[] chunked = HexUtil.decodeHexString(header.replace(key, "5f" + key + "ff"));
+        ShelleyHeaderValidator validator = new ShelleyHeaderValidator(
+                "structural", SLOTS_PER_KES_PERIOD, MAX_KES_EVOLUTIONS);
+
+        HeaderValidationResult result = validator.validateShelley(fixture.blockHeader(), chunked);
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.stage()).isEqualTo("shape");
+        assertThat(result.reason()).contains("indefinite-length byte string");
+    }
+
+    /** {@code OutputVRF} decodes from any byte string: the VRF proof stage is what refuses a wrong output. */
+    @Test
+    void aWrongVrfOutputDecodesAndFailsTheVrfProofStage() {
+        HeaderFixture fixture = validHeader().withShortVrfOutputAndFreshKesSignature();
+        ShelleyHeaderValidator structural = new ShelleyHeaderValidator(
+                "structural", SLOTS_PER_KES_PERIOD, MAX_KES_EVOLUTIONS);
+        ShelleyHeaderValidator praosLite = new ShelleyHeaderValidator(
+                "praos-lite", SLOTS_PER_KES_PERIOD, MAX_KES_EVOLUTIONS, slot -> fixture.epochNonce());
+
+        assertThat(structural.validateShelley(fixture.blockHeader(), fixture.wrappedHeaderCbor()).accepted()).isTrue();
+
+        HeaderValidationResult result = praosLite.validateShelley(fixture.blockHeader(), fixture.wrappedHeaderCbor());
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.stage()).isEqualTo("vrf-proof");
+    }
+
     @Test
     void headerSignatureValidationRejectsBadKesSignature() {
         HeaderFixture fixture = validHeader().withKesSignatureByteFlipped();
@@ -410,6 +445,15 @@ class ShelleyHeaderValidatorTest {
             coldSignature[0] ^= 0x01;
             opcert.getDataItems().set(3, new ByteString(coldSignature));
 
+            signHeaderBody(copy, body);
+            return new HeaderFixture(copy, wrap(copy), epochNonce);
+        }
+
+        HeaderFixture withShortVrfOutputAndFreshKesSignature() {
+            Array copy = headerArrayFromWrapped(wrappedHeaderCbor);
+            Array body = (Array) copy.getDataItems().get(0);
+            Array vrfResult = (Array) body.getDataItems().get(5);
+            vrfResult.getDataItems().set(0, new ByteString(new byte[63]));
             signHeaderBody(copy, body);
             return new HeaderFixture(copy, wrap(copy), epochNonce);
         }
