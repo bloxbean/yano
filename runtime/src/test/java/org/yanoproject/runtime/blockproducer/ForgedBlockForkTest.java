@@ -158,6 +158,29 @@ class ForgedBlockForkTest {
     }
 
     @Test
+    void aForgedBlockTheUpstreamAdoptsAfterAReorgEvolvesTheNonceAgain() throws Exception {
+        Upstream upstream = new Upstream();
+        var genesis = upstream.block(0, 0, null, List.of());
+        var block1 = upstream.block(1, 1, genesis.blockHash(), List.of());
+        var competing = upstream.block(2, 2, block1.blockHash(), List.of());
+        var forgedAgain = upstream.block(2, 3, block1.blockHash(), List.of());
+
+        Node node = new Node(tempDir.resolve("node"), null);
+        node.storeGenesis(genesis);
+        node.receive(block1);
+        node.producer(List.of()).checkSlot(3);
+        assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(forgedAgain.blockHash());
+        byte[] nonceWithForgedBlock = node.nonceState.serialize();
+
+        node.receive(competing);
+        assertThat(node.nonceState.serialize()).isNotEqualTo(nonceWithForgedBlock);
+        node.receive(forgedAgain);
+
+        assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(forgedAgain.blockHash());
+        assertThat(node.nonceState.serialize()).isEqualTo(nonceWithForgedBlock);
+    }
+
+    @Test
     void normalSyncAndAnAdoptedForgedBlockNeverRollBack() throws Exception {
         Upstream upstream = new Upstream();
         var genesis = upstream.block(0, 0, null, List.of());
@@ -416,10 +439,10 @@ class ForgedBlockForkTest {
                 rollbacks.add(ctx.event().target());
                 realReorgs.add(ctx.event().realReorg());
             }, SubscriptionOptions.builder().build());
-            // The upstream signs with this node's devnet keys, so the nonce listener cannot skip this node's own
-            // blocks by issuer as in production: it evolves a forged block a second time, which is rolled back
-            // with the block.
-            AnnotationListenerRegistrar.register(bus, new NonceEvolutionListener(nonceState, null, null),
+            // As in production. The upstream signs with this node's devnet keys, so its blocks are own blocks that
+            // arrive through sync.
+            String ownIssuer = signing(nonceState, chainState).signedBlockBuilder().getIssuerVkeyHex();
+            AnnotationListenerRegistrar.register(bus, new NonceEvolutionListener(nonceState, null, ownIssuer),
                     SubscriptionOptions.builder().build());
 
             PeerClient peerClient = new PeerClient("upstream", 3001, 42, Point.ORIGIN);

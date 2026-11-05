@@ -27,7 +27,7 @@ public class NonceEvolutionListener {
 
     private final EpochNonceState nonceState;
     private final NonceStateStore nonceStore;  // nullable
-    private final String ownIssuerVkey;        // hex, to skip own produced blocks (nullable)
+    private final String ownIssuerVkey;        // hex, to recognise blocks this node forged (nullable)
     private final EpochNonceEvolver evolver;
     private final NonceCursorResolver cursorResolver; // nullable
     private final NonceReplayService replayService;   // nullable
@@ -83,12 +83,14 @@ public class NonceEvolutionListener {
         HeaderBody hb = block.getHeader().getHeaderBody();
         if (hb == null) return;
 
-        // Skip blocks we produced ourselves (SignedBlockBuilder already evolved nonce)
-        if (ownIssuerVkey != null && ownIssuerVkey.equals(hb.getIssuerVkey())) {
+        long slot = event.slot();
+
+        // A block forged here is already counted: its builder evolved the nonce and saved this checkpoint before
+        // publishing it. An own block that arrives through sync, or again after a rollback, is not.
+        if (ownIssuerVkey != null && ownIssuerVkey.equals(hb.getIssuerVkey()) && nonceState.hasCheckpointAt(slot)) {
             return;
         }
 
-        long slot = event.slot();
         var result = evolver.evolve(nonceState, era, slot, hb);
         if (!result.applied()) return;
 
