@@ -149,10 +149,10 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
                     return TransactionInput.deserialize((Array) item(cbor));
                 }, (s, c) -> ((TransactionInput) c).serialize()),
                 model("transaction_output", StrictElements::output, cbor -> TransactionOutput.deserialize(item(cbor)),
-                        (s, c) -> ((TransactionOutput) c).serialize()),
+                        (s, c) -> ((TransactionOutput) c).serializeInLedgerOrder()),
                 inTransaction("transaction_witness_set", cbor -> tx(hex(MIN_BODY), cbor, null)),
                 model("value", reads(StrictElements::value), cbor -> Value.deserialize(item(cbor)),
-                        (s, c) -> ((Value) c).serialize()),
+                        (s, c) -> ((Value) c).serializeInLedgerOrder()),
                 model("voting_procedure", cbor -> StrictElements.transaction(voteTx(cbor)), cbor -> {
                     Transaction.deserialize(voteTx(cbor));
                     return VotingProcedure.deserialize((Array) item(cbor));

@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,7 @@ class CborDecodingDiversityReportTest {
         Map<String, int[]> counts = new TreeMap<>();
         Map<String, int[]> decoders = new TreeMap<>();
         ObjectNode results = NodeDiversity.JSON.createObjectNode();
+        List<String> outcomes = new ArrayList<>();
         for (Path sample : samples(conway)) {
             Path relative = conway.relativize(sample);
             String ruleName = relative.getName(0).toString();
@@ -50,6 +52,7 @@ class CborDecodingDiversityReportTest {
             Optional<String> failure = check(rule, valid, sample);
             tallyDecoders(decoders.computeIfAbsent(ruleName, k -> new int[DECODER_COLUMNS]), rule, yaci.get(ruleName),
                     valid, read(sample));
+            outcomes.add(relative.toString().replace('\\', '/') + " " + outcomes(rule, yaci.get(ruleName), read(sample)));
             int offset = valid ? 0 : 2;
             c[offset + 1]++;
             String name = relative.toString().replace('\\', '/');
@@ -61,6 +64,10 @@ class CborDecodingDiversityReportTest {
             }
         }
         assertThat(counts).isNotEmpty();
+        String outcomesFile = System.getenv("CBOR_DECODER_OUTCOMES");
+        if (outcomesFile != null) {
+            Files.write(Path.of(outcomesFile), outcomes);
+        }
 
         ObjectNode report = NodeDiversity.JSON.createObjectNode();
         report.put("version", "2");
@@ -104,6 +111,16 @@ class CborDecodingDiversityReportTest {
         if (yaci != null) {
             tally(t, 8, valid, accepts(yaci, input));
         }
+    }
+
+    /** ADR 0003 I7: each decoder's outcome on one sample, A accepted, R rejected, C crashed, - no decoder. */
+    private static String outcomes(CborRule rule, CborRule.Decoder yaci, byte[] input) {
+        return outcome(accepts(rule.strict(), input)) + " " + outcome(accepts(rule.library(), input)) + " "
+                + (yaci == null ? "-" : outcome(accepts(yaci, input)));
+    }
+
+    private static String outcome(Boolean accepted) {
+        return accepted == null ? "C" : accepted ? "A" : "R";
     }
 
     /** {@code accepted} is null for a crash, which meets no expectation. */

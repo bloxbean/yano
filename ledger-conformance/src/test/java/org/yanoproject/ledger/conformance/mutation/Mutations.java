@@ -458,11 +458,11 @@ public final class Mutations {
             new Mutation("committee-update-conflict", "GOV.ConflictingCommitteeUpdate", List.of(), SIMPLE,
                     "an update committee proposal removing and adding dev-bb",
                     s -> propose(s, proposal(updateCommittee(Set.of(MutationWorld.credential(TestKey.DEV_BB)),
-                            Map.of(MutationWorld.credential(TestKey.DEV_BB), 50))))),
+                            Map.of(MutationWorld.credential(TestKey.DEV_BB), 50L))))),
             new Mutation("committee-expiration-too-small", "GOV.ExpirationEpochTooSmall", List.of(), SIMPLE,
                     "an update committee proposal adding dev-42 with expiry epoch 0, the current epoch",
                     s -> propose(s, proposal(updateCommittee(Set.of(),
-                            Map.of(MutationWorld.credential(TestKey.DEV_42), 0))))),
+                            Map.of(MutationWorld.credential(TestKey.DEV_42), 0L))))),
             new Mutation("voter-does-not-exist", "GOV.VotersDoNotExist", List.of(), SIMPLE,
                     "dev-aa, not a registered DRep, votes on the standing info action",
                     s -> vote(s, VoterType.DREP_KEY_HASH, TestKey.DEV_AA, MutationWorld.INFO_ACTION)),
@@ -897,7 +897,7 @@ public final class Mutations {
                 MutationWorld.rewardAccount(key, network), amount))), null);
     }
 
-    private static UpdateCommittee updateCommittee(Set<Credential> remove, Map<Credential, Integer> add) {
+    private static UpdateCommittee updateCommittee(Set<Credential> remove, Map<Credential, Long> add) {
         return new UpdateCommittee(null, new LinkedHashSet<>(remove), new LinkedHashMap<>(add),
                 new UnitInterval(BigInteger.TWO, BigInteger.valueOf(3)));
     }

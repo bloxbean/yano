@@ -12,7 +12,9 @@ import com.bloxbean.cardano.client.plutus.spec.PlutusData;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.MultiAsset;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.transaction.spec.Withdrawal;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
 import com.bloxbean.cardano.client.transaction.spec.cert.Relay;
@@ -81,7 +83,7 @@ final class CborPlacedRules {
                 inBody("addr_keyhash", "0e81", "", 14, 0),
                 inBody("auxiliary_data_hash", "07", "", 7),
                 inBody("certificates", "04", "", 4),
-                inBody("mint", "09", "", 9),
+                inBodyInLedgerOrder("mint", "09", body -> MultiAsset.serializeInLedgerOrder(body.getMint())),
                 inBody("network_id", "0f", "", 15),
                 inBody("nonzero_int64", "09a1" + HASH28 + "a140", "", 9, VALUE, VALUE),
                 inBody("proposal_procedures", "14", "", 20),
@@ -89,7 +91,7 @@ final class CborPlacedRules {
                 inBody("slot", "03", "", 3),
                 inBody("voter", "13a1", "a1" + INPUT + "82" + "00f6", 19, KEY),
                 inBody("voting_procedures", "13", "", 19),
-                inBody("withdrawals", "05", "", 5),
+                inBodyInLedgerOrder("withdrawals", "05", body -> Withdrawal.serializeInLedgerOrder(body.getWithdrawals())),
                 placedInBody("coin", "a30081" + INPUT + "018002", "", 2),
                 placedInBody("hash32", "a3008182", "00" + "01800200", 0, 0, 0),
                 placedInBody("transaction_id", "a3008182", "00" + "01800200", 0, 0, 0));
@@ -228,6 +230,19 @@ final class CborPlacedRules {
                 (s, c) -> at(((Transaction) c).getBody().serialize(), path));
     }
 
+    /** A body writes CIP-21's order for hardware wallets, so the part is written on its own in the ledger's order. */
+    private static CborRule inBodyInLedgerOrder(String name, String prefix, LedgerOrderWriter writer) {
+        Wrapper wrapper = cbor -> tx(cat("a4" + MIN_BODY_ENTRIES + prefix, cbor), hex("a0"), null);
+        return model(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
+                cbor -> Transaction.deserialize(wrapper.wrap(cbor)),
+                (s, c) -> writer.write(((Transaction) c).getBody()));
+    }
+
+    @FunctionalInterface
+    private interface LedgerOrderWriter {
+        DataItem write(com.bloxbean.cardano.client.transaction.spec.TransactionBody body) throws Exception;
+    }
+
     private static CborRule inWitnessSet(String name, String prefix, String suffix, Object... path) {
         Wrapper wrapper = cbor -> tx(hex(MIN_BODY), cat(prefix, cbor, suffix), null);
         return model(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
@@ -246,7 +261,7 @@ final class CborPlacedRules {
 
     private static CborRule inValue(String name, String prefix, String suffix, Object... path) {
         return placed(name, prefix, suffix, StrictElements::value, cbor -> Value.deserialize(item(cbor)),
-                c -> ((Value) c).serialize(), path);
+                c -> ((Value) c).serializeInLedgerOrder(), path);
     }
 
     private static CborRule inProposal(String name, String prefix, String suffix, Object... path) {
