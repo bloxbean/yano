@@ -1,9 +1,9 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
+import com.bloxbean.cardano.client.transaction.raw.RawValue;
 
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -64,107 +64,28 @@ public record RawOutput(int index, CborSpan span, byte[] address, LedgerValue va
         return span.length();
     }
 
-    /** Parses one output. */
+    /** Reads one output: {@link HaskellPolicy} decides whether it decodes, CCL's reader reads it. */
     static RawOutput read(CborSpan item, int index, boolean collateralReturn) {
-        byte[] address = null;
-        LedgerValue value = null;
-        byte[] datumHash = null;
-        byte[] inlineDatum = null;
-        RawScript scriptRef = null;
-        if (StrictCbor.major(item) == 4) {
-            // Legacy form (Babbage/TxOut.hs:553-576): exactly [address, value] or [address, value, datum_hash].
-            List<CborSpan> fields = StrictCbor.array(item);
-            if (fields.size() < 2 || fields.size() > 3) {
-                throw new TxDecodingException("a legacy output has 2 or 3 elements, found " + fields.size());
-            }
-            address = StrictCbor.definiteBytes(fields.get(0));
-            value = readValue(fields.get(1));
-            if (fields.size() == 3) {
-                datumHash = StrictCbor.definiteBytes(fields.get(2));
-                if (datumHash.length != 32) {
-                    throw new TxDecodingException("output " + index + " has a datum hash that is not 32 bytes");
-                }
-            }
-        } else {
-            // Map form (Babbage/TxOut.hs:605-663): a sparse keyed map with keys 0-3, no duplicate, 0 and 1 required.
-            boolean[] seen = new boolean[4];
-            for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
-                long key = StrictCbor.unsignedLong(entry.getKey());
-                if (key > 3) {
-                    throw new TxDecodingException("unknown output key " + key);
-                }
-                if (seen[(int) key]) {
-                    throw new TxDecodingException("duplicate output key " + key);
-                }
-                seen[(int) key] = true;
-                CborSpan field = entry.getValue();
-                if (key == 0) {
-                    address = StrictCbor.definiteBytes(field);
-                } else if (key == 1) {
-                    value = readValue(field);
-                } else if (key == 2) {
-                    byte[][] datum = readDatumOption(field, index);
-                    datumHash = datum[0];
-                    inlineDatum = datum[1];
-                } else {
-                    scriptRef = readScriptRef(field);
-                }
-            }
-        }
-        if (address == null || value == null) {
-            throw new TxDecodingException("output " + index + " has no address or no value");
-        }
-        AddressBytes.validate(address);
-        return new RawOutput(index, item, address, value, collateralReturn, datumHash, inlineDatum, scriptRef);
+        HaskellPolicy.CONWAY.walk(FieldType.TRANSACTION_OUTPUT, item);
+        return accepted(com.bloxbean.cardano.client.transaction.raw.RawOutput.of(item), index, collateralReturn);
     }
 
-    /**
-     * {@code datum_option = [0, hash32] / [1, #6.24(bytes .cbor plutus_data)]}.
-     *
-     * @return {datum hash, inline datum bytes}: one of them is null
-     */
-    private static byte[][] readDatumOption(CborSpan item, int index) {
-        List<CborSpan> fields = StrictCbor.array(item, 2,
-                "output " + index + ": a datum option is a two-element array");
-        long kind = StrictCbor.unsignedLong(fields.get(0));
-        byte[] hash = null;
-        byte[] inline = null;
-        if (kind == 0) {
-            hash = StrictCbor.definiteBytes(fields.get(1));
-            if (hash.length != 32) {
-                throw new TxDecodingException("output " + index + " has a datum hash that is not 32 bytes");
-            }
-        } else if (kind == 1) {
-            if (fields.get(1).tag() != 24) {
-                throw new TxDecodingException("output " + index + ": an inline datum is wrapped in tag 24");
-            }
-            // decodeNestedCborBytes (a definite byte string), then makeBinaryData: the bytes must be exactly one
-            // well-formed Plutus Data (decodeFull', cardano-ledger-core Plutus/Data.hs:154-173).
-            inline = StrictCbor.definiteBytes(fields.get(1).untag());
-            PlutusData.validate(inline);
-        } else {
-            throw new TxDecodingException("output " + index + ": unknown datum option " + kind);
-        }
-        return new byte[][]{hash, inline};
+    /** The output at {@code index}, which {@link HaskellPolicy} has accepted. */
+    static RawOutput accepted(com.bloxbean.cardano.client.transaction.raw.RawOutput output, int index,
+                              boolean collateralReturn) {
+        return new RawOutput(index, output.span(), output.addressBytes().orElseThrow(),
+                value(RawValue.of(output.value())), collateralReturn, output.datumHash().orElse(null),
+                output.inlineDatumBytes().orElse(null),
+                output.scriptRefBytes().map(script -> RawScript.readScript(StrictCbor.span(script))).orElse(null));
     }
 
-    /** {@code script_ref = #6.24(bytes .cbor script)}. */
-    private static RawScript readScriptRef(CborSpan item) {
-        if (item.tag() != 24) {
-            throw new TxDecodingException("a script reference is wrapped in tag 24");
-        }
-        return RawScript.readScript(StrictCbor.span(StrictCbor.definiteBytes(item.untag())));
-    }
-
-    /**
-     * Reads a {@code value}: {@code coin} or {@code [coin, multiasset<positive_coin>]}, the pair a definite-length
-     * {@code RecD} record below decoder version 12 ({@code decodeValuePair}, Mary/Value.hs:298-310).
-     */
+    /** Reads a {@code value}: {@link HaskellPolicy} decides whether it decodes, CCL's reader reads it. */
     static LedgerValue readValue(CborSpan item) {
-        if (StrictCbor.major(item) == 0) {
-            return LedgerValue.ofCoin(StrictCbor.unsigned(item));
-        }
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, "a multi-asset value is a two-element array");
-        return new LedgerValue(StrictCbor.unsigned(fields.get(0)), MultiAssets.read(fields.get(1), false));
+        HaskellPolicy.CONWAY.walk(FieldType.VALUE, item);
+        return value(RawValue.of(item));
+    }
+
+    private static LedgerValue value(RawValue value) {
+        return new LedgerValue(value.coin(), MultiAssets.of(value.multiAssets()));
     }
 }

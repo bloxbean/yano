@@ -146,12 +146,18 @@ public final class StrictCbor {
 
     /** @return the content of an untagged definite-length byte string */
     public static byte[] definiteBytes(CborSpan item) {
+        definiteLength(item);
+        return item.byteString();
+    }
+
+    /** @return the content's length of an untagged definite-length byte string, which is not copied */
+    public static int definiteLength(CborSpan item) {
         expect(item, MAJOR_BYTES, "a byte string");
         if (item.isIndefinite()) {
             throw new TxDecodingException("an indefinite-length byte string at " + item.offset()
                     + " (definite only below decoder version 12)");
         }
-        return item.byteString();
+        return item.length() - item.headerLength();
     }
 
     /** @return the UTF-8 bytes of an untagged definite-length text string (cborg's {@code decodeString}) */

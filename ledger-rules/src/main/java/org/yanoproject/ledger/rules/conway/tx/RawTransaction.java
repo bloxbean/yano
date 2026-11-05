@@ -3,9 +3,12 @@ package org.yanoproject.ledger.rules.conway.tx;
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.spec.Era;
-import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.RawDatum;
+import com.bloxbean.cardano.client.transaction.raw.RawInput;
+import com.bloxbean.cardano.client.transaction.raw.RawItems;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
+import com.bloxbean.cardano.client.transaction.raw.RawTxBody;
+import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.util.HexUtil;
 
@@ -20,6 +23,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
@@ -33,10 +38,10 @@ import java.util.TreeSet;
  * every field are spans of the received transaction, so everything the rules hash or size comes from the original
  * bytes, never from a re-serialisation: the transaction id ({@link #txId()}, blake2b-256 of the body bytes), the size
  * ({@link #size()}), each output's encoded size, the witness-set fields (redeemers, datums) and the auxiliary data.
- * Over those spans every field is decoded with Haskell's bounds ({@link StrictCbor}), so the checks see exactly what
- * Haskell decodes (for example whether a validity bound is present at all) and bytes Haskell would not decode are a
- * {@link TxDecodingException}. The decoded CCL {@link Transaction} is kept for the structure the rules do not need
- * byte-exact.</p>
+ * Over those spans the body is walked by CCL with {@link HaskellPolicy} and read through CCL's views, and the rest is
+ * decoded here with Haskell's bounds ({@link StrictCbor}), so the checks see exactly what Haskell decodes (for example
+ * whether a validity bound is present at all) and bytes Haskell would not decode are a {@link TxDecodingException}. The
+ * decoded CCL {@link Transaction} is kept for the structure the rules do not need byte-exact.</p>
  *
  * <p>Definite and indefinite encodings and tag-258 sets are accepted wherever Conway accepts them; redeemers
  * may be the list form or the Conway map form.</p>
@@ -46,28 +51,6 @@ public final class RawTransaction {
     /** Haskell's derived {@code Ord GovActionId}: the transaction id's bytes, then the index. */
     public static final Comparator<GovActionId> GOV_ACTION_ID_ORDER =
             Comparator.comparing(GovActionId::txHashHex).thenComparingInt(GovActionId::index);
-
-    /** Body keys (Conway CDDL {@code transaction_body}). */
-    public static final int BODY_INPUTS = 0;
-    public static final int BODY_OUTPUTS = 1;
-    public static final int BODY_FEE = 2;
-    public static final int BODY_TTL = 3;
-    public static final int BODY_CERTS = 4;
-    public static final int BODY_WITHDRAWALS = 5;
-    public static final int BODY_AUX_DATA_HASH = 7;
-    public static final int BODY_VALIDITY_START = 8;
-    public static final int BODY_MINT = 9;
-    public static final int BODY_SCRIPT_DATA_HASH = 11;
-    public static final int BODY_COLLATERAL = 13;
-    public static final int BODY_REQUIRED_SIGNERS = 14;
-    public static final int BODY_NETWORK_ID = 15;
-    public static final int BODY_COLLATERAL_RETURN = 16;
-    public static final int BODY_TOTAL_COLLATERAL = 17;
-    public static final int BODY_REFERENCE_INPUTS = 18;
-    public static final int BODY_VOTING_PROCEDURES = 19;
-    public static final int BODY_PROPOSAL_PROCEDURES = 20;
-    public static final int BODY_CURRENT_TREASURY_VALUE = 21;
-    public static final int BODY_DONATION = 22;
 
     /** Witness-set keys. */
     public static final int WITNESS_VKEYS = 0;
@@ -79,10 +62,6 @@ public final class RawTransaction {
     public static final int WITNESS_PLUTUS_V2 = 6;
     public static final int WITNESS_PLUTUS_V3 = 7;
 
-    /** The keys Conway's body decoder knows (Conway/TxBody.hs:190-252). */
-    private static final Set<Integer> BODY_KEYS = Set.of(0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 13, 14, 15, 16, 17, 18, 19,
-            20, 21, 22);
-    private static final int TX_ID_LENGTH = 32;
     private static final int VKEY_LENGTH = 32;
     private static final int SIGNATURE_LENGTH = 64;
 
@@ -486,123 +465,68 @@ public final class RawTransaction {
         }
 
         /**
-         * Conway's body decoder at protocol version 9+ ({@code ConwayTxBodyRaw} {@code DecCBOR},
-         * Conway/TxBody.hs:186-260): a sparse keyed map with keys 0–5, 7–9, 11, 13–22 (any other key is
-         * {@code invalidField}), no duplicate key, keys 0–2 required, and the set-like fields 4, 5, 9, 13, 14, 18,
-         * 19, 20 non-empty when present ({@code fieldGuarded}); the donation must be non-zero
-         * ({@code decodePositiveCoin}).
+         * The body through CCL's walk and view: {@link HaskellPolicy} decides whether it decodes (Conway's body decoder
+         * at protocol version 9+, {@code ConwayTxBodyRaw} {@code DecCBOR}, Conway/TxBody.hs:186-260), and the view
+         * reads it. The governance fields are leaves of the walk, which holds only that they are non-empty: their items
+         * are read here.
          */
         private void readBody() {
-            Set<Integer> keys = new HashSet<>();
-            for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(tx.body())) {
-                long key = StrictCbor.unsignedLong(entry.getKey());
-                if (!BODY_KEYS.contains((int) key) || key > 22) {
-                    throw new TxDecodingException("unknown transaction body key " + key);
+            HaskellPolicy.CONWAY.walk(TxBodyField.RECORD, tx.body());
+            RawTxBody body = tx.body(Era.Conway);
+            inputs = inputs(body.inputs());
+            collateralInputs = body.collateral().map(Builder::inputs).orElse(List.of());
+            referenceInputs = body.referenceInputs().map(Builder::inputs).orElse(List.of());
+            for (var output : body.outputs()) {
+                outputs.add(RawOutput.accepted(output, outputs.size(), false));
+            }
+            fee = body.fee().orElseThrow();
+            ttl = unsigned(body.ttl());
+            validityStart = unsigned(body.validityStart());
+            body.withdrawals().forEach(w -> withdrawals.add(new Withdrawal(w.rewardAccount(), w.coin())));
+            mint = MultiAssets.of(body.mint());
+            OptionalInt network = body.networkId();
+            networkId = network.isPresent() ? network.getAsInt() : null;
+            auxDataHash = body.auxDataHash().orElse(null);
+            scriptDataHash = body.scriptDataHash().orElse(null);
+            body.requiredSigners().ifPresent(requiredSigners::addAll);
+            collateralReturn = body.collateralReturn()
+                    .map(output -> RawOutput.accepted(output, Math.min(outputs.size(), 0xFFFF), true)).orElse(null);
+            totalCollateral = body.totalCollateral().orElse(null);
+            currentTreasuryValue = body.currentTreasury().map(RawItems::unsigned).orElse(null);
+            donation = body.donation().map(RawItems::unsigned).orElse(BigInteger.ZERO);
+            for (var certificate : body.certificates()) {
+                certificates.add(RawCertificate.accepted(certificate, certificates.size()));
+            }
+            body.votingProcedures().ifPresent(this::readVotes);
+            body.proposalProcedures().ifPresent(this::readProposals);
+        }
+
+        private static BigInteger unsigned(OptionalLong value) {
+            return value.isPresent() ? new BigInteger(Long.toUnsignedString(value.getAsLong())) : null;
+        }
+
+        private static List<TxInRef> inputs(List<RawInput> views) {
+            List<TxInRef> result = new ArrayList<>(views.size());
+            for (RawInput input : views) {
+                result.add(new TxInRef(HexUtil.encodeHexString(input.transactionId()), input.index()));
+            }
+            return result;
+        }
+
+        /** An OSet too: two equal proposal procedures do not decode. */
+        private void readProposals(CborSpan field) {
+            Set<String> seen = new HashSet<>();
+            List<CborSpan> items = StrictCbor.set(field);
+            for (int i = 0; i < items.size(); i++) {
+                RawProposal proposal = RawProposal.read(items.get(i), i);
+                // [deposit, account, gov_action, anchor]; an update-committee action [4, prev, set, map, q]
+                // holds a set at position 2
+                if (!seen.add(key(items.get(i), proposal.actionTag() == 4 ? 2 : -1))) {
+                    throw new TxDecodingException("duplicate proposal procedure " + i);
                 }
-                if (!keys.add((int) key)) {
-                    throw new TxDecodingException("duplicate transaction body key " + key);
-                }
+                proposals.add(proposal);
             }
-            for (int required : new int[]{BODY_INPUTS, BODY_OUTPUTS, BODY_FEE}) {
-                if (!keys.contains(required)) {
-                    throw new TxDecodingException("transaction body has no key " + required);
-                }
-            }
-            inputs = readInputs(tx.bodySetItems(BODY_INPUTS), false);
-            collateralInputs = optional(BODY_COLLATERAL) ? readInputs(tx.bodySetItems(BODY_COLLATERAL), true)
-                    : List.of();
-            referenceInputs = optional(BODY_REFERENCE_INPUTS)
-                    ? readInputs(tx.bodySetItems(BODY_REFERENCE_INPUTS), true) : List.of();
-            List<CborSpan> outputItems = StrictCbor.array(field(BODY_OUTPUTS));
-            for (int i = 0; i < outputItems.size(); i++) {
-                outputs.add(RawOutput.read(outputItems.get(i), i, false));
-            }
-            fee = StrictCbor.unsigned(field(BODY_FEE));
-            ttl = optional(BODY_TTL) ? StrictCbor.unsigned(field(BODY_TTL)) : null;
-            validityStart = optional(BODY_VALIDITY_START) ? StrictCbor.unsigned(field(BODY_VALIDITY_START)) : null;
-            if (optional(BODY_WITHDRAWALS)) {
-                // Withdrawals: a map without duplicate keys (decodeMap at version 9, Decoder.hs:810-830) of
-                // account addresses (decodeAccountAddressT, Address.hs:938-955: header & 0xEE == 0xE0, 28-byte hash).
-                Set<String> seen = new HashSet<>();
-                for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(field(BODY_WITHDRAWALS))) {
-                    byte[] account = StrictCbor.definiteBytes(entry.getKey());
-                    if (account.length != 29 || (account[0] & 0xee) != 0xe0) {
-                        throw new TxDecodingException("withdrawal key is not an account address");
-                    }
-                    if (!seen.add(HexUtil.encodeHexString(account))) {
-                        throw new TxDecodingException("duplicate withdrawal key " + HexUtil.encodeHexString(account));
-                    }
-                    withdrawals.add(new Withdrawal(account, StrictCbor.unsigned(entry.getValue())));
-                }
-                nonEmpty(withdrawals.isEmpty(), "Withdrawals");
-            }
-            if (optional(BODY_MINT)) {
-                mint = MultiAssets.read(field(BODY_MINT), true);
-                nonEmpty(mint.isEmpty(), "Mint");
-            }
-            if (optional(BODY_NETWORK_ID)) {
-                long network = StrictCbor.unsignedLong(field(BODY_NETWORK_ID));
-                if (network > 1) {
-                    throw new TxDecodingException("network id " + network);
-                }
-                networkId = (int) network;
-            }
-            if (optional(BODY_AUX_DATA_HASH)) {
-                auxDataHash = hash(StrictCbor.definiteBytes(field(BODY_AUX_DATA_HASH)), 32, "auxiliary data hash");
-            }
-            if (optional(BODY_SCRIPT_DATA_HASH)) {
-                scriptDataHash = hash(StrictCbor.definiteBytes(field(BODY_SCRIPT_DATA_HASH)), 32,
-                        "script integrity hash");
-            }
-            if (optional(BODY_REQUIRED_SIGNERS)) {
-                Set<String> seen = new HashSet<>();
-                for (CborSpan item : tx.bodySetItems(BODY_REQUIRED_SIGNERS)) {
-                    byte[] signer = hash(StrictCbor.definiteBytes(item), 28, "required signer");
-                    if (!seen.add(HexUtil.encodeHexString(signer))) {
-                        throw new TxDecodingException("duplicate required signer");
-                    }
-                    requiredSigners.add(signer);
-                }
-                nonEmpty(requiredSigners.isEmpty(), "Required Signer Hashes");
-            }
-            if (optional(BODY_COLLATERAL_RETURN)) {
-                collateralReturn = RawOutput.read(field(BODY_COLLATERAL_RETURN), Math.min(outputs.size(), 0xFFFF),
-                        true);
-            }
-            totalCollateral = optional(BODY_TOTAL_COLLATERAL)
-                    ? StrictCbor.unsigned(field(BODY_TOTAL_COLLATERAL)) : null;
-            currentTreasuryValue = optional(BODY_CURRENT_TREASURY_VALUE)
-                    ? StrictCbor.unsigned(field(BODY_CURRENT_TREASURY_VALUE)) : null;
-            donation = optional(BODY_DONATION) ? StrictCbor.unsigned(field(BODY_DONATION)) : BigInteger.ZERO;
-            if (optional(BODY_DONATION) && donation.signum() == 0) {
-                throw new TxDecodingException("TxBody: 'Treasury Donation' must be non-zero when supplied");
-            }
-            if (optional(BODY_CERTS)) {
-                HaskellPolicy.CONWAY.check(FieldType.NONEMPTY_CERTIFICATE_SET, field(BODY_CERTS), Era.Conway);
-                List<CborSpan> items = tx.bodySetItems(BODY_CERTS);
-                for (int i = 0; i < items.size(); i++) {
-                    certificates.add(RawCertificate.accepted(items.get(i), i));
-                }
-            }
-            if (optional(BODY_VOTING_PROCEDURES)) {
-                readVotes(field(BODY_VOTING_PROCEDURES));
-            }
-            if (optional(BODY_PROPOSAL_PROCEDURES)) {
-                // An OSet too: two equal proposal procedures do not decode.
-                Set<String> seen = new HashSet<>();
-                List<CborSpan> items = tx.bodySetItems(BODY_PROPOSAL_PROCEDURES);
-                for (int i = 0; i < items.size(); i++) {
-                    RawProposal proposal = RawProposal.read(items.get(i), i);
-                    // [deposit, account, gov_action, anchor]; an update-committee action [4, prev, set, map, q]
-                    // holds a set at position 2
-                    if (!seen.add(key(items.get(i), proposal.actionTag() == 4 ? 2 : -1))) {
-                        throw new TxDecodingException("duplicate proposal procedure " + i);
-                    }
-                    proposals.add(proposal);
-                }
-                proposalCount = proposals.size();
-                nonEmpty(proposalCount == 0, "ProposalProcedures");
-            }
+            proposalCount = proposals.size();
         }
 
         /**
@@ -640,7 +564,6 @@ public final class RawTransaction {
                 }
                 votes.put(voter, Collections.unmodifiableSortedMap(ids));
             }
-            nonEmpty(seen.isEmpty(), "VotingProcedures");
             voters.addAll(seen);
         }
 
@@ -668,52 +591,6 @@ public final class RawTransaction {
                 key.append('|');
             }
             return key.toString();
-        }
-
-        private static void nonEmpty(boolean empty, String field) {
-            if (empty) {
-                throw new TxDecodingException("TxBody: '" + field + "' must be non-empty when supplied");
-            }
-        }
-
-        private static byte[] hash(byte[] value, int length, String what) {
-            if (value.length != length) {
-                throw new TxDecodingException(what + " of " + value.length + " bytes, expected " + length);
-            }
-            return value;
-        }
-
-        private boolean optional(int key) {
-            return tx.bodyField(key).isPresent();
-        }
-
-        private CborSpan field(int key) {
-            return tx.bodyField(key).orElseThrow();
-        }
-
-        private static List<TxInRef> readInputs(List<CborSpan> items, boolean nonEmpty) {
-            List<TxInRef> result = new ArrayList<>();
-            TreeSet<TxInRef> seen = new TreeSet<>();
-            for (CborSpan item : items) {
-                List<CborSpan> parts = StrictCbor.array(item, 2, "a transaction input is a two-element array");
-                byte[] id = StrictCbor.definiteBytes(parts.get(0));
-                if (id.length != TX_ID_LENGTH) {
-                    throw new TxDecodingException("transaction id of " + id.length + " bytes");
-                }
-                long index = StrictCbor.unsignedLong(parts.get(1));
-                if (index > 0xFFFF) {
-                    throw new TxDecodingException("output index " + index + " exceeds Word16");
-                }
-                TxInRef in = new TxInRef(HexUtil.encodeHexString(id), (int) index);
-                if (!seen.add(in)) {
-                    throw new TxDecodingException("duplicate input " + in);
-                }
-                result.add(in);
-            }
-            if (nonEmpty && result.isEmpty()) {
-                throw new TxDecodingException("TxBody: an input set field must be non-empty when supplied");
-            }
-            return result;
         }
 
         private void readWitnessSet() {

@@ -126,7 +126,7 @@ class HaskellPolicyTest {
         bothAccept("a4" + INPUTS + OUTPUTS + FEE + "0481" + "8200" + CRED, "a0");
         bothReject("a4" + INPUTS + OUTPUTS + FEE + "0480", "a0", "Certificates");
         bothReject("a4" + INPUTS + OUTPUTS + FEE + "0482" + "8200" + CRED + "8200" + CRED, "a0",
-                "duplicate certificate 1");
+                "duplicate certificate at");
         bothReject("a4" + INPUTS + OUTPUTS + FEE + "0481" + "8200" + "8200" + "581b" + "11".repeat(27), "a0",
                 "key hash of 27 bytes");
         bothReject("a4" + INPUTS + OUTPUTS + FEE + "0481" + "8205" + CRED, "a0", "certificate key 05");
@@ -245,6 +245,41 @@ class HaskellPolicyTest {
                 + "0200" + KES_SIGNATURE);
         refuses("82" + "89" + BODY_10.substring(2, BODY_10.length() - "820a00".length()) + KES_SIGNATURE, "15 or 10");
         refuses("82" + "8a" + "00".repeat(8) + "00" + "00" + KES_SIGNATURE, "");
+    }
+
+    @Test
+    void aSetRepeatsNoItemHoweverItIsEncoded() {
+        String input = "82" + HASH32 + "05";
+        bothReject("a3" + "0082" + input + input + OUTPUTS + FEE, "a0", "duplicate transaction_input");
+        bothReject("a3" + "0082" + input + "9f" + HASH32 + "1805" + "ff" + OUTPUTS + FEE, "a0",
+                "duplicate transaction_input");
+        bothAccept("a3" + "0082" + input + "82" + HASH32 + "06" + OUTPUTS + FEE, "a0");
+
+        String signer = "581c" + "88".repeat(28);
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "0e82" + signer + signer, "a0", "duplicate addr_keyhash");
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "0e82" + signer + "59001c" + "88".repeat(28), "a0",
+                "duplicate addr_keyhash");
+    }
+
+    @Test
+    void aPoolRepeatsNoOwner() {
+        String owner = "581c" + "88".repeat(28);
+        String pool = "8a03" + HASH28 + HASH32 + "0000" + "d81e820102" + "581de0" + "44".repeat(28);
+        bothAccept("a4" + INPUTS + OUTPUTS + FEE + "0481" + pool + "81" + owner + "80" + "f6", "a0");
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "0481" + pool + "82" + owner + owner + "80" + "f6", "a0",
+                "duplicate key hash");
+    }
+
+    @Test
+    void anItemOfASetTooDeepForARecursiveReaderIsRejected() {
+        String deep = "81".repeat(200_000) + "00";
+        bothReject("a3" + "0082" + deep + deep + OUTPUTS + FEE, "a0", "");
+    }
+
+    @Test
+    void anIndexOfAnInputIsAWord16() {
+        bothAccept("a3" + "0081" + "82" + HASH32 + "19ffff" + OUTPUTS + FEE, "a0");
+        bothReject("a3" + "0081" + "82" + HASH32 + "1a00010000" + OUTPUTS + FEE, "a0", "exceeds");
     }
 
     @Test

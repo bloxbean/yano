@@ -203,12 +203,11 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
     /** Reads one certificate: {@link HaskellPolicy} decides whether it decodes, CCL's reader reads it. */
     static RawCertificate read(CborSpan item, int index) {
         HaskellPolicy.CONWAY.walk(CertKind.RECORD, item);
-        return accepted(item, index);
+        return accepted(com.bloxbean.cardano.client.transaction.raw.RawCertificate.of(item), index);
     }
 
     /** The certificate at {@code index}, which {@link HaskellPolicy} has accepted. */
-    static RawCertificate accepted(CborSpan item, int index) {
-        var cert = com.bloxbean.cardano.client.transaction.raw.RawCertificate.of(item);
+    static RawCertificate accepted(com.bloxbean.cardano.client.transaction.raw.RawCertificate cert, int index) {
         CertKind kind = cert.kind();
         RawCredential credential = switch (kind) {
             case POOL_REGISTRATION, POOL_RETIREMENT -> null;
