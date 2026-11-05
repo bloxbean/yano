@@ -212,6 +212,9 @@ public class PipelineDataListener implements BlockChainDataListener {
                 if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
                     return LedgerApplyProcessor.Outcome.SKIPPED_STALE;
                 }
+                if (result == BodyFetchManager.BlockApplyResult.SKIPPED_DUPLICATE) {
+                    return LedgerApplyProcessor.Outcome.SKIPPED_DUPLICATE;
+                }
 
                 // Update sync progress tracking in Yano
                 callbacks.updateSyncProgress(slot, blockNumber);
@@ -260,6 +263,9 @@ public class PipelineDataListener implements BlockChainDataListener {
                 if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
                     return LedgerApplyProcessor.Outcome.SKIPPED_STALE;
                 }
+                if (result == BodyFetchManager.BlockApplyResult.SKIPPED_DUPLICATE) {
+                    return LedgerApplyProcessor.Outcome.SKIPPED_DUPLICATE;
+                }
 
                 // Update sync progress tracking in Yano
                 callbacks.updateSyncProgress(slot, blockNumber);
@@ -307,6 +313,9 @@ public class PipelineDataListener implements BlockChainDataListener {
                 BodyFetchManager.BlockApplyResult result = bodyFetchManager.applyByronEbBlock(byronEbBlock);
                 if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
                     return LedgerApplyProcessor.Outcome.SKIPPED_STALE;
+                }
+                if (result == BodyFetchManager.BlockApplyResult.SKIPPED_DUPLICATE) {
+                    return LedgerApplyProcessor.Outcome.SKIPPED_DUPLICATE;
                 }
 
                 // Update sync progress tracking in Yano
