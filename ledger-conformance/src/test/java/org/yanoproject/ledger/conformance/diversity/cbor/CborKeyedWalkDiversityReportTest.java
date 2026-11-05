@@ -55,11 +55,13 @@ class CborKeyedWalkDiversityReportTest {
     @Test
     void comparesTheWalkWithTheReader() throws IOException {
         Path conway = NodeDiversity.requireCorpus(CborDecodingDiversityReportTest.DATASET).resolve("conway");
-        int beyondTheReader = 0;
+        int disagreements = 0;
         for (String rule : new TreeMap<>(RULES).keySet()) {
-            beyondTheReader += compare(rule, conway.resolve(rule));
+            disagreements += compare(rule, conway.resolve(rule));
         }
-        assertThat(beyondTheReader).as("samples a walk rejects and the strict reader accepts").isZero();
+        // I13: the walk with Yano's policy decides alone, so the reader's views reject nothing it accepted, and the
+        // walk nothing the reader accepted
+        assertThat(disagreements).as("samples the walk and the strict reader decide differently").isZero();
     }
 
     private static int compare(String rule, Path samples) throws IOException {
@@ -90,7 +92,7 @@ class CborKeyedWalkDiversityReportTest {
                 rule, total, reader, structure, walk);
         outside.forEach((reason, count) -> System.out.printf("cbor-walk %-24s %5d only the reader: %s%n", rule, count,
                 reason));
-        return beyondTheReader;
+        return beyondTheReader + outside.values().stream().mapToInt(Integer::intValue).sum();
     }
 
     /** @return why the read rejected the transaction, its numbers and hex removed, or null if it accepted */
