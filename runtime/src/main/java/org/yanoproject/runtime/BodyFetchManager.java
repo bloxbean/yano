@@ -80,7 +80,11 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
          * The block was an expected stale body, usually an in-flight BlockFetch
          * response from the pre-rollback chain, and was deliberately ignored.
          */
-        SKIPPED_STALE
+        SKIPPED_STALE,
+        /**
+         * The block is already applied, so this second delivery of its body was ignored.
+         */
+        SKIPPED_DUPLICATE
     }
 
     private static final long SLOW_EPOCH_TRANSITION_WARN_MS =
@@ -677,6 +681,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             blockNumber = block.getHeader().getHeaderBody().getBlockNumber();
             hash = block.getHeader().getHeaderBody().getBlockHash();
 
+            if (isDuplicateBody(blockNumber, slot, hash)) {
+                return BlockApplyResult.SKIPPED_DUPLICATE;
+            }
+
             // Check for stale blocks that arrived after rollback
             if (isStaleBlock(blockNumber, slot, hash, false)) {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Block #{} at slot {} arrived after rollback - skipping storage",
@@ -888,6 +896,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             blockNumber = byronBlock.getHeader().getConsensusData().getDifficulty().longValue();
             hash = byronBlock.getHeader().getBlockHash();
 
+            if (isDuplicateBody(blockNumber, slot, hash)) {
+                return BlockApplyResult.SKIPPED_DUPLICATE;
+            }
+
             // Check for stale blocks that arrived after rollback
             if (isStaleBlock(blockNumber, slot, hash, false)) {
                 log.warn("🗑️ DISCARDED STALE BLOCK: Block #{} at slot {} arrived after rollback - skipping storage",
@@ -1047,6 +1059,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             slot = byronEbBlock.getHeader().getConsensusData().getAbsoluteSlot();
             blockNumber = byronEbBlock.getHeader().getConsensusData().getDifficulty().longValue();
             hash = byronEbBlock.getHeader().getBlockHash();
+
+            if (isDuplicateBody(blockNumber, slot, hash)) {
+                return BlockApplyResult.SKIPPED_DUPLICATE;
+            }
 
             // Check for stale blocks that arrived after rollback
             if (isStaleBlock(blockNumber, slot, hash, true)) {
@@ -1443,6 +1459,21 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     // ================================================================
     // Helper Classes and Methods
     // ================================================================
+
+    /**
+     * A rollback abandons the fetch in flight, so two fetches can answer with the same body. Applying it again would
+     * feed every BlockAppliedEvent listener the block twice, and the nonce state would keep the error for good.
+     * A rollback deletes the bodies it removes and lowers the tip, so a block re-adopted afterwards still applies.
+     */
+    private boolean isDuplicateBody(long blockNumber, long slot, String hash) {
+        ChainTip tip = chainState.getTip();
+        boolean duplicate = tip != null && blockNumber <= tip.getBlockNumber()
+                && chainState.hasBlock(HexUtil.decodeHexString(hash));
+        if (duplicate) {
+            log.info("Block #{} at slot {} is already applied - ignoring the duplicate body", blockNumber, slot);
+        }
+        return duplicate;
+    }
 
     /**
      * Check if an incoming block is stale or would create a gap.

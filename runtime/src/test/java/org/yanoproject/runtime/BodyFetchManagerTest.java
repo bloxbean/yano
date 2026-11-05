@@ -628,6 +628,111 @@ class BodyFetchManagerTest {
         bodyFetchManager.stop();
     }
     
+    @Test
+    @DisplayName("A fetch in flight across a rollback must not apply the re-announced block twice")
+    void inFlightFetchAcrossRollbackDoesNotApplySameBodyTwice() throws Exception {
+        Method check = BodyFetchManager.class.getDeclaredMethod("checkAndFetchBodies");
+        check.setAccessible(true);
+        bodyFetchManager.setSyncPhase(SyncPhase.STEADY_STATE);
+
+        String parent = "30000000000000000000000000000000000000000000000000000000000000aa";
+        String child = "30000000000000000000000000000000000000000000000000000000000000ab";
+        chainState.storeBlockHeader(hexToBytes(parent), 100L, 1000L, "header".getBytes());
+        chainState.storeBlock(hexToBytes(parent), 100L, 1000L, "body".getBytes());
+
+        List<Long> applied = new ArrayList<>();
+        eventBus.subscribe(BlockAppliedEvent.class, ctx -> applied.add(ctx.event().blockNumber()),
+                SubscriptionOptions.builder().build());
+
+        // Header of the child arrives; the first fetch goes out and stays in flight.
+        chainState.storeBlockHeader(hexToBytes(child), 101L, 1001L, "header".getBytes());
+        check.invoke(bodyFetchManager);
+        assertEquals(1, mockPeerClient.getFetchCallCount());
+
+        // The peer rolls back to the parent before answering.
+        Point rollbackPoint = new Point(1000L, parent);
+        chainState.rollbackTo(rollbackPoint);
+        bodyFetchManager.onRollback(rollbackPoint);
+        bodyFetchManager.resume();
+
+        // The answer to the first fetch has no header any more: discarded as stale.
+        Block block = createTestBlock(1001L, 101L, child);
+        assertEquals(BodyFetchManager.BlockApplyResult.SKIPPED_STALE,
+                bodyFetchManager.applyBlock(Era.Conway, block, Collections.emptyList()));
+
+        // The peer re-announces the same child; a second fetch goes out for it.
+        chainState.storeBlockHeader(hexToBytes(child), 101L, 1001L, "header".getBytes());
+        check.invoke(bodyFetchManager);
+
+        // BatchDone of the FIRST fetch is processed now and clears the flag of the second one.
+        bodyFetchManager.batchDone();
+        check.invoke(bodyFetchManager);
+        assertEquals(3, mockPeerClient.getFetchCallCount());
+
+        // Both remaining fetches answer with the same body.
+        assertEquals(BodyFetchManager.BlockApplyResult.APPLIED,
+                bodyFetchManager.applyBlock(Era.Conway, block, Collections.emptyList()));
+        assertEquals(BodyFetchManager.BlockApplyResult.SKIPPED_DUPLICATE,
+                bodyFetchManager.applyBlock(Era.Conway, block, Collections.emptyList()));
+
+        assertEquals(List.of(101L), applied, "the block must be applied exactly once");
+    }
+
+    @Test
+    @DisplayName("A duplicate body behind the tip is ignored and does not move the tip")
+    void duplicateBodyBehindTipIsIgnored() {
+        String parent = "31000000000000000000000000000000000000000000000000000000000000aa";
+        String first = "31000000000000000000000000000000000000000000000000000000000000ab";
+        String second = "31000000000000000000000000000000000000000000000000000000000000ac";
+        chainState.storeBlockHeader(hexToBytes(parent), 100L, 1000L, "header".getBytes());
+        chainState.storeBlock(hexToBytes(parent), 100L, 1000L, "body".getBytes());
+        chainState.storeBlockHeader(hexToBytes(first), 101L, 1001L, "header".getBytes());
+        chainState.storeBlockHeader(hexToBytes(second), 102L, 1002L, "header".getBytes());
+
+        List<Long> applied = new ArrayList<>();
+        eventBus.subscribe(BlockAppliedEvent.class, ctx -> applied.add(ctx.event().blockNumber()),
+                SubscriptionOptions.builder().build());
+
+        Block firstBlock = createTestBlock(1001L, 101L, first);
+        bodyFetchManager.applyBlock(Era.Conway, firstBlock, Collections.emptyList());
+        bodyFetchManager.applyBlock(Era.Conway, createTestBlock(1002L, 102L, second), Collections.emptyList());
+
+        assertEquals(BodyFetchManager.BlockApplyResult.SKIPPED_DUPLICATE,
+                bodyFetchManager.applyBlock(Era.Conway, firstBlock, Collections.emptyList()));
+
+        assertEquals(List.of(101L, 102L), applied);
+        assertEquals(102L, chainState.getTip().getBlockNumber());
+    }
+
+    @Test
+    @DisplayName("A block re-adopted after a rollback removed it is applied again")
+    void blockReadoptedAfterRollbackAppliesAgain() {
+        String parent = "32000000000000000000000000000000000000000000000000000000000000aa";
+        String child = "32000000000000000000000000000000000000000000000000000000000000ab";
+        chainState.storeBlockHeader(hexToBytes(parent), 100L, 1000L, "header".getBytes());
+        chainState.storeBlock(hexToBytes(parent), 100L, 1000L, "body".getBytes());
+        chainState.storeBlockHeader(hexToBytes(child), 101L, 1001L, "header".getBytes());
+
+        List<Long> applied = new ArrayList<>();
+        eventBus.subscribe(BlockAppliedEvent.class, ctx -> applied.add(ctx.event().blockNumber()),
+                SubscriptionOptions.builder().build());
+
+        Block block = createTestBlock(1001L, 101L, child);
+        bodyFetchManager.applyBlock(Era.Conway, block, Collections.emptyList());
+
+        Point rollbackPoint = new Point(1000L, parent);
+        chainState.rollbackTo(rollbackPoint);
+        bodyFetchManager.onRollback(rollbackPoint);
+        bodyFetchManager.resume();
+
+        chainState.storeBlockHeader(hexToBytes(child), 101L, 1001L, "header".getBytes());
+        assertEquals(BodyFetchManager.BlockApplyResult.APPLIED,
+                bodyFetchManager.applyBlock(Era.Conway, block, Collections.emptyList()));
+
+        assertEquals(List.of(101L, 101L), applied);
+        assertEquals(101L, chainState.getTip().getBlockNumber());
+    }
+
     // ================================================================
     // Helper Methods for Creating Test Objects
     // ================================================================
