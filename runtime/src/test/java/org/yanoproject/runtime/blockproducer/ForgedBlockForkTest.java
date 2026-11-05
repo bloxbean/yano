@@ -63,12 +63,14 @@ import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -181,6 +183,64 @@ class ForgedBlockForkTest {
         assertThat(callbacks.recoveries).isEmpty();
         assertThat(node.chainState.getTip().getBlockHash()).isEqualTo(block4.blockHash());
         assertThat(node.chainState.getBlock(forged.getBlockHash())).isNotNull();
+    }
+
+    @Test
+    void aBlockAppliedWhileABlockIsForgedKeepsItsNonceContributionWhenTheForgedBlockIsDiscarded() throws Exception {
+        Upstream upstream = new Upstream();
+        var genesis = upstream.block(0, 0, null, List.of());
+        var block1 = upstream.block(1, 1, genesis.blockHash(), List.of());
+        var block2 = upstream.block(2, 2, block1.blockHash(), List.of());
+
+        Node node = new Node(tempDir.resolve("node"), null);
+        node.storeGenesis(genesis);
+        node.receive(block1);
+
+        CountDownLatch selecting = new CountDownLatch(1);
+        CountDownLatch gateHeld = new CountDownLatch(1);
+        AtomicBoolean selected = new AtomicBoolean();
+        SlotLeaderBlockProducer producer = node.producer(new BlockTransactionSelector() {
+            @Override
+            public boolean hasPendingTransactions() {
+                return false;
+            }
+
+            @Override
+            public List<byte[]> drainForBlock() {
+                selecting.countDown();
+                try {
+                    assertThat(gateHeld.await(5, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException e) {
+                    throw new IllegalStateException(e);
+                }
+                selected.set(true);
+                return List.of();
+            }
+        });
+
+        Thread forging = new Thread(() -> producer.checkSlot(3));
+        forging.start();
+        assertThat(selecting.await(5, TimeUnit.SECONDS)).isTrue();
+        try (var ignored = CanonicalStateGate.of(node.chainState).enterWrite()) {
+            gateHeld.countDown();
+            // The producer builds its block, then waits for the write section that would store it.
+            long deadline = System.currentTimeMillis() + 5_000L;
+            while (!(selected.get() && forging.getState() == Thread.State.WAITING)) {
+                assertThat(System.currentTimeMillis()).as("the producer reaches the write section").isLessThan(deadline);
+                Thread.sleep(5);
+            }
+            node.receive(block2);
+        }
+        forging.join(5_000L);
+        assertThat(forging.isAlive()).isFalse();
+
+        Node reference = new Node(tempDir.resolve("reference"), null);
+        reference.storeGenesis(genesis);
+        reference.receive(block1);
+        reference.receive(block2);
+        assertThat(node.chainState.getTip().getBlockHash()).as("the tip moved, so the forged block is discarded")
+                .isEqualTo(block2.blockHash());
+        assertThat(node.nonceState.serialize()).isEqualTo(reference.nonceState.serialize());
     }
 
     @Test
@@ -520,8 +580,12 @@ class ForgedBlockForkTest {
         }
 
         SlotLeaderBlockProducer producer(List<byte[]> txs) throws Exception {
+            return producer(once(txs));
+        }
+
+        SlotLeaderBlockProducer producer(BlockTransactionSelector transactions) throws Exception {
             SlotLeaderSigningComponents signing = signing(nonceState, chainState);
-            SlotLeaderBlockProducer producer = new SlotLeaderBlockProducer(chainState, once(txs), () -> null, bus,
+            SlotLeaderBlockProducer producer = new SlotLeaderBlockProducer(chainState, transactions, () -> null, bus,
                     scheduler, signing.signedBlockBuilder(), nonceState, signing.slotLeaderCheck(), stake(), "pool",
                     FUTURE_CLOCK, tip -> true);
             producer.start();

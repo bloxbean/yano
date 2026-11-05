@@ -214,7 +214,7 @@ public class EpochNonceState {
      * Block producer leader checks need the next-epoch nonce before they know whether a block
      * will be produced. Mutating the shared nonce state during a losing leader check can move
      * the cursor ahead of body application, so producer code must preview first and let the
-     * block builder apply the transition only when a block is actually built.
+     * block builder apply the transition only when a block is actually stored.
      */
     public byte[] previewEpochNonceForSlot(long slot) {
         return previewEpochNonceForSlot(slot, null, null);
