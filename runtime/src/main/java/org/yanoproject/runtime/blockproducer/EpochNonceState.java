@@ -307,18 +307,26 @@ public class EpochNonceState {
     }
 
     /**
+     * @return whether the block at {@code slot} is already in this state: its checkpoint is saved once it is counted,
+     * and removed when a rollback takes it off the chain
+     */
+    public boolean hasCheckpointAt(long slot) {
+        return checkpoints.containsKey(slot);
+    }
+
+    /**
      * Roll back nonce state to the most recent checkpoint at or before the target slot.
      *
      * @param slot the target rollback slot
      * @return true if a checkpoint was found and restored, false otherwise
      */
     public boolean rollbackTo(long slot) {
+        // Remove all checkpoints after rollback point, also when none is at or before it: those blocks are gone
+        checkpoints.tailMap(slot, false).clear();
         var entry = checkpoints.floorEntry(slot);
         if (entry == null) return false;
 
         restore(entry.getValue());
-        // Remove all checkpoints after rollback point
-        checkpoints.tailMap(slot, false).clear();
         return true;
     }
 

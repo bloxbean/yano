@@ -22,6 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NonceEvolutionListenerTest {
 
     private static final byte[] GENESIS_HASH = bytes(32, 1);
+    private static final String OWN_ISSUER = "ab".repeat(32);
+    private static final String OTHER_ISSUER = "cd".repeat(32);
 
     @Test
     void storesEpochNonceOnEpochTransitionAndPrunesOnRollback() {
@@ -99,7 +101,87 @@ class NonceEvolutionListenerTest {
         assertThat(store.getEpochNonce(1)).isNull();
     }
 
+    @Test
+    void forgedBlockIsNotCountedAgainWhenItsAppliedEventArrives() {
+        EpochNonceState state = producerState();
+        NonceEvolutionListener listener = new NonceEvolutionListener(state, null, OWN_ISSUER);
+        listener.onBlockApplied(issuedBlockEvent(10, OTHER_ISSUER, 2));
+        forge(state, 11, 3);
+
+        listener.onBlockApplied(issuedBlockEvent(11, OWN_ISSUER, 3));
+        listener.onBlockApplied(issuedBlockEvent(12, OTHER_ISSUER, 4));
+
+        assertThat(state.getEvolvingNonce()).isEqualTo(evolvingNonceWithoutProducerKeys());
+    }
+
+    @Test
+    void ownBlockDeliveredAgainAfterARollbackEvolvesTheNonce() {
+        EpochNonceState state = producerState();
+        NonceEvolutionListener listener = new NonceEvolutionListener(state, null, OWN_ISSUER);
+        listener.onBlockApplied(issuedBlockEvent(10, OTHER_ISSUER, 2));
+        forge(state, 11, 3);
+        listener.onBlockApplied(issuedBlockEvent(11, OWN_ISSUER, 3));
+
+        listener.onRollback(new RollbackEvent(new Point(10, "cc".repeat(32)), true));
+        listener.onBlockApplied(issuedBlockEvent(11, OWN_ISSUER, 3));
+        listener.onBlockApplied(issuedBlockEvent(12, OTHER_ISSUER, 4));
+
+        assertThat(state.getEvolvingNonce()).isEqualTo(evolvingNonceWithoutProducerKeys());
+    }
+
+    @Test
+    void ownBlockReceivedThroughSyncEvolvesTheNonce() {
+        EpochNonceState state = producerState();
+        NonceEvolutionListener listener = new NonceEvolutionListener(state, null, OWN_ISSUER);
+
+        listener.onBlockApplied(issuedBlockEvent(10, OTHER_ISSUER, 2));
+        listener.onBlockApplied(issuedBlockEvent(11, OWN_ISSUER, 3));
+        listener.onBlockApplied(issuedBlockEvent(12, OTHER_ISSUER, 4));
+
+        assertThat(state.getEvolvingNonce()).isEqualTo(evolvingNonceWithoutProducerKeys());
+    }
+
+    @Test
+    void rollbackBelowTheOldestCheckpointRemovesTheCheckpointsAboveTheTarget() {
+        EpochNonceState state = producerState();
+        state.saveCheckpoint(11);
+
+        assertThat(state.rollbackTo(10)).isFalse();
+
+        assertThat(state.hasCheckpointAt(11)).isFalse();
+    }
+
+    private static EpochNonceState producerState() {
+        EpochNonceState state = new EpochNonceState(1000, 1, 1.0);
+        state.initFromGenesisHash(GENESIS_HASH);
+        return state;
+    }
+
+    /** What SignedBlockBuilder, and the commit once the block is stored, do to the nonce state. */
+    private static void forge(EpochNonceState state, long slot, int vrfSeed) {
+        state.onBlockProduced(slot, HexUtil.decodeHexString("aa".repeat(32)), bytes(64, vrfSeed));
+        state.saveCheckpoint(slot);
+    }
+
+    /** The nonce after the three blocks of these tests on a node that cannot have forged any of them. */
+    private static byte[] evolvingNonceWithoutProducerKeys() {
+        EpochNonceState state = producerState();
+        NonceEvolutionListener listener = new NonceEvolutionListener(state, null, null);
+        listener.onBlockApplied(issuedBlockEvent(10, OTHER_ISSUER, 2));
+        listener.onBlockApplied(issuedBlockEvent(11, OWN_ISSUER, 3));
+        listener.onBlockApplied(issuedBlockEvent(12, OTHER_ISSUER, 4));
+        return state.getEvolvingNonce();
+    }
+
+    private static BlockAppliedEvent issuedBlockEvent(long slot, String issuer, int vrfSeed) {
+        return blockEvent(slot, "aa".repeat(32), issuer, vrfSeed);
+    }
+
     private static BlockAppliedEvent blockEvent(long slot, String prevHash, int vrfSeed) {
+        return blockEvent(slot, prevHash, null, vrfSeed);
+    }
+
+    private static BlockAppliedEvent blockEvent(long slot, String prevHash, String issuer, int vrfSeed) {
         var vrf = VrfCert.builder()
                 ._1(HexUtil.encodeHexString(bytes(64, vrfSeed)))
                 .build();
@@ -107,6 +189,7 @@ class NonceEvolutionListenerTest {
                 .slot(slot)
                 .blockNumber(slot + 1)
                 .prevHash(prevHash)
+                .issuerVkey(issuer)
                 .vrfResult(vrf)
                 .build();
         var header = BlockHeader.builder()
