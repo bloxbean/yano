@@ -170,10 +170,10 @@ class CborRuleTest {
                 different.put(entry.getKey(), HexFormat.of().formatHex(encoded));
             }
         }
-        // CCL 0.8.0-pre7 decodes a parameter update without its Conway keys (cardano-client-lib#743), and writes an
+        // CCL writes an
         // output that came as a map as an array. This fails once CCL changes, and the rule then leaves this set.
         assertThat(different.keySet()).as(different.toString())
-                .containsExactly("babbage_transaction_output", "drep_voting_thresholds", "pool_voting_thresholds");
+                .containsExactly("babbage_transaction_output");
     }
 
     @Test
