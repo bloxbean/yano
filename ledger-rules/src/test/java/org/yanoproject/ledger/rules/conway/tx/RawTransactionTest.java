@@ -153,7 +153,8 @@ class RawTransactionTest {
                 "transaction_body key 06 is not in Conway");
         assertDecodingFailure("84" + BODY + "a10801" + "f5f6", "unknown witness set key 8");
         String reward = "581de0" + "44".repeat(28);
-        assertDecodingFailure("84" + body("05a2" + reward + "01" + reward + "02") + "a0f5f6", "repeated withdrawals key");
+        assertDecodingFailure("84" + body("05a2" + reward + "01" + reward + "02") + "a0f5f6",
+                "repeated withdrawals key");
         assertDecodingFailure("84" + body("05a1" + "581d62" + "44".repeat(28) + "01") + "a0f5f6", "account address");
         assertDecodingFailure("84" + body("05a0") + "a0f5f6", "non-empty");
         assertDecodingFailure("84" + body("0480") + "a0f5f6", "Certificates");
@@ -184,7 +185,8 @@ class RawTransactionTest {
     @Test
     void outputsFollowBabbagesTxOutDecoder() {
         String address = "581d60" + "11".repeat(28);
-        assertDecodingFailure(withOutput("a3" + "00" + address + "011a000f4240" + "0401"), "unknown babbage_transaction_output key 04");
+        assertDecodingFailure(withOutput("a3" + "00" + address + "011a000f4240" + "0401"),
+                "unknown babbage_transaction_output key 04");
         assertDecodingFailure(withOutput("a3" + "00" + address + "011a000f4240" + "011a000f4240"),
                 "repeated babbage_transaction_output key 01");
         assertDecodingFailure(withOutput("a1" + "00" + address), "has no VALUE");

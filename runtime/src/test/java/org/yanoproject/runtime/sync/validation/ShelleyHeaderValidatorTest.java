@@ -276,8 +276,8 @@ class ShelleyHeaderValidatorTest {
     @Test
     void structuralValidationRejectsAKeyInChunks() {
         HeaderFixture fixture = validHeader();
-        String key = "5820" + HexUtil.encodeHexString(((ByteString) ((Array) ((Array) fixture.headerArray().getDataItems()
-                .get(0)).getDataItems().get(8)).getDataItems().get(0)).getBytes());
+        Array opcert = (Array) ((Array) fixture.headerArray().getDataItems().get(0)).getDataItems().get(8);
+        String key = "5820" + HexUtil.encodeHexString(((ByteString) opcert.getDataItems().get(0)).getBytes());
         String header = HexUtil.encodeHexString(CborSerializationUtil.serialize(fixture.headerArray()));
         byte[] chunked = HexUtil.decodeHexString(header.replace(key, "5f" + key + "ff"));
         ShelleyHeaderValidator validator = new ShelleyHeaderValidator(
