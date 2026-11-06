@@ -35,12 +35,17 @@ import java.util.Set;
  * bignums ({@code decodeIntegralRational}, BaseTypes.hs:417-428). Below 9 a text has at most 64 bytes and a set no
  * tag or rule against duplicates, which this class does not hold.
  *
+ * <p>The decoder version comes from the era, not the ledger's current protocol version: Haskell decodes an era's blocks,
+ * headers and transactions with {@code eraDecoder}, at the era's lowest major version ({@code eraProtVerLow},
+ * cardano-ledger Core/Era.hs:259-260; ouroboros-consensus Shelley/Ledger/Block.hs:352, Mempool.hs:294). So a Conway
+ * transaction decodes at 9 at protocol versions 9 to 11; {@link #forEra} picks the policy.
+ *
  * <p>A type this class does not name has no rule yet: its values are read by {@link RawTransaction}. Its rules stand
- * for a transaction at Conway's decoder versions and for a block header of any era, which no version below 12 changes.
+ * for a transaction at Conway's decoder version and for a block header of any era, which no version below 12 changes.
  */
 public final class HaskellPolicy implements FormatPolicy {
 
-    /** Conway's decoder versions, 9 to 11, reject alike. */
+    /** Conway's decoder version: {@code eraProtVerLow ConwayEra} (Era.hs:132). */
     public static final HaskellPolicy CONWAY = new HaskellPolicy(9);
 
     private static final int FIRST_KNOWN_VERSION = 9;
@@ -97,6 +102,19 @@ public final class HaskellPolicy implements FormatPolicy {
             throw new IllegalArgumentException("no rules for decoder version " + decoderVersion);
         }
         this.decoderVersion = decoderVersion;
+    }
+
+    /**
+     * The policy Haskell decodes an era's transactions with: the era's {@code eraDecoder}. Only Conway has rules; an era
+     * added later (Dijkstra decodes at 12, where a {@code RecD} record may be indefinite) needs its own entry here.
+     *
+     * @throws IllegalArgumentException for an era without rules
+     */
+    public static HaskellPolicy forEra(Era era) {
+        if (era == Era.Conway) {
+            return CONWAY;
+        }
+        throw new IllegalArgumentException("no decoding rules for era " + era);
     }
 
     /** Walks a Conway transaction with this policy: its array, body, witness set, validity flag and aux data. */

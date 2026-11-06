@@ -1,7 +1,9 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.raw.CertKind;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
@@ -427,6 +429,34 @@ class HaskellPolicyTest {
         bothReject(proposing("8400f6" + "a1" + "13" + "9f" + "d81e820101" + "d81e820101" + "ff" + "f6"), "a0",
                 "EX_UNIT_PRICES is a RecD record");
         bothReject(proposing("8400f6" + "a1" + "09" + "d81e820100" + "f6"), "a0", "denominator");
+    }
+
+    /**
+     * Haskell decodes a Conway transaction at {@code eraProtVerLow ConwayEra}, 9, at every Conway protocol version, so
+     * auxiliary data {@code [metadata, scripts]} ({@code RecD}, Alonzo/TxAuxData.hs:220, 246-252) must be definite; it
+     * may be indefinite only from 12 ({@code decodeDijkstra}).
+     */
+    @Test
+    void aConwayTransactionDecodesAtItsEraVersionWhereAuxDataIsDefinite() {
+        HaskellPolicy conway = HaskellPolicy.forEra(Era.Conway);
+        assertThat(conway).isSameAs(HaskellPolicy.CONWAY);
+
+        CborSpan definite = StrictCbor.span(HexUtil.decodeHexString("82" + "a0" + "80"));
+        CborSpan indefinite = StrictCbor.span(HexUtil.decodeHexString("9f" + "a0" + "80" + "ff"));
+        assertThatCode(() -> conway.walk(FieldType.OPTIONAL_AUXILIARY_DATA, definite)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> conway.walk(FieldType.OPTIONAL_AUXILIARY_DATA, indefinite))
+                .isInstanceOf(TxDecodingException.class).hasMessageContaining("auxiliary data [metadata, scripts]");
+        assertThatCode(() -> new HaskellPolicy(12).walk(FieldType.OPTIONAL_AUXILIARY_DATA, indefinite))
+                .doesNotThrowAnyException();
+
+        byte[] tx = HexUtil.decodeHexString("84" + BODY + "a0" + "f5" + "9f" + "a0" + "80" + "ff");
+        assertThatThrownBy(() -> RawTransaction.parse(tx, null)).isInstanceOf(TxDecodingException.class);
+    }
+
+    @Test
+    void anEraWithoutRulesIsRefusedNotReadAsConway() {
+        assertThatThrownBy(() -> HaskellPolicy.forEra(Era.Babbage)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Babbage");
     }
 
     @Test

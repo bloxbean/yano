@@ -392,6 +392,9 @@ public final class RawTransaction {
 
     /** Parser state. */
     private static final class Builder {
+        /** The era the transaction is read in: its decoder ({@link HaskellPolicy#forEra}) and CCL's views. */
+        private static final Era ERA = Era.Conway;
+
         private final byte[] txCbor;
         private final Transaction decoded;
         private RawTx tx;
@@ -435,10 +438,10 @@ public final class RawTransaction {
                 throw new TxDecodingException("empty transaction bytes");
             }
             tx = RawTx.of(txCbor);
-            HaskellPolicy.CONWAY.walk(tx);
+            HaskellPolicy.forEra(ERA).walk(tx);
             readBody();
             readWitnessSet();
-            tx.auxData(Era.Conway).ifPresent(auxData -> auxData.scripts()
+            tx.auxData(ERA).ifPresent(auxData -> auxData.scripts()
                     .forEach(script -> auxScripts.add(RawScript.accepted(script))));
         }
 
@@ -447,7 +450,7 @@ public final class RawTransaction {
          * version 9+, {@code ConwayTxBodyRaw} {@code DecCBOR}, Conway/TxBody.hs:180-265).
          */
         private void readBody() {
-            RawTxBody body = tx.body(Era.Conway);
+            RawTxBody body = tx.body(ERA);
             inputs = inputs(body.inputs());
             collateralInputs = body.collateral().map(Builder::inputs).orElse(List.of());
             referenceInputs = body.referenceInputs().map(Builder::inputs).orElse(List.of());
@@ -505,7 +508,7 @@ public final class RawTransaction {
          * protocol version 9+, Alonzo/TxWits.hs:603-700).
          */
         private void readWitnessSet() {
-            RawWitnessSet witnesses = tx.witnessSet(Era.Conway);
+            RawWitnessSet witnesses = tx.witnessSet(ERA);
             witnesses.vkeyWitnesses().ifPresent(views -> views
                     .forEach(w -> vkeyWitnesses.add(new VKeyWitness(w.vkey(), w.signature()))));
             witnesses.bootstrapWitnesses().ifPresent(views -> views.forEach(w -> bootstrapWitnesses
