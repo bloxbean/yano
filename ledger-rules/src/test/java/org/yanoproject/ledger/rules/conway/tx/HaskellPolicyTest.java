@@ -165,6 +165,39 @@ class HaskellPolicyTest {
     }
 
     @Test
+    void aMultiAssetIsSmallEnoughToCompact() {
+        // isMultiAssetSmallEnough: 44 * assets + 28 * policies <= 65535, a multiple of 4 on the left
+        String mint = "a4" + INPUTS + OUTPUTS + FEE + "09%s";
+        bothAccept(mint.formatted(multiAsset(1483, 10, "01")), "a0");
+        bothReject(mint.formatted(multiAsset(1485, 7, "01")), "a0", "too big to compact");
+
+        String output = "a2" + "00" + "581d60" + "33".repeat(28) + "01" + "8200%s";
+        String body = "a3" + INPUTS + "0181" + output + FEE;
+        bothAccept(body.formatted(multiAsset(1483, 10, "01")), "a0");
+        bothReject(body.formatted(multiAsset(1485, 7, "01")), "a0", "too big to compact");
+    }
+
+    /** A multi-asset of {@code assets} two-byte names spread over {@code policies} policies, each of one amount. */
+    private static String multiAsset(int assets, int policies, String amount) {
+        StringBuilder cbor = new StringBuilder(mapHead(policies));
+        for (int policy = 0; policy < policies; policy++) {
+            int names = assets / policies + (policy < assets % policies ? 1 : 0);
+            cbor.append("581c").append("%056x".formatted(policy)).append(mapHead(names));
+            for (int name = 0; name < names; name++) {
+                cbor.append("42").append("%04x".formatted(name)).append(amount);
+            }
+        }
+        return cbor.toString();
+    }
+
+    private static String mapHead(int size) {
+        if (size < 24) {
+            return "%02x".formatted(0xa0 + size);
+        }
+        return size < 256 ? "b8%02x".formatted(size) : "b9%04x".formatted(size);
+    }
+
+    @Test
     void aTransactionWithoutItsValidityFlag() {
         bothReject(HexUtil.decodeHexString("83" + BODY + "a0" + "f6"), "pre_alonzo_transaction item at 1 is not in");
     }

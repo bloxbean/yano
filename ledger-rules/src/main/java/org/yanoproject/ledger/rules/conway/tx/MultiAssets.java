@@ -10,8 +10,7 @@ import java.util.TreeMap;
 
 /**
  * The rules' form of a {@code multiasset<a>} map that {@link HaskellPolicy} has accepted, read by CCL's view: policy id
- * to asset name to quantity, as hex keys. Not checked by the policy: {@code isMultiAssetSmallEnough} (a
- * compact-representation bound far above what a transaction within {@code maxTxSize} can carry).
+ * to asset name to quantity, as hex keys.
  */
 final class MultiAssets {
 

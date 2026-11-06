@@ -83,6 +83,10 @@ public final class HaskellPolicy implements FormatPolicy {
     /** An output and the redeemers, whose decoders pick their form by cborg's token type. */
     private static final RecordSpec OUTPUT = TxBodyField.OUTPUTS.spec().record();
     private static final RecordSpec REDEEMERS = WitnessSetField.REDEEMERS_FIELD.spec().record();
+    /** {@code isMultiAssetSmallEnough} (Mary/Value.hs:721-723): {@code 44 * assets + 28 * policies <= 65535}. */
+    private static final long MAX_COMPACT_MULTI_ASSET = 65535;
+    private static final long COMPACT_ASSET = 44;
+    private static final long COMPACT_POLICY = 28;
     /** A map's head with an 8-byte length, which cborg reports as {@code TypeMapLen64}. */
     private static final int MAP_HEAD_8_BYTES = 0xbb;
 
@@ -151,12 +155,16 @@ public final class HaskellPolicy implements FormatPolicy {
     /**
      * A record is in no tag, as Haskell does not look through one, or in its own: the aux data map's 259
      * ({@code TagD 259}, Alonzo/TxAuxData.hs:269-271). A proposal procedure, an item of a set, is a {@code RecD}
-     * record (Procedures.hs:559-570).
+     * record (Procedures.hs:559-570). A multi-asset, of a value or of mint, is small enough to compact, at every
+     * decoder version ({@code decodeMultiAsset}, Mary/Value.hs:327-337).
      */
     @Override
     public void enter(RecordSpec record, CborSpan container, Era era) {
         if (record == PROPOSAL) {
             recD(container, record.name());
+        }
+        if (isMultiAsset(record)) {
+            smallEnoughToCompact(container);
         }
         CborSpan content = container;
         if (record.tag() != NO_TAG) {
@@ -213,6 +221,27 @@ public final class HaskellPolicy implements FormatPolicy {
                 throw new TxDecodingException("Protocol version " + major + " exceeds the maximum expected version of "
                         + MAX_HARD_FORK_MAJOR);
             }
+        }
+    }
+
+    /** A {@code multiasset<a>}: policy ids to maps of asset names to amounts. */
+    private static boolean isMultiAsset(RecordSpec record) {
+        if (record.keyType() != FieldType.HASH28 || record.fields().size() != 1) {
+            return false;
+        }
+        RecordSpec assets = record.fields().getFirst().record();
+        return assets != null && assets.keyType() == FieldType.ASSET_NAME;
+    }
+
+    private static void smallEnoughToCompact(CborSpan multiAsset) {
+        List<Map.Entry<CborSpan, CborSpan>> policies = StrictCbor.map(multiAsset);
+        long assets = 0;
+        for (Map.Entry<CborSpan, CborSpan> policy : policies) {
+            assets += StrictCbor.map(policy.getValue()).size();
+        }
+        if (COMPACT_ASSET * assets + COMPACT_POLICY * policies.size() > MAX_COMPACT_MULTI_ASSET) {
+            throw new TxDecodingException("MultiAsset is too big to compact: " + assets + " assets under "
+                    + policies.size() + " policies");
         }
     }
 
