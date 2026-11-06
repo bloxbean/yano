@@ -61,7 +61,7 @@ class JavaEnginePhase5GateTest {
      */
     static final Map<Integer, Tally> PER_VERSION = Map.of(
             9, new Tally(1, 0, 0, 1),
-            10, new Tally(273, 272, 1, 0),
+            10, new Tally(273, 273, 0, 0),
             11, new Tally(2, 2, 0, 0));
 
     /** One scenario's gate verdict. */

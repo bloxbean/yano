@@ -45,10 +45,19 @@ class LedgerRulesResultTest {
 
     @Test
     void aConstructorWithoutCorpusNameIsReportedBare() {
+        Expected expected = predicate("MaxTxSizeUTxO", LedgerRuleName.UTXO, "MaxTxSizeUTxO");
+        Observation observation = Observation.rejected(List.of(failure("UTXO", "ExUnitsTooBigUTxO")));
+
+        assertThat(result(expected, observation)).isEqualTo("ExUnitsTooBigUTxO");
+    }
+
+    @Test
+    void anOversizedByronAttributeIsReportedAsHaskellNamedItBeforeTheFix() {
         Expected expected = predicate("OutputTooBigUTxO", LedgerRuleName.UTXO, "OutputTooBigUTxO");
         Observation observation = Observation.rejected(List.of(failure("UTXO", "OutputBootAddrAttrsTooBig")));
 
-        assertThat(result(expected, observation)).isEqualTo("OutputBootAddrAttrsTooBig");
+        assertThat(result(expected, observation)).isEqualTo("OutputTooBigUTxO");
+        assertThat(result(new Expected.Pass(), observation)).isEqualTo("OutputTooBigUTxO");
     }
 
     @Test

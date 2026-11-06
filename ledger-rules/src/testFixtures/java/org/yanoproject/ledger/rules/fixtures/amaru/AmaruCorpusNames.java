@@ -104,9 +104,16 @@ public final class AmaruCorpusNames {
      * a scenario expecting the corpus name is satisfied by either. {@code UnelectedCommitteeVoters} (the PV 11 {@code GOV}
      * predicate, Conway/Rules/Gov.hs:478-481) is normalised to {@code "VotersDoNotExist"} (Run.hs:532-533), so scenario
      * 00171 names {@code VotersDoNotExist} although Haskell reports {@code UnelectedCommitteeVoters}.
+     *
+     * <p>Temporary: {@code OutputTooBigUTxO} also covers {@code UTXO.OutputBootAddrAttrsTooBig}. Before cardano-ledger
+     * {@code c0f8975c0c} ("Fix shelleyToAllegraUtxoPredFailure mapping", cardano-ledger-allegra 1.10.2.0, first in
+     * cardano-node 11.2.0) Haskell injected Shelley's {@code OutputBootAddrAttrsTooBig} as {@code OutputTooBigUTxO}, so
+     * cardano-node 11.1.3, both pins ({@code f649f975}, {@code 6176e413}) and scenario 00280 name an oversized Byron
+     * attribute so. Yano reports the fixed name. Remove this alias once 00280 expects {@code OutputBootAddrAttrsTooBig}.
      */
     private static final Map<String, Set<String>> ALIASES = Map.of(
-            "VotersDoNotExist", Set.of("GOV.UnelectedCommitteeVoters"));
+            "VotersDoNotExist", Set.of("GOV.UnelectedCommitteeVoters"),
+            "OutputTooBigUTxO", Set.of("UTXO.OutputBootAddrAttrsTooBig"));
 
     private AmaruCorpusNames() {
     }
