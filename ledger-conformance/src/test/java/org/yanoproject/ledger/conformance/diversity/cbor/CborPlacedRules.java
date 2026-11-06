@@ -206,8 +206,8 @@ final class CborPlacedRules {
                         c -> at(((Redeemer) c).serializePreConway(), 3)),
                 // Haskell's Language alone (decodeEnumBounded, PlutusV1 to PlutusV4 at 6176e413), which no Conway
                 // transaction decodes: Yano reads a language as a cost model's key, a Word8 (decodeCostModelsLenient)
-                only(head -> head <= MAX_LANGUAGE, model("language", reads(FieldType.LANGUAGE),
-                        CborPlacedRules::language, c -> at(((CostMdls) c).serialize(), KEY))),
+                model("language", CborPlacedRules::strictLanguage, CborPlacedRules::language,
+                        c -> at(((CostMdls) c).serialize(), KEY)),
                 model("vote", reads(FieldType.VOTE),
                         cbor -> VotingProcedure.deserialize((Array) item(cat("82", cbor, "f6"))),
                         c -> at(((VotingProcedure) c).serialize(), 0)));
@@ -330,6 +330,19 @@ final class CborPlacedRules {
     private static CborRule inAuxiliaryData(String name, Decoder strict, String prefix, String suffix) {
         Wrapper wrapper = cbor -> tx(hex(MIN_BODY), hex("a0"), cat(prefix, cbor, suffix));
         return kept(name, orIn(strict, inTransaction(wrapper)), cbor -> Transaction.deserialize(wrapper.wrap(cbor)));
+    }
+
+    /**
+     * Yano's reading of a cost model's key, narrowed to Haskell's {@code Language} by value: a head of any width
+     * ({@code 1802}) is the same language, as {@code decodeEnumBounded} reads it.
+     */
+    private static Object strictLanguage(byte[] cbor) throws Exception {
+        Object read = reads(FieldType.LANGUAGE).decode(cbor);
+        if (!(item(cbor) instanceof UnsignedInteger key)
+                || key.getValue().compareTo(BigInteger.valueOf(MAX_LANGUAGE)) > 0) {
+            throw new IllegalArgumentException("not of this rule's form");
+        }
+        return read;
     }
 
     /** A cost model keeps a key it does not know, as Haskell's does, but {@code Language} has only the known ones. */
