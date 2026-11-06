@@ -137,7 +137,11 @@ final class CborPlacedRules {
 
     private static List<CborRule> valueParts() {
         return List.of(
-                inValue("%multiasset<positive_coin>", null, "8200", "", 1),
+                // Haskell writes the multi-asset alone (EraSpec.hs:404-409): an empty one is a0, where a value of
+                // coin and an empty multi-asset is written as the coin
+                placed("%multiasset<positive_coin>", placedIn(reads(FieldType.VALUE), "8200", ""), "8200", "",
+                        cbor -> Value.deserialize(item(cbor)),
+                        c -> MultiAsset.serializeInLedgerOrder(multiAssets((Value) c))),
                 inValue("asset_name", reads(FieldType.ASSET_NAME), "8200a1" + HASH28 + "a1", "01", 1, VALUE, KEY),
                 inValue("policy_id", reads(FieldType.HASH28), "8200a1", "a14001", 1, KEY),
                 inValue("positive_coin", reads(FieldType.POSITIVE_COIN), "8200a1" + HASH28 + "a140", "", 1, VALUE,
@@ -170,7 +174,9 @@ final class CborPlacedRules {
 
     /**
      * The alternatives of {@code plutus_data} (PlutusData.hs's {@code decodeData}), told apart by the head: Yano reads
-     * them all as one type, so another alternative is a rejection here.
+     * them all as one type, so another alternative is a rejection here. Like {@code plutus_data}, an alternative is
+     * written as its bytes, which the node keeps ({@code Data} is {@code MemoBytes}), and the dataset compares
+     * normalized.
      */
     private static List<CborRule> plutusParts() {
         return List.of(
@@ -185,8 +191,8 @@ final class CborPlacedRules {
     }
 
     private static CborRule data(String name, Predicate<Integer> head, Class<? extends PlutusData> alternative) {
-        return only(head, model(name, reads(FieldType.PLUTUS_DATA),
-                cbor -> alternative.cast(PlutusData.deserialize(cbor)), c -> ((PlutusData) c).serialize()));
+        return only(head, kept(name, reads(FieldType.PLUTUS_DATA),
+                cbor -> alternative.cast(PlutusData.deserialize(cbor))));
     }
 
     private static List<CborRule> otherParts(Map<String, CborRule> base) {
@@ -375,6 +381,10 @@ final class CborPlacedRules {
     /** The same decoders under a second rule name: the dataset tests one Haskell type under both. */
     private static CborRule sameAs(String name, CborRule same) {
         return new CborRule(name, same.exact(), same.strict(), same.library(), same.encoder());
+    }
+
+    private static List<MultiAsset> multiAssets(Value value) {
+        return value.getMultiAssets() != null ? value.getMultiAssets() : List.of();
     }
 
     private static byte[] addressOutput(byte[] address) {

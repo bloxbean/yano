@@ -1,20 +1,9 @@
-# ADR 0003 I7's baseline (CborRejectionGate), on cardano-cbor-dataset d4709b12 and Yano at ADR 0003 M6 with CCL's
-# Byron address decoder: 43347 of 43430 reported; Yano's reader rejects 31831 of 31842 invalid samples.
+# ADR 0003 I7's baseline (CborRejectionGate), on cardano-cbor-dataset d4709b12 and Yano at ADR 0003 M6: 43365 of
+# 43430 reported; Yano's reader rejects all 31842 invalid samples.
 # The misses: 64 auxiliary_data and auxiliary_data_array samples are indefinite Allegra [metadata, scripts] arrays.
 # The node decodes them with RecD (Alonzo/TxAuxData.hs, definite only below version 12); the dataset labels them valid
-# with the testlib decoder (decodeRecordNamed, either length). 8 are re-encodings the CCL model writes differently from
-# the expected bytes (5 Plutus constructors, 2 multi-assets, a Byron payload with a wide head); Yano's reader accepts
-# them. 9 multi-assets past isMultiAssetSmallEnough are yano#238, and 2 maps with an 8-byte length head are accepted.
-report-miss %constr<plutus_data>/manual-valid/0001-index-zero-two-fields.input.cbor
-report-miss %constr<plutus_data>/manual-valid/0003-fields-indefinite.input.cbor
-report-miss %constr<plutus_data>/manual-valid/0004-outer-indefinite.input.cbor
-report-miss %constr<plutus_data>/manual-valid/wide-heads-38.input.cbor
-report-miss %constr<plutus_data>/manual-valid/widest-heads-1.input.cbor
-report-miss %multiasset<positive_coin>/manual-invalid/too-many-assets-one-policy.input.cbor
-report-miss %multiasset<positive_coin>/manual-invalid/too-many-assets-three-policies.input.cbor
-report-miss %multiasset<positive_coin>/manual-invalid/too-many-policies-empty-names.input.cbor
-report-miss %multiasset<positive_coin>/valid/00008-c19a797fa1fd590c.input.cbor
-report-miss %multiasset<positive_coin>/valid/00065-58daaf73604c8f2c.input.cbor
+# with the testlib decoder (decodeRecordNamed, either length). The other is a Byron address whose payload array has a
+# wide head: the dataset expects Haskell's Addr encoder, which writes it anew, where an output keeps its bytes.
 report-miss address/manual-valid/byron-payload-array-with-a-wide-head.input.cbor
 report-miss auxiliary_data/valid/00002-0c539dfdbaef007a.input.cbor
 report-miss auxiliary_data/valid/00005-a457defa17a4ecca.input.cbor
@@ -80,22 +69,3 @@ report-miss auxiliary_data_array/valid/00094-3efb96c905f3a401.input.cbor
 report-miss auxiliary_data_array/valid/00098-b3f6c784302e7bb6.input.cbor
 report-miss auxiliary_data_array/valid/00099-9be254d305a98d6b.input.cbor
 report-miss auxiliary_data_array/valid/00100-695b641a1427ada3.input.cbor
-report-miss babbage_transaction_output/manual-invalid/widest-map-head.input.cbor
-report-miss mint/manual-invalid/too-many-assets-one-policy.input.cbor
-report-miss mint/manual-invalid/too-many-assets-three-policies.input.cbor
-report-miss mint/manual-invalid/too-many-policies-empty-names.input.cbor
-report-miss redeemers/manual-invalid/widest-map-head.input.cbor
-report-miss value/manual-invalid/too-many-assets-one-policy.input.cbor
-report-miss value/manual-invalid/too-many-assets-three-policies.input.cbor
-report-miss value/manual-invalid/too-many-policies-empty-names.input.cbor
-strict-accepts %multiasset<positive_coin>/manual-invalid/too-many-assets-one-policy.input.cbor
-strict-accepts %multiasset<positive_coin>/manual-invalid/too-many-assets-three-policies.input.cbor
-strict-accepts %multiasset<positive_coin>/manual-invalid/too-many-policies-empty-names.input.cbor
-strict-accepts babbage_transaction_output/manual-invalid/widest-map-head.input.cbor
-strict-accepts mint/manual-invalid/too-many-assets-one-policy.input.cbor
-strict-accepts mint/manual-invalid/too-many-assets-three-policies.input.cbor
-strict-accepts mint/manual-invalid/too-many-policies-empty-names.input.cbor
-strict-accepts redeemers/manual-invalid/widest-map-head.input.cbor
-strict-accepts value/manual-invalid/too-many-assets-one-policy.input.cbor
-strict-accepts value/manual-invalid/too-many-assets-three-policies.input.cbor
-strict-accepts value/manual-invalid/too-many-policies-empty-names.input.cbor

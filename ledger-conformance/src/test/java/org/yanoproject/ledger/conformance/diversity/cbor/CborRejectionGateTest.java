@@ -50,9 +50,8 @@ class CborRejectionGateTest {
     @Test
     void theBaselineHoldsBothSets() {
         Baseline baseline = CborRejectionGate.baseline();
-        assertThat(baseline.reportMisses()).hasSize(83);
-        // On dataset d4709b12 Yano's reader accepts 11 invalid samples: 9 multi-assets past isMultiAssetSmallEnough
-        // (yano#238) and 2 maps with an 8-byte length head.
-        assertThat(baseline.strictAccepts()).hasSize(11);
+        assertThat(baseline.reportMisses()).hasSize(65);
+        // Yano's reader rejects every invalid sample since each rule is read directly (ADR 0003 M6).
+        assertThat(baseline.strictAccepts()).isEmpty();
     }
 }
