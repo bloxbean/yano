@@ -149,6 +149,22 @@ class HaskellPolicyTest {
     }
 
     @Test
+    void anOutputOrRedeemersMapWithAnEightByteHead() {
+        // cborg reads ba as TypeMapLen and bb as TypeMapLen64, which the output and redeemers decoders send to their
+        // list form (Babbage/TxOut.hs:554-556, Alonzo/TxWits.hs:556-562)
+        String output = "00" + "581d60" + "33".repeat(28) + "01" + "00";
+        String body = "a3" + INPUTS + "0181%s" + FEE;
+        bothAccept(body.formatted("a2" + output), "a0");
+        bothAccept(body.formatted("b802" + output), "a0");
+        bothAccept(body.formatted("ba00000002" + output), "a0");
+        bothReject(body.formatted("bb0000000000000002" + output), "a0", "8-byte head");
+
+        String redeemer = "820000" + "8200820101";
+        bothAccept(BODY, "a105" + "ba00000001" + redeemer);
+        bothReject(BODY, "a105" + "bb0000000000000001" + redeemer, "8-byte head");
+    }
+
+    @Test
     void aTransactionWithoutItsValidityFlag() {
         bothReject(HexUtil.decodeHexString("83" + BODY + "a0" + "f6"), "pre_alonzo_transaction item at 1 is not in");
     }

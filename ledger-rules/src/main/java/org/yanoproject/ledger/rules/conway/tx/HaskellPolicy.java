@@ -12,6 +12,7 @@ import com.bloxbean.cardano.client.transaction.raw.RawProtocolVersion;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.raw.RecordSpec;
 import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
+import com.bloxbean.cardano.client.transaction.raw.WitnessSetField;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.math.BigInteger;
@@ -79,6 +80,11 @@ public final class HaskellPolicy implements FormatPolicy {
     private static final RecordSpec PROPOSAL = TxBodyField.PROPOSAL_PROCEDURES.spec().record();
     /** A hard fork initiation, the member of the governance action union. */
     private static final RecordSpec HARD_FORK = GovActionKind.HARD_FORK_INITIATION.member().record();
+    /** An output and the redeemers, whose decoders pick their form by cborg's token type. */
+    private static final RecordSpec OUTPUT = TxBodyField.OUTPUTS.spec().record();
+    private static final RecordSpec REDEEMERS = WitnessSetField.REDEEMERS_FIELD.spec().record();
+    /** A map's head with an 8-byte length, which cborg reports as {@code TypeMapLen64}. */
+    private static final int MAP_HEAD_8_BYTES = 0xbb;
 
     private final int decoderVersion;
 
@@ -173,7 +179,9 @@ public final class HaskellPolicy implements FormatPolicy {
      * ({@code decodeProtVer @ConwayEra}, BaseTypes.hs:253-263, Procedures.hs:938-940); a header's may be one more.
      * The form a value takes, where it may take more than one (a record by major type, such as a value, an output,
      * auxiliary data or redeemers), is checked for its era only: its items are checked where its parent's entry is,
-     * and a map of redeemers keeps a repeated key.
+     * and a map of redeemers keeps a repeated key. An output or the redeemers, though, is a map only by a head that
+     * cborg reports as {@code TypeMapLen} or {@code TypeMapLenIndef}: the 8-byte head, {@code TypeMapLen64}, takes the
+     * list form's decoder, which fails (Babbage/TxOut.hs:554-556, Alonzo/TxWits.hs:556-562).
      */
     @Override
     public void entry(RecordSpec record, FieldSpec field, CborSpan key, CborSpan value, int occurrence, Era era) {
@@ -184,6 +192,10 @@ public final class HaskellPolicy implements FormatPolicy {
             throw new TxDecodingException(at(record, key, value) + " is not in " + era);
         }
         if (record.shape() == RecordSpec.Shape.BY_MAJOR_TYPE) {
+            boolean dispatchedByToken = record == OUTPUT || record == REDEEMERS;
+            if (dispatchedByToken && (value.buffer()[value.offset()] & 0xff) == MAP_HEAD_8_BYTES) {
+                throw new TxDecodingException(record + " at " + value.offset() + " is a map with an 8-byte head");
+            }
             return;
         }
         if (occurrence > 0 && field.type() != FieldType.REDEEMER_VALUE) {
