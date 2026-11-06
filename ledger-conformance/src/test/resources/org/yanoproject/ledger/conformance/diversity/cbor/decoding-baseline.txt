@@ -1,9 +1,12 @@
-# ADR 0003 I7's baseline (CborRejectionGate), on cardano-cbor-dataset d4709b12 and Yano at ADR 0003 M6: 43365 of
-# 43430 reported; Yano's reader rejects all 31842 invalid samples.
+# ADR 0003 I7's baseline (CborRejectionGate), on cardano-cbor-dataset 4fd977b2 and Yano at ADR 0003 M7a: 43365 of
+# 43434 reported; Yano's reader rejects all 31842 invalid samples.
 # The misses: 64 auxiliary_data and auxiliary_data_array samples are indefinite Allegra [metadata, scripts] arrays.
 # The node decodes them with RecD (Alonzo/TxAuxData.hs, definite only below version 12); the dataset labels them valid
 # with the testlib decoder (decodeRecordNamed, either length). The other is a Byron address whose payload array has a
 # wide head: the dataset expects Haskell's Addr encoder, which writes it anew, where an output keeps its bytes.
+# The 4 rationals new at 4fd977b2 have bignum (tag 2) or negative parts that reduce into range. The node reads both
+# parts with decodeInteger and reduces n % d (Binary/Decoding/Decoder.hs); Yano's reader accepts them, but the
+# re-encoding through CCL's model rejects a bignum part under tag 30 and writes -1/-2 unreduced.
 report-miss address/manual-valid/byron-payload-array-with-a-wide-head.input.cbor
 report-miss auxiliary_data/valid/00002-0c539dfdbaef007a.input.cbor
 report-miss auxiliary_data/valid/00005-a457defa17a4ecca.input.cbor
@@ -69,3 +72,7 @@ report-miss auxiliary_data_array/valid/00094-3efb96c905f3a401.input.cbor
 report-miss auxiliary_data_array/valid/00098-b3f6c784302e7bb6.input.cbor
 report-miss auxiliary_data_array/valid/00099-9be254d305a98d6b.input.cbor
 report-miss auxiliary_data_array/valid/00100-695b641a1427ada3.input.cbor
+report-miss nonnegative_interval/manual-valid/bignum-numerator-reduces-in-range.input.cbor
+report-miss nonnegative_interval/manual-valid/bignum-ratio-reduces-in-range.input.cbor
+report-miss unit_interval/manual-valid/bignum-ratio-reduces-in-range.input.cbor
+report-miss unit_interval/manual-valid/negative-ratio-reduces-in-range.input.cbor
