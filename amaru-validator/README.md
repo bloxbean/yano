@@ -196,15 +196,20 @@ identical at PV 10 and 11. The harness also takes `amaru`.
     `OutputBootAddrAttrsTooBig`), non-ADA collateral (`ValueNotConservedUTxO` for
     `CollateralContainsNonADA`), and `VotersDoNotExist` for PV 11's `UnelectedCommitteeVoters`.
   - Amaru stops at its first failure, while Haskell lists all of them.
-- **`amaru-scalus` phase two is Scalus.** The engine calls the Scalus evaluator whenever a
-  transaction has redeemers or Plutus witness scripts, or spends an input carrying a reference
-  script. Amaru's phase-one mode runs Amaru's own Plutus evaluation too and drops its phase-two
-  verdict (Amaru keeps its phase-one rules crate-private from `v10.11.20261105`), so it reports
-  `MalformedScriptWitnesses` and `CollectErrors` itself (`INTERFACE.md`, "Modes").
+- **`amaru-scalus` phase two is Scalus, but Amaru evaluates the scripts too.** The engine calls
+  the Scalus evaluator whenever a transaction has redeemers or Plutus witness scripts, or spends an
+  input carrying a reference script. From Amaru `v10.11.20261105` the module's phase-one mode runs
+  Amaru's own Plutus evaluation as well and drops its verdict (Amaru keeps its phase-one rules
+  crate-private; `INTERFACE.md`, "Modes"). It reports `MalformedScriptWitnesses` and
+  `CollectErrors` itself, and re-application saves no Plutus time.
 - **CCL decoding is still needed** for the MEMPOOL step and for effects. A transaction Amaru
   accepts but CCL cannot decode fails closed.
-- **Speed.** Wasm runs about 15–20 times slower than native Amaru. That is fine for admission, but
-  not for bulk validation.
+- **Speed.** Wasm runs about 15–20 times slower than native Amaru. On the scenario corpus
+  (small test scripts) `amaru` takes p50 1.0 ms and p99 2.7 ms. On real preprod/preview Plutus
+  transactions both Amaru engines take p50 15–44 ms and p99 170–250 ms, because Amaru's script
+  evaluation is slow under Endive; `amaru-scalus` took 3 ms and 7 ms before Amaru
+  `v10.11.20261105` (ADR-057 Phase E re-run, 2026-11-07). The Java engines stay at p50 1–2.4 ms.
+  Prefer them for admission on public networks.
 
 ADR-056 (Phase 3a and 3b results) and `ledger-conformance/docs/baseline-2026-09.md` hold the full
 list and the Haskell references.

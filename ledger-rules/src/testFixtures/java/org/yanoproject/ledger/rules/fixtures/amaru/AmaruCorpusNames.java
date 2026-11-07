@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.fixtures.amaru;
 
 import org.yanoproject.ledger.rules.LedgerRuleName;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -122,9 +123,11 @@ public final class AmaruCorpusNames {
      * ({@code normalizeGovFailure}, {@code crates/amaru/tests/conformance/validation-rules/src/Command/ValidatePhaseOne/Run.hs}):
      * a scenario expecting the corpus name is satisfied by either. {@code UnelectedCommitteeVoters} (the PV 11 {@code GOV}
      * predicate, Conway/Rules/Gov.hs:478-481) is normalised to {@code "VotersDoNotExist"} (Run.hs:603-604), so scenario
-     * 00171 names {@code VotersDoNotExist} although Haskell reports {@code UnelectedCommitteeVoters}. A wrong DRep refund
-     * ({@code ConwayDRepIncorrectRefund}, Conway/Rules/GovCert.hs:242) is normalised to {@code "IncorrectDepositDRep"}
-     * ({@code normalizeGovCertFailure}, Run.hs:547-550; scenario 00305). Same table as {@code haskell_aliases} in
+     * 00171 names {@code VotersDoNotExist} although Haskell reports {@code UnelectedCommitteeVoters}. A wrong DRep
+     * refund ({@code ConwayDRepIncorrectRefund}, Conway/Rules/GovCert.hs:242) is normalised to
+     * {@code "IncorrectDepositDRep"} ({@code normalizeGovCertFailure}, Run.hs:547-550; scenario 00305). An alias is
+     * keyed by corpus name, so it also accepts the refund constructor for a wrong DRep <em>deposit</em> (scenario
+     * 00347); this table cannot tell the two apart. Same table as {@code haskell_aliases} in
      * {@code amaru-validator-wasm/tests/amaru_scenarios.rs}.
      */
     private static final Map<String, Set<String>> ALIASES = Map.of(
@@ -152,18 +155,27 @@ public final class AmaruCorpusNames {
     }
 
     /**
+     * The name Amaru's Haskell checker gives a constructor that several corpus names share, when no expected predicate
+     * hints otherwise: {@code normalizeDelegFailure} names {@code StakeKeyNotRegisteredDELEG}
+     * {@code StakeCredentialInvalidPoolDelegation} (Run.hs:528-529). It has no such default for {@code UTXOS}
+     * ({@code CollectErrors}: by the failure's text, else unsupported; Run.hs:495-502).
+     */
+    private static final Map<String, String> CHECKER_DEFAULTS = Map.of(
+            "DELEG.StakeKeyNotRegisteredDELEG", "StakeCredentialInvalidPoolDelegation");
+
+    /**
      * The corpus name for a Haskell {@code RULE.Constructor}, aliases included. Where several corpus names share one
-     * Haskell constructor ({@code StakeKeyNotRegisteredDELEG}), the first in alphabetical order, which is also the
-     * default of Amaru's Haskell checker ({@code normalizeDelegFailure}).
+     * Haskell constructor, the checker's default ({@link #CHECKER_DEFAULTS}), or none when it has none.
      *
-     * @return the corpus name, or empty when no corpus name maps to the constructor
+     * @return the corpus name, or empty when no corpus name, or no single one, maps to the constructor
      */
     public static Optional<String> corpusName(String qualifiedName) {
-        return NAMES.entrySet().stream()
+        List<String> names = NAMES.entrySet().stream()
                 .filter(e -> (e.getValue().rule() + "." + e.getValue().constructor()).equals(qualifiedName)
                         || aliases(e.getKey()).contains(qualifiedName))
                 .map(Map.Entry::getKey)
-                .sorted()
-                .findFirst();
+                .toList();
+        return names.size() == 1 ? Optional.of(names.getFirst())
+                : Optional.ofNullable(CHECKER_DEFAULTS.get(qualifiedName));
     }
 }

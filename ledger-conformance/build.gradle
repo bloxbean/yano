@@ -13,6 +13,8 @@
 //   ./gradlew :ledger-conformance:conformanceReport ... regenerates docs/baseline-2026-09.md,
 //                                                       docs/blueprint-vectors-2026-09.md and
 //                                                       ledger-rules/docs/conway-rule-coverage.md
+//                                                       (the -2026-09 suffix names the series start; each
+//                                                       report's "Generated" header is authoritative)
 //   -Pconformance.strict=false                         report missing coverage instead of failing (strict is the
 //                                                       default since the ADR-056 Phase 5 gate)
 //   -PblueprintVectors=<dir>                           another copy of the cardano-blueprint vectors (default: the

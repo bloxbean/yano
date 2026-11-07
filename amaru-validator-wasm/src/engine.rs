@@ -145,6 +145,11 @@ pub fn validate_request_in(request: Request, arena_pool: &ArenaPool) -> Response
     let mapping = failure::MappingContext::new(protocol_version.major(), &transaction.body);
     let transaction = transaction.tx_ref();
 
+    // WORKAROUND (Amaru v10.11.20261105, upstream request: re-export a public phase-one entry point; ADR-057 open
+    // question 1). Amaru made `phase_one::when_valid` / `when_invalid` crate-private, so `mode = phase_one` runs the
+    // full `validate_transaction`, Plutus evaluation included, and drops a phase-two verdict below. This costs
+    // `amaru-scalus` Amaru's script evaluation on every Plutus transaction (ADR-057 Phase E). Once a public
+    // phase-one entry point exists, call it for `Mode::PhaseOne` and remove the `PhaseTwo` arm.
     let result = validate_transaction(
         &mut context,
         arena_pool,
@@ -159,9 +164,8 @@ pub fn validate_request_in(request: Request, arena_pool: &ArenaPool) -> Response
     );
     match (request.mode, result) {
         (_, Ok(())) => Response::Ok,
-        // Phase one passed and only Amaru's script verdict disagrees: in phase-one mode the host's
-        // phase-2 engine judges the scripts. Amaru keeps its phase-one rules crate-private, so this
-        // mode runs the full validation and drops that verdict (INTERFACE.md, "Modes").
+        // Part of the workaround above: phase one passed and only Amaru's script verdict disagrees; in
+        // phase-one mode the host's phase-2 engine judges the scripts (INTERFACE.md, "Modes").
         (Mode::PhaseOne, Err(TransactionInvalid::PhaseTwo(_))) => Response::Ok,
         (_, Err(e)) => Response::Invalid(failure::from_transaction_invalid(&e, &mapping)),
     }

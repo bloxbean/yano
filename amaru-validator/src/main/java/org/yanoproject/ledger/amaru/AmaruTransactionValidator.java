@@ -302,7 +302,8 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
             return TxValidationOutcome.Invalid.of(LedgerFailure.ledgerStateUnavailable(resolution.unavailable()));
         }
         // Re-application (ADR-056 §6): with a reusable previous verdict, Amaru runs in phase-one mode (its static
-        // checks cannot be skipped inside the module) and no phase-2 evaluation runs.
+        // checks cannot be skipped inside the module) and the host's phase-2 evaluator does not run. From Amaru
+        // v10.11.20261105 phase-one mode still evaluates the scripts inside the module (INTERFACE.md, "Modes").
         byte[] resolvedDigest = tx != null
                 ? ReapplyPolicy.resolvedInputsDigest(ReapplyPolicy.allInputs(tx.getBody()), resolvedInputs) : null;
         ValidatedTx previous = request.previous();

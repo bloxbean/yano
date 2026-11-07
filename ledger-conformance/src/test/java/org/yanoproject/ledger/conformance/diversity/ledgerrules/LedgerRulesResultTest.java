@@ -45,6 +45,13 @@ class LedgerRulesResultTest {
     }
 
     @Test
+    void aConstructorSeveralCorpusNamesShareWithoutACheckerDefaultIsReportedBare() {
+        // UTXOS.CollectErrors: MissingCostModel, OutsideForecast, ByronTxOutInContext, ... (Run.hs:495-502).
+        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(failure("UTXOS", "CollectErrors")))))
+                .isEqualTo("CollectErrors");
+    }
+
+    @Test
     void aConstructorWithoutCorpusNameIsReportedBare() {
         Expected expected = predicate("OutputTooBigUTxO", LedgerRuleName.UTXO, "OutputTooBigUTxO");
         Observation observation = Observation.rejected(List.of(failure("UTXO", "OutputBootAddrAttrsTooBig")));

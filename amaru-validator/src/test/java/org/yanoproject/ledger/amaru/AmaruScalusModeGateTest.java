@@ -19,10 +19,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-056 step 1d / ADR-057 deviation 9: the scenario gate for {@code engine: amaru-scalus}. Amaru judges phase
- * one ({@code mode = phase_one}); the real Scalus {@code ScriptPhaseEvaluator} runs the scripts and reports the
- * phase-1 checks Amaru makes while preparing script contexts ({@code MalformedScriptWitnesses},
- * {@code CollectErrors}). Every scenario must get the same verdict, rule and Haskell constructor as
- * {@code engine: amaru} ({@link AmaruScenarioGateTest#mismatch}).
+ * one ({@code mode = phase_one}, which from Amaru {@code v10.11.20261105} also reports the phase-1 checks Amaru makes
+ * while preparing script contexts, {@code MalformedScriptWitnesses} and {@code CollectErrors}, and evaluates the scripts
+ * without reporting that verdict; INTERFACE.md, "Modes"); the real Scalus {@code ScriptPhaseEvaluator} judges the
+ * scripts. Every scenario must get the same verdict, rule and Haskell constructor as {@code engine: amaru}
+ * ({@link AmaruScenarioGateTest#mismatch}).
  */
 class AmaruScalusModeGateTest {
 

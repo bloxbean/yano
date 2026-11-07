@@ -8,7 +8,7 @@ Generated 2026-11-07 by
 ./gradlew :ledger-conformance:conformanceReport -PwithAmaru=true -PamaruWasm=<amaru_validator.wasm> -PamaruScenariosDir=<amaru clone at v10.11.20261105>
 ```
 
-Amaru module: `amaru-validator-wasm` crate 0.1.2, sha256 `b12616f87ae52aa1decbb1aaa64384efaba529dd017b1a93243a470c28a41046` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
+Amaru module: `amaru-validator-wasm` crate 0.1.2, sha256 `001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
 
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
@@ -25,19 +25,19 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
 | `java-julc` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, julc phase 2 (Yano script contexts, julc CEK machine) |
 | `java-scalus` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, Scalus phase 2 |
-| `amaru` | AmaruTransactionValidator, engine amaru, Endive AOT (reference; ADR-057); module crate 0.1.2, sha256 b12616f87ae52aa1decbb1aaa64384efaba529dd017b1a93243a470c28a41046 |
+| `amaru` | AmaruTransactionValidator, engine amaru, Endive AOT (reference; ADR-057); module crate 0.1.2, sha256 001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964 |
 
 ## Summary
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 253/368 | 133/368 | 133/368 | 39/94 | 6/6 | 33/86 | 2.09 |
-| `scalus-legacy+supplementary` | 292/368 | 170/368 | 170/368 | 54/94 | 6/6 | 47/86 | 0.37 |
-| `scalus-engine` | 275/368 | 240/368 | 240/368 | 56/94 | 6/6 | 50/86 | 0.47 |
-| `java-legacy` | 235/368 | 51/368 | 162/368 | 12/94 | 0/6 | 21/86 | 0.35 |
-| `java-julc` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.61 |
-| `java-scalus` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.43 |
-| `amaru` | 366/368 | 350/368 | 350/368 | 86/94 | 4/6 | 79/86 | 2.61 |
+| `scalus-legacy` | 253/368 | 133/368 | 133/368 | 39/94 | 6/6 | 33/86 | 2.42 |
+| `scalus-legacy+supplementary` | 292/368 | 170/368 | 170/368 | 54/94 | 6/6 | 47/86 | 0.48 |
+| `scalus-engine` | 275/368 | 240/368 | 240/368 | 56/94 | 6/6 | 50/86 | 0.49 |
+| `java-legacy` | 235/368 | 51/368 | 162/368 | 12/94 | 0/6 | 21/86 | 0.36 |
+| `java-julc` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.70 |
+| `java-scalus` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.50 |
+| `amaru` | 366/368 | 350/368 | 350/368 | 86/94 | 4/6 | 79/86 | 2.65 |
 
 *Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 85 of the 86 constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: `MempoolTransitionTest`).
 

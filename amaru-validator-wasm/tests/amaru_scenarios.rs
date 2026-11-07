@@ -397,7 +397,9 @@ fn haskell_name(corpus: &str) -> Option<(&'static str, &'static str)> {
 fn haskell_aliases(corpus: &str) -> &'static [(&'static str, &'static str)] {
     match corpus {
         // `normalizeGovCertFailure` (Run.hs:547-550): a wrong DRep refund is `ConwayDRepIncorrectRefund`
-        // (Conway/Rules/GovCert.hs:242), spelled like a wrong deposit.
+        // (Conway/Rules/GovCert.hs:242), spelled like a wrong deposit. Keyed by corpus name, so it also lets a
+        // deposit scenario (00347) pass with the refund constructor; failure.rs picks between the two from the
+        // certificate.
         "IncorrectDepositDRep" => &[("GOVCERT", "ConwayDRepIncorrectRefund")],
         _ => &[],
     }

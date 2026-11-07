@@ -84,7 +84,7 @@ hash32          = bytes .size 32
 credential      = [0, hash28] / [1, hash28]           ; key hash / script hash (Conway CDDL)
 drep            = [0, hash28] / [1, hash28] / [2] / [3] ; key, script, abstain, no confidence
 tx_in           = [transaction_id: hash32, index: uint .size 2]
-gov_action_id   = [transaction_id: hash32, index: uint .size 4]
+gov_action_id   = [transaction_id: hash32, index: uint .size 2]
 epoch           = uint
 slot            = uint
 coin            = uint
@@ -163,7 +163,7 @@ committee_member = [cold: credential,
 
 proposal = [gov_action_id, proposal_kind, valid_until: epoch]  ; valid_until = proposed epoch + lifetime
 proposal_kind = [0, any_in_security_group: bool]   ; parameter change
-              / [1, major: uint, minor: uint]      ; hard-fork initiation to that version
+              / [1, major: uint .size 4, minor: uint .size 4]  ; hard-fork initiation to that version
               / [2]                                ; no confidence / update committee
               / [3]                                ; new constitution
               / [4]                                ; treasury withdrawals
@@ -321,7 +321,7 @@ bytes after it are an error:
 
 ```cddl
 keys_env = { ? 0: 1,                          ; abi_version
-             1: [major: uint, minor: uint] }  ; decode the tx under this protocol version
+             1: [major: uint .size 4, minor: uint .size 4] }  ; decode the tx under this protocol version
                                               ; (the one the validate request will carry)
 
 required_keys_response = {
@@ -354,9 +354,13 @@ phase one, then phase two. Both modes therefore call `validate_transaction`:
   phase-2 engine judges the scripts.
 
 Amaru's Plutus evaluation therefore also runs in phase-one mode (the fallback
-ADR-057 open question 1 names), and phase-one mode now reports the phase-1 checks
-Amaru makes while preparing script contexts (`PreparationError`), with the same
-names as full mode:
+ADR-057 open question 1 names; an isolated workaround in `src/engine.rs` until
+Amaru re-exports a public phase-one entry point). That is a cost regression:
+`amaru-scalus` now pays Amaru's script evaluation as well as the host's, p50
+15–44 ms and p99 170–250 ms per real preprod/preview Plutus transaction against
+3 ms and 7 ms before (ADR-057 Phase E re-run, 2026-11-07). Phase-one mode also
+reports the phase-1 checks Amaru makes while preparing script contexts
+(`PreparationError`), with the same names as full mode:
 - `UTXOW.MalformedScriptWitnesses`: Plutus script witnesses that do not decode;
 - `UTXOS.CollectErrors` with `NoCostModel`: a script language with no cost model;
 - `UTXOS.CollectErrors` with `BadTranslation`: `TxInfo` translation failures
@@ -369,13 +373,14 @@ phase-one mode matches full mode on every scenario, except that a full-mode
 `ValidationTagMismatch` is `ok`.
 
 Up to `v10.11.20260925` phase-one mode called the then-public
-`phase_one::execute` and did not report the checks above.
+`phase_one::execute`: it ran no Plutus and did not report the checks above.
 
 ## Interface invariants for hosts
 
 1. **Conway only (ADR-057 invariant 6).** The host refuses protocol versions below
    10 before building a request. The module validates whatever Amaru accepts;
-   Amaru's corpus even includes a hard-fork proposal made at version 9.0.
+   18 of Amaru's 368 scenarios run at protocol version 9.0, and the native scenario
+   gate validates them all.
 2. **One snapshot per request.** Build each request from one ADR-056 canonical
    snapshot plus overlay (invariant 3).
 3. **Bumping `abi_version`.** Any change to these schemas bumps `abi_version`. An

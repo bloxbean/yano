@@ -867,6 +867,13 @@ The static set is taken from the `lblStatic`/`runTestOnSignal` labels at the
 pinned revision (`Babbage/Rules/Utxow.hs`, `Babbage/Rules/Utxo.hs`,
 `Alonzo/Rules/Utxos.hs`).
 
+**Exception, the Amaru engines (from Amaru `v10.11.20261105`).** The Amaru
+module cannot skip Plutus: Amaru made its phase-one rules crate-private, so
+phase-one mode runs Amaru's script evaluation inside the module (ADR-057 open
+question 1). Under `amaru` and `amaru-scalus`, re-application and every
+`amaru-scalus` admission cost Amaru's Plutus evaluation, tens to hundreds of
+milliseconds per real Plutus transaction (ADR-057 Phase E re-run, 2026-11-07).
+
 **Block production.**
 - `BlockTransactionSelectors.selectMempool` acquires one `CanonicalSnapshot`
   (§3) and releases it after the block is forged or the selection is discarded.
@@ -2195,7 +2202,8 @@ same base-plus-delta model.
   adapter** runs `YanoCardanoMutator.reapply` (Scalus's validators minus the `lblStatic` ones — signatures,
   metadata, script well-formedness, empty inputs, bootstrap attributes, the three network checks, size — and the
   mutators minus `PlutusScriptsTransactionMutator`); the **Amaru adapter** runs the module in phase-one mode and
-  no phase-2 evaluation (the module's static checks cannot be skipped from outside).
+  no host phase-2 evaluation (the module's static checks cannot be skipped from outside; from Amaru
+  `v10.11.20261105` phase-one mode also runs Amaru's own Plutus evaluation, §6).
 - **Phase-2-invalid policy** is enforced on this path by the engines (`isValid=true` with a failing script →
   `UTXOS.ValidationTagMismatch`; `isValid=false` → `ENGINE.Phase2InvalidTxNotSupported`), verified from `LOCAL` and
   `PEER`.
@@ -2226,8 +2234,8 @@ same base-plus-delta model.
   | `amaru` (wasm, `phase2: scalus`) | 8.27 s | 8.04 s | ≤ 2 s: **not met** |
 
   **Recorded reason (decision 3):** Amaru's cost is the module call itself (`required_keys` plus `validate`, about
-  0.8 ms per transaction in Chicory), and phase-one mode only saves Plutus, so a re-application rebuild costs about
-  the same as full validation; the 2 s target holds for Amaru up to roughly 2,400 mempool transactions. Above that a
+  0.8 ms per transaction in Chicory), and phase-one mode only saves Plutus (nothing from Amaru `v10.11.20261105`,
+  §6), so a re-application rebuild costs about the same as full validation; the 2 s target holds for Amaru up to roughly 2,400 mempool transactions. Above that a
   rebuild can take several seconds and, on a fast devnet with a large mempool, lead to `CATCHING_UP` (the accepted
   fallback, never a stale publication). Amaru stays the optional oracle (ADR-057); the default and `java` meet the
   target.

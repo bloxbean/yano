@@ -102,14 +102,21 @@ public final class HaskellFailureLists {
             List.of("UTXO.ValueNotConservedUTxO", "UTXO.InsufficientCollateral");
 
     /**
-     * Scenarios 00292 and 00305: a DRep deregistration of an unregistered DRep ({@code ConwayDRepNotRegistered}), or
-     * stating a refund other than the recorded deposit ({@code ConwayDRepIncorrectRefund}; Conway/Rules/GovCert.hs:
-     * 234-242). Value conservation consumes the <em>stated</em> refund ({@code conwayDRepRefundsTxCerts},
-     * Conway/TxCert.hs:852-858), and these transactions balance without it, so {@code UTXO} reports
-     * {@code ValueNotConservedUTxO} too; {@code LEDGER} lists {@code UTXOW}'s subtree first.
+     * Scenario 00292: a DRep deregistration of an unregistered DRep ({@code ConwayDRepNotRegistered},
+     * Conway/Rules/GovCert.hs:241). Value conservation consumes the <em>stated</em> refund
+     * ({@code conwayDRepRefundsTxCerts}, Conway/TxCert.hs:852-858), and the transaction balances without it, so
+     * {@code UTXO} reports {@code ValueNotConservedUTxO} too; {@code LEDGER} lists {@code UTXOW}'s subtree first.
      */
     public static final List<String> UNREGISTERED_DREP_REFUND =
             List.of("UTXO.ValueNotConservedUTxO", "GOVCERT.ConwayDRepNotRegistered");
+
+    /**
+     * Scenario 00305: a DRep deregistration stating a refund of 110 lovelace where the recorded deposit is 100
+     * ({@code ConwayDRepIncorrectRefund}, Conway/Rules/GovCert.hs:242). The transaction balances with the recorded
+     * 100, while value conservation consumes the stated 110 ({@code conwayDRepRefundsTxCerts}, Conway/TxCert.hs:
+     * 852-858), so {@code UTXO} reports {@code ValueNotConservedUTxO} by 10 lovelace too; {@code LEDGER} lists
+     * {@code UTXOW}'s subtree first.
+     */
     public static final List<String> INCORRECT_DREP_REFUND =
             List.of("UTXO.ValueNotConservedUTxO", "GOVCERT.ConwayDRepIncorrectRefund");
 

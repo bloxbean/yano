@@ -895,12 +895,60 @@ counted.
   287–297 ms and 188 ms. These are single-transaction costs; a block with several such transactions takes seconds in
   `amaru`, against a few milliseconds per transaction in the Java engines.
 - **`phase2: scalus`**, the node default, stays at p50 2.8–3.4 ms and p99 6.5–7.5 ms on the same sample: the p99
-  is inside the target, the p50 is 0.8–1.4 ms over it and 0.6–1.5 ms above `java-scalus`.
+  is inside the target, the p50 is 0.8–1.4 ms over it and 0.6–1.5 ms above `java-scalus`. **No longer true from
+  Amaru `v10.11.20261105`**: `amaru-scalus` now pays Amaru's script evaluation too (re-run below).
 - **Consequences.** In the node, `amaru` (admission engine, admission shadow or shadow-sync engine) should keep the
   default `phase2: scalus`. `phase2: amaru` (full) is the test-oracle mode: fine on devnets and on the scenario
   corpus, but on public networks with Plutus-heavy blocks it would cost tens to hundreds of milliseconds per script
   transaction and fall behind the Java engines. Speeding up Amaru's script evaluation in the module would be the fix;
   it is not part of this ADR.
+
+#### Phase E results: benchmark re-run after the Amaru `v10.11.20261105` bump (2026-11-07)
+
+**Regression.** At `v10.11.20261105` (`c773f84`) Amaru made its phase-one rules crate-private
+(`phase_one::when_valid` / `when_invalid` are `pub(crate)`), so `mode = phase_one` calls `validate_transaction`,
+which always runs Amaru's Plutus evaluation, and drops a phase-two verdict (open question 1, reopened; an isolated
+workaround in `amaru-validator-wasm/src/engine.rs`). `engine: amaru-scalus` therefore pays Amaru's script evaluation
+on every Plutus transaction, on top of Scalus's: in admission, the admission shadow, shadow sync and re-application.
+
+**Setup.** As above (Apple M4 Max, 16 cores, macOS 26.0.1, OpenJDK 25.0.2), but a loaded machine: 1-minute load
+average 10–12 on 16 cores (other builds were running; no Yano node). Module sha256
+`001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964`, crate `0.1.2`, Amaru `v10.11.20261105`,
+scenarios from the same tag (350 at PV ≥ 10). Julc: the repository's `0.1.0-pre20` (no init script). Parent commit
+`65307919c`. Default passes. Same public-network corpus (the 15 replay bundles of `PublicNetworkTransactions`).
+Two runs; they agree within 6 % except single-sample maxima. Run 2:
+
+| Corpus | Engine | cases | samples | p50 | p90 | p99 | max | valid |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| scenarios | `java-julc` | 350 | 1,750 | 0.239 | 0.390 | 0.697 | 4.9 | 124/350 |
+| scenarios | `java-scalus` | 350 | 1,750 | 0.230 | 0.611 | 1.413 | 17.5 | 124/350 |
+| scenarios | `amaru` | 350 | 1,750 | 1.029 | 1.975 | 2.713 | 32.7 | 124/350 |
+| preprod | `java-julc` | 9 | 900 | 1.293 | 2.693 | 3.866 | 5.5 | 9/9 |
+| preprod | `java-scalus` | 9 | 900 | 1.680 | 4.166 | 4.783 | 5.7 | 9/9 |
+| preprod | `amaru` | 6 | 600 | 14.3 | 239.8 | 242.3 | 243.4 | 6/6 |
+| preprod | `amaru-scalus` | 6 | 600 | **15.2** | 231.1 | **244.5** | 248.4 | 6/6 |
+| preview | `java-julc` | 6 | 600 | 1.130 | 2.478 | 2.679 | 8.8 | 6/6 |
+| preview | `java-scalus` | 6 | 600 | 2.354 | 4.636 | 5.173 | 7.1 | 6/6 |
+| preview | `amaru` | 5 | 500 | 42.0 | 167.5 | 171.7 | 176.1 | 5/5 |
+| preview | `amaru-scalus` | 5 | 500 | **43.5** | 169.5 | **177.7** | 183.2 | 5/5 |
+
+(Run 1: `amaru-scalus` p50 15.2 / 43.1 ms, p99 245.1 / 173.5 ms; `amaru` p50 14.5 / 41.5 ms, p99 241.9 / 168.4 ms,
+preprod / preview.)
+
+- **`amaru-scalus` is now `amaru` plus Scalus**: p50 15 ms (preprod) and 43 ms (preview), p99 245 and 178 ms, against
+  3.0 / 2.8 ms and 6.6 / 6.9 ms at `v10.11.20260925`: about 5–16 times slower at p50 and 26–37 times at p99. On the
+  same sample `java-scalus` stays at p50 1.7 / 2.4 ms. The target is not met on real Plutus transactions by either
+  Amaru engine; the scenario corpus (small test scripts) still meets it (`amaru` p50 1.0 ms, p99 2.7 ms).
+- `amaru` itself is in line with 2026-09-30 (p50 14 / 42 ms against 17–19 / 46–47 ms, p99 242 / 172 ms against
+  287–297 / 188 ms, preprod / preview).
+- **Footprint** (`AmaruFootprintBenchmarkTest`, one run, same load): parse 138 ms, first instance 98 ms, first
+  `validate` 21.6 ms, first corpus pass 2.3 ms per request (368 requests), metaspace 13.3 MiB, retained heap
+  34.9 MiB once per JVM, 9.6 MiB per fresh instance and 14.8 MiB after a corpus pass, warm instantiation p50
+  0.64 ms: within the load-induced noise of the 2026-09-30 figures.
+- **Consequences.** Until Amaru re-exports a public phase-one entry point, `amaru-scalus` costs as much as `amaru`
+  on Plutus-heavy public-network traffic: tens to hundreds of milliseconds per script transaction in admission and
+  shadow sync, and no Plutus saving in re-application. Prefer the Java engines for admission on public networks; the
+  Amaru engines remain the oracle.
 
 ## Acceptance criteria
 
@@ -949,6 +997,9 @@ Status on 2026-09-30.
   must track Amaru's API changes on each bump.
 - It runs about 15–20× slower than native Amaru, which is fine for admission
   (about 1 ms per transaction) but not for bulk sync validation.
+- From Amaru `v10.11.20261105` phase-one mode runs Amaru's Plutus evaluation
+  (open question 1): `amaru-scalus` costs p50 15–44 ms and p99 170–250 ms per
+  real Plutus transaction (Phase E re-run, 2026-11-07), up from 3 ms and 7 ms.
 - Differences in state mapping between Yano's model and Amaru's (DRep
   `valid_until`, committee candidates, enacted roots) are a new class of bugs.
   The scenario and differential gates catch them only on the paths they
@@ -980,10 +1031,15 @@ reverts this ADR completely. No persisted state is involved.
    script context (`CollectErrors`: NoCostModel, BadTranslation, including the
    Plutus V3 disjoint-reference-inputs check). Phase-one mode misses these, so
    the `phase2: scalus` path must report them
-   (`amaru-validator-wasm/INTERFACE.md`). From `v10.11.20261105` the
-   phase-one rules are crate-private, so `mode = phase_one` runs
+   (`amaru-validator-wasm/INTERFACE.md`).*
+   *Reopened at `v10.11.20261105`: the phase-one rules are crate-private
+   (`phase_one::when_valid` / `when_invalid`), so `mode = phase_one` runs
    `validate_transaction` and reports a phase-two verdict as `ok` (the
-   fallback below); it now reports those checks itself.*
+   fallback below; an isolated workaround in `src/engine.rs`). It now reports
+   the checks above itself, but runs Amaru's Plutus evaluation, which costs
+   `amaru-scalus` tens to hundreds of milliseconds per real Plutus transaction
+   (Phase E re-run). Upstream request: re-export a public phase-one entry
+   point.*
    Is Amaru's phase-one entry point (`rules::transaction::phase_one::execute`)
    public at the pinned tag? If not, `phase2: scalus` needs a small upstream
    visibility change. Until then it runs `full` and discards Amaru's phase-2
