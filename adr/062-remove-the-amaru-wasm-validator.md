@@ -228,13 +228,17 @@ module, its files, its configuration keys, its engine names or ADR-057's steps a
 ## Open questions
 
 1. **A Haskell oracle for mutants.** Mutants are compared with the Haskell failures they pin, each cited from the
-   Haskell source. Running new mutants through Haskell itself (Amaru's `tests/conformance/run-haskell.sh` drives the
-   Haskell ledger on this fixture format) would replace the second opinion Amaru gave. Lean: a follow-up issue, not
-   this change.
+   Haskell source. Running them through the Haskell ledger itself would replace the second opinion Amaru gave.
+   Amaru's `crates/amaru/tests/conformance/validation-rules` is a small Haskell program, built with cabal against
+   the cardano-ledger packages (Conway 1.22.1.0 at `v10.11.20261105`), that validates scenarios in this fixture
+   format (`conformance validate-phase-one --test-directory … --json-report …`). Yano would write its mutants as
+   scenarios and run them through it. Lean: a follow-up issue, not this change.
 
 ## Revision history
 
 - r1 (2026-11-07): initial version.
+- r5 (2026-11-07): open question 1 names Amaru's Haskell ledger checker (`validation-rules`); r4 cited
+  `run-haskell.sh`, which is Amaru's UPLC runner.
 - r4 (2026-11-07, responds to Codex's review of r3): D3 and its startup test are qualified by transaction validation
   being enabled (Codex F16).
 - r3 (2026-11-07, responds to the reviews of r2): D3's precondition (Fable F9); the corpus job's fetch, tag check,
