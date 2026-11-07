@@ -53,8 +53,9 @@ class AmaruScalusPhaseTwoTest {
     }
 
     /**
-     * Amaru decodes a witness set with key 8; Haskell's decoder does not ({@code AlonzoTxWits}: keys 0-7), and neither
-     * does {@code RawTransaction}, which the effects are derived from: a decoding failure, not an engine failure.
+     * A witness set with key 8: Haskell's decoder refuses it ({@code AlonzoTxWits}: keys 0-7), and so does Amaru's from
+     * {@code v10.11.20261105} (up to {@code v10.11.20260925} Amaru accepted it and the engine refused it while deriving
+     * the effects): a decoding failure, not an engine failure.
      */
     @Test
     void aTransactionHaskellCannotDecodeIsADecodingFailure() {
@@ -65,8 +66,7 @@ class AmaruScalusPhaseTwoTest {
         assertThat(validate(tx, 10)).isInstanceOfSatisfying(TxValidationOutcome.Invalid.class, invalid -> {
             assertThat(invalid.failures()).extracting(LedgerFailure::qualifiedName)
                     .containsExactly("ENGINE." + AmaruTransactionValidator.DECODING_FAILURE);
-            assertThat(invalid.failures().getFirst().detail()).contains("Amaru accepted")
-                    .contains("unknown witness set key 8");
+            assertThat(invalid.failures().getFirst().detail()).contains("unrecognised field key: 8");
         });
     }
 

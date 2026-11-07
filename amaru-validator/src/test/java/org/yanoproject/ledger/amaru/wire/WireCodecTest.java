@@ -29,14 +29,15 @@ class WireCodecTest {
 
     @Test
     void keysEnvMatchesTheReferenceLayout() {
-        // {0: 1, 1: [10, 0]}
-        assertThat(HexUtil.encodeHexString(AmaruRequestEncoder.keysEnv(10, 0))).isEqualTo("a2000101820a00");
+        // {0: 2, 1: [10, 0]}
+        assertThat(HexUtil.encodeHexString(AmaruRequestEncoder.keysEnv(10, 0))).isEqualTo("a2000201820a00");
     }
 
     @Test
-    void rationalsAreShortestDecimalFractions() {
+    void rationalsAreFractionsInLowestTerms() {
         assertThat(rational(new BigDecimal("0.0577"))).isEqualTo("d81e82190241192710");
-        assertThat(rational(new BigDecimal("1.20"))).isEqualTo("d81e820c0a");
+        assertThat(rational(new BigDecimal("1.20"))).isEqualTo("d81e820605");
+        assertThat(rational(new BigDecimal("0.75"))).isEqualTo("d81e820304");
         assertThat(rational(new BigDecimal("15"))).isEqualTo("d81e820f01");
         assertThat(rational(new BigDecimal("1E+2"))).isEqualTo("d81e82186401");
         assertThat(rational(BigDecimal.ZERO)).isEqualTo("d81e820001");

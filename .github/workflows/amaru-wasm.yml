@@ -160,7 +160,7 @@ jobs:
           rm -rf target/scenario-requests   # never replay requests cached from an earlier run
           AMARU_DUMP_REQUESTS_DIR="$PWD/target/scenario-requests" \
             cargo test --locked -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
-          grep -E 'Amaru scenarios .*: 276 matched of 276' "$RUNNER_TEMP/test.log"
+          grep -E 'Amaru scenarios .*: 368 matched of 368' "$RUNNER_TEMP/test.log"
 
       - name: Build the wasm module (wasi-sdk, wasm-opt, import/feature check, sha256)
         run: scripts/build-wasm.sh
@@ -236,10 +236,10 @@ jobs:
           [[ "$actual" == "$commit" ]] \
             || { echo "::error::tag $tag is at $actual, AMARU_VERSION pins $commit"; exit 1; }
 
-      - name: Conformance harness (Amaru reference, 276 scenarios, blueprint vectors, mutation matrix, strict coverage)
+      - name: Conformance harness (Amaru reference, 368 scenarios, blueprint vectors, mutation matrix, strict coverage)
         # conformance.strict is the default since the ADR-056 Phase 5 gate; it is passed explicitly so that
         # this job never runs without it: every in-scope constructor needs a @Covers test, and the Java engine
-        # must match all 276 scenarios (JavaEnginePhase5GateTest) and pass every blueprint vector Amaru passes
+        # must match all 368 scenarios (JavaEnginePhase5GateTest) and pass every blueprint vector Amaru passes
         # (BlueprintVectorGateTest). The blueprint vectors are vendored under ledger-conformance/vectors/cardano-blueprint.
         shell: bash
         run: |

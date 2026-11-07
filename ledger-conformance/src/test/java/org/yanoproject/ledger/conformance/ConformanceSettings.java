@@ -16,7 +16,7 @@ import java.util.Optional;
 public final class ConformanceSettings {
 
     /** The Amaru tag the scenarios and the Amaru engine are pinned to ({@code amaru-validator-wasm/AMARU_VERSION}). */
-    public static final String AMARU_TAG = "v10.11.20260925";
+    public static final String AMARU_TAG = "v10.11.20261105";
 
     private ConformanceSettings() {
     }

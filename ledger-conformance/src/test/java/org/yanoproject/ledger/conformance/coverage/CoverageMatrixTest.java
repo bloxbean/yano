@@ -60,7 +60,7 @@ class CoverageMatrixTest {
             if (s.expected() instanceof Expected.Predicate p) {
                 assertThat(catalogue.contains(p.qualifiedName()))
                         .as("%s expects %s (%s)", s.name(), p.qualifiedName(), p.corpusName()).isTrue();
-                assertThat(AmaruCorpusNames.haskellName(p.corpusName())).isPresent();
+                assertThat(AmaruCorpusNames.haskellName(s.name(), p.corpusName())).isPresent();
             }
         }));
     }

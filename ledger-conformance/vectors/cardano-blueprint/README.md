@@ -19,7 +19,7 @@ the events (transactions, slot ticks, epoch changes), the ledger state after, an
 | Contents | 320 vectors under `eras/`, 44 protocol-parameter records under `pparams/` |
 | Vendored | 2026-09-29 |
 
-The same 364 files, byte for byte, are in Amaru at tag `v10.11.20260925`
+The same 364 files, byte for byte, are in Amaru at tag `v10.11.20261105` (and `v10.11.20260925`)
 (`crates/amaru-ledger/tests/data/rules-conformance`), the tag `amaru-validator-wasm/AMARU_VERSION` pins.
 cardano-blueprint `main` (`0f0c17e1` at the time of vendoring) still carries an older tarball in a different format
 (one JSON file per transaction), which the loader does not read.

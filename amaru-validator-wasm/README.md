@@ -21,14 +21,14 @@ Its golden tests compare the Java request encoder with the requests `cargo test`
 
 | File | What it is |
 |---|---|
-| `Cargo.toml`, `Cargo.lock` | Git dependencies on `amaru-kernel`, `amaru-ledger` and `amaru-plutus` at the pinned tag. The lockfile pins the exact commit. |
+| `Cargo.toml`, `Cargo.lock` | Git dependencies on `amaru-kernel`, `amaru-ledger` and `amaru-uplc` (the arena pool) at the pinned tag. The lockfile pins the exact commit. |
 | `rust-toolchain.toml` | The nightly that Amaru pins at that tag, plus the `wasm32-wasip1` target. |
 | `AMARU_VERSION` | `tag=`, `commit=` and `toolchain=` lines. Embedded in the module and returned by `amaru_version`, followed by `crate=<Cargo.toml version>`. Bump the crate version whenever the failure mapping (`src/failure.rs`) or any other host-visible behaviour changes; Yano's conformance harness refuses a module whose `crate=` differs from `Cargo.toml`. |
-| `INTERFACE.md` | Interface v1: exports, CBOR request and response schemas (CDDL), and absence semantics. |
-| `src/interface.rs` | The reference codec for the v1 documents. |
+| `INTERFACE.md` | Interface version 2: exports, CBOR request and response schemas (CDDL), and absence semantics. |
+| `src/interface.rs` | The reference codec for the interface documents. |
 | `src/engine.rs` | `required_keys` and `validate`, built on Amaru's public API. |
 | `src/failure.rs` | Amaru errors mapped to the Haskell rule and constructor at ADR-056's pinned `cardano-ledger` revision. Every variant is mapped explicitly. |
-| `tests/amaru_scenarios.rs` | Fixture-equivalence gate: all 276 Amaru scenarios in both modes (phase, rule and constructor), `required_keys` sufficiency, and arena growth. |
+| `tests/amaru_scenarios.rs` | Fixture-equivalence gate: all 368 Amaru scenarios in both modes (phase, rule and constructor), `required_keys` sufficiency, and arena growth. |
 | `scripts/build-wasm.sh` | Release build, `wasm-opt -O3`, the import and feature check, and sha256. |
 | `scripts/wasm_check.py` | Enforces WASI p1 imports only, the v1 exports, and no threads/atomics/SIMD/EH/tail-call/GC. |
 | `scripts/run_wasm_scenarios.py` | Replays every `validate` and `required_keys` call through the built `.wasm` (wasmtime). Its responses must equal the native ones byte for byte. |
@@ -95,8 +95,9 @@ waits for `release-dist.yml` to create the GitHub release, then attaches them to
 4. The response is `ok`, `invalid {phase, rule, constructor, amaru_error, detail}`, or
    `error {message}`.
 
-`mode = phase_one` runs Amaru's public `phase_one::execute` only. `mode = full` runs
-`validate_transaction`, which adds Amaru's Plutus evaluation.
+Both modes run Amaru's `validate_transaction` (phase one, then Amaru's Plutus evaluation).
+`mode = full` returns its verdict; `mode = phase_one` reports a phase-two verdict
+(`ValidationTagMismatch`) as `ok`, leaving the scripts to the host (`INTERFACE.md`, "Modes").
 
 ## Upgrading Amaru
 
@@ -109,13 +110,13 @@ This is the ADR-057 §4 runbook, made concrete:
 3. **Re-check the workspace overrides.**
    - Copy the tag's `rust-toolchain.toml` channel.
    - Check its root `Cargo.toml` for `[patch.*]` sections. Cargo ignores a dependency's patches,
-     so copy any it has into ours. There are none at `v10.11.20260925`.
+     so copy any it has into ours. There are none at `v10.11.20261105`.
    - `crates/vendor/*` path dependencies resolve inside the git checkout and need nothing.
 4. **Re-seed the lockfile.** Copy Amaru's `Cargo.lock` from the tag over ours. Run one
    `cargo build` without `--locked`, then use `--locked` for everything else. Diff the lockfile:
    no crate should change version from Amaru's lock.
 5. **Adapt the wrapper.** Build, and follow the compile errors:
-   - `validate_transaction`, `phase_one::execute`, `DefaultValidationContext::new` and
+   - `validate_transaction`, `DefaultValidationContext::new` and
      `prepare_transaction` in `src/engine.rs`;
    - the kernel types in `src/interface.rs`;
    - the error enums in `src/failure.rs`. These matches have no catch-all, so a new Amaru variant

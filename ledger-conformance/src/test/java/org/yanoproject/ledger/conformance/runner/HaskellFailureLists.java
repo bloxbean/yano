@@ -85,6 +85,50 @@ public final class HaskellFailureLists {
     public static final List<String> BAD_PARENT_UNREGISTERED_RETURN_ACCOUNT =
             List.of("GOV.ProposalReturnAccountDoesNotExist", "GOV.InvalidPrevGovActionId");
 
+    /**
+     * Scenario 00285: the redeemers' execution units sum past 2^64. Haskell sums {@code ExUnits} as {@code Natural}, so
+     * the total exceeds {@code ppMaxTxExUnits} ({@code validateExUnitsTooBigUTxO}, Babbage/Rules/Utxo.hs:409) and the
+     * minimum fee, which prices it, exceeds the fee ({@code feesOK}, :371); {@code LEDGER} lists the {@code UTXO}
+     * checks in reverse execution order.
+     */
+    public static final List<String> EX_UNITS_OVERFLOW = List.of("UTXO.ExUnitsTooBigUTxO", "UTXO.FeeTooSmallUTxO");
+
+    /**
+     * Scenario 00381: a fee of 2^64 - 1 needs more collateral than the inputs hold ({@code InsufficientCollateral},
+     * {@code feesOK} part 5 through {@code validateTotalCollateral}, Babbage/Rules/Utxo.hs:216-245), and the spend does
+     * not balance ({@code ValueNotConservedUTxO}, :378); {@code LEDGER} lists them reversed.
+     */
+    public static final List<String> MAXIMUM_FEE_INSUFFICIENT_COLLATERAL =
+            List.of("UTXO.ValueNotConservedUTxO", "UTXO.InsufficientCollateral");
+
+    /**
+     * Scenario 00292: a DRep deregistration of an unregistered DRep ({@code ConwayDRepNotRegistered},
+     * Conway/Rules/GovCert.hs:241). Value conservation consumes the <em>stated</em> refund
+     * ({@code conwayDRepRefundsTxCerts}, Conway/TxCert.hs:852-858), and the transaction balances without it, so
+     * {@code UTXO} reports {@code ValueNotConservedUTxO} too; {@code LEDGER} lists {@code UTXOW}'s subtree first.
+     */
+    public static final List<String> UNREGISTERED_DREP_REFUND =
+            List.of("UTXO.ValueNotConservedUTxO", "GOVCERT.ConwayDRepNotRegistered");
+
+    /**
+     * Scenario 00305: a DRep deregistration stating a refund of 110 lovelace where the recorded deposit is 100
+     * ({@code ConwayDRepIncorrectRefund}, Conway/Rules/GovCert.hs:242). The transaction balances with the recorded
+     * 100, while value conservation consumes the stated 110 ({@code conwayDRepRefundsTxCerts}, Conway/TxCert.hs:
+     * 852-858), so {@code UTXO} reports {@code ValueNotConservedUTxO} by 10 lovelace too; {@code LEDGER} lists
+     * {@code UTXOW}'s subtree first.
+     */
+    public static final List<String> INCORRECT_DREP_REFUND =
+            List.of("UTXO.ValueNotConservedUTxO", "GOVCERT.ConwayDRepIncorrectRefund");
+
+    /**
+     * Scenario 00322: a spend's redeemer tagged as a mint. {@code hasExactSetOfRedeemers} reports the mint redeemer as
+     * extra and the spend's as missing ({@code sequenceA_}, Alonzo/Rules/Utxow.hs:259-262; one {@code UTXOW} predicate,
+     * so {@code LEDGER} keeps their order), and the script context collection finds no spend redeemer
+     * ({@code UTXOS.CollectErrors [NoRedeemer]}, as {@link #MISSING_REDEEMER}).
+     */
+    public static final List<String> REDEEMER_WITH_WRONG_PURPOSE =
+            List.of("UTXOW.ExtraRedeemers", "UTXOW.MissingRedeemers", "UTXOS.CollectErrors");
+
     private static final Map<String, List<String>> SCENARIOS = Map.ofEntries(
             Map.entry("00148-fail-parameter-change-proposal-chaining-to-a-non-existent-parent",
                     BAD_PARENT_UNREGISTERED_RETURN_ACCOUNT),
@@ -99,7 +143,12 @@ public final class HaskellFailureLists {
             Map.entry("00103-fail-script-credential-delegation-after-conway-unreg",
                     SCRIPT_DELEGATION_AFTER_DEREGISTRATION),
             Map.entry("00072-fail-stake-registration-cert-with-incorrect-deposit", STATED_KEY_DEPOSIT_BALANCED),
-            Map.entry("00273-fail-stake-registration-with-a-zero-deposit", STATED_KEY_DEPOSIT_BALANCED));
+            Map.entry("00273-fail-stake-registration-with-a-zero-deposit", STATED_KEY_DEPOSIT_BALANCED),
+            Map.entry("00285-fail-plutus-redeemers-whose-summed-ex-units-overflow-64-bits", EX_UNITS_OVERFLOW),
+            Map.entry("00292-fail-drep-unregistration-of-an-unregistered-drep", UNREGISTERED_DREP_REFUND),
+            Map.entry("00305-fail-drep-deregistration-with-incorrect-refund", INCORRECT_DREP_REFUND),
+            Map.entry("00322-fail-redeemer-with-incorrect-purpose", REDEEMER_WITH_WRONG_PURPOSE),
+            Map.entry("00381-fail-maximum-fee-with-insufficient-collateral", MAXIMUM_FEE_INSUFFICIENT_COLLATERAL));
 
     private HaskellFailureLists() {
     }

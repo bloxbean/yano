@@ -381,7 +381,7 @@ def main():
             print(f"PROBLEM: {problem}")
     if report["problems"]:
         sys.exit(1)
-    print("OK: WASI p1 imports only, interface v1 exports present, no threads/atomics/SIMD/EH/tail-call/GC")
+    print("OK: WASI p1 imports only, interface exports present, no threads/atomics/SIMD/EH/tail-call/GC")
 
 
 if __name__ == "__main__":

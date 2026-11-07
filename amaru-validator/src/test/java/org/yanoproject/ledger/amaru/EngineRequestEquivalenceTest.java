@@ -73,7 +73,8 @@ class EngineRequestEquivalenceTest {
         System.out.println("Engine requests equivalent to the reference: " + (compared - mismatches.size()) + " of "
                 + compared);
         assertThat(mismatches).isEmpty();
-        assertThat(compared).isEqualTo(AmaruScenarioLoader.EXPECTED_SCENARIOS - 4);
+        // Skipped: the 5 decoding-failure scenarios and the 18 at protocol version 9.
+        assertThat(compared).isEqualTo(AmaruScenarioLoader.EXPECTED_SCENARIOS - 23);
     }
 
     private static String compare(byte[] referenceRequest, byte[] keysResponse, byte[] engineRequest) {
