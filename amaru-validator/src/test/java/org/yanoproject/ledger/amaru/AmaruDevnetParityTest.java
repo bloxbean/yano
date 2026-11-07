@@ -8,7 +8,6 @@ import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.tx.gate.DevnetGateNode;
 import org.yanoproject.tx.gate.LedgerRulesDevnetMatrix;
 
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,20 +34,8 @@ class AmaruDevnetParityTest {
         assertThat(amaru.problems()).as("amaru matrix").isEmpty();
         assertThat(java.problems()).as("java matrix").isEmpty();
         assertThat(amaru.metrics().get("revalidation.engines")).asList().containsExactly("java-julc", "amaru-scalus");
-        assertThat(normalise(amaru.lines())).as("same verdicts, mempool states, placements and drop reasons")
+        assertThat(amaru.lines()).as("same verdicts, mempool states, placements and drop reasons")
                 .containsExactlyElementsOf(java.lines());
-    }
-
-    /**
-     * Recorded divergences (ADR-057 Phase C results; {@link AmaruKnownDivergencesTest}): the line Amaru produces,
-     * mapped to the java engine's. Both are rejections.
-     */
-    private static final Map<String, String> KNOWN_DIVERGENCES = Map.of(
-            "A.reject-unregistered-delegator ENGINE.AmaruEngineFailure",
-            "A.reject-unregistered-delegator DELEG.StakeKeyNotRegisteredDELEG");
-
-    private static List<String> normalise(List<String> lines) {
-        return lines.stream().map(line -> KNOWN_DIVERGENCES.getOrDefault(line, line)).toList();
     }
 
     private static LedgerRulesDevnetMatrix.Report run(DevnetGateNode.Settings settings) throws Exception {

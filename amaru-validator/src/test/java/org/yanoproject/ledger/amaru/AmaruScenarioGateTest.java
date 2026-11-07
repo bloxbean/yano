@@ -9,6 +9,7 @@ import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest.Origin;
 import org.yanoproject.ledger.rules.TxValidationRequest.Rule;
+import org.yanoproject.ledger.rules.fixtures.amaru.AmaruCorpusNames;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenarioLoader;
@@ -27,8 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Rule {@code LEDGER} and origin {@code SYNC}: the corpus exercises the {@code LEDGER} rule, and one
  * scenario is a valid {@code is_valid = false} transaction, which only shadow sync admits (ADR-056 §6).
- * One scenario runs at protocol version 9; the engine refuses it with {@code ENGINE.EraNotSupported}
- * (invariant 6), which is the expected outcome here.</p>
+ * The scenarios at protocol version 9 are refused with {@code ENGINE.EraNotSupported} (invariant 6), which is
+ * the expected outcome here. A constructor Amaru's checker reports under the same corpus name
+ * ({@link AmaruCorpusNames#aliases}) also matches.</p>
  */
 class AmaruScenarioGateTest {
 
@@ -129,8 +131,9 @@ class AmaruScenarioGateTest {
                 if (failure == null) {
                     yield "expected " + p.qualifiedName() + ", got " + outcome;
                 }
-                boolean same = failure.rule() == p.rule() && failure.constructor().equals(p.constructor())
-                        && failure.phase() == p.phase()
+                boolean sameName = failure.qualifiedName().equals(p.qualifiedName())
+                        || AmaruCorpusNames.aliases(p.corpusName()).contains(failure.qualifiedName());
+                boolean same = sameName && failure.phase() == p.phase()
                         && (p.description() == null || failure.detail().startsWith(p.description() + ":"));
                 yield same ? null : "expected " + p.qualifiedName() + " (" + p.corpusName() + ", " + p.phase()
                         + (p.description() != null ? ", " + p.description() : "") + "), got " + failure;

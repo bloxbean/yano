@@ -28,7 +28,8 @@ import java.util.Set;
  *                  {@link AmaruScenario.LedgerConstants#NONE})
  * @param expected  the expected Haskell verdict
  * @param haskellFailures for an expected predicate that Haskell always reports together with others, Haskell's
- *                  whole failure list in its order (it contains the expected constructor); empty when the expected
+ *                  whole failure list in its order (it contains the expected constructor, or one Amaru's checker names the
+ *                  same, {@link AmaruCorpusNames#aliases}); empty when the expected
  *                  constructor is the only one. An engine's first failure matches when it is any of them, so the
  *                  harness never favours an order other than Haskell's.
  */
@@ -56,7 +57,8 @@ public record ConformanceCase(String id, String title, Kind kind, byte[] txCbor,
         Objects.requireNonNull(expected, "expected");
         haskellFailures = List.copyOf(haskellFailures);
         if (!haskellFailures.isEmpty() && (!(expected instanceof Expected.Predicate p)
-                || !haskellFailures.contains(p.qualifiedName()))) {
+                || !(haskellFailures.contains(p.qualifiedName())
+                || haskellFailures.stream().anyMatch(AmaruCorpusNames.aliases(p.corpusName())::contains)))) {
             throw new IllegalArgumentException(id + ": the Haskell failure list must contain the expected constructor");
         }
     }

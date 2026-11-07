@@ -353,11 +353,7 @@ public final class Mutations {
                     "re-registers dev-77's pool with a 33-byte metadata hash",
                     s -> certificate(s, MutationWorld.poolRegistration(TestKey.DEV_77, MutationWorld.POOL_77_VRF,
                             MutationWorld.MIN_POOL_COST, MutationWorld.NETWORK, "ab".repeat(33)), BigInteger.ZERO,
-                            TestKey.DEV_77))
-                    // Recorded divergence: Amaru's decoder refuses a metadata hash that is not 32 bytes; Haskell
-                    // decodes any size (PoolMetadata's pmHash is a ByteArray, StakePool.hs:522-524) and POOL rejects
-                    // it (Shelley/Rules/Pool.hs:245-250).
-                    .withAmaruReports("ENGINE.DecodingFailure"),
+                            TestKey.DEV_77)),
             new Mutation("pool-vrf-taken-v11", "POOL.VRFKeyHashAlreadyRegistered", List.of(), SIMPLE,
                     "re-registers dev-77's pool with the VRF key hash of dev-bb's pool (protocol version 11)",
                     s -> certificate(s, MutationWorld.poolRegistration(TestKey.DEV_77, MutationWorld.POOL_BB_VRF,
@@ -376,11 +372,7 @@ public final class Mutations {
             new Mutation("drep-not-registered", "GOVCERT.ConwayDRepNotRegistered", List.of(), SIMPLE,
                     "updates dev-42's DRep, which is not registered",
                     s -> certificate(s, new UpdateDRepCert(MutationWorld.credential(TestKey.DEV_42), null),
-                            BigInteger.ZERO))
-                    // Recorded divergence: Amaru's DRepsSlice::update does not check the registration
-                    // (context/default/validation.rs:263-266 at the pinned tag) and accepts; Yano's adapter then
-                    // cannot derive the update's effects and fails closed. Haskell: GovCert.hs:256-258.
-                    .withAmaruReports("ENGINE.AmaruEngineFailure"),
+                            BigInteger.ZERO)),
             new Mutation("drep-refund-incorrect", "GOVCERT.ConwayDRepIncorrectRefund", List.of(), SIMPLE,
                     "deregisters dev-77's DRep stating (and crediting) 400 ADA; its deposit is 500 ADA",
                     s -> certificate(s, new UnregDRepCert(MutationWorld.credential(TestKey.DEV_77), ada(400)),

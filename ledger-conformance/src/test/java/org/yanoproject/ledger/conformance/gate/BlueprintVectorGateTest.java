@@ -129,7 +129,7 @@ class BlueprintVectorGateTest {
     @Test
     void amarusKnownFailuresMatchTheCheckout() {
         Set<String> pinned = AmaruKnownFailures.pinned();
-        assertThat(pinned).hasSize(27);
+        assertThat(pinned).hasSize(18);
         AmaruKnownFailures.fromAmaruCheckout().ifPresent(checkout -> assertThat(checkout)
                 .as("the pinned list equals the Amaru checkout's rules-conformance.failures.toml")
                 .containsExactlyElementsOf(pinned));

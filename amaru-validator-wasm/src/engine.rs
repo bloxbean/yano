@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ops::Deref,
     sync::OnceLock,
 };
 
@@ -14,9 +13,12 @@ use amaru_kernel::{
 use amaru_ledger::{
     context::{DefaultPreparationContext, DefaultValidationContext},
     epoch_transition::GovernanceActivity,
-    rules::{block::validate_transaction, prepare_transaction, transaction::phase_one},
+    rules::{
+        block::{TransactionInvalid, validate_transaction},
+        prepare_transaction,
+    },
 };
-use amaru_plutus::arena_pool::ArenaPool;
+use amaru_uplc::arena_pool::ArenaPool;
 
 use crate::{
     failure,
@@ -143,40 +145,25 @@ pub fn validate_request_in(request: Request, arena_pool: &ArenaPool) -> Response
     let mapping = failure::MappingContext::new(protocol_version.major(), &transaction.body);
     let transaction = transaction.tx_ref();
 
-    match request.mode {
-        Mode::Full => match validate_transaction(
-            &mut context,
-            arena_pool,
-            network,
-            &protocol_parameters,
-            &era_history,
-            &request.global_parameters,
-            governance_activity,
-            request.guardrail_script,
-            request.pointer,
-            transaction,
-        ) {
-            Ok(()) => Response::Ok,
-            Err(e) => Response::Invalid(failure::from_transaction_invalid(&e, &mapping)),
-        },
-        Mode::PhaseOne => match phase_one::execute(
-            &mut context,
-            arena_pool,
-            network,
-            &protocol_parameters,
-            &era_history,
-            governance_activity,
-            request.guardrail_script,
-            request.pointer,
-            transaction.is_expected_valid,
-            transaction.body.clone(),
-            transaction.witnesses.deref(),
-            transaction.auxiliary_data,
-            transaction.len(),
-        ) {
-            Ok(_consumed) => Response::Ok,
-            Err(e) => Response::Invalid(failure::from_phase_one(&e, &mapping)),
-        },
+    let result = validate_transaction(
+        &mut context,
+        arena_pool,
+        network,
+        &protocol_parameters,
+        &era_history,
+        &request.global_parameters,
+        governance_activity,
+        request.guardrail_script,
+        request.pointer,
+        transaction,
+    );
+    match (request.mode, result) {
+        (_, Ok(())) => Response::Ok,
+        // Phase one passed and only Amaru's script verdict disagrees: in phase-one mode the host's
+        // phase-2 engine judges the scripts. Amaru keeps its phase-one rules crate-private, so this
+        // mode runs the full validation and drops that verdict (INTERFACE.md, "Modes").
+        (Mode::PhaseOne, Err(TransactionInvalid::PhaseTwo(_))) => Response::Ok,
+        (_, Err(e)) => Response::Invalid(failure::from_transaction_invalid(&e, &mapping)),
     }
 }
 

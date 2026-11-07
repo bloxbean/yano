@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "adler2"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -35,7 +29,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "amaru-deps"
 version = "0.0.0"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "bitflags",
  "blst",
@@ -46,9 +40,11 @@ dependencies = [
  "clap",
  "clap_builder",
  "console",
+ "crc32fast",
  "criterion",
  "crossbeam-epoch",
  "crossbeam-utils",
+ "dashu-base",
  "digest 0.10.7",
  "digest 0.11.3",
  "ed25519 2.2.3",
@@ -71,11 +67,12 @@ dependencies = [
  "insta",
  "ipnet",
  "itertools 0.13.0",
+ "itertools 0.14.0",
  "js-sys",
  "libc",
+ "libm",
  "log",
  "memchr",
- "miniz_oxide",
  "mio",
  "num",
  "num-bigint",
@@ -91,6 +88,7 @@ dependencies = [
  "ppv-lite86",
  "proc-macro2",
  "quote",
+ "rand 0.10.2",
  "rand 0.9.5",
  "rand_chacha 0.3.1",
  "rand_chacha 0.9.0",
@@ -119,6 +117,8 @@ dependencies = [
  "syn 2.0.119",
  "syn 3.0.3",
  "thiserror",
+ "time",
+ "time-macros",
  "tokio",
  "tokio-util",
  "tower",
@@ -138,7 +138,7 @@ dependencies = [
 [[package]]
 name = "amaru-iter-borrow"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "minicbor",
@@ -147,16 +147,16 @@ dependencies = [
 [[package]]
 name = "amaru-kernel"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "amaru-minicbor-extra",
  "anyhow",
  "base58",
  "bech32",
+ "blake2",
  "bytes",
  "crc",
- "cryptoxide",
  "dashu-base",
  "dashu-int",
  "ed25519-dalek 3.0.0",
@@ -174,12 +174,14 @@ dependencies = [
  "stacksafe",
  "sysinfo",
  "thiserror",
+ "time",
+ "zeroize",
 ]
 
 [[package]]
 name = "amaru-ledger"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "amaru-iter-borrow",
@@ -191,6 +193,7 @@ dependencies = [
  "amaru-progress-bar",
  "amaru-uplc",
  "anyhow",
+ "dashu-int",
  "hex",
  "itertools 0.15.0",
  "num",
@@ -205,7 +208,7 @@ dependencies = [
 [[package]]
 name = "amaru-metrics"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "opentelemetry",
@@ -215,21 +218,20 @@ dependencies = [
 [[package]]
 name = "amaru-minicbor-extra"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "anyhow",
+ "dashu-int",
  "hex",
  "minicbor",
- "num",
- "num-bigint",
  "serde",
 ]
 
 [[package]]
 name = "amaru-observability"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-kernel",
  "amaru-observability-macros",
@@ -250,10 +252,9 @@ dependencies = [
 [[package]]
 name = "amaru-observability-macros"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "inventory",
- "opentelemetry",
  "proc-macro2",
  "quote",
  "syn 3.0.3",
@@ -263,7 +264,7 @@ dependencies = [
 [[package]]
 name = "amaru-ouroboros-traits"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "amaru-kernel",
@@ -278,20 +279,18 @@ dependencies = [
 [[package]]
 name = "amaru-plutus"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "amaru-kernel",
- "amaru-uplc",
  "hex",
- "num",
  "thiserror",
 ]
 
 [[package]]
 name = "amaru-progress-bar"
 version = "0.1.2"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
 ]
@@ -299,24 +298,28 @@ dependencies = [
 [[package]]
 name = "amaru-uplc"
 version = "0.4.0"
-source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20260925#eaf8ac3fa309f2a174c045454c276194c9312b8d"
+source = "git+https://github.com/pragma-org/amaru?tag=v10.11.20261105#c773f8486e5b64284506824daa3974020e0c8bf6"
 dependencies = [
  "amaru-deps",
  "amaru-kernel",
  "amaru-minicbor-extra",
  "append-only-vec",
+ "blake2",
  "blst",
  "bumpalo",
  "chumsky",
- "cryptoxide",
+ "dashu-base",
+ "dashu-int",
+ "ed25519-dalek 3.0.0",
  "hamming",
  "hex",
  "indoc",
  "minicbor",
- "num",
- "num-bigint",
  "once_cell",
+ "ripemd",
  "secp256k1",
+ "sha2 0.11.0",
+ "sha3",
  "stacksafe",
  "thiserror",
  "walkdir",
@@ -324,11 +327,11 @@ dependencies = [
 
 [[package]]
 name = "amaru-validator-wasm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "amaru-kernel",
  "amaru-ledger",
- "amaru-plutus",
+ "amaru-uplc",
  "hex",
  "serde",
  "serde_json",
@@ -536,6 +539,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
+name = "blake2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b5d4d889834ee8ecfc0f8426ad30faf7cdcb10f741a8e6d7224d95325479f6f"
+dependencies = [
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -594,9 +606,9 @@ checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "cbor-data"
-version = "0.8.19"
+version = "0.8.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da3ad76f5176516dc0f8b18e53c6ae4542fabc71cfcb3e8202f66d27f4086614"
+checksum = "85192a213e319a947e78efc44233b4fc98440ce174383a9ce24920779b59a840"
 dependencies = [
  "base64 0.13.1",
  "half 1.8.3",
@@ -844,6 +856,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
+name = "crc32fast"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "criterion"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -935,12 +956,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cryptoxide"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93f80e26fec88f5ae9450cd5f4e59f5c6421abafc919ea68a3edd521f9580c9b"
-
-[[package]]
 name = "ctutils"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1009,6 +1024,7 @@ dependencies = [
  "num-modular",
  "num-order",
  "rustversion",
+ "serde",
  "static_assertions",
 ]
 
@@ -1021,6 +1037,12 @@ dependencies = [
  "const-oid 0.9.6",
  "zeroize",
 ]
+
+[[package]]
+name = "deranged"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
 name = "digest"
@@ -1738,6 +1760,9 @@ name = "ipnet"
 version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -1750,6 +1775,15 @@ name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
@@ -1889,6 +1923,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lock_api"
+version = "0.4.14"
+source = "git+https://github.com/Amanieu/parking_lot?rev=43d5007a252d#43d5007a252ddcf4b9ed9e784e6ad4f7bf1ae82d"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
 name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1940,16 +1982,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "miniz_oxide"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
-dependencies = [
- "adler2",
- "simd-adler32",
 ]
 
 [[package]]
@@ -2014,6 +2046,12 @@ checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "num-traits",
 ]
+
+[[package]]
+name = "num-conv"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
 
 [[package]]
 name = "num-integer"
@@ -2219,20 +2257,17 @@ dependencies = [
 [[package]]
 name = "parking_lot"
 version = "0.12.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
+source = "git+https://github.com/Amanieu/parking_lot?rev=43d5007a252d#43d5007a252ddcf4b9ed9e784e6ad4f7bf1ae82d"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.14 (git+https://github.com/Amanieu/parking_lot?rev=43d5007a252d)",
  "parking_lot_core",
 ]
 
 [[package]]
 name = "parking_lot_core"
 version = "0.9.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+source = "git+https://github.com/Amanieu/parking_lot?rev=43d5007a252d#43d5007a252ddcf4b9ed9e784e6ad4f7bf1ae82d"
 dependencies = [
- "cfg-if",
  "libc",
  "redox_syscall",
  "smallvec",
@@ -2309,6 +2344,12 @@ checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
  "zerovec",
 ]
+
+[[package]]
+name = "powerfmt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
@@ -2556,9 +2597,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.18"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+checksum = "737970939a87c6fa31e7acad13307bccbb017a073b695b6089a2c484f929e20e"
 dependencies = [
  "bitflags",
 ]
@@ -2672,6 +2713,15 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ripemd"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dd4211456b4172d7e44261920c25acf07367c4f04bb5f5d54fc21b090d9b159"
+dependencies = [
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -3028,12 +3078,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 
 [[package]]
-name = "simd-adler32"
-version = "0.3.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
-
-[[package]]
 name = "simd_cesu8"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3083,7 +3127,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.14 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3298,6 +3342,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d050e60b33d41c19108b32cea32164033a9013fe3b46cbd4457559bfbf77afaa"
 dependencies = [
  "num_cpus",
+]
+
+[[package]]
+name = "time"
+version = "0.3.55"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
+dependencies = [
+ "deranged",
+ "num-conv",
+ "powerfmt",
+ "serde_core",
+ "time-core",
+ "time-macros",
+]
+
+[[package]]
+name = "time-core"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+
+[[package]]
+name = "time-macros"
+version = "0.2.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
+dependencies = [
+ "num-conv",
+ "time-core",
 ]
 
 [[package]]
@@ -4129,6 +4203,7 @@ version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

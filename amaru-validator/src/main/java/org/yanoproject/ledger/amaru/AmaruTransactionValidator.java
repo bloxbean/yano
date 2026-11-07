@@ -415,10 +415,10 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
 
     /**
      * Whether the {@link ScriptPhaseEvaluator} must see the transaction: it has redeemers, Plutus script
-     * witnesses, or a resolved input carrying a reference script. Phase-one mode does not check Plutus
-     * script witnesses and reference scripts for well-formedness ({@code MalformedScriptWitnesses},
-     * {@code MalformedReferenceScripts}), so a transaction carrying any of them goes to the evaluator even
-     * without a redeemer.
+     * witnesses, or a resolved input carrying a reference script. A transaction carrying any of them goes to the
+     * evaluator even without a redeemer, which also checks them for well-formedness
+     * ({@code MalformedScriptWitnesses}, {@code MalformedReferenceScripts}); from Amaru {@code v10.11.20261105}
+     * phase-one mode reports those first (INTERFACE.md, "Modes").
      */
     static boolean needsScriptPhase(Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs) {
         TransactionWitnessSet witnesses = tx.getWitnessSet();

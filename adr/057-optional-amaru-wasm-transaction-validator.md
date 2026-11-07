@@ -573,9 +573,10 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
    keys yet (TODO for step 1d in `CanonicalLedgerView.toProposalState`), so
    until it does, under `engine: amaru` every transaction validated while a
    parameter-change proposal is pending in canonical state fails closed.
-5. **Rationals** are sent as the shortest decimal fraction of Yano's
-   `BigDecimal` (`0.0577` → `577/10000`). Amaru compares parameters by value
-   and never hashes them, so verdicts do not depend on the representation.
+5. **Rationals** are sent as the exact fraction of Yano's `BigDecimal` in
+   lowest terms (`0.0577` → `577/10000`, `0.2` → `1/5`), as Haskell and Amaru
+   (from `v10.11.20261105`) hold them. Amaru compares parameters by value and
+   never hashes them, so verdicts do not depend on the representation.
 6. **Certificate pointers** (account delegations, DRep registration) are sent
    as `null`; Yano's view does not track them and Amaru's rules do not read
    them at the pinned tag.
@@ -979,7 +980,10 @@ reverts this ADR completely. No persisted state is involved.
    script context (`CollectErrors`: NoCostModel, BadTranslation, including the
    Plutus V3 disjoint-reference-inputs check). Phase-one mode misses these, so
    the `phase2: scalus` path must report them
-   (`amaru-validator-wasm/INTERFACE.md`).*
+   (`amaru-validator-wasm/INTERFACE.md`). From `v10.11.20261105` the
+   phase-one rules are crate-private, so `mode = phase_one` runs
+   `validate_transaction` and reports a phase-two verdict as `ok` (the
+   fallback below); it now reports those checks itself.*
    Is Amaru's phase-one entry point (`rules::transaction::phase_one::execute`)
    public at the pinned tag? If not, `phase2: scalus` needs a small upstream
    visibility change. Until then it runs `full` and discards Amaru's phase-2

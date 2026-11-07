@@ -24,8 +24,8 @@ class AmaruScenarioLoaderTest {
         assertThat(scenarios).hasSize(AmaruScenarioLoader.EXPECTED_SCENARIOS);
         long passes = scenarios.stream().filter(s -> s.expected() instanceof Expected.Pass).count();
         long decoding = scenarios.stream().filter(s -> s.expected() instanceof Expected.DecodingFailure).count();
-        assertThat(passes).isEqualTo(114);
-        assertThat(decoding).isEqualTo(3);
+        assertThat(passes).isEqualTo(126);
+        assertThat(decoding).isEqualTo(5);
         for (AmaruScenario scenario : scenarios) {
             assertThat(scenario.view().protocolParams().isPresent()).as(scenario.name()).isTrue();
             assertThat(scenario.network().eras()).as(scenario.name()).isNotEmpty();

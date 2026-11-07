@@ -7,7 +7,7 @@
 //
 //   ./gradlew :ledger-conformance:test                  runner, coverage matrix and mutation matrix; the
 //                                                       scenario parts skip without the Amaru corpus
-//   -PamaruScenariosDir=<amaru clone or its            the 276 Amaru scenarios (or AMARU_SCENARIOS_DIR)
+//   -PamaruScenariosDir=<amaru clone or its            the 368 Amaru scenarios (or AMARU_SCENARIOS_DIR)
 //      crates/amaru-ledger/tests/data/transaction>
 //   -PwithAmaru=true -PamaruWasm=<module.wasm>         adds the Amaru engine as the reference
 //   ./gradlew :ledger-conformance:conformanceReport ... regenerates docs/baseline-2026-09.md,

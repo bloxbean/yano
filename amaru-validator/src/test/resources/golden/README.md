@@ -1,6 +1,6 @@
 Reference `validate` request documents produced by the Rust reference encoder
 (`amaru-validator-wasm/tests/amaru_scenarios.rs`, run with `AMARU_DUMP_REQUESTS_DIR`) for a few of
-Amaru's scenarios at tag `v10.11.20260925`. `GoldenRequestEncodingTest` rebuilds each request from the
+Amaru's scenarios at tag `v10.11.20261105`. `GoldenRequestEncodingTest` rebuilds each request from the
 same scenario with the Java encoder and requires identical bytes.
 
 The transactions and state inside them come from Amaru's scenario corpus (Apache-2.0; see

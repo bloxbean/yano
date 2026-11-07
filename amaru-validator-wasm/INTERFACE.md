@@ -118,7 +118,7 @@ validate_request = {
   18 : [* proposal],
 }
 
-mode = 0   ; phase_one: Amaru's phase-one rules only (no Plutus evaluation)
+mode = 0   ; phase_one: full validation, a phase-two verdict reported as ok (see "Modes")
      / 1   ; full: phase-one, then phase-two in Amaru's UPLC machine
 
 era_history = [stability_window: uint, [+ era]]
@@ -343,28 +343,33 @@ required_keys_response = {
 
 ## Modes and ADR-057 open question 1
 
-Amaru's `rules::transaction::phase_one::execute` **is public** at
-`v10.11.20260925`, so `mode = phase_one` runs phase one alone. No upstream change
-or fork is needed.
+From `v10.11.20261105` Amaru's phase-one rules are crate-private
+(`phase_one::when_valid` / `when_invalid`, chosen by the transaction's `is_valid`
+flag); the public entry point is `rules::block::validate_transaction`, which runs
+phase one, then phase two. Both modes therefore call `validate_transaction`:
 
-**Limitation.** Amaru runs several phase-1 checks inside its phase-two
-preparation (`phase_two::execute`), which phase-one mode does not call. Phase-one
-mode therefore does not report:
-- `UTXOW.MalformedScriptWitnesses`: Plutus script witnesses that do not decode
-  (scenarios 00256–00258);
-- `UTXOS.CollectErrors` with `NoCostModel`: a script language with no cost model
-  (`PreparationError::MissingCostModel`). Haskell reports it before any script
-  runs;
-- `UTXOS.CollectErrors` with `BadTranslation`: `TxInfo` translation failures,
-  including Amaru's Plutus V3 check that spending and reference inputs are
-  disjoint (`phase_two/mod.rs`, the `NonDisjointRefInputs` preparation error). At
-  PV 10 the UTXO rule's `BabbageNonDisjointRefInputs` fires first, and phase-one
-  mode does report that.
+- `mode = full` returns its verdict;
+- `mode = phase_one` returns the same verdict, except that a phase-two verdict
+  (`UTXOS.ValidationTagMismatch`) becomes `ok`: phase one passed and the host's
+  phase-2 engine judges the scripts.
 
-Under `engine: amaru-scalus` (ADR-057 Phase B), the host's phase-2 engine must report
-all three with these names, as phase-1 failures, before running any script. In
-the scenario gate, phase-one mode matches full mode on every scenario, except
-where full mode's verdict came from that phase-two code.
+Amaru's Plutus evaluation therefore also runs in phase-one mode (the fallback
+ADR-057 open question 1 names), and phase-one mode now reports the phase-1 checks
+Amaru makes while preparing script contexts (`PreparationError`), with the same
+names as full mode:
+- `UTXOW.MalformedScriptWitnesses`: Plutus script witnesses that do not decode;
+- `UTXOS.CollectErrors` with `NoCostModel`: a script language with no cost model;
+- `UTXOS.CollectErrors` with `BadTranslation`: `TxInfo` translation failures
+  (Byron addresses, inline datums or Conway fields in a Plutus V1/V2 context, and
+  Amaru's Plutus V3 check that spending and reference inputs are disjoint).
+
+Under `engine: amaru-scalus` (ADR-057 Phase B) the host's phase-2 engine still
+reports these too, for a transaction Amaru accepts. In the scenario gate,
+phase-one mode matches full mode on every scenario, except that a full-mode
+`ValidationTagMismatch` is `ok`.
+
+Up to `v10.11.20260925` phase-one mode called the then-public
+`phase_one::execute` and did not report the checks above.
 
 ## Interface invariants for hosts
 
