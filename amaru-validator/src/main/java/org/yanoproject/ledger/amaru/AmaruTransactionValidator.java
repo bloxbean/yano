@@ -61,7 +61,7 @@ import java.util.function.Supplier;
 
 /**
  * The Amaru admission engine (ADR-057): Pragma's Amaru Conway rules, compiled to WebAssembly
- * ({@code amaru-validator-wasm}, interface v1) and run in the JVM by Endive's build-time AOT code. Engine ids follow
+ * ({@code amaru-validator-wasm}, interface version 2) and run in the JVM by Endive's build-time AOT code. Engine ids follow
  * {@code <rules>-<evaluator>}: {@code amaru} runs both phases on Amaru; {@code amaru-scalus} runs Amaru phase one and
  * then the node's Scalus {@link ScriptPhaseEvaluator}.
  *

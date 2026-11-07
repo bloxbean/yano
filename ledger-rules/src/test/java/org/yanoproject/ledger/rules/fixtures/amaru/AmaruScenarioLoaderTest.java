@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** The scenario loader reads the whole corpus; skipped when {@code AMARU_SCENARIOS_DIR} is not set. */
 class AmaruScenarioLoaderTest {
@@ -72,11 +73,20 @@ class AmaruScenarioLoaderTest {
 
     @Test
     void corpusNamesCoverTheHaskellAliases() {
-        assertThat(AmaruCorpusNames.haskellName("TreasuryWithdrawalsAllZeros").orElseThrow().constructor())
-                .isEqualTo("ZeroTreasuryWithdrawals");
-        assertThat(AmaruCorpusNames.haskellName("StakeCredentialInvalidVoteDelegation").orElseThrow().rule())
-                .isEqualTo(LedgerRuleName.DELEG);
-        assertThat(AmaruCorpusNames.haskellName("NotACorpusName")).isEmpty();
+        assertThat(AmaruCorpusNames.haskellName("00001-any", "TreasuryWithdrawalsAllZeros").orElseThrow()
+                .constructor()).isEqualTo("ZeroTreasuryWithdrawals");
+        assertThat(AmaruCorpusNames.haskellName("00001-any", "StakeCredentialInvalidVoteDelegation").orElseThrow()
+                .rule()).isEqualTo(LedgerRuleName.DELEG);
+        assertThat(AmaruCorpusNames.haskellName("00001-any", "NotACorpusName")).isEmpty();
+        // IncorrectDepositDRep is a wrong DRep deposit or refund: resolved per scenario, refused for any other.
+        assertThat(AmaruCorpusNames.haskellName("00305-fail-drep-deregistration-with-incorrect-refund",
+                "IncorrectDepositDRep").orElseThrow().constructor()).isEqualTo("ConwayDRepIncorrectRefund");
+        assertThat(AmaruCorpusNames.haskellName("00347-fail-drep-registration-with-an-incorrect-deposit",
+                "IncorrectDepositDRep").orElseThrow().constructor()).isEqualTo("ConwayDRepIncorrectDeposit");
+        assertThatThrownBy(() -> AmaruCorpusNames.haskellName("00001-any", "IncorrectDepositDRep"))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(AmaruCorpusNames.corpusName("GOVCERT.ConwayDRepIncorrectRefund")).contains("IncorrectDepositDRep");
+        assertThat(AmaruCorpusNames.corpusName("GOVCERT.ConwayDRepIncorrectDeposit")).contains("IncorrectDepositDRep");
         assertThat(Set.of(AmaruScenarioLoader.eraTag("Conway"), AmaruScenarioLoader.eraTag("Byron")))
                 .containsExactlyInAnyOrder(7, 1);
     }

@@ -343,7 +343,7 @@ public final class AmaruScenarioLoader {
                 slotConfig(eras, network.globalParameters()), new byte[32]);
 
         return new AmaruScenario(name, file, fixture.path("title").asText(name), hex(fixture.get("transaction")),
-                view.build(), env, params, expected(fixture.get("expected")), network, constants, state);
+                view.build(), env, params, expected(name, fixture.get("expected")), network, constants, state);
     }
 
     /** {@code $ref} to a shared document, with an optional shallow {@code $override}. */
@@ -365,7 +365,7 @@ public final class AmaruScenarioLoader {
         return document;
     }
 
-    private static Expected expected(JsonNode expected) {
+    private static Expected expected(String scenario, JsonNode expected) {
         if (expected.isTextual() && "Pass".equals(expected.asText())) {
             return new Expected.Pass();
         }
@@ -373,7 +373,7 @@ public final class AmaruScenarioLoader {
             return new Expected.DecodingFailure();
         }
         String predicate = expected.get("predicate").asText();
-        AmaruCorpusNames.HaskellName haskell = AmaruCorpusNames.haskellName(predicate)
+        AmaruCorpusNames.HaskellName haskell = AmaruCorpusNames.haskellName(scenario, predicate)
                 .orElseThrow(() -> new IllegalStateException("corpus predicate " + predicate
                         + " has no Haskell alias (AmaruCorpusNames)"));
         String description = expected.hasNonNull("description") ? expected.get("description").asText() : null;

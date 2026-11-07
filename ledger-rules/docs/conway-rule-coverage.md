@@ -21,12 +21,12 @@ ADR-056 §8. One row per Conway leaf predicate-failure constructor at cardano-le
 | CERTS | 1 | 1 | 0 | 0 | 0 |
 | DELEG | 8 | 6 | 2 | 0 | 0 |
 | POOL | 6 | 4 | 2 | 0 | 0 |
-| GOVCERT | 6 | 5 | 1 | 0 | 0 |
+| GOVCERT | 6 | 6 | 0 | 0 | 0 |
 | GOV | 19 | 15 | 4 | 0 | 0 |
 | UTXOW | 18 | 16 | 2 | 0 | 0 |
 | UTXO | 20 | 18 | 2 | 0 | 0 |
 | UTXOS | 2 | 2 | 0 | 0 | 0 |
-| **Total** | **86** | **70** | **16** | **0** | **0** |
+| **Total** | **86** | **71** | **15** | **0** | **0** |
 
 88 constructors in the catalogue; 86 reachable at protocol version 9 (the bootstrap phase), 10 or 11. Out of scope: `UTXO.OutsideForecast` (unreachable), `UTXO.OutputTooSmallUTxO` (unreachable).
 
@@ -89,9 +89,9 @@ ADR-056 Phase 5c: a constructor must be covered at every supported protocol vers
 | POOL | `PoolMedataHashTooBig` | 9+ | dynamic | `PoolChecks.MetadataHashTooBig` (9–11) | MutationMatrixTest#poolMetadataHashTooBig<br>PoolRuleTest#theMetadataHashIsAtMost32Bytes | 9 ✓ · 10 ✓ · 11 ✓ | – | – | test |
 | POOL | `VRFKeyHashAlreadyRegistered` | 11+ | dynamic | `PoolChecks.VrfKeyHashAlreadyRegistered` (11) | MutationMatrixTest#poolVrfKeyHashTakenV11<br>PoolRuleTest#fromProtocolVersion11AVrfKeyHashBelongsToOnePool | 11 ✓ | – | – | test |
 | GOVCERT | `ConwayDRepAlreadyRegistered` | 9+ | dynamic | `GovCertChecks.DRepAlreadyRegistered` (9–11) | GovCertRuleTest#aRegisteredDRepCannotRegisterAgain<br>MutationMatrixTest#drepAlreadyRegistered | 9 ✓ · 10 ✓ · 11 ✓ | 00059, 00060 | 10: 1 | test + scenario |
-| GOVCERT | `ConwayDRepIncorrectDeposit` | 9+ | dynamic | `GovCertChecks.DRepIncorrectDeposit` (9–11) | GovCertRuleTest#theDRepDepositIsPpDRepDeposit<br>MutationMatrixTest#drepDepositIncorrect | 9 ✓ · 10 ✓ · 11 ✓ | 00305, 00347 | 10: 1 | test + scenario |
+| GOVCERT | `ConwayDRepIncorrectDeposit` | 9+ | dynamic | `GovCertChecks.DRepIncorrectDeposit` (9–11) | GovCertRuleTest#theDRepDepositIsPpDRepDeposit<br>MutationMatrixTest#drepDepositIncorrect | 9 ✓ · 10 ✓ · 11 ✓ | 00347 | 10: 1 | test + scenario |
 | GOVCERT | `ConwayDRepNotRegistered` | 9+ | dynamic | `GovCertChecks.DRepNotRegistered` (9–11) | GovCertRuleTest#onlyARegisteredDRepDeregistersOrUpdates<br>MutationMatrixTest#drepNotRegistered | 9 ✓ · 10 ✓ · 11 ✓ | 00289, 00292 | – | test + scenario |
-| GOVCERT | `ConwayDRepIncorrectRefund` | 9+ | dynamic | `GovCertChecks.DRepIncorrectRefund` (9–11) | GovCertRuleTest#theDRepRefundIsTheRecordedDeposit<br>MutationMatrixTest#drepRefundIncorrect | 9 ✓ · 10 ✓ · 11 ✓ | – | – | test |
+| GOVCERT | `ConwayDRepIncorrectRefund` | 9+ | dynamic | `GovCertChecks.DRepIncorrectRefund` (9–11) | GovCertRuleTest#theDRepRefundIsTheRecordedDeposit<br>MutationMatrixTest#drepRefundIncorrect | 9 ✓ · 10 ✓ · 11 ✓ | 00305 | – | test + scenario |
 | GOVCERT | `ConwayCommitteeHasPreviouslyResigned` | 9+ | dynamic | `GovCertChecks.CommitteeHasPreviouslyResigned` (9–11) | GovCertRuleTest#aResignedMemberCannotAuthorizeOrResignAgain<br>MutationMatrixTest#committeeMemberResigned | 9 ✓ · 10 ✓ · 11 ✓ | 00206, 00207, 00208, 00209, 00210, 00217 | 10: 2 | test + scenario |
 | GOVCERT | `ConwayCommitteeIsUnknown` | 9+ | dynamic | `GovCertChecks.CommitteeIsUnknown` (9–11) | GovCertRuleTest#theColdCredentialIsAMemberOrAProposedMember<br>MutationMatrixTest#committeeMemberUnknown | 9 ✓ · 10 ✓ · 11 ✓ | 00201, 00204, 00205, 00220, 00343 | 10: 1 | test + scenario |
 | GOV | `UnelectedCommitteeVoters` | 11+ | dynamic | `GovChecks.UnelectedCommitteeVoters` (11) | GovRuleTest#unelectedCommitteeMembersDoNotVoteFromProtocolVersion11<br>MutationMatrixTest#unelectedCommitteeVoterV11 | 11 ✓ | – | – | test |

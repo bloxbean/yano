@@ -1,8 +1,11 @@
-# amaru-validator-wasm interface, version 1
+# amaru-validator-wasm interface, version 2
 
 This is the contract between `amaru_validator.wasm` and its host (Yano's optional
 `amaru-validator` Java module, ADR-057 Phase B). Yano owns it; it is independent of
 Amaru's internal types and is versioned by `abi_version`.
+
+Version 2 (Amaru `v10.11.20261105`) differs from version 1 only in the integer
+widths of three fields; see "Changes from version 1" at the end.
 
 The Rust reference implementation is `src/interface.rs`. The fixture test
 (`tests/amaru_scenarios.rs`) encodes every Amaru scenario through it, and checks
@@ -43,7 +46,7 @@ that each request round-trips byte for byte.
 
 | Export | Signature (wasm) | Meaning |
 |---|---|---|
-| `abi_version` | `() -> i32` | Interface version, `1`. A host refuses a module whose version it does not support (invariant 5). |
+| `abi_version` | `() -> i32` | Interface version, `2`. A host refuses a module whose version it does not support (invariant 5). |
 | `amaru_version` | `() -> i32` (ptr) | Buffer holding the UTF-8 text of `AMARU_VERSION` (`tag=…`, `commit=…`, `toolchain=…` lines) followed by `crate=<version>`, this crate's `Cargo.toml` version. The crate version is bumped whenever host-visible behaviour changes without an Amaru upgrade (for example the failure-name mapping), so a host can refuse a stale module. |
 | `alloc` | `(len: i32) -> i32` (ptr) | Allocates `len` bytes (zeroed) for the host to write into. |
 | `dealloc` | `(ptr: i32, len: i32)` | Frees a buffer from `alloc` (the same `len`), or a returned buffer (`4 + payload length`). |
@@ -97,7 +100,7 @@ cert_pointer    = [slot, transaction_index: uint, certificate_index: uint] / nul
 
 ```cddl
 validate_request = {
-  0  : 1,                          ; abi_version
+  0  : 2,                          ; abi_version
   1  : mode,
   2  : bytes .cbor transaction,    ; [body, witnesses, is_valid, auxiliary_data], as received
   3  : network_magic: uint,        ; 764824073 mainnet, 1 preprod, 2 preview, anything else = testnet
@@ -320,7 +323,7 @@ error   = { 0: 2, 7: message: tstr }  ; the request could not be processed: says
 bytes after it are an error:
 
 ```cddl
-keys_env = { ? 0: 1,                          ; abi_version
+keys_env = { ? 0: 2,                          ; abi_version
              1: [major: uint .size 4, minor: uint .size 4] }  ; decode the tx under this protocol version
                                               ; (the one the validate request will carry)
 
@@ -385,3 +388,17 @@ Up to `v10.11.20260925` phase-one mode called the then-public
    snapshot plus overlay (invariant 3).
 3. **Bumping `abi_version`.** Any change to these schemas bumps `abi_version`. An
    Amaru bump that leaves them intact does not.
+
+## Changes from version 1
+
+Version 2 narrows three fields to the types Amaru `v10.11.20261105` and Haskell
+use; a value outside them is a malformed request (or env), not a verdict:
+
+| Field | Version 1 | Version 2 | Follows |
+|---|---|---|---|
+| protocol version `major`, `minor` (`keys_env` key 1; `proposal_kind` `[1, major, minor]`) | `uint` (u64) | `uint .size 4` (u32) | Amaru's `ProtocolVersion` (`u32`); Conway CDDL `protocol_version = [major_protocol_version, uint .size 4]`, `major_protocol_version = 0 .. 12` |
+| `gov_action_id` index (proposal ids, `proposals_roots`, votes' targets) | `uint .size 4` (u32) | `uint .size 2` (u16) | Haskell's `GovActionIx` (`Word16`, Conway/Governance/Procedures.hs:162; Conway CDDL `gov_action_index : uint .size 2`) |
+
+Everything else is unchanged. A version 1 host is refused (`unsupported
+abi_version 1`), and the Java host refuses a module whose `abi_version` is not
+`AmaruTransactionValidator.SUPPORTED_ABI_VERSION`.

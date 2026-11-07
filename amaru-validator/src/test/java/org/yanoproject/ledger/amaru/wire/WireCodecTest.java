@@ -29,8 +29,8 @@ class WireCodecTest {
 
     @Test
     void keysEnvMatchesTheReferenceLayout() {
-        // {0: 1, 1: [10, 0]}
-        assertThat(HexUtil.encodeHexString(AmaruRequestEncoder.keysEnv(10, 0))).isEqualTo("a2000101820a00");
+        // {0: 2, 1: [10, 0]}
+        assertThat(HexUtil.encodeHexString(AmaruRequestEncoder.keysEnv(10, 0))).isEqualTo("a2000201820a00");
     }
 
     @Test

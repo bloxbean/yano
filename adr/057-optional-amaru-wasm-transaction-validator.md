@@ -918,10 +918,11 @@ after latency run 2 and 22.62 after the footprint run, so the footprint figures 
 The "before" figures quoted below are the unloaded 2026-09-30 run (load 4–7, Julc `0.1.0-pre18-yano-local2`); the
 old module was not re-run in this session, so the `java-*` and `amaru` rows of the same run are the control. Module
 sha256
-`001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964`, crate `0.1.2`, Amaru `v10.11.20261105`,
+`001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964`, crate `0.1.2`, interface version 1 (the interface
+version 2 module that followed, `e3e8c44e…`, differs only in three integer widths it decodes), Amaru `v10.11.20261105`,
 scenarios from the same tag (350 at PV ≥ 10). Julc: the repository's `0.1.0-pre20` (no init script). Parent commit
 `65307919c`. Default passes. Same public-network corpus (the 15 replay bundles of `PublicNetworkTransactions`).
-Two runs; they agree within 6 % except single-sample maxima. Run 2:
+Two runs; per-row p50, p90 and p99 agree within 7.1 % (largest: scenario `amaru` p50 +7.0 %, preprod `java-julc` p99 +7.0 %, preview `java-scalus` p90 −7.1 %), maxima excepted. Run 2:
 
 | Corpus | Engine | cases | samples | p50 | p90 | p99 | max | valid |
 |---|---|---:|---:|---:|---:|---:|---:|---:|

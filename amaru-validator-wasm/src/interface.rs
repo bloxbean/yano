@@ -1,4 +1,4 @@
-//! Interface version 1: the CBOR request and response documents exchanged with the host.
+//! Interface version 2: the CBOR request and response documents exchanged with the host.
 //!
 //! The schema is owned by Yano, not by Amaru, and is specified (with CDDL) in `INTERFACE.md`.
 //! Every document is a CBOR map with small unsigned integer keys. Unknown keys are rejected, so an
@@ -18,8 +18,9 @@ use amaru_kernel::{
 use amaru_ledger::context::{AccountState, CCMember, ProposalStateSlim};
 
 /// The interface version implemented by this module; returned by the `abi_version` export and
-/// carried in every request.
-pub const ABI_VERSION: u32 = 1;
+/// carried in every request. Version 2 (Amaru `v10.11.20261105`) narrows protocol-version components to
+/// `u32` and the governance action index to `u16` (INTERFACE.md, "Changes from version 1").
+pub const ABI_VERSION: u32 = 2;
 
 pub type DecodeError = cbor::decode::Error;
 
@@ -119,7 +120,7 @@ type EncodeResult = Result<(), cbor::encode::Error<std::convert::Infallible>>;
 type Enc<'a> = Encoder<&'a mut Vec<u8>>;
 
 impl Request {
-    /// Encode as a v1 request document. This is the reference encoder: hosts must produce
+    /// Encode as a request document. This is the reference encoder: hosts must produce
     /// byte-for-byte the same structure (field order does not matter, key set does).
     pub fn to_cbor(&self) -> Vec<u8> {
         let mut buffer = Vec::new();
@@ -227,7 +228,7 @@ impl Request {
         Ok(())
     }
 
-    /// Decode a v1 request document.
+    /// Decode a request document.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Decoder::new(bytes);
         let request = Self::decode(&mut d)?;
@@ -1054,4 +1055,51 @@ pub(crate) fn into_unique_map<K: Ord + std::fmt::Debug, V>(
         }
     }
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decoder_of(build: impl FnOnce(&mut Encoder<&mut Vec<u8>>)) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        build(&mut Encoder::new(&mut buffer));
+        buffer
+    }
+
+    /// Version 2 bounds: protocol-version components are `u32` (Amaru's `ProtocolVersion`), the governance
+    /// action index is `u16` (Haskell's `GovActionIx`, a `Word16`).
+    #[test]
+    fn narrowed_fields_accept_their_maximum_and_refuse_one_more() {
+        let hard_fork = |minor: u64| {
+            decoder_of(|e| {
+                e.array(3).unwrap().u8(1).unwrap().u32(10).unwrap().u64(minor).unwrap();
+            })
+        };
+        let max = hard_fork(u64::from(u32::MAX));
+        assert!(matches!(
+            decode_proposal_kind(&mut Decoder::new(&max)),
+            Ok(ProposalSlim::HardFork(version)) if version.minor() == u32::MAX
+        ));
+        assert!(decode_proposal_kind(&mut Decoder::new(&hard_fork(u64::from(u32::MAX) + 1))).is_err());
+
+        let env = |minor: u64| {
+            decoder_of(|e| {
+                e.map(2).unwrap().u8(0).unwrap().u32(ABI_VERSION).unwrap();
+                e.u8(1).unwrap().array(2).unwrap().u32(10).unwrap().u64(minor).unwrap();
+            })
+        };
+        let max = KeysEnv::from_cbor(&env(u64::from(u32::MAX))).expect("u32::MAX minor");
+        assert_eq!(max.protocol_version.minor(), u32::MAX);
+        assert!(KeysEnv::from_cbor(&env(u64::from(u32::MAX) + 1)).is_err());
+
+        let proposal_id = |index: u32| {
+            decoder_of(|e| {
+                e.array(2).unwrap().bytes(&[7u8; 32]).unwrap().u32(index).unwrap();
+            })
+        };
+        let max = decode_proposal_id(&mut Decoder::new(&proposal_id(u32::from(u16::MAX)))).expect("u16::MAX index");
+        assert_eq!(max.proposal_index, u16::MAX);
+        assert!(decode_proposal_id(&mut Decoder::new(&proposal_id(u32::from(u16::MAX) + 1))).is_err());
+    }
 }

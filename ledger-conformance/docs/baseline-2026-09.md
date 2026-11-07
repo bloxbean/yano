@@ -8,7 +8,7 @@ Generated 2026-11-07 by
 ./gradlew :ledger-conformance:conformanceReport -PwithAmaru=true -PamaruWasm=<amaru_validator.wasm> -PamaruScenariosDir=<amaru clone at v10.11.20261105>
 ```
 
-Amaru module: `amaru-validator-wasm` crate 0.1.2, sha256 `001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
+Amaru module: `amaru-validator-wasm` crate 0.1.2, sha256 `e3e8c44e35d7d056013e17ef8b2414f4011744bd9d367ac9b8cdc64469d135c5` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
 
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
@@ -25,19 +25,19 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
 | `java-julc` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, julc phase 2 (Yano script contexts, julc CEK machine) |
 | `java-scalus` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, Scalus phase 2 |
-| `amaru` | AmaruTransactionValidator, engine amaru, Endive AOT (reference; ADR-057); module crate 0.1.2, sha256 001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964 |
+| `amaru` | AmaruTransactionValidator, engine amaru, Endive AOT (reference; ADR-057); module crate 0.1.2, sha256 e3e8c44e35d7d056013e17ef8b2414f4011744bd9d367ac9b8cdc64469d135c5 |
 
 ## Summary
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 253/368 | 133/368 | 133/368 | 39/94 | 6/6 | 33/86 | 2.42 |
-| `scalus-legacy+supplementary` | 292/368 | 170/368 | 170/368 | 54/94 | 6/6 | 47/86 | 0.48 |
-| `scalus-engine` | 275/368 | 240/368 | 240/368 | 56/94 | 6/6 | 50/86 | 0.49 |
-| `java-legacy` | 235/368 | 51/368 | 162/368 | 12/94 | 0/6 | 21/86 | 0.36 |
-| `java-julc` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.70 |
-| `java-scalus` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.50 |
-| `amaru` | 366/368 | 350/368 | 350/368 | 86/94 | 4/6 | 79/86 | 2.65 |
+| `scalus-legacy` | 253/368 | 133/368 | 133/368 | 39/94 | 6/6 | 33/86 | 2.51 |
+| `scalus-legacy+supplementary` | 292/368 | 170/368 | 170/368 | 54/94 | 6/6 | 47/86 | 0.51 |
+| `scalus-engine` | 275/368 | 240/368 | 240/368 | 56/94 | 6/6 | 50/86 | 0.58 |
+| `java-legacy` | 235/368 | 51/368 | 162/368 | 12/94 | 0/6 | 21/86 | 0.48 |
+| `java-julc` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.72 |
+| `java-scalus` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.60 |
+| `amaru` | 366/368 | 350/368 | 350/368 | 86/94 | 4/6 | 79/86 | 2.80 |
 
 *Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 85 of the 86 constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: `MempoolTransitionTest`).
 
@@ -292,7 +292,7 @@ In-scope constructors that at least one scenario or mutant expects, with the eng
 | `GOVCERT.ConwayDRepAlreadyRegistered` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
 | `GOVCERT.ConwayDRepIncorrectDeposit` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
 | `GOVCERT.ConwayDRepNotRegistered` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `GOVCERT.ConwayDRepIncorrectRefund` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
+| `GOVCERT.ConwayDRepIncorrectRefund` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
 | `GOVCERT.ConwayCommitteeHasPreviouslyResigned` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
 | `GOVCERT.ConwayCommitteeIsUnknown` | 6 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
 | `GOV.UnelectedCommitteeVoters` | 13 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ |
@@ -372,7 +372,7 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 | `UTXOS.ValidationTagMismatch` | 10 | GOV.MalformedProposal |
 | `UNMAPPED.StakeCertificates` | 9 | DELEG.IncorrectDepositDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), DELEG.StakeKeyNotRegisteredDELEG, DELEG.StakeKeyRegisteredDELEG, … (5 kinds) |
 | `UNMAPPED.StakePool` | 3 | POOL.StakePoolNotRegisteredOnKeyPOOL, POOL.WrongNetworkPOOL |
-| `UNMAPPED.DRep` | 3 | GOVCERT.ConwayDRepIncorrectDeposit (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund), GOVCERT.ConwayDRepNotRegistered, GOVCERT.ConwayDRepNotRegistered (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepNotRegistered) |
+| `UNMAPPED.DRep` | 3 | GOVCERT.ConwayDRepIncorrectRefund (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund), GOVCERT.ConwayDRepNotRegistered, GOVCERT.ConwayDRepNotRegistered (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepNotRegistered) |
 | `UTXOW.UnspendableUTxONoDatumHash` | 3 | UTXOW.MissingRequiredDatums, UTXOW.NotAllowedSupplementalDatums |
 
 **`scalus-legacy+supplementary`** (198 mismatches)
@@ -386,7 +386,7 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 | `UNMAPPED.StakeCertificates` | 9 | DELEG.IncorrectDepositDELEG, DELEG.IncorrectDepositDELEG (Haskell: UTXO.ValueNotConservedUTxO, DELEG.IncorrectDepositDELEG), DELEG.StakeKeyNotRegisteredDELEG, DELEG.StakeKeyRegisteredDELEG, … (5 kinds) |
 | `GOVCERT.ConwayCommitteeIsUnknown` | 4 | GOVCERT.ConwayCommitteeHasPreviouslyResigned, Pass |
 | `UNMAPPED.StakePool` | 3 | POOL.StakePoolNotRegisteredOnKeyPOOL, POOL.WrongNetworkPOOL |
-| `UNMAPPED.DRep` | 3 | GOVCERT.ConwayDRepIncorrectDeposit (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund), GOVCERT.ConwayDRepNotRegistered, GOVCERT.ConwayDRepNotRegistered (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepNotRegistered) |
+| `UNMAPPED.DRep` | 3 | GOVCERT.ConwayDRepIncorrectRefund (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund), GOVCERT.ConwayDRepNotRegistered, GOVCERT.ConwayDRepNotRegistered (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepNotRegistered) |
 
 **`scalus-engine`** (128 mismatches)
 
@@ -650,7 +650,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00301-fail-outputs-summing-past-the-maximum-word64 | UTXO.ValueNotConservedUTxO | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Long but got OverLong (input position 79) |
 | 00302-fail-asset-quantities-summing-past-the-maximum-word64 | UTXO.ValueNotConservedUTxO | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Long but got OverLong (input position 121) |
 | 00304-fail-bootstrap-witness-whose-key-is-not-a-curve-point | UTXOW.InvalidWitnessesUTXOW | `UNMAPPED.IllegalArgument` | IllegalArgument: Validation error: requirement failed: Invalid Bech32: mixed case in data part. |
-| 00305-fail-drep-deregistration-with-incorrect-refund | GOVCERT.ConwayDRepIncorrectDeposit (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund) | `UNMAPPED.DRep` | DRep: DRep certificate validation failed for transactionId "d3c558d0b80ae870785f8b562a407cb00d97a81a53ae6943c33f57cd4fdf9c0f". already registered: Set(), not... |
+| 00305-fail-drep-deregistration-with-incorrect-refund | GOVCERT.ConwayDRepIncorrectRefund (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund) | `UNMAPPED.DRep` | DRep: DRep certificate validation failed for transactionId "d3c558d0b80ae870785f8b562a407cb00d97a81a53ae6943c33f57cd4fdf9c0f". already registered: Set(), not... |
 | 00306-fail-plutus-v1-proposal-procedures-context | UTXOS.CollectErrors | `UNMAPPED.IllegalArgument` | IllegalArgument: Error during Plutus script evaluation: ProposalProcedures field not supported in Plutus V1/V2: Vector(ProposalProcedure(Coin(123),RewardAcco... |
 | 00307-fail-plutus-v2-proposal-procedures-context | UTXOS.CollectErrors | `UNMAPPED.IllegalArgument` | IllegalArgument: Error during Plutus script evaluation: ProposalProcedures field not supported in Plutus V1/V2: Vector(ProposalProcedure(Coin(123),RewardAcco... |
 | 00308-fail-plutus-v1-treasury-donation-context | UTXOS.CollectErrors | `UNMAPPED.IllegalArgument` | IllegalArgument: Error during Plutus script evaluation: Donation field not supported in Plutus V1/V2: Coin(10000) |
@@ -856,7 +856,7 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | 00301-fail-outputs-summing-past-the-maximum-word64 | UTXO.ValueNotConservedUTxO | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Long but got OverLong (input position 79) |
 | 00302-fail-asset-quantities-summing-past-the-maximum-word64 | UTXO.ValueNotConservedUTxO | `ENGINE.DecodingFailure` | InvalidInputData: Validation error: Expected Long but got OverLong (input position 121) |
 | 00304-fail-bootstrap-witness-whose-key-is-not-a-curve-point | UTXOW.InvalidWitnessesUTXOW | `UNMAPPED.IllegalArgument` | IllegalArgument: Validation error: requirement failed: Invalid Bech32: mixed case in data part. |
-| 00305-fail-drep-deregistration-with-incorrect-refund | GOVCERT.ConwayDRepIncorrectDeposit (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund) | `UNMAPPED.DRep` | DRep: DRep certificate validation failed for transactionId "d3c558d0b80ae870785f8b562a407cb00d97a81a53ae6943c33f57cd4fdf9c0f". already registered: Set(), not... |
+| 00305-fail-drep-deregistration-with-incorrect-refund | GOVCERT.ConwayDRepIncorrectRefund (Haskell: UTXO.ValueNotConservedUTxO, GOVCERT.ConwayDRepIncorrectRefund) | `UNMAPPED.DRep` | DRep: DRep certificate validation failed for transactionId "d3c558d0b80ae870785f8b562a407cb00d97a81a53ae6943c33f57cd4fdf9c0f". already registered: Set(), not... |
 | 00306-fail-plutus-v1-proposal-procedures-context | UTXOS.CollectErrors | `UNMAPPED.IllegalArgument` | IllegalArgument: Error during Plutus script evaluation: ProposalProcedures field not supported in Plutus V1/V2: Vector(ProposalProcedure(Coin(123),RewardAcco... |
 | 00307-fail-plutus-v2-proposal-procedures-context | UTXOS.CollectErrors | `UNMAPPED.IllegalArgument` | IllegalArgument: Error during Plutus script evaluation: ProposalProcedures field not supported in Plutus V1/V2: Vector(ProposalProcedure(Coin(123),RewardAcco... |
 | 00308-fail-plutus-v1-treasury-donation-context | UTXOS.CollectErrors | `UNMAPPED.IllegalArgument` | IllegalArgument: Error during Plutus script evaluation: Donation field not supported in Plutus V1/V2: Coin(10000) |

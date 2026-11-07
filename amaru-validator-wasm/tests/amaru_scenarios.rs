@@ -28,7 +28,7 @@ use amaru_uplc::arena_pool::ArenaPool;
 use amaru_validator::{
     AMARU_VERSION, Mode, Request, RequiredKeys, Response,
     engine::{self, network_name},
-    interface::{EraHistoryWire, KeysEnv, LedgerConstants, Phase},
+    interface::{EraHistoryWire, Invalid, KeysEnv, LedgerConstants, Phase},
 };
 
 /// Number of scenarios at the pinned tag; a change means the corpus moved and this gate must be
@@ -72,7 +72,7 @@ fn fixtures_dir() -> PathBuf {
     );
 }
 
-// ------------------------------------------------------------------------ fixture → v1 request
+// --------------------------------------------------------------------------- fixture → request
 
 fn resolve(root: &Path, value: &Value) -> Value {
     let Some(reference) = value.get("$ref").and_then(Value::as_str) else {
@@ -129,7 +129,13 @@ fn ledger_constants(parameters: &ProtocolParameters) -> LedgerConstants {
 enum Expected {
     Pass,
     DecodingFailure,
-    Predicate { name: String, description: Option<String> },
+    /// The corpus predicate `name` and the Haskell rule and constructor it stands for in this scenario.
+    Predicate {
+        name: String,
+        rule: &'static str,
+        constructor: &'static str,
+        description: Option<String>,
+    },
 }
 
 struct Scenario {
@@ -248,10 +254,16 @@ fn load_scenario(root: &Path, path: &Path) -> Scenario {
     let expected = match &fixture["expected"] {
         Value::String(pass) if pass == "Pass" => Expected::Pass,
         Value::Object(map) if map.contains_key("decoding_failure") => Expected::DecodingFailure,
-        Value::Object(map) => Expected::Predicate {
-            name: map["predicate"].as_str().expect("predicate").to_string(),
-            description: map.get("description").and_then(Value::as_str).map(str::to_string),
-        },
+        Value::Object(map) => {
+            let predicate = map["predicate"].as_str().expect("predicate").to_string();
+            let (rule, constructor) = scenario_haskell_name(&name, &predicate).unwrap_or_else(|e| panic!("{e}"));
+            Expected::Predicate {
+                name: predicate,
+                rule,
+                constructor,
+                description: map.get("description").and_then(Value::as_str).map(str::to_string),
+            }
+        }
         other => panic!("{name}: unexpected `expected` {other}"),
     };
 
@@ -329,7 +341,6 @@ fn haskell_name(corpus: &str) -> Option<(&'static str, &'static str)> {
         "FeeTooSmallUTxO" => ("UTXO", "FeeTooSmallUTxO"),
         "GovActionsDoNotExist" => ("GOV", "GovActionsDoNotExist"),
         "IncorrectDepositDELEG" => ("DELEG", "IncorrectDepositDELEG"),
-        "IncorrectDepositDRep" => ("GOVCERT", "ConwayDRepIncorrectDeposit"),
         "IncorrectTotalCollateralField" => ("UTXO", "IncorrectTotalCollateralField"),
         "InlineDatumsNotSupported" => ("UTXOS", "CollectErrors"),
         "InputSetEmptyUTxO" => ("UTXO", "InputSetEmptyUTxO"),
@@ -391,17 +402,23 @@ fn haskell_name(corpus: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// Other Haskell (rule, constructor)s that Amaru's Haskell checker reports under the same corpus name
-/// (`crates/amaru/tests/conformance/validation-rules/src/Command/ValidatePhaseOne/Run.hs`): a scenario
-/// expecting the corpus name is satisfied by either. Same table as `AmaruCorpusNames.ALIASES` (Java).
-fn haskell_aliases(corpus: &str) -> &'static [(&'static str, &'static str)] {
-    match corpus {
-        // `normalizeGovCertFailure` (Run.hs:547-550): a wrong DRep refund is `ConwayDRepIncorrectRefund`
-        // (Conway/Rules/GovCert.hs:242), spelled like a wrong deposit. Keyed by corpus name, so it also lets a
-        // deposit scenario (00347) pass with the refund constructor; failure.rs picks between the two from the
-        // certificate.
-        "IncorrectDepositDRep" => &[("GOVCERT", "ConwayDRepIncorrectRefund")],
-        _ => &[],
+/// The Haskell (rule, constructor) a scenario's corpus predicate stands for. Amaru's Haskell checker spells some
+/// distinct Haskell failures alike; those corpus names are resolved per scenario, and a scenario using one that is not
+/// listed here fails. `normalizeGovCertFailure` (`ValidatePhaseOne/Run.hs:547-550`) names both
+/// `ConwayDRepIncorrectDeposit` and `ConwayDRepIncorrectRefund` `IncorrectDepositDRep` (Conway/Rules/GovCert.hs:
+/// 209-242 tells them apart). Same table as `AmaruCorpusNames.SCENARIO_NAMES` (Java).
+fn scenario_haskell_name(scenario: &str, corpus: &str) -> Result<(&'static str, &'static str), String> {
+    match (corpus, scenario) {
+        ("IncorrectDepositDRep", "00305-fail-drep-deregistration-with-incorrect-refund") => {
+            Ok(("GOVCERT", "ConwayDRepIncorrectRefund"))
+        }
+        ("IncorrectDepositDRep", "00347-fail-drep-registration-with-an-incorrect-deposit") => {
+            Ok(("GOVCERT", "ConwayDRepIncorrectDeposit"))
+        }
+        ("IncorrectDepositDRep", other) => {
+            Err(format!("{other}: IncorrectDepositDRep is a wrong DRep deposit or refund; resolve it per scenario"))
+        }
+        _ => haskell_name(corpus).ok_or_else(|| format!("{scenario}: corpus predicate {corpus} has no Haskell alias")),
     }
 }
 
@@ -414,15 +431,12 @@ fn verdict_matches(expected: &Expected, response: &Response) -> Result<(), Strin
         {
             Ok(())
         }
-        (Expected::Predicate { name, description }, Response::Invalid(invalid)) => {
-            let (rule, constructor) =
-                haskell_name(name).ok_or_else(|| format!("corpus predicate {name} has no Haskell alias"))?;
+        (Expected::Predicate { name, rule, constructor, description }, Response::Invalid(invalid)) => {
             let phase = if name == "ValidationTagMismatch" { Phase::PhaseTwo } else { Phase::PhaseOne };
-            let names_match =
-                std::iter::once(&(rule, constructor)).chain(haskell_aliases(name)).any(|(rule, constructor)| {
-                    invalid.rule == *rule && invalid.constructor.as_deref() == Some(*constructor)
-                });
-            if invalid.phase == phase && names_match && (description.is_none() || invalid.tag_mismatch == *description)
+            if invalid.phase == phase
+                && invalid.rule == *rule
+                && invalid.constructor.as_deref() == Some(*constructor)
+                && (description.is_none() || invalid.tag_mismatch == *description)
             {
                 Ok(())
             } else {
@@ -628,11 +642,12 @@ fn amaru_version_matches_cargo_manifest_and_lockfile() {
 
 #[test]
 fn unsupported_abi_version_is_rejected() {
+    // A version 1 host (wider protocol-version and governance-action-index fields) is refused.
     let mut buffer = Vec::new();
     let mut e = cbor::Encoder::new(&mut buffer);
-    e.map(1).unwrap().u8(0).unwrap().u32(2).unwrap();
+    e.map(1).unwrap().u8(0).unwrap().u32(1).unwrap();
     match engine::validate(&buffer) {
-        Response::Error(message) => assert!(message.contains("abi_version"), "{message}"),
+        Response::Error(message) => assert!(message.contains("unsupported abi_version 1"), "{message}"),
         other => panic!("expected an error, got {other:?}"),
     }
 }
@@ -735,4 +750,27 @@ fn required_keys_env_must_name_the_protocol_version_and_have_no_trailing_bytes()
             other => panic!("expected an env error for {env:02x?}, got {other:?}"),
         }
     }
+}
+
+/// `IncorrectDepositDRep` is resolved per scenario: the refund scenario needs the refund constructor and the deposit
+/// scenario the deposit one; the swapped constructor is a mismatch in both.
+#[test]
+fn drep_deposit_and_refund_scenarios_do_not_accept_each_others_constructor() {
+    let invalid = |constructor: &str| {
+        Response::Invalid(Invalid {
+            phase: Phase::PhaseOne,
+            rule: "GOVCERT".to_string(),
+            constructor: Some(constructor.to_string()),
+            amaru_error: String::new(),
+            detail: String::new(),
+            tag_mismatch: None,
+        })
+    };
+    let refund = scenario("00305-fail-drep-deregistration-with-incorrect-refund.json").expected;
+    let deposit = scenario("00347-fail-drep-registration-with-an-incorrect-deposit.json").expected;
+    assert!(verdict_matches(&refund, &invalid("ConwayDRepIncorrectRefund")).is_ok());
+    assert!(verdict_matches(&refund, &invalid("ConwayDRepIncorrectDeposit")).is_err());
+    assert!(verdict_matches(&deposit, &invalid("ConwayDRepIncorrectDeposit")).is_ok());
+    assert!(verdict_matches(&deposit, &invalid("ConwayDRepIncorrectRefund")).is_err());
+    assert!(scenario_haskell_name("00999-fail-some-other-drep-deposit", "IncorrectDepositDRep").is_err());
 }

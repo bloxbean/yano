@@ -279,11 +279,12 @@ class AmaruEngineBehaviourTest {
 
     @Test
     void anUnsupportedAbiVersionFailsConstruction() {
+        // A version 1 module (before the protocol-version and governance-action-index fields narrowed).
         AmaruScenario s = scenario(DELEGATION);
         AmaruInstance wrongAbi = new AmaruInstance() {
             @Override
             public int abiVersion() {
-                return 2;
+                return 1;
             }
 
             @Override
@@ -308,7 +309,7 @@ class AmaruEngineBehaviourTest {
         assertThatThrownBy(() -> new AmaruTransactionValidator(LedgerValidationEngines.AMARU, config(),
                 ScenarioSupport.network(s), null, AmaruLedgerConstants.HASKELL, () -> wrongAbi))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("interface version 2");
+                .hasMessageContaining("interface version 1");
     }
 
     // --------------------------------------------------------------------------------- MEMPOOL

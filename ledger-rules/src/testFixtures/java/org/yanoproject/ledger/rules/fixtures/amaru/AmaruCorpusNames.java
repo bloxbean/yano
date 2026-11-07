@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static java.util.Map.entry;
 
@@ -53,7 +54,6 @@ public final class AmaruCorpusNames {
             entry("FeeTooSmallUTxO", name(LedgerRuleName.UTXO, "FeeTooSmallUTxO")),
             entry("GovActionsDoNotExist", name(LedgerRuleName.GOV, "GovActionsDoNotExist")),
             entry("IncorrectDepositDELEG", name(LedgerRuleName.DELEG, "IncorrectDepositDELEG")),
-            entry("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit")),
             entry("IncorrectTotalCollateralField", name(LedgerRuleName.UTXO, "IncorrectTotalCollateralField")),
             entry("InlineDatumsNotSupported", name(LedgerRuleName.UTXOS, "CollectErrors")),
             entry("InputSetEmptyUTxO", name(LedgerRuleName.UTXO, "InputSetEmptyUTxO")),
@@ -123,16 +123,29 @@ public final class AmaruCorpusNames {
      * ({@code normalizeGovFailure}, {@code crates/amaru/tests/conformance/validation-rules/src/Command/ValidatePhaseOne/Run.hs}):
      * a scenario expecting the corpus name is satisfied by either. {@code UnelectedCommitteeVoters} (the PV 11 {@code GOV}
      * predicate, Conway/Rules/Gov.hs:478-481) is normalised to {@code "VotersDoNotExist"} (Run.hs:603-604), so scenario
-     * 00171 names {@code VotersDoNotExist} although Haskell reports {@code UnelectedCommitteeVoters}. A wrong DRep
-     * refund ({@code ConwayDRepIncorrectRefund}, Conway/Rules/GovCert.hs:242) is normalised to
-     * {@code "IncorrectDepositDRep"} ({@code normalizeGovCertFailure}, Run.hs:547-550; scenario 00305). An alias is
-     * keyed by corpus name, so it also accepts the refund constructor for a wrong DRep <em>deposit</em> (scenario
-     * 00347); this table cannot tell the two apart. Same table as {@code haskell_aliases} in
-     * {@code amaru-validator-wasm/tests/amaru_scenarios.rs}.
+     * 00171 names {@code VotersDoNotExist} although Haskell reports {@code UnelectedCommitteeVoters}.
      */
     private static final Map<String, Set<String>> ALIASES = Map.of(
-            "IncorrectDepositDRep", Set.of("GOVCERT.ConwayDRepIncorrectRefund"),
             "VotersDoNotExist", Set.of("GOV.UnelectedCommitteeVoters"));
+
+    /** A corpus name resolved for one scenario. */
+    private record ScenarioName(String corpusName, HaskellName haskell) {
+    }
+
+    /**
+     * Corpus names Amaru's Haskell checker gives to distinct Haskell failures, resolved per scenario; a scenario using
+     * one that is not listed here fails to load. {@code normalizeGovCertFailure} (Run.hs:547-550) names both
+     * {@code ConwayDRepIncorrectDeposit} and {@code ConwayDRepIncorrectRefund} {@code "IncorrectDepositDRep"}, which
+     * Haskell tells apart (Conway/Rules/GovCert.hs:209-242). Same table as {@code scenario_haskell_name} in
+     * {@code amaru-validator-wasm/tests/amaru_scenarios.rs}.
+     */
+    private static final Set<String> PER_SCENARIO = Set.of("IncorrectDepositDRep");
+
+    private static final Map<String, ScenarioName> SCENARIO_NAMES = Map.of(
+            "00305-fail-drep-deregistration-with-incorrect-refund",
+            new ScenarioName("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectRefund")),
+            "00347-fail-drep-registration-with-an-incorrect-deposit",
+            new ScenarioName("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit")));
 
     private AmaruCorpusNames() {
     }
@@ -149,8 +162,22 @@ public final class AmaruCorpusNames {
         return new HaskellName(rule, constructor);
     }
 
-    /** @return the Haskell name for a corpus predicate, or empty when the table has no entry */
-    public static Optional<HaskellName> haskellName(String corpusName) {
+    /**
+     * @param scenario   the scenario's name (its file name without {@code .json})
+     * @param corpusName the scenario's expected corpus predicate
+     * @return the Haskell name the predicate stands for in this scenario, or empty when the table has no entry
+     * @throws IllegalStateException for a corpus name resolved per scenario ({@link #PER_SCENARIO}) and an unlisted
+     *                               scenario
+     */
+    public static Optional<HaskellName> haskellName(String scenario, String corpusName) {
+        if (PER_SCENARIO.contains(corpusName)) {
+            ScenarioName resolved = SCENARIO_NAMES.get(scenario);
+            if (resolved == null || !resolved.corpusName().equals(corpusName)) {
+                throw new IllegalStateException(scenario + ": " + corpusName + " names more than one Haskell "
+                        + "constructor; resolve it per scenario (AmaruCorpusNames.SCENARIO_NAMES)");
+            }
+            return Optional.of(resolved.haskell());
+        }
         return Optional.ofNullable(NAMES.get(corpusName));
     }
 
@@ -170,12 +197,21 @@ public final class AmaruCorpusNames {
      * @return the corpus name, or empty when no corpus name, or no single one, maps to the constructor
      */
     public static Optional<String> corpusName(String qualifiedName) {
-        List<String> names = NAMES.entrySet().stream()
-                .filter(e -> (e.getValue().rule() + "." + e.getValue().constructor()).equals(qualifiedName)
-                        || aliases(e.getKey()).contains(qualifiedName))
-                .map(Map.Entry::getKey)
+        List<String> names = Stream.concat(
+                        NAMES.entrySet().stream()
+                                .filter(e -> qualified(e.getValue()).equals(qualifiedName)
+                                        || aliases(e.getKey()).contains(qualifiedName))
+                                .map(Map.Entry::getKey),
+                        SCENARIO_NAMES.values().stream()
+                                .filter(s -> qualified(s.haskell()).equals(qualifiedName))
+                                .map(ScenarioName::corpusName))
+                .distinct()
                 .toList();
         return names.size() == 1 ? Optional.of(names.getFirst())
                 : Optional.ofNullable(CHECKER_DEFAULTS.get(qualifiedName));
+    }
+
+    private static String qualified(HaskellName name) {
+        return name.rule() + "." + name.constructor();
     }
 }

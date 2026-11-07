@@ -24,8 +24,8 @@ Its golden tests compare the Java request encoder with the requests `cargo test`
 | `Cargo.toml`, `Cargo.lock` | Git dependencies on `amaru-kernel`, `amaru-ledger` and `amaru-uplc` (the arena pool) at the pinned tag. The lockfile pins the exact commit. |
 | `rust-toolchain.toml` | The nightly that Amaru pins at that tag, plus the `wasm32-wasip1` target. |
 | `AMARU_VERSION` | `tag=`, `commit=` and `toolchain=` lines. Embedded in the module and returned by `amaru_version`, followed by `crate=<Cargo.toml version>`. Bump the crate version whenever the failure mapping (`src/failure.rs`) or any other host-visible behaviour changes; Yano's conformance harness refuses a module whose `crate=` differs from `Cargo.toml`. |
-| `INTERFACE.md` | Interface v1: exports, CBOR request and response schemas (CDDL), and absence semantics. |
-| `src/interface.rs` | The reference codec for the v1 documents. |
+| `INTERFACE.md` | Interface version 2: exports, CBOR request and response schemas (CDDL), and absence semantics. |
+| `src/interface.rs` | The reference codec for the interface documents. |
 | `src/engine.rs` | `required_keys` and `validate`, built on Amaru's public API. |
 | `src/failure.rs` | Amaru errors mapped to the Haskell rule and constructor at ADR-056's pinned `cardano-ledger` revision. Every variant is mapped explicitly. |
 | `tests/amaru_scenarios.rs` | Fixture-equivalence gate: all 368 Amaru scenarios in both modes (phase, rule and constructor), `required_keys` sufficiency, and arena growth. |
