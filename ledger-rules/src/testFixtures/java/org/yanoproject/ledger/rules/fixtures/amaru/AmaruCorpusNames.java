@@ -137,14 +137,16 @@ public final class AmaruCorpusNames {
      * one that is not listed here fails to load. {@code normalizeGovCertFailure} (Run.hs:547-550) names both
      * {@code ConwayDRepIncorrectDeposit} and {@code ConwayDRepIncorrectRefund} {@code "IncorrectDepositDRep"}, which
      * Haskell tells apart (Conway/Rules/GovCert.hs:209-242). Same table as {@code scenario_haskell_name} in
-     * {@code amaru-validator-wasm/tests/amaru_scenarios.rs}.
+     * {@code amaru-validator-wasm/tests/amaru_scenarios.rs}. Keyed by the scenario's description, its name without the
+     * number: the node-diversity fixtures are copies of Amaru's scenarios numbered differently (fixture
+     * {@code 00298-fail-drep-registration-with-an-incorrect-deposit} is Amaru's scenario 00347).
      */
     private static final Set<String> PER_SCENARIO = Set.of("IncorrectDepositDRep");
 
     private static final Map<String, ScenarioName> SCENARIO_NAMES = Map.of(
-            "00305-fail-drep-deregistration-with-incorrect-refund",
+            "fail-drep-deregistration-with-incorrect-refund",
             new ScenarioName("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectRefund")),
-            "00347-fail-drep-registration-with-an-incorrect-deposit",
+            "fail-drep-registration-with-an-incorrect-deposit",
             new ScenarioName("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit")));
 
     private AmaruCorpusNames() {
@@ -171,7 +173,7 @@ public final class AmaruCorpusNames {
      */
     public static Optional<HaskellName> haskellName(String scenario, String corpusName) {
         if (PER_SCENARIO.contains(corpusName)) {
-            ScenarioName resolved = SCENARIO_NAMES.get(scenario);
+            ScenarioName resolved = SCENARIO_NAMES.get(scenario.replaceFirst("^\\d+-", ""));
             if (resolved == null || !resolved.corpusName().equals(corpusName)) {
                 throw new IllegalStateException(scenario + ": " + corpusName + " names more than one Haskell "
                         + "constructor; resolve it per scenario (AmaruCorpusNames.SCENARIO_NAMES)");

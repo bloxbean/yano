@@ -83,6 +83,9 @@ class AmaruScenarioLoaderTest {
                 "IncorrectDepositDRep").orElseThrow().constructor()).isEqualTo("ConwayDRepIncorrectRefund");
         assertThat(AmaruCorpusNames.haskellName("00347-fail-drep-registration-with-an-incorrect-deposit",
                 "IncorrectDepositDRep").orElseThrow().constructor()).isEqualTo("ConwayDRepIncorrectDeposit");
+        // The node-diversity fixtures number the same scenarios differently.
+        assertThat(AmaruCorpusNames.haskellName("00298-fail-drep-registration-with-an-incorrect-deposit",
+                "IncorrectDepositDRep").orElseThrow().constructor()).isEqualTo("ConwayDRepIncorrectDeposit");
         assertThatThrownBy(() -> AmaruCorpusNames.haskellName("00001-any", "IncorrectDepositDRep"))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(AmaruCorpusNames.corpusName("GOVCERT.ConwayDRepIncorrectRefund")).contains("IncorrectDepositDRep");
