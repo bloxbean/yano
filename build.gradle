@@ -692,13 +692,10 @@ allprojects { candidate ->
 // aggregate that gives a downstream application the node stack in one
 // coordinate.
 //
-// `amaru-validator` (ADR-057) exists only in builds run with -PwithAmaru=true
-// and never publishes (amaru-validator/build.gradle removes its publication), so
-// even such a build deploys exactly the default scope. Listing a name that is
-// not a project is harmless. `ledger-conformance` (ADR-056 §8) is a test-only
-// harness that removes its publication the same way.
+// `ledger-conformance` (ADR-056 §8) is a test-only harness that removes its
+// publication the same way.
 def centralDeploymentExclusions = nonLibraryModules +
-        ['appchain-plugin-conformance', 'amaru-validator', 'ledger-conformance'] as Set
+        ['appchain-plugin-conformance', 'ledger-conformance'] as Set
 def centralDeploymentProjects = ([rootProject] + subprojects.toList()).findAll { candidate ->
     !(candidate.name in centralDeploymentExclusions)
 } + project(':yano-bom')

@@ -10,7 +10,7 @@ import java.util.Optional;
 /**
  * What two engines are compared on (ADR-056 §7): valid or invalid, and for an invalid outcome the first
  * failure's rule and constructor. Details and later failures are not compared: engines word details
- * differently, and Amaru stops at the first failure where Haskell accumulates.
+ * differently, and some engines stop at the first failure where Haskell accumulates.
  *
  * @param valid        whether the outcome is valid
  * @param firstFailure the first failure of an invalid outcome, otherwise {@code null}

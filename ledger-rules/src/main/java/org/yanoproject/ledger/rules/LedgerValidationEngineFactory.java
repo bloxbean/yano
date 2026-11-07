@@ -5,13 +5,13 @@ package org.yanoproject.ledger.rules;
  * {@code yano.validation.shadow-engines} (ADR-056 §7).
  *
  * <p>Implementations are discovered with {@link java.util.ServiceLoader}
- * ({@code META-INF/services/org.yanoproject.ledger.rules.LedgerValidationEngineFactory}), so an optional
- * engine module ({@code amaru-validator}, ADR-057) is available exactly when it is on the classpath. See
+ * ({@code META-INF/services/org.yanoproject.ledger.rules.LedgerValidationEngineFactory}), so an engine module
+ * is available exactly when it is on the classpath. See
  * {@link LedgerValidationEngines} for selection and the startup errors.</p>
  */
 public interface LedgerValidationEngineFactory {
 
-    /** @return the engine name used in configuration ({@code scalus}, {@code amaru}, …), lowercase */
+    /** @return the engine name used in configuration ({@code scalus}, {@code java-julc}, …), lowercase */
     String name();
 
     /**

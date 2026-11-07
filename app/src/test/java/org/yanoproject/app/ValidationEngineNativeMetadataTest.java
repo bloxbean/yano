@@ -18,8 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-056 Phase 7c: every validation-engine provider the application ships ({@code java-julc}, {@code java-scalus},
- * {@code scalus}, and {@code amaru} and {@code amaru-scalus} in {@code -PwithAmaru=true} builds) is registered for
- * reflective construction in the native image.
+ * {@code scalus}) is registered for reflective construction in the native image.
  * Quarkus does not register {@code META-INF/services} providers by itself, and a missing registration makes the
  * native {@code ServiceLoader} fail ({@code Provider ... not found}) where the JVM works.
  */
@@ -45,7 +44,7 @@ class ValidationEngineNativeMetadataTest {
 
         Set<String> constructible = new HashSet<>();
         ObjectMapper json = new ObjectMapper();
-        for (String module : new String[]{"yano-ledger-rules", "yano-scalus-bridge", "amaru-validator", "yano-app"}) {
+        for (String module : new String[]{"yano-ledger-rules", "yano-scalus-bridge", "yano-app"}) {
             String config = "META-INF/native-image/org.yanoproject/" + module + "/reflect-config.json";
             for (URL url : Collections.list(loader.getResources(config))) {
                 for (JsonNode entry : json.readTree(read(url))) {

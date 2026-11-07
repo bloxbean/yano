@@ -996,7 +996,7 @@ public class YanoProducer {
     /** Removed with the shadow-sync thread pool (shadow sync runs on virtual threads); ignored with a warning. */
     private static final String REMOVED_SHADOW_SYNC_THREADS = "yano.validation.shadow-sync-threads";
 
-    /** ADR-056 §7 engine selection and shadowing, and ADR-057 §2 Amaru settings, forwarded verbatim. */
+    /** ADR-056 §7 engine selection and shadowing, forwarded verbatim. */
     static final List<String> VALIDATION_ENGINE_KEYS = List.of(
             YanoPropertyKeys.Validation.ENGINE,
             YanoPropertyKeys.Validation.SHADOW_ENGINES,
@@ -1010,11 +1010,7 @@ public class YanoProducer {
             YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_WAIT_MS,
             YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS,
             YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS,
-            YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS,
-            YanoPropertyKeys.Validation.AMARU_POOL_SIZE,
-            YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS,
-            YanoPropertyKeys.Validation.AMARU_MAX_ABANDONED,
-            YanoPropertyKeys.Validation.AMARU_MAX_MEMORY_PAGES);
+            YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS);
 
     void forwardValidationEngineKeys(Map<String, Object> globals) {
         for (String key : VALIDATION_ENGINE_KEYS) {

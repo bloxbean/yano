@@ -1,5 +1,6 @@
 # Amaru's known failures on the cardano-blueprint ledger conformance vectors: the keys of
-# crates/amaru-ledger/tests/data/rules-conformance.failures.toml at Amaru tag v10.11.20261105 (commit c773f848),
+# crates/amaru-ledger/tests/data/rules-conformance.failures.toml at the Amaru tag pinned in
+# ledger-conformance/node-diversity/corpora.env (AMARU_TAG, AMARU_REVISION),
 # one vector id per line. Every other vector passes Amaru's harness (evaluate_ledger_states.rs).
 # AmaruKnownFailuresTest checks this list against the file when an Amaru checkout is configured.
 allegra/fail-utxow-invalidmetadata/0

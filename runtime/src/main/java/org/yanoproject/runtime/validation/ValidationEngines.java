@@ -1,24 +1,14 @@
 package org.yanoproject.runtime.validation;
 
 import lombok.extern.slf4j.Slf4j;
-import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.ledger.rules.EngineContext;
-import org.yanoproject.ledger.rules.EpochProtocolParamsSupplier;
 import org.yanoproject.ledger.rules.LedgerValidationEngine;
 import org.yanoproject.ledger.rules.LedgerValidationEngines;
-import org.yanoproject.ledger.rules.NetworkParameters;
-import org.yanoproject.ledger.rules.SlotConfigSupplier;
-import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
 
 /**
  * The configured validation engines (ADR-056 §7): the admission engine, the shadow engines and their
@@ -30,21 +20,6 @@ public final class ValidationEngines implements AutoCloseable {
 
     /** Status name of the legacy admission validator. */
     public static final String LEGACY = "scalus (legacy)";
-
-    /**
-     * Health and counters for health checks and metrics.
-     *
-     * @param engine           the admission engine
-     * @param shadowEngines    the shadow engines
-     * @param admissionHealthy whether the admission engine can answer (false fails every admission closed)
-     * @param engineHealth     health per engine name
-     * @param shadow           shadow counters, or {@code null} without shadow engines
-     * @param shadowSyncHealth health per shadow-sync engine (ADR-056 Phase 7a); reported, never gating readiness
-     */
-    public record Status(String engine, List<String> shadowEngines, boolean admissionHealthy,
-                         Map<String, Boolean> engineHealth, ShadowValidationRunner.Stats shadow,
-                         Map<String, Boolean> shadowSyncHealth) {
-    }
 
     private final ValidationEngineSettings settings;
     private final LedgerValidationEngine admission;
@@ -105,10 +80,8 @@ public final class ValidationEngines implements AutoCloseable {
             // Shadow sync (ADR-056 Phase 7a) gets its own instances; it only observes synced blocks.
             List<LedgerValidationEngine> shadowSync = new ArrayList<>();
             if (settings.shadowSync()) {
-                EngineContext observeOnly = new ObserveOnlyContext(context,
-                        settings.shadowSyncSettings().maxInFlight());
                 for (String name : settings.shadowSyncSettings().engines()) {
-                    shadowSync.add(create(registry, name, observeOnly, created));
+                    shadowSync.add(create(registry, name, context, created));
                 }
             }
             ShadowValidationRunner runner = shadows.isEmpty() ? null
@@ -205,29 +178,6 @@ public final class ValidationEngines implements AutoCloseable {
         return shadowRunner;
     }
 
-    /** @return whether the admission engine reports healthy (the legacy validator always does) */
-    public boolean admissionHealthy() {
-        return admission == null || admission.isHealthy();
-    }
-
-    /** @return true when the admission or a shadow engine is {@code name} */
-    public boolean uses(String name) {
-        return settings.uses(name);
-    }
-
-    public Status status() {
-        Map<String, Boolean> health = new LinkedHashMap<>();
-        if (admission != null) {
-            health.put(admission.name(), admission.isHealthy());
-        }
-        shadows.forEach(s -> health.put(s.name(), s.isHealthy()));
-        Map<String, Boolean> syncHealth = new LinkedHashMap<>();
-        shadowSyncEngines.forEach(s -> syncHealth.put(s.name(), s.isHealthy()));
-        return new Status(admissionEngineName(), shadows.stream().map(LedgerValidationEngine::name).toList(),
-                admissionHealthy(), Map.copyOf(health), shadowRunner != null ? shadowRunner.stats() : null,
-                Map.copyOf(syncHealth));
-    }
-
     @Override
     public void close() {
         ShadowSyncValidator sync = shadowSync;
@@ -240,57 +190,6 @@ public final class ValidationEngines implements AutoCloseable {
         closeQuietly(admission);
         shadows.forEach(ValidationEngines::closeQuietly);
         shadowSyncEngines.forEach(ValidationEngines::closeQuietly);
-    }
-
-    /**
-     * The node's context with Amaru's {@code pool-size: 0} (or unset) answered with the shadow-sync concurrency: at
-     * most {@code shadow-sync-max-in-flight} blocks call the engine at once, and shadow sync needs none of the
-     * admission callers' headroom.
-     */
-    private record ObserveOnlyContext(EngineContext delegate, int maxInFlight) implements EngineContext {
-        @Override
-        public Optional<String> config(String key) {
-            if (YanoPropertyKeys.Validation.AMARU_POOL_SIZE.equals(key)) {
-                return delegate.config(key).filter(v -> !v.isBlank() && !"0".equals(v.trim()))
-                        .or(() -> Optional.of(Integer.toString(maxInFlight)));
-            }
-            return delegate.config(key);
-        }
-
-        @Override
-        public Supplier<NetworkParameters> network() {
-            return delegate.network();
-        }
-
-        @Override
-        public EpochProtocolParamsSupplier protocolParams() {
-            return delegate.protocolParams();
-        }
-
-        @Override
-        public SlotConfigSupplier slotConfig() {
-            return delegate.slotConfig();
-        }
-
-        @Override
-        public LongSupplier currentSlot() {
-            return delegate.currentSlot();
-        }
-
-        @Override
-        public ScriptPhaseEvaluator scriptPhaseEvaluator() {
-            return delegate.scriptPhaseEvaluator();
-        }
-
-        @Override
-        public ScriptPhaseEvaluator julcScriptPhaseEvaluator() {
-            return delegate.julcScriptPhaseEvaluator();
-        }
-
-        @Override
-        public int validationThreads() {
-            return delegate.validationThreads();
-        }
     }
 
     private static void closeQuietly(Object engine) {

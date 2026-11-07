@@ -6,7 +6,6 @@ import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.VkeyWitness;
 
 import org.junit.jupiter.api.Test;
-import org.yanoproject.ledger.conformance.engines.BaselineEngines;
 import org.yanoproject.ledger.conformance.engines.JavaViewEngine;
 import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
@@ -23,7 +22,6 @@ import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
 import java.math.BigInteger;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,10 +32,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ul>
  *   <li>the mutant builds, differs from its base, has the exact fee its spec asks for, and carries valid signatures
  *       over its own body (except the invalid-witness mutant, whose first signature is the fault);</li>
- *   <li>with the Amaru reference engine in the build ({@code -PwithAmaru=true}), the base is valid and the mutant is
- *       rejected with the covered constructor, or, for a fault Haskell reports with several constructors
- *       ({@link Mutation#haskellFailures()}), only with constructors of that list; where Amaru names the fault
- *       differently from Haskell ({@link Mutation#amaruReports()}, a recorded divergence), with that name;</li>
  *   <li>the Java engine ({@code java-julc}) accepts the bases and rejects every mutant (every family since Phase 5)
  *       with exactly Haskell's failure list, or the single covered constructor.</li>
  * </ul>
@@ -49,7 +43,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class MutationMatrixTest {
 
-    private static final Optional<ConformanceEngine> REFERENCE = BaselineEngines.amaru();
     private static final ConformanceEngine JAVA = new JavaViewEngine();
     /** The rule families the Java engine implements: all of them since ADR-056 Phase 5. */
     private static final Set<String> JAVA_FAMILIES = Set.of("UTXO", "UTXOW", "UTXOS", "CERTS", "DELEG", "POOL",
@@ -83,15 +76,6 @@ class MutationMatrixTest {
                 assertSignatures(built, true);
             }
         }
-        // Amaru validates protocol version 10 and later only (ADR-056 invariant 6): it refuses the bootstrap world.
-        REFERENCE.ifPresent(amaru -> Mutations.baseCases().forEach(c -> {
-            Observation observation = ConformanceRunner.run(amaru, c).observation();
-            if (c.env().protocolMajor() < 10) {
-                assertThat(observation.label()).as("%s under amaru", c.id()).isEqualTo(Mutation.AMARU_REFUSES_PV9);
-            } else {
-                assertThat(observation.valid()).as("%s under amaru", c.id()).isTrue();
-            }
-        }));
         Mutations.baseCases().forEach(c -> assertThat(ConformanceRunner.run(JAVA, c).observation().label())
                 .as("%s under the java engine", c.id()).isEqualTo("Valid"));
     }
@@ -671,8 +655,8 @@ class MutationMatrixTest {
 
     /**
      * The other side of each bootstrap gate: the edit of a protocol version 10 mutant (rejected there, which its own
-     * {@code @Covers} test and Amaru confirm) is valid in the protocol version 9 world under the Java engine. Amaru
-     * refuses protocol version 9, so the Haskell gate cited in {@link Mutations#BOOTSTRAP_ACCEPTED} is the evidence.
+     * {@code @Covers} test confirms) is valid in the protocol version 9 world under the Java engine. The Haskell gate
+     * cited in {@link Mutations#BOOTSTRAP_ACCEPTED} is the evidence.
      */
     @Test
     @Covers("LEDGER.ConwayWdrlNotDelegatedToDRep")
@@ -693,8 +677,6 @@ class MutationMatrixTest {
                     .as("%s at protocol version 9 under the java engine (%s)", acceptance.mutationId(),
                             acceptance.gate())
                     .isEqualTo("Valid");
-            REFERENCE.ifPresent(amaru -> assertThat(ConformanceRunner.run(amaru, testCase).observation().label())
-                    .as("%s under amaru", testCase.id()).isEqualTo(Mutation.AMARU_REFUSES_PV9));
             // The rejecting side, in the protocol version 10 world.
             check(acceptance.mutationId());
         }
@@ -709,20 +691,6 @@ class MutationMatrixTest {
         assertSignatures(mutant, !id.equals("invalid-witness"));
 
         ConformanceCase testCase = Mutations.mutantCase(mutation);
-        REFERENCE.ifPresent(amaru -> {
-            Observation observation = ConformanceRunner.run(amaru, testCase).observation();
-            if (Mutation.AMARU_ACCEPTS.equals(mutation.amaruReports())) {
-                assertThat(observation.valid()).as("%s under amaru (recorded divergence: Amaru accepts)", id)
-                        .isTrue();
-                return;
-            }
-            assertThat(observation.valid()).as("%s under amaru", id).isFalse();
-            List<String> failures = observation.failures().stream().map(Observation.Failure::qualifiedName).toList();
-            Set<String> allowed = mutation.amaruReports() != null ? Set.of(mutation.amaruReports())
-                    : testCase.acceptedFirst();
-            assertThat(failures).as("%s under amaru", id).isNotEmpty();
-            assertThat(allowed).as("%s under amaru: only the mutation's fault", id).containsAll(failures);
-        });
         if (JAVA_FAMILIES.contains(mutation.covers().split("\\.")[0])) {
             Observation observation = ConformanceRunner.run(JAVA, testCase).observation();
             List<String> failures = observation.failures().stream().map(Observation.Failure::qualifiedName).toList();

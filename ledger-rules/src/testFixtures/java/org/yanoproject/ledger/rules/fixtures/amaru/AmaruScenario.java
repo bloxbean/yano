@@ -124,7 +124,7 @@ public record AmaruScenario(String name, Path path, String title, byte[] txCbor,
     /**
      * Values Haskell hardcodes instead of storing them in the protocol parameters, when the fixture
      * moves them; each field is null when the fixture keeps Haskell's value (204800, 1048576, 25600,
-     * 12/10). Production hosts never send them (INTERFACE.md, request key 7).
+     * 12/10). Production never moves them.
      */
     public record LedgerConstants(Long maxRefScriptSizePerTx, Long maxRefScriptSizePerBlock,
                                   Long refScriptCostStride, BigInteger refScriptCostMultiplierNumerator,

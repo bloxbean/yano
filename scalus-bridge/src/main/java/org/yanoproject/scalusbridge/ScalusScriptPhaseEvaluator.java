@@ -27,11 +27,11 @@ import scala.util.Either;
  *
  * <p>Before any script runs it reports, as phase-1 {@link ScriptPhaseResult.Rejected} failures, the checks
  * Haskell makes while preparing script contexts ({@link ScriptCollection}: {@code MalformedScriptWitnesses},
- * {@code MalformedReferenceScripts} and {@code CollectErrors}), which Amaru's {@code phase_one} mode does not (ADR-057
- * Phase B deviation 9). The Java engine's {@code UTXOW} owns the two malformed-script checks (ADR-056 Phase 3b): it
- * asks {@link #isWellFormed} per script, and {@link #collect} reports only the {@code CollectErrors}; {@link #evaluate}
- * still refuses to run a malformed script. A malformed reference script of a resolved input fails when it is decoded
- * to run ({@code decodePlutusRunnable}): a phase-2 failure, {@link ScriptPhaseResult.Failed}.</p>
+ * {@code MalformedReferenceScripts} and {@code CollectErrors}). The Java engine's {@code UTXOW} owns the two
+ * malformed-script checks (ADR-056 Phase 3b): it asks {@link #isWellFormed} per script, and {@link #collect} reports
+ * only the {@code CollectErrors}; {@link #evaluate} still refuses to run a malformed script. A malformed reference
+ * script of a resolved input fails when it is decoded to run ({@code decodePlutusRunnable}): a phase-2 failure,
+ * {@link ScriptPhaseResult.Failed}.</p>
  *
  * <p>Then every script runs; the first failure (Scalus stops there) makes the result
  * {@link ScriptPhaseResult.Failed}. Comparing with {@code is_valid} is the engine's job. Anything else Scalus

@@ -30,8 +30,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The ADR-056 Phase 6 devnet matrix (Phase 6b), run against an in-process {@link DevnetGateNode}; ADR-057 Phase C
- * runs the same matrix with {@code engine: amaru-scalus} and compares the {@link Report#lines() report}.
+ * The ADR-056 Phase 6 devnet matrix (Phase 6b), run against an in-process {@link DevnetGateNode}.
  *
  * <ul>
  *   <li><b>A, one block:</b> the producer is stopped, the four dependent chains (stake register → delegate → vote
@@ -64,8 +63,8 @@ public final class LedgerRulesDevnetMatrix {
     /**
      * The result of one run.
      *
-     * @param lines    engine-independent observations (verdicts, block placement, mempool contents), compared
-     *                 between engines by ADR-057 Phase C
+     * @param lines    engine-independent observations (verdicts, block placement, mempool contents), comparable
+     *                 between engines
      * @param problems gate failures (must be empty)
      * @param metrics  measurements that differ between runs (block numbers, latencies)
      */

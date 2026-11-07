@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# ADR-060: fetches the pinned node-diversity corpora (corpora.env) into <dir>, for
+# ADR-060, ADR-062: fetches the pinned conformance corpora (corpora.env) into <dir>, for
 #   ./gradlew :ledger-conformance:nodeDiversityReports -PnodeDiversityCorpora=<dir>
+#   ./gradlew :ledger-conformance:test -PamaruScenariosDir=<dir>/amaru
 #
+# <dir>/amaru                       Amaru at AMARU_REVISION (tag AMARU_TAG; the transaction scenarios)
 # <dir>/node-diversity-conformance  pragma's repository at NDC_REVISION (the ledger-rules fixtures)
 # <dir>/cardano-cbor-dataset        the CBOR dataset at CBOR_DATASET_REVISION
 # <dir>/uplc-conformance            the UPLC vectors, checked against UPLC_CORPUS_SHA256
@@ -64,6 +66,7 @@ extract() {
     echo "$target: extracted $url"
 }
 
+checkout "$AMARU_REPOSITORY" "$AMARU_REVISION" "$DIR/amaru"
 checkout "$NDC_REPOSITORY" "$NDC_REVISION" "$DIR/node-diversity-conformance"
 checkout "$CBOR_DATASET_REPOSITORY" "$CBOR_DATASET_REVISION" "$DIR/cardano-cbor-dataset"
 extract "$UPLC_CORPUS_URL" "$UPLC_CORPUS_SHA256" "$DIR/uplc-conformance"

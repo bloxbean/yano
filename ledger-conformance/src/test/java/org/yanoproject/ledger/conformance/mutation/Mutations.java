@@ -176,8 +176,7 @@ public final class Mutations {
                     s -> s.collateral = new ArrayList<>(List.of(MutationWorld.SCRIPT_COLLATERAL_INPUT))),
             new Mutation("collateral-non-ada", "UTXO.CollateralContainsNonADA", List.of(), SCRIPT,
                     "the collateral input carries a token and there is no collateral return",
-                    s -> s.collateral = new ArrayList<>(List.of(MutationWorld.TOKEN_COLLATERAL_INPUT)),
-                    "UTXO.ValueNotConservedUTxO"),
+                    s -> s.collateral = new ArrayList<>(List.of(MutationWorld.TOKEN_COLLATERAL_INPUT))),
             new Mutation("insufficient-collateral", "UTXO.InsufficientCollateral", List.of(), SCRIPT,
                     "0.2 ADA of collateral, below 150% of the fee",
                     s -> s.collateral = new ArrayList<>(List.of(MutationWorld.SMALL_COLLATERAL_INPUT))),
@@ -190,8 +189,7 @@ public final class Mutations {
                     s -> s.inputs.add(MutationWorld.MANY_ASSETS_INPUT)),
             new Mutation("boot-addr-attrs-too-big", "UTXO.OutputBootAddrAttrsTooBig", List.of(), SIMPLE,
                     "the payment goes to a testnet Byron address with 70 bytes of unknown attributes",
-                    s -> s.outputs.set(0, MutationWorld.output(MutationWorld.byronAddress(70), PAYMENT)),
-                    "UTXO.OutputTooBigUTxO"),
+                    s -> s.outputs.set(0, MutationWorld.output(MutationWorld.byronAddress(70), PAYMENT))),
             new Mutation("ex-units-too-big", "UTXO.ExUnitsTooBigUTxO", List.of(), SCRIPT,
                     "the redeemer declares 15M memory units where maxTxExUnits allows 14M (fee paid)",
                     s -> s.redeemers.set(0, MutationWorld.spendRedeemer(15_000_000))),
@@ -254,8 +252,7 @@ public final class Mutations {
                     s -> {
                         s.inputs.set(1, MutationWorld.TRAILING_BYTES_SCRIPT_INPUT);
                         s.plutusScripts.set(0, MutationWorld.TRAILING_BYTES_SCRIPT);
-                    },
-                    Mutation.AMARU_ACCEPTS),
+                    }),
             new Mutation("script-unavailable-builtin", "UTXOW.MalformedScriptWitnesses", List.of(), SCRIPT,
                     "spends the UTxO of a PlutusV3 script using expModInteger, available only from protocol "
                             + "version 11 (builtinsAvailableIn), with that script",
@@ -358,9 +355,7 @@ public final class Mutations {
                     "re-registers dev-77's pool with the VRF key hash of dev-bb's pool (protocol version 11)",
                     s -> certificate(s, MutationWorld.poolRegistration(TestKey.DEV_77, MutationWorld.POOL_BB_VRF,
                             MutationWorld.MIN_POOL_COST, MutationWorld.NETWORK, null), BigInteger.ZERO,
-                            TestKey.DEV_77)).atProtocolVersion11()
-                    // Recorded divergence: Amaru has no psVRFKeyHashes (the request carries pool ids only) and accepts.
-                    .withAmaruReports(Mutation.AMARU_ACCEPTS),
+                            TestKey.DEV_77)).atProtocolVersion11(),
             new Mutation("drep-already-registered", "GOVCERT.ConwayDRepAlreadyRegistered", List.of(), SIMPLE,
                     "registers dev-77 as a DRep again, with the right deposit",
                     s -> certificate(s, new RegDRepCert(MutationWorld.credential(TestKey.DEV_77), ada(500), null),
@@ -469,18 +464,14 @@ public final class Mutations {
             new Mutation("unelected-committee-voter-v11", "GOV.UnelectedCommitteeVoters", List.of(), SIMPLE,
                     "the hot key (dev-aa) of a committee member without a term votes (protocol version 11)",
                     s -> vote(s, VoterType.CONSTITUTIONAL_COMMITTEE_HOT_KEY_HASH, TestKey.DEV_AA,
-                            MutationWorld.INFO_ACTION)).atProtocolVersion11()
-                    // Amaru has no separate name for Haskell's UnelectedCommitteeVoters (Conway/Rules/Gov.hs:478-481)
-                    // and reports VotersDoNotExist, the name its Haskell checker normalises it to
-                    // (ValidatePhaseOne/Run.hs:532-533; scenario 00171). A naming alias, not a verdict difference.
-                    .withAmaruReports("GOV.VotersDoNotExist"),
+                            MutationWorld.INFO_ACTION)).atProtocolVersion11(),
             new Mutation("malformed-proposal-coins-per-byte", "GOV.MalformedProposal", List.of(), SIMPLE,
                     "a parameter change setting coinsPerUTxOByte to 0 (not ppuWellFormed from protocol version 10; "
                             + "the protocol version 9 world accepts it, BOOTSTRAP_ACCEPTED)",
                     s -> propose(s, proposal(new ParameterChangeAction(null, ProtocolParamUpdate.builder()
                             .adaPerUtxoByte(BigInteger.ZERO).build(), null)))),
-            // ---- Phase 5b: the protocol version 9 (bootstrap) world, the same state at protocol version 9.0. Amaru
-            // refuses protocol version 9 (Mutation.AMARU_REFUSES_PV9); each mutant cites its Haskell evidence.
+            // ---- Phase 5b: the protocol version 9 (bootstrap) world, the same state at protocol version 9.0. Each
+            // mutant cites its Haskell evidence.
             new Mutation("bootstrap-proposal-v9", "GOV.DisallowedProposalDuringBootstrap", List.of(), SIMPLE,
                     "a no-confidence proposal at protocol version 9 (Gov.hs:435-444, 483: only ParameterChange, "
                             + "HardForkInitiation and InfoAction, isBootstrapAction :633-639)",
@@ -532,7 +523,7 @@ public final class Mutations {
 
     /**
      * Faults that protocol version 10 rejects and the bootstrap phase accepts (ADR-056 Phase 5b): each names a mutant
-     * of the protocol version 10 world (the rejecting side, confirmed by Amaru) whose edit the protocol version 9
+     * of the protocol version 10 world (the rejecting side) whose edit the protocol version 9
      * world must accept, with the Haskell gate.
      *
      * @param mutationId the protocol version 10 mutant
@@ -725,7 +716,7 @@ public final class Mutations {
     /** @return {@code mutation} built and validated in the world of protocol version {@code world} */
     public static Mutation inWorld(Mutation mutation, int world) {
         return new Mutation(mutation.id(), mutation.covers(), mutation.haskellFailures(), mutation.base(),
-                mutation.description(), mutation.edit(), mutation.amaruReports(), world);
+                mutation.description(), mutation.edit(), world);
     }
 
     /**

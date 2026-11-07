@@ -5,10 +5,8 @@
 Generated 2026-11-07 by
 
 ```
-./gradlew :ledger-conformance:conformanceReport -PwithAmaru=true -PamaruWasm=<amaru_validator.wasm> -PamaruScenariosDir=<amaru clone at v10.11.20261105>
+./gradlew :ledger-conformance:conformanceReport -PamaruScenariosDir=<amaru clone at v10.11.20261105>
 ```
-
-Amaru module: `amaru-validator-wasm` crate 0.1.2, sha256 `e3e8c44e35d7d056013e17ef8b2414f4011744bd9d367ac9b8cdc64469d135c5` (the reference engine refuses a module whose crate version is not `Cargo.toml`'s).
 
 Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: engines are expected to disagree with Haskell, and nothing here gates the build.
 
@@ -25,19 +23,17 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 | `java-legacy` | the copied CCL rules (LedgerStateValidator, 10 rules) over slices adapted from the view |
 | `java-julc` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, julc phase 2 (Yano script contexts, julc CEK machine) |
 | `java-scalus` | JavaLedgerValidationEngine (ADR-056 Phases 3–5b: every Conway rule family, LEDGER, GOV, CERTS, DELEG, POOL, GOVCERT, UTXOW, UTXO, UTXOS, protocol versions 9–11) over the LedgerView, Scalus phase 2 |
-| `amaru` | AmaruTransactionValidator, engine amaru, Endive AOT (reference; ADR-057); module crate 0.1.2, sha256 e3e8c44e35d7d056013e17ef8b2414f4011744bd9d367ac9b8cdc64469d135c5 |
 
 ## Summary
 
 | Engine | Scenarios: verdict | Scenarios: constructor | Scenarios: constructor found | Mutants: constructor | Bases valid | Constructors demonstrated | ms / scenario (one pass) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `scalus-legacy` | 253/368 | 133/368 | 133/368 | 39/94 | 6/6 | 33/86 | 2.51 |
-| `scalus-legacy+supplementary` | 292/368 | 170/368 | 170/368 | 54/94 | 6/6 | 47/86 | 0.51 |
-| `scalus-engine` | 275/368 | 240/368 | 240/368 | 56/94 | 6/6 | 50/86 | 0.58 |
-| `java-legacy` | 235/368 | 51/368 | 162/368 | 12/94 | 0/6 | 21/86 | 0.48 |
-| `java-julc` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.72 |
-| `java-scalus` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.60 |
-| `amaru` | 366/368 | 350/368 | 350/368 | 86/94 | 4/6 | 79/86 | 2.80 |
+| `scalus-legacy` | 253/368 | 133/368 | 133/368 | 39/94 | 6/6 | 33/86 | 4.11 |
+| `scalus-legacy+supplementary` | 292/368 | 170/368 | 170/368 | 54/94 | 6/6 | 47/86 | 1.08 |
+| `scalus-engine` | 275/368 | 240/368 | 240/368 | 56/94 | 6/6 | 50/86 | 1.28 |
+| `java-legacy` | 235/368 | 51/368 | 162/368 | 12/94 | 0/6 | 21/86 | 0.66 |
+| `java-julc` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 1.05 |
+| `java-scalus` | 368/368 | 367/368 | 367/368 | 94/94 | 6/6 | 85/86 | 0.76 |
 
 *Constructors demonstrated*: in-scope constructors the engine reports first on at least one scenario or mutant that expects them (where Haskell always reports a fault with several constructors, any of them counts). The scenarios and mutants can demonstrate 85 of the 86 constructors; the rest are covered by unit tests only (`LEDGER.ConwayMempoolFailure` is reported under rule `MEMPOOL`, and the harness validates with rule `LEDGER`: `MempoolTransitionTest`).
 
@@ -45,126 +41,126 @@ Measured, not estimated (ADR-056 §8, Phase 2). The baseline is informational: e
 
 Verdict matches / constructor matches, by the rule family of the expected constructor (`PASS`: expected valid; `DECODING`: expected not to decode).
 
-| Family | Scenarios | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-julc` | `java-scalus` | `amaru` |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| PASS | 126 | 75 / 75 | 65 / 65 | 123 / 123 | 8 / 8 | 126 / 126 | 126 / 126 | 124 / 124 |
-| DECODING | 5 | 5 / 5 | 5 / 5 | 5 / 5 | 2 / 0 | 5 / 5 | 5 / 5 | 5 / 5 |
-| LEDGER | 5 | 4 / 0 | 4 / 0 | 0 / 0 | 2 / 0 | 5 / 5 | 5 / 5 | 5 / 5 |
-| CERTS | 3 | 3 / 1 | 3 / 1 | 3 / 3 | 3 / 0 | 3 / 3 | 3 / 3 | 3 / 2 |
-| DELEG | 27 | 27 / 0 | 27 / 0 | 19 / 19 | 27 / 0 | 27 / 27 | 27 / 27 | 27 / 27 |
-| POOL | 7 | 7 / 0 | 7 / 0 | 7 / 7 | 7 / 0 | 7 / 7 | 7 / 7 | 7 / 7 |
-| GOVCERT | 17 | 8 / 0 | 14 / 4 | 6 / 5 | 17 / 3 | 17 / 17 | 17 / 17 | 17 / 17 |
-| GOV | 76 | 22 / 0 | 65 / 43 | 11 / 0 | 76 / 1 | 76 / 76 | 76 / 76 | 76 / 75 |
-| UTXOW | 40 | 40 / 25 | 40 / 25 | 39 / 39 | 34 / 7 | 40 / 40 | 40 / 40 | 40 / 29 |
-| UTXO | 40 | 40 / 21 | 40 / 21 | 40 / 33 | 37 / 32 | 40 / 39 | 40 / 39 | 40 / 40 |
-| UTXOS | 22 | 22 / 6 | 22 / 6 | 22 / 6 | 22 / 0 | 22 / 22 | 22 / 22 | 22 / 19 |
+| Family | Scenarios | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-julc` | `java-scalus` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| PASS | 126 | 75 / 75 | 65 / 65 | 123 / 123 | 8 / 8 | 126 / 126 | 126 / 126 |
+| DECODING | 5 | 5 / 5 | 5 / 5 | 5 / 5 | 2 / 0 | 5 / 5 | 5 / 5 |
+| LEDGER | 5 | 4 / 0 | 4 / 0 | 0 / 0 | 2 / 0 | 5 / 5 | 5 / 5 |
+| CERTS | 3 | 3 / 1 | 3 / 1 | 3 / 3 | 3 / 0 | 3 / 3 | 3 / 3 |
+| DELEG | 27 | 27 / 0 | 27 / 0 | 19 / 19 | 27 / 0 | 27 / 27 | 27 / 27 |
+| POOL | 7 | 7 / 0 | 7 / 0 | 7 / 7 | 7 / 0 | 7 / 7 | 7 / 7 |
+| GOVCERT | 17 | 8 / 0 | 14 / 4 | 6 / 5 | 17 / 3 | 17 / 17 | 17 / 17 |
+| GOV | 76 | 22 / 0 | 65 / 43 | 11 / 0 | 76 / 1 | 76 / 76 | 76 / 76 |
+| UTXOW | 40 | 40 / 25 | 40 / 25 | 39 / 39 | 34 / 7 | 40 / 40 | 40 / 40 |
+| UTXO | 40 | 40 / 21 | 40 / 21 | 40 / 33 | 37 / 32 | 40 / 39 | 40 / 39 |
+| UTXOS | 22 | 22 / 6 | 22 / 6 | 22 / 6 | 22 / 0 | 22 / 22 | 22 / 22 |
 
 ## Mutation matrix
 
 `✓`: the expected verdict and constructor; otherwise the engine's first failure (or `Valid`).
 
-| Case | Expected | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-julc` | `java-scalus` | `amaru` |
-|---|---|---|---|---|---|---|---|---|
-| `base:simple-v9` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `ENGINE.EraNotSupported` |
-| `base:script-v9` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `ENGINE.EraNotSupported` |
-| `base:simple` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `base:script` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `base:simple-v11` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `base:script-v11` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:fee-too-small` | UTXO.FeeTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:bad-input` | UTXO.BadInputsUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:value-not-conserved` | UTXO.ValueNotConservedUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:output-too-small` | UTXO.BabbageOutputTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:wrong-network-output` | UTXO.WrongNetwork | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:expired` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:missing-vkey-witness` | UTXOW.MissingVKeyWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:invalid-witness` | UTXOW.InvalidWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:max-tx-size` | UTXO.MaxTxSizeUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:no-collateral` | UTXO.NoCollateralInputs (Haskell: UTXO.NoCollateralInputs, UTXO.InsufficientCollateral) | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:too-many-collateral` | UTXO.TooManyCollateralInputs | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:wrong-network-in-body` | UTXO.WrongNetworkInTxBody | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:extraneous-script-witness` | UTXOW.ExtraneousScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:conflicting-metadata-hash` | UTXOW.ConflictingMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:missing-metadata-hash` | UTXOW.MissingTxBodyMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:missing-metadata` | UTXOW.MissingTxMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:empty-inputs` | UTXO.InputSetEmptyUTxO (Haskell: UTXO.ValueNotConservedUTxO, UTXO.InputSetEmptyUTxO) | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | ✓ | ✓ | ✓ | ✓ |
-| `mutant:not-yet-valid` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:scripts-not-paid` | UTXO.ScriptsNotPaidUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:collateral-non-ada` | UTXO.CollateralContainsNonADA | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `UTXO.ValueNotConservedUTxO` |
-| `mutant:insufficient-collateral` | UTXO.InsufficientCollateral | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:incorrect-total-collateral` | UTXO.IncorrectTotalCollateralField | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:output-too-big` | UTXO.OutputTooBigUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:boot-addr-attrs-too-big` | UTXO.OutputBootAddrAttrsTooBig | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `UTXO.OutputTooBigUTxO` |
-| `mutant:ex-units-too-big` | UTXO.ExUnitsTooBigUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:non-disjoint-reference-inputs` | UTXO.BabbageNonDisjointRefInputs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:script-fails` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:passed-unexpectedly` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:missing-script-witness` | UTXOW.MissingScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:native-script-not-validating` | UTXOW.ScriptWitnessNotValidatingUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:unspendable-no-datum` | UTXOW.UnspendableUTxONoDatumHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:missing-required-datum` | UTXOW.MissingRequiredDatums | `UTXOW.UnspendableUTxONoDatumHash` | `UTXOW.UnspendableUTxONoDatumHash` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:not-allowed-supplemental-datum` | UTXOW.NotAllowedSupplementalDatums | `UTXOW.UnspendableUTxONoDatumHash` | `UTXOW.UnspendableUTxONoDatumHash` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:extra-redeemer` | UTXOW.ExtraRedeemers | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:missing-redeemer` | UTXOW.MissingRedeemers (Haskell: UTXOW.MissingRedeemers, UTXOS.CollectErrors) | `UTXOW.ExtraRedeemers` | `UTXOW.ExtraRedeemers` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:script-integrity-hash` | UTXOW.PPViewHashesDontMatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:malformed-script-witness` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:script-trailing-bytes` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `Valid` |
-| `mutant:script-unavailable-builtin` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:malformed-reference-script` | UTXOW.MalformedReferenceScripts | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:invalid-metadata` | UTXOW.InvalidMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:script-integrity-hash-v11` | UTXOW.ScriptIntegrityHashMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:withdrawal-not-draining` | CERTS.WithdrawalsNotInRewardsCERTS | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:withdrawal-missing-account-v11` | LEDGER.ConwayWithdrawalsMissingAccounts | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:withdrawal-incomplete-v11` | LEDGER.ConwayIncompleteWithdrawals | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:reg-deposit-incorrect` | DELEG.IncorrectDepositDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:unreg-refund-incorrect` | DELEG.IncorrectDepositDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:reg-deposit-incorrect-v11` | DELEG.DepositIncorrectDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:unreg-refund-incorrect-v11` | DELEG.RefundIncorrectDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:reg-already-registered` | DELEG.StakeKeyRegisteredDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:unreg-not-registered` | DELEG.StakeKeyNotRegisteredDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:unreg-non-zero-balance` | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:deleg-pool-not-registered` | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:retire-unregistered-pool` | POOL.StakePoolNotRegisteredOnKeyPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:retire-wrong-epoch` | POOL.StakePoolRetirementWrongEpochPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:pool-cost-too-low` | POOL.StakePoolCostTooLowPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:pool-wrong-network` | POOL.WrongNetworkPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:pool-metadata-hash-too-big` | POOL.PoolMedataHashTooBig | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:pool-vrf-taken-v11` | POOL.VRFKeyHashAlreadyRegistered | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `Valid` |
-| `mutant:drep-already-registered` | GOVCERT.ConwayDRepAlreadyRegistered | `UNMAPPED.DRep` | `UNMAPPED.DRep` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:drep-deposit-incorrect` | GOVCERT.ConwayDRepIncorrectDeposit | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:drep-not-registered` | GOVCERT.ConwayDRepNotRegistered | `UNMAPPED.DRep` | `UNMAPPED.DRep` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:drep-refund-incorrect` | GOVCERT.ConwayDRepIncorrectRefund | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:committee-resigned` | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:committee-unknown` | GOVCERT.ConwayCommitteeIsUnknown | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:treasury-value-mismatch` | LEDGER.ConwayTreasuryValueMismatch | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:ref-scripts-too-big` | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:withdrawal-not-delegated-to-drep` | LEDGER.ConwayWdrlNotDelegatedToDRep | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:proposal-deposit-incorrect` | GOV.ProposalDepositIncorrect | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:proposal-return-account-missing` | GOV.ProposalReturnAccountDoesNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:proposal-return-account-network` | GOV.ProposalProcedureNetworkIdMismatch | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:treasury-withdrawal-network` | GOV.TreasuryWithdrawalsNetworkIdMismatch | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:treasury-withdrawal-account-missing` | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:treasury-withdrawal-zero` | GOV.ZeroTreasuryWithdrawals | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:guardrails-script-hash` | GOV.InvalidGuardrailsScriptHash | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:malformed-proposal` | GOV.MalformedProposal | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:hard-fork-cant-follow` | GOV.ProposalCantFollow | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:invalid-prev-gov-action-id` | GOV.InvalidPrevGovActionId | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:committee-update-conflict` | GOV.ConflictingCommitteeUpdate | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:committee-expiration-too-small` | GOV.ExpirationEpochTooSmall | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:voter-does-not-exist` | GOV.VotersDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:gov-action-does-not-exist` | GOV.GovActionsDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:disallowed-voter` | GOV.DisallowedVoters | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:unelected-committee-voter-v11` | GOV.UnelectedCommitteeVoters | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `GOV.VotersDoNotExist` |
-| `mutant:malformed-proposal-coins-per-byte` | GOV.MalformedProposal | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:bootstrap-proposal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `ENGINE.EraNotSupported` |
-| `mutant:bootstrap-treasury-withdrawal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `GOV.ProposalReturnAccountDoesNotExist` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `ENGINE.EraNotSupported` |
-| `mutant:bootstrap-drep-vote-v9` | GOV.DisallowedVotesDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | `ENGINE.EraNotSupported` |
-| `mutant:hard-fork-cant-follow-v11` | GOV.ProposalCantFollow | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:wrong-network-withdrawal` | UTXO.WrongNetworkWithdrawal (Haskell: UTXO.WrongNetworkWithdrawal, CERTS.WithdrawalsNotInRewardsCERTS, LEDGER.ConwayWdrlNotDelegatedToDRep) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mutant:reg-deleg-deposit-incorrect` | DELEG.IncorrectDepositDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:vote-reg-deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
-| `mutant:stake-vote-reg-deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ | ✓ |
+| Case | Expected | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-julc` | `java-scalus` |
+|---|---|---|---|---|---|---|---|
+| `base:simple-v9` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `base:script-v9` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `base:simple` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `base:script` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `base:simple-v11` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `base:script-v11` | Pass | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:fee-too-small` | UTXO.FeeTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:bad-input` | UTXO.BadInputsUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:value-not-conserved` | UTXO.ValueNotConservedUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:output-too-small` | UTXO.BabbageOutputTooSmallUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:wrong-network-output` | UTXO.WrongNetwork | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:expired` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:missing-vkey-witness` | UTXOW.MissingVKeyWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:invalid-witness` | UTXOW.InvalidWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:max-tx-size` | UTXO.MaxTxSizeUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:no-collateral` | UTXO.NoCollateralInputs (Haskell: UTXO.NoCollateralInputs, UTXO.InsufficientCollateral) | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:too-many-collateral` | UTXO.TooManyCollateralInputs | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:wrong-network-in-body` | UTXO.WrongNetworkInTxBody | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:extraneous-script-witness` | UTXOW.ExtraneousScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:conflicting-metadata-hash` | UTXOW.ConflictingMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-metadata-hash` | UTXOW.MissingTxBodyMetadataHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-metadata` | UTXOW.MissingTxMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:empty-inputs` | UTXO.InputSetEmptyUTxO (Haskell: UTXO.ValueNotConservedUTxO, UTXO.InputSetEmptyUTxO) | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | ✓ | ✓ | ✓ |
+| `mutant:not-yet-valid` | UTXO.OutsideValidityIntervalUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:scripts-not-paid` | UTXO.ScriptsNotPaidUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:collateral-non-ada` | UTXO.CollateralContainsNonADA | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:insufficient-collateral` | UTXO.InsufficientCollateral | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:incorrect-total-collateral` | UTXO.IncorrectTotalCollateralField | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:output-too-big` | UTXO.OutputTooBigUTxO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:boot-addr-attrs-too-big` | UTXO.OutputBootAddrAttrsTooBig | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:ex-units-too-big` | UTXO.ExUnitsTooBigUTxO | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:non-disjoint-reference-inputs` | UTXO.BabbageNonDisjointRefInputs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:script-fails` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:passed-unexpectedly` | UTXOS.ValidationTagMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-script-witness` | UTXOW.MissingScriptWitnessesUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:native-script-not-validating` | UTXOW.ScriptWitnessNotValidatingUTXOW | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unspendable-no-datum` | UTXOW.UnspendableUTxONoDatumHash | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-required-datum` | UTXOW.MissingRequiredDatums | `UTXOW.UnspendableUTxONoDatumHash` | `UTXOW.UnspendableUTxONoDatumHash` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:not-allowed-supplemental-datum` | UTXOW.NotAllowedSupplementalDatums | `UTXOW.UnspendableUTxONoDatumHash` | `UTXOW.UnspendableUTxONoDatumHash` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:extra-redeemer` | UTXOW.ExtraRedeemers | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:missing-redeemer` | UTXOW.MissingRedeemers (Haskell: UTXOW.MissingRedeemers, UTXOS.CollectErrors) | `UTXOW.ExtraRedeemers` | `UTXOW.ExtraRedeemers` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:script-integrity-hash` | UTXOW.PPViewHashesDontMatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:malformed-script-witness` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:script-trailing-bytes` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:script-unavailable-builtin` | UTXOW.MalformedScriptWitnesses | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:malformed-reference-script` | UTXOW.MalformedReferenceScripts | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:invalid-metadata` | UTXOW.InvalidMetadata | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:script-integrity-hash-v11` | UTXOW.ScriptIntegrityHashMismatch | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:withdrawal-not-draining` | CERTS.WithdrawalsNotInRewardsCERTS | ✓ | ✓ | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:withdrawal-missing-account-v11` | LEDGER.ConwayWithdrawalsMissingAccounts | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:withdrawal-incomplete-v11` | LEDGER.ConwayIncompleteWithdrawals | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `CERTS.WithdrawalsNotInRewardsCERTS` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:reg-deposit-incorrect` | DELEG.IncorrectDepositDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unreg-refund-incorrect` | DELEG.IncorrectDepositDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:reg-deposit-incorrect-v11` | DELEG.DepositIncorrectDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unreg-refund-incorrect-v11` | DELEG.RefundIncorrectDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:reg-already-registered` | DELEG.StakeKeyRegisteredDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unreg-not-registered` | DELEG.StakeKeyNotRegisteredDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unreg-non-zero-balance` | DELEG.StakeKeyHasNonZeroAccountBalanceDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:deleg-pool-not-registered` | DELEG.DelegateeStakePoolNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:retire-unregistered-pool` | POOL.StakePoolNotRegisteredOnKeyPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:retire-wrong-epoch` | POOL.StakePoolRetirementWrongEpochPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:pool-cost-too-low` | POOL.StakePoolCostTooLowPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:pool-wrong-network` | POOL.WrongNetworkPOOL | `UNMAPPED.StakePool` | `UNMAPPED.StakePool` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:pool-metadata-hash-too-big` | POOL.PoolMedataHashTooBig | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:pool-vrf-taken-v11` | POOL.VRFKeyHashAlreadyRegistered | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:drep-already-registered` | GOVCERT.ConwayDRepAlreadyRegistered | `UNMAPPED.DRep` | `UNMAPPED.DRep` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:drep-deposit-incorrect` | GOVCERT.ConwayDRepIncorrectDeposit | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:drep-not-registered` | GOVCERT.ConwayDRepNotRegistered | `UNMAPPED.DRep` | `UNMAPPED.DRep` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:drep-refund-incorrect` | GOVCERT.ConwayDRepIncorrectRefund | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:committee-resigned` | GOVCERT.ConwayCommitteeHasPreviouslyResigned | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:committee-unknown` | GOVCERT.ConwayCommitteeIsUnknown | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-value-mismatch` | LEDGER.ConwayTreasuryValueMismatch | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:ref-scripts-too-big` | LEDGER.ConwayTxRefScriptsSizeTooBig | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:withdrawal-not-delegated-to-drep` | LEDGER.ConwayWdrlNotDelegatedToDRep | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:proposal-deposit-incorrect` | GOV.ProposalDepositIncorrect | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.ValueNotConservedUTxO` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:proposal-return-account-missing` | GOV.ProposalReturnAccountDoesNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:proposal-return-account-network` | GOV.ProposalProcedureNetworkIdMismatch | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-withdrawal-network` | GOV.TreasuryWithdrawalsNetworkIdMismatch | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-withdrawal-account-missing` | GOV.TreasuryWithdrawalReturnAccountsDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:treasury-withdrawal-zero` | GOV.ZeroTreasuryWithdrawals | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:guardrails-script-hash` | GOV.InvalidGuardrailsScriptHash | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:malformed-proposal` | GOV.MalformedProposal | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:hard-fork-cant-follow` | GOV.ProposalCantFollow | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:invalid-prev-gov-action-id` | GOV.InvalidPrevGovActionId | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:committee-update-conflict` | GOV.ConflictingCommitteeUpdate | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:committee-expiration-too-small` | GOV.ExpirationEpochTooSmall | `ENGINE.DecodingFailure` | `ENGINE.DecodingFailure` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:voter-does-not-exist` | GOV.VotersDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:gov-action-does-not-exist` | GOV.GovActionsDoNotExist | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:disallowed-voter` | GOV.DisallowedVoters | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:unelected-committee-voter-v11` | GOV.UnelectedCommitteeVoters | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:malformed-proposal-coins-per-byte` | GOV.MalformedProposal | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:bootstrap-proposal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:bootstrap-treasury-withdrawal-v9` | GOV.DisallowedProposalDuringBootstrap | `Valid` | `GOV.ProposalReturnAccountDoesNotExist` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:bootstrap-drep-vote-v9` | GOV.DisallowedVotesDuringBootstrap | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:hard-fork-cant-follow-v11` | GOV.ProposalCantFollow | `Valid` | `Valid` | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:wrong-network-withdrawal` | UTXO.WrongNetworkWithdrawal (Haskell: UTXO.WrongNetworkWithdrawal, CERTS.WithdrawalsNotInRewardsCERTS, LEDGER.ConwayWdrlNotDelegatedToDRep) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mutant:reg-deleg-deposit-incorrect` | DELEG.IncorrectDepositDELEG | `UNMAPPED.StakeCertificates` | `UNMAPPED.StakeCertificates` | ✓ | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:vote-reg-deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
+| `mutant:stake-vote-reg-deleg-drep-not-registered` | DELEG.DelegateeDRepNotRegisteredDELEG | `Valid` | ✓ | `Valid` | `UTXO.FeeTooSmallUTxO` | ✓ | ✓ |
 
 Mutants (94):
 
@@ -267,94 +263,94 @@ Mutants (94):
 
 In-scope constructors that at least one scenario or mutant expects, with the engines that report them as Haskell does (first failure). Constructors no case expects are gaps of the corpus and the mutation matrix, listed after the table.
 
-| Constructor | Cases | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-julc` | `java-scalus` | `amaru` |
-|---|---:|---|---|---|---|---|---|---|
-| `LEDGER.ConwayTreasuryValueMismatch` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `LEDGER.ConwayTxRefScriptsSizeTooBig` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `LEDGER.ConwayWithdrawalsMissingAccounts` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `LEDGER.ConwayIncompleteWithdrawals` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `CERTS.WithdrawalsNotInRewardsCERTS` | 5 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.IncorrectDepositDELEG` | 6 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.DepositIncorrectDELEG` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.RefundIncorrectDELEG` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.StakeKeyRegisteredDELEG` | 6 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.StakeKeyNotRegisteredDELEG` | 10 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.StakeKeyHasNonZeroAccountBalanceDELEG` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.DelegateeDRepNotRegisteredDELEG` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `DELEG.DelegateeStakePoolNotRegisteredDELEG` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `POOL.StakePoolNotRegisteredOnKeyPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `POOL.StakePoolRetirementWrongEpochPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `POOL.StakePoolCostTooLowPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `POOL.WrongNetworkPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `POOL.PoolMedataHashTooBig` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `POOL.VRFKeyHashAlreadyRegistered` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ |
-| `GOVCERT.ConwayDRepAlreadyRegistered` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `GOVCERT.ConwayDRepIncorrectDeposit` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOVCERT.ConwayDRepNotRegistered` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `GOVCERT.ConwayDRepIncorrectRefund` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `GOVCERT.ConwayCommitteeHasPreviouslyResigned` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOVCERT.ConwayCommitteeIsUnknown` | 6 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| `GOV.UnelectedCommitteeVoters` | 13 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ |
-| `GOV.DisallowedProposalDuringBootstrap` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ |
-| `GOV.ProposalCantFollow` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.MalformedProposal` | 15 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.ProposalReturnAccountDoesNotExist` | 10 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.ProposalDepositIncorrect` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.ProposalProcedureNetworkIdMismatch` | 3 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.TreasuryWithdrawalsNetworkIdMismatch` | 1 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.InvalidGuardrailsScriptHash` | 6 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.ZeroTreasuryWithdrawals` | 2 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| `GOV.ConflictingCommitteeUpdate` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.ExpirationEpochTooSmall` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.InvalidPrevGovActionId` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.VotersDoNotExist` | 13 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.GovActionsDoNotExist` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.DisallowedVotesDuringBootstrap` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ |
-| `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `GOV.DisallowedVoters` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.InvalidWitnessesUTXOW` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingVKeyWitnessesUTXOW` | 9 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingScriptWitnessesUTXOW` | 9 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.ExtraneousScriptWitnessesUTXOW` | 4 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.ScriptWitnessNotValidatingUTXOW` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingTxBodyMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingTxMetadata` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.ConflictingMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.InvalidMetadata` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingRedeemers` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.ExtraRedeemers` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.MissingRequiredDatums` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.NotAllowedSupplementalDatums` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.UnspendableUTxONoDatumHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.PPViewHashesDontMatch` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.ScriptIntegrityHashMismatch` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.MalformedScriptWitnesses` | 6 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOW.MalformedReferenceScripts` | 4 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXO.BabbageNonDisjointRefInputs` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.OutsideValidityIntervalUTxO` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.InputSetEmptyUTxO` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.FeeTooSmallUTxO` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.ScriptsNotPaidUTxO` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.CollateralContainsNonADA` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ |
-| `UTXO.InsufficientCollateral` | 6 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.IncorrectTotalCollateralField` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.NoCollateralInputs` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.BadInputsUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.ValueNotConservedUTxO` | 19 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.BabbageOutputTooSmallUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.OutputTooBigUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.OutputBootAddrAttrsTooBig` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ |
-| `UTXO.WrongNetwork` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.WrongNetworkWithdrawal` | 2 | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.WrongNetworkInTxBody` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.MaxTxSizeUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.ExUnitsTooBigUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `UTXO.TooManyCollateralInputs` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOS.CollectErrors` | 18 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `UTXOS.ValidationTagMismatch` | 8 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| **Total** | | **33** | **47** | **50** | **21** | **85** | **85** | **79** |
+| Constructor | Cases | `scalus-legacy` | `scalus-legacy+supplementary` | `scalus-engine` | `java-legacy` | `java-julc` | `java-scalus` |
+|---|---:|---|---|---|---|---|---|
+| `LEDGER.ConwayTreasuryValueMismatch` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `LEDGER.ConwayTxRefScriptsSizeTooBig` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `LEDGER.ConwayWdrlNotDelegatedToDRep` | 3 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `LEDGER.ConwayWithdrawalsMissingAccounts` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `LEDGER.ConwayIncompleteWithdrawals` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `CERTS.WithdrawalsNotInRewardsCERTS` | 5 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.IncorrectDepositDELEG` | 6 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.DepositIncorrectDELEG` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.RefundIncorrectDELEG` | 1 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.StakeKeyRegisteredDELEG` | 6 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.StakeKeyNotRegisteredDELEG` | 10 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.StakeKeyHasNonZeroAccountBalanceDELEG` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `DELEG.DelegateeDRepNotRegisteredDELEG` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `DELEG.DelegateeStakePoolNotRegisteredDELEG` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `POOL.StakePoolNotRegisteredOnKeyPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `POOL.StakePoolRetirementWrongEpochPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `POOL.StakePoolCostTooLowPOOL` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `POOL.WrongNetworkPOOL` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `POOL.PoolMedataHashTooBig` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `POOL.VRFKeyHashAlreadyRegistered` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOVCERT.ConwayDRepAlreadyRegistered` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `GOVCERT.ConwayDRepIncorrectDeposit` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOVCERT.ConwayDRepNotRegistered` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `GOVCERT.ConwayDRepIncorrectRefund` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `GOVCERT.ConwayCommitteeHasPreviouslyResigned` | 7 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOVCERT.ConwayCommitteeIsUnknown` | 6 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
+| `GOV.UnelectedCommitteeVoters` | 13 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.DisallowedProposalDuringBootstrap` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalCantFollow` | 4 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.MalformedProposal` | 15 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalReturnAccountDoesNotExist` | 10 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.TreasuryWithdrawalReturnAccountsDoNotExist` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalDepositIncorrect` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ProposalProcedureNetworkIdMismatch` | 3 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.TreasuryWithdrawalsNetworkIdMismatch` | 1 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.InvalidGuardrailsScriptHash` | 6 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ZeroTreasuryWithdrawals` | 2 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ |
+| `GOV.ConflictingCommitteeUpdate` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.ExpirationEpochTooSmall` | 2 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.InvalidPrevGovActionId` | 4 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.VotersDoNotExist` | 13 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.GovActionsDoNotExist` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.DisallowedVotesDuringBootstrap` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.VotingOnExpiredGovAction` | 17 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `GOV.DisallowedVoters` | 5 | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ |
+| `UTXOW.InvalidWitnessesUTXOW` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXOW.MissingVKeyWitnessesUTXOW` | 9 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXOW.MissingScriptWitnessesUTXOW` | 9 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ExtraneousScriptWitnessesUTXOW` | 4 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ScriptWitnessNotValidatingUTXOW` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingTxBodyMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingTxMetadata` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ConflictingMetadataHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.InvalidMetadata` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingRedeemers` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ExtraRedeemers` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MissingRequiredDatums` | 3 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.NotAllowedSupplementalDatums` | 2 | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.UnspendableUTxONoDatumHash` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.PPViewHashesDontMatch` | 3 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.ScriptIntegrityHashMismatch` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MalformedScriptWitnesses` | 6 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOW.MalformedReferenceScripts` | 4 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXO.BabbageNonDisjointRefInputs` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.OutsideValidityIntervalUTxO` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.InputSetEmptyUTxO` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| `UTXO.FeeTooSmallUTxO` | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.ScriptsNotPaidUTxO` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.CollateralContainsNonADA` | 1 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXO.InsufficientCollateral` | 6 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.IncorrectTotalCollateralField` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.NoCollateralInputs` | 2 | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| `UTXO.BadInputsUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.ValueNotConservedUTxO` | 19 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.BabbageOutputTooSmallUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.OutputTooBigUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.OutputBootAddrAttrsTooBig` | 1 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `UTXO.WrongNetwork` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.WrongNetworkWithdrawal` | 2 | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.WrongNetworkInTxBody` | 2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.MaxTxSizeUTxO` | 3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.ExUnitsTooBigUTxO` | 4 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `UTXO.TooManyCollateralInputs` | 2 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `UTXOS.CollectErrors` | 18 | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| `UTXOS.ValidationTagMismatch` | 8 | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| **Total** | | **33** | **47** | **50** | **21** | **85** | **85** |
 
 No scenario or mutant expects (1): `LEDGER.ConwayMempoolFailure`.
 
@@ -425,35 +421,6 @@ Scenario constructor mismatches grouped by what the engine reported first (top 8
 | Reported first | Count | Expected (examples) |
 |---|---:|---|
 | `UTXO.OutputBootAddrAttrsTooBig` | 1 | UTXO.OutputTooBigUTxO |
-
-**`amaru`** (18 mismatches)
-
-| Reported first | Count | Expected (examples) |
-|---|---:|---|
-| `ENGINE.EraNotSupported` | 18 | CERTS.WithdrawalsNotInRewardsCERTS, GOV.ProposalCantFollow, Pass, UTXOS.ValidationTagMismatch, … (14 kinds) |
-
-## Reference engine vs Haskell
-
-Scenarios where the Amaru engine's first failure differs from the expected Haskell constructor:
-
-- `00203-fail-gov-hardfork-initiation-chains-two-majors`: expected GOV.ProposalCantFollow, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00315-fail-ppview-hashes-mismatch`: expected UTXOW.PPViewHashesDontMatch, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00316-fail-ppview-hash-missing`: expected UTXOW.PPViewHashesDontMatch, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00317-fail-missing-phase-two-script-witness`: expected UTXOW.MissingScriptWitnessesUTXOW, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00318-fail-missing-collateral-vkey-witness`: expected UTXOW.MissingVKeyWitnessesUTXOW, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00319-fail-missing-redeemer`: expected UTXOW.MissingRedeemers, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00320-fail-missing-required-datum`: expected UTXOW.MissingRequiredDatums, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00321-fail-supplemental-datum-not-allowed`: expected UTXOW.NotAllowedSupplementalDatums, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00322-fail-redeemer-with-incorrect-purpose`: expected UTXOW.MissingRedeemers (Haskell: UTXOW.ExtraRedeemers, UTXOW.MissingRedeemers, UTXOS.CollectErrors), got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00323-fail-unspendable-script-input-without-datum-hash`: expected UTXOW.UnspendableUTxONoDatumHash, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00324-fail-certificate-script-does-not-validate`: expected UTXOS.ValidationTagMismatch, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00325-fail-mint-script-does-not-validate`: expected UTXOS.ValidationTagMismatch, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00326-fail-spending-script-does-not-validate`: expected UTXOS.ValidationTagMismatch, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00327-fail-withdrawal-script-does-not-validate`: expected CERTS.WithdrawalsNotInRewardsCERTS, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00328-fail-phase-one-script-witness`: expected UTXOW.ScriptWitnessNotValidatingUTXOW, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00329-fail-extraneous-redeemer`: expected UTXOW.ExtraRedeemers, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00374-pass-plutus-v3-script-spending-a-script-locked-utxo-without-a-datum`: expected Pass, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
-- `00376-pass-zero-coins-per-utxo-byte-in-protocol-parameter-update-during-bootstrap`: expected Pass, got `ENGINE.EraNotSupported` — protocol version 9: refused by design (ADR-056 invariant 6, PV 10+ only), not a disagreement
 
 ## Scenario mismatches per engine
 
@@ -1376,31 +1343,6 @@ Scenarios where the Amaru engine's first failure differs from the expected Haske
 | Scenario | Expected | Reported first | Engine detail |
 |---|---|---|---|
 | 00280-fail-output-to-a-byron-address-with-oversized-attributes | UTXO.OutputTooBigUTxO | `UTXO.OutputBootAddrAttrsTooBig` | output 0 82d818588983581c149ad4b736608c56aa72fba87b7f72343fed0f0b78b2fd39b5eff808a201586258605be51343581011594d82a1e32dfc2c5e0ab8be4a32aab4fbf3bcf9e17991a53c... |
-
-</details>
-
-<details><summary><code>amaru</code>: 18 of 368 without a constructor match</summary>
-
-| Scenario | Expected | Reported first | Engine detail |
-|---|---|---|---|
-| 00203-fail-gov-hardfork-initiation-chains-two-majors | GOV.ProposalCantFollow | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00315-fail-ppview-hashes-mismatch | UTXOW.PPViewHashesDontMatch | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00316-fail-ppview-hash-missing | UTXOW.PPViewHashesDontMatch | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00317-fail-missing-phase-two-script-witness | UTXOW.MissingScriptWitnessesUTXOW | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00318-fail-missing-collateral-vkey-witness | UTXOW.MissingVKeyWitnessesUTXOW | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00319-fail-missing-redeemer | UTXOW.MissingRedeemers | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00320-fail-missing-required-datum | UTXOW.MissingRequiredDatums | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00321-fail-supplemental-datum-not-allowed | UTXOW.NotAllowedSupplementalDatums | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00322-fail-redeemer-with-incorrect-purpose | UTXOW.MissingRedeemers (Haskell: UTXOW.ExtraRedeemers, UTXOW.MissingRedeemers, UTXOS.CollectErrors) | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00323-fail-unspendable-script-input-without-datum-hash | UTXOW.UnspendableUTxONoDatumHash | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00324-fail-certificate-script-does-not-validate | UTXOS.ValidationTagMismatch | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00325-fail-mint-script-does-not-validate | UTXOS.ValidationTagMismatch | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00326-fail-spending-script-does-not-validate | UTXOS.ValidationTagMismatch | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00327-fail-withdrawal-script-does-not-validate | CERTS.WithdrawalsNotInRewardsCERTS | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00328-fail-phase-one-script-witness | UTXOW.ScriptWitnessNotValidatingUTXOW | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00329-fail-extraneous-redeemer | UTXOW.ExtraRedeemers | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00374-pass-plutus-v3-script-spending-a-script-locked-utxo-without-a-datum | Pass | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
-| 00376-pass-zero-coins-per-utxo-byte-in-protocol-parameter-update-during-bootstrap | Pass | `ENGINE.EraNotSupported` | protocol version 9.0 (Amaru validates Conway from protocol version 10) |
 
 </details>
 

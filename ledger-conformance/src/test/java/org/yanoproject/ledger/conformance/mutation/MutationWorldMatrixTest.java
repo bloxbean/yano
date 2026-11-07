@@ -3,7 +3,6 @@ package org.yanoproject.ledger.conformance.mutation;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
-import org.yanoproject.ledger.conformance.engines.BaselineEngines;
 import org.yanoproject.ledger.conformance.engines.JavaViewEngine;
 import org.yanoproject.ledger.conformance.mutation.Mutations.WorldCase;
 import org.yanoproject.ledger.conformance.mutation.Mutations.WorldExpectation;
@@ -18,7 +17,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -33,16 +31,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>In its own world a mutant must be rejected with exactly its Haskell failure list (as {@code MutationMatrixTest}
  * also checks). In the other worlds it must be judged the same, unless a protocol-version gate makes Haskell judge it
  * differently: {@link Mutations#WORLD_EXPECTATIONS} records those verdicts with the gate, and
- * {@link Mutations#worldCases(int)} refuses a replay whose list names a constructor that does not exist in that world.
- * With the Amaru reference engine in the build, the protocol version 10 and 11 worlds are cross-checked against it too
- * (Amaru refuses protocol version 9).</p>
+ * {@link Mutations#worldCases(int)} refuses a replay whose list names a constructor that does not exist in that
+ * world.</p>
  *
  * <p>The counts per world are pinned ({@link #PINNED}): a mutant that stops being validated, or a verdict that flips
  * between valid and invalid, changes its world's count.</p>
  */
 class MutationWorldMatrixTest {
 
-    private static final Optional<ConformanceEngine> REFERENCE = BaselineEngines.amaru();
     private static final ConformanceEngine JAVA_LEDGER = new JavaViewEngine();
     private static final ConformanceEngine JAVA_MEMPOOL = new JavaViewEngine(TxValidationRequest.Rule.MEMPOOL);
 
@@ -68,7 +64,6 @@ class MutationWorldMatrixTest {
     private static void everyMutantInTheWorldOfProtocolVersion(int world) {
         List<WorldCase> cases = Mutations.worldCases(world);
         List<String> misses = new ArrayList<>();
-        List<String> amaruMisses = new ArrayList<>();
         int valid = 0;
         for (WorldCase c : cases) {
             ConformanceCase testCase = c.testCase();
@@ -81,17 +76,12 @@ class MutationWorldMatrixTest {
             if (c.expected().isEmpty()) {
                 valid++;
             }
-            if (world >= 10 && c.rule() == TxValidationRequest.Rule.LEDGER) {
-                REFERENCE.ifPresent(amaru -> amaruDisagreement(amaru, c, testCase).ifPresent(amaruMisses::add));
-            }
         }
-        System.out.printf("Mutation world matrix, protocol version %d: %d cases (%d valid), %d misses, %d Amaru "
-                + "disagreements%n", world, cases.size(), valid, misses.size(), amaruMisses.size());
+        System.out.printf("Mutation world matrix, protocol version %d: %d cases (%d valid), %d misses%n", world,
+                cases.size(), valid, misses.size());
         misses.forEach(m -> System.out.println("  java-julc: " + m));
-        amaruMisses.forEach(m -> System.out.println("  amaru: " + m));
         assertThat(misses).as("protocol version %d: mutants the java engine judges other than Haskell", world)
                 .isEmpty();
-        assertThat(amaruMisses).as("protocol version %d: mutants Amaru judges other than recorded", world).isEmpty();
         assertThat(new Counts(cases.size(), valid)).as("protocol version %d: pinned counts", world)
                 .isEqualTo(PINNED.get(world));
     }
@@ -120,30 +110,6 @@ class MutationWorldMatrixTest {
             e.failures().forEach(f -> assertThat(Mutations.existsAt(f, e.protocolMajor()))
                     .as("%s: %s exists at protocol version %d", e.mutationId(), f, e.protocolMajor()).isTrue());
         }
-    }
-
-    /**
-     * @return a description when Amaru's verdict is not Haskell's (or the recorded divergence, which holds in every
-     *         world), empty when it agrees
-     */
-    private static Optional<String> amaruDisagreement(ConformanceEngine amaru, WorldCase c, ConformanceCase testCase) {
-        Observation observation = ConformanceRunner.run(amaru, testCase).observation();
-        List<String> failures = names(observation);
-        // A recorded divergence holds in every world, except Amaru's refusal of protocol version 9, which is the
-        // bootstrap world's alone.
-        String recorded = Mutation.AMARU_REFUSES_PV9.equals(c.mutation().amaruReports()) ? null
-                : c.mutation().amaruReports();
-        if (Mutation.AMARU_ACCEPTS.equals(recorded) || c.expected().isEmpty()) {
-            boolean agrees = observation.valid()
-                    || (recorded != null && !Mutation.AMARU_ACCEPTS.equals(recorded) && failures.equals(
-                    List.of(recorded)));
-            return agrees ? Optional.empty() : Optional.of(c.id() + ": Haskell " + label(c.expected()) + ", Amaru "
-                    + label(failures));
-        }
-        Set<String> allowed = recorded != null ? Set.of(recorded) : Set.copyOf(c.expected());
-        boolean agrees = !observation.valid() && allowed.containsAll(failures);
-        return agrees ? Optional.empty() : Optional.of(c.id() + ": Haskell " + label(c.expected()) + ", Amaru "
-                + label(failures));
     }
 
     private static List<String> names(Observation observation) {

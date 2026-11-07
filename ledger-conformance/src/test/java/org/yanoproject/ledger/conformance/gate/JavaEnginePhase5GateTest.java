@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Since ADR-056 Phase 5b the engine validates protocol version 9 (the bootstrap phase) too, so the corpus's protocol
  * version 9 scenarios ({@link #BOOTSTRAP_SCENARIOS}) must match their expected (Haskell-cross-checked) predicate, although
- * the Amaru reference engine refuses them ({@code ENGINE.EraNotSupported}, its own minimum, invariant 6).</p>
+ * Amaru itself validates Conway from protocol version 10 only.</p>
  *
  * <p>Since ADR-056 Phase 5c the gate is also one test per protocol version with a pinned tally ({@link #PER_VERSION}),
  * so a regression at one version cannot be masked by the others.</p>
