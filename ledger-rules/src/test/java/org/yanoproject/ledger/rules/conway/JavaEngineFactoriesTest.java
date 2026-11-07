@@ -12,7 +12,6 @@ import org.yanoproject.ledger.rules.conway.EngineTestSupport.StubEvaluator;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 
-import java.util.Optional;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -84,11 +83,6 @@ class JavaEngineFactoriesTest {
     private static EngineContext context(ScriptPhaseEvaluator scalus, ScriptPhaseEvaluator julc) {
         return new EngineContext() {
             @Override
-            public Optional<String> config(String key) {
-                return Optional.empty();
-            }
-
-            @Override
             public Supplier<NetworkParameters> network() {
                 return () -> null;
             }
@@ -116,11 +110,6 @@ class JavaEngineFactoriesTest {
             @Override
             public ScriptPhaseEvaluator julcScriptPhaseEvaluator() {
                 return julc;
-            }
-
-            @Override
-            public int validationThreads() {
-                return 1;
             }
         };
     }

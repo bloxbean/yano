@@ -22,7 +22,7 @@ import java.util.Map;
  *
  * <p>Some checks that Haskell reports as phase-1 failures only surface while preparing the script
  * context. The evaluator must report them as {@link ScriptPhaseResult.Rejected}, before running any
- * script (ADR-057 {@code amaru-validator-wasm/INTERFACE.md}, "Modes"):</p>
+ * script:</p>
  * <ul>
  *   <li>{@code UTXOW.MalformedScriptWitnesses} and {@code UTXOW.MalformedReferenceScripts}: a Plutus
  *       script witness or reference script that does not deserialise ({@link #evaluate} only: the Java

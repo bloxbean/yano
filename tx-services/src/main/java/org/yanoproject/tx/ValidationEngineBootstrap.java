@@ -19,7 +19,6 @@ import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 import org.yanoproject.ledger.rules.util.Phase2EnvDigest;
 import org.yanoproject.runtime.blockproducer.GenesisConfig;
 import org.yanoproject.runtime.genesis.ShelleyGenesisData;
-import org.yanoproject.runtime.validation.ShadowValidationRunner;
 import org.yanoproject.runtime.validation.ValidationEngineConfigurationException;
 import org.yanoproject.runtime.validation.ValidationEngineSettings;
 import org.yanoproject.runtime.validation.ValidationEngines;
@@ -37,21 +36,13 @@ import java.util.function.Supplier;
 /**
  * Creates the validation engines of ADR-056 §7 from the runtime globals, when
  * {@link ValidationEngineSettings#usesEngineApi()}: engines are discovered with {@code ServiceLoader}
- * ({@code scalus} from scalus-bridge, {@code amaru} and {@code amaru-scalus} from the optional amaru-validator
- * module), and each gets an {@link EngineContext} with the node's configuration, genesis-derived network facts, slot
- * timing and the phase-2 evaluators: julc (engine {@code java-julc}) and Scalus (engines {@code java-scalus} and
- * {@code amaru-scalus}; ADR-056 Phase 7c).
+ * ({@code scalus} from scalus-bridge), and each gets an {@link EngineContext} with the genesis-derived network
+ * facts, slot timing and the phase-2 evaluators: julc (engine {@code java-julc}) and Scalus (engine
+ * {@code java-scalus}; ADR-056 Phase 7c).
  */
 final class ValidationEngineBootstrap {
 
     private static final Logger log = LoggerFactory.getLogger(ValidationEngineBootstrap.class);
-
-    /**
-     * One admission validates at a time (the mempool's mutation lane serialises admission), one mempool rebuild
-     * worker folds off the lane next to it (ADR-056 §6), plus the shadow workers:
-     * {@code yano.validation.amaru.pool-size: 0} resolves to this.
-     */
-    static final int VALIDATION_THREADS = 2 + ShadowValidationRunner.DEFAULT_THREADS;
 
     private ValidationEngineBootstrap() {
     }
@@ -96,8 +87,8 @@ final class ValidationEngineBootstrap {
         Supplier<NetworkParameters> network = memoized(network(genesis, epochSlotCalc, slotConfig, protocolMagic,
                 networkId));
         ForecastHorizon horizon = ForecastHorizon.of(() -> network.get().stabilityWindow(), epochSlotCalc);
-        // Both phase-2 evaluators share the forecast horizon: julc for java-julc, Scalus for java-scalus, amaru-scalus.
-        EngineContext context = new Context(globals, network, protocolParams, slotConfig, currentSlot,
+        // Both phase-2 evaluators share the forecast horizon: julc for java-julc, Scalus for java-scalus.
+        EngineContext context = new Context(network, protocolParams, slotConfig, currentSlot,
                 new ScalusScriptPhaseEvaluator(horizon), new JulcScriptPhaseEvaluator(horizon));
         return Optional.of(ValidationEngines.create(settings, registry, context,
                 envFactory(epochSlotCalc, slotConfig, networkId)));
@@ -150,7 +141,7 @@ final class ValidationEngineBootstrap {
     }
 
     /** The {@link EngineContext} handed to engine factories. */
-    private record Context(Map<String, Object> globals, Supplier<NetworkParameters> network,
+    private record Context(Supplier<NetworkParameters> network,
                            EpochProtocolParamsSupplier protocolParams, SlotConfigSupplier slotConfig,
                            LongSupplier currentSlot, ScriptPhaseEvaluator scriptPhaseEvaluator,
                            ScriptPhaseEvaluator julcEvaluator)
@@ -161,15 +152,5 @@ final class ValidationEngineBootstrap {
             return julcEvaluator;
         }
 
-        @Override
-        public Optional<String> config(String key) {
-            Object value = globals != null ? globals.get(key) : null;
-            return value == null ? Optional.empty() : Optional.of(String.valueOf(value));
-        }
-
-        @Override
-        public int validationThreads() {
-            return VALIDATION_THREADS;
-        }
     }
 }

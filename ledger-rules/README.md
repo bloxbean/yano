@@ -92,8 +92,9 @@ state in a unit (the subject carries it).
    failure list does not exist at N.
 6. **Coverage:** every constructor that exists at N must be covered at N (`CoverageMatrixTest`, strict), by the mutation
    world matrix or by a `@Covers(value = …, pv = {N})` test.
-7. **Oracles:** refresh the Amaru module and scenarios when Amaru supports N, and pin the new revisions
-   (`adr/reports/adr-056-haskell-pinned-revisions.md`, `ConformanceSettings.AMARU_TAG`). Add the new scenario versions
+7. **Oracles:** refresh the Amaru scenarios when Amaru supports N, and pin the new revisions
+   (`adr/reports/adr-056-haskell-pinned-revisions.md`, `AMARU_TAG` and `AMARU_REVISION` in
+   `ledger-conformance/node-diversity/corpora.env`, ADR-062). Add the new scenario versions
    to `JavaEnginePhase5GateTest.PER_VERSION`.
 8. **Things outside the rule sets:** check `PlutusScriptDecoder` (builtins and limits per version, as in
    plutus-ledger-api), the phase-2 evaluator, and the protocol-parameter decoding.
@@ -108,7 +109,7 @@ engine's selection to it. The versioned deltas within the era then work exactly 
 ```
 ./gradlew :ledger-rules:test                        # unit tests, ConwayRuleSetsTest, the frozen manifests
 ./gradlew :ledger-conformance:test \
-    -PamaruScenariosDir=<amaru>/crates/amaru-ledger/tests/data/transaction \
-    -PwithAmaru=true -PamaruWasm=<amaru_validator.wasm>   # gates per protocol version, mutation world matrix, coverage
+    -PamaruScenariosDir=<amaru>/crates/amaru-ledger/tests/data/transaction
+                                                    # gates per protocol version, mutation world matrix, coverage
 ./gradlew :ledger-conformance:conformanceReport …   # regenerates docs/conway-rule-coverage.md and the baseline
 ```

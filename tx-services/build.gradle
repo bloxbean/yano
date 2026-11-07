@@ -9,7 +9,7 @@ dependencies {
     implementation project(':script-evaluators')
 
     // ADR-056 Phase 6b / ADR-057 Phase C: the devnet ledger-rules gate (an in-process devnet producer, dependent
-    // chains built with QuickTx, independent re-validation of every produced block). Shared with amaru-validator.
+    // chains built with QuickTx, independent re-validation of every produced block).
     testFixturesApi project(':testkit')
     testFixturesApi project(':scalus-bridge')
     // The independent re-validation runs the default java-julc engine (ADR-056 Phase 7c).

@@ -338,8 +338,8 @@ yano:
       rocksdb:
         seconds: 30
   validation:
-    # Transaction validation engines (ADR-056 §7, ADR-057).
-    # Admission engine: java-julc (default) | java-scalus | scalus | amaru | amaru-scalus.
+    # Transaction validation engines (ADR-056 §7).
+    # Admission engine: java-julc (default) | java-scalus | scalus.
     # Ids name <rules>-<evaluator> (who runs the Plutus scripts); a single name runs both phases.
     #   java-julc    - the Java Conway rules (ADR-056 Phases 3-5) with Plutus on julc (Phase 7c). The default since
     #                  ADR-056 Phase 8, and the Java engine wherever one is defaulted.
@@ -347,9 +347,6 @@ yano:
     #                  java-julc: shadow-sync-engines: java-julc,java-scalus gives every Conway transaction both
     #                  verdicts, and metrics, health and report lines name the engine.
     #   scalus       - the legacy Scalus validator, unchanged; set it to restore the behaviour before Phase 8.
-    #   amaru        - Amaru's rules as WebAssembly, for both phases; needs a build with -PwithAmaru=true, otherwise
-    #                  startup fails.
-    #   amaru-scalus - Amaru phase one with Plutus on Scalus; same build requirement.
     # The former id "java" is gone: startup fails and names the valid ids.
     # Any engine other than scalus validates admission against one canonical snapshot ticked to the slot
     # after the tip (or, right after a producer applied the next boundary, the first slot of that epoch).
@@ -362,7 +359,7 @@ yano:
     # engine: scalus admission stays on the legacy validator; the shadows use their own snapshot and are
     # compared with the legacy verdict (valid/invalid, plus the Haskell constructor where the legacy name
     # maps to one). Disagreements are counted (yano_validation_disagreements_total{engine,rule}) and logged
-    # once per tx. e.g. shadow-engines: scalus   or, with engine: amaru, shadow-engines: java-julc
+    # once per tx. e.g. shadow-engines: scalus
     shadow-engines: ""
     # When set, a JSON replay bundle (tx CBOR + every ledger-view read both engines made) is written
     # here for each disagreement.
@@ -376,7 +373,7 @@ yano:
     # validation falls behind, block application waits (sync slows to validation speed).
     shadow-sync: false
     shadow-sync-engines: java-julc  # java-julc and/or java-scalus (java-julc,java-scalus runs both phase-2
-                                    # evaluators) and/or amaru, amaru-scalus (-PwithAmaru)
+                                    # evaluators)
     shadow-sync-report: ""          # JSONL file: one line per disagreement, engine failure or block finding
     shadow-sync-dump-dir: ""        # replay bundle (tx + every view read) per finding
     shadow-sync-max-dumps: 1000
@@ -392,12 +389,6 @@ yano:
     snapshot-max-age-ms: 30000
     # Soft cap on live canonical snapshots; when reached, new shadow tasks are dropped (never admission).
     max-live-snapshots: 4
-    amaru:                      # settings of the amaru and amaru-scalus engines
-      pool-size: 0              # Amaru instances; 0 = validation threads + 2 (mempool rebuild, block selection);
-                                # for shadow sync, 0 = shadow-sync-max-in-flight
-      timeout-ms: 2000          # a call that takes longer is rejected and its instance replaced
-      max-abandoned: 2          # stuck calls tolerated before the engine turns unhealthy (fails closed)
-      max-memory-pages: 2048    # 128 MiB linear memory per instance
     # Deprecated (ADR-056 §7; removed in Phase 8, a WARN is logged when set). Defaults unchanged:
     #   default-validator-enabled: true   - register the built-in admission validator listener
     #   supplementary-rules-enabled: false - CCL GOVCERT/governance/delegatee rules on top of the legacy

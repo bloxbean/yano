@@ -48,7 +48,7 @@ import java.util.Map;
  *   <li><b>Account, pool and DRep state</b> come from {@link LedgerViewStateProvider}, which fails closed on
  *       unavailable reads.</li>
  *   <li><b>Protocol parameters</b> are the view's (so ticking changes them); the slot is the request's.</li>
- *   <li><b>Rule {@code MEMPOOL}</b> first runs the engine-neutral {@link MempoolRule}, as the Amaru engine
+ *   <li><b>Rule {@code MEMPOOL}</b> first runs the engine-neutral {@link MempoolRule}, as the Java engine
  *       does, so failure precedence is the same across engines.</li>
  *   <li><b>Failures</b> are Haskell-named by {@link ScalusFailureMapping}: only Plutus evaluation outcomes are
  *       phase 2 (the legacy validator's class-name heuristic labelled every failure whose class mentions

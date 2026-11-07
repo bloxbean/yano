@@ -786,9 +786,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
                 Map.entry("txDiffusionMaxInFlightBytesPerPeer", txDiffusionMaxInFlightBytesPerPeer),
                 Map.entry("txDiffusionPeerCooldownMs", txDiffusionPeerCooldownMs),
                 Map.entry("validationEngine", validationEngines != null
-                        ? validationEngines.admissionEngineName() : ValidationEngines.LEGACY),
-                Map.entry("validationEngineHealthy", validationEngines == null
-                        || validationEngines.admissionHealthy()));
+                        ? validationEngines.admissionEngineName() : ValidationEngines.LEGACY));
     }
 
     private void resolveTxConfig() {

@@ -1,0 +1,85 @@
+name: Ledger Conformance
+
+# ADR-056 §8, ADR-062 D5: the conformance harness over Amaru's transaction scenarios at the pinned corpus
+# (AMARU_TAG / AMARU_REVISION in ledger-conformance/node-diversity/corpora.env), the vendored cardano-blueprint
+# vectors, the mutation matrix and strict coverage. The default build runs the same tests without the scenarios.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'ledger-conformance/**'
+      - 'ledger-rules/**'
+      - 'scalus-bridge/**'
+      - 'script-evaluators/**'
+      - '.github/workflows/ledger-conformance.yml'
+  pull_request:
+    paths:
+      - 'ledger-conformance/**'
+      - 'ledger-rules/**'
+      - 'scalus-bridge/**'
+      - 'script-evaluators/**'
+      - '.github/workflows/ledger-conformance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ledger-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Fetch Amaru's scenarios at the pinned revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ledger-conformance/node-diversity/corpora.env
+          # The commit the tag names (the peeled entry, last, when the tag is annotated).
+          tagged=$(git ls-remote "$AMARU_REPOSITORY" "refs/tags/$AMARU_TAG" "refs/tags/$AMARU_TAG^{}" | tail -n 1 | cut -f1)
+          [[ "$tagged" == "$AMARU_REVISION" ]] \
+            || { echo "::error::tag $AMARU_TAG is at ${tagged:-nothing}, corpora.env pins $AMARU_REVISION"; exit 1; }
+          git init -q "$RUNNER_TEMP/amaru"
+          git -C "$RUNNER_TEMP/amaru" fetch -q --depth 1 "$AMARU_REPOSITORY" "$AMARU_REVISION"
+          git -C "$RUNNER_TEMP/amaru" checkout -q FETCH_HEAD
+          actual=$(git -C "$RUNNER_TEMP/amaru" rev-parse HEAD)
+          [[ "$actual" == "$AMARU_REVISION" ]] \
+            || { echo "::error::checked out $actual, corpora.env pins $AMARU_REVISION"; exit 1; }
+
+      - name: Conformance harness (368 scenarios, blueprint vectors, mutation matrix, strict coverage)
+        # conformance.strict is the default since the ADR-056 Phase 5 gate; it is passed explicitly so that this
+        # job never runs without it: every in-scope constructor needs a @Covers test, the Java engine must match all
+        # 368 scenarios (JavaEnginePhase5GateTest) and pass every blueprint vector Amaru passes
+        # (BlueprintVectorGateTest).
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :ledger-conformance:test -PskipSigning=true --stacktrace \
+            -Pconformance.strict=true \
+            -PamaruScenariosDir="$RUNNER_TEMP/amaru"
+
+      - name: Upload the baseline, blueprint-vector and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-conformance-reports
+          path: ledger-conformance/build/conformance/
+          if-no-files-found: warn
+          retention-days: 30

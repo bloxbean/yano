@@ -20,7 +20,8 @@ the events (transactions, slot ticks, epoch changes), the ledger state after, an
 | Vendored | 2026-09-29 |
 
 The same 364 files, byte for byte, are in Amaru at tag `v10.11.20261105` (and `v10.11.20260925`)
-(`crates/amaru-ledger/tests/data/rules-conformance`), the tag `amaru-validator-wasm/AMARU_VERSION` pins.
+(`crates/amaru-ledger/tests/data/rules-conformance`), the tag `AMARU_TAG` in
+`ledger-conformance/node-diversity/corpora.env` pins.
 cardano-blueprint `main` (`0f0c17e1` at the time of vendoring) still carries an older tarball in a different format
 (one JSON file per transaction), which the loader does not read.
 
@@ -49,7 +50,8 @@ the older JSON format on cardano-blueprint `main` is not read by the loader.
    `gh api 'repos/pragma-org/amaru/commits?path=crates/amaru-ledger/tests/data/rules-conformance&per_page=5' --jq '.[] | {sha,date:.commit.committer.date,message:.commit.message}'`
    Amaru's copy can also be vendored directly: point `update.sh` at a tarball of that directory, or copy its
    `eras/` and `pparams/` here and recompute the digest. Prefer an Amaru tag that matches
-   `amaru-validator-wasm/AMARU_VERSION`, so that the Amaru reference engine and the vectors move together.
+   `AMARU_TAG` in `ledger-conformance/node-diversity/corpora.env`, so that the Amaru scenarios and the vectors
+   move together.
 4. **The generator.** The vectors are dumped from the cardano-ledger Conway Imp tests by a patched cardano-ledger
    (see the README next to the tarball in cardano-blueprint, and
    [cardano-ledger#4892](https://github.com/IntersectMBO/cardano-ledger/issues/4892)). If the ledger version Yano

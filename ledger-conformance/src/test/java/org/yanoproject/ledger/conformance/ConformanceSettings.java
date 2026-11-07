@@ -5,20 +5,27 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 
 /** The harness's system properties (set by {@code ledger-conformance/build.gradle}) and pins. */
 public final class ConformanceSettings {
 
-    /** The Amaru tag the scenarios and the Amaru engine are pinned to ({@code amaru-validator-wasm/AMARU_VERSION}). */
-    public static final String AMARU_TAG = "v10.11.20261105";
-
     private ConformanceSettings() {
+    }
+
+    /**
+     * @return the Amaru tag the scenarios are read at, {@code AMARU_TAG} in
+     *         {@code ledger-conformance/node-diversity/corpora.env} (ADR-062 D5; set by the build)
+     */
+    public static String amaruTag() {
+        String tag = System.getProperty("conformance.amaruTag");
+        if (tag == null || tag.isBlank()) {
+            throw new IllegalStateException(
+                    "conformance.amaruTag is not set: run through ledger-conformance/build.gradle");
+        }
+        return tag;
     }
 
     /**
@@ -27,38 +34,6 @@ public final class ConformanceSettings {
      */
     public static boolean strict() {
         return Boolean.parseBoolean(System.getProperty("conformance.strict", "true"));
-    }
-
-    /** @return true when the build includes the Amaru engine ({@code -PwithAmaru=true}) */
-    public static boolean withAmaru() {
-        return Boolean.getBoolean("conformance.withAmaru");
-    }
-
-    /**
-     * @return the version in {@code amaru-validator-wasm/Cargo.toml}, which the Amaru module under test must report
-     *         in its {@code crate=} line (set by the build with {@code -PwithAmaru=true})
-     */
-    public static Optional<String> amaruCrateVersion() {
-        return Optional.ofNullable(System.getProperty("amaru.wasm.crateVersion")).filter(s -> !s.isBlank());
-    }
-
-    /** @return the module the Amaru engine was compiled from ({@code amaru-validator/build/amaru-wasm}) */
-    public static Optional<Path> amaruWasmFile() {
-        return Optional.ofNullable(System.getProperty("amaru.wasm.file")).filter(s -> !s.isBlank()).map(Path::of)
-                .filter(Files::isRegularFile);
-    }
-
-    /** @return the sha256 of {@link #amaruWasmFile()}, lowercase hex */
-    public static Optional<String> amaruWasmSha256() {
-        return amaruWasmFile().map(file -> {
-            try {
-                return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file)));
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            } catch (NoSuchAlgorithmException e) {
-                throw new IllegalStateException(e);
-            }
-        });
     }
 
     /** @return true for {@code conformanceReport}: the generated documents are written into the source tree */

@@ -58,8 +58,8 @@ import java.util.TreeSet;
  * ({@code Ledger.hs:124}), so failures are reported under rule {@link LedgerRuleName#LEDGER}.</p>
  *
  * <p>The checks are the {@link ConwayScopes#MEMPOOL} units of the protocol version's rule set
- * ({@link MempoolChecks}; ADR-056 Phase 5c). This class is engine-neutral: the Java engine, the Scalus engine and the
- * Amaru engine (ADR-057 §2, step 0) all run them, so failure precedence is identical across engines.</p>
+ * ({@link MempoolChecks}; ADR-056 Phase 5c). This class is engine-neutral: the Java engine and the Scalus engine both
+ * run them, so failure precedence is identical across engines.</p>
  */
 public final class MempoolRule {
 
@@ -104,8 +104,8 @@ public final class MempoolRule {
     }
 
     /**
-     * Runs the MEMPOOL checks of the rule set for {@code protocolMajor} (engine-neutral: the Java, Scalus and Amaru
-     * engines all run them). A version after {@link ConwayRuleSets#SUPPORTED} uses the latest rule set's checks
+     * Runs the MEMPOOL checks of the rule set for {@code protocolMajor} (engine-neutral: the Java and Scalus engines
+     * both run them). A version after {@link ConwayRuleSets#SUPPORTED} uses the latest rule set's checks
      * ({@link ConwayRuleSets#forProtocolOrLatest}).
      *
      * @param body          the decoded transaction body

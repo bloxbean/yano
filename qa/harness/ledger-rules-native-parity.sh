@@ -17,9 +17,6 @@
 #   java-scalus  engine java-scalus (the same rules, Scalus phase 2), admission shadow scalus, shadow sync
 #                java-scalus, plus a follower
 #   scalus  engine scalus: legacy Scalus admission, no engines
-#   amaru-scalus, amaru  that engine (Amaru phase one with Scalus Plutus, or Amaru for both phases), admission shadow
-#           java-julc, shadow sync java-julc and the engine, plus a follower (JAR and NATIVE built with
-#           -PwithAmaru=true; protocol version 10 or later)
 # Binaries: $JAR and $NATIVE (common.sh defaults: the release-QA build in qa/work/bin). Ports: producer
 # HTTP_A/N2N_A, follower HTTP_B/N2N_B. Runs under $SP/runs/ledger-rules-native-parity.
 CONFIGS=${1:-java-julc java-scalus scalus}
@@ -57,9 +54,6 @@ engine_opts() { # <config> <dir> <producer|follower>
             -Dyano.validation.shadow-engines=scalus -Dyano.validation.shadow-dump-dir=$2/shadow-dumps"
           echo "$sync -Dyano.validation.shadow-sync-engines=java-scalus" ;;
     scalus) echo "-Dyano.validation.engine=scalus" ;;
-    amaru|amaru-scalus) [ "$3" = producer ] && echo "-Dyano.validation.engine=$1
-            -Dyano.validation.shadow-engines=java-julc -Dyano.validation.shadow-dump-dir=$2/shadow-dumps"
-           echo "$sync -Dyano.validation.shadow-sync-engines=java-julc,$1" ;;
   esac
 }
 
@@ -137,19 +131,18 @@ parity_view() { # <mode dir>: what must be equal between the JVM and the native 
   local d=$1 role
   echo "== observations"; cat "$d/observations.txt"
   echo "== workload exit $(cat "$d/workload-exit")"
-  echo "== admission shadows"; grep -h '^yano_validation_disagreements\|^yano_validation_engine_healthy' "$d/producer/metrics.txt" | sort
+  echo "== admission shadows"; grep -h '^yano_validation_disagreements' "$d/producer/metrics.txt" | sort
   echo "== admission-shadow bundles $(ls "$d/producer/shadow-dumps" 2>/dev/null | wc -l | tr -d ' ')"
   echo "== producer shadow sync"; jq -S -c '.stats.byEngine' "$d/producer/shadow-sync-summary.json" 2>/dev/null
   for role in producer follower; do
     echo "== $role shadow-sync failures and block rules"
-    grep -h '^yano_validation_shadow_sync_txs_total\|^yano_validation_shadow_sync_block_rule\|^yano_validation_shadow_sync_engine_healthy' \
+    grep -h '^yano_validation_shadow_sync_txs_total\|^yano_validation_shadow_sync_block_rule' \
       "$d/$role/metrics.txt" 2>/dev/null | grep -v 'outcome="validated"\|outcome="agreed"' | sort
   done
 }
 
 for c in $CONFIGS; do
   for pv in $PVS; do
-    case $c in amaru*) [ "$pv" -lt 10 ] && { log "$c pv$pv: skipped (Amaru validates Conway from PV 10)"; continue; } ;; esac
     for mode in jvm native; do run_mode "$c" "$pv" "$mode"; check_mode "$c" "$pv" "$mode"; done
     d=$OUT/$c-pv$pv
     if [ ! -s "$d/jvm/observations.txt" ] || [ ! -s "$d/native/observations.txt" ]; then

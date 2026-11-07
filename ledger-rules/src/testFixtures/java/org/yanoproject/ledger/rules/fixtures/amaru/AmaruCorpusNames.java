@@ -16,10 +16,7 @@ import static java.util.Map.entry;
  * {@code adr/reports/adr-056-haskell-pinned-revisions.md}), for the protocol versions the corpus
  * uses (9 to 11).
  *
- * <p>This is the same table as {@code haskell_name} in
- * {@code amaru-validator-wasm/tests/amaru_scenarios.rs}; the two must agree. Most names are already
- * Haskell's; the exceptions (INTERFACE.md, "Amaru's corpus spells some names differently") are the
- * ones whose value differs from the key.</p>
+ * <p>Most names are already Haskell's; the exceptions are the ones whose value differs from the key.</p>
  */
 public final class AmaruCorpusNames {
 
@@ -136,8 +133,7 @@ public final class AmaruCorpusNames {
      * Corpus names Amaru's Haskell checker gives to distinct Haskell failures, resolved per scenario; a scenario using
      * one that is not listed here fails to load. {@code normalizeGovCertFailure} (Run.hs:547-550) names both
      * {@code ConwayDRepIncorrectDeposit} and {@code ConwayDRepIncorrectRefund} {@code "IncorrectDepositDRep"}, which
-     * Haskell tells apart (Conway/Rules/GovCert.hs:209-242). Same table as {@code scenario_haskell_name} in
-     * {@code amaru-validator-wasm/tests/amaru_scenarios.rs}. Keyed by the scenario's description, its name without the
+     * Haskell tells apart (Conway/Rules/GovCert.hs:209-242). Keyed by the scenario's description, its name without the
      * number: the node-diversity fixtures are copies of Amaru's scenarios numbered differently (fixture
      * {@code 00298-fail-drep-registration-with-an-incorrect-deposit} is Amaru's scenario 00347).
      */

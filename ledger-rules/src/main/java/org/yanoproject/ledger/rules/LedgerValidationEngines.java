@@ -6,7 +6,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.Set;
@@ -25,10 +24,6 @@ public final class LedgerValidationEngines {
      * engine ({@code yano.validation.engine}, ADR-056 Phase 8) and the Java engine wherever one is defaulted.
      */
     public static final String JAVA_JULC = "java-julc";
-    /** The optional Amaru WebAssembly engine (ADR-057), Amaru for both phases. */
-    public static final String AMARU = "amaru";
-    /** The optional Amaru WebAssembly engine (ADR-057) for phase one, with Plutus scripts on Scalus. */
-    public static final String AMARU_SCALUS = "amaru-scalus";
     /**
      * The Java Conway engine with the Scalus phase-2 evaluator instead of julc (ADR-056 Phase 7c), for users who need
      * it; shadow sync can run both side by side ({@code shadow-sync-engines: java-julc,java-scalus}).
@@ -95,13 +90,9 @@ public final class LedgerValidationEngines {
     private String unavailableMessage(String key) {
         return switch (key) {
             case JAVA_JULC -> "Validation engine 'java-julc' is not on the classpath: its factory (ledger-rules, "
-                    + "JavaJulcEngineFactory) was not found. Use yano.validation.engine=scalus, or amaru or "
-                    + "amaru-scalus in a build with -PwithAmaru=true.";
+                    + "JavaJulcEngineFactory) was not found. Use yano.validation.engine=scalus.";
             case JAVA_SCALUS -> "Validation engine 'java-scalus' is not on the classpath: its factory (ledger-rules, "
                     + "JavaScalusEngineFactory) was not found.";
-            case AMARU, AMARU_SCALUS -> "Validation engine '" + key + "' is configured but the amaru-validator "
-                    + "module is not on the classpath. Build Yano with -PwithAmaru=true (ADR-057), or select another "
-                    + "engine and remove " + key + " from yano.validation.shadow-engines.";
             default -> "Unknown validation engine '" + key + "'. Available: " + String.join(", ",
                     factories.keySet().stream().sorted().toList());
         };
@@ -147,12 +138,5 @@ public final class LedgerValidationEngines {
     @Override
     public String toString() {
         return "LedgerValidationEngines" + factories.keySet();
-    }
-
-    /** @return true when {@code name} is one of the known engine names, available or not */
-    public static boolean isKnownName(String name) {
-        String key = normalize(name);
-        return Objects.equals(key, SCALUS) || Objects.equals(key, JAVA_JULC) || Objects.equals(key, JAVA_SCALUS)
-                || Objects.equals(key, AMARU) || Objects.equals(key, AMARU_SCALUS);
     }
 }

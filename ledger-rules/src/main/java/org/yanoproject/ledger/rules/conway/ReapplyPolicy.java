@@ -129,8 +129,8 @@ public final class ReapplyPolicy {
     }
 
     /**
-     * {@link #resolvedInputsDigest(SortedSet, Map)} for engines that resolve by outpoint (the Scalus and Amaru
-     * adapters): {@code inputs} are every spending, reference and collateral input the body names, and
+     * {@link #resolvedInputsDigest(SortedSet, Map)} for engines that resolve by outpoint (the Scalus adapter):
+     * {@code inputs} are every spending, reference and collateral input the body names, and
      * {@code resolved} what the view answered for those present.
      *
      * @return the digest, or null when an output cannot be encoded
