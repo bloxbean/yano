@@ -577,6 +577,32 @@ fn every_amaru_scenario_matches_its_expected_verdict() {
         .expect("scenario run panicked");
 }
 
+/// The `src/engine.rs` phase-one WORKAROUND exists because Amaru keeps its phase-one rules crate-private
+/// (upstream request: re-export a public phase-one entry point). Fails once the pinned Amaru declares one again, as
+/// `pub fn execute` did up to `v10.11.20260925`. Reads the checkout the scenario gate uses (`fixtures_dir`).
+#[test]
+fn amaru_phase_one_entry_point_is_still_crate_private() {
+    let phase_one = fixtures_dir().join("../../../src/rules/transaction/phase_one/mod.rs");
+    let source = fs::read_to_string(&phase_one)
+        .unwrap_or_else(|e| panic!("cannot read {} (an Amaru checkout is needed): {e}", phase_one.display()));
+    let public: Vec<&str> = source
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| {
+            ["execute", "when_valid", "when_invalid"].iter().any(|name| {
+                line.strip_prefix("pub fn ")
+                    .and_then(|rest| rest.strip_prefix(name))
+                    .is_some_and(|rest| rest.starts_with('<') || rest.starts_with('('))
+            })
+        })
+        .collect();
+    assert!(
+        public.is_empty(),
+        "Amaru declares a public phase-one entry point ({public:?}) in {}: remove the engine.rs workaround",
+        phase_one.display()
+    );
+}
+
 #[test]
 fn amaru_version_matches_cargo_manifest_and_lockfile() {
     let tag = amaru_version_field("tag");

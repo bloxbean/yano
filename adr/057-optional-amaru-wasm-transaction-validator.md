@@ -587,7 +587,8 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
    effects). A transaction Amaru accepts but CCL cannot decode fails closed.
 9. **Scalus-mode gaps.** Phase-one mode does not report
    `MalformedScriptWitnesses` or `CollectErrors` (`NoCostModel`,
-   `BadTranslation`, V3 non-disjoint inputs); it does report
+   `BadTranslation`, V3 non-disjoint inputs; from `v10.11.20261105` it does,
+   because phase-one mode runs `validate_transaction`, open question 1); it does report
    `MalformedReferenceScripts` for the transaction's own outputs (00151). The
    engine therefore calls the `ScriptPhaseEvaluator` whenever the transaction
    has redeemers **or** Plutus witness scripts, or a resolved input carries a
@@ -911,8 +912,12 @@ which always runs Amaru's Plutus evaluation, and drops a phase-two verdict (open
 workaround in `amaru-validator-wasm/src/engine.rs`). `engine: amaru-scalus` therefore pays Amaru's script evaluation
 on every Plutus transaction, on top of Scalus's: in admission, the admission shadow, shadow sync and re-application.
 
-**Setup.** As above (Apple M4 Max, 16 cores, macOS 26.0.1, OpenJDK 25.0.2), but a loaded machine: 1-minute load
-average 10–12 on 16 cores (other builds were running; no Yano node). Module sha256
+**Setup.** As above (Apple M4 Max, 16 cores, macOS 26.0.1, OpenJDK 25.0.2), but a loaded machine (other builds were
+running; no Yano node): the 1-minute load average on 16 cores was 11.12 before latency run 1, 9.73 after it, 16.13
+after latency run 2 and 22.62 after the footprint run, so the footprint figures were taken at the 16–23 readings.
+The "before" figures quoted below are the unloaded 2026-09-30 run (load 4–7, Julc `0.1.0-pre18-yano-local2`); the
+old module was not re-run in this session, so the `java-*` and `amaru` rows of the same run are the control. Module
+sha256
 `001a49fe9a891ed399bb6df87b1933519d9e3631ae77fc1e6e55f75a631ab964`, crate `0.1.2`, Amaru `v10.11.20261105`,
 scenarios from the same tag (350 at PV ≥ 10). Julc: the repository's `0.1.0-pre20` (no init script). Parent commit
 `65307919c`. Default passes. Same public-network corpus (the 15 replay bundles of `PublicNetworkTransactions`).
@@ -963,7 +968,7 @@ Status on 2026-09-30.
 | With the module, the native image works. | **Met** | JVM = native at PV 10 and 11 for admission, block selection and shadow sync (Phase E results). |
 | The CI workflow reproduces the module from the pinned tag and toolchain, and publishes it with its sha256. | **Met; first publication pending** | `amaru-wasm.yml` builds the module and its bundle with the sha256 on every relevant push. Its `release` job attaches them to a Yano release tag; no release carries the module yet. |
 | ADR-056's differential gate runs against this module. | **Met** | Phase D status above. |
-| Phase E: latency benchmark on the scenario corpus, startup and per-instance memory, developer guide. | **Met on the scenario corpus**; slower on real Plutus transactions with `phase2: full` | Scenarios: `amaru` p50 0.56–0.71 ms, p99 2.3–3.3 ms (target 2 and 10). Real preprod/preview Plutus sample: `phase2: full` p50 17–47 ms, p99 188–297 ms; `phase2: scalus` p50 2.8–3.4 ms, p99 6.5–7.5 ms. Cold start about 250 ms, 9.4–14.6 MiB heap per instance. Developer guide written. ("Phase E results: benchmark".) |
+| Phase E: latency benchmark on the scenario corpus, startup and per-instance memory, developer guide. | **Met on the scenario corpus**; slower on real Plutus transactions with `phase2: full` | Scenarios: `amaru` p50 0.56–0.71 ms, p99 2.3–3.3 ms (target 2 and 10). Real preprod/preview Plutus sample: `phase2: full` p50 17–47 ms, p99 188–297 ms; `phase2: scalus` p50 2.8–3.4 ms, p99 6.5–7.5 ms, superseded by the 2026-11-07 re-run at Amaru `v10.11.20261105`: `amaru-scalus` p50 15–44 ms, p99 178–245 ms, so the target is not met on real Plutus transactions by either Amaru engine. Cold start about 250 ms, 9.4–14.6 MiB heap per instance. Developer guide written. ("Phase E results: benchmark" and its re-run.) |
 
 ## Alternatives considered
 

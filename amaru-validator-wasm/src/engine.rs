@@ -149,7 +149,8 @@ pub fn validate_request_in(request: Request, arena_pool: &ArenaPool) -> Response
     // question 1). Amaru made `phase_one::when_valid` / `when_invalid` crate-private, so `mode = phase_one` runs the
     // full `validate_transaction`, Plutus evaluation included, and drops a phase-two verdict below. This costs
     // `amaru-scalus` Amaru's script evaluation on every Plutus transaction (ADR-057 Phase E). Once a public
-    // phase-one entry point exists, call it for `Mode::PhaseOne` and remove the `PhaseTwo` arm.
+    // phase-one entry point exists, call it for `Mode::PhaseOne` and remove the `PhaseTwo` arm; the test
+    // `amaru_phase_one_entry_point_is_still_crate_private` (tests/amaru_scenarios.rs) fails then.
     let result = validate_transaction(
         &mut context,
         arena_pool,
