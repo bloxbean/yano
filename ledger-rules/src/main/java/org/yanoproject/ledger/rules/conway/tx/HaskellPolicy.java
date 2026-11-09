@@ -339,9 +339,11 @@ public final class HaskellPolicy implements FormatPolicy {
                 }
             }
             case DATA -> PlutusData.validate(embedded(value, "an inline datum"));
-            case SCRIPT_REF -> RawScript.readScript(StrictCbor.span(embedded(value, "a script reference")));
+            // Conway's native scripts have no guard (RawScript.requireConwayTypes); a Dijkstra policy allows it
+            case SCRIPT_REF -> RawScript.readScript(StrictCbor.span(embedded(value, "a script reference")))
+                    .requireConwayTypes();
             case PLUTUS_DATA -> PlutusData.validate(value);
-            case NATIVE_SCRIPT -> RawScript.of(RawScript.NATIVE, value);
+            case NATIVE_SCRIPT -> RawScript.of(RawScript.NATIVE, value).requireConwayTypes();
             case PLUTUS_SCRIPT, BYTES -> length(value);
             case METADATA -> Metadata.validate(value);
             case OPTIONAL_AUXILIARY_DATA -> {

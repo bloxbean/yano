@@ -121,6 +121,40 @@ class WitnessDecodingTest {
     }
 
     @Test
+    void aGuardIsNotAConwayNativeScript() {
+        // [6, [0, keyhash]]: Dijkstra's RequireGuard, which CCL's decoder reads in any era and TimelockRaw does not
+        String guard = "8206" + "8200581c" + KEY;
+        String body = "a3" + "0081" + "825820" + "00".repeat(32) + "00" + "0180" + "0200";
+        String scriptRef = "d818" + "5824" + "8200" + guard;
+        // Conway's policy refuses it alone and nested in all, any and at-least, at any depth
+        for (String script : List.of(guard, "820181" + guard, "820281" + guard, "83030181" + guard,
+                "820181" + "820181" + "820281" + guard)) {
+            assertThatThrownBy(() -> HaskellPolicy.CONWAY.walk(FieldType.NATIVE_SCRIPT,
+                    StrictCbor.span(HexUtil.decodeHexString(script)))).as(script)
+                    .isInstanceOf(TxDecodingException.class).hasMessageContaining("type 6");
+        }
+        // in a transaction's witness set, its auxiliary data (both forms), and an output's reference script
+        String output = "a3" + "00581d60" + "00".repeat(28) + "0100" + "03" + scriptRef;
+        for (String tx : List.of(
+                "84" + body + "a1" + "0181" + guard + "f5f6",
+                "84" + body + "a1" + "0181" + "820181" + guard + "f5f6",
+                "84" + body + "a0" + "f5" + "82a081" + guard,
+                "84" + body + "a0" + "f5" + "d90103a1" + "0181" + guard,
+                "84" + "a3" + "0081" + "825820" + "00".repeat(32) + "00" + "0181" + output + "0200" + "a0f5f6")) {
+            assertThatThrownBy(() -> RawTransaction.parse(HexUtil.decodeHexString(tx), null)).as(tx)
+                    .isInstanceOf(TxDecodingException.class).hasMessageContaining("type 6");
+        }
+        // RawScript itself takes no era: sync hashes reference scripts of any era with it, a Dijkstra guard included
+        assertThatCode(() -> script(guard)).doesNotThrowAnyException();
+        assertThat(RawScript.fromScriptRef(HexUtil.decodeHexString(scriptRef)).hash()).hasSize(28);
+        // types 0 to 5 are unchanged
+        assertThatCode(() -> HaskellPolicy.CONWAY.walk(FieldType.NATIVE_SCRIPT,
+                StrictCbor.span(HexUtil.decodeHexString("820181" + "8200581c" + KEY)))).doesNotThrowAnyException();
+        assertThatCode(() -> RawTransaction.parse(HexUtil.decodeHexString("84" + body + "a1" + "0181" + "8200581c"
+                + KEY + "f5f6"), null)).doesNotThrowAnyException();
+    }
+
+    @Test
     void scriptsHashWithTheirLanguageTag() {
         // MutationWorld.ALWAYS_SUCCEEDS: PlutusV3 binary 450101002499, hash 186e32fa…
         RawScript v3 = RawScript.of(RawScript.PLUTUS_V3, StrictCbor.span(HexUtil.decodeHexString("46450101002499")));
