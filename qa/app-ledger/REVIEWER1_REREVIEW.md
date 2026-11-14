@@ -158,6 +158,27 @@ All 10 focused `PluginCatalogPackagingTest` cases pass. That suite is now also
 required by the permanent adapter gate. Two independent review agents approved
 the production guard and test changes.
 
+## Direct runtime construction follow-up
+
+Clean normal build [43609043058](https://github.com/bloxbean/yano/actions/runs/43609043058)
+progressed through 2,089 runtime tests and exposed 32 failures with one cause:
+the direct `RuntimeNode` constructor created its owned plugin environment, then
+registered the Host API using the shadowing nullable constructor argument.
+Packaged assembly supplies an environment and did not exercise this path.
+The fix reads `this.pluginEnvironment.providers()`; it changes no lifecycle or
+plugin ownership contract. All nine affected suites pass after the fix: 47 tests,
+zero failures/errors/skips. Two existing direct-constructor suites are now
+required by the host regression gate. Independent review confirmed the cause and
+checked constructor ownership for similar mistakes.
+
+The updated adapter gate passes all 35 tests on clean commit `7823bfe21` with
+source unchanged. The separate [integration workflow](https://github.com/bloxbean/yano/actions/runs/43609043044)
+passes runtime integration, distribution and native-core on that commit; those
+passes do not hide the normal-build constructor failure. Successful full-host
+staging [43608923020](https://github.com/bloxbean/yano/actions/runs/43608923020)
+used the same pre-fix commit; subsequent X input pins must consume a newly staged
+host containing the constructor correction.
+
 ## Release boundary
 
 The Yaci blocker is resolved by the public snapshot. Yano foundation and X

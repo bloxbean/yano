@@ -18,6 +18,7 @@ GATES = {
     "host": [":host-api:test", ":runtime:test", "--tests", "*DefaultN2NExtensionRegistryTest",
              "--tests", "*DefaultHostLifecycleRegistryTest", "--tests", "*RuntimeKernelStagesTest",
              "--tests", "*NodeKernelTest",
+             "--tests", "*YanoTransactionAdmissionTest", "--tests", "*PipelineIntegrationTest",
              "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest", "--tests", "*PriorCompiledRuntimeCompatibilityTest",
              "--tests", "*DeferredAppLedgerAssemblyTest", "--tests", "*RequiredEmbeddedPluginCatalogTest", "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
              ":runtime:checkAppLedgerBinaryCompatibility", ":runtime:checkAppLedgerRuntimeCompatibility"],
@@ -36,7 +37,7 @@ GATES = {
 
 # Each named suite must execute: unrelated passing tests cannot mask a missing gate.
 REQUIRED = {
-    "host": {"NodeKernelTest", "DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "PriorCompiledRuntimeCompatibilityTest", "DeferredAppLedgerAssemblyTest", "RequiredEmbeddedPluginCatalogTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
+    "host": {"NodeKernelTest", "YanoTransactionAdmissionTest", "PipelineIntegrationTest", "DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "PriorCompiledRuntimeCompatibilityTest", "DeferredAppLedgerAssemblyTest", "RequiredEmbeddedPluginCatalogTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
     "standalone": {"AppLedgerAssemblyTest"},
     "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest", "PluginCatalogPackagingTest"},
     "consensus": {"AppChainEngineIdentityValidationTest", "AppChainEngineLifecycleTest"},

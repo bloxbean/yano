@@ -490,7 +490,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 constructionCleanup.addLast(pluginManager::close);
                 constructionCleanup.addLast(hostLifecycle::close);
                 pluginManager.registerHostService(HostApi.SERVICE_KEY,
-                        new DefaultHostApi(n2n, pluginEnvironment.providers(), hostLifecycle));
+                        new DefaultHostApi(n2n, this.pluginEnvironment.providers(), hostLifecycle));
                 pluginManager.registerHostService(AppLedgerHostPlugin.NODE_CONFIG_SERVICE,
                         config.toBuilder().build());
                 pluginManager.registerHostService(AppLedgerHostPlugin.RUNTIME_OPTIONS_SERVICE,
