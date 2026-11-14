@@ -83,10 +83,12 @@ chainstate. Logs, proofs, block responses and the tested JAR digest are retained
 JUnit additionally verifies certificate signatures/evidence; the HTTP check does
 not substitute a signature count for cryptographic validation.
 
-The independently packaged X oldest/current-host matrix remains outstanding.
-These focused gates are not a complete release qualification. Run one final
-`qa/release-qa.sh` qualification plus that compatibility matrix after both phases
-are integrated, covering both standalone and Cardano-integrated deployments.
+X's `qa/framework/host-matrix` checks independently packaged oldest/current hosts
+with unchanged compiled fixture bytecode, exact artifact hashes, and separate
+standalone and Cardano-construction profiles. These focused gates are not a
+complete release qualification. Run one final `qa/release-qa.sh --build` cycle
+plus that compatibility matrix after both phases are integrated, covering both
+standalone and Cardano-integrated deployments.
 
 For a fresh environment, follow [the coordinated artifact-staging recipe](COORDINATED_BUILD.md)
 before running the draft gates. It breaks the bootstrap into independent builds
@@ -107,3 +109,8 @@ its JAR is never recompiled by ordinary tests. The ownership guard checks both
 runtime/manager pairs and the two checked validator resources. Required embedded
 activation tests cover disabled optional plugins, restrictive policy, library
 fallback, malformed optional providers and packaged/native index requirements.
+
+Deferred assembly tests cover both runtime modes: every plugin finishes `init()`
+before framework factories run, and any later initialization failure prevents
+factory construction. They guard the ordering contract alongside lifecycle and
+configuration compatibility, rather than relying only on successful startup.
