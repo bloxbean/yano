@@ -87,3 +87,7 @@ The independently packaged X oldest/current-host matrix remains outstanding.
 These focused gates are not a complete release qualification. Run one final
 `qa/release-qa.sh` qualification plus that compatibility matrix after both phases
 are integrated, covering both standalone and Cardano-integrated deployments.
+
+For a fresh environment, follow [the coordinated artifact-staging recipe](COORDINATED_BUILD.md)
+before running the draft gates. It breaks the bootstrap into independent builds
+and records which unpublished candidate versions were actually exercised.
