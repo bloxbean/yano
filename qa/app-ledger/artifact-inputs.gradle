@@ -1,0 +1,31 @@
+// Exact artifact inputs for the coordinated, unreleased Yaci transport change.
+// No sibling sources, Maven Local overwrite, or source checkout dependency.
+allprojects {
+    def inputRepository = providers.gradleProperty('appLedgerYaciRepository')
+    def inputVersion = providers.gradleProperty('appLedgerYaciVersion')
+    if (!inputRepository.isPresent() || !inputVersion.isPresent()) {
+        throw new GradleException('Supply -PappLedgerYaciRepository=<Maven repository URI> '
+                + 'and -PappLedgerYaciVersion=<exact version>; see qa/app-ledger/README.md')
+    }
+    repositories {
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = 'appLedgerYaciInput'
+                    url = uri(inputRepository.get())
+                }
+            }
+            filter {
+                includeVersion('com.bloxbean.cardano', 'yaci-core', inputVersion.get())
+            }
+        }
+    }
+    configurations.configureEach {
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'com.bloxbean.cardano' && details.requested.name == 'yaci-core') {
+                details.useVersion(inputVersion.get())
+                details.because('Issue #245 app-only sessions; exact coordinated Yaci artifact')
+            }
+        }
+    }
+}
