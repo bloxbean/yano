@@ -1,4 +1,4 @@
 // Compatibility coordinate: checked validator resources and authoring sources are owned by Yano-X.
 dependencies {
-    api "org.yanoproject.x:yano-x-appchain-anchor-onchain:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.10')}"
+    api "org.yanoproject.x:yano-x-appchain-anchor-onchain:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
 }

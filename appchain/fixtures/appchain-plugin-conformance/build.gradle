@@ -1,9 +1,9 @@
 description = 'Build-only ADR-011.2 native plugin SPI conformance fixture'
 
 dependencies {
-    compileOnly "org.yanoproject.x:yano-x-appchain-cardano-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.10')}"
+    compileOnly "org.yanoproject.x:yano-x-appchain-cardano-api:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
 
-    testImplementation "org.yanoproject.x:yano-x-appchain-cardano-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.10')}"
+    testImplementation "org.yanoproject.x:yano-x-appchain-cardano-api:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
     testImplementation project(':plugin-catalog')
     testImplementation project(':runtime')
 }
