@@ -22,7 +22,8 @@ GATES = {
              "--tests", "*DeferredAppLedgerAssemblyTest", "--tests", "*RequiredEmbeddedPluginCatalogTest", "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
              ":runtime:checkAppLedgerBinaryCompatibility", ":runtime:checkAppLedgerRuntimeCompatibility"],
     "standalone": [":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
-    "adapter": [":app:test", "--tests", "*CardanoAvailabilityFilterTest", "--tests", "*YanoProducerTest"],
+    "adapter": [":app:test", "--tests", "*CardanoAvailabilityFilterTest", "--tests", "*YanoProducerTest",
+                "--tests", "*PluginCatalogPackagingTest"],
     "consensus": [":runtime:test", "--tests", "org.yanoproject.runtime.appchain.*"],
     "configuration": [":node-api:test", ":cardano-api:test", ":appchain-config:test"],
     "hybrid": [":runtime:test", "--tests", "*AppChainManagerSharedTransportTest",
@@ -37,7 +38,7 @@ GATES = {
 REQUIRED = {
     "host": {"NodeKernelTest", "DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "PriorCompiledRuntimeCompatibilityTest", "DeferredAppLedgerAssemblyTest", "RequiredEmbeddedPluginCatalogTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
     "standalone": {"AppLedgerAssemblyTest"},
-    "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest"},
+    "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest", "PluginCatalogPackagingTest"},
     "consensus": {"AppChainEngineIdentityValidationTest", "AppChainEngineLifecycleTest"},
     "configuration": {"PluginsOptionsTest", "YanoConfigTest", "PluginApiVersionTest",
                       "StrictEd25519Test", "PluginHealthContractTest", "PluginMetricsContractTest",

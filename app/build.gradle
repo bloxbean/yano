@@ -67,6 +67,13 @@ def buildTimePluginBundles = [
 ]
 
 def requireIndexedManifestVersions = { index, Map<String, String> expectedVersions ->
+    if (!(index.bundles instanceof Collection)
+            || index.bundles.size() != expectedVersions.size()
+            || index.bundles.collect { it.manifest?.id }.toSet() != expectedVersions.keySet()) {
+        throw new GradleException(
+                "Plugin catalog must contain exactly the declared build-time bundles: "
+                        + expectedVersions.keySet().sort())
+    }
     expectedVersions.toSorted().each { bundleId, expectedVersion ->
         def bundle = index.bundles.find { it.manifest?.id == bundleId }
         if (bundle == null) {
@@ -2281,19 +2288,20 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             def index = archive.getInputStream(indexEntries.getFirst()).withCloseable { stream ->
                 new groovy.json.JsonSlurper().parse(stream)
             }
-            if (!(index.bundles instanceof Collection) || index.bundles.size() != 1
-                    || index.bundles[0].manifest?.id
-                    != 'org.yanoproject.plugins.logging') {
-                throw new GradleException(
-                        'Final uber-JAR aggregate index must contain only the core logging bundle')
+            def expectedVersions = buildTimePluginBundles.collectEntries { bundleId, specification ->
+                [(bundleId): (specification.expectedManifestVersion
+                        ?: declaredPluginManifestVersion)]
             }
+            requireIndexedManifestVersions(index, expectedVersions)
             def manifestEntries = archive.entries().findAll {
                 it.name.startsWith(manifestPrefix) && it.name.endsWith('.json')
             }
-            if (manifestEntries.size() != 1) {
-                throw new GradleException(
-                        'Final uber-JAR must retain exactly one core bundle manifest')
+            def retainedManifests = manifestEntries.collect { entry ->
+                archive.getInputStream(entry).withCloseable { stream ->
+                    [manifest: new groovy.json.JsonSlurper().parse(stream)]
+                }
             }
+            requireIndexedManifestVersions([bundles: retainedManifests], expectedVersions)
             if (index.bundles.any {
                 it.manifest?.id == 'org.yanoproject.fixture.plugin-conformance'
             }) {

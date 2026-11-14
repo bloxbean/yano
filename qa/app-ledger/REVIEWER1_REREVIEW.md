@@ -142,6 +142,22 @@ The full X smoke is on macOS 26.0.1 arm64 / Java 25.0.2. It does not claim Docke
 eUTXO, preprod, remote deployment, or a rerun of the native/Haskell qualification.
 Those retain their earlier recorded inputs and the final coordinated release gate.
 
+## Integrated catalog qualification
+
+The first clean full-host staging run, [43607629809](https://github.com/bloxbean/yano/actions/runs/43607629809),
+compiled and built the distribution, then exposed a stale logging-only catalog
+assertion. The integrated deployment requires both logging and app-ledger bundles.
+The existing catalog helper now enforces the exact declared bundle IDs, counts
+and independent versions in the generated index, packaged index and every
+retained manifest. The external conformance fixture remains excluded.
+
+The real packaged JVM catalog smoke passes with the verified remote framework
+and public Yaci snapshot. Negative probes reject an extra fixture bundle and a
+wrong retained framework version; the original JAR was restored byte-for-byte.
+All 10 focused `PluginCatalogPackagingTest` cases pass. That suite is now also
+required by the permanent adapter gate. Two independent review agents approved
+the production guard and test changes.
+
 ## Release boundary
 
 The Yaci blocker is resolved by the public snapshot. Yano foundation and X
