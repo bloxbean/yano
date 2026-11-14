@@ -33,7 +33,8 @@ class LedgerRulesResultTest {
 
     @Test
     void otherwiseTheFirstFailureUnderItsCorpusName() {
-        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(failure("UTXOS", "CollectErrors")))))
+        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(new Failure("UTXOS", "CollectErrors",
+                "BadTranslation TimeTranslationPastHorizon ttl 9 for PlutusV3")))))
                 .isEqualTo("OutsideForecast");
         assertThat(result(new Expected.Pass(),
                 Observation.rejected(List.of(failure("DELEG", "StakeKeyNotRegisteredDELEG")))))
@@ -41,6 +42,27 @@ class LedgerRulesResultTest {
         assertThat(result(new Expected.Pass(),
                 Observation.rejected(List.of(failure("GOV", "UnelectedCommitteeVoters")))))
                 .isEqualTo("VotersDoNotExist");
+        assertThat(result(new Expected.Pass(),
+                Observation.rejected(List.of(failure("GOVCERT", "ConwayDRepIncorrectRefund")))))
+                .isEqualTo("IncorrectDepositDRep");
+    }
+
+    @Test
+    void theCollectErrorsDetailNamesItsCorpusName() {
+        Expected byron = predicate("ByronTxOutInContext", LedgerRuleName.UTXOS, "CollectErrors");
+        Observation inlineDatum = Observation.rejected(List.of(new Failure("UTXOS", "CollectErrors",
+                "BadTranslation InlineDatumsNotSupported output 0 for PlutusV1")));
+
+        assertThat(result(byron, inlineDatum)).isEqualTo("InlineDatumsNotSupported");
+        assertThat(result(byron, Observation.rejected(List.of(new Failure("UTXOS", "CollectErrors",
+                "BadTranslation ByronTxOutInContext input 00#0 for PlutusV1")))))
+                .isEqualTo("ByronTxOutInContext");
+        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(new Failure("UTXOS", "CollectErrors",
+                "NoCostModel PlutusV3")))))
+                .isEqualTo("MissingCostModel");
+        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(new Failure("UTXOS", "CollectErrors",
+                "NoRedeemer spend[0]")))))
+                .isEqualTo("CollectErrors");
     }
 
     @Test

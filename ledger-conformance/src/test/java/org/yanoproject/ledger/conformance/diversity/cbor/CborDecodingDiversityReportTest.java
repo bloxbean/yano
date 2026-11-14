@@ -76,8 +76,8 @@ class CborDecodingDiversityReportTest {
         report.put("version", "2");
         report.put("generated_at", System.currentTimeMillis());
         report.put("protocol_version", PROTOCOL_VERSION);
-        report.put("dataset_commit", commit("node.diversity.cborDatasetCommit"));
-        report.put("implementation_commit", commit("node.diversity.commit"));
+        report.put("dataset_commit", NodeDiversity.commit("node.diversity.cborDatasetCommit"));
+        report.put("implementation_commit", NodeDiversity.commit("node.diversity.commit"));
         report.set("results", results);
         NodeDiversity.write(SCENARIO, report);
 
@@ -97,12 +97,6 @@ class CborDecodingDiversityReportTest {
     /** @return whether a sample in this directory must decode; the dataset's other directories must be rejected */
     static boolean isValid(String category) {
         return category.equals("valid") || category.equals("manual-valid");
-    }
-
-    private static String commit(String property) {
-        String commit = System.getProperty(property, "");
-        assertThat(commit).as(property).matches("[0-9a-f]{40}");
-        return commit;
     }
 
     /** valid accepted, valid total, invalid rejected, invalid total, for the strict reader, the library and yaci. */

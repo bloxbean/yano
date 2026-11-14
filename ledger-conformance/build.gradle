@@ -88,9 +88,10 @@ tasks.withType(Test).configureEach {
     systemProperty 'conformance.report.dir', layout.buildDirectory.dir('conformance').get().asFile.absolutePath
     if (nodeDiversityCorpora) {
         systemProperty 'node.diversity.corpora', file(nodeDiversityCorpora).absolutePath
-        // The cbor-decoding report names both commits.
-        systemProperty 'node.diversity.cborDatasetCommit',
-                (file('node-diversity/corpora.env').text =~ /(?m)^CBOR_DATASET_REVISION=(\S+)/)[0][1]
+        def corporaPin = { key -> (file('node-diversity/corpora.env').text =~ /(?m)^${key}=(\S+)/)[0][1] }
+        // The cbor-decoding report names both commits; the ledger-rules report names its dataset's.
+        systemProperty 'node.diversity.cborDatasetCommit', corporaPin('CBOR_DATASET_REVISION')
+        systemProperty 'node.diversity.ledgerRulesDatasetCommit', corporaPin('NDC_LEDGER_RULES_DATASET_COMMIT')
         systemProperty 'node.diversity.commit',
                 providers.exec { commandLine 'git', 'rev-parse', 'HEAD' }.standardOutput.asText.get().trim()
     }
