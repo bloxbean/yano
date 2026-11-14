@@ -16,7 +16,7 @@ class CardanoAvailabilityFilterTest {
     @Test
     void standaloneReturnsUnavailableBeforeResourceErrorHandling() {
         CardanoAvailabilityFilter filter = new CardanoAvailabilityFilter();
-        filter.mode = "app-ledger";
+        filter.mode = () -> "app-ledger";
         ContainerRequestContext request = mock(ContainerRequestContext.class);
         filter.filter(request);
         ArgumentCaptor<Response> response = ArgumentCaptor.forClass(Response.class);
@@ -28,7 +28,7 @@ class CardanoAvailabilityFilterTest {
     @Test
     void existingCardanoRequestsPassThroughUnchanged() {
         CardanoAvailabilityFilter filter = new CardanoAvailabilityFilter();
-        filter.mode = "cardano";
+        filter.mode = () -> "cardano";
         ContainerRequestContext request = mock(ContainerRequestContext.class);
         filter.filter(request);
         verifyNoInteractions(request);
