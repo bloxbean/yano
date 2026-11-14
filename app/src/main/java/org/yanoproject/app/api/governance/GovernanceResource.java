@@ -9,6 +9,7 @@ import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.util.CardanoBech32Ids;
 import org.yanoproject.api.util.CardanoHex;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.EpochUtil;
 import org.yanoproject.app.api.governance.dto.GovernanceDtos.DRepDistributionDto;
 import org.yanoproject.app.api.governance.dto.GovernanceDtos.DRepDto;
@@ -37,6 +38,7 @@ import java.util.Map;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("governance")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class GovernanceResource {
     private static final Logger log = LoggerFactory.getLogger(GovernanceResource.class);
 

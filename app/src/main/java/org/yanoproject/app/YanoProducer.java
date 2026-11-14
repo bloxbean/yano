@@ -26,6 +26,7 @@ import org.yanoproject.api.config.UpstreamTxConfig;
 import org.yanoproject.api.config.UpstreamValidationConfig;
 import org.yanoproject.api.config.UpstreamValidationStartConfig;
 import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.config.RuntimeMode;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.db.IncompatibleChainStateException;
 import org.yanoproject.api.plugin.PluginCatalogView;
@@ -548,6 +549,11 @@ public class YanoProducer {
         if (yano != null) {
             return yano;
         }
+        if (appConfig != null && RuntimeMode.parse(appConfig.getOptionalValue(YanoPropertyKeys.MODE, String.class)
+                .orElse("cardano")) == RuntimeMode.APP_LEDGER) {
+            yano = createStandaloneAppLedger();
+            return yano;
+        }
         bridgeRuntimeResourceProperties();
         log.info("Creating Yano with network: {}, resourceProfile={}",
                 network, ResourceProfile.current().externalName());
@@ -695,55 +701,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
                 txDiffusionMaxInFlightBytesPerPeer);
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, txDiffusionPeerCooldownMs);
-        java.util.List<java.util.Map<String, Object>> appChainList = parseAppChainChains();
-        // Effective enablement: explicit flag wins; otherwise presence of a
-        // multi-chain list enables. An explicit enabled=false always disables.
-        boolean appChainEnabled = appChainEnabledOpt.orElse(!appChainList.isEmpty());
-        globals.put(YanoPropertyKeys.AppChain.ENABLED, appChainEnabled);
-        appChainId.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.CHAIN_ID, v));
-        appChainSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SIGNING_KEY, v));
-        appChainMembers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.MEMBERS, v));
-        appChainPeers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.PEERS, v));
-        globals.put(YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES, appChainMaxMessageBytes);
-        globals.put(YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, appChainMaxTtlSeconds);
-        globals.put(YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS, appChainDefaultTtlSeconds);
-        appChainProposer.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER, v));
-        globals.put(YanoPropertyKeys.AppChain.THRESHOLD, appChainThreshold);
-        globals.put(YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, appChainBlockIntervalMs);
-        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, appChainBlockMaxMessages);
-        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_BYTES, appChainBlockMaxBytes);
-        globals.put(YanoPropertyKeys.AppChain.STATE_MACHINE, appChainStateMachine);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, appChainAnchorEnabled);
-        appChainAnchorSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY, v));
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS, appChainAnchorEveryBlocks);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, appChainAnchorMaxIntervalMinutes);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_VALIDITY_SLOTS, appChainAnchorValiditySlots);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, appChainAnchorFallbackFeeLovelace);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MODE, appChainAnchorMode);
-        appChainAnchorScriptValidator.ifPresent(
-                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_VALIDATOR, v));
-        appChainAnchorScriptThreadPolicy.ifPresent(
-                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_THREAD_POLICY, v));
-        globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
-        appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
-        globals.put(YanoPropertyKeys.AppChain.RETENTION_ENABLED, appChainRetentionEnabled);
-        globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
-        globals.put(YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, appChainPoolMaxMessages);
-        globals.put(YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, appChainEnforceSenderSeq);
-        globals.put(YanoPropertyKeys.AppChain.VALIDATION_STRICT, appChainValidationStrict);
-        // Dynamic plugin config is copied verbatim so extension settings can
-        // be enabled from node-app config, not only through direct runtime
-        // construction in tests. Keep this list shared with indexed-chain
-        // parsing below: omitting effects.* here silently disables ADR-010 in
-        // a packaged node even though the configuration is present.
-        forwardAppChainDynamicKeys(globals);
-        if (!appChainList.isEmpty() && appChainEnabled) {
-            globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
-            log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
-        } else if (!appChainList.isEmpty()) {
-            log.info("App-chain multi-chain config present but yano.app-chain.enabled=false — not started");
-        }
+        putAppChainGlobals(globals);
         globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
         globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,
                 relayAdvertisedHost.map(String::trim).filter(host -> !host.isBlank()).orElse("auto"));
@@ -819,6 +777,73 @@ public class YanoProducer {
         log.info("Yano created successfully");
 
         return yano;
+    }
+
+    private void putAppChainGlobals(Map<String, Object> globals) {
+        java.util.List<java.util.Map<String, Object>> appChainList = parseAppChainChains();
+        // Effective enablement: explicit flag wins; otherwise presence of a
+        // multi-chain list enables. An explicit enabled=false always disables.
+        boolean appChainEnabled = appChainEnabledOpt.orElse(!appChainList.isEmpty());
+        globals.put(YanoPropertyKeys.AppChain.ENABLED, appChainEnabled);
+        appChainId.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.CHAIN_ID, v));
+        appChainSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SIGNING_KEY, v));
+        appChainMembers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.MEMBERS, v));
+        appChainPeers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.PEERS, v));
+        globals.put(YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES, appChainMaxMessageBytes);
+        globals.put(YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, appChainMaxTtlSeconds);
+        globals.put(YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS, appChainDefaultTtlSeconds);
+        appChainProposer.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER, v));
+        globals.put(YanoPropertyKeys.AppChain.THRESHOLD, appChainThreshold);
+        globals.put(YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, appChainBlockIntervalMs);
+        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, appChainBlockMaxMessages);
+        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_BYTES, appChainBlockMaxBytes);
+        globals.put(YanoPropertyKeys.AppChain.STATE_MACHINE, appChainStateMachine);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, appChainAnchorEnabled);
+        appChainAnchorSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY, v));
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS, appChainAnchorEveryBlocks);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, appChainAnchorMaxIntervalMinutes);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_VALIDITY_SLOTS, appChainAnchorValiditySlots);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, appChainAnchorFallbackFeeLovelace);
+        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MODE, appChainAnchorMode);
+        appChainAnchorScriptValidator.ifPresent(
+                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_VALIDATOR, v));
+        appChainAnchorScriptThreadPolicy.ifPresent(
+                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_THREAD_POLICY, v));
+        globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
+        appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
+        globals.put(YanoPropertyKeys.AppChain.RETENTION_ENABLED, appChainRetentionEnabled);
+        globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
+        globals.put(YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, appChainPoolMaxMessages);
+        globals.put(YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, appChainEnforceSenderSeq);
+        globals.put(YanoPropertyKeys.AppChain.VALIDATION_STRICT, appChainValidationStrict);
+        // Dynamic plugin config is copied verbatim so extension settings can
+        // be enabled from node-app config, not only through direct runtime
+        // construction in tests. Keep this list shared with indexed-chain
+        // parsing below: omitting effects.* here silently disables ADR-010 in
+        // a packaged node even though the configuration is present.
+        forwardAppChainDynamicKeys(globals);
+        if (!appChainList.isEmpty() && appChainEnabled) {
+            globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
+            log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
+        } else if (!appChainList.isEmpty()) {
+            log.info("App-chain multi-chain config present but yano.app-chain.enabled=false — not started");
+        }
+        appConfig.getOptionalValue("yano.app-chain.network-magic", String.class)
+                .ifPresent(value -> globals.put("yano.app-chain.network-magic", value));
+    }
+
+    private Yano createStandaloneAppLedger() {
+        Map<String, Object> globals = new HashMap<>();
+        putAppChainGlobals(globals);
+        YanoConfig standalone = YanoConfig.builder().mode(RuntimeMode.APP_LEDGER)
+                .enableServer(serverEnabled).serverPort(serverPort)
+                .enableBlockProducer(blockProducerEnabled).enableBootstrap(bootstrapEnabled).devMode(devMode)
+                .rocksDBPath(storagePath).appChainStoragePath(appChainStoragePath).build();
+        return YanoAssembly.fromConfig(standalone)
+                .runtimeOptions(new RuntimeOptions(new EventsOptions(
+                        eventsEnabled, 8192, SubscriptionOptions.Overflow.BLOCK), pluginOptions(), globals))
+                .pluginLoader(pluginLoader).build();
     }
 
     private void bridgeRuntimeResourceProperties() {
@@ -1102,32 +1127,38 @@ public class YanoProducer {
 
         try {
             Yano assembledYano = ensureYano();
-            historyArchive.initialize();
-            // Projection history: the node's only archival write path. The service
-            // initialised above no longer writes anything - it is the read facade over the
-            // archive this one produces, which is why both are still composed here.
-            // Disabled by default; a disabled node installs no contributor.
-            projectionHistory.initialize(
-                    assembledYano,
-                    assembledYano.chain(),
-                    assembledYano.ledger(),
-                    (YanoConfig) assembledYano.lifecycle().getConfig());
-            // ADR-039 Phase 6: route historical reads at the primary archive. When the legacy
-            // writer is off, this service holds no backend, so every archive-backed query would
-            // answer "history disabled" over an archive the projection had fully populated.
-            if (projectionHistory.isEnabled() && !historyArchive.enabled()) {
-                projectionHistory.archiveIdentity().ifPresent(identity ->
-                        historyArchive.initializeProjectionReads(
-                                identity,
-                                projectionHistory.coveredDatasets(),
-                                projectionHistory::committedThroughBlock,
-                                projectionHistory::requireCompleteEpochHistory));
+            if (((YanoConfig) assembledYano.lifecycle().getConfig()).getMode() != RuntimeMode.APP_LEDGER) {
+                historyArchive.initialize();
+                // Projection history: the node's only archival write path. The service
+                // initialised above no longer writes anything - it is the read facade over the
+                // archive this one produces, which is why both are still composed here.
+                // Disabled by default; a disabled node installs no contributor.
+                projectionHistory.initialize(
+                        assembledYano,
+                        assembledYano.chain(),
+                        assembledYano.ledger(),
+                        (YanoConfig) assembledYano.lifecycle().getConfig());
+                // ADR-039 Phase 6: route historical reads at the primary archive. When the legacy
+                // writer is off, this service holds no backend, so every archive-backed query would
+                // answer "history disabled" over an archive the projection had fully populated.
+                if (projectionHistory.isEnabled() && !historyArchive.enabled()) {
+                    projectionHistory.archiveIdentity().ifPresent(identity ->
+                            historyArchive.initializeProjectionReads(
+                                    identity,
+                                    projectionHistory.coveredDatasets(),
+                                    projectionHistory::committedThroughBlock,
+                                    projectionHistory::requireCompleteEpochHistory));
+                }
             }
 
             if (autoSyncStart) {
-                log.info("Auto-starting Yano synchronization...");
+                log.info("Auto-starting Yano runtime...");
                 assembledYano.start();
-                log.info("Yano started automatically and syncing with {} network", network);
+                if (((YanoConfig) assembledYano.lifecycle().getConfig()).getMode() == RuntimeMode.APP_LEDGER) {
+                    log.info("Standalone application-ledger runtime started; Cardano L1 is unavailable");
+                } else {
+                    log.info("Yano started automatically and syncing with {} network", network);
+                }
                 log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
             } else {
                 log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());

@@ -3,6 +3,7 @@ package org.yanoproject.app.api.genesis;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.model.GenesisParameters;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.genesis.dto.GenesisDto;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
@@ -16,6 +17,7 @@ import java.util.Map;
 @Path("genesis")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class GenesisResource {
 
     @Inject

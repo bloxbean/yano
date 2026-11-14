@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.utxos.dto.UtxoDto;
 import org.yanoproject.app.api.utxos.dto.UtxoDtoMapper;
 import jakarta.inject.Inject;
@@ -25,6 +26,7 @@ import java.util.stream.Collectors;
 @Path("/")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class UtxoResource {
     private static final Logger LOG = LoggerFactory.getLogger(UtxoResource.class);
 

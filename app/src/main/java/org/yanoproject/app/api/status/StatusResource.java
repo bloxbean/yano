@@ -6,6 +6,7 @@ import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.runtime.utxo.UtxoStatusProvider;
 import org.yanoproject.app.archive.HistoryArchiveService;
 import org.yanoproject.app.archive.ProjectionHistoryService;
@@ -22,6 +23,7 @@ import java.util.Map;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("status")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class StatusResource {
 
     @Inject

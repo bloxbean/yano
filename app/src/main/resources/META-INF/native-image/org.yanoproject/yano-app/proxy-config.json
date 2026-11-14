@@ -1,0 +1,14 @@
+[
+  [
+    "org.yanoproject.api.ChainQuery"
+  ],
+  [
+    "org.yanoproject.api.LedgerQuery"
+  ],
+  [
+    "org.yanoproject.api.TxGateway"
+  ],
+  [
+    "org.yanoproject.api.TxEvaluationGateway"
+  ]
+]

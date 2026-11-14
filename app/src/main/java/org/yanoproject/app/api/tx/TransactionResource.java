@@ -13,6 +13,7 @@ import org.yanoproject.api.utxo.model.AssetAmount;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.tx.dto.TxAmountDto;
 import org.yanoproject.app.api.tx.dto.TxDto;
 import org.yanoproject.app.api.tx.dto.TxInputsOutputsDto;
@@ -35,6 +36,7 @@ import java.util.Map;
 @Path("txs")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class TransactionResource {
     private static final Logger log = LoggerFactory.getLogger(TransactionResource.class);
 

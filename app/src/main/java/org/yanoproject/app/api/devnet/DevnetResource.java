@@ -10,6 +10,7 @@ import org.yanoproject.api.model.FundResult;
 import org.yanoproject.api.model.SnapshotInfo;
 import org.yanoproject.api.model.TimeAdvanceResult;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.devnet.dto.*;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
@@ -33,6 +34,7 @@ import java.util.zip.ZipOutputStream;
 @Path("devnet")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class DevnetResource {
 
     private static final Logger log = LoggerFactory.getLogger(DevnetResource.class);

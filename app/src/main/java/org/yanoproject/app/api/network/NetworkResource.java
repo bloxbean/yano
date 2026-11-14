@@ -8,6 +8,7 @@ import org.yanoproject.api.account.AccountStateReadStore;
 import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.model.GenesisParameters;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.EpochUtil;
 import org.yanoproject.app.api.network.dto.NetworkDto;
 import jakarta.inject.Inject;
@@ -26,6 +27,7 @@ import java.util.Map;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("network")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class NetworkResource {
     private static final Logger log = LoggerFactory.getLogger(NetworkResource.class);
 

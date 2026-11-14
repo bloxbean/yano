@@ -2,6 +2,8 @@ package org.yanoproject.app.api.status;
 
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.NodeLifecycle;
+import org.yanoproject.api.config.RuntimeMode;
+import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.model.NodeStatus;
 import org.yanoproject.runtime.utxo.UtxoStatusProvider;
 import io.micrometer.core.instrument.FunctionCounter;
@@ -76,6 +78,8 @@ public class NodeMetrics {
     }
 
     void register() {
+        if (nodeLifecycle != null && nodeLifecycle.getConfig() instanceof YanoConfig config
+                && config.getMode() == RuntimeMode.APP_LEDGER) return;
         gauge("yano.node.tip.local.block", Snapshot::localTip,
                 "Current local L1 block height");
         gauge("yano.node.tip.remote.block", Snapshot::remoteTip,

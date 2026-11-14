@@ -1,6 +1,7 @@
 package org.yanoproject.app.api.history;
 
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.archive.api.ArchiveDatasetId;
 import org.yanoproject.archive.api.ArchiveStoreException;
 import org.yanoproject.app.archive.HistoryArchiveService;
@@ -25,6 +26,7 @@ import java.util.Set;
 @Extension(name = ApiGroup.HISTORY, value = "")
 @Path("history")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class HistoryResource {
     @Inject
     HistoryArchiveService history;
