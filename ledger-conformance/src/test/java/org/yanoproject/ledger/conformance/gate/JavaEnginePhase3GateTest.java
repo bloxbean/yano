@@ -46,12 +46,9 @@ class JavaEnginePhase3GateTest {
     /**
      * Recorded divergences: Amaru's corpus expects one constructor, Haskell (cardano-ledger {@code f649f975})
      * reports another. Haskell wins (ADR-056 invariant 1); see ADR-056 "Phase 3a results" and "Phase 3b results".
+     * None is recorded: 00280, once listed here, is Haskell's own name at the pin (an alias in {@code AmaruCorpusNames}).
      */
-    static final Map<String, Divergence> DIVERGENCES = Map.of(
-            "00280-fail-output-to-a-byron-address-with-oversized-attributes",
-            new Divergence("UTXO.OutputBootAddrAttrsTooBig", "the output's value is Coin 2000000 (5 bytes, far below "
-                    + "maxValSize), so validateOutputTooBigUTxO (Alonzo/Rules/Utxo.hs:412-434) holds; its Byron "
-                    + "address carries 99 bytes of attributes > 64 (Shelley/Rules/Utxo.hs:544-561)"));
+    static final Map<String, Divergence> DIVERGENCES = Map.of();
 
     /** @param haskell Haskell's first failure ({@code RULE.Constructor}) */
     record Divergence(String haskell, String reason) {

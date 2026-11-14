@@ -59,12 +59,13 @@ class CborRuleTest {
         byte[] redeemer = HexFormat.of().parseHex("840000a203040102820101");
         CborRule rule = RULES.get("redeemer");
 
-        assertThat(rule.encode(rule.decode(redeemer))).isEqualTo(redeemer);
+        rule.read(redeemer);
+        assertThat(rule.encode(redeemer)).isEqualTo(redeemer);
     }
 
     @Test
     void encoderFailureIsNotARejection(@TempDir Path dir) throws IOException {
-        CborRule rule = new CborRule("rule", false, cbor -> cbor, cbor -> cbor, (strict, library) -> {
+        CborRule rule = new CborRule("rule", false, cbor -> cbor, cbor -> cbor, model -> {
             throw new IllegalStateException("encoder failure");
         });
         Path sample = Files.write(dir.resolve("sample.input.cbor"), new byte[]{0});
@@ -74,9 +75,9 @@ class CborRuleTest {
     }
 
     /**
-     * A valid item for each rule of a part of a larger item: it must get past both decoders in its placement and come
-     * back out of the re-encoding, or a placement or path is wrong. Part of the check a broken placement would fail
-     * silently otherwise: a rejected sample would look like a decoder difference.
+     * A valid item for each rule of a part of a larger item: Yano must read it, and it must come back out of the
+     * re-encoding of the model it is placed in, or a reader, a placement or a path is wrong. Part of the check a broken
+     * one would fail silently otherwise: a rejected sample would look like a decoder difference.
      */
     @Test
     void placedRulesReturnWhatWasPlaced() throws Exception {
@@ -165,20 +166,21 @@ class CborRuleTest {
         for (Map.Entry<String, String> entry : items.entrySet()) {
             CborRule rule = RULES.get(entry.getKey());
             byte[] item = HexFormat.of().parseHex(entry.getValue());
-            byte[] encoded = rule.encode(rule.decode(item));
+            rule.read(item);
+            byte[] encoded = rule.encode(item);
             if (!Arrays.equals(CborNormalizer.normalize(encoded), CborNormalizer.normalize(item))) {
                 different.put(entry.getKey(), HexFormat.of().formatHex(encoded));
             }
         }
-        // CCL 0.8.0-pre7 decodes a parameter update without its Conway keys (cardano-client-lib#743), and writes an
+        // CCL writes an
         // output that came as a map as an array. This fails once CCL changes, and the rule then leaves this set.
         assertThat(different.keySet()).as(different.toString())
-                .containsExactly("babbage_transaction_output", "drep_voting_thresholds", "pool_voting_thresholds");
+                .containsExactly("babbage_transaction_output");
     }
 
     @Test
     void placedRuleRejectsAWrongItem() {
-        assertThatThrownBy(() -> RULES.get("hash32").decode(HexFormat.of().parseHex(HASH28)))
+        assertThatThrownBy(() -> RULES.get("hash32").read(HexFormat.of().parseHex(HASH28)))
                 .isInstanceOf(Exception.class);
     }
 
@@ -192,6 +194,9 @@ class CborRuleTest {
 
     private static void accepts(String rule, byte[] item) {
         CborRule cborRule = RULES.get(rule);
-        assertThatCode(() -> cborRule.encode(cborRule.decode(item))).as(rule).doesNotThrowAnyException();
+        assertThatCode(() -> {
+            cborRule.read(item);
+            cborRule.encode(item);
+        }).as(rule).doesNotThrowAnyException();
     }
 }

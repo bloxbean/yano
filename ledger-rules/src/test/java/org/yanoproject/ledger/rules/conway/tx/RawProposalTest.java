@@ -1,5 +1,10 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
+import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
+import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.junit.jupiter.api.Test;
@@ -29,13 +34,22 @@ class RawProposalTest {
     private static final String ANCHOR = "82" + "60" + "5820" + "00".repeat(32);
     private static final String DEPOSIT = "1a05f5e100";
 
+    /** A parameter update as the walk of a proposal reads it: the policy decides, CCL's view is read. */
     private static RawParamUpdate update(String hex) {
-        return RawParamUpdate.read(StrictCbor.span(HexUtil.decodeHexString(hex)));
+        CborSpan item = StrictCbor.span(HexUtil.decodeHexString(hex));
+        HaskellPolicy.CONWAY.walk(FieldType.PROTOCOL_PARAM_UPDATE, item);
+        return RawParamUpdate.accepted(RawProtocolParamUpdate.of(item, Era.Conway));
+    }
+
+    /** A proposal procedure as the walk of a transaction reads one. */
+    private static RawProposal read(String hex) {
+        CborSpan item = StrictCbor.span(HexUtil.decodeHexString(hex));
+        HaskellPolicy.CONWAY.walk(TxBodyField.PROPOSAL_PROCEDURES.spec().record(), item);
+        return RawProposal.accepted(com.bloxbean.cardano.client.transaction.raw.RawProposal.of(item, Era.Conway), 0);
     }
 
     private static RawProposal proposal(String actionHex) {
-        return RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + ACCOUNT + actionHex + ANCHOR)),
-                0);
+        return read("84" + DEPOSIT + ACCOUNT + actionHex + ANCHOR);
     }
 
     // ------------------------------------------------------------------------------------------------ PParamsUpdate
@@ -96,7 +110,7 @@ class RawProposalTest {
     @Test
     void refusesDuplicateKeysAndOutOfRangeValues() {
         assertThatThrownBy(() -> update("a2" + "0301" + "0302")).isInstanceOf(TxDecodingException.class)
-                .hasMessageContaining("duplicate");
+                .hasMessageContaining("repeated");
         assertThatThrownBy(() -> update("a1" + "04" + "1a00010000")).isInstanceOf(TxDecodingException.class); // Word16
         assertThatThrownBy(() -> update("a1" + "02" + "1b0000000100000000")).isInstanceOf(TxDecodingException.class);
         assertThatThrownBy(() -> update("a1" + "0a" + "d81e820302")).isInstanceOf(TxDecodingException.class); // > 1
@@ -196,17 +210,17 @@ class RawProposalTest {
                 .isInstanceOf(TxDecodingException.class);
         assertThatThrownBy(() -> proposal("82" + "03" + "82" + "5820" + "11".repeat(32) + "1a00010000"))
                 .isInstanceOf(TxDecodingException.class);
-        assertThatThrownBy(() -> RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + "581d01"
-                + KEY_HASH + "8106" + ANCHOR)), 0)).isInstanceOf(TxDecodingException.class);
+        assertThatThrownBy(() -> read("84" + DEPOSIT + "581d01" + KEY_HASH + "8106" + ANCHOR))
+                .isInstanceOf(TxDecodingException.class);
         // Indefinite-length byte and text strings: definite only below decoder version 12 (decodeBytesDefinite,
         // decodeByteArrayDefinite, cborg's decodeString).
-        assertThatThrownBy(() -> RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + "5f" + "41e0"
-                + "581c" + KEY_HASH + "ff" + "8106" + ANCHOR)), 0)).isInstanceOf(TxDecodingException.class)
+        assertThatThrownBy(() -> read("84" + DEPOSIT + "5f" + "41e0" + "581c" + KEY_HASH + "ff" + "8106" + ANCHOR))
+                .isInstanceOf(TxDecodingException.class)
                 .hasMessageContaining("indefinite-length byte string");
         assertThatThrownBy(() -> proposal("82" + "03" + "82" + "5f" + "5820" + "11".repeat(32) + "ff" + "00"))
                 .isInstanceOf(TxDecodingException.class);
-        assertThatThrownBy(() -> RawProposal.read(StrictCbor.span(HexUtil.decodeHexString("84" + DEPOSIT + ACCOUNT
-                + "8106" + "82" + "7f" + "60" + "ff" + "5820" + "00".repeat(32))), 0)).isInstanceOf(TxDecodingException.class)
+        assertThatThrownBy(() -> read("84" + DEPOSIT + ACCOUNT + "8106" + "82" + "7f" + "60" + "ff" + "5820"
+                + "00".repeat(32))).isInstanceOf(TxDecodingException.class)
                 .hasMessageContaining("indefinite-length text string");
         // A guardrails policy hash that is not 28 bytes.
         assertThatThrownBy(() -> proposal("84" + "00" + "f6" + "a1" + "0301" + "5820" + "33".repeat(32)))

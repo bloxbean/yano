@@ -2,7 +2,8 @@
 # ADR-060: fetches the pinned node-diversity corpora (corpora.env) into <dir>, for
 #   ./gradlew :ledger-conformance:nodeDiversityReports -PnodeDiversityCorpora=<dir>
 #
-# <dir>/node-diversity-conformance  pragma's repository at NDC_REVISION (the ledger-rules fixtures)
+# <dir>/node-diversity-conformance  pragma's repository at NDC_REVISION (the ledger-rules fixtures), with the
+#                                   protocol-parameter files it lacks from Amaru (corpora.env)
 # <dir>/cardano-cbor-dataset        the CBOR dataset at CBOR_DATASET_REVISION
 # <dir>/uplc-conformance            the UPLC vectors, checked against UPLC_CORPUS_SHA256
 # <dir>/turbo                       the turbo scripts, checked against TURBO_CORPUS_SHA256
@@ -64,7 +65,32 @@ extract() {
     echo "$target: extracted $url"
 }
 
+# The workaround of corpora.env: the protocol-parameter files the NDC fixtures name but NDC lacks, from Amaru.
+add_missing_parameters() {
+    local ndc=$1 entry file digest target
+    for entry in $LEDGER_RULES_MISSING_PARAMETERS; do
+        file=${entry%%:*}
+        digest=${entry#*:}
+        target="$ndc/scenarios/ledger-rules/fixtures/protocol-parameters/$file"
+        if git -C "$ndc" ls-files --error-unmatch "${target#"$ndc"/}" >/dev/null 2>&1; then
+            echo "$file is now in node-diversity-conformance: remove it from LEDGER_RULES_MISSING_PARAMETERS" >&2
+            exit 1
+        fi
+        if [[ ! -f "$target" || "$(sha256 "$target")" != "$digest" ]]; then
+            curl --fail --silent --show-error --location --retry 3 -o "$target" \
+                "$AMARU_RAW/$NDC_LEDGER_RULES_DATASET_COMMIT/crates/amaru-ledger/tests/data/transaction/common/protocol-parameters/$file"
+            if [[ "$(sha256 "$target")" != "$digest" ]]; then
+                echo "$file: sha256 $(sha256 "$target"), expected $digest" >&2
+                rm -f "$target"
+                exit 1
+            fi
+        fi
+        echo "$target: from Amaru ($digest)"
+    done
+}
+
 checkout "$NDC_REPOSITORY" "$NDC_REVISION" "$DIR/node-diversity-conformance"
+add_missing_parameters "$DIR/node-diversity-conformance"
 checkout "$CBOR_DATASET_REPOSITORY" "$CBOR_DATASET_REVISION" "$DIR/cardano-cbor-dataset"
 extract "$UPLC_CORPUS_URL" "$UPLC_CORPUS_SHA256" "$DIR/uplc-conformance"
 extract "$TURBO_CORPUS_URL" "$TURBO_CORPUS_SHA256" "$DIR/turbo"

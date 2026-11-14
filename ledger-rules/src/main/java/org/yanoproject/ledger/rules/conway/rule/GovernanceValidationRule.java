@@ -206,9 +206,9 @@ public class GovernanceValidationRule implements LedgerRule {
         // G-5: new member expiration > currentEpoch
         long currentEpoch = context.getCurrentEpoch();
         if (currentEpoch >= 0 && uc.getNewMembersAndTerms() != null) {
-            for (Map.Entry<Credential, Integer> entry : uc.getNewMembersAndTerms().entrySet()) {
-                int expiration = entry.getValue();
-                if (expiration <= currentEpoch) {
+            for (Map.Entry<Credential, Long> entry : uc.getNewMembersAndTerms().entrySet()) {
+                long expiration = entry.getValue();
+                if (Long.compareUnsigned(expiration, currentEpoch) <= 0) {
                     String credHashStr = credHash(entry.getKey());
                     errors.add(error("Proposal[" + proposalIndex + "] UpdateCommittee: member "
                             + credHashStr + " expiration epoch " + expiration
@@ -219,7 +219,7 @@ public class GovernanceValidationRule implements LedgerRule {
 
         // ConflictingCommitteeUpdate: membersForRemoval ∩ newMembersAndTerms.keys == ∅
         Set<Credential> toRemove = uc.getMembersForRemoval();
-        Map<Credential, Integer> toAdd = uc.getNewMembersAndTerms();
+        Map<Credential, Long> toAdd = uc.getNewMembersAndTerms();
         if (toRemove != null && !toRemove.isEmpty() && toAdd != null && !toAdd.isEmpty()) {
             for (Credential removeCred : toRemove) {
                 if (toAdd.containsKey(removeCred)) {

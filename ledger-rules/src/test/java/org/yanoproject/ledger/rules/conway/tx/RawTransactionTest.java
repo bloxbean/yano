@@ -110,7 +110,7 @@ class RawTransactionTest {
         assertDecodingFailure("84" + BODY + "a10580" + "f5f6", "non-empty");
         assertDecodingFailure("84" + BODY + "a105a0" + "f5f6", "non-empty");
         assertDecodingFailure("84" + BODY + "a105" + "81" + "84001b00000001000000000082" + "0101" + "f5f6",
-                "Word32");
+                "exceeds 4294967295");
         assertDecodingFailure("84" + BODY + "a105" + "81" + "84060000" + "820101" + "f5f6", "tag");
     }
 
@@ -122,7 +122,7 @@ class RawTransactionTest {
 
         String duplicateInput = BODY.replace("00d901029f" + INPUT + "ff", "00d901029f" + INPUT + INPUT + "ff");
         assertThatThrownBy(() -> RawTransaction.parse(HexUtil.decodeHexString("84" + duplicateInput + "a0f5f6"),
-                null)).isInstanceOf(TxDecodingException.class).hasMessageContaining("duplicate input");
+                null)).isInstanceOf(TxDecodingException.class).hasMessageContaining("duplicate transaction_input");
 
         assertThatThrownBy(() -> RawTransaction.parse(HexUtil.decodeHexString("83" + BODY + "a0f5"), null))
                 .isInstanceOf(TxDecodingException.class);
@@ -142,35 +142,36 @@ class RawTransactionTest {
         String signature = "5840" + "33".repeat(64);
         assertThat(RawTransaction.parse(HexUtil.decodeHexString("84" + BODY + "a1008182" + vkey + signature + "f5f6"),
                 null).vkeyWitnesses()).hasSize(1);
-        assertDecodingFailure("84" + BODY + "a1008183" + vkey + signature + "00" + "f5f6", "vkey witness");
-        assertDecodingFailure("84" + BODY + "a1028183" + vkey + signature + "40" + "f5f6", "bootstrap witness");
+        assertDecodingFailure("84" + BODY + "a1008183" + vkey + signature + "00" + "f5f6", "unknown vkeywitness item");
+        assertDecodingFailure("84" + BODY + "a1028183" + vkey + signature + "40" + "f5f6", "bootstrap_witness");
         assertDecodingFailure("84" + BODY + "a105" + "81" + "8400000083010100" + "f5f6", "ex_units");
     }
 
     @Test
     void conwayRejectsUnknownKeysAndDuplicatesAtDecoding() {
         assertDecodingFailure("84" + BODY.replace("021a00030d40", "021a00030d40" + "0601") + "a0f5f6",
-                "unknown transaction body key 6");
-        assertDecodingFailure("84" + BODY + "a10801" + "f5f6", "unknown witness set key 8");
+                "transaction_body key 06 is not in Conway");
+        assertDecodingFailure("84" + BODY + "a10801" + "f5f6", "unknown transaction_witness_set key 08");
         String reward = "581de0" + "44".repeat(28);
-        assertDecodingFailure("84" + body("05a2" + reward + "01" + reward + "02") + "a0f5f6", "duplicate withdrawal");
+        assertDecodingFailure("84" + body("05a2" + reward + "01" + reward + "02") + "a0f5f6",
+                "repeated withdrawals key");
         assertDecodingFailure("84" + body("05a1" + "581d62" + "44".repeat(28) + "01") + "a0f5f6", "account address");
-        assertDecodingFailure("84" + body("05a0") + "a0f5f6", "Withdrawals");
+        assertDecodingFailure("84" + body("05a0") + "a0f5f6", "non-empty");
         assertDecodingFailure("84" + body("0480") + "a0f5f6", "Certificates");
         assertDecodingFailure("84" + body("0d80") + "a0f5f6", "non-empty");
-        assertDecodingFailure("84" + body("1600") + "a0f5f6", "Treasury Donation");
-        assertDecodingFailure("84" + BODY + "a10080" + "f5f6", "empty list");
+        assertDecodingFailure("84" + body("1600") + "a0f5f6", "positive coin");
+        assertDecodingFailure("84" + BODY + "a10080" + "f5f6", "non-empty");
     }
 
     @Test
     void mintAndValueMultiAssetsFollowConwaysDecoder() {
         String policy = "581c" + "ab".repeat(28);
         assertDecodingFailure("84" + body("09a1" + policy + "a14100" + "00") + "a0f5f6", "zeros");
-        assertDecodingFailure("84" + body("09a1" + policy + "a0") + "a0f5f6", "Empty Assets");
-        assertDecodingFailure("84" + body("09a0") + "a0f5f6", "Mint");
+        assertDecodingFailure("84" + body("09a1" + policy + "a0") + "a0f5f6", "non-empty");
+        assertDecodingFailure("84" + body("09a0") + "a0f5f6", "non-empty");
         assertDecodingFailure("84" + body("09a2" + policy + "a1410001" + policy + "a1410101") + "a0f5f6",
-                "duplicate policy");
-        assertDecodingFailure("84" + body("09a1" + policy + "a2410001410001") + "a0f5f6", "duplicate asset name");
+                "repeated mint key");
+        assertDecodingFailure("84" + body("09a1" + policy + "a2410001410001") + "a0f5f6", "repeated mint assets key");
         RawTransaction minted = RawTransaction.parse(HexUtil.decodeHexString("84"
                 + body("09a1" + policy + "a1410021") + "a0f5f6"), null);
         assertThat(minted.mint().get("ab".repeat(28))).containsEntry("00", BigInteger.valueOf(-2));
@@ -178,16 +179,17 @@ class RawTransactionTest {
         String address = "581d60" + "11".repeat(28);
         String zeroTokenOutput = "82" + address + "821a000f4240a1" + policy + "a1410000";
         assertDecodingFailure("84" + BODY.replace("019f82581d60" + "11".repeat(28) + "1a000f4240ff",
-                "0181" + zeroTokenOutput) + "a0f5f6", "zeros");
+                "0181" + zeroTokenOutput) + "a0f5f6", "positive coin");
     }
 
     @Test
     void outputsFollowBabbagesTxOutDecoder() {
         String address = "581d60" + "11".repeat(28);
-        assertDecodingFailure(withOutput("a3" + "00" + address + "011a000f4240" + "0401"), "unknown output key 4");
+        assertDecodingFailure(withOutput("a3" + "00" + address + "011a000f4240" + "0401"),
+                "unknown babbage_transaction_output key 04");
         assertDecodingFailure(withOutput("a3" + "00" + address + "011a000f4240" + "011a000f4240"),
-                "duplicate output key 1");
-        assertDecodingFailure(withOutput("a1" + "00" + address), "no address or no value");
+                "repeated babbage_transaction_output key 01");
+        assertDecodingFailure(withOutput("a1" + "00" + address), "has no VALUE");
         assertDecodingFailure(withOutput("82" + "581d80" + "11".repeat(28) + "1a000f4240"), "unused bits");
         assertDecodingFailure(withOutput("82" + "581d64" + "11".repeat(28) + "1a000f4240"), "unused bits");
         // Only bit 0 is the network (headerNetworkId, Address.hs:556-559); bit 1 is not checked: 0x62 is testnet.
@@ -263,8 +265,8 @@ class RawTransactionTest {
     @Test
     void readsWitnessesAsConwayDecodesThem() {
         String tx = "84" + BODY;
-        assertDecodingFailure(tx + "a10780" + "f5f6", "Empty list of scripts");
-        assertDecodingFailure(tx + "a107824401020304" + "4401020304" + "f5f6", "duplicate PlutusV3");
+        assertDecodingFailure(tx + "a10780" + "f5f6", "non-empty");
+        assertDecodingFailure(tx + "a107824401020304" + "4401020304" + "f5f6", "duplicate plutus_script");
         String bootstrap = "a1028184" + "5820" + "01".repeat(32) + "5840" + "02".repeat(64) + "5821" + "03".repeat(33)
                 + "41a0";
         RawTransaction raw = RawTransaction.parse(HexUtil.decodeHexString(tx + bootstrap + "f5f6"), null);

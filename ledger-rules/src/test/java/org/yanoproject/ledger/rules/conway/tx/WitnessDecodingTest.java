@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.junit.jupiter.api.Test;
@@ -96,10 +97,10 @@ class WitnessDecodingTest {
         assertDecodingFailure("a101c249010000000000000000", "Unsupported");
         // no duplicate label; no PlutusV4 (key 5) or unknown key; Allegra form has exactly two fields
         assertDecodingFailure("a201010101", "duplicate metadata label");
-        assertDecodingFailure("d90103a1" + "0580", "PlutusV4");
-        assertDecodingFailure("d90103a1" + "0680", "unknown auxiliary data key");
-        assertDecodingFailure("d90103a2" + "00a0" + "00a0", "Duplicate key");
-        assertDecodingFailure("83a08080", "2 elements");
+        assertDecodingFailure("d90103a1" + "0580", "unknown auxiliary_data_map key 05");
+        assertDecodingFailure("d90103a1" + "0680", "unknown auxiliary_data_map key 06");
+        assertDecodingFailure("d90103a2" + "00a0" + "00a0", "repeated auxiliary_data_map key 00");
+        assertDecodingFailure("83a08080", "unknown auxiliary_data_array item");
     }
 
     @Test
@@ -112,11 +113,45 @@ class WitnessDecodingTest {
     }
 
     private static void validate(String hex) {
-        RawAuxData.validate(StrictCbor.span(HexUtil.decodeHexString(hex)));
+        HaskellPolicy.CONWAY.walk(FieldType.OPTIONAL_AUXILIARY_DATA, StrictCbor.span(HexUtil.decodeHexString(hex)));
     }
 
     private static void assertDecodingFailure(String hex, String message) {
         assertThatThrownBy(() -> validate(hex)).isInstanceOf(TxDecodingException.class).hasMessageContaining(message);
+    }
+
+    @Test
+    void aGuardIsNotAConwayNativeScript() {
+        // [6, [0, keyhash]]: Dijkstra's RequireGuard, which CCL's decoder reads in any era and TimelockRaw does not
+        String guard = "8206" + "8200581c" + KEY;
+        String body = "a3" + "0081" + "825820" + "00".repeat(32) + "00" + "0180" + "0200";
+        String scriptRef = "d818" + "5824" + "8200" + guard;
+        // Conway's policy refuses it alone and nested in all, any and at-least, at any depth
+        for (String script : List.of(guard, "820181" + guard, "820281" + guard, "83030181" + guard,
+                "820181" + "820181" + "820281" + guard)) {
+            assertThatThrownBy(() -> HaskellPolicy.CONWAY.walk(FieldType.NATIVE_SCRIPT,
+                    StrictCbor.span(HexUtil.decodeHexString(script)))).as(script)
+                    .isInstanceOf(TxDecodingException.class).hasMessageContaining("type 6");
+        }
+        // in a transaction's witness set, its auxiliary data (both forms), and an output's reference script
+        String output = "a3" + "00581d60" + "00".repeat(28) + "0100" + "03" + scriptRef;
+        for (String tx : List.of(
+                "84" + body + "a1" + "0181" + guard + "f5f6",
+                "84" + body + "a1" + "0181" + "820181" + guard + "f5f6",
+                "84" + body + "a0" + "f5" + "82a081" + guard,
+                "84" + body + "a0" + "f5" + "d90103a1" + "0181" + guard,
+                "84" + "a3" + "0081" + "825820" + "00".repeat(32) + "00" + "0181" + output + "0200" + "a0f5f6")) {
+            assertThatThrownBy(() -> RawTransaction.parse(HexUtil.decodeHexString(tx), null)).as(tx)
+                    .isInstanceOf(TxDecodingException.class).hasMessageContaining("type 6");
+        }
+        // RawScript itself takes no era: sync hashes reference scripts of any era with it, a Dijkstra guard included
+        assertThatCode(() -> script(guard)).doesNotThrowAnyException();
+        assertThat(RawScript.fromScriptRef(HexUtil.decodeHexString(scriptRef)).hash()).hasSize(28);
+        // types 0 to 5 are unchanged
+        assertThatCode(() -> HaskellPolicy.CONWAY.walk(FieldType.NATIVE_SCRIPT,
+                StrictCbor.span(HexUtil.decodeHexString("820181" + "8200581c" + KEY)))).doesNotThrowAnyException();
+        assertThatCode(() -> RawTransaction.parse(HexUtil.decodeHexString("84" + body + "a1" + "0181" + "8200581c"
+                + KEY + "f5f6"), null)).doesNotThrowAnyException();
     }
 
     @Test

@@ -1,10 +1,10 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.CertKind;
+import com.bloxbean.cardano.client.transaction.raw.RawDRep;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.math.BigInteger;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -70,26 +70,13 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
             }
         }
 
-        static DRep read(CborSpan item) {
-            List<CborSpan> fields = StrictCbor.array(item);
-            if (fields.isEmpty()) {
-                throw new TxDecodingException("a DRep is an empty array");
-            }
-            long kind = StrictCbor.unsignedLong(fields.get(0));
-            int expected;
-            if (kind <= 1) {
-                expected = 2;
-            } else if (kind <= 3) {
-                expected = 1;
-            } else {
-                throw new TxDecodingException("unknown DRep kind " + kind);
-            }
-            if (fields.size() != expected) {
-                throw new TxDecodingException("a DRep of kind " + kind + " has " + expected + " elements");
-            }
-            RawCredential credential = kind <= 1
-                    ? new RawCredential(kind == 1, StrictCbor.definiteBytes(fields.get(1))) : null;
-            return new DRep((int) kind, credential);
+        private static DRep of(RawDRep drep) {
+            return switch (drep.kind()) {
+                case KEY_HASH -> new DRep(0, new RawCredential(false, drep.hash()));
+                case SCRIPT_HASH -> new DRep(1, new RawCredential(true, drep.hash()));
+                case ABSTAIN -> new DRep(2, null);
+                case NO_CONFIDENCE -> new DRep(3, null);
+            };
         }
 
         @Override
@@ -206,130 +193,37 @@ public record RawCertificate(int index, int tag, RawCredential credential, byte[
         return credential.hash();
     }
 
-    /**
-     * Reads one certificate. The fields the rules do not read are still decoded with their Haskell bounds
-     * ({@link BoundedFields}: anchors, the pool margin, relays and metadata URL).
-     */
-    static RawCertificate read(CborSpan item, int index) {
-        List<CborSpan> f = StrictCbor.array(item);
-        if (f.isEmpty()) {
-            throw new TxDecodingException("a certificate is an empty array");
-        }
-        long tag = StrictCbor.unsignedLong(f.get(0));
-        int expected = switch ((int) Math.min(tag, 19)) {
-            case 0, 1 -> 2;
-            case 2, 7, 8, 9, 14, 15, 17, 18, 4 -> 3;
-            case 10, 11, 12, 16 -> 4;
-            case 13 -> 5;
-            case 3 -> 10;
-            default -> throw new TxDecodingException("certificate tag " + tag + " is not a Conway certificate");
+    /** The certificate at {@code index}, which {@link HaskellPolicy} has accepted. */
+    static RawCertificate accepted(com.bloxbean.cardano.client.transaction.raw.RawCertificate cert, int index) {
+        CertKind kind = cert.kind();
+        RawCredential credential = switch (kind) {
+            case POOL_REGISTRATION, POOL_RETIREMENT -> null;
+            default -> RawCredential.of(cert.credential());
         };
-        if (f.size() != expected) {
-            throw new TxDecodingException("certificate tag " + tag + " has " + f.size() + " elements, expected "
-                    + expected);
-        }
-        RawCredential credential = null;
-        RawCredential hot = null;
-        byte[] poolId = null;
-        List<byte[]> owners = new ArrayList<>();
-        byte[] targetPool = null;
-        DRep drep = null;
-        BigInteger coin = null;
-        BigInteger epoch = null;
-        PoolParams pool = null;
-        switch ((int) tag) {
-            case 0, 1 -> credential = RawCredential.read(f.get(1));
-            case 2 -> {
-                credential = RawCredential.read(f.get(1));
-                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
-            }
-            case 7, 8, 17 -> {
-                credential = RawCredential.read(f.get(1));
-                coin = StrictCbor.unsigned(f.get(2));
-            }
-            case 9 -> {
-                credential = RawCredential.read(f.get(1));
-                drep = DRep.read(f.get(2));
-            }
-            case 10 -> {
-                credential = RawCredential.read(f.get(1));
-                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
-                drep = DRep.read(f.get(3));
-            }
-            case 11 -> {
-                credential = RawCredential.read(f.get(1));
-                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
-                coin = StrictCbor.unsigned(f.get(3));
-            }
-            case 12 -> {
-                credential = RawCredential.read(f.get(1));
-                drep = DRep.read(f.get(2));
-                coin = StrictCbor.unsigned(f.get(3));
-            }
-            case 13 -> {
-                credential = RawCredential.read(f.get(1));
-                targetPool = keyHash(StrictCbor.definiteBytes(f.get(2)), "delegatee pool");
-                drep = DRep.read(f.get(3));
-                coin = StrictCbor.unsigned(f.get(4));
-            }
-            case 14 -> {
-                credential = RawCredential.read(f.get(1));
-                hot = RawCredential.read(f.get(2));
-            }
-            case 15, 18 -> {
-                credential = RawCredential.read(f.get(1));
-                BoundedFields.anchorOrNull(f.get(2), "certificate");
-            }
-            case 16 -> {
-                credential = RawCredential.read(f.get(1));
-                coin = StrictCbor.unsigned(f.get(2));
-                BoundedFields.anchorOrNull(f.get(3), "certificate");
-            }
-            case 3 -> {
-                // pool_params, flattened: operator, vrf, pledge, cost, margin, reward account, owners, relays,
-                // metadata (decodeStakePoolParamsFlat)
-                poolId = keyHash(StrictCbor.definiteBytes(f.get(1)), "pool operator");
-                byte[] vrf = StrictCbor.definiteBytes(f.get(2));
-                if (vrf.length != VRF_KEY_HASH_LENGTH) {
-                    throw new TxDecodingException("VRF key hash of " + vrf.length + " bytes");
-                }
-                StrictCbor.unsigned(f.get(3)); // pledge: a Word64 coin
-                BigInteger cost = StrictCbor.unsigned(f.get(4));
-                BoundedFields.unitInterval(f.get(5), "pool margin");
-                byte[] rewardAccount = StrictCbor.definiteBytes(f.get(6));
-                // decodeAccountAddress (Address.hs:938-955): header & 0xEE == 0xE0, then a 28-byte hash
-                if (rewardAccount.length != 29 || (rewardAccount[0] & 0xee) != 0xe0) {
-                    throw new TxDecodingException("pool reward account is not an account address");
-                }
-                for (CborSpan owner : StrictCbor.set(f.get(7))) {
-                    owners.add(keyHash(StrictCbor.definiteBytes(owner), "pool owner"));
-                }
-                for (CborSpan relay : StrictCbor.array(f.get(8))) {
-                    BoundedFields.relay(relay);
-                }
-                Integer metadataHashSize = null;
-                if (!f.get(9).isNull()) {
-                    List<CborSpan> metadata = StrictCbor.array(f.get(9), 2, "pool metadata is a two-element array");
-                    BoundedFields.url(metadata.get(0), "pool metadata");
-                    metadataHashSize = StrictCbor.definiteBytes(metadata.get(1)).length;
-                }
-                pool = new PoolParams(vrf, cost, rewardAccount, metadataHashSize);
-            }
-            default -> {
-                // 4: pool retirement
-                poolId = keyHash(StrictCbor.definiteBytes(f.get(1)), "pool id");
-                epoch = StrictCbor.unsigned(f.get(2));
-            }
-        }
+        RawCredential hot = kind == CertKind.AUTH_COMMITTEE_HOT_CERT ? RawCredential.of(cert.hotCredential()) : null;
+        byte[] targetPool = switch (kind) {
+            case STAKE_DELEGATION, STAKE_VOTE_DELEG_CERT, STAKE_REG_DELEG_CERT, STAKE_VOTE_REG_DELEG_CERT ->
+                    cert.poolKeyHash();
+            default -> null;
+        };
+        DRep drep = switch (kind) {
+            case VOTE_DELEG_CERT, STAKE_VOTE_DELEG_CERT, VOTE_REG_DELEG_CERT, STAKE_VOTE_REG_DELEG_CERT ->
+                    DRep.of(cert.drep());
+            default -> null;
+        };
+        BigInteger coin = switch (kind) {
+            case REG_CERT, UNREG_CERT, STAKE_REG_DELEG_CERT, VOTE_REG_DELEG_CERT, STAKE_VOTE_REG_DELEG_CERT,
+                 REG_DREP_CERT, UNREG_DREP_CERT -> cert.coin();
+            default -> null;
+        };
         Delegatee delegatee = targetPool != null || drep != null ? new Delegatee(targetPool, drep) : null;
-        return new RawCertificate(index, (int) tag, credential, poolId, owners, hot, delegatee, coin, epoch, pool);
-    }
-
-    private static byte[] keyHash(byte[] value, String what) {
-        if (value.length != RawCredential.HASH_LENGTH) {
-            throw new TxDecodingException(what + " key hash of " + value.length + " bytes");
-        }
-        return value;
+        boolean registration = kind == CertKind.POOL_REGISTRATION;
+        boolean retirement = kind == CertKind.POOL_RETIREMENT;
+        return new RawCertificate(index, kind.tag(), credential, registration || retirement ? cert.poolKeyHash() : null,
+                registration ? cert.poolOwners() : List.of(), hot, delegatee, coin,
+                retirement ? new BigInteger(Long.toUnsignedString(cert.epoch())) : null,
+                registration ? new PoolParams(cert.vrfKeyHash(), cert.cost(), cert.rewardAccount(),
+                        cert.poolMetadata().map(metadata -> metadata.hash().length).orElse(null)) : null);
     }
 
     @Override

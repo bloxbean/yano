@@ -5,10 +5,17 @@ import com.bloxbean.cardano.client.exception.CborDeserializationException;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScriptEvaluator;
+import com.bloxbean.cardano.client.transaction.spec.script.RequireGuard;
+import com.bloxbean.cardano.client.transaction.spec.script.ScriptAll;
+import com.bloxbean.cardano.client.transaction.spec.script.ScriptAny;
+import com.bloxbean.cardano.client.transaction.spec.script.ScriptAtLeast;
+import com.bloxbean.cardano.client.transaction.util.RawModels;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.math.BigInteger;
+import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.List;
 import java.util.Set;
 
@@ -20,7 +27,9 @@ import java.util.Set;
  * Haskell decodes a script: a Plutus script is a definite-length byte string; a native script decodes as Haskell's
  * {@code TimelockRaw} decoder does ({@code Summands}, Allegra/Scripts.hs:235-245: {@code [0, keyhash]},
  * {@code [1, [scripts]]}, {@code [2, [scripts]]}, {@code [3, n, [scripts]]}, {@code [4, slot]}, {@code [5, slot]}),
- * which CCL's native script decoder implements, with its key hashes definite-length byte strings. The hash is CCL's,
+ * which CCL's native script decoder implements, with its key hashes definite-length byte strings. CCL's decoder also
+ * reads Dijkstra's guard, type 6, in any era, and so does this class, so that sync can still hash a reference script
+ * holding one; {@link HaskellPolicy} refuses it in Conway ({@link #requireConwayTypes()}). The hash is CCL's,
  * from the original bytes; a native script is decoded and evaluated by CCL without recursion, so any nesting depth
  * works on any thread.</p>
  */
@@ -55,15 +64,58 @@ public final class RawScript {
         if (language < NATIVE || language > PLUTUS_V3) {
             throw new TxDecodingException("script language " + language + " is not a Conway language");
         }
-        var view = new com.bloxbean.cardano.client.transaction.raw.RawScript(language, span);
         if (language != NATIVE) {
-            return new RawScript(view, StrictCbor.definiteBytes(span), null);
+            StrictCbor.definiteLength(span);
+        } else {
+            requireDefiniteByteStrings(span);
         }
-        requireDefiniteByteStrings(span);
+        return accepted(new com.bloxbean.cardano.client.transaction.raw.RawScript(language, span));
+    }
+
+    /**
+     * A script {@link HaskellPolicy} has accepted: a Plutus script's bytes, or a native script decoded.
+     *
+     * @param view CCL's view of the script
+     * @throws TxDecodingException when a native script does not decode
+     */
+    static RawScript accepted(com.bloxbean.cardano.client.transaction.raw.RawScript view) {
+        CborSpan span = view.span();
+        if (view.type() != NATIVE) {
+            return new RawScript(view, span.byteString(), null);
+        }
         try {
-            return new RawScript(view, span.bytes(), (NativeScript) view.toScript());
+            return new RawScript(view, span.bytes(), (NativeScript) RawModels.toScript(view));
         } catch (CborDeserializationException | CborRuntimeException e) {
             throw new TxDecodingException("native script: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Conway's {@code TimelockRaw} has the types 0 to 5 (Allegra/Scripts.hs:235-245), at any depth. CCL's decoder also
+     * reads Dijkstra's {@code RequireGuard}, type 6, in any era (its ADR 0004), so {@link HaskellPolicy} refuses a
+     * Conway native script holding one. Without recursion, as scripts can be nested thousands deep. A Plutus script
+     * passes.
+     *
+     * @throws TxDecodingException for a native script holding a guard
+     */
+    void requireConwayTypes() {
+        if (nativeScript == null) {
+            return;
+        }
+        Deque<NativeScript> pending = new ArrayDeque<>();
+        pending.push(nativeScript);
+        while (!pending.isEmpty()) {
+            NativeScript next = pending.pop();
+            if (next instanceof RequireGuard) {
+                throw new TxDecodingException("native script: type 6, a guard, is not a Conway native script");
+            }
+            if (next instanceof ScriptAll all) {
+                all.getScripts().forEach(pending::push);
+            } else if (next instanceof ScriptAny any) {
+                any.getScripts().forEach(pending::push);
+            } else if (next instanceof ScriptAtLeast atLeast) {
+                atLeast.getScripts().forEach(pending::push);
+            }
         }
     }
 
@@ -85,8 +137,8 @@ public final class RawScript {
         return readScript(ref);
     }
 
-    /** Reads {@code [language, script]}. */
-    static RawScript readScript(CborSpan script) {
+    /** Reads {@code script = [language, script]}, the reader of that CDDL rule. */
+    public static RawScript readScript(CborSpan script) {
         List<CborSpan> fields = StrictCbor.array(script, 2, "a script is [language, script]");
         long language = StrictCbor.unsignedLong(fields.get(0));
         if (language > PLUTUS_V3) {

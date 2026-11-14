@@ -10,32 +10,23 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
- * Decoders for the bounded Conway field types that certificates, proposals and votes carry, with the bounds Haskell's
- * decoders enforce at decoder version 9 and later (cardano-ledger {@code f649f975}); anything else is a
+ * Decoders for the bounded Conway field types that {@link HaskellPolicy} checks, with the bounds
+ * Haskell's decoders enforce at decoder version 9 and later (cardano-ledger {@code f649f975}); anything else is a
  * {@link TxDecodingException} ({@code ENGINE.DecodingFailure}).
  *
  * <ul>
  *   <li>{@code Url} and {@code DnsName}: UTF-8 text (each chunk valid, {@code decodeString}) of at most 128 bytes
  *       ({@code textDecCBOR 128}, BaseTypes.hs:678-697).</li>
- *   <li>{@code Anchor}: {@code [url, hash]}, the hash a 32-byte {@code SafeHash} (BaseTypes.hs:996-1004, the
- *       record form below decoder version 12).</li>
- *   <li>{@code ExUnits}: {@code [mem, steps]}, each at most {@code maxBound :: Int64} (Plutus/ExUnits.hs:195-218, the
- *       record form below decoder version 12).</li>
  *   <li>{@code UnitInterval}: tag 30, two integers (bignums tagged 2/3 too), a non-zero denominator, the reduced ratio in [0, 1] with
  *       numerator and denominator in {@code Word64} ({@code decodeRationalWithTag}, Plain.hs:159-167;
  *       {@code boundRational}, BaseTypes.hs:386-402).</li>
- *   <li>{@code StakePoolRelay} (StakePool.hs:406-421): {@code [0, port / null, ipv4 / null, ipv6 / null]},
- *       {@code [1, port / null, dns_name]}, {@code [2, dns_name]}; a port is a {@code Word16}, an IPv4 address 4
- *       bytes and an IPv6 address 16 ({@code binaryGetDecoder} refuses left-over bytes, Decoder.hs:1345-1377).</li>
  * </ul>
  */
 final class BoundedFields {
 
     /** {@code textDecCBOR 128} at decoder version 9 and later. */
     static final int MAX_TEXT_BYTES = 128;
-    static final int ANCHOR_HASH_LENGTH = 32;
     private static final BigInteger WORD64_MAX = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
-    private static final BigInteger INT64_MAX = BigInteger.valueOf(Long.MAX_VALUE);
 
     private BoundedFields() {
     }
@@ -62,44 +53,6 @@ final class BoundedFields {
         if (length > MAX_TEXT_BYTES) {
             throw new TxDecodingException(what + " exceeds " + MAX_TEXT_BYTES + " bytes: " + length);
         }
-    }
-
-    /** Reads an {@code Anchor}. */
-    static void anchor(CborSpan item, String what) {
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, what + " anchor is a two-element array");
-        url(fields.get(0), what + " anchor");
-        byte[] hash = StrictCbor.definiteBytes(fields.get(1));
-        if (hash.length != ANCHOR_HASH_LENGTH) {
-            throw new TxDecodingException(what + " anchor data hash of " + hash.length + " bytes");
-        }
-    }
-
-    /**
-     * Reads {@code ExUnits}.
-     *
-     * @return the memory and the steps
-     */
-    static BigInteger[] exUnits(CborSpan item, String what) {
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, what + " is [mem, steps]");
-        BigInteger[] units = {StrictCbor.unsigned(fields.get(0)), StrictCbor.unsigned(fields.get(1))};
-        for (BigInteger value : units) {
-            if (value.compareTo(INT64_MAX) > 0) {
-                throw new TxDecodingException(what + " value " + value + " exceeds maxBound :: Int64");
-            }
-        }
-        return units;
-    }
-
-    /** Reads {@code anchor / null}. */
-    static void anchorOrNull(CborSpan item, String what) {
-        if (!item.isNull()) {
-            anchor(item, what);
-        }
-    }
-
-    /** Reads a {@code UnitInterval}. */
-    static void unitInterval(CborSpan item, String what) {
-        boundedRational(item, what, true);
     }
 
     /**
@@ -151,51 +104,5 @@ final class BoundedFields {
             return initial == 0xc2 ? magnitude : magnitude.negate().subtract(BigInteger.ONE);
         }
         return StrictCbor.integer(item);
-    }
-
-    /** Reads a {@code StakePoolRelay}. */
-    static void relay(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.array(item);
-        if (fields.isEmpty()) {
-            throw new TxDecodingException("a relay is an empty array");
-        }
-        long tag = StrictCbor.unsignedLong(fields.get(0));
-        int expected = switch ((int) Math.min(tag, 3)) {
-            case 0 -> 4;
-            case 1 -> 3;
-            case 2 -> 2;
-            default -> throw new TxDecodingException("unknown relay tag " + tag);
-        };
-        if (fields.size() != expected) {
-            throw new TxDecodingException("relay tag " + tag + " has " + expected + " elements");
-        }
-        switch ((int) tag) {
-            case 0 -> {
-                portOrNull(fields.get(1));
-                ipOrNull(fields.get(2), 4);
-                ipOrNull(fields.get(3), 16);
-            }
-            case 1 -> {
-                portOrNull(fields.get(1));
-                dnsName(fields.get(2));
-            }
-            default -> dnsName(fields.get(1));
-        }
-    }
-
-    private static void portOrNull(CborSpan item) {
-        if (!item.isNull() && StrictCbor.unsignedLong(item) > 0xFFFF) {
-            throw new TxDecodingException("relay port exceeds Word16");
-        }
-    }
-
-    private static void ipOrNull(CborSpan item, int bytes) {
-        if (item.isNull()) {
-            return;
-        }
-        int length = StrictCbor.definiteBytes(item).length;
-        if (length != bytes) {
-            throw new TxDecodingException("relay IPv" + (bytes == 4 ? 4 : 6) + " address of " + length + " bytes");
-        }
     }
 }

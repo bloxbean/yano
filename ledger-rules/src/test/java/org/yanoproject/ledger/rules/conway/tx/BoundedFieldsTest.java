@@ -75,19 +75,19 @@ class BoundedFieldsTest {
         decodes(resignation(anchor(text(128), 32)));
         decodes(resignation("f6"));
         fails(resignation(anchor(text(129), 32)), "exceeds 128 bytes");
-        fails(resignation(anchor(text(10), 31)), "anchor data hash of 31 bytes");
+        fails(resignation(anchor(text(10), 31)), "hash of 31 bytes");
         fails(resignation(anchor("62c328", 32)), "not valid UTF-8");
-        fails(resignation("83" + text(4) + "5820" + "ab".repeat(32) + "00"), "two-element array");
+        fails(resignation("83" + text(4) + "5820" + "ab".repeat(32) + "00"), "unknown anchor item");
         // DRep registration and update carry anchors too.
         fails(tx("04", "81" + "8410" + CRED + "1a1dcd6500" + anchor(text(129), 32)), "exceeds 128 bytes");
-        fails(tx("04", "81" + "8312" + CRED + anchor(text(10), 33)), "anchor data hash of 33 bytes");
+        fails(tx("04", "81" + "8312" + CRED + anchor(text(10), 33)), "hash of 33 bytes");
     }
 
     @Test
     void poolMetadataUrlsRelaysAndMarginsHaveHaskellsBounds() {
         decodes(pool(MARGIN, "80", "f6"));
         decodes(pool(MARGIN, "80", "82" + text(128) + "5820" + "00".repeat(32)));
-        fails(pool(MARGIN, "80", "82" + text(129) + "5820" + "00".repeat(32)), "pool metadata url exceeds 128");
+        fails(pool(MARGIN, "80", "82" + text(129) + "5820" + "00".repeat(32)), "url exceeds 128");
 
         // relays: [0, port, ipv4, ipv6], [1, port, dns], [2, dns]
         decodes(pool(MARGIN, "83" + "8400f6f6f6" + "8301190bb8" + text(128) + "8202" + text(5), "f6"));
@@ -96,8 +96,8 @@ class BoundedFieldsTest {
         fails(pool(MARGIN, "81" + "8400f643" + "7f0000" + "f6", "f6"), "IPv4 address of 3 bytes");
         fails(pool(MARGIN, "81" + "8400f6f64f" + "00".repeat(15), "f6"), "IPv6 address of 15 bytes");
         fails(pool(MARGIN, "81" + "8202" + text(129), "f6"), "DNS name exceeds 128");
-        fails(pool(MARGIN, "81" + "8103", "f6"), "unknown relay tag 3");
-        fails(pool(MARGIN, "81" + "8302" + text(3) + "00", "f6"), "relay tag 2 has 2 elements");
+        fails(pool(MARGIN, "81" + "8103", "f6"), "unknown relay key 03");
+        fails(pool(MARGIN, "81" + "8302" + text(3) + "00", "f6"), "unknown member 2 item");
 
         // margin: a tag-30 rational in [0, 1] with a non-zero denominator (n % d reduces and normalises the sign)
         decodes(pool("d81e820101", "80", "f6"));
@@ -113,18 +113,18 @@ class BoundedFieldsTest {
         String account = "581de0" + "44".repeat(28);
         String info = "841a000f4240" + account + "8106";
         decodes(tx("14", "81" + info + anchor(text(128), 32)));
-        fails(tx("14", "81" + info + anchor(text(129), 32)), "proposal anchor url exceeds 128");
-        fails(tx("14", "81" + info + anchor(text(8), 31)), "proposal anchor data hash");
+        fails(tx("14", "81" + info + anchor(text(129), 32)), "url exceeds 128");
+        fails(tx("14", "81" + info + anchor(text(8), 31)), "hash of 31 bytes");
         // NewConstitution [5, prev, [anchor, script_hash / null]]
         String constitution = "841a000f4240" + account + "8305f6" + "82" + anchor(text(8), 31) + "f6";
-        fails(tx("14", "81" + constitution + anchor(text(8), 32)), "constitution anchor data hash");
+        fails(tx("14", "81" + constitution + anchor(text(8), 32)), "hash of 31 bytes");
 
         String voter = "8200581c" + "77".repeat(28);
         String actionId = "825820" + "00".repeat(32) + "00";
         decodes(tx("13", "a1" + voter + "a1" + actionId + "8201f6"));
         decodes(tx("13", "a1" + voter + "a1" + actionId + "8201" + anchor(text(128), 32)));
-        fails(tx("13", "a1" + voter + "a1" + actionId + "8201" + anchor(text(129), 32)), "vote anchor url exceeds");
-        fails(tx("13", "a1" + voter + "a1" + actionId + "8301f600"), "voting procedure has 2 elements");
+        fails(tx("13", "a1" + voter + "a1" + actionId + "8201" + anchor(text(129), 32)), "url exceeds 128");
+        fails(tx("13", "a1" + voter + "a1" + actionId + "8301f600"), "unknown voting_procedure item");
         assertThat(RawTransaction.parse(tx("13", "a1" + voter + "a1" + actionId + "8200f6"), null).voters())
                 .hasSize(1);
     }

@@ -1,0 +1,78 @@
+# ADR 0003 I7's baseline (CborRejectionGate), on cardano-cbor-dataset 4fd977b2 and Yano at ADR 0003 M7a: 43365 of
+# 43434 reported; Yano's reader rejects all 31842 invalid samples.
+# The misses: 64 auxiliary_data and auxiliary_data_array samples are indefinite Allegra [metadata, scripts] arrays.
+# The node decodes them with RecD (Alonzo/TxAuxData.hs, definite only below version 12); the dataset labels them valid
+# with the testlib decoder (decodeRecordNamed, either length). The other is a Byron address whose payload array has a
+# wide head: the dataset expects Haskell's Addr encoder, which writes it anew, where an output keeps its bytes.
+# The 4 rationals new at 4fd977b2 have bignum (tag 2) or negative parts that reduce into range. The node reads both
+# parts with decodeInteger and reduces n % d (Binary/Decoding/Decoder.hs); Yano's reader accepts them, but the
+# re-encoding through CCL's model rejects a bignum part under tag 30 and writes -1/-2 unreduced.
+report-miss address/manual-valid/byron-payload-array-with-a-wide-head.input.cbor
+report-miss auxiliary_data/valid/00002-0c539dfdbaef007a.input.cbor
+report-miss auxiliary_data/valid/00005-a457defa17a4ecca.input.cbor
+report-miss auxiliary_data/valid/00017-404626cf68958993.input.cbor
+report-miss auxiliary_data/valid/00023-00ab0922d19c644a.input.cbor
+report-miss auxiliary_data/valid/00029-6205e9711d89789d.input.cbor
+report-miss auxiliary_data/valid/00041-253deb02a918fb73.input.cbor
+report-miss auxiliary_data/valid/00042-d82311b80642032b.input.cbor
+report-miss auxiliary_data/valid/00048-756519256dadb3b0.input.cbor
+report-miss auxiliary_data/valid/00050-bb9832c1fcffbfb6.input.cbor
+report-miss auxiliary_data/valid/00062-908eed8f850ccf14.input.cbor
+report-miss auxiliary_data/valid/00067-43ded06814c5ed57.input.cbor
+report-miss auxiliary_data/valid/00070-51e81a87bd5c2281.input.cbor
+report-miss auxiliary_data/valid/00074-6316419958642947.input.cbor
+report-miss auxiliary_data/valid/00097-520777a711fb34f9.input.cbor
+report-miss auxiliary_data_array/valid/00001-4e94a6ac3baa787d.input.cbor
+report-miss auxiliary_data_array/valid/00004-4cfd00bf702aceba.input.cbor
+report-miss auxiliary_data_array/valid/00008-24454bca4c097bb3.input.cbor
+report-miss auxiliary_data_array/valid/00010-ce59972c7b3bb527.input.cbor
+report-miss auxiliary_data_array/valid/00013-c41b82e16cfb07b0.input.cbor
+report-miss auxiliary_data_array/valid/00016-d1711bf6df2942cd.input.cbor
+report-miss auxiliary_data_array/valid/00019-8ab367809646a4a6.input.cbor
+report-miss auxiliary_data_array/valid/00020-d016a9b715495c34.input.cbor
+report-miss auxiliary_data_array/valid/00021-b5f11cb536dd30eb.input.cbor
+report-miss auxiliary_data_array/valid/00022-8ef0a1416c44d42b.input.cbor
+report-miss auxiliary_data_array/valid/00023-c59d40fde023980f.input.cbor
+report-miss auxiliary_data_array/valid/00024-0052726b4c887560.input.cbor
+report-miss auxiliary_data_array/valid/00027-da96eccac37007ca.input.cbor
+report-miss auxiliary_data_array/valid/00029-7a3402d81c0081c2.input.cbor
+report-miss auxiliary_data_array/valid/00031-657364c729dc594a.input.cbor
+report-miss auxiliary_data_array/valid/00032-a9d2a7e7ccb1968f.input.cbor
+report-miss auxiliary_data_array/valid/00033-38899a4d8531c99f.input.cbor
+report-miss auxiliary_data_array/valid/00034-27cb9b6b665ebffd.input.cbor
+report-miss auxiliary_data_array/valid/00036-11fe66298160b500.input.cbor
+report-miss auxiliary_data_array/valid/00040-2a95a287c5f79ddf.input.cbor
+report-miss auxiliary_data_array/valid/00042-3d7723d672690a3a.input.cbor
+report-miss auxiliary_data_array/valid/00043-ce9e38ef0b3debec.input.cbor
+report-miss auxiliary_data_array/valid/00045-a5a3a98909f92568.input.cbor
+report-miss auxiliary_data_array/valid/00048-038390e097402884.input.cbor
+report-miss auxiliary_data_array/valid/00049-2b94d982d0f160fd.input.cbor
+report-miss auxiliary_data_array/valid/00052-b4d4f4d7155c2d3d.input.cbor
+report-miss auxiliary_data_array/valid/00055-6054f74ba9376d22.input.cbor
+report-miss auxiliary_data_array/valid/00056-90ad1e3fa488d8a8.input.cbor
+report-miss auxiliary_data_array/valid/00059-c41decf05c700c66.input.cbor
+report-miss auxiliary_data_array/valid/00060-ea10567013c2b404.input.cbor
+report-miss auxiliary_data_array/valid/00061-ad16a76fb8341730.input.cbor
+report-miss auxiliary_data_array/valid/00062-c60e54f2f8c61123.input.cbor
+report-miss auxiliary_data_array/valid/00064-c77b0331ece1bc6d.input.cbor
+report-miss auxiliary_data_array/valid/00065-89bfd138f741ebb3.input.cbor
+report-miss auxiliary_data_array/valid/00069-26f73fed5f8e1504.input.cbor
+report-miss auxiliary_data_array/valid/00070-db42aa27557acbf8.input.cbor
+report-miss auxiliary_data_array/valid/00072-c55c529b5c9441fa.input.cbor
+report-miss auxiliary_data_array/valid/00073-51085f1c9261b9b8.input.cbor
+report-miss auxiliary_data_array/valid/00074-9d4a9e7ab556860d.input.cbor
+report-miss auxiliary_data_array/valid/00076-06f0c366cddcc5fb.input.cbor
+report-miss auxiliary_data_array/valid/00078-fcd89289db2ca868.input.cbor
+report-miss auxiliary_data_array/valid/00080-4d1e36ec298bcf49.input.cbor
+report-miss auxiliary_data_array/valid/00082-6245fdf4da384523.input.cbor
+report-miss auxiliary_data_array/valid/00090-087e0c60643eaefb.input.cbor
+report-miss auxiliary_data_array/valid/00092-8f90381be3568f33.input.cbor
+report-miss auxiliary_data_array/valid/00093-835d7a3db18e4fd2.input.cbor
+report-miss auxiliary_data_array/valid/00094-3efb96c905f3a401.input.cbor
+report-miss auxiliary_data_array/valid/00098-b3f6c784302e7bb6.input.cbor
+report-miss auxiliary_data_array/valid/00099-9be254d305a98d6b.input.cbor
+report-miss auxiliary_data_array/valid/00100-695b641a1427ada3.input.cbor
+report-miss nonnegative_interval/manual-valid/bignum-numerator-reduces-in-range.input.cbor
+report-miss nonnegative_interval/manual-valid/bignum-ratio-reduces-in-range.input.cbor
+report-miss unit_interval/manual-valid/bignum-ratio-reduces-in-range.input.cbor
+report-miss unit_interval/manual-valid/negative-ratio-reduces-in-range.input.cbor

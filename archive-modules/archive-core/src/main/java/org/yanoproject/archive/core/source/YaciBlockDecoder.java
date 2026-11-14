@@ -41,9 +41,8 @@ public final class YaciBlockDecoder implements CanonicalBlockDecoder<Block> {
             Block block = StoredBlockUtil.isStoredByronBlock(era, body)
                     ? decodeByron(body, blockNumber, reference) : BlockSerializer.INSTANCE.deserialize(body);
             if (block.getEra() == null) {
-                block = new Block(storedEra.apply(blockNumber), block.getHeader(), block.getTransactionBodies(),
-                        block.getTransactionWitness(), block.getAuxiliaryDataMap(),
-                        block.getInvalidTransactions(), block.getCbor());
+                // A copy that keeps every field, the Leios and Peras ones of an unknown-index Dijkstra block included
+                block = block.toBuilder().era(storedEra.apply(blockNumber)).build();
             }
             var header = block.getHeader().getHeaderBody();
             byte[] parent = header.getPrevHash() == null || header.getPrevHash().isBlank()

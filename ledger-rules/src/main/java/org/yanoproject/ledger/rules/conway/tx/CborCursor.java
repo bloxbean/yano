@@ -6,7 +6,7 @@ import java.util.Arrays;
 /**
  * A forward cursor over CBOR heads, for the validators whose Haskell rules depend on the encoding itself and that must
  * run in linear time over input of any nesting depth: Plutus {@code Data} ({@link PlutusData}: byte-string chunk sizes,
- * the one-byte bignum heads), metadata ({@link RawAuxData}: text chunks) and the byte strings of a native script
+ * the one-byte bignum heads), metadata ({@link Metadata}: text chunks) and the byte strings of a native script
  * ({@link RawScript}). {@code CborSpan} cannot serve them: it exposes neither heads nor chunks, and enumerating a
  * span's children walks each child again, which is quadratic in the depth. Nesting is tracked on an explicit stack
  * ({@link Containers}), never by recursion. Malformed input is a {@link TxDecodingException}.

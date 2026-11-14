@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,8 @@ class CborDecodingDiversityReportTest {
         Map<String, int[]> counts = new TreeMap<>();
         Map<String, int[]> decoders = new TreeMap<>();
         ObjectNode results = NodeDiversity.JSON.createObjectNode();
+        List<String> outcomes = new ArrayList<>();
+        List<CborRejectionGate.Sample> gated = new ArrayList<>();
         for (Path sample : samples(conway)) {
             Path relative = conway.relativize(sample);
             String ruleName = relative.getName(0).toString();
@@ -50,9 +53,12 @@ class CborDecodingDiversityReportTest {
             Optional<String> failure = check(rule, valid, sample);
             tallyDecoders(decoders.computeIfAbsent(ruleName, k -> new int[DECODER_COLUMNS]), rule, yaci.get(ruleName),
                     valid, read(sample));
+            outcomes.add(relative.toString().replace('\\', '/') + " " + outcomes(rule, yaci.get(ruleName), read(sample)));
             int offset = valid ? 0 : 2;
             c[offset + 1]++;
             String name = relative.toString().replace('\\', '/');
+            boolean strictRejected = Boolean.FALSE.equals(accepts(rule.strict(), read(sample)));
+            gated.add(new CborRejectionGate.Sample(name, valid, strictRejected, failure.isEmpty()));
             if (failure.isEmpty()) {
                 c[offset]++;
                 results.put(name, true);
@@ -61,13 +67,17 @@ class CborDecodingDiversityReportTest {
             }
         }
         assertThat(counts).isNotEmpty();
+        String outcomesFile = System.getenv("CBOR_DECODER_OUTCOMES");
+        if (outcomesFile != null) {
+            Files.write(Path.of(outcomesFile), outcomes);
+        }
 
         ObjectNode report = NodeDiversity.JSON.createObjectNode();
         report.put("version", "2");
         report.put("generated_at", System.currentTimeMillis());
         report.put("protocol_version", PROTOCOL_VERSION);
-        report.put("dataset_commit", commit("node.diversity.cborDatasetCommit"));
-        report.put("implementation_commit", commit("node.diversity.commit"));
+        report.put("dataset_commit", NodeDiversity.commit("node.diversity.cborDatasetCommit"));
+        report.put("implementation_commit", NodeDiversity.commit("node.diversity.commit"));
         report.set("results", results);
         NodeDiversity.write(SCENARIO, report);
 
@@ -78,6 +88,7 @@ class CborDecodingDiversityReportTest {
         });
         System.out.printf("cbor-decoding %-28s %s%n", "TOTAL", summary(totals));
         printDecoders(decoders);
+        assertThat(CborRejectionGate.violations(CborRejectionGate.baseline(), gated)).isEmpty();
     }
 
     /** valid passed, valid total, invalid rejected, invalid total. */
@@ -86,12 +97,6 @@ class CborDecodingDiversityReportTest {
     /** @return whether a sample in this directory must decode; the dataset's other directories must be rejected */
     static boolean isValid(String category) {
         return category.equals("valid") || category.equals("manual-valid");
-    }
-
-    private static String commit(String property) {
-        String commit = System.getProperty(property, "");
-        assertThat(commit).as(property).matches("[0-9a-f]{40}");
-        return commit;
     }
 
     /** valid accepted, valid total, invalid rejected, invalid total, for the strict reader, the library and yaci. */
@@ -104,6 +109,16 @@ class CborDecodingDiversityReportTest {
         if (yaci != null) {
             tally(t, 8, valid, accepts(yaci, input));
         }
+    }
+
+    /** ADR 0003 I7: each decoder's outcome on one sample, A accepted, R rejected, C crashed, - no decoder. */
+    private static String outcomes(CborRule rule, CborRule.Decoder yaci, byte[] input) {
+        return outcome(accepts(rule.strict(), input)) + " " + outcome(accepts(rule.library(), input)) + " "
+                + (yaci == null ? "-" : outcome(accepts(yaci, input)));
+    }
+
+    private static String outcome(Boolean accepted) {
+        return accepted == null ? "C" : accepted ? "A" : "R";
     }
 
     /** {@code accepted} is null for a crash, which meets no expectation. */
@@ -129,7 +144,7 @@ class CborDecodingDiversityReportTest {
 
     private static void printDecoders(Map<String, int[]> decoders) {
         int[] total = new int[DECODER_COLUMNS];
-        System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts them together):");
+        System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts Yano's alone):");
         System.out.printf("cbor-decoding %-28s %-36s %-56s %s%n", "rule", "Yano strict: valid ok / invalid ok",
                 "library (CCL; yaci for headers): valid ok / invalid ok", "yaci (sync): valid ok / invalid ok");
         decoders.forEach((rule, t) -> {
@@ -152,9 +167,8 @@ class CborDecodingDiversityReportTest {
      */
     static Optional<String> check(CborRule rule, boolean valid, Path sample) {
         byte[] input = read(sample);
-        CborRule.Decoded decoded;
         try {
-            decoded = rule.decode(input);
+            rule.read(input);
         } catch (Error e) {
             return Optional.of("decode: crash: " + e);
         } catch (Exception e) {
@@ -166,7 +180,7 @@ class CborDecodingDiversityReportTest {
         try {
             byte[] expected = read(sample.resolveSibling(sample.getFileName().toString()
                     .replace(".input.cbor", ".expected.cbor")));
-            byte[] encoded = rule.encode(decoded);
+            byte[] encoded = rule.encode(input);
             boolean same = rule.exact() ? Arrays.equals(encoded, expected)
                     : Arrays.equals(CborNormalizer.normalize(encoded), CborNormalizer.normalize(expected));
             return same ? Optional.empty() : Optional.of("encode: re-encoding differs from the reference");

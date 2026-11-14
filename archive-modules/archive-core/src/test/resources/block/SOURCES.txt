@@ -1,0 +1,7 @@
+musashi-dijkstra8.txt (block): one CBOR item in hex, copied unchanged from Yaci's
+core/src/test/resources/block/dijkstra/musashi-dijkstra8.txt, itself from cardano-client-lib
+transaction-spec/src/test/resources/cbor/dijkstra-vectors.json.
+  source: Musashi (magic 164, ouroboros-leios prototype-2026w36), txpipe/pallas 4b76c2e8 (Apache-2.0),
+  test_data/dijkstra-fixtures.md (dijkstra8.block: the first Leios certificate, with an announcement)
+  expected: {"blockHash": "33a48eee693522320891dd4d1da8ee33c288c854eb25337802dbc4c912571d07", "blockNumber": 17403,
+  "slot": 371723, "txCount": 0, "headerItems": 12, "leiosCertificate": true}

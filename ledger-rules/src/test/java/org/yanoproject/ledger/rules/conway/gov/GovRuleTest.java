@@ -109,7 +109,7 @@ class GovRuleTest {
         return new Withdrawal(MutationWorld.rewardAccount(key, network), amount);
     }
 
-    private static UpdateCommittee updateCommittee(Set<Credential> remove, Map<Credential, Integer> add) {
+    private static UpdateCommittee updateCommittee(Set<Credential> remove, Map<Credential, Long> add) {
         return new UpdateCommittee(null, new LinkedHashSet<>(remove), new LinkedHashMap<>(add),
                 new UnitInterval(BigInteger.TWO, BigInteger.valueOf(3)));
     }
@@ -135,7 +135,7 @@ class GovRuleTest {
                 ada(10))))), 10)).containsExactly("Valid");
         assertThat(run(proposing(proposal(new NoConfidence(null))), 10)).containsExactly("Valid");
         assertThat(run(proposing(proposal(updateCommittee(Set.of(MutationWorld.credential(TestKey.DEV_BB)),
-                Map.of(MutationWorld.credential(TestKey.DEV_42), 50)))), 10)).containsExactly("Valid");
+                Map.of(MutationWorld.credential(TestKey.DEV_42), 50L)))), 10)).containsExactly("Valid");
         assertThat(run(proposing(proposal(new NewConstitution(null, Constitution.builder()
                 .anchor(new Anchor("https://example.com/constitution.txt", new byte[32])).build()))), 10))
                 .containsExactly("Valid");
@@ -353,7 +353,7 @@ class GovRuleTest {
     @Covers("GOV.ConflictingCommitteeUpdate")
     void aMemberCannotBeAddedAndRemoved() {
         Credential bb = MutationWorld.credential(TestKey.DEV_BB);
-        assertThat(run(proposing(proposal(updateCommittee(Set.of(bb), Map.of(bb, 50)))), 10))
+        assertThat(run(proposing(proposal(updateCommittee(Set.of(bb), Map.of(bb, 50L)))), 10))
                 .containsExactly("GOV.ConflictingCommitteeUpdate");
     }
 
@@ -362,12 +362,12 @@ class GovRuleTest {
     void newMembersExpireAfterTheCurrentEpoch() {
         Credential cold = MutationWorld.credential(TestKey.DEV_42);
         // The world is at epoch 0: an expiry of 0 is already reached.
-        assertThat(run(proposing(proposal(updateCommittee(Set.of(), Map.of(cold, 0)))), 10))
+        assertThat(run(proposing(proposal(updateCommittee(Set.of(), Map.of(cold, 0L)))), 10))
                 .containsExactly("GOV.ExpirationEpochTooSmall");
-        assertThat(run(proposing(proposal(updateCommittee(Set.of(), Map.of(cold, 1)))), 10)).containsExactly("Valid");
+        assertThat(run(proposing(proposal(updateCommittee(Set.of(), Map.of(cold, 1L)))), 10)).containsExactly("Valid");
         // Both committee checks, in Haskell's order (two GOV predicates: execution order in LEDGER's list).
         Credential bb = MutationWorld.credential(TestKey.DEV_BB);
-        assertThat(run(proposing(proposal(updateCommittee(Set.of(bb), Map.of(bb, 0)))), 10))
+        assertThat(run(proposing(proposal(updateCommittee(Set.of(bb), Map.of(bb, 0L)))), 10))
                 .containsExactly("GOV.ConflictingCommitteeUpdate", "GOV.ExpirationEpochTooSmall");
     }
 
@@ -604,7 +604,7 @@ class GovRuleTest {
                 treasuryWithdrawals(withdrawal(TestKey.DEV_77, MutationWorld.NETWORK, ada(10))),
                 new NoConfidence(null),
                 updateCommittee(Set.of(MutationWorld.credential(TestKey.DEV_BB)),
-                        Map.of(MutationWorld.credential(TestKey.DEV_42), 50)),
+                        Map.of(MutationWorld.credential(TestKey.DEV_42), 50L)),
                 new NewConstitution(null, Constitution.builder()
                         .anchor(new Anchor("https://example.com/constitution.txt", new byte[32])).build()));
         for (GovAction action : disallowed) {
@@ -726,11 +726,11 @@ class GovRuleTest {
             procedure.getDataItems().set(0, new UnsignedInteger(3));
         });
         assertThatThrownBy(() -> RawTransaction.parse(badVote, built.tx())).isInstanceOf(TxDecodingException.class)
-                .hasMessageContaining("unknown vote 3");
+                .hasMessageContaining("unsigned integer 3 exceeds 2");
         byte[] noVotes = editVotes(built.cbor(), byVoter -> byVoter.put(byVoter.getKeys().iterator().next(),
                 new co.nstant.in.cbor.model.Map()));
         assertThatThrownBy(() -> RawTransaction.parse(noVotes, built.tx())).isInstanceOf(TxDecodingException.class)
-                .hasMessageContaining("didn't have any");
+                .hasMessageContaining("must be non-empty");
         assertThat(RawTransaction.parse(built.cbor(), built.tx()).votes().values()).singleElement()
                 .isEqualTo(Map.of(MutationWorld.INFO_ACTION, 1));
     }

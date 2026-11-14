@@ -10,7 +10,8 @@ import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
  * (Amaru's {@code validation-rules} checker, {@code Command/ValidatePhaseOne/Run.hs}, which produces cardano-node's
  * report): {@code "pass"} when accepted; the fixture's predicate when it is among the failures, in any position
  * (Haskell's STS order puts {@code UTXOW} before {@code CERTS}); otherwise the first failure under its corpus name, or
- * its bare Haskell constructor when no corpus name maps to it.
+ * its bare Haskell constructor when no corpus name maps to it. A corpus name sharing {@code UTXOS.CollectErrors} also
+ * needs its {@code CollectError} in the failure's detail ({@link AmaruCorpusNames#detailMatches}).
  */
 final class LedgerRulesResult {
 
@@ -25,7 +26,7 @@ final class LedgerRulesResult {
         if (observation.valid()) {
             return PASS;
         }
-        if (result.constructorFound()) {
+        if (expectedFound(result)) {
             return switch (result.testCase().expected()) {
                 case Expected.Predicate p -> p.corpusName();
                 case Expected.DecodingFailure d -> DECODING_FAILURE;
@@ -36,6 +37,16 @@ final class LedgerRulesResult {
         if (DECODING_FAILURE.equals(first.constructor())) {
             return DECODING_FAILURE;
         }
-        return AmaruCorpusNames.corpusName(first.qualifiedName()).orElse(first.constructor());
+        return AmaruCorpusNames.corpusName(first.qualifiedName(), first.raw()).orElse(first.constructor());
+    }
+
+    /** {@link CaseResult#constructorFound()}, with the detail a corpus name sharing {@code CollectErrors} needs. */
+    static boolean expectedFound(CaseResult result) {
+        if (!(result.testCase().expected() instanceof Expected.Predicate p)) {
+            return result.constructorFound();
+        }
+        return result.observation().failures().stream()
+                .anyMatch(f -> result.testCase().acceptedFirst().contains(f.qualifiedName())
+                        && AmaruCorpusNames.detailMatches(p.corpusName(), f.raw()));
     }
 }

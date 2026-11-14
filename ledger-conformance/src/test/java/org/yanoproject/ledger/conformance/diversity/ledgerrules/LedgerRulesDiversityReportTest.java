@@ -32,12 +32,13 @@ class LedgerRulesDiversityReportTest {
         List<CaseResult> results = ConformanceRunner.run(new JavaViewEngine(), cases);
 
         ObjectNode report = NodeDiversity.report(SCENARIO);
+        report.put("dataset_commit", NodeDiversity.commit("node.diversity.ledgerRulesDatasetCommit"));
         ArrayNode entries = report.putArray("scenarios");
         int matched = 0;
         for (CaseResult result : results) {
             String value = LedgerRulesResult.of(result);
             entries.addObject().put("id", result.testCase().id().substring(0, 5)).put("result", value);
-            if (result.constructorFound()) {
+            if (LedgerRulesResult.expectedFound(result)) {
                 matched++;
             }
         }

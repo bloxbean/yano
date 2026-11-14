@@ -16,7 +16,7 @@ cardano-node, Amaru and Dingo are listed today.
 
 | Scenario | Kind | Corpus | Report entry |
 |---|---|---|---|
-| `ledger-rules` | functional | 290 transaction fixtures in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
+| `ledger-rules` | functional | 368 transaction fixtures (from corpus `9dc68a75`) in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
 | `uplc-conformance` | functional | 1,064 UPLC vectors (`uplc-conformance.tar.zst`), protocol versions 10 and 11, cost models included | `{id, title, group, plutus_version, protocol_version, evaluation, budget}` |
 | `uplc-turbo` | performance | 3,997 Flat-encoded mainnet scripts (`turbo.tar.zst`), by epoch | per script: `cpu_us`, `mem_bytes`, `budget_cpu`, `budget_mem`, plus the machine |
 | `cbor-decoding` | functional | `r2rationality/cardano-cbor-dataset`, `dataset/conway`: 97 rules, 10,914 valid and 31,761 invalid samples | format version 2: the outcome of every sample, and the dataset and node commits |
@@ -81,7 +81,8 @@ Gradle task `:ledger-conformance:nodeDiversityReports` follows the existing `con
   corpora.
 
 The corpus revisions are pinned in `ledger-conformance/node-diversity/corpora.env`: git commits for the two
-repositories and SHA-256s for the two tarballs. `ledger-conformance/node-diversity/fetch-corpora.sh <dir>` fetches and
+repositories and SHA-256s for the two tarballs, plus the Amaru commit of the ledger-rules fixtures and SHA-256s of the
+three files taken from it (section 3). `ledger-conformance/node-diversity/fetch-corpora.sh <dir>` fetches and
 verifies them. Each report records the corpus it ran on where the schema allows (`corpus` for CBOR).
 
 ### 3. ledger-rules: the default engine, reported the way the Haskell reference reports
@@ -106,10 +107,24 @@ verifies them. Each report records the corpus it ran on where the schema allows 
   `StakeKeyNotRegistered`, and from corpus `e02a9e1c` `IncorrectDepositDRep`, Haskell's GOVCERT
   `ConwayDRepIncorrectDeposit`). The loader also accepts pragma's layout, where shared documents sit beside
   `scenarios/` rather than under `common/`.
-- **Expected score:** 289/290 at corpus `e02a9e1c` (283/284 at `9d14fd8c`). Fixture 00280 expects `OutputTooBigUTxO` for
-  a Byron address with oversized attributes. In Haskell that transaction fails only `OutputBootAddrAttrsTooBig`:
-  `validateOutputTooBigUTxO` measures the serialized *value* (`Alonzo/Rules/Utxo.hs`), and Babbage/Conway run both
-  checks. Yano agrees with Haskell. The fixture is to be raised upstream rather than worked around.
+- **Corpus `9dc68a75` (2026-11-14).** 368 fixtures: 78 new ids, 12 renumbered to Amaru's numbering (results unchanged),
+  one removed. The table gains 19 names. Seven of them (`ByronTxOutInContext`, `CurrentTreasuryFieldNotSupported`,
+  `InlineDatumsNotSupported`, `MissingCostModel`, `ProposalProceduresFieldNotSupported`,
+  `TreasuryDonationFieldNotSupported`, `VotingProceduresFieldNotSupported`), with the existing `OutsideForecast`, all
+  stand for Haskell's `UTXOS.CollectErrors`, and are told apart by the `CollectError` in the failure, as Amaru's checker does
+  (`Run.hs:495-504`). `IncorrectDepositDRep` also covers `ConwayDRepIncorrectRefund` (`Run.hs:549-550`). The report
+  carries `dataset_commit`, the Amaru commit the fixtures come from (`NDC_LEDGER_RULES_DATASET_COMMIT`), without which the
+  site marks it outdated. 32 fixtures name three protocol-parameter files the pragma repository lacks;
+  `fetch-corpora.sh` adds them from Amaru at that commit, checked by sha256, and fails once pragma has them, so that the
+  workaround is removed. Score: 368/368.
+- **Expected score:** 368/368 at corpus `9dc68a75`; earlier, 290/290 at `e02a9e1c` (284/284 at `9d14fd8c`). Fixture 00280 expects `OutputTooBigUTxO` for
+  a Byron address with oversized attributes. Yano reports `OutputBootAddrAttrsTooBig`, as current Haskell does: the
+  value is 5 bytes against `max_value_size` 5,000, so `validateOutputTooBigUTxO` (`Alonzo/Rules/Utxo.hs`) cannot fire.
+  Haskell before cardano-ledger `c0f8975c0c` (2026-09-07, `cardano-ledger-conway` 1.24.0.0) renamed that failure to
+  `OutputTooBigUTxO` on its way into Conway (`shelleyToAllegraUtxoPredFailure`), and the corpus's checker is built
+  against `cardano-ledger-conway` 1.22.1.0. A temporary alias in `AmaruCorpusNames` therefore lets
+  `OutputBootAddrAttrsTooBig` match the fixture's name. Yano's rule is unchanged. The alias goes once the fixture
+  names `OutputBootAddrAttrsTooBig` upstream.
 
 ### 4. uplc-conformance: julc, as phase 2 runs it
 
@@ -262,14 +277,16 @@ fixtures pass) and, with the Flat-first evaluation order (§4), uplc-conformance
 cbor-decoding are unchanged, for 98.92% overall under the site's scoring rules. With julc 0.1.0-pre20 (#261 and #262):
 uplc-conformance 1064/1064 and uplc-turbo 3986/3997, every other result identical, for 99.06%.
 
-Findings, none of them masked in the harness:
+Findings, none of them masked in the harness except the temporary 00280 alias (item 1):
 
 1. **ledger-rules fixture 00280 (upstream).** It expects `OutputTooBigUTxO` for an output to a Byron address with
    oversized attributes. Haskell reports only `OutputBootAddrAttrsTooBig`: `validateOutputTooBigUTxO` measures the
    value. That is what Yano reports, and the scenario schema has no such predicate. The fixture's two outputs carry
    plain lovelace and `max_value_size` is 5,000, so `OutputTooBigUTxO` cannot fire, yet pragma's cardano-node and
-   Amaru reports both give `OutputTooBigUTxO`. Yano's result is not mapped to match them; the question goes to the
-   corpus maintainers.
+   Amaru reports both give `OutputTooBigUTxO`. The cause is a Haskell naming bug fixed in cardano-ledger
+   `c0f8975c0c` (2026-09-07), which the corpus's checker (`cardano-ledger-conway` 1.22.1.0) predates. A temporary
+   alias matches Yano's `OutputBootAddrAttrsTooBig` to the fixture's name (section 3); the fixture goes to the
+   corpus maintainers, and the alias is removed once it is updated.
 2. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
    Haskell rejects them (plutus `conValue` requires canonical form, plutus #7816): bloxbean/julc#260, fixed by
    bloxbean/julc#262 (julc 0.1.0-pre20). Text-only: a `value` constant has no Flat form, and chain data is not affected.

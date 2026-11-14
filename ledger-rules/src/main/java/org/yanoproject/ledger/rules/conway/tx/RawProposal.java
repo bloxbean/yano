@@ -1,6 +1,12 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.spec.UnitInterval;
+import com.bloxbean.cardano.client.transaction.raw.RawGovAction;
+import com.bloxbean.cardano.client.transaction.raw.RawGovActionId;
+import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
+import com.bloxbean.cardano.client.transaction.raw.RawProtocolVersion;
+import com.bloxbean.cardano.client.transaction.raw.RawWithdrawal;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.view.model.GovActionId;
@@ -33,17 +39,10 @@ import java.util.TreeSet;
  *            / [6]                                                                     ; info
  * </pre>
  *
- * <p>Decoded as Haskell's {@code DecCBOR (ProposalProcedure era)} and {@code DecCBOR (GovAction era)} at decoder
- * versions 9–11 (Procedures.hs:522-535, 875-941); anything else is a {@link TxDecodingException}: the deposit a
- * {@code Word64} coin, the return account an account address (header {@code & 0xEE == 0xE0}, 29 bytes,
- * {@code decodeAccountAddress}), a {@code GovActionId} {@code [txid (32 bytes), Word16]}, the parameter update per
- * {@link RawParamUpdate}, the protocol version {@code [Word32 major ≤ 12, Word32 minor]} ({@code decodeProtVer}:
- * the major at most {@code succVersion (ProtVerHigh ConwayEra)} = 12, BaseTypes.hs:253-262), maps and sets without
- * duplicates ({@code decodeMap}/{@code decodeSet} from version 9, Decoder.hs:801-976; a set optionally tagged 258),
- * committee expiry epochs {@code Word64}, the quorum a {@code UnitInterval}, script hashes 28 bytes, anchors per
- * {@link BoundedFields}. The procedure, a {@code GovActionId} and a {@code Constitution} are {@code RecD} records,
- * so definite-length arrays ({@link StrictCbor#definiteArray}; Procedures.hs:182-190, 520-535, 984-995); the action
- * is a sum and the protocol version a {@code CBORGroup}, which accept either length.</p>
+ * <p>Read through CCL's view ({@link com.bloxbean.cardano.client.transaction.raw.RawProposal}) of a proposal that
+ * {@link HaskellPolicy} has walked: Haskell's {@code DecCBOR (ProposalProcedure era)} and {@code DecCBOR (GovAction
+ * era)} at decoder versions 9–11 (Procedures.hs:559-570, 927-946), with the parameter update per
+ * {@link RawParamUpdate}.</p>
  */
 public final class RawProposal {
 
@@ -56,11 +55,8 @@ public final class RawProposal {
     public static final int NEW_CONSTITUTION = 5;
     public static final int INFO = 6;
 
-    private static final BigInteger WORD32_MAX = BigInteger.valueOf(0xFFFF_FFFFL);
     /** {@code MaxVersion} (cardano-ledger-binary Version.hs:63): {@code succVersion} of it is {@code Nothing}. */
     public static final int MAX_VERSION = 13;
-    /** {@code succVersion (ProtVerHigh ConwayEra)}: Conway's highest major version is 11. */
-    public static final int MAX_DECODABLE_MAJOR = 12;
 
     /**
      * Haskell's {@code Ord AccountAddress} (derived: network — {@code Testnet} before {@code Mainnet} — then the
@@ -238,158 +234,63 @@ public final class RawProposal {
         return constitutionScript != null ? constitutionScript.clone() : null;
     }
 
-    /** Reads a proposal procedure. */
-    static RawProposal read(CborSpan item, int index) {
+    /** @return the proposal that CCL's reader read, which {@link HaskellPolicy} has accepted */
+    static RawProposal accepted(com.bloxbean.cardano.client.transaction.raw.RawProposal proposal, int index) {
         Builder b = new Builder();
         b.index = index;
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 4, "a proposal procedure has 4 elements");
-        b.deposit = StrictCbor.unsigned(fields.get(0));
-        b.returnAccount = accountAddress(fields.get(1), "proposal return account");
-        List<CborSpan> action = StrictCbor.array(fields.get(2));
-        if (action.isEmpty()) {
-            throw new TxDecodingException("a governance action is an empty array");
-        }
-        long tag = StrictCbor.unsignedLong(action.get(0));
-        int expected = switch ((int) Math.min(tag, 7)) {
-            case PARAMETER_CHANGE -> 4;
-            case HARD_FORK_INITIATION, TREASURY_WITHDRAWALS -> 3;
-            case NO_CONFIDENCE -> 2;
-            case UPDATE_COMMITTEE -> 5;
-            case NEW_CONSTITUTION -> 3;
-            case INFO -> 1;
-            default -> throw new TxDecodingException("unknown governance action tag " + tag);
-        };
-        if (action.size() != expected) {
-            throw new TxDecodingException("governance action tag " + tag + " has " + action.size() + " elements");
-        }
-        b.actionTag = (int) tag;
-        switch (b.actionTag) {
+        b.deposit = proposal.deposit();
+        b.returnAccount = proposal.rewardAccount();
+        RawGovAction action = proposal.govAction();
+        b.actionTag = action.kind().tag();
+        switch (action.kind()) {
             case PARAMETER_CHANGE -> {
-                b.prevActionId = govActionIdOrNull(action.get(1));
-                b.paramUpdate = RawParamUpdate.read(action.get(2));
-                b.paramUpdateSpan = action.get(2);
-                b.policyHash = scriptHashOrNull(action.get(3), "guardrails policy hash");
+                b.prevActionId = previous(action);
+                RawProtocolParamUpdate update = action.protocolParamUpdate();
+                b.paramUpdate = RawParamUpdate.accepted(update);
+                b.paramUpdateSpan = update.span();
+                b.policyHash = action.policyHash().orElse(null);
             }
             case HARD_FORK_INITIATION -> {
-                b.prevActionId = govActionIdOrNull(action.get(1));
-                b.protocolVersion = protVer(action.get(2));
+                b.prevActionId = previous(action);
+                RawProtocolVersion version = action.protocolVersion();
+                b.protocolVersion = new ProtVer(version.major(), version.minor().longValueExact());
             }
             case TREASURY_WITHDRAWALS -> {
-                b.withdrawals.addAll(treasuryWithdrawals(action.get(1)));
-                b.policyHash = scriptHashOrNull(action.get(2), "guardrails policy hash");
+                TreeMap<byte[], BigInteger> sorted = new TreeMap<>(ACCOUNT_ORDER);
+                for (RawWithdrawal withdrawal : action.withdrawals()) {
+                    sorted.put(withdrawal.rewardAccount(), withdrawal.coin());
+                }
+                sorted.forEach((account, amount) -> b.withdrawals.add(new Withdrawal(account, amount)));
+                b.policyHash = action.policyHash().orElse(null);
             }
-            case NO_CONFIDENCE -> b.prevActionId = govActionIdOrNull(action.get(1));
+            case NO_CONFIDENCE -> b.prevActionId = previous(action);
             case UPDATE_COMMITTEE -> {
-                b.prevActionId = govActionIdOrNull(action.get(1));
-                committeeRemovals(action.get(2), b.committeeRemovals);
-                committeeAdditions(action.get(3), b.committeeAdditions);
-                b.quorum = BoundedFields.boundedRational(action.get(4), "committee quorum", true);
+                b.prevActionId = previous(action);
+                action.membersToRemove().forEach(member -> b.committeeRemovals.add(RawCredential.of(member)));
+                action.membersToAdd().forEach(member -> b.committeeAdditions.put(RawCredential.of(member.getKey()),
+                        new BigInteger(Long.toUnsignedString(member.getValue()))));
+                UnitInterval quorum = action.quorum();
+                BigInteger gcd = quorum.getNumerator().gcd(quorum.getDenominator());
+                b.quorum = new BigInteger[]{quorum.getNumerator().divide(gcd), quorum.getDenominator().divide(gcd)};
             }
             case NEW_CONSTITUTION -> {
-                b.prevActionId = govActionIdOrNull(action.get(1));
-                b.constitutionScript = constitution(action.get(2));
+                b.prevActionId = previous(action);
+                b.constitutionScript = action.constitution().scriptHash().orElse(null);
             }
             default -> {
                 // InfoAction: [6]
             }
         }
-        BoundedFields.anchor(fields.get(3), "proposal");
         return new RawProposal(b);
     }
 
-    /** {@code decodeAccountAddress}: 29 bytes, header {@code 111s 000n} (Address.hs:938-955). */
-    static byte[] accountAddress(CborSpan item, String what) {
-        byte[] account = StrictCbor.definiteBytes(item);
-        if (account.length != 29 || (account[0] & 0xee) != 0xe0) {
-            throw new TxDecodingException(what + " is not an account address");
-        }
-        return account;
+    private static GovActionId previous(RawGovAction action) {
+        return action.previousActionId().map(RawProposal::govActionId).orElse(null);
     }
 
-    /** {@code gov_action_id / null}. */
-    private static GovActionId govActionIdOrNull(CborSpan item) {
-        return item.isNull() ? null : govActionId(item);
-    }
-
-    /** {@code gov_action_id = [transaction_id, Word16]}. */
-    static GovActionId govActionId(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, "a governance action id has 2 elements");
-        byte[] txId = StrictCbor.definiteBytes(fields.get(0));
-        if (txId.length != 32) {
-            throw new TxDecodingException("a governance action id's transaction id of " + txId.length + " bytes");
-        }
-        long ix = StrictCbor.unsignedLong(fields.get(1));
-        if (ix > 0xFFFF) {
-            throw new TxDecodingException("a governance action index exceeds Word16: " + ix);
-        }
-        return new GovActionId(HexUtil.encodeHexString(txId), (int) ix);
-    }
-
-    private static byte[] scriptHashOrNull(CborSpan item, String what) {
-        if (item.isNull()) {
-            return null;
-        }
-        byte[] hash = StrictCbor.definiteBytes(item);
-        if (hash.length != RawCredential.HASH_LENGTH) {
-            throw new TxDecodingException("a " + what + " is 28 bytes");
-        }
-        return hash;
-    }
-
-    /** {@code decodeProtVer @ConwayEra}: {@code [major, minor]}, the major at most 12. */
-    private static ProtVer protVer(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.array(item, 2, "a protocol version has 2 elements");
-        BigInteger major = StrictCbor.unsigned(fields.get(0));
-        BigInteger minor = StrictCbor.unsigned(fields.get(1));
-        if (minor.compareTo(WORD32_MAX) > 0) {
-            throw new TxDecodingException("a protocol minor version exceeds Word32: " + minor);
-        }
-        if (major.compareTo(BigInteger.valueOf(MAX_DECODABLE_MAJOR)) > 0) {
-            throw new TxDecodingException("Protocol version " + major + " exceeds the maximum expected version of "
-                    + MAX_DECODABLE_MAJOR);
-        }
-        return new ProtVer(major.longValue(), minor.longValue());
-    }
-
-    private static List<Withdrawal> treasuryWithdrawals(CborSpan item) {
-        TreeMap<byte[], BigInteger> sorted = new TreeMap<>(ACCOUNT_ORDER);
-        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
-            byte[] account = accountAddress(entry.getKey(), "treasury withdrawal account");
-            BigInteger amount = StrictCbor.unsigned(entry.getValue());
-            if (sorted.put(account, amount) != null) {
-                throw new TxDecodingException("duplicate treasury withdrawal account "
-                        + HexUtil.encodeHexString(account));
-            }
-        }
-        List<Withdrawal> result = new ArrayList<>(sorted.size());
-        sorted.forEach((account, amount) -> result.add(new Withdrawal(account, amount)));
-        return result;
-    }
-
-    private static void committeeRemovals(CborSpan item, SortedSet<RawCredential> into) {
-        for (CborSpan member : StrictCbor.set(item)) {
-            RawCredential credential = RawCredential.read(member);
-            if (!into.add(credential)) {
-                throw new TxDecodingException("duplicate committee member to remove " + credential);
-            }
-        }
-    }
-
-    private static void committeeAdditions(CborSpan item, SortedMap<RawCredential, BigInteger> into) {
-        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
-            RawCredential credential = RawCredential.read(entry.getKey());
-            BigInteger epoch = StrictCbor.unsigned(entry.getValue());
-            if (into.put(credential, epoch) != null) {
-                throw new TxDecodingException("duplicate committee member to add " + credential);
-            }
-        }
-    }
-
-    /** {@code constitution = [anchor, script_hash / null]}: @return the script hash, or null */
-    private static byte[] constitution(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.definiteArray(item, 2, "a constitution has 2 elements");
-        BoundedFields.anchor(fields.get(0), "constitution");
-        return scriptHashOrNull(fields.get(1), "constitution guardrails script hash");
+    /** @return a governance action id that CCL's reader read, which {@link HaskellPolicy} has accepted */
+    static GovActionId govActionId(RawGovActionId id) {
+        return new GovActionId(HexUtil.encodeHexString(id.transactionId()), id.index());
     }
 
     /** @return Haskell's {@code showGovActionType} */

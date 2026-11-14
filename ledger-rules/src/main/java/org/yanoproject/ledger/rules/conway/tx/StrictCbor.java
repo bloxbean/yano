@@ -75,26 +75,6 @@ public final class StrictCbor {
         return items;
     }
 
-    /**
-     * Reads a record Haskell decodes with {@code RecD} or as a tuple, which below decoder version 12 must be a
-     * definite-length array: {@code RecD} checks for the end of an indefinite list before it reads any field
-     * ({@code decodeCount (RecD cn)}, Coders.hs:482, and {@code decodeListLikeT}, Decoder.hs:700-709: "Excess terms in
-     * array"), and a tuple reads its length with {@code decodeListLenOf} (DecCBOR.hs:238-245). Sums
-     * ({@code decodeRecordSum}) and records read with {@code decodeRecordNamed} accept either length; use
-     * {@link #array} for those.
-     *
-     * @return the items of an untagged definite-length array of exactly {@code size} items, else fails with
-     *         {@code message}
-     */
-    public static List<CborSpan> definiteArray(CborSpan item, int size, String message) {
-        expect(item, MAJOR_ARRAY, "an array");
-        if (item.isIndefinite()) {
-            throw new TxDecodingException("an indefinite-length array at " + item.offset() + " (" + message
-                    + ", definite only below decoder version 12)");
-        }
-        return array(item, size, message);
-    }
-
     /** @return the entries of an untagged map, definite or indefinite, in encoded order with any repeated key */
     public static List<Map.Entry<CborSpan, CborSpan>> map(CborSpan item) {
         expect(item, MAJOR_MAP, "a map");
@@ -111,6 +91,12 @@ public final class StrictCbor {
         expect(item, MAJOR_UNSIGNED, "an unsigned integer");
         long value = argument(item);
         return value >= 0 ? BigInteger.valueOf(value) : BigInteger.valueOf(value).add(TWO_64);
+    }
+
+    /** @return the 64 bits of an untagged unsigned integer, unsigned, so that checking one allocates nothing */
+    public static long word64(CborSpan item) {
+        expect(item, MAJOR_UNSIGNED, "an unsigned integer");
+        return argument(item);
     }
 
     /** @return the value of an untagged unsigned integer that fits 63 bits */
@@ -146,12 +132,18 @@ public final class StrictCbor {
 
     /** @return the content of an untagged definite-length byte string */
     public static byte[] definiteBytes(CborSpan item) {
+        definiteLength(item);
+        return item.byteString();
+    }
+
+    /** @return the content's length of an untagged definite-length byte string, which is not copied */
+    public static int definiteLength(CborSpan item) {
         expect(item, MAJOR_BYTES, "a byte string");
         if (item.isIndefinite()) {
             throw new TxDecodingException("an indefinite-length byte string at " + item.offset()
                     + " (definite only below decoder version 12)");
         }
-        return item.byteString();
+        return item.length() - item.headerLength();
     }
 
     /** @return the UTF-8 bytes of an untagged definite-length text string (cborg's {@code decodeString}) */

@@ -5,12 +5,19 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.plutus.spec.CostMdls;
 import com.bloxbean.cardano.client.plutus.spec.PlutusData;
 import com.bloxbean.cardano.client.plutus.spec.PlutusScript;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
 import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.CertKind;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
 import com.bloxbean.cardano.client.transaction.raw.RawBlock;
+import com.bloxbean.cardano.client.transaction.raw.RawInput;
+import com.bloxbean.cardano.client.transaction.raw.RawOutput;
+import com.bloxbean.cardano.client.transaction.raw.RecordSpec;
+import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
 import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
@@ -29,14 +36,13 @@ import com.bloxbean.cardano.yaci.core.model.serializers.AuxDataSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockHeaderSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.CertificateSerializer;
-import com.bloxbean.cardano.yaci.core.model.serializers.StakeCredentialSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.TransactionBodySerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.TransactionInputSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.TransactionOutputSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.WitnessesSerializer;
-import org.yanoproject.ledger.rules.conway.tx.RawOutput;
-import org.yanoproject.ledger.rules.conway.tx.StrictElements;
-import org.yanoproject.runtime.sync.validation.ShelleyHeaderView;
+import org.yanoproject.ledger.rules.conway.tx.HaskellPolicy;
+import org.yanoproject.ledger.rules.conway.tx.RawScript;
+import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 
 import java.io.ByteArrayOutputStream;
 import java.util.HexFormat;
@@ -46,28 +52,26 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.bloxbean.cardano.yaci.core.util.CborSerializationUtil.deserializeOne;
-
 /**
  * How Yano decodes and re-encodes one cardano-cbor-dataset rule (ADR-060 §6).
  *
- * <p>The node decodes a transaction twice: CCL's model decoding ({@code Transaction.deserialize}), which the validation
- * engine runs first and whose model the rules read, and Yano's strict reader ({@link StrictElements}), which applies
- * Haskell's decoding rules. {@link #strict} and {@link #library} are those two decoders for one item; either one
- * rejecting is the node rejecting. Apart, they show which side a difference from Haskell comes from. An item the node
- * only reads inside a transaction, an output, a proposal or a parameter update is placed in a minimal, valid one
- * first.</p>
+ * <p>Whether an item decodes is {@link #strict}'s alone (ADR 0003 D9): CCL's reader with {@link HaskellPolicy}, read
+ * by the rule's own type or record where it has one ({@link #reads}), so the report measures one reader and one policy.
+ * A rule whose checks belong to its parent (a collection, a part of a transaction or of a header) is read in a minimal,
+ * valid parent.</p>
  *
- * <p>{@link #encoder} re-encodes the decoded model (CCL's, or Yano's for {@code datum_option}). Without one, the rule
- * re-encodes as its original bytes, as Haskell's {@code MemoBytes} does and as the node keeps them.</p>
+ * <p>{@link #library} is CCL's model of an accepted item, which {@link #encoder} re-encodes: a model's writer, as
+ * Haskell's re-encoding sorts and folds what the original bytes keep. Without an encoder, the rule re-encodes as its
+ * original bytes, as Haskell's {@code MemoBytes} does and as the node keeps them. On its own, the model's decoding is a
+ * diagnostic: which items CCL's models and Yano's policy differ on.</p>
  *
  * @param name    the corpus rule
  * @param exact   whether the dataset compares the bytes exactly ({@code mkByteExactRule} in its {@code EraSpec.hs});
  *                otherwise both sides are normalized
- * @param strict  Yano's strict reading; rejects by throwing
+ * @param strict  Yano's reading; rejects by throwing
  * @param library CCL's model decoding, or for headers yaci's (the only header decoding with header validation off,
  *                the default); rejects by throwing
- * @param encoder the re-encoding, from both decodings
+ * @param encoder the re-encoding of the model
  */
 record CborRule(String name, boolean exact, Decoder strict, Decoder library, Encoder encoder) {
 
@@ -79,7 +83,7 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
     @FunctionalInterface
     interface Encoder {
         /** @return a {@link DataItem} or the encoded bytes */
-        Object encode(Object strict, Object library) throws Exception;
+        Object encode(Object model) throws Exception;
     }
 
     // Known-good parts of the wrappers.
@@ -91,6 +95,8 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
     static final String MIN_BODY_ENTRIES = "0081" + INPUT + "0180" + "0200";
     static final String MIN_BODY = "a3" + MIN_BODY_ENTRIES;
     private static final String KES_SIGNATURE = "5901c0" + "00".repeat(448);
+    /** A proposal procedure, an item of the body's set of them. */
+    private static final RecordSpec PROPOSAL = TxBodyField.PROPOSAL_PROCEDURES.spec().record();
 
     /** @return the rules this harness knows, by name */
     static Map<String, CborRule> all() {
@@ -102,61 +108,54 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
     /** @return the rules for items the node reads as they are, or with one wrapper */
     static Map<String, CborRule> base() {
         return Stream.of(
-                inTransaction("auxiliary_data", cbor -> tx(hex(MIN_BODY), hex("a0"), cbor)),
-                kept("block", cbor -> block(cbor, StrictElements::transaction),
+                hashed("auxiliary_data", reads(FieldType.OPTIONAL_AUXILIARY_DATA),
+                        cbor -> Transaction.deserialize(tx(hex(MIN_BODY), hex("a0"), cbor))),
+                kept("block", cbor -> block(cbor, CborRule::transaction),
                         cbor -> block(cbor, Transaction::deserialize)),
-                model("certificate", reads(StrictElements::certificate),
-                        cbor -> Certificate.deserialize((Array) item(cbor)), (s, c) -> ((Certificate) c).serialize()),
-                model("cost_models", reads(cbor -> StrictElements.paramUpdate(cat("a112", cbor))),
-                        cbor -> CostMdls.deserialize(item(cbor)), (s, c) -> ((CostMdls) c).serialize()),
-                model("credential", reads(StrictElements::credential),
+                model("certificate", reads(CertKind.RECORD), cbor -> Certificate.deserialize((Array) item(cbor)),
+                        c -> ((Certificate) c).serialize()),
+                model("cost_models", reads(FieldType.COST_MODELS), cbor -> CostMdls.deserialize(item(cbor)),
+                        c -> ((CostMdls) c).serialize()),
+                model("credential", reads(FieldType.CREDENTIAL),
                         cbor -> StakeCredential.deserialize((Array) item(cbor)),
-                        (s, c) -> ((StakeCredential) c).serialize()),
-                model("datum_option", cbor -> StrictElements.output(datumOutput(cbor)),
-                        cbor -> TransactionOutput.deserialize(item(datumOutput(cbor))),
-                        (s, c) -> datumOption((RawOutput) s)),
-                model("drep", reads(StrictElements::drep), cbor -> DRep.deserialize(item(cbor)),
-                        (s, c) -> ((DRep) c).serialize()),
-                model("gov_action",
-                        reads(cbor -> StrictElements.proposal(cat("8400" + REWARD_ACCOUNT, cbor, "8260" + HASH32))),
-                        cbor -> GovAction.deserialize((Array) item(cbor)), (s, c) -> ((GovAction) c).serialize()),
+                        c -> ((StakeCredential) c).serialize()),
+                kept("datum_option", reads(FieldType.DATUM_OPTION),
+                        cbor -> TransactionOutput.deserialize(item(datumOutput(cbor)))),
+                model("drep", reads(FieldType.DREP), cbor -> DRep.deserialize(item(cbor)), c -> ((DRep) c).serialize()),
+                model("gov_action", reads(FieldType.GOV_ACTION), cbor -> GovAction.deserialize((Array) item(cbor)),
+                        c -> ((GovAction) c).serialize()),
                 hashed("header", CborRule::header, CborRule::yaciHeader),
                 kept("header_body", cbor -> header(headerOf(cbor)), cbor -> yaciHeader(headerOf(cbor))),
-                hashed("native_script", reads(StrictElements::nativeScript),
+                hashed("native_script", reads(FieldType.NATIVE_SCRIPT),
                         cbor -> NativeScript.deserialize((Array) item(cbor))),
-                hashed("plutus_data", reads(StrictElements::plutusData), PlutusData::deserialize),
-                model("proposal_procedure", reads(StrictElements::proposal),
-                        cbor -> ProposalProcedure.deserialize(item(cbor)),
-                        (s, c) -> ((ProposalProcedure) c).serialize()),
-                model("protocol_param_update", reads(StrictElements::paramUpdate),
+                hashed("plutus_data", reads(FieldType.PLUTUS_DATA), PlutusData::deserialize),
+                model("proposal_procedure", reads(PROPOSAL), cbor -> ProposalProcedure.deserialize(item(cbor)),
+                        c -> ((ProposalProcedure) c).serialize()),
+                model("protocol_param_update", reads(FieldType.PROTOCOL_PARAM_UPDATE),
                         cbor -> ProtocolParamUpdate.deserialize(item(cbor)),
-                        (s, c) -> ((ProtocolParamUpdate) c).serialize()),
-                model("redeemer", cbor -> StrictElements.transaction(redeemerTx(cbor)), cbor -> {
-                    Transaction.deserialize(redeemerTx(cbor));
-                    return Redeemer.deserializePreConway((Array) item(cbor));
-                }, (s, c) -> ((Redeemer) c).serializePreConway()),
+                        c -> ((ProtocolParamUpdate) c).serialize()),
+                model("redeemer", inTransaction(CborRule::redeemerTx),
+                        cbor -> Redeemer.deserializePreConway((Array) item(cbor)),
+                        c -> ((Redeemer) c).serializePreConway()),
                 inTransaction("redeemers", cbor -> tx(hex(MIN_BODY), cat("a105", cbor), null)),
-                model("relay", reads(StrictElements::relay), CborRule::relay, (s, c) -> ((Relay) c).serialize()),
-                model("script", reads(StrictElements::script),
+                model("relay", reads(FieldType.RELAY_LIST.record()), CborRule::relay, c -> ((Relay) c).serialize()),
+                model("script", cbor -> RawScript.readScript(CborSpan.of(cbor)),
                         cbor -> ((Array) item(cbor)).getDataItems().getFirst().equals(new UnsignedInteger(0))
                                 ? NativeScript.deserializeScriptRef(cbor) : PlutusScript.deserializeScriptRef(cbor),
-                        (s, c) -> c instanceof NativeScript n ? n.scriptRefBytes()
-                                : ((PlutusScript) c).scriptRefBytes()),
-                kept("transaction", StrictElements::transaction, Transaction::deserialize),
+                        c -> c instanceof NativeScript n ? n.scriptRefBytes() : ((PlutusScript) c).scriptRefBytes()),
+                kept("transaction", CborRule::transaction, Transaction::deserialize),
                 inTransaction("transaction_body", cbor -> tx(cbor, hex("a0"), null)),
-                model("transaction_input", cbor -> StrictElements.transaction(inputTx(cbor)), cbor -> {
-                    Transaction.deserialize(inputTx(cbor));
-                    return TransactionInput.deserialize((Array) item(cbor));
-                }, (s, c) -> ((TransactionInput) c).serialize()),
-                model("transaction_output", StrictElements::output, cbor -> TransactionOutput.deserialize(item(cbor)),
-                        (s, c) -> ((TransactionOutput) c).serialize()),
+                model("transaction_input", reads(TxBodyField.INPUTS.spec().record()),
+                        cbor -> TransactionInput.deserialize((Array) item(cbor)),
+                        c -> ((TransactionInput) c).serialize()),
+                model("transaction_output", reads(FieldType.TRANSACTION_OUTPUT),
+                        cbor -> TransactionOutput.deserialize(item(cbor)),
+                        c -> ((TransactionOutput) c).serializeInLedgerOrder()),
                 inTransaction("transaction_witness_set", cbor -> tx(hex(MIN_BODY), cbor, null)),
-                model("value", reads(StrictElements::value), cbor -> Value.deserialize(item(cbor)),
-                        (s, c) -> ((Value) c).serialize()),
-                model("voting_procedure", cbor -> StrictElements.transaction(voteTx(cbor)), cbor -> {
-                    Transaction.deserialize(voteTx(cbor));
-                    return VotingProcedure.deserialize((Array) item(cbor));
-                }, (s, c) -> ((VotingProcedure) c).serialize())
+                model("value", reads(FieldType.VALUE), cbor -> Value.deserialize(item(cbor)),
+                        c -> ((Value) c).serializeInLedgerOrder()),
+                model("voting_procedure", reads(FieldType.VOTING_PROCEDURE),
+                        cbor -> VotingProcedure.deserialize((Array) item(cbor)), c -> ((VotingProcedure) c).serialize())
         ).collect(Collectors.toMap(CborRule::name, Function.identity()));
     }
 
@@ -165,40 +164,35 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
      *         with yaci. Sync decodes with yaci by default, so this gives the sync path a number. It is a diagnostic:
      *         the report measures transaction admission, which does not use these. As in sync, an item yaci recovers
      *         from (a block, witness set or auxiliary data with a datum or metadata it cannot parse) counts as
-     *         accepted.
+     *         accepted. Each is the reader sync uses: a credential has none, as yaci reads one only in its certificate.
      */
     static Map<String, Decoder> yaciDecoders() {
         return Map.of(
                 "auxiliary_data", AuxDataSerializer.INSTANCE::deserialize,
                 "block", cbor -> BlockSerializer.INSTANCE.deserialize(cat("8207", cbor)),
-                "certificate", cbor -> CertificateSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
-                "credential", cbor -> StakeCredentialSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
-                "transaction_body",
-                cbor -> TransactionBodySerializer.INSTANCE.deserializeDI(deserializeOne(cbor), cbor),
-                "transaction_input", cbor -> TransactionInputSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
-                "transaction_output", cbor -> TransactionOutputSerializer.INSTANCE.deserializeDI(deserializeOne(cbor)),
+                "certificate", cbor -> CertificateSerializer.INSTANCE.read(CborSpan.of(cbor)),
+                "transaction_body", cbor -> TransactionBodySerializer.INSTANCE.read(cbor, Era.Conway),
+                "transaction_input", cbor -> TransactionInputSerializer.INSTANCE.read(RawInput.of(CborSpan.of(cbor))),
+                "transaction_output",
+                cbor -> TransactionOutputSerializer.INSTANCE.read(RawOutput.tolerant(CborSpan.of(cbor))),
                 "transaction_witness_set", WitnessesSerializer.INSTANCE::deserialize);
     }
 
-    /** One item as both decoders read it. */
-    record Decoded(byte[] cbor, Object strict, Object library) {
-    }
-
-    /** @return the item when both decoders accept it; an exception is a rejection */
-    Decoded decode(byte[] cbor) throws Exception {
-        return new Decoded(cbor, strict.decode(cbor), library.decode(cbor));
+    /** Yano's reading of an item: an exception is a rejection. */
+    void read(byte[] cbor) throws Exception {
+        strict.decode(cbor);
     }
 
     /**
      * @return the re-encoding of an accepted item. Not the canonical form, which would sort a Plutus {@code Data} map:
-     *         that is an association list, whose order Haskell keeps. An exception here is an encoder failure, not a
-     *         rejection.
+     *         that is an association list, whose order Haskell keeps. An exception here, the model's decoding
+     *         included, is an encoder failure, not a rejection.
      */
-    byte[] encode(Decoded item) throws Exception {
+    byte[] encode(byte[] cbor) throws Exception {
         if (encoder == null) {
-            return item.cbor();
+            return cbor;
         }
-        Object encoded = encoder.encode(item.strict(), item.library());
+        Object encoded = encoder.encode(library.decode(cbor));
         return encoded instanceof byte[] bytes ? bytes : CborSerializationUtil.serialize((DataItem) encoded, false);
     }
 
@@ -216,21 +210,36 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
         return new CborRule(name, false, strict, library, null);
     }
 
-    /** A hashed rule read inside (or as) a transaction: the strict reader and CCL's decoding of that transaction. */
+    /** A hashed rule read inside (or as) a transaction: Yano's reading and CCL's decoding of that transaction. */
     private static CborRule inTransaction(String name, Wrapper wrapper) {
-        return hashed(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
-                cbor -> Transaction.deserialize(wrapper.wrap(cbor)));
+        return hashed(name, inTransaction(wrapper), cbor -> Transaction.deserialize(wrapper.wrap(cbor)));
     }
 
-    /** A strict reader that only accepts or rejects. */
-    @FunctionalInterface
-    interface Reader {
-        void read(byte[] cbor) throws Exception;
+    /** Yano's reading of a transaction, which a rule whose checks are a transaction's is placed in. */
+    static Decoder inTransaction(Wrapper wrapper) {
+        return cbor -> transaction(wrapper.wrap(cbor));
     }
 
-    static Decoder reads(Reader reader) {
+    /**
+     * {@code transaction}. The node also decodes it with CCL ({@code Transaction.deserialize}) and passes that model
+     * along; the reader keeps it for structure only and decides nothing on it, so it is left out here.
+     */
+    static RawTransaction transaction(byte[] cbor) {
+        return RawTransaction.parse(cbor, null);
+    }
+
+    /** The reader of a rule that is one type: {@link HaskellPolicy} on CCL's walk of it. */
+    static Decoder reads(FieldType type) {
         return cbor -> {
-            reader.read(cbor);
+            HaskellPolicy.CONWAY.walk(type, CborSpan.of(cbor));
+            return null;
+        };
+    }
+
+    /** The reader of a rule that is one record of CCL's tables. */
+    static Decoder reads(RecordSpec record) {
+        return cbor -> {
+            HaskellPolicy.CONWAY.walk(record, CborSpan.of(cbor));
             return null;
         };
     }
@@ -254,15 +263,6 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
         return tx(hex(MIN_BODY), cat("a10581", redeemer), null);
     }
 
-    private static byte[] inputTx(byte[] input) {
-        return tx(cat("a30081", input, "01800200"), hex("a0"), null);
-    }
-
-    static byte[] voteTx(byte[] votingProcedure) {
-        return tx(cat("a4" + MIN_BODY_ENTRIES + "13a1" + "8200" + HASH28 + "a1" + INPUT, votingProcedure), hex("a0"),
-                null);
-    }
-
     /** A Conway block, as shadow sync reads one: CCL's raw view, then every transaction with {@code transaction}. */
     private static Object block(byte[] cbor, Decoder transaction) throws Exception {
         RawBlock block = RawBlock.of(cbor, Era.Conway);
@@ -272,13 +272,9 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
         return block;
     }
 
-    /**
-     * A header as chain sync receives one (wrapped in a byte string): yaci's decoding, then the header checks of
-     * upstream header validation ({@link ShelleyHeaderView}), which a node runs when header validation is on.
-     */
-    static Object header(byte[] cbor) throws Exception {
-        byte[] wrapped = wrapped(cbor);
-        return ShelleyHeaderView.from(BlockHeaderSerializer.INSTANCE.deserialize(wrapped), wrapped);
+    /** A header as upstream header validation reads one, when a node runs it: {@link HaskellPolicy#header}. */
+    static Object header(byte[] cbor) {
+        return HaskellPolicy.header(CborSpan.of(cbor));
     }
 
     /** A header as chain sync decodes one with header validation off: yaci's decoding alone. */
@@ -293,24 +289,6 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
     /** {@code [header_body, kes_signature]} */
     static byte[] headerOf(byte[] headerBody) {
         return cat(hex("82"), headerBody, hex(KES_SIGNATURE));
-    }
-
-    /**
-     * {@code datum_option} from Yano's reading of it: {@code [0, hash]}, or {@code [1, #6.24(bytes)]} around the inline
-     * datum's original bytes, which Yano keeps (as Haskell's {@code MemoBytes} does) and hashes.
-     */
-    static DataItem datumOption(RawOutput output) {
-        Array option = new Array();
-        if (output.datumHash() != null) {
-            option.add(new UnsignedInteger(0));
-            option.add(new ByteString(output.datumHash()));
-        } else {
-            option.add(new UnsignedInteger(1));
-            ByteString inline = new ByteString(output.inlineDatum());
-            inline.setTag(24);
-            option.add(inline);
-        }
-        return option;
     }
 
     static DataItem item(byte[] cbor) {

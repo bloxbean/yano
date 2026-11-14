@@ -14,6 +14,8 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * ADR-060: the pinned corpora and the reports for the Cardano node-diversity site
  * (https://github.com/pragma-org/node-diversity-conformance). The build sets the system properties
@@ -50,6 +52,13 @@ public final class NodeDiversity {
         Assumptions.assumeTrue(dir.isPresent(), () -> "corpus " + relative + " not configured: pass "
                 + "-PnodeDiversityCorpora=<dir> (ledger-conformance/node-diversity/fetch-corpora.sh)");
         return dir.orElseThrow();
+    }
+
+    /** @return the full git commit the build passes in {@code property} (from {@code corpora.env} or git) */
+    public static String commit(String property) {
+        String commit = System.getProperty(property, "");
+        assertThat(commit).as(property).matches("[0-9a-f]{40}");
+        return commit;
     }
 
     /** @return a report holding the fields every scenario requires */

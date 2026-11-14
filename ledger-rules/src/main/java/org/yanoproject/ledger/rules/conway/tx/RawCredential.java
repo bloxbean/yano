@@ -1,10 +1,8 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
-import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -38,14 +36,9 @@ public record RawCredential(boolean script, byte[] hash) implements Comparable<R
         return HexUtil.encodeHexString(hash);
     }
 
-    /** Reads {@code credential = [0, addr_keyhash] / [1, script_hash]}. */
-    static RawCredential read(CborSpan item) {
-        List<CborSpan> fields = StrictCbor.array(item, 2, "a credential is a two-element array");
-        long kind = StrictCbor.unsignedLong(fields.get(0));
-        if (kind > 1) {
-            throw new TxDecodingException("unknown credential kind " + kind);
-        }
-        return new RawCredential(kind == 1, StrictCbor.definiteBytes(fields.get(1)));
+    /** @return the credential that CCL's reader read, which {@link HaskellPolicy} has accepted */
+    static RawCredential of(com.bloxbean.cardano.client.transaction.raw.RawCredential credential) {
+        return new RawCredential(credential.isScript(), credential.hash());
     }
 
     @Override

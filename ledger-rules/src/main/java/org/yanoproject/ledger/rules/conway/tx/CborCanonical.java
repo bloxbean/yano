@@ -7,45 +7,84 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A canonical re-encoding of a CBOR item, used as the equality key of decoded values: two encodings Haskell decodes
  * to equal values give the same key. Definite lengths, shortest heads, byte and text strings with their chunks
  * joined, map entries sorted by key, a tag-258 set's elements sorted (the tag dropped), and a tag-30 rational reduced
- * (Haskell keeps {@code BoundedRatio} normalised). Untagged sets are sorted by the caller ({@link #set}).
+ * (Haskell keeps {@code BoundedRatio} normalised). An untagged set is sorted where the caller says one is.
  */
 final class CborCanonical {
 
+    /**
+     * The deepest item compared: no value of Conway the ledger compares for equality, a set's item or a proposal, nests
+     * near it, so a deeper one is not a value Haskell decodes, and the recursion stays within any thread's stack.
+     */
+    private static final int MAX_DEPTH = 64;
+
     private final byte[] data;
+    private final Set<Integer> sets;
     private int pos;
+    private int depth;
 
     private CborCanonical(byte[] data, int pos) {
+        this(data, pos, Set.of());
+    }
+
+    private CborCanonical(byte[] data, int pos, Set<Integer> sets) {
         this.data = data;
         this.pos = pos;
+        this.sets = sets;
     }
 
     /** @return the canonical encoding of {@code item} */
     static byte[] of(CborSpan item) {
-        CborCanonical c = new CborCanonical(item.buffer(), item.offset());
+        if (shortestScalarLength(item.buffer(), item.offset()) == item.length()) {
+            return item.bytes();
+        }
+        return of(item, Set.of());
+    }
+
+    /**
+     * @param sets the offsets in the item's buffer of the arrays inside it that are sets
+     * @return the canonical encoding of {@code item}, with those arrays' elements sorted as a tag-258 set's are
+     */
+    static byte[] of(CborSpan item, Set<Integer> sets) {
+        CborCanonical c = new CborCanonical(item.buffer(), item.offset(), sets);
         byte[] out = c.item();
         c.requireEnd(item);
         return out;
     }
 
-    /** @return the canonical encoding of an array or set item as a set: its elements' encodings sorted */
-    static byte[] set(CborSpan item) {
-        CborCanonical c = new CborCanonical(item.buffer(), item.offset());
-        int head = c.peek();
-        if (head >>> 5 == 6) {
-            c.pos++;
-            BigInteger tag = c.argument(head & 0x1f);
-            if (!tag.equals(BigInteger.valueOf(258))) {
-                throw new TxDecodingException("expected a set, found tag " + tag);
+    /**
+     * @return the length of the item at {@code at} if it is an integer or a definite string whose head is the shortest,
+     *         which is its own canonical encoding; else -1
+     */
+    private static int shortestScalarLength(byte[] data, int at) {
+        int initial = data[at] & 0xff;
+        int major = initial >>> 5;
+        int info = initial & 0x1f;
+        if (major > 3 || info > 27) {
+            return -1;
+        }
+        int head = 1 + (info < 24 ? 0 : 1 << (info - 24));
+        if (at + head > data.length) {
+            return -1;
+        }
+        long value = info;
+        if (info >= 24) {
+            value = 0;
+            for (int i = 1; i < head; i++) {
+                value = value << 8 | data[at + i] & 0xff;
+            }
+            // the smallest value of each head length: 24, 2^8, 2^16, 2^32
+            if (Long.compareUnsigned(value, info == 24 ? 24 : 1L << (8 << (info - 25))) < 0) {
+                return -1;
             }
         }
-        byte[] out = c.sortedArray();
-        c.requireEnd(item);
-        return out;
+        long length = head + (major < 2 ? 0 : value);
+        return value >= 0 && at + length <= data.length ? (int) length : -1;
     }
 
     private void requireEnd(CborSpan item) {
@@ -62,7 +101,21 @@ final class CborCanonical {
     }
 
     private byte[] item() {
+        if (++depth > MAX_DEPTH) {
+            throw new TxDecodingException("CBOR item nested more than " + MAX_DEPTH + " deep at " + pos);
+        }
+        byte[] out = itemHere();
+        depth--;
+        return out;
+    }
+
+    private byte[] itemHere() {
         int head = peek();
+        int scalar = shortestScalarLength(data, pos);
+        if (scalar > 0) {
+            pos += scalar;
+            return Arrays.copyOfRange(data, pos - scalar, pos);
+        }
         int major = head >>> 5;
         int info = head & 0x1f;
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -77,6 +130,9 @@ final class CborCanonical {
                 out.writeBytes(content);
             }
             case 4 -> {
+                if (!sets.isEmpty() && sets.contains(pos)) {
+                    return sortedArray();
+                }
                 List<byte[]> items = array();
                 head(out, 4, BigInteger.valueOf(items.size()));
                 items.forEach(out::writeBytes);

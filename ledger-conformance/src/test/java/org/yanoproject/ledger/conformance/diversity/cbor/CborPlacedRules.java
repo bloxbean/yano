@@ -10,29 +10,34 @@ import com.bloxbean.cardano.client.plutus.spec.CostMdls;
 import com.bloxbean.cardano.client.plutus.spec.Language;
 import com.bloxbean.cardano.client.plutus.spec.PlutusData;
 import com.bloxbean.cardano.client.plutus.spec.Redeemer;
+import com.bloxbean.cardano.client.transaction.raw.FieldType;
+import com.bloxbean.cardano.client.transaction.raw.WitnessSetField;
 import com.bloxbean.cardano.client.transaction.spec.ProtocolParamUpdate;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.MultiAsset;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.transaction.spec.Withdrawal;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.spec.cert.Certificate;
 import com.bloxbean.cardano.client.transaction.spec.cert.Relay;
 import com.bloxbean.cardano.client.transaction.spec.cert.StakeCredential;
 import com.bloxbean.cardano.client.transaction.spec.governance.ProposalProcedure;
 import com.bloxbean.cardano.client.transaction.spec.governance.VotingProcedure;
-import org.yanoproject.ledger.rules.conway.tx.RawOutput;
-import org.yanoproject.ledger.rules.conway.tx.StrictElements;
 
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import static org.yanoproject.ledger.conformance.diversity.cbor.CborRule.*;
 
 /**
- * The dataset's rules for parts of a larger item. The node never reads such a part alone, so a sample is placed in a
- * minimal, valid item and both decoders read that. A valid sample then has to come back out: the part is taken from
- * the re-encoded CCL model, at the path it was placed, so a value the model drops or changes fails.
+ * The dataset's rules for parts of a larger item. Yano reads a part by its own type or record ({@link CborRule#reads}),
+ * or in a minimal, valid parent where the part's checks are the parent's: a collection's (non-empty, distinct items),
+ * a map's, or a part that is read only in a transaction or a header. CCL has a model of the parent only, so the sample
+ * is placed in one for the re-encoding, and a valid sample has to come back out of it: the part is taken from the
+ * re-encoded model, at the path it was placed, so a value the model drops or changes fails.
  *
  * <p>A part of a header, of auxiliary data or of a block has no re-encoding to read: the node keeps those items' bytes
  * ({@link CborRule#kept}).</p>
@@ -48,6 +53,8 @@ final class CborPlacedRules {
     private static final int ARRAY = 4;
     private static final int MAP = 5;
     private static final int TAG = 6;
+    /** {@code PlutusV4}, the last of Haskell's {@code Language} at 6176e413 (Plutus/Language.hs:273-277). */
+    private static final int MAX_LANGUAGE = 3;
 
     private static final String HASH64 = "5840" + "00".repeat(64);
     private static final String ANCHOR = "8260" + HASH32;
@@ -78,91 +85,114 @@ final class CborPlacedRules {
 
     private static List<CborRule> bodyParts() {
         return List.of(
-                inBody("addr_keyhash", "0e81", "", 14, 0),
-                inBody("auxiliary_data_hash", "07", "", 7),
-                inBody("certificates", "04", "", 4),
-                inBody("mint", "09", "", 9),
-                inBody("network_id", "0f", "", 15),
-                inBody("nonzero_int64", "09a1" + HASH28 + "a140", "", 9, VALUE, VALUE),
-                inBody("proposal_procedures", "14", "", 20),
-                inBody("script_data_hash", "0b", "", 11),
-                inBody("slot", "03", "", 3),
-                inBody("voter", "13a1", "a1" + INPUT + "82" + "00f6", 19, KEY),
-                inBody("voting_procedures", "13", "", 19),
-                inBody("withdrawals", "05", "", 5),
-                placedInBody("coin", "a30081" + INPUT + "018002", "", 2),
-                placedInBody("hash32", "a3008182", "00" + "01800200", 0, 0, 0),
-                placedInBody("transaction_id", "a3008182", "00" + "01800200", 0, 0, 0));
+                inBody("addr_keyhash", reads(FieldType.HASH28), "0e81", "", 14, 0),
+                inBody("auxiliary_data_hash", reads(FieldType.HASH32), "07", "", 7),
+                inBody("certificates", null, "04", "", 4),
+                inBodyInLedgerOrder("mint", "09", body -> MultiAsset.serializeInLedgerOrder(body.getMint())),
+                inBody("network_id", reads(FieldType.NETWORK_ID), "0f", "", 15),
+                inBody("nonzero_int64", reads(FieldType.NONZERO_INT64), "09a1" + HASH28 + "a140", "", 9, VALUE, VALUE),
+                inBody("proposal_procedures", null, "14", "", 20),
+                inBody("script_data_hash", reads(FieldType.HASH32), "0b", "", 11),
+                inBody("slot", reads(FieldType.UINT), "03", "", 3),
+                inBody("voter", reads(FieldType.VOTER), "13a1", "a1" + INPUT + "82" + "00f6", 19, KEY),
+                inBody("voting_procedures", null, "13", "", 19),
+                inBodyInLedgerOrder("withdrawals", "05", body -> Withdrawal.serializeInLedgerOrder(body.getWithdrawals())),
+                placedInBody("coin", reads(FieldType.COIN), "a30081" + INPUT + "018002", "", 2),
+                placedInBody("hash32", reads(FieldType.HASH32), "a3008182", "00" + "01800200", 0, 0, 0),
+                placedInBody("transaction_id", reads(FieldType.HASH32), "a3008182", "00" + "01800200", 0, 0, 0));
     }
 
     private static List<CborRule> witnessParts() {
         return List.of(
-                inWitnessSet("bootstrap_witness", "a10281", "", 2, 0),
-                inWitnessSet("plutus_v1_script", "a10381", "", 3, 0),
-                inWitnessSet("plutus_v2_script", "a10681", "", 6, 0),
-                inWitnessSet("plutus_v3_script", "a10781", "", 7, 0),
-                inWitnessSet("signature", "a1008182" + HASH32, "", 0, 0, 1),
-                inWitnessSet("vkey", "a1008182", HASH64, 0, 0, 0),
-                inWitnessSet("vkeywitness", "a10081", "", 0, 0));
+                inWitnessSet("bootstrap_witness", reads(WitnessSetField.BOOTSTRAP_WITNESSES.spec().record()), "a10281",
+                        "", 2, 0),
+                inWitnessSet("plutus_v1_script", reads(FieldType.PLUTUS_SCRIPT), "a10381", "", 3, 0),
+                inWitnessSet("plutus_v2_script", reads(FieldType.PLUTUS_SCRIPT), "a10681", "", 6, 0),
+                inWitnessSet("plutus_v3_script", reads(FieldType.PLUTUS_SCRIPT), "a10781", "", 7, 0),
+                inWitnessSet("signature", reads(FieldType.SIGNATURE), "a1008182" + HASH32, "", 0, 0, 1),
+                inWitnessSet("vkey", reads(FieldType.VKEY), "a1008182", HASH64, 0, 0, 0),
+                inWitnessSet("vkeywitness", reads(WitnessSetField.VKEY_WITNESSES.spec().record()), "a10081", "", 0,
+                        0));
     }
 
     private static List<CborRule> certificateParts() {
         return List.of(
-                inCertificate("committee_cold_credential", "830e", "8200" + HASH28, 1),
-                inCertificate("committee_hot_credential", "830e8200" + HASH28, "", 2),
-                inCertificate("drep_credential", "8410", "00f6", 1),
-                inCertificate("epoch", "8304" + HASH28, "", 2),
-                inCertificate("pool_keyhash", "8304", "00", 1),
-                only(ARRAY, inCertificate("pool_metadata", POOL_START + HASH32 + POOL_AFTER_VRF + POOL_OWNERS_RELAYS,
-                        "", 9)),
-                inCertificate("vrf_keyhash", POOL_START, POOL_AFTER_VRF + POOL_OWNERS_RELAYS + "f6", 2));
+                inCertificate("committee_cold_credential", reads(FieldType.CREDENTIAL), "830e", "8200" + HASH28, 1),
+                inCertificate("committee_hot_credential", reads(FieldType.CREDENTIAL), "830e8200" + HASH28, "", 2),
+                inCertificate("drep_credential", reads(FieldType.CREDENTIAL), "8410", "00f6", 1),
+                inCertificate("epoch", reads(FieldType.UINT), "8304" + HASH28, "", 2),
+                inCertificate("pool_keyhash", reads(FieldType.HASH28), "8304", "00", 1),
+                only(ARRAY, inCertificate("pool_metadata", reads(FieldType.OPTIONAL_POOL_METADATA),
+                        POOL_START + HASH32 + POOL_AFTER_VRF + POOL_OWNERS_RELAYS, "", 9)),
+                inCertificate("vrf_keyhash", reads(FieldType.HASH32), POOL_START,
+                        POOL_AFTER_VRF + POOL_OWNERS_RELAYS + "f6", 2));
     }
 
     private static List<CborRule> relayParts() {
         return List.of(
-                inRelay("dns_name", "8301f6", "", 2),
-                only(BYTES, inRelay("ipv4", "8400f6", "f6", 2)),
-                only(BYTES, inRelay("ipv6", "8400f6f6", "", 3)));
+                inRelay("dns_name", reads(FieldType.DNS_NAME), "8301f6", "", 2),
+                only(BYTES, inRelay("ipv4", reads(FieldType.OPTIONAL_IPV4), "8400f6", "f6", 2)),
+                only(BYTES, inRelay("ipv6", reads(FieldType.OPTIONAL_IPV6), "8400f6f6", "", 3)));
     }
 
     private static List<CborRule> valueParts() {
         return List.of(
-                inValue("%multiasset<positive_coin>", "8200", "", 1),
-                inValue("asset_name", "8200a1" + HASH28 + "a1", "01", 1, VALUE, KEY),
-                inValue("policy_id", "8200a1", "a14001", 1, KEY),
-                inValue("positive_coin", "8200a1" + HASH28 + "a140", "", 1, VALUE, VALUE));
+                // Haskell writes the multi-asset alone (EraSpec.hs:404-409): an empty one is a0, where a value of
+                // coin and an empty multi-asset is written as the coin
+                placed("%multiasset<positive_coin>", placedIn(reads(FieldType.VALUE), "8200", ""), "8200", "",
+                        cbor -> Value.deserialize(item(cbor)),
+                        c -> MultiAsset.serializeInLedgerOrder(multiAssets((Value) c))),
+                inValue("asset_name", reads(FieldType.ASSET_NAME), "8200a1" + HASH28 + "a1", "01", 1, VALUE, KEY),
+                inValue("policy_id", reads(FieldType.HASH28), "8200a1", "a14001", 1, KEY),
+                inValue("positive_coin", reads(FieldType.POSITIVE_COIN), "8200a1" + HASH28 + "a140", "", 1, VALUE,
+                        VALUE));
     }
 
     private static List<CborRule> proposalParts() {
         return List.of(
-                inProposal("anchor", PROPOSAL + INFO_ACTION, "", 3),
-                inProposal("constitution", PROPOSAL + "8305f6", ANCHOR, 2, 2),
-                only(ARRAY, inProposal("gov_action_id", PROPOSAL + "8203", ANCHOR, 2, 1)),
-                only(BYTES, inProposal("guardrails_script_hash", PROPOSAL + "8302a0", ANCHOR, 2, 2)),
-                inProposal("major_protocol_version", PROPOSAL + "8301f682", "00" + ANCHOR, 2, 2, 0),
-                inProposal("protocol_version", PROPOSAL + "8301f6", ANCHOR, 2, 2),
-                inProposal("reward_account", "8400", INFO_ACTION + ANCHOR, 1),
-                inProposal("url", PROPOSAL + INFO_ACTION + "82", HASH32, 3, 0));
+                inProposal("anchor", reads(FieldType.ANCHOR), PROPOSAL + INFO_ACTION, "", 3),
+                inProposal("constitution", reads(FieldType.CONSTITUTION), PROPOSAL + "8305f6", ANCHOR, 2, 2),
+                only(ARRAY, inProposal("gov_action_id", reads(FieldType.GOV_ACTION_ID), PROPOSAL + "8203", ANCHOR, 2,
+                        1)),
+                only(BYTES, inProposal("guardrails_script_hash", reads(FieldType.OPTIONAL_HASH28), PROPOSAL + "8302a0",
+                        ANCHOR, 2, 2)),
+                inProposal("major_protocol_version", reads(FieldType.MAJOR_PROTOCOL_VERSION), PROPOSAL + "8301f682",
+                        "00" + ANCHOR, 2, 2, 0),
+                inProposal("protocol_version", reads(FieldType.PROTOCOL_VERSION), PROPOSAL + "8301f6", ANCHOR, 2, 2),
+                inProposal("reward_account", reads(FieldType.REWARD_ACCOUNT), "8400", INFO_ACTION + ANCHOR, 1),
+                inProposal("url", reads(FieldType.URL), PROPOSAL + INFO_ACTION + "82", HASH32, 3, 0));
     }
 
     private static List<CborRule> paramParts() {
         return List.of(
-                inParamUpdate("drep_voting_thresholds", "a1181a", 26),
-                inParamUpdate("ex_unit_prices", "a113", 19),
-                inParamUpdate("nonnegative_interval", "a109", 9),
-                inParamUpdate("pool_voting_thresholds", "a11819", 25),
-                inParamUpdate("unit_interval", "a10a", 10));
+                inParamUpdate("drep_voting_thresholds", FieldType.DREP_VOTING_THRESHOLDS, "a1181a", 26),
+                inParamUpdate("ex_unit_prices", FieldType.EX_UNIT_PRICES, "a113", 19),
+                inParamUpdate("nonnegative_interval", FieldType.NONNEGATIVE_INTERVAL, "a109", 9),
+                inParamUpdate("pool_voting_thresholds", FieldType.POOL_VOTING_THRESHOLDS, "a11819", 25),
+                inParamUpdate("unit_interval", FieldType.UNIT_INTERVAL, "a10a", 10));
     }
 
+    /**
+     * The alternatives of {@code plutus_data} (PlutusData.hs's {@code decodeData}), told apart by the head: Yano reads
+     * them all as one type, so another alternative is a rejection here. Like {@code plutus_data}, an alternative is
+     * written as its bytes, which the node keeps ({@code Data} is {@code MemoBytes}), and the dataset compares
+     * normalized.
+     */
     private static List<CborRule> plutusParts() {
-        return List.of(data("%constr<plutus_data>", ConstrPlutusData.class), data("big_int", BigIntPlutusData.class),
-                data("bounded_bytes", BytesPlutusData.class));
+        return List.of(
+                data("%constr<plutus_data>", head -> head >>> 5 == TAG && !isBignum(head), ConstrPlutusData.class),
+                data("big_int", head -> head >>> 5 <= 1 || isBignum(head), BigIntPlutusData.class),
+                data("bounded_bytes", head -> head >>> 5 == BYTES, BytesPlutusData.class));
     }
 
-    /** One alternative of {@code plutus_data}: the decoders take them all, so another one is a rejection here. */
-    private static CborRule data(String name, Class<? extends PlutusData> alternative) {
-        return model(name, reads(StrictElements::plutusData), cbor -> alternative.cast(PlutusData.deserialize(cbor)),
-                (s, c) -> ((PlutusData) c).serialize());
+    /** cborg reads only the one-byte heads of tags 2 and 3 as a bignum. */
+    private static boolean isBignum(int head) {
+        return head == 0xc2 || head == 0xc3;
+    }
+
+    private static CborRule data(String name, Predicate<Integer> head, Class<? extends PlutusData> alternative) {
+        return only(head, kept(name, reads(FieldType.PLUTUS_DATA),
+                cbor -> alternative.cast(PlutusData.deserialize(cbor))));
     }
 
     private static List<CborRule> otherParts(Map<String, CborRule> base) {
@@ -172,24 +202,21 @@ final class CborPlacedRules {
                 sameAs("babbage_transaction_output", base.get("transaction_output")),
                 inCredential("hash28"),
                 inCredential("script_hash"),
-                model("address", cbor -> StrictElements.output(addressOutput(cbor)),
+                model("address", reads(FieldType.ADDRESS),
                         cbor -> TransactionOutput.deserialize(item(addressOutput(cbor))),
-                        (s, c) -> at(((TransactionOutput) c).serialize(), 0)),
-                model("data", cbor -> StrictElements.output(datumOutput(cat("8201", cbor))),
-                        cbor -> TransactionOutput.deserialize(item(datumOutput(cat("8201", cbor)))),
-                        (s, c) -> at(datumOption((RawOutput) s), 1)),
-                model("ex_units", cbor -> StrictElements.transaction(redeemerTx(cat("84000000", cbor))), cbor -> {
-                    byte[] redeemer = cat("84000000", cbor);
-                    Transaction.deserialize(redeemerTx(redeemer));
-                    return Redeemer.deserializePreConway((Array) item(redeemer));
-                }, (s, c) -> at(((Redeemer) c).serializePreConway(), 3)),
-                model("language", reads(cbor -> StrictElements.paramUpdate(cat("a112a1", cbor, "80"))),
-                        CborPlacedRules::language, (s, c) -> at(((CostMdls) c).serialize(), KEY)),
-                model("vote", cbor -> StrictElements.transaction(voteTx(cat("82", cbor, "f6"))), cbor -> {
-                    byte[] procedure = cat("82", cbor, "f6");
-                    Transaction.deserialize(voteTx(procedure));
-                    return VotingProcedure.deserialize((Array) item(procedure));
-                }, (s, c) -> at(((VotingProcedure) c).serialize(), 0)));
+                        c -> at(((TransactionOutput) c).serialize(), 0)),
+                kept("data", reads(FieldType.DATA),
+                        cbor -> TransactionOutput.deserialize(item(datumOutput(cat("8201", cbor))))),
+                model("ex_units", reads(FieldType.EX_UNITS),
+                        cbor -> Redeemer.deserializePreConway((Array) item(cat("84000000", cbor))),
+                        c -> at(((Redeemer) c).serializePreConway(), 3)),
+                // Haskell's Language alone (decodeEnumBounded, PlutusV1 to PlutusV4 at 6176e413), which no Conway
+                // transaction decodes: Yano reads a language as a cost model's key, a Word8 (decodeCostModelsLenient)
+                model("language", CborPlacedRules::strictLanguage, CborPlacedRules::language,
+                        c -> at(((CostMdls) c).serialize(), KEY)),
+                model("vote", reads(FieldType.VOTE),
+                        cbor -> VotingProcedure.deserialize((Array) item(cat("82", cbor, "f6"))),
+                        c -> at(((VotingProcedure) c).serialize(), 0)));
     }
 
     private static List<CborRule> headerParts() {
@@ -198,77 +225,102 @@ final class CborPlacedRules {
         String certificateEnd = "0000" + HASH64;
         String certificate = "84" + HASH32 + certificateEnd;
         return List.of(
-                inHeaderBody("block_number", HEADER_BODY_START, HEADER_SLOT_TO_ISSUER + HASH32 + HEADER_VRF_TO_BODY_HASH
-                        + certificate + HEADER_PROTOCOL_VERSION),
-                inHeaderBody("kes_period", beforeCertificate + "84" + HASH32 + "00", HASH64 + HEADER_PROTOCOL_VERSION),
-                inHeaderBody("kes_vkey", beforeCertificate + "84", certificateEnd + HEADER_PROTOCOL_VERSION),
-                inHeaderBody("operational_cert", beforeCertificate, HEADER_PROTOCOL_VERSION),
-                inHeaderBody("vrf_vkey", beforeVrfVkey, HEADER_VRF_TO_BODY_HASH + certificate
+                inHeaderBody("block_number", reads(FieldType.UINT), HEADER_BODY_START, HEADER_SLOT_TO_ISSUER + HASH32
+                        + HEADER_VRF_TO_BODY_HASH + certificate + HEADER_PROTOCOL_VERSION),
+                inHeaderBody("kes_period", reads(FieldType.KES_PERIOD), beforeCertificate + "84" + HASH32 + "00",
+                        HASH64 + HEADER_PROTOCOL_VERSION),
+                inHeaderBody("kes_vkey", reads(FieldType.KES_VKEY), beforeCertificate + "84",
+                        certificateEnd + HEADER_PROTOCOL_VERSION),
+                inHeaderBody("operational_cert", reads(FieldType.OPERATIONAL_CERT), beforeCertificate,
+                        HEADER_PROTOCOL_VERSION),
+                inHeaderBody("vrf_vkey", reads(FieldType.VRF_VKEY), beforeVrfVkey, HEADER_VRF_TO_BODY_HASH + certificate
                         + HEADER_PROTOCOL_VERSION));
     }
 
     private static List<CborRule> auxiliaryDataParts() {
         return List.of(
-                only(ARRAY, inAuxiliaryData("auxiliary_data_array", "", "")),
-                only(TAG, inAuxiliaryData("auxiliary_data_map", "", "")),
-                inAuxiliaryData("auxiliary_scripts", "82a0", ""),
-                only(MAP, inAuxiliaryData("metadata", "", "")),
-                inAuxiliaryData("metadatum", "a100", ""));
+                only(ARRAY, inAuxiliaryData("auxiliary_data_array", reads(FieldType.OPTIONAL_AUXILIARY_DATA), "", "")),
+                only(TAG, inAuxiliaryData("auxiliary_data_map", reads(FieldType.OPTIONAL_AUXILIARY_DATA), "", "")),
+                inAuxiliaryData("auxiliary_scripts", null, "82a0", ""),
+                only(MAP, inAuxiliaryData("metadata", reads(FieldType.METADATA), "", "")),
+                inAuxiliaryData("metadatum", null, "a100", ""));
     }
 
-    private static CborRule inBody(String name, String keyAndPrefix, String suffix, Object... path) {
-        return placedInBody(name, "a4" + MIN_BODY_ENTRIES + keyAndPrefix, suffix, path);
+    private static CborRule inBody(String name, Decoder strict, String keyAndPrefix, String suffix, Object... path) {
+        return placedInBody(name, strict, "a4" + MIN_BODY_ENTRIES + keyAndPrefix, suffix, path);
     }
 
     /** The sample inside a transaction body: {@code prefix} and {@code suffix} make the rest of the body. */
-    private static CborRule placedInBody(String name, String prefix, String suffix, Object... path) {
+    private static CborRule placedInBody(String name, Decoder strict, String prefix, String suffix, Object... path) {
         Wrapper wrapper = cbor -> tx(cat(prefix, cbor, suffix), hex("a0"), null);
-        return model(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
-                cbor -> Transaction.deserialize(wrapper.wrap(cbor)),
-                (s, c) -> at(((Transaction) c).getBody().serialize(), path));
+        return model(name, orIn(strict, inTransaction(wrapper)), cbor -> Transaction.deserialize(wrapper.wrap(cbor)),
+                c -> at(((Transaction) c).getBody().serialize(), path));
     }
 
-    private static CborRule inWitnessSet(String name, String prefix, String suffix, Object... path) {
+    /**
+     * A body writes CIP-21's order for hardware wallets, so the part is written on its own in the ledger's order. The
+     * part is a map, read in the body.
+     */
+    private static CborRule inBodyInLedgerOrder(String name, String prefix, LedgerOrderWriter writer) {
+        Wrapper wrapper = cbor -> tx(cat("a4" + MIN_BODY_ENTRIES + prefix, cbor), hex("a0"), null);
+        return model(name, inTransaction(wrapper), cbor -> Transaction.deserialize(wrapper.wrap(cbor)),
+                c -> writer.write(((Transaction) c).getBody()));
+    }
+
+    @FunctionalInterface
+    private interface LedgerOrderWriter {
+        DataItem write(com.bloxbean.cardano.client.transaction.spec.TransactionBody body) throws Exception;
+    }
+
+    private static CborRule inWitnessSet(String name, Decoder strict, String prefix, String suffix, Object... path) {
         Wrapper wrapper = cbor -> tx(hex(MIN_BODY), cat(prefix, cbor, suffix), null);
-        return model(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
-                cbor -> Transaction.deserialize(wrapper.wrap(cbor)),
-                (s, c) -> at(((Transaction) c).getWitnessSet().serialize(), path));
+        return model(name, strict, cbor -> Transaction.deserialize(wrapper.wrap(cbor)),
+                c -> at(((Transaction) c).getWitnessSet().serialize(), path));
     }
 
-    private static CborRule inCertificate(String name, String prefix, String suffix, Object... path) {
-        return placed(name, prefix, suffix, StrictElements::certificate,
-                cbor -> Certificate.deserialize((Array) item(cbor)), c -> ((Certificate) c).serialize(), path);
+    private static CborRule inCertificate(String name, Decoder strict, String prefix, String suffix, Object... path) {
+        return placed(name, strict, prefix, suffix, cbor -> Certificate.deserialize((Array) item(cbor)),
+                c -> ((Certificate) c).serialize(), path);
     }
 
-    private static CborRule inRelay(String name, String prefix, String suffix, Object... path) {
-        return placed(name, prefix, suffix, StrictElements::relay, CborRule::relay, c -> ((Relay) c).serialize(), path);
+    private static CborRule inRelay(String name, Decoder strict, String prefix, String suffix, Object... path) {
+        return placed(name, strict, prefix, suffix, CborRule::relay, c -> ((Relay) c).serialize(), path);
     }
 
-    private static CborRule inValue(String name, String prefix, String suffix, Object... path) {
-        return placed(name, prefix, suffix, StrictElements::value, cbor -> Value.deserialize(item(cbor)),
-                c -> ((Value) c).serialize(), path);
+    private static CborRule inValue(String name, Decoder strict, String prefix, String suffix, Object... path) {
+        return placed(name, orIn(strict, placedIn(reads(FieldType.VALUE), prefix, suffix)), prefix, suffix,
+                cbor -> Value.deserialize(item(cbor)), c -> ((Value) c).serializeInLedgerOrder(), path);
     }
 
-    private static CborRule inProposal(String name, String prefix, String suffix, Object... path) {
-        return placed(name, prefix, suffix, StrictElements::proposal, cbor -> ProposalProcedure.deserialize(item(cbor)),
+    private static CborRule inProposal(String name, Decoder strict, String prefix, String suffix, Object... path) {
+        return placed(name, strict, prefix, suffix, cbor -> ProposalProcedure.deserialize(item(cbor)),
                 c -> ((ProposalProcedure) c).serialize(), path);
     }
 
-    private static CborRule inParamUpdate(String name, String prefix, int key) {
-        return placed(name, prefix, "", StrictElements::paramUpdate,
-                cbor -> ProtocolParamUpdate.deserialize(item(cbor)), c -> ((ProtocolParamUpdate) c).serialize(), key);
+    private static CborRule inParamUpdate(String name, FieldType type, String prefix, int key) {
+        return placed(name, reads(type), prefix, "", cbor -> ProtocolParamUpdate.deserialize(item(cbor)),
+                c -> ((ProtocolParamUpdate) c).serialize(), key);
     }
 
     private static CborRule inCredential(String name) {
-        return placed(name, "8201", "", StrictElements::credential,
+        return placed(name, reads(FieldType.HASH28), "8201", "",
                 cbor -> StakeCredential.deserialize((Array) item(cbor)), c -> ((StakeCredential) c).serialize(), 1);
     }
 
-    /** The sample inside an item with a strict reader and a model of its own, read from that model at the path. */
-    private static CborRule placed(String name, String prefix, String suffix, Reader strict, Decoder library,
+    /** The sample read by {@code strict}, and placed in an item with a model of its own, taken from it at the path. */
+    private static CborRule placed(String name, Decoder strict, String prefix, String suffix, Decoder library,
                                    Serializer serializer, Object... path) {
-        return model(name, reads(cbor -> strict.read(cat(prefix, cbor, suffix))),
-                cbor -> library.decode(cat(prefix, cbor, suffix)), (s, c) -> at(serializer.serialize(c), path));
+        return model(name, strict, cbor -> library.decode(cat(prefix, cbor, suffix)),
+                c -> at(serializer.serialize(c), path));
+    }
+
+    /** {@code strict}, or for a part whose checks are its parent's ({@code strict} null), the parent's reader. */
+    private static Decoder orIn(Decoder strict, Decoder parent) {
+        return strict != null ? strict : parent;
+    }
+
+    private static Decoder placedIn(Decoder parent, String prefix, String suffix) {
+        return cbor -> parent.decode(cat(prefix, cbor, suffix));
     }
 
     @FunctionalInterface
@@ -276,15 +328,27 @@ final class CborPlacedRules {
         DataItem serialize(Object model) throws Exception;
     }
 
-    private static CborRule inHeaderBody(String name, String prefix, String suffix) {
-        return kept(name, cbor -> header(headerOf(cat(prefix, cbor, suffix))),
-                cbor -> yaciHeader(headerOf(cat(prefix, cbor, suffix))));
+    /** A header body's layout is its era's, so its rule is read in a header; its parts by their own types. */
+    private static CborRule inHeaderBody(String name, Decoder strict, String prefix, String suffix) {
+        return kept(name, strict, cbor -> yaciHeader(headerOf(cat(prefix, cbor, suffix))));
     }
 
-    private static CborRule inAuxiliaryData(String name, String prefix, String suffix) {
+    private static CborRule inAuxiliaryData(String name, Decoder strict, String prefix, String suffix) {
         Wrapper wrapper = cbor -> tx(hex(MIN_BODY), hex("a0"), cat(prefix, cbor, suffix));
-        return kept(name, cbor -> StrictElements.transaction(wrapper.wrap(cbor)),
-                cbor -> Transaction.deserialize(wrapper.wrap(cbor)));
+        return kept(name, orIn(strict, inTransaction(wrapper)), cbor -> Transaction.deserialize(wrapper.wrap(cbor)));
+    }
+
+    /**
+     * Yano's reading of a cost model's key, narrowed to Haskell's {@code Language} by value: a head of any width
+     * ({@code 1802}) is the same language, as {@code decodeEnumBounded} reads it.
+     */
+    private static Object strictLanguage(byte[] cbor) throws Exception {
+        Object read = reads(FieldType.LANGUAGE).decode(cbor);
+        if (!(item(cbor) instanceof UnsignedInteger key)
+                || key.getValue().compareTo(BigInteger.valueOf(MAX_LANGUAGE)) > 0) {
+            throw new IllegalArgumentException("not of this rule's form");
+        }
+        return read;
     }
 
     /** A cost model keeps a key it does not know, as Haskell's does, but {@code Language} has only the known ones. */
@@ -297,26 +361,30 @@ final class CborPlacedRules {
     }
 
     /**
-     * A rule placed where its parent also takes another type, such as a nullable position or another form of auxiliary
-     * data. The parent would accept that item, but it is not one of this rule's.
+     * A rule narrower than the type Yano reads it as, such as a nullable position, another form of auxiliary data or
+     * another alternative of {@code plutus_data}: Yano would accept that item, but it is not one of this rule's.
      */
     private static CborRule only(int majorType, CborRule rule) {
-        return new CborRule(rule.name(), rule.exact(), only(majorType, rule.strict()), only(majorType, rule.library()),
-                rule.encoder());
+        return only(head -> head >>> 5 == majorType, rule);
     }
 
-    private static CborRule.Decoder only(int majorType, CborRule.Decoder decoder) {
-        return cbor -> {
-            if ((cbor[0] & 0xff) >>> 5 != majorType) {
-                throw new IllegalArgumentException("not of major type " + majorType);
+    private static CborRule only(Predicate<Integer> head, CborRule rule) {
+        CborRule.Decoder strict = rule.strict();
+        return new CborRule(rule.name(), rule.exact(), cbor -> {
+            if (!head.test(cbor[0] & 0xff)) {
+                throw new IllegalArgumentException("not of this rule's form");
             }
-            return decoder.decode(cbor);
-        };
+            return strict.decode(cbor);
+        }, rule.library(), rule.encoder());
     }
 
     /** The same decoders under a second rule name: the dataset tests one Haskell type under both. */
     private static CborRule sameAs(String name, CborRule same) {
         return new CborRule(name, same.exact(), same.strict(), same.library(), same.encoder());
+    }
+
+    private static List<MultiAsset> multiAssets(Value value) {
+        return value.getMultiAssets() != null ? value.getMultiAssets() : List.of();
     }
 
     private static byte[] addressOutput(byte[] address) {
