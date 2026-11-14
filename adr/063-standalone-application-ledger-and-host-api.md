@@ -160,9 +160,9 @@ where feasible. Package names need not change when artifact ownership changes.
 Do not add an `org.yanoproject.<product-name>` namespace in Yano.
 
 Acyclic API extraction requires separating foundational node contracts from
-legacy aggregate API packaging. Keep the existing `yano-core-api` coordinate as
-a compatibility aggregate where necessary, with transitive dependencies on the
-new owners; it must not embed duplicate class definitions. The small host SPI
+legacy aggregate API packaging. The initial extraction retained `yano-core-api`
+as a compatibility aggregate. The preview cleanup decision below supersedes that
+packaging choice: consumers declare the concrete API owners directly. The small host SPI
 must not become that aggregate. Optional Cardano observer APIs may depend on
 Cardano model contracts, including the existing Yaci `Block` parameter. The
 standalone core must not gain those dependencies through an aggregate POM.
@@ -714,3 +714,63 @@ metadata. It never substitutes host modules or sibling source builds, and the
 external compatibility matrix remains artifact-only. The integrated ZIP is not
 an upgrade overlay: independent framework selection uses ordinary thin Maven
 embedding; the existing integrated distribution remains a bundled release.
+
+
+## Preview cleanup: remove the redundant core API aggregate
+
+After reviewing the extracted boundaries, the project owner chose to remove
+`yano-core-api` before this coordinated preview release. It contains no production
+classes; retaining its transitive exports obscures the actual dependencies. This
+supersedes the aggregate-retention statements in the historical milestones above.
+Keep the descriptive `yano-cardano-api` name; do not rename it to `core-api`.
+
+The concrete boundaries remain:
+
+| Consumer | Direct API dependency |
+| --- | --- |
+| Generic X application API and core | `yano-node-api` (directly or through the X API) |
+| X host adapter | `yano-host-api`, which exposes the shared node contracts |
+| Optional X Cardano integration | `yano-cardano-api` and the applicable Host API contracts |
+| Cardano node implementation | `yano-cardano-api`, plus concrete X API artifacts where used |
+| Integrated Yano/X distribution | Yano runtime and selected X artifacts; the bundled JVM ZIP matches its Yano runtime version |
+
+`PluginContext`, `StorageFilter`, `UtxoFilterContext` and existing configuration
+contracts stay in `node-api`. Their existing signatures connect them; moving
+only the UTxO context to `cardano-api` would introduce a dependency cycle. A new
+filter SPI or configuration split is unnecessary for deleting an empty aggregate.
+The shared foundation is therefore not claimed to be free of all Cardano-related
+information. Cardano-facing state, event and transaction contracts remain in
+`cardano-api`; the generic X implementation still has no Yano implementation or
+Cardano settlement SDK dependency. No production class, interface, binary name,
+consensus rule, persisted encoding, or configuration key changes in this cleanup.
+
+Migration replaces aggregate dependencies with actual owners in Yano, X, the BOM,
+starter POM, distribution manifests, scaffolding and current documentation.
+Scaffolding accepts an independent X version alongside the existing Yano version,
+so selecting an older compatible host does not select that host's version for an
+X artifact. It continues to build against published/staged artifacts without a
+sibling checkout. The other existing compatibility artifacts are outside this
+cleanup's scope.
+
+Tests previously housed in the aggregate move to their production owners:
+seven shared-contract suites to `node-api`, nine Cardano suites to `cardano-api`,
+and application/domain suites and wire specifications to X's existing API modules.
+Already extracted copies remain single owners; the message-proof vector test uses
+its bundled resource. The topic-vector generator follows its X-owned fixtures.
+No test or canonical fixture is intentionally dropped.
+
+The intentional compatibility change is Maven-level: new releases no longer
+publish or list `yano-core-api`; consumers requesting that coordinate must update
+their dependencies. The supported Host API version and frozen oldest-host fixture
+are unchanged. Older immutable hosts may still contain their historical aggregate;
+that is allowed in the older-host matrix, not in the new host's runtime closure.
+
+Validation retains both frozen pre19 public-API comparisons and compiled-client
+fixtures to catch accidental signature changes. The existing artifact gate also
+rejects `yano-core-api` in the current runtime and all generated Maven POMs,
+including BOM and starter metadata. Focused relocated tests, full consumer
+compilation, framework boundaries, scaffold tests, packaged standalone consensus,
+existing integrated distribution checks, and the unchanged oldest-host fixture
+cover missing transitive dependencies and packaging mistakes. One comprehensive
+Yano release-qualification cycle remains planned after final coordinated pins;
+this cleanup introduces no intermediate release.

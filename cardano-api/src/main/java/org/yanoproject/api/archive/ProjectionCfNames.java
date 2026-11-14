@@ -3,7 +3,7 @@ package org.yanoproject.api.archive;
 /**
  * Column families backing the canonical projection outbox (ADR-039 §2, §8).
  *
- * <p>These names live in {@code core-api} because both sides need them and neither may
+ * <p>These names live in {@code cardano-api} because both sides need them and neither may
  * depend on the other: the runtime declares the column families when it opens the
  * shared chainstate, and the archive modules read and write them. Sharing one physical
  * RocksDB is what lets a contributor commit its projection section inside the same

@@ -13,7 +13,6 @@ def yanoModules = [
         'node-api'                    : 'node-api',
         'cardano-api'                 : 'cardano-api',
         'host-api'                    : 'host-api',
-        'core-api'                    : 'core-api',
         'plugin-catalog'              : 'plugin-catalog',
         'consensus'                   : 'consensus',
         'p2p'                         : 'p2p',

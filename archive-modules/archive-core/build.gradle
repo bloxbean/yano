@@ -5,6 +5,7 @@ plugins {
 
 dependencies {
     api project(':archive-modules:archive-api')
+    api project(':cardano-api')
     implementation libs.rocksdb
     implementation libs.cardano.client.address
     implementation libs.cardano.client.core

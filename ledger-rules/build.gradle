@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    api project(':core-api')
+    api project(':cardano-api')
     api libs.cardano.client.core  // CCL core types: ProtocolParams, Utxo, Transaction
 
     // Test fixtures shared with the engines' conformance suites (ADR-056 Phase 2, ADR-057 Phase B):

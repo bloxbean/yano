@@ -43,7 +43,7 @@ jobs:
       # What the Gradle consumer check resolves, and which of this build's jars it must get.
       CONSUMER_PLATFORM: org.yanoproject:yano-bom
       CONSUMER_DEPENDENCIES: org.yanoproject:yano
-      CONSUMER_REQUIRED: yano-core-api yano-runtime
+      CONSUMER_REQUIRED: yano-node-api yano-cardano-api yano-host-api yano-runtime
       # Absolute, because build.gradle resolves stagingRepository against each project's own directory.
       STAGING_DIR: ${{ github.workspace }}/build/bloxbean-maven
       AWS_ENDPOINT_URL: ${{ vars.R2_ENDPOINT }}

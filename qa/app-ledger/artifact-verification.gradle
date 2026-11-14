@@ -1,4 +1,6 @@
 import groovy.json.JsonOutput
+import groovy.xml.XmlSlurper
+import org.gradle.api.publish.maven.tasks.GenerateMavenPom
 import java.security.MessageDigest
 
 // Applied to :runtime. These tasks observe the exact artifacts used by this build.
@@ -6,9 +8,12 @@ def sha256 = { File input ->
     MessageDigest.getInstance('SHA-256').digest(input.bytes).encodeHex().toString()
 }
 def artifactInputs = layout.buildDirectory.file('reports/app-ledger/artifact-inputs.json')
+def currentPomTasks = rootProject.allprojects.collect { it.tasks.withType(GenerateMavenPom) }
 tasks.register('writeAppLedgerArtifactInputs') {
     group = 'verification'
+    dependsOn currentPomTasks
     inputs.files(configurations.runtimeClasspath)
+    inputs.files(currentPomTasks)
     outputs.file(artifactInputs)
     doLast {
         def artifacts = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts
@@ -16,10 +21,25 @@ tasks.register('writeAppLedgerArtifactInputs') {
                     [group: artifact.moduleVersion.id.group, name: artifact.name,
                      version: artifact.moduleVersion.id.version, sha256: sha256(artifact.file)]
                 }.sort { a, b -> "${a.group}:${a.name}" <=> "${b.group}:${b.name}" }
+        if (artifacts.any { it.group == 'org.yanoproject' && it.name == 'yano-core-api' }) {
+            throw new GradleException('The current runtime must not depend on the retired yano-core-api aggregate')
+        }
+        def publicationPoms = currentPomTasks.collectMany { it.toList() }.collect { task ->
+            File pomFile = task.destination
+            def pom = new XmlSlurper(false, false).parse(pomFile)
+            def obsolete = pom.depthFirst().find { node ->
+                node.name() == 'dependency' && node.groupId.text() == 'org.yanoproject'
+                        && node.artifactId.text() == 'yano-core-api'
+            }
+            if (obsolete != null) {
+                throw new GradleException("Current publication ${task.path} depends on the retired yano-core-api aggregate")
+            }
+            [task: task.path, sha256: sha256(pomFile)]
+        }.sort { it.task }
         def output = artifactInputs.get().asFile
         output.parentFile.mkdirs()
         output.text = JsonOutput.prettyPrint(JsonOutput.toJson(
-                [schemaVersion: 1, artifacts: artifacts])) + '\n'
+                [schemaVersion: 1, artifacts: artifacts, publicationPoms: publicationPoms])) + '\n'
     }
 }
 
@@ -49,11 +69,11 @@ tasks.register('checkAppLedgerBinaryCompatibility', JavaExec) {
             throw new GradleException('API baseline checksum differs from the frozen pre19 fixture provenance')
         }
         def allJars = configurations.runtimeClasspath.files.toList().sort { it.name }
-        def apiNames = ['yano-core-api-', 'yano-node-api-', 'yano-host-api-', 'yano-cardano-api-',
+        def apiNames = ['yano-node-api-', 'yano-host-api-', 'yano-cardano-api-',
                         'yano-x-appchain-api-', 'yano-x-appchain-cardano-api-']
         def newJars = allJars.findAll { file -> apiNames.any { file.name.startsWith(it) } }
         if (newJars.size() != apiNames.size()) {
-            throw new GradleException("Expected exactly six API ownership artifacts, found ${newJars}")
+            throw new GradleException("Expected exactly five API ownership artifacts, found ${newJars}")
         }
         report.get().asFile.parentFile.mkdirs()
         new File(report.get().asFile.parentFile, 'api-baseline.json').text =

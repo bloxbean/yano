@@ -142,10 +142,10 @@ class PluginArtifactScannerTest {
                 .hasMessageContaining("packages Yano API class")
                 .hasMessageContaining("NodePlugin.class");
 
-        Path coreApi = emptyArtifact("core-api");
-        writeBytes(coreApi, "org/yanoproject/api/plugin/NodePlugin.class", new byte[]{1});
-        writeService(coreApi, KIND, "# no provider entry");
-        assertThat(scanner.scan(coreApi)).isEqualTo(PluginIndex.empty());
+        Path nodeApi = emptyArtifact("node-api");
+        writeBytes(nodeApi, "org/yanoproject/api/plugin/NodePlugin.class", new byte[]{1});
+        writeService(nodeApi, KIND, "# no provider entry");
+        assertThat(scanner.scan(nodeApi)).isEqualTo(PluginIndex.empty());
     }
 
     @Test

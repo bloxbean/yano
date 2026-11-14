@@ -80,7 +80,6 @@ compileJava {
 
 
 dependencies {
-    api project(':core-api')
     api project(':runtime')
 }
 
@@ -395,7 +394,7 @@ publishing {
             // exempt, which is how :yano-bom already publishes.
             //
             // yano-runtime api-depends on plugin-catalog, consensus, p2p,
-            // ledger-rules and ledger-state, so these two coordinates give a
+            // ledger-rules and ledger-state, so this coordinate gives a
             // downstream application the whole node stack transitively.
             // Optional modules -- scalus-bridge, script-evaluators, archive-*,
             // tx-services, bootstrap-providers -- stay opt-in, and the testkits
@@ -405,7 +404,7 @@ publishing {
                 packaging = 'pom'
                 withXml {
                     def dependencies = asNode().appendNode('dependencies')
-                    ['yano-core-api', 'yano-runtime'].each { artifact ->
+                    ['yano-runtime'].each { artifact ->
                         def dependency = dependencies.appendNode('dependency')
                         dependency.appendNode('groupId', project.group)
                         dependency.appendNode('artifactId', artifact)

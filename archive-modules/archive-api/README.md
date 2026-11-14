@@ -20,8 +20,9 @@ the affected projection version when row meaning changes.
 
 ## Dependency direction
 
-This module depends only on `core-api`. Archive backends and `archive-core`
-depend on it; it must never depend on a backend or on the application module.
+This module has no dependency on the node or Cardano API modules. Archive
+backends and `archive-core` depend on it; it must never depend on a backend or
+on the application module.
 
 ## Testing
 

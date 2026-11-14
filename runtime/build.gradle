@@ -1,5 +1,7 @@
 dependencies {
-    api project(':core-api')
+    api project(':node-api')
+    api project(':cardano-api')
+    api project(':host-api')
     api "org.yanoproject.x:yano-x-appchain-cardano:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.10')}"
     // Compile the embedded framework's service keys; its selected root supplies
     // the adapter at runtime, so the host does not pin a second runtime copy.

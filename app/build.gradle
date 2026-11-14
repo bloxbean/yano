@@ -96,7 +96,7 @@ dependencies {
     implementation project(':console-ui')
 
     // Yano module dependencies
-    implementation(project(':core-api')) {
+    implementation(project(':cardano-api')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
     implementation(project(':runtime')) {
@@ -1176,7 +1176,7 @@ def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
                 "Plugin operations summary smoke failed: ${summaryResponse}")
     }
     def summary = new groovy.json.JsonSlurper().parseText(summaryResponse.text)
-    // Must match PluginApiVersion.CURRENT_MAJOR / CURRENT_LEVEL (core-api).
+    // Must match PluginApiVersion.CURRENT_MAJOR / CURRENT_LEVEL (node-api).
     if (!(summary.catalogFingerprint ==~ /sha256:[0-9a-f]{64}/)
             || summary.pluginApiMajor != 3
             || summary.pluginApiLevel != 13

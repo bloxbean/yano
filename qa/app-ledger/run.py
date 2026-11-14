@@ -20,11 +20,10 @@ GATES = {
              "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest", "--tests", "*PriorCompiledRuntimeCompatibilityTest",
              "--tests", "*DeferredAppLedgerAssemblyTest", "--tests", "*RequiredEmbeddedPluginCatalogTest", "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
              ":runtime:checkAppLedgerBinaryCompatibility", ":runtime:checkAppLedgerRuntimeCompatibility"],
-    "standalone": [":core-api:test", "--tests", "*AppLedgerOperatingProfileTest",
-                   ":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
+    "standalone": [":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
     "adapter": [":app:test", "--tests", "*CardanoAvailabilityFilterTest", "--tests", "*YanoProducerTest"],
     "consensus": [":runtime:test", "--tests", "org.yanoproject.runtime.appchain.*"],
-    "configuration": [":core-api:test", ":appchain-config:test"],
+    "configuration": [":node-api:test", ":cardano-api:test", ":appchain-config:test"],
     "hybrid": [":runtime:test", "--tests", "*AppChainManagerSharedTransportTest",
                "--tests", "*SharedAppTransportTest", "--tests", "*AppChainL1SubscriptionLifecycleTest",
                "--tests", "*ScriptAnchorServiceTest", "--tests", "*L1EpochObservationCoordinatorTest",
@@ -36,10 +35,15 @@ GATES = {
 # Each named suite must execute: unrelated passing tests cannot mask a missing gate.
 REQUIRED = {
     "host": {"DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "PriorCompiledRuntimeCompatibilityTest", "DeferredAppLedgerAssemblyTest", "RequiredEmbeddedPluginCatalogTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
-    "standalone": {"AppLedgerOperatingProfileTest", "AppLedgerAssemblyTest"},
+    "standalone": {"AppLedgerAssemblyTest"},
     "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest"},
     "consensus": {"AppChainEngineIdentityValidationTest", "AppChainEngineLifecycleTest"},
-    "configuration": {"AppLedgerOperatingProfileTest", "AppChainConfigParserTest"},
+    "configuration": {"PluginsOptionsTest", "YanoConfigTest", "PluginApiVersionTest",
+                      "StrictEd25519Test", "PluginHealthContractTest", "PluginMetricsContractTest",
+                      "PluginOperationsContractTest", "NodeRoleInterfacesTest", "GenesisUtxosTest",
+                      "NodeStatusTest", "StakeCredentialExtractorTest", "CardanoBech32IdsTest",
+                      "CardanoHexTest", "CostModelUtilTest", "EpochSlotCalcTest", "StoredBlockUtilTest",
+                      "AppChainConfigParserTest"},
     "hybrid": {"AppChainManagerSharedTransportTest", "SharedAppTransportTest",
                "AppChainL1SubscriptionLifecycleTest", "ScriptAnchorServiceTest",
                "L1EpochObservationCoordinatorTest", "AppChainSubsystemGenerationLifecycleTest",
@@ -77,7 +81,7 @@ def run(command, log, timeout):
 def collect_reports(destination, since):
     totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
     suites = set()
-    for module in ("host-api", "core-api", "appchain/appchain-config", "runtime", "app"):
+    for module in ("host-api", "node-api", "cardano-api", "appchain/appchain-config", "runtime", "app"):
         source = ROOT / module / "build/test-results"
         for xml in source.glob("*/TEST-*.xml"):
             if xml.stat().st_mtime < since:

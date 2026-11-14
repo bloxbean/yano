@@ -66,21 +66,25 @@ Host API. Its checksum is mandatory; see the harness README for the explicit
 baseline-file option. Do not substitute a freshly compiled API as the old side
 of the ABI check.
 
-The current development evidence used Yaci `0.5.0-pre15-app-only-245`, node API
-`0.1.0-245.4`, Host API `1.0.0-245.4`, and framework `0.1.0-245.9` in isolated local
-repositories. They are unpublished candidates, not remotely resolvable releases.
+Exact development candidate versions and artifact hashes are recorded in the
+[Phase 2 validation record](PHASE2_VALIDATION.md) and
+[review follow-up record](REVIEW_FOLLOWUP.md). They are unpublished candidates in
+isolated local repositories, not remotely resolvable releases.
 The final coordinated release must pin available upstream artifacts and freeze
 its supported host baseline. No release tag or public publication is needed to
 perform these incremental checks.
 
 For the independent host matrix, stage the thin host modules after framework
-publication: `core-api`, `appchain-config`, `consensus`, `p2p`, `ledger-rules`,
+publication: `appchain-config`, `consensus`, `p2p`, `ledger-rules`,
 `ledger-state`, `plugin-catalog` and `runtime`. Use the same exact framework
 input arguments as the harness, a new `-Pversion=HOST_VERSION` and the existing
 `-PhostApiVersion=HOST_API_VERSION`. Publish `node-api` and `cardano-api` for that
 host version as well. Do not republish an unchanged Host API coordinate.
-The final development host candidate is `0.1.0-245.5`, consuming X `.9` built
-against the older node API `.4` and unchanged Host API `1.0.0-245.4`.
+The current host declares its concrete node, Cardano and Host API dependencies;
+there is no current `yano-core-api` aggregate to stage. Keep the historical pre19
+aggregate only as the frozen ABI/compiled-client baseline. The artifact-input
+gate rejects obsolete aggregate dependencies in current runtime artifacts and
+generated publication POMs.
 
 Run X's `qa/framework/host-matrix/run.py` using its documented `prepare` and
 `run` steps, with both `standalone` and `cardano-construction` profiles. Freeze

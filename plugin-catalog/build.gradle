@@ -3,7 +3,8 @@ plugins {
 }
 
 dependencies {
-    api project(':core-api')
+    api project(':cardano-api')
+    api "org.yanoproject.x:yano-x-appchain-cardano-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.10')}"
     implementation libs.jackson.databind
 }
 

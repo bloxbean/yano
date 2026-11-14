@@ -7,7 +7,7 @@ package org.yanoproject.api.util;
  * For networks with no Byron era (preview, sanchonet, devnets), set {@code firstNonByronSlot = 0}.
  * <p>
  * This class is intentionally free of runtime or genesis config dependencies so it can be
- * used from any module (core-api, ledger-state, runtime, app).
+ * used from any module (cardano-api, ledger-state, runtime, app).
  */
 public class EpochSlotCalc {
 

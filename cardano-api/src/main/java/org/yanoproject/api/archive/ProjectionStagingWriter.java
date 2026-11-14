@@ -7,7 +7,7 @@ package org.yanoproject.api.archive;
  * key or value encoding; the archive owns the encoding and knows nothing about how the
  * batch is committed. That keeps ADR-039's atomicity guarantee — a section is durable
  * exactly when the state it was derived from is durable — without either side depending
- * on the other's internals, and without {@code core-api} taking a RocksDB dependency.
+ * on the other's internals, and without {@code cardano-api} taking a RocksDB dependency.
  */
 @FunctionalInterface
 public interface ProjectionStagingWriter {

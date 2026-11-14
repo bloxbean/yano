@@ -17,7 +17,7 @@ resolved production coordinates and SHA-256 of every JAR.
 | --- | --- |
 | `host` | Public ABI, fixed older plugin bytecode, class/resource ownership, N2N registration, retention leases, plugin lifecycle. |
 | `standalone` | Three-node gossip/finality, late protocol-103 catch-up, restart, canonical commitment agreement, fresh-store/profile boundaries and absence of L1 state. |
-| `configuration` | Existing flat/indexed property parsing, API/codec contracts and semantic validation. |
+| `configuration` | Existing flat/indexed property parsing, node/plugin contracts, Cardano API utilities and semantic validation. |
 | `consensus` | Existing complete runtime app-chain unit/integration suite, including storage, snapshots, observations and effects. |
 | `hybrid` | Existing shared transport, Cardano observer/anchor and subsystem lifecycle tests. |
 | `plugins` | Existing catalog, provider, lifecycle and plugin operations tests. |
@@ -25,6 +25,11 @@ resolved production coordinates and SHA-256 of every JAR.
 
 The `host` gate uses [japicmp](https://siom79.github.io/japicmp/CliTool.html) 0.26.5
 to compare the old core API JAR against the combined extracted API artifacts.
+The five current owners are `yano-node-api`, `yano-host-api`, `yano-cardano-api`,
+`yano-x-appchain-api` and `yano-x-appchain-cardano-api`. The retired
+`yano-core-api` aggregate is not published by the current build. Its historical
+JAR remains the frozen compatibility baseline; removing its current Maven
+coordinate does not retire the existing public Java signatures or plugin fixtures.
 Binary and source incompatibilities fail the build; missing classes are not ignored. The
 baseline is `org.yanoproject:yano-core-api:0.1.0-pre19`, SHA-256
 `e8cc29db9c9e36dd743c9ae81bd42e806a4035e87d090d392af017c5f12554e9`.
@@ -39,6 +44,18 @@ compiler/artifact hashes live in `fixtures/pre19/`; its JAR is under
 `runtime/src/test/resources/app-ledger/compat/`. It exercises old config and
 service calls through two actual host lifecycle cycles. Duplicate API definitions
 or moved wire resources also fail the host gate.
+
+Every gate also rejects the retired aggregate in the current runtime dependency
+closure or any freshly generated Maven publication POM, including the starter
+and BOM. Artifact reports include the generated POM hashes. Baseline-only
+configurations are excluded from this current-dependency check.
+
+The seven generic configuration/plugin/crypto suites run in `node-api`; the nine
+Cardano role/model/utility suites run in `cardano-api`. The configuration gate
+requires every relocated suite by name. Application-ledger operating-profile,
+codec, wire-vector and domain API model tests belong to X's `framework:api` and
+`framework:cardano-api` modules and run through `frameworkCheck`. Yano's
+standalone gate retains the real host assembly, consensus and restart checks.
 
 ## Exact coordinated inputs
 
