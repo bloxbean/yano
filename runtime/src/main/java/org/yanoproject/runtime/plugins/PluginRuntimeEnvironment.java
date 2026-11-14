@@ -5,6 +5,7 @@ import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSourceCategory;
+import org.yanoproject.catalog.BundleManifestParser;
 import org.yanoproject.catalog.CatalogDigests;
 import org.yanoproject.catalog.IndexedBundle;
 import org.yanoproject.catalog.PluginArtifactScanner;
@@ -18,10 +19,14 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.net.JarURLConnection;
+import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -30,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -63,7 +69,18 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
 
     public static PluginRuntimeEnvironment open(PluginsOptions options,
                                                 PluginLoaderHandle loaderHandle) {
-        return open(options, loaderHandle, (embeddedIndexSha256, result) ->
+        return open(options, loaderHandle, Set.of());
+    }
+
+    /**
+     * Select host-required embedded bundles through the ordinary catalog. These
+     * infrastructure roots and their embedded dependencies are independent of
+     * optional-plugin policy; directory bundles cannot satisfy them.
+     */
+    public static PluginRuntimeEnvironment open(PluginsOptions options,
+                                                PluginLoaderHandle loaderHandle,
+                                                Set<String> requiredEmbeddedBundles) {
+        return open(options, loaderHandle, requiredEmbeddedBundles, (embeddedIndexSha256, result) ->
                 log.info("{} indexSha256={} catalogFingerprint={}", PROVENANCE_LOG_PREFIX,
                         embeddedIndexSha256, result.catalog().fingerprint()));
     }
@@ -74,17 +91,27 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
             PluginLoaderHandle loaderHandle,
             PostBuildAction postBuildAction
     ) {
+        return open(options, loaderHandle, Set.of(), postBuildAction);
+    }
+
+    private static PluginRuntimeEnvironment open(
+            PluginsOptions options,
+            PluginLoaderHandle loaderHandle,
+            Set<String> requiredEmbeddedBundles,
+            PostBuildAction postBuildAction
+    ) {
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(loaderHandle, "loaderHandle");
         Objects.requireNonNull(postBuildAction, "postBuildAction");
+        Set<String> required = Set.copyOf(requiredEmbeddedBundles);
         loaderHandle.claimRuntimeOwnership();
         PluginCatalogBuilder.BuildResult result = null;
         try {
-            DiscoveryResult discovery = options.enabled()
-                    ? discoverInputs(options, loaderHandle) : DiscoveryResult.disabled();
+            DiscoveryResult discovery = options.enabled() || !required.isEmpty()
+                    ? discoverInputs(options, loaderHandle, required) : DiscoveryResult.disabled();
             result = new PluginCatalogBuilder().build(
                     options, loaderHandle.classLoader(), discovery.inputs(),
-                    discovery.allowUnindexedLegacyProviders());
+                    discovery.allowUnindexedLegacyProviders(), required);
             PluginRuntimeEnvironment environment =
                     new PluginRuntimeEnvironment(options, loaderHandle, result);
             postBuildAction.run(discovery.embeddedIndexSha256(), result);
@@ -137,7 +164,8 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
 
     private static DiscoveryResult discoverInputs(
             PluginsOptions options,
-            PluginLoaderHandle handle) {
+            PluginLoaderHandle handle,
+            Set<String> requiredEmbeddedBundles) {
         List<PluginCatalogBuilder.CatalogInput> inputs = new ArrayList<>();
         List<String> embeddedIndexDigests = new ArrayList<>();
         PluginIndexCodec codec = new PluginIndexCodec();
@@ -178,6 +206,17 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
                     embeddedIndexDigests.add(sha256(encodedIndex));
                 }
             }
+            if (embeddedIndexes.isEmpty()
+                    && handle.discoveryMode() == PluginDiscoveryMode.LIBRARY_COMPATIBILITY) {
+                inputs.addAll(discoverRequiredLibraryInputs(handle.embeddedIndexLoader(), requiredEmbeddedBundles));
+            }
+            if (!options.enabled()) {
+                // Required infrastructure uses only the trusted embedded index.
+                // Do not scan or install directory artifacts while user plugins
+                // are disabled, even when the supplied handle contains them.
+                return new DiscoveryResult(List.copyOf(inputs), false,
+                        embeddedIndexDigests.isEmpty() ? "none" : embeddedIndexDigests.getFirst());
+            }
             PluginArtifactScanner scanner = new PluginArtifactScanner();
             for (Path artifact : handle.artifacts()) {
                 PluginIndex index = scanner.scan(artifact);
@@ -206,6 +245,65 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         } catch (IOException e) {
             throw new IllegalStateException("Plugin catalog inputs could not be read", e);
         }
+    }
+
+    /** Library embedding may supply complete manifested JARs without a generated aggregate index. */
+    private static List<PluginCatalogBuilder.CatalogInput> discoverRequiredLibraryInputs(
+            ClassLoader loader, Set<String> roots) throws IOException {
+        List<PluginCatalogBuilder.CatalogInput> inputs = new ArrayList<>();
+        Set<String> discovered = new LinkedHashSet<>();
+        Deque<String> pending = new ArrayDeque<>(new TreeSet<>(roots));
+        PluginArtifactScanner scanner = new PluginArtifactScanner();
+        while (!pending.isEmpty()) {
+            String id = pending.removeFirst();
+            if (!discovered.add(id)) continue;
+            if (discovered.size() > PluginIndex.MAX_BUNDLES) {
+                throw new IllegalStateException("Too many host-required embedded plugin bundles");
+            }
+            String resourcePath = BundleManifestParser.RESOURCE_DIRECTORY + id + BundleManifestParser.RESOURCE_SUFFIX;
+            Enumeration<URL> resources = loader.getResources(resourcePath);
+            if (!resources.hasMoreElements()) {
+                throw new IllegalStateException("Host-required embedded plugin bundle '" + id
+                        + "' has no classpath manifest");
+            }
+            URL resource = resources.nextElement();
+            if (resources.hasMoreElements()) {
+                throw new IllegalStateException(
+                        "Multiple classpath manifests for host-required embedded plugin bundle '"
+                        + id + "'");
+            }
+            PluginIndex index = scanner.scan(manifestArtifact(resource, resourcePath));
+            IndexedBundle bundle = index.bundles().stream()
+                    .filter(candidate -> candidate.manifest().id().equals(id))
+                    .findFirst().orElseThrow(() -> new IllegalStateException(
+                            "Classpath artifact does not declare host-required embedded plugin bundle '" + id + "'"));
+            inputs.add(new PluginCatalogBuilder.CatalogInput(
+                    new PluginIndex(PluginIndex.CURRENT_SCHEMA_VERSION, List.of(bundle), List.of()),
+                    PluginSourceCategory.CLASSPATH));
+            bundle.manifest().dependencies().forEach(dependency -> pending.addLast(dependency.id()));
+        }
+        return List.copyOf(inputs);
+    }
+
+    private static Path manifestArtifact(URL resource, String resourcePath) throws IOException {
+        try {
+            if ("jar".equals(resource.getProtocol())) {
+                JarURLConnection connection = (JarURLConnection) resource.openConnection();
+                connection.setUseCaches(false);
+                URL jar = connection.getJarFileURL();
+                if ("file".equals(jar.getProtocol())) return Path.of(jar.toURI());
+            } else if ("file".equals(resource.getProtocol())) {
+                Path root = Path.of(resource.toURI());
+                for (int segment = 0; segment < resourcePath.split("/").length; segment++) {
+                    root = root.getParent();
+                    if (root == null) throw new IOException("Classpath manifest has no artifact root");
+                }
+                return root;
+            }
+        } catch (URISyntaxException invalid) {
+            throw new IOException("Classpath manifest artifact URL is invalid", invalid);
+        }
+        throw new IOException("Required classpath manifest must belong to a file JAR or exploded artifact");
     }
 
     /**

@@ -1,19 +1,4 @@
+// Preserve the former configuration coordinate for existing tooling and embedders.
 dependencies {
-    api project(':core-api')
-}
-
-java {
-    sourceCompatibility = 25
-    targetCompatibility = 25
-}
-
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            pom {
-                name = 'Yano App-Chain Configuration'
-                description = 'Typed app-chain configuration metadata and offline validation contracts'
-            }
-        }
-    }
+    api "org.yanoproject.x:yano-x-appchain-config:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
 }

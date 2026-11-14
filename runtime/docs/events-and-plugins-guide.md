@@ -10,7 +10,7 @@ with the [query and domain API plugin guide](../../docs/APP_CHAIN_PLUGIN_QUERY_A
 - Module overview
   - `events-core`: event SPI (`Event`, `EventBus`, `EventListener`, `EventContext`, `EventMetadata`, `SubscriptionOptions`, `PublishOptions`, `@DomainEventListener`), `SimpleEventBus`, `NoopEventBus`, registrar, `support.DomainEventBindings` SPI.
   - `events-processor`: JSR 269 annotation processor generating build-time bindings for `@DomainEventListener` (GraalVM friendly).
-  - `core-api`: plugin SPI (`NodePlugin`, `PluginContext`, `PluginCapability`, `Notifier`, `Notification`, `StorageAdapter`, `NodePolicy`), config (`RuntimeOptions`, `PluginsOptions`).
+  - `node-api`: plugin SPI (`NodePlugin`, `PluginContext`, `PluginCapability`, `Notifier`, `Notification`, `StorageAdapter`, `NodePolicy`), config (`RuntimeOptions`, `PluginsOptions`).
   - `plugin-catalog`: strict bundle manifest parsing, artifact correlation and
     canonical aggregate-index generation.
   - `runtime`: catalog/runtime ownership, lifecycle wiring, publication points,
@@ -71,7 +71,7 @@ Use explicit options (records) — do not rely on `System.setProperty`.
   - `bufferSize` (int): queue capacity for async offload.
   - `overflow` (enum): `BLOCK | DROP_LATEST | DROP_OLDEST | ERROR`.
 
-- `PluginsOptions` (core-api)
+- `PluginsOptions` (node-api)
   - `enabled` (boolean): enable/disable plugin system.
   - `autoRegisterAnnotated` (boolean): reserved and currently inactive; plugins
     should own their listener handles explicitly.
@@ -85,7 +85,7 @@ Use explicit options (records) — do not rely on `System.setProperty`.
     `yano.plugins.bundle."<bundle-id>".*`; the context removes that exact owner
     segment and exposes only the selected bundle's values.
 
-- `RuntimeOptions` (core-api)
+- `RuntimeOptions` (node-api)
   - Wraps `EventsOptions`, `PluginsOptions`, and a `globals` map.
 
 ### Embedding in plain Java
@@ -169,7 +169,8 @@ reported by the app-chain operations surface.
 ### Authenticated-map validator bundles
 
 An `authenticated-map-validator` contribution implements
-`AuthenticatedMapValueValidatorFactory` from `core-api`. It is narrowly scoped
+`AuthenticatedMapValueValidatorFactory` from Yano-X
+`framework/api` (`org.yanoproject.x:yano-x-appchain-api`). It is narrowly scoped
 to a pure verdict over `(collectionId, applicationKey, value)` and must not be
 used for rules that read state. The descriptor selecting it lives in
 authenticated-map genesis, not node-local plugin configuration.
@@ -383,6 +384,7 @@ SubscriptionHandle h = bus.subscribe(
 
 ## References
 
-- SPI: `events-core` and `core-api` modules.
+- Event/plugin SPI: `events-core` and `node-api`; application-ledger contracts:
+  [Yano-X framework/api](https://github.com/bloxbean/yano-x/tree/main/framework/api).
 - Processor: `events-processor` module.
 - Example: `runtime` `LoggingPlugin` and event publications.

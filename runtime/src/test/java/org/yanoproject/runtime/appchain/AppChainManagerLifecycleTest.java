@@ -1,14 +1,25 @@
 package org.yanoproject.runtime.appchain;
 
-import org.yanoproject.api.appchain.l1view.L1EpochStateProvider;
+import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.AppLedgerOperatingProfile;
 import org.yanoproject.api.appchain.l1view.L1EpochBoundary;
 import org.yanoproject.api.appchain.l1view.L1EpochState;
+import org.yanoproject.api.appchain.l1view.L1EpochStateProvider;
+import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.List;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -16,19 +27,74 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 class AppChainManagerLifecycleTest {
+    @TempDir Path directory;
 
     @Test
-    void epochStateIsWiredAfterManagerAssemblyAndReachesEveryChain() {
-        List<L1EpochStateProvider> firstWiring = new ArrayList<>();
-        List<L1EpochStateProvider> secondWiring = new ArrayList<>();
-        ScriptedChain first = chain("first", new ArrayList<>(), null, null, firstWiring);
-        ScriptedChain second = chain("second", new ArrayList<>(), null, null, secondWiring);
+    void epochStateIsWiredAfterManagerAssemblyAndReachesEveryChain() throws Exception {
+        AppChainSubsystem first = cardanoChain("first");
+        AppChainSubsystem second = cardanoChain("second");
         L1EpochStateProvider provider = inertEpochStateProvider();
+        try (AppChainManager manager = new AppChainManager(List.of(first, second),
+                LoggerFactory.getLogger(getClass()))) {
+            manager.wireL1EpochState(provider);
+            var field = AppChainSubsystem.class.getDeclaredField("epochStateProvider");
+            field.setAccessible(true);
+            assertThat(field.get(first)).isSameAs(provider);
+            assertThat(field.get(second)).isSameAs(provider);
+        }
+    }
 
-        AppChainManager.wireL1EpochState(List.of(first, second), provider);
+    @Test
+    void genericManagerHostsStandaloneRuntimesAndPreservesLifecycleOrder() {
+        List<String> calls = new ArrayList<>();
+        AppLedgerRuntime first = new TrackedRuntime(config("first", true), directory, calls);
+        AppLedgerRuntime second = new TrackedRuntime(config("second", true), directory, calls);
+        try (AppLedgerManager manager = new AppLedgerManager(List.of(first, second),
+                LoggerFactory.getLogger(getClass()))) {
+            assertThat(manager.byId("first")).contains(first);
+            assertThat(manager.byId("missing")).isEmpty();
+            assertThat(manager.all()).containsExactly(first, second);
+            manager.start();
+            manager.stop();
+            assertThat(calls).containsExactly("start:first", "start:second", "stop:second", "stop:first");
+        }
+        assertThat(calls.stream().filter(call -> call.startsWith("close:")))
+                .containsExactly("close:second", "close:first");
+    }
 
-        assertThat(firstWiring).containsExactly(provider);
-        assertThat(secondWiring).containsExactly(provider);
+    private AppChainSubsystem cardanoChain(String chainId) {
+        return new AppChainSubsystem(config(chainId, false), 42, null, null, directory.toString(),
+                LoggerFactory.getLogger(getClass()));
+    }
+
+    private static AppChainConfig config(String chainId, boolean standalone) {
+        byte[] seed = new byte[32];
+        Arrays.fill(seed, (byte) 37);
+        String member = HexFormat.of().formatHex(KeyGenUtil.getPublicKeyFromPrivateKey(seed));
+        return AppChainConfig.builder(chainId)
+                .signingKeyHex(HexFormat.of().formatHex(seed))
+                .memberKeysHex(Set.of(member))
+                .proposerKeyHex(member)
+                .threshold(1)
+                .blockIntervalMs(60_000)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .pluginSettings(standalone ? Map.of(AppLedgerOperatingProfile.SETTING,
+                        AppLedgerOperatingProfile.STANDALONE.id()) : Map.of())
+                .build();
+    }
+
+    private static final class TrackedRuntime extends AppLedgerRuntime {
+        private final List<String> calls;
+
+        private TrackedRuntime(AppChainConfig config, Path directory, List<String> calls) {
+            super(config, 42, null, null, directory.toString(), PluginProviderRegistry.empty(),
+                    LoggerFactory.getLogger(TrackedRuntime.class));
+            this.calls = calls;
+        }
+
+        @Override public void start() { super.start(); calls.add("start:" + chainId()); }
+        @Override public void stop() { super.stop(); calls.add("stop:" + chainId()); }
+        @Override public void close() { super.close(); calls.add("close:" + chainId()); }
     }
 
     @Test
@@ -46,7 +112,7 @@ class AppChainManagerLifecycleTest {
         ScriptedChain failing = chain("failing", calls, startFailure, null);
         Logger logger = mock(Logger.class);
 
-        assertThatThrownBy(() -> AppChainManager.startManagedChains(
+        assertThatThrownBy(() -> AppLedgerManager.startManagedChains(
                 List.of(first, second, third, failing), logger)).isSameAs(fatalCleanup);
 
         assertThat(calls).containsExactly(
@@ -69,7 +135,7 @@ class AppChainManagerLifecycleTest {
         ScriptedChain second = chain("second", calls, null, fatalCleanup);
         ScriptedChain third = chain("third", calls, null, containableCleanup);
 
-        assertThatThrownBy(() -> AppChainManager.stopManagedChains(
+        assertThatThrownBy(() -> AppLedgerManager.stopManagedChains(
                 List.of(first, second, third), mock(Logger.class))).isSameAs(fatalCleanup);
 
         assertThat(calls).containsExactly("stop:third", "stop:second", "stop:first");
@@ -82,7 +148,7 @@ class AppChainManagerLifecycleTest {
             Throwable startFailure,
             Throwable stopFailure
     ) {
-        return chain(id, calls, startFailure, stopFailure, new ArrayList<>());
+        return new ScriptedChain(id, calls, startFailure, stopFailure);
     }
 
     private static L1EpochStateProvider inertEpochStateProvider() {
@@ -114,23 +180,12 @@ class AppChainManagerLifecycleTest {
         };
     }
 
-    private static ScriptedChain chain(
-            String id,
-            List<String> calls,
-            Throwable startFailure,
-            Throwable stopFailure,
-            List<L1EpochStateProvider> wiring
-    ) {
-        return new ScriptedChain(id, calls, startFailure, stopFailure, wiring);
-    }
-
     private record ScriptedChain(
             String chainId,
             List<String> calls,
             Throwable startFailure,
-            Throwable stopFailure,
-            List<L1EpochStateProvider> wiring
-    ) implements AppChainManager.ManagedChain {
+            Throwable stopFailure
+    ) implements AppLedgerManager.ManagedChain {
         @Override
         public void start() {
             calls.add("start:" + chainId);
@@ -141,11 +196,6 @@ class AppChainManagerLifecycleTest {
         public void stop() {
             calls.add("stop:" + chainId);
             throwUnchecked(stopFailure);
-        }
-
-        @Override
-        public void wireL1EpochState(L1EpochStateProvider provider) {
-            wiring.add(provider);
         }
 
         private static void throwUnchecked(Throwable failure) {

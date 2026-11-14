@@ -2,6 +2,7 @@ package org.yanoproject.app.api.nonce;
 
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -18,6 +19,7 @@ import java.util.Map;
 @Extension(name = ApiGroup.ADMIN, value = "")
 @Path("node")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class EpochNonceResource {
 
     @Inject

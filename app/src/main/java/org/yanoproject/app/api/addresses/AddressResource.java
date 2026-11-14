@@ -14,6 +14,7 @@ import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.api.wallet.WalletIndexUnavailableException;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.addresses.dto.AddressSummaryDto;
 import org.yanoproject.app.api.addresses.dto.AddressTxDto;
 import org.yanoproject.app.api.utxos.dto.AmountDto;
@@ -49,6 +50,7 @@ import java.util.Map;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("/")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class AddressResource {
     private static final Logger log = LoggerFactory.getLogger(AddressResource.class);
     private static final int SUMMARY_PAGE_SIZE = 100;

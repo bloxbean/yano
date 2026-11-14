@@ -101,6 +101,7 @@ public final class PluginManager implements AutoCloseable {
             new CopyOnWriteArrayList<>();
 
     private State state = State.NEW;
+    private Runnable beforePluginCleanup = () -> { };
     private Thread closingThread;
 
     /**
@@ -285,8 +286,25 @@ public final class PluginManager implements AutoCloseable {
         }
     }
 
+    /** Publish an existing host capability before any plugin initialization callback can run. */
+    public synchronized void registerHostService(String key, Object service) {
+        requireState(State.NEW, "register host services");
+        services.registerHost(key, service);
+    }
+
+    /** Read an init- or start-scoped service from the existing shared registry. */
+    public <T> Optional<T> getService(String key, Class<T> type) {
+        return services.get(key, type);
+    }
+
     /** Discover, validate and initialize the selected plugin set exactly once. */
     public void discoverAndInit() {
+        discoverAndInit(() -> { });
+    }
+
+    /** Drain registered host services before plugin-owned resources on initialization/start failure. */
+    public void discoverAndInit(Runnable failureCleanup) {
+        Objects.requireNonNull(failureCleanup, "failureCleanup");
         requireNotInCatalogCallback("discover and initialize plugins");
         synchronized (this) {
             if (state == State.INITIALIZED || state == State.STARTED
@@ -294,6 +312,7 @@ public final class PluginManager implements AutoCloseable {
                 return;
             }
             requireState(State.NEW, "discover and initialize");
+            beforePluginCleanup = failureCleanup;
             state = State.DISCOVERING;
 
             if (!options.enabled()) {
@@ -317,6 +336,8 @@ public final class PluginManager implements AutoCloseable {
             managedCallbacks.awaitCompletion(callbackCleanup);
             List<Throwable> cleanupFailures = new ArrayList<>(
                     managedCallbacks.drainCleanupFailures());
+            try { beforePluginCleanup.run(); }
+            catch (Throwable cleanup) { cleanupFailures.add(cleanup); }
             closeInternallyDiscoveredReverse(cleanupFailures);
             synchronized (this) {
                 state = State.FAILED;
@@ -349,6 +370,8 @@ public final class PluginManager implements AutoCloseable {
                         managedCallbacks.sealTerminal();
                 managedCallbacks.awaitCompletion(callbackCleanup);
                 cleanupFailures.addAll(managedCallbacks.drainCleanupFailures());
+                try { beforePluginCleanup.run(); }
+                catch (Throwable cleanup) { cleanupFailures.add(cleanup); }
                 if (suppliedPlugins == null) {
                     // Standalone ServiceLoader construction owns the complete
                     // discovered set, including not-yet-initialized tails.
@@ -459,6 +482,8 @@ public final class PluginManager implements AutoCloseable {
                         managedCallbacks.sealTerminal();
                 managedCallbacks.awaitCompletion(callbackCleanup);
                 cleanupFailures.addAll(managedCallbacks.drainCleanupFailures());
+                try { beforePluginCleanup.run(); }
+                catch (Throwable cleanup) { cleanupFailures.add(cleanup); }
                 stopOne(plugin, id, cleanupFailures);
                 stopStartedReverse(cleanupFailures);
                 closeInitializedReverse(cleanupFailures);

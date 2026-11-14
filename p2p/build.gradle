@@ -1,5 +1,5 @@
 dependencies {
-    api project(':core-api')
+    api project(':cardano-api')
     api libs.yaci.core
     api libs.yaci.helper
 

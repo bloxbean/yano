@@ -6,7 +6,7 @@ Java libraries. It connects to **one upstream** Cardano node (client mode) and s
 header/body pipeline with RocksDB persistence.
 
 Every component — protocol agents, event bus, storage, plugin system — ships as a
-standalone library (`core`, `helper`, `core-api`, `runtime`, `events-core`).
+standalone library (`core`, `helper`, `node-api`, `cardano-api`, `host-api`, `runtime`, `events-core`).
 The app is one assembly; you can build your own.
 
 ---
@@ -269,7 +269,9 @@ All modules ship as standalone libraries on Maven Central (`com.bloxbean.cardano
 | **helper** | Reactive APIs for common operations | `BlockSync`, `N2NChainSyncFetcher`, `TxSubmissionClient` |
 | **events-core** | Framework-agnostic event bus SPI | `EventBus`, `EventListener`, `@DomainEventListener`, `VetoableEvent` |
 | **events-processor** | Annotation processor for AOT event bindings | `DomainEventBindings` (generated) |
-| **core-api** | Public node interfaces and plugin SPI | `NodePlugin`, `PluginContext`, `StorageFilter`, `UtxoState`, all event types |
+| **node-api** | Shared node/configuration contracts and plugin SPI | `NodePlugin`, `PluginContext`, `StorageFilter`, `RuntimeOptions` |
+| **cardano-api** | Cardano chain, ledger, and query contracts | `ChainQuery`, `LedgerQuery`, `TxGateway` |
+| **host-api** | Versioned framework hosting capabilities | `HostApi`, `HostLifecycleRegistry`, `N2NExtensionRegistry` |
 | **runtime** | Node implementation with RocksDB | `Yano`, `DirectRocksDBChainState`, `DefaultUtxoStore`, `BlockProducer` |
 | **bootstrap-providers** | Fast startup via external APIs | `BlockfrostBootstrapProvider`, `KoiosBootstrapProvider` |
 | **ledger-rules** | Transaction validation API and Conway ledger rules | `TransactionValidator`, `TransactionEvaluator`, `LedgerStateValidator` |
@@ -277,7 +279,8 @@ All modules ship as standalone libraries on Maven Central (`com.bloxbean.cardano
 | **scalus-bridge** | Plutus script evaluation via Scalus | `ScalusBasedTransactionValidator`, `ScalusBasedTransactionEvaluator` |
 | **app** | Quarkus REST application wrapper | JAX-RS resources, health checks, CDI producers |
 
-**Using as libraries** — to build a custom node, depend on `core-api` + `runtime`
+**Using as libraries** — to build a custom node, depend on `runtime`, which exposes
+its `node-api`, `cardano-api`, and Host API contracts,
 and wire it through the composition root:
 
 ```java

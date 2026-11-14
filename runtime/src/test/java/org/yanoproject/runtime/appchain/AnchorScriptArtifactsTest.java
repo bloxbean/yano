@@ -5,6 +5,10 @@ import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.appchain.AppChainConfig.AnchorScriptConfig;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -91,10 +95,17 @@ class AnchorScriptArtifactsTest {
     }
 
     @Test
-    void fileRef_loadsTheBundledReleaseArtifacts() {
-        // The Aiken artifacts checked in beside their source must load
-        // through the SAME production path (ADR 008.4 §2.4)
-        String base = "../appchain/onchain/aiken/appchain-anchor/artifacts/";
+    void fileRef_loadsTheBundledReleaseArtifacts(@TempDir Path directory) throws Exception {
+        // Exercise file: loading using the exact published resources; the host
+        // consumer must not depend on another repository's authoring checkout.
+        try (var validator = getClass().getResourceAsStream("/META-INF/plutus/AnchorValidator.plutus.json");
+             var policy = getClass().getResourceAsStream("/META-INF/plutus/AnchorThreadPolicy.plutus.json")) {
+            assertThat(validator).isNotNull();
+            assertThat(policy).isNotNull();
+            Files.copy(validator, directory.resolve("anchor-validator.plutus.json"));
+            Files.copy(policy, directory.resolve("thread-policy.plutus.json"));
+        }
+        String base = directory.toAbsolutePath() + "/";
         AnchorScriptArtifacts aiken = new AnchorScriptArtifacts(new AnchorScriptConfig(
                 "file:" + base + "anchor-validator.plutus.json",
                 "file:" + base + "thread-policy.plutus.json"));

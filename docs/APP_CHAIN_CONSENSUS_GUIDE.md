@@ -7,11 +7,13 @@ it, debug it, or audit it. Companion docs are the
 and the core ADRs under `adr/app-layer/`. Extension tutorials and product ADRs
 live in [Yano X](https://github.com/bloxbean/yano-x).
 
-Code pointers use class names — start at
-`runtime/.../appchain/AppChainEngine.java` (consensus core),
-`core-api/.../appchain/` (SPI + codecs), and
-`runtime/.../appchain/OrderedLogStateMachine.java` (the one built-in state
-machine, whose transition logic is `core-api/.../appchain/transition/OrderedLogKernel.java`).
+Code pointers refer to the owning [Yano-X framework](https://github.com/bloxbean/yano-x/tree/main/framework):
+[`AppChainEngine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/runtime/appchain/AppChainEngine.java)
+for consensus, [`framework/api`](https://github.com/bloxbean/yano-x/tree/main/framework/api/src/main/java/org/yanoproject/api/appchain)
+for SPI and codecs, and
+[`OrderedLogStateMachine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/runtime/appchain/OrderedLogStateMachine.java)
+for the built-in machine. Its transition logic is
+[`OrderedLogKernel`](https://github.com/bloxbean/yano-x/blob/main/framework/api/src/main/java/org/yanoproject/api/appchain/transition/OrderedLogKernel.java).
 
 ---
 
@@ -483,7 +485,7 @@ cbor([schemaVersion, height, index, topic, sender])` and maintains a namespaced
 tip record. Resolve the public message ID through the `finalized-message-v1`
 typed proof subject; `state/proof/{keyHex}` is the lower-level route for the
 resolved physical key. The record format is shared (`FinalizedMessageIndex` in
-core-api) with opt-in indexes so proofs never diverge.
+Yano-X `framework/api`) with opt-in indexes so proofs never diverge.
 
 Additional state machines are ServiceLoader plugins maintained in
 [Yano X](https://github.com/bloxbean/yano-x/tree/main/state-machines). Their
@@ -548,6 +550,7 @@ plugins so Yano's core documentation does not imply that they are built in.
 - **Rotation & governed membership design**: `adr/app-layer/008.2-*`,
   `008.3-*`.
 - **Wire ABIs** (anchor datum, evidence bundle, observations):
-  `core-api/src/main/cddl/appchain/*.cddl`.
+  [framework API CDDL](https://github.com/bloxbean/yano-x/tree/main/framework/api/src/main/cddl/appchain)
+  and the [Cardano anchor CDDL](https://github.com/bloxbean/yano-x/blob/main/framework/cardano-api/src/main/cddl/appchain/anchor-v1.cddl).
 - **Live regressions** that exercise everything in this guide on a real
   devnet: the `test-app-chain-*` skills under `.claude/skills/`.

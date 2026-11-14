@@ -1,0 +1,9 @@
+description = 'Generic node/plugin foundation contracts without Cardano SDK or host implementation'
+dependencies {
+    // App-only protocols use Yaci's crypto/CBOR/network stack. Cardano transaction
+    // construction is restored explicitly by cardano-api for integrated hosts.
+    api(libs.yaci.core) { exclude group: 'com.bloxbean.cardano', module: 'cardano-client-core' }
+    api(libs.yaci.helper) { exclude group: 'com.bloxbean.cardano', module: 'cardano-client-core' }
+    api libs.yaci.events.core
+    implementation libs.cardano.client.crypto
+}

@@ -7,6 +7,7 @@ import org.yanoproject.api.appchain.AppBlock;
 import org.yanoproject.api.appchain.AppBlockExecutionContext;
 import org.yanoproject.api.appchain.effects.AppEffectEmitter;
 import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.api.appchain.AppLedgerOperatingProfile;
 import org.yanoproject.api.appchain.AppStateMachine;
 import org.yanoproject.api.appchain.AppStateWriter;
 import org.yanoproject.api.appchain.FinalityCert;
@@ -620,6 +621,58 @@ class AppChainEngineIdentityValidationTest {
         return CertifiedConsensusCodec.encodeNewView(new CertifiedConsensusCodec.NewViewCertificate(
                 2, 1, context, List.of(new CertifiedConsensusCodec.SignedTimeout(
                 signer.publicKey(), timeout))));
+    }
+
+    @Test
+    void standaloneRejectsSignedL1ReferencesOnLiveAndCatchUpPaths(@TempDir Path directory)
+            throws Exception {
+        AppMessageSigner proposer = new AppMessageSigner(HexUtil.encodeHexString(filled(51)));
+        AppMessageSigner follower = new AppMessageSigner(HexUtil.encodeHexString(filled(52)));
+        Set<String> members = Set.of(proposer.publicKeyHex(), follower.publicKeyHex());
+        AppChainConfig config = AppChainConfig.builder(CHAIN)
+                .signingKeyHex(HexUtil.encodeHexString(filled(52))).memberKeysHex(members)
+                .proposerKeyHex(proposer.publicKeyHex()).threshold(1)
+                .pluginSettings(Map.of(AppLedgerOperatingProfile.SETTING, "standalone-v1"))
+                .stateCommitmentIdentity(TestStateCommitments.MPF).build();
+        Logger logger = mock(Logger.class);
+        AppLedgerStore ledger = new AppLedgerStore(directory.resolve("ledger").toString(), logger);
+        CountDownLatch voted = new CountDownLatch(1);
+        AtomicLong votes = new AtomicLong();
+        AppChainEngine engine = new AppChainEngine(config, ledger, new AppMsgPool(10), new NoOpMachine(),
+                follower, new MemberGroup(members, 1), new AlwaysSequencer(), 60_000, 10,
+                config.blockMaxBytes(), (topic, body) -> {
+                    if (ConsensusCodec.TOPIC_PREPARE.equals(topic)) {
+                        votes.incrementAndGet();
+                        voted.countDown();
+                    }
+                    return null;
+                }, logger);
+        try {
+            AppBlock valid = withConsensusProfileRoot(block(AppBlock.BLOCK_VERSION, CHAIN,
+                    List.of(), proposer.publicKey()), config, ledger);
+            // Both certificates are cryptographically valid. Accepting the L1-linked one
+            // would occupy height 1 and make the no-L1 control block impossible to import.
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(certify(withL1(valid), proposer))));
+            engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(certify(valid, proposer))));
+            awaitTip(ledger, 1);
+            assertThat(ledger.block(1).orElseThrow().l1Slot()).isZero();
+            AppBlock next = nextBlock(valid, System.currentTimeMillis(), proposer.publicKey());
+            engine.onConsensusMessage(proposal(proposer, withL1(next), 1));
+            engine.onConsensusMessage(proposal(proposer, next, 2));
+            assertThat(voted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(votes.get()).isEqualTo(1);
+        } finally {
+            engine.close();
+            engine.closeCompletion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            ledger.close();
+        }
+    }
+
+    private static AppBlock withL1(AppBlock block) {
+        return new AppBlock(block.version(), block.chainId(), block.height(),
+                block.consensusContextDigest(), block.view(), block.prevHash(), 42,
+                filled(3), block.timestamp(), block.messagesRoot(), block.stateRoot(),
+                block.messages(), block.proposer(), block.justification(), block.cert());
     }
 
     private static AppBlock atView(AppBlock block, long view, byte[] justification) {

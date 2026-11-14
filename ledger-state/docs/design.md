@@ -494,7 +494,7 @@ and rollback directory cleanup no longer exist.
 
 ```
 ledger-state
-    |- core-api       (AccountStateStore interface, events, EpochParamProvider)
+    |- cardano-api    (AccountStateStore interface, Cardano events, EpochParamProvider)
     |- core           (Block, Transaction, Certificate, Governance models)
     |- rocksdb        (persistence)
     |- cbor           (CBOR serialization)

@@ -13,7 +13,9 @@ To run Yano, [download a release](/start/installation/). To change the node itse
 
 | Area | Responsibility |
 | --- | --- |
-| `core-api` | Public contracts, role interfaces, plugin SPI |
+| `node-api` | Shared node/configuration contracts and plugin SPI |
+| `cardano-api` | Cardano chain, ledger, and query contracts |
+| `host-api` | Independently versioned framework hosting capabilities |
 | `runtime` | Node assembly and runtime implementation |
 | `ledger-state`, `ledger-rules` | Ledger state, validation API and Conway ledger rules |
 | `script-evaluators`, `scalus-bridge` | Plutus script evaluators and the Scalus bridge |

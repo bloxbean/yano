@@ -2,6 +2,7 @@ package org.yanoproject.app;
 
 import org.yanoproject.runtime.chain.MempoolAdmissionException;
 import org.yanoproject.api.ChainQuery;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.NodeLifecycle;
 import org.yanoproject.api.TxGateway;
@@ -54,6 +55,7 @@ public class YanoResource {
 
     @GET
     @Path("/peers")
+    @RequiresCardano
     public Response getPeers() {
         return Response.ok(nodeLifecycle.getPeers()).build();
     }
@@ -101,6 +103,7 @@ public class YanoResource {
     @Path("/tip")
     @Extension(name = ApiGroup.CORE, value = "")
     @Extension(name = ApiGroup.ADMIN, value = "")
+    @RequiresCardano
     public Response getLocalTip() {
         var tip = chainQuery.getLocalTip();
         if (tip == null) {
@@ -142,6 +145,7 @@ public class YanoResource {
     @POST
     @Path("/tx/submit")
     @Consumes(MediaType.APPLICATION_OCTET_STREAM)
+    @RequiresCardano
     public Response submitTransaction(byte[] txCbor) {
         if (txCbor == null || txCbor.length == 0) {
             return Response.status(Response.Status.BAD_REQUEST)
@@ -173,6 +177,7 @@ public class YanoResource {
     @Path("/protocol-params")
     @Extension(name = ApiGroup.CORE, value = "")
     @Extension(name = ApiGroup.ADMIN, value = "")
+    @RequiresCardano
     public Response getProtocolParameters() {
         String params = ledgerQuery.getProtocolParameters();
         if (params == null) {
@@ -185,6 +190,7 @@ public class YanoResource {
 
     @GET
     @Path("/epoch-calc-status")
+    @RequiresCardano
     public Response getEpochCalcStatus() {
         var status = ledgerQuery.getEpochCalcStatus();
         if (status == null) {
@@ -195,6 +201,7 @@ public class YanoResource {
 
     @POST
     @Path("/recover")
+    @RequiresCardano
     public Response recoverChain() {
         try {
             if (nodeLifecycle.isRunning()) {

@@ -23,9 +23,19 @@ def cryptoTestLock = gradle.sharedServices.registerIfAbsent(
     maxParallelUsages = 1
 }
 
+// Opt in explicitly for coordinated local host development; never let locally
+// republished third-party artifacts mask missing or incompatible remote inputs.
+def useMavenLocalValue = providers.gradleProperty('useMavenLocal').getOrElse('false')
+if (!(useMavenLocalValue in ['true', 'false'])) {
+    throw new GradleException('useMavenLocal must be true or false')
+}
+def useLocalRepository = Boolean.parseBoolean(useMavenLocalValue)
+
 repositories {
     mavenCentral()
-    mavenLocal()
+    if (useLocalRepository) {
+        mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+    }
     maven {
         url "https://central.sonatype.com/repository/maven-snapshots/"
     }
@@ -38,6 +48,22 @@ repositories {
 
 def aggregateSbomJson = layout.buildDirectory.file(
         "reports/cyclonedx/yano-${project.version}.cdx.json")
+allprojects {
+    // External framework artifacts refer to these published coordinates. Select
+    // this build's API projects once, avoiding duplicate host classes at runtime.
+    configurations.configureEach {
+        resolutionStrategy.dependencySubstitution {
+            substitute module('org.yanoproject:yano-node-api') using project(':node-api')
+            substitute module('org.yanoproject:yano-cardano-api') using project(':cardano-api')
+            substitute module('org.yanoproject:yano-host-api') using project(':host-api')
+        }
+    }
+    def frameworkRepository = providers.gradleProperty('appLedgerFrameworkRepository')
+    if (frameworkRepository.isPresent()) {
+        repositories { maven { url = uri(frameworkRepository.get()) } }
+    }
+}
+
 allprojects { candidate ->
     candidate.tasks.named('cyclonedxDirectBom') {
         includeConfigs = ['runtimeClasspath']
@@ -64,7 +90,6 @@ compileJava {
 
 
 dependencies {
-    api project(':core-api')
     api project(':runtime')
 }
 
@@ -379,7 +404,7 @@ publishing {
             // exempt, which is how :yano-bom already publishes.
             //
             // yano-runtime api-depends on plugin-catalog, consensus, p2p,
-            // ledger-rules and ledger-state, so these two coordinates give a
+            // ledger-rules and ledger-state, so this coordinate gives a
             // downstream application the whole node stack transitively.
             // Optional modules -- scalus-bridge, script-evaluators, archive-*,
             // tx-services, bootstrap-providers -- stay opt-in, and the testkits
@@ -389,7 +414,7 @@ publishing {
                 packaging = 'pom'
                 withXml {
                     def dependencies = asNode().appendNode('dependencies')
-                    ['yano-core-api', 'yano-runtime'].each { artifact ->
+                    ['yano-runtime'].each { artifact ->
                         def dependency = dependencies.appendNode('dependency')
                         dependency.appendNode('groupId', project.group)
                         dependency.appendNode('artifactId', artifact)
@@ -486,7 +511,9 @@ subprojects {
     }
 
     repositories {
-        mavenLocal()
+        if (useLocalRepository) {
+            mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+        }
         mavenCentral()
         maven {
             url "https://central.sonatype.com/repository/maven-snapshots/"

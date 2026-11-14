@@ -7,6 +7,7 @@ import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.MempoolQueryGateway;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.scripts.dto.ScriptCborDto;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
@@ -22,6 +23,7 @@ import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("scripts")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class ScriptResource {
 
     @Inject

@@ -7,7 +7,7 @@ import java.util.Objects;
 /**
  * Helpers for {@link Outpoint} keys.
  *
- * <p>{@code Outpoint} is a {@code core-api} record that does not normalise its hash. Ledger views and
+ * <p>{@code Outpoint} is a {@code cardano-api} record that does not normalise its hash. Ledger views and
  * overlays key on the lowercase form produced by {@link #normalize(Outpoint)}.</p>
  */
 public final class Outpoints {

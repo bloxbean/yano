@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.model.TxEvaluationResult;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -24,6 +25,7 @@ import java.util.Map;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("utils/txs")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class EvaluationResource {
 
     private static final Logger log = LoggerFactory.getLogger(EvaluationResource.class);

@@ -1,5 +1,11 @@
 dependencies {
-    api project(':core-api')
+    api project(':node-api')
+    api project(':cardano-api')
+    api project(':host-api')
+    api "org.yanoproject.x:yano-x-appchain-cardano:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
+    // Compile the embedded framework's service keys; its selected root supplies
+    // the adapter at runtime, so the host does not pin a second runtime copy.
+    compileOnly "org.yanoproject.x:yano-x-appchain-host-adapter:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
     implementation project(':appchain-config')
     api project(':plugin-catalog')
     api project(':consensus')
@@ -19,29 +25,15 @@ dependencies {
 
     implementation libs.cardano.client.core
     implementation libs.cardano.client.crypto.ext
-    // App-chain state commitment (Merkle Patricia Forestry, Aiken-compatible)
-    implementation libs.cardano.client.mpf
-    implementation libs.cardano.client.mpf.rocksdb
-    // ADR-025 Phase 3: pinned classic radix-16 Blake2b-256 JMT core. Its
-    // persistence SPI is implemented against this runtime's shared WriteBatch.
-    implementation libs.cardano.client.jmt
+    // Retained consumer regression tests exercise X-owned storage implementations.
+    testImplementation libs.cardano.client.mpf
+    testImplementation libs.cardano.client.mpf.rocksdb
+    testImplementation libs.cardano.client.jmt
     api project(':ledger-rules')
     api project(':ledger-state')
     implementation libs.jackson.databind
 
-    // Script anchors (ADR 008.4): UPLC param application + script hashing for
-    // the anchor artifacts...
-    implementation libs.julc.cardano.client.lib
-    // ...and the julc VM provider that JulcTransactionEvaluator loads through
-    // ServiceLoader when ScriptAnchorService prices anchor transactions.
-    runtimeOnly(libs.julc.vm.java) {
-        exclude group: 'com.bloxbean.cardano', module: 'cardano-client-lib'
-    }
-    // ...and the bundled julc-compiled anchor artifacts (resources only — the
-    // validator classes are never loaded)
-    runtimeOnly project(':appchain-anchor-onchain')
-    // Anchor tx construction (Iteration 4, owner-requested): QuickTx balances
-    // fees/collateral/change with additionalSignersCount for co-sign witnesses
+    // Host-backed transaction builder still uses QuickTx directly.
     implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
@@ -232,3 +224,5 @@ tasks.register('verifyWalletHistory', JavaExec) {
     args providers.gradleProperty('walletVerifyDatabase').getOrElse(''),
             providers.gradleProperty('walletVerifyOutput').getOrElse('')
 }
+
+apply from: rootProject.file('qa/app-ledger/artifact-verification.gradle')
