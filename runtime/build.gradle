@@ -1,6 +1,6 @@
 dependencies {
     api project(':core-api')
-    api "org.yanoproject.x:yano-x-appchain-core:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.2')}"
+    api "org.yanoproject.x:yano-x-appchain-core:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.3')}"
     implementation project(':appchain-config')
     api project(':plugin-catalog')
     api project(':consensus')

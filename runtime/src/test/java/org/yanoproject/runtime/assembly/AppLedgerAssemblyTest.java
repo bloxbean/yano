@@ -65,6 +65,12 @@ class AppLedgerAssemblyTest {
                         .isEqualTo(AppBlockCodec.blockHash(proposer.block(height).orElseThrow()));
                 assertThat(chain.block(height).orElseThrow().stateRoot())
                         .isEqualTo(proposer.block(height).orElseThrow().stateRoot());
+                var commitment = chain.finalizedCommitment(height).orElseThrow();
+                assertThat(commitment).isEqualTo(proposer.finalizedCommitment(height).orElseThrow());
+                assertThat(commitment.blockHash())
+                        .isEqualTo(AppBlockCodec.blockHash(chain.block(height).orElseThrow()));
+                assertThat(commitment.consensusContextDigest())
+                        .isEqualTo(chain.block(height).orElseThrow().consensusContextDigest());
                 // Certificate signatures are semantically a set; arrival order is not consensus identity.
                 assertThat(signatures(chain, height)).isEqualTo(signatures(proposer, height));
                 Set<String> members = IntStream.range(0, 3)
@@ -104,6 +110,27 @@ class AppLedgerAssemblyTest {
                 .runtimeOptions(new RuntimeOptions(null, null, settings)).build())
                 .hasMessageContaining("transport.mode=dedicated");
         try (var entries = Files.list(directory)) { assertThat(entries.toList()).isEmpty(); }
+    }
+
+    @Test
+    void cannotAdoptAnExistingEmptyLegacyStoreAsStandalone() {
+        List<Integer> ports = List.of(12345, 12346, 12347);
+        YanoConfig stoppedServer = config(0, ports.getFirst()).toBuilder().enableServer(false).build();
+        Map<String, Object> settings = settings(0, ports);
+        settings.put("yano.app-chain.peers", "");
+        var legacy = AppChainConfigParser.parseChains(settings, false).getFirst();
+        try (var events = new PropagatingEventBus();
+             var subsystem = new AppChainSubsystem(legacy, 424242, events, null,
+                     stoppedServer.getAppChainStoragePath(), LoggerFactory.getLogger(getClass()))) {
+            subsystem.start();
+            assertThat(subsystem.tipHeight()).isZero();
+        }
+        try (Yano node = YanoAssembly.fromConfig(stoppedServer)
+                .runtimeOptions(new RuntimeOptions(null, null, settings)).build()) {
+            assertThatThrownBy(node::start)
+                    .hasRootCauseInstanceOf(IllegalStateException.class)
+                    .hasStackTraceContaining("Existing app history has no standalone profile");
+        }
     }
 
     @Test
