@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.assembly;
 
+import com.bloxbean.cardano.yaci.core.common.NetworkType;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.host.HostApi;
 import org.yanoproject.runtime.host.DefaultHostApi;
@@ -51,10 +52,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /** App-only composition of the existing kernel, catalog, transport and app-chain manager. */
 final class AppLedgerAssembly implements Yano, NodeLifecycle {
     private static final Logger log = LoggerFactory.getLogger(AppLedgerAssembly.class);
+    // Reuse the transport's public-network inventory and the host's existing devnet default.
+    private static final Set<Long> CARDANO_NETWORK_MAGICS = Stream.concat(
+            Stream.of(NetworkType.values()).map(NetworkType::getProtocolMagic),
+            Stream.of(YanoConfig.devnetDefault(0).getProtocolMagic())).collect(Collectors.toUnmodifiableSet());
+    private final ChainQuery unavailableChain = unavailable(ChainQuery.class);
+    private final LedgerQuery unavailableLedger = unavailable(LedgerQuery.class);
+    private final TxGateway unavailableTransactions = unavailable(TxGateway.class);
+    private final TxEvaluationGateway unavailableEvaluation = unavailable(TxEvaluationGateway.class);
     private final RuntimeMaintenanceGate maintenance = new RuntimeMaintenanceGate();
     private final YanoConfig config;
     private final NodeKernel kernel;
@@ -93,7 +104,8 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
                     new RuntimeOptions(options.events(), options.plugins(), PluginConfigValues.immutableCopy(globals)));
             manager.discoverAndInit(hostLifecycle::close);
             chains = manager.getService(AppLedgerHostPlugin.ASSEMBLY_SERVICE, AppLedgerHostPlugin.class)
-                    .orElseThrow(() -> new IllegalStateException("Required application-ledger framework did not initialize"))
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Required application-ledger framework did not initialize"))
                     .assemble();
             server = ServeSubsystem.appOnly(config.getServerPort(), magic, log);
             owned.add(server);
@@ -144,9 +156,6 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         if (!Boolean.parseBoolean(String.valueOf(globals.get("yano.app-chain.enabled")))) {
             throw new IllegalArgumentException("yano.mode=app-ledger requires yano.app-chain.enabled=true");
         }
-        if (!"dedicated".equals(String.valueOf(globals.get("yano.app-chain.transport.mode")))) {
-            throw new IllegalArgumentException("yano.mode=app-ledger requires yano.app-chain.transport.mode=dedicated");
-        }
         Object magicValue = globals.get("yano.app-chain.network-magic");
         long magic;
         try {
@@ -154,18 +163,23 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         } catch (NumberFormatException invalid) {
             throw new IllegalArgumentException("Standalone requires yano.app-chain.network-magic (unsigned 32-bit)");
         }
-        if (magic <= 2 || magic > 0xffff_ffffL || magic == 764824073 || magic == 1097911063) {
+        if (magic <= 0 || magic > 0xffff_ffffL || CARDANO_NETWORK_MAGICS.contains(magic)) {
             throw new IllegalArgumentException("yano.app-chain.network-magic must be a distinct app network identity");
         }
         if (config.isEnableBlockProducer() || config.isEnableBootstrap() || config.isDevMode()) {
-            throw new IllegalArgumentException("Cardano producer/bootstrap/dev mode is unavailable in yano.mode=app-ledger");
+            throw new IllegalArgumentException(
+                    "Cardano producer/bootstrap/dev mode is unavailable in yano.mode=app-ledger");
         }
         String path = config.getAppChainStoragePath();
-        if (path == null || path.isBlank()) throw new IllegalArgumentException("yano.app-chain.storage.path is required");
+        if (path == null || path.isBlank()) {
+            throw new IllegalArgumentException("yano.app-chain.storage.path is required");
+        }
         Path appPath = Path.of(path).toAbsolutePath().normalize();
         Path l1Path = Path.of(config.getRocksDBPath() == null ? "chainstate" : config.getRocksDBPath())
                 .toAbsolutePath().normalize();
-        if (appPath.equals(l1Path)) throw new IllegalArgumentException("App storage must differ from yano.storage.path");
+        if (appPath.equals(l1Path)) {
+            throw new IllegalArgumentException("App storage must differ from yano.storage.path");
+        }
     }
 
     private static void closeAll(List<AutoCloseable> resources, Throwable failure) {
@@ -199,10 +213,10 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
 
     public Optional<RuntimeMaintenanceGate> maintenanceGate() { return Optional.of(maintenance); }
     public NodeLifecycle lifecycle() { return this; }
-    public ChainQuery chain() { return unavailable(ChainQuery.class); }
-    public LedgerQuery ledger() { return unavailable(LedgerQuery.class); }
-    public TxGateway txGateway() { return unavailable(TxGateway.class); }
-    public TxEvaluationGateway txEvaluationGateway() { return unavailable(TxEvaluationGateway.class); }
+    public ChainQuery chain() { return unavailableChain; }
+    public LedgerQuery ledger() { return unavailableLedger; }
+    public TxGateway txGateway() { return unavailableTransactions; }
+    public TxEvaluationGateway txEvaluationGateway() { return unavailableEvaluation; }
     public Optional<ProducerControl> producerControl() { return Optional.empty(); }
     public Optional<DevnetControl> devnetControl() { return Optional.empty(); }
     public Optional<NodeKernel> kernel() { return Optional.of(kernel); }

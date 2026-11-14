@@ -268,7 +268,8 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
             }
             URL resource = resources.nextElement();
             if (resources.hasMoreElements()) {
-                throw new IllegalStateException("Multiple classpath manifests for host-required embedded plugin bundle '"
+                throw new IllegalStateException(
+                        "Multiple classpath manifests for host-required embedded plugin bundle '"
                         + id + "'");
             }
             PluginIndex index = scanner.scan(manifestArtifact(resource, resourcePath));

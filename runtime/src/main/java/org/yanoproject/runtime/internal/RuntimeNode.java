@@ -1556,7 +1556,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         pluginEnvironment.resumeContributionCallbacks();
         boolean pluginsStarted = false;
         try {
-            if (pluginManager != null && runtimeOptions.plugins().enabled()) {
+            // The catalog already applies optional-plugin policy. A manager can
+            // still own required framework plugins when optional plugins are disabled.
+            if (pluginManager != null) {
                 pluginManager.startAll();
                 pluginsStarted = true;
             }

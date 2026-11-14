@@ -9,7 +9,9 @@ public record HostApiVersion(int major, int level) {
     }
 
     public void requireCompatible(int requiredMajor, int minimumLevel) {
-        if (requiredMajor < 1 || minimumLevel < 1) throw new IllegalArgumentException("Invalid required Host API version");
+        if (requiredMajor < 1 || minimumLevel < 1) {
+            throw new IllegalArgumentException("Invalid required Host API version");
+        }
         if (major != requiredMajor || level < minimumLevel) {
             throw new IllegalStateException("Extension requires Yano Host API " + requiredMajor + "." + minimumLevel
                     + " or a newer level in that major; host provides " + major + "." + level);

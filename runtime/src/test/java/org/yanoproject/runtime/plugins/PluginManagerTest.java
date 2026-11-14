@@ -1048,6 +1048,10 @@ class PluginManagerTest {
                 "start:a", "start:b",
                 "stop:b", "stop:a",
                 "close:c", "close:b", "close:a");
+        assertThatThrownBy(manager::startAll)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Cannot start plugins from state FAILED");
+        assertThat(events).hasSize(10);
         manager.close();
     }
 

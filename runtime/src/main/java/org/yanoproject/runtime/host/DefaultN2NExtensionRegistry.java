@@ -65,7 +65,9 @@ public final class DefaultN2NExtensionRegistry implements N2NExtensionRegistry {
     }
 
     private void requireOpen() {
-        if (sealed) throw new IllegalStateException("Register N2N extensions during initialization, before sessions start");
+        if (sealed) {
+            throw new IllegalStateException("Register N2N extensions during initialization, before sessions start");
+        }
     }
     private void requireSealed() {
         if (!sealed) throw new IllegalStateException("Seal N2N registration before constructing sessions");

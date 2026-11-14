@@ -123,7 +123,8 @@ public final class ServeSubsystem implements Subsystem {
         this.serverPort = serverPort;
         this.protocolMagic = protocolMagic;
         this.chainState = appOnly ? null : Objects.requireNonNull(chainState, "chainState");
-        this.transactionAdmission = appOnly ? null : Objects.requireNonNull(transactionAdmission, "transactionAdmission");
+        this.transactionAdmission = appOnly ? null
+                : Objects.requireNonNull(transactionAdmission, "transactionAdmission");
         this.blockProducerMode = blockProducerMode;
         this.txDiffusionSupplier = txDiffusionSupplier;
         this.relayAutoDiscovery = relayAutoDiscovery;
@@ -251,7 +252,8 @@ public final class ServeSubsystem implements Subsystem {
             }
 
             log.info("NodeServer started successfully on port {}", serverPort);
-            log.info("Server is ready to accept {} connections", appOnly ? "standalone application-ledger" : "Cardano node");
+            log.info("Server is ready to accept {} connections",
+                    appOnly ? "standalone application-ledger" : "Cardano node");
             if (relayAutoDiscovery) {
                 log.info("Relay peer-sharing enabled (advertised endpoint: {}:{})",
                         advertisedHost != null && !advertisedHost.isBlank() ? advertisedHost : "<none>",

@@ -250,6 +250,15 @@ independent future destinations cannot overwrite one another's receipt/status.
 Keep any added receipt representation outside canonical app history. Results
 enter app state only through existing deterministic transitions.
 
+This is a contract for future publication adapters, not a new generic publisher,
+outbox or receipt store in this change. A finalized-block callback alone is not a
+durable delivery guarantee: future adapters must recover from persisted finalized
+history using destination-specific acknowledged progress or a durable outbox,
+including a crash after finality is persisted but before work is enqueued. Their
+acceptance tests must exercise that crash window and replay idempotently. Existing
+Cardano anchor services retain their periodic reconciliation of the persisted app
+ledger tip against their persisted anchor frontier/pending transaction state.
+
 Keep Cardano anchors/receipts and observers operational. Do not add other L1
 adapters, a universal observer interface, bridge contracts, or production fanout.
 A signed finality certificate/MPF proof attests to the app trust model. Posting a

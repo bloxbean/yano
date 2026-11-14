@@ -1,6 +1,7 @@
 package org.yanoproject.runtime.assembly;
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.yaci.core.common.NetworkType;
 import org.yanoproject.api.appchain.AppChainGateway;
 import org.yanoproject.api.appchain.codec.AppBlockCodec;
 import org.yanoproject.api.appchain.evidence.EvidenceVerifier;
@@ -81,6 +82,10 @@ class AppLedgerAssemblyTest {
                 assertThat(chain.block(height).orElseThrow().l1Slot()).isZero();
                 assertThat(chain.block(height).orElseThrow().l1BlockHash()).isEmpty();
                 assertThat(node.lifecycle().isSyncing()).isFalse();
+                assertThat(node.chain()).isSameAs(node.chain());
+                assertThat(node.ledger()).isSameAs(node.ledger());
+                assertThat(node.txGateway()).isSameAs(node.txGateway());
+                assertThat(node.txEvaluationGateway()).isSameAs(node.txEvaluationGateway());
                 assertThat(node.kernel().orElseThrow().subsystems()).extracting(s -> s.name())
                         .doesNotContain("sync", "ledger-state", "utxo", "producer", "chain-storage");
                 assertThatThrownBy(() -> node.chain().getBlock(new byte[32]))
@@ -109,6 +114,55 @@ class AppLedgerAssemblyTest {
         assertThatThrownBy(() -> YanoAssembly.fromConfig(config(0, 12345))
                 .runtimeOptions(new RuntimeOptions(null, null, settings)).build())
                 .hasMessageContaining("transport.mode=dedicated");
+        try (var entries = Files.list(directory)) { assertThat(entries.toList()).isEmpty(); }
+    }
+
+    @Test
+    void knownCardanoNetworkIdentitiesAreRejectedBeforeStorage() throws Exception {
+        List<Long> rejected = new ArrayList<>();
+        for (NetworkType network : NetworkType.values()) rejected.add(network.getProtocolMagic());
+        rejected.add(YanoConfig.devnetDefault(0).getProtocolMagic());
+        rejected.add(0L);
+        rejected.add(-1L);
+        rejected.add(0x1_0000_0000L);
+        for (long magic : rejected) {
+            Map<String, Object> settings = settings(0, List.of(12345, 12346, 12347));
+            settings.put("yano.app-chain.network-magic", magic);
+            assertThatThrownBy(() -> YanoAssembly.fromConfig(config(0, 12345))
+                    .runtimeOptions(new RuntimeOptions(null, null, settings)).build())
+                    .as("network magic %s", magic).hasMessageContaining("distinct app network identity");
+        }
+        try (var entries = Files.list(directory)) { assertThat(entries.toList()).isEmpty(); }
+    }
+
+    @Test
+    void indexedChainsValidateTheirOwnTransportAndAcceptUnsignedNetworkMagic() throws Exception {
+        Map<String, Object> globals = settings(0, List.of(12345, 12346, 12347));
+        Map<String, Object> first = new LinkedHashMap<>();
+        globals.forEach((key, value) -> first.put(key.substring("yano.app-chain.".length()), value));
+        first.put("chain-id", "first");
+        first.put("peers", "");
+        Map<String, Object> second = new LinkedHashMap<>(first);
+        second.put("chain-id", "second");
+        globals.put("yano.app-chain.chains", List.of(first, second));
+        globals.remove("yano.app-chain.transport.mode");
+        globals.put("yano.app-chain.network-magic", 0xffff_ffffL);
+        YanoConfig config = config(0, 12345).toBuilder().enableServer(false).build();
+        try (Yano node = YanoAssembly.fromConfig(config)
+                .runtimeOptions(new RuntimeOptions(null, null, globals)).build()) {
+            assertThat(node.appChains().all()).hasSize(2);
+        }
+        // Explicit per-chain configuration also wins over a flat/default shared mode.
+        globals.put("yano.app-chain.transport.mode", "shared");
+        try (Yano node = YanoAssembly.fromConfig(config)
+                .runtimeOptions(new RuntimeOptions(null, null, globals)).build()) {
+            assertThat(node.appChains().all()).hasSize(2);
+        }
+        globals.put("yano.app-chain.transport.mode", "dedicated");
+        second.put("transport.mode", "shared");
+        assertThatThrownBy(() -> YanoAssembly.fromConfig(config)
+                .runtimeOptions(new RuntimeOptions(null, null, globals)).build())
+                .hasMessageContaining("transport.mode=dedicated").hasMessageContaining("second");
         try (var entries = Files.list(directory)) { assertThat(entries.toList()).isEmpty(); }
     }
 
