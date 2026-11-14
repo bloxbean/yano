@@ -114,3 +114,6 @@ Deferred assembly tests cover both runtime modes: every plugin finishes `init()`
 before framework factories run, and any later initialization failure prevents
 factory construction. They guard the ordering contract alongside lifecycle and
 configuration compatibility, rather than relying only on successful startup.
+
+The [Phase 2 validation record](PHASE2_VALIDATION.md) records final candidate inputs,
+passed gates, packaged checks, review fixes and the remaining coordinated release gate.

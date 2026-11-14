@@ -673,3 +673,35 @@ areas are untouched by this extraction. #241 (Amaru removal) overlaps build and
 application configuration and must apply its `YanoPropertyKeys` edits to the new
 `node-api` owner. #240 and the #243 tracking plan remain independent. No unrelated
 PR is a prerequisite and none was awaited.
+
+
+## Completed extraction development gates
+
+The final implementation supersedes the earlier partial-milestone status above.
+X candidate `.9` owns the complete framework runtime and optional Cardano adapter;
+Yano host `.5` consumes it through deferred manifested activation and the unchanged
+Host API `1.0.0-245.4`. X compiles against node API `.4`. All seven incremental
+Yano gates pass, including 573 consensus tests (two existing skips), 419
+configuration tests, both pre19 ABI checks and unchanged compiled clients.
+The integrated three-process standalone package passes finality/catch-up/restart.
+
+The retained supported-host fixture passes both standalone and Cardano-construction
+profiles with X `.9` and `.8` on identical host/API bytes. It was compiled with
+`.9` and is never rebuilt by an ordinary matrix run. The first supported host is
+also the current host; no older public Host API release is invented. These are
+unpublished development candidates. The Cardano construction profile does not
+replace live observer/anchor and L1 regression qualification.
+
+Available public dependency pins and one comprehensive coordinated Yano release
+qualification remain release gates. No intermediate release is planned or made.
+
+X tooling regression tests (262) and the full `distributionCheck` pass against the
+matching Yano `.5` JVM ZIP. Extraction exposed non-transitive consumers of old
+aggregate coordinates and duplicate local/published framework owners. Tooling now
+depends on its actual framework owners; an inventory-driven, same-repository
+source-build rule selects those projects for all requested versions. A gate
+checks older-host requests, single class ownership and normal published Maven
+metadata. It never substitutes host modules or sibling source builds, and the
+external compatibility matrix remains artifact-only. The integrated ZIP is not
+an upgrade overlay: independent framework selection uses ordinary thin Maven
+embedding; the existing integrated distribution remains a bundled release.
