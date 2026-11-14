@@ -16,9 +16,10 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 GATES = {
     "host": [":host-api:test", ":runtime:test", "--tests", "*DefaultN2NExtensionRegistryTest",
+             "--tests", "*DefaultHostLifecycleRegistryTest", "--tests", "*RuntimeKernelStagesTest",
              "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest",
              "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
-             ":runtime:checkAppLedgerBinaryCompatibility"],
+             ":runtime:checkAppLedgerBinaryCompatibility", ":runtime:checkAppLedgerRuntimeCompatibility"],
     "standalone": [":core-api:test", "--tests", "*AppLedgerOperatingProfileTest",
                    ":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
     "adapter": [":app:test", "--tests", "*CardanoAvailabilityFilterTest", "--tests", "*YanoProducerTest"],
@@ -34,7 +35,7 @@ GATES = {
 
 # Each named suite must execute: unrelated passing tests cannot mask a missing gate.
 REQUIRED = {
-    "host": {"HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
+    "host": {"DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
     "standalone": {"AppLedgerOperatingProfileTest", "AppLedgerAssemblyTest"},
     "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest"},
     "consensus": {"AppChainEngineIdentityValidationTest", "AppChainEngineLifecycleTest"},
@@ -120,7 +121,7 @@ def main():
         counts, suites = collect_reports(destination / "junit", started)
         required_reports = ["artifact-inputs.json"]
         if name == "host":
-            required_reports += ["api-compatibility.xml", "api-baseline.json"]
+            required_reports += ["api-compatibility.xml", "api-baseline.json", "runtime-compatibility.xml", "runtime-baseline.json"]
         missing_reports = []
         for filename in required_reports:
             source = ROOT / "runtime/build/reports/app-ledger" / filename

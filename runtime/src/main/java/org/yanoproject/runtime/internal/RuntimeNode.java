@@ -22,6 +22,7 @@ import org.rocksdb.RocksDB;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.host.HostApi;
 import org.yanoproject.runtime.host.DefaultHostApi;
+import org.yanoproject.runtime.host.DefaultHostLifecycleRegistry;
 import org.yanoproject.runtime.host.DefaultN2NExtensionRegistry;
 import org.yanoproject.api.BlockBodyRetentionBoundary;
 import org.yanoproject.api.EpochParamProvider;
@@ -299,6 +300,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final org.yanoproject.runtime.events.L1EventFanout l1EventFanout;
     private final PluginRuntimeEnvironment pluginEnvironment;
     private PluginManager pluginManager;
+    private final DefaultHostLifecycleRegistry hostLifecycle = new DefaultHostLifecycleRegistry();
     private final UtxoSubsystem utxoSubsystem;
     private final LedgerStateSubsystem ledgerStateSubsystem;
     private final SyncSubsystem syncSubsystem;
@@ -476,14 +478,24 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 pluginManager = this.pluginEnvironment.createNodePluginManager(
                         eventBus, scheduler, pluginOperationsRegistry);
                 constructionCleanup.addLast(pluginManager::close);
+                constructionCleanup.addLast(hostLifecycle::close);
                 pluginManager.registerHostService(HostApi.SERVICE_KEY,
-                        new DefaultHostApi(n2n, pluginEnvironment.providers()));
-                pluginManager.discoverAndInit();
+                        new DefaultHostApi(n2n, pluginEnvironment.providers(), hostLifecycle));
+                pluginManager.discoverAndInit(hostLifecycle::close);
+            } else {
+                constructionCleanup.addLast(hostLifecycle::close);
             }
 
             this.appChainManager = buildAppChainManager();
             if (appChainManager != null) {
-                constructionCleanup.addLast(appChainManager::stop);
+                try {
+                    hostLifecycle.registerBeforePublication(appChainManager);
+                } catch (Throwable rejected) {
+                    Throwable failure = rejected;
+                    try { appChainManager.close(); }
+                    catch (Throwable cleanup) { failure = LifecycleFailures.merge(failure, cleanup); }
+                    throw propagateConstructionFailure(failure);
+                }
                 appChainManager.registerProtocols(n2n);
             }
             this.localReadModels =
@@ -868,9 +880,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private List<Subsystem> runtimeKernelSubsystems() {
-        List<Subsystem> prePublication = appChainManager == null
-                ? List.of()
-                : List.of(appChainManager, localReadModelSubsystem());
+        hostLifecycle.seal();
+        List<Subsystem> prePublication = new ArrayList<>(hostLifecycle.subsystems());
+        if (appChainManager != null) prePublication.add(localReadModelSubsystem());
         return RuntimeKernelStages.create(runtimeKernelActions(), prePublication);
     }
 
@@ -3981,9 +3993,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
             @Override
             public void closePluginManager() {
-                if (pluginManager != null) {
-                    pluginManager.close();
-                }
+                Throwable failure = null;
+                try { hostLifecycle.close(); }
+                catch (Throwable cleanup) { failure = cleanup; }
+                try { if (pluginManager != null) pluginManager.close(); }
+                catch (Throwable cleanup) { failure = LifecycleFailures.merge(failure, cleanup); }
+                rethrowRuntimeCleanup(failure, "Host extension close failed");
             }
 
             @Override

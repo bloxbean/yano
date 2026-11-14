@@ -13,4 +13,9 @@ public interface HostApi {
     HostApiVersion version();
     N2NExtensionRegistry n2n();
     PluginProviderRegistry providers();
+
+    /** Optional on earlier hosts; require it before opening extension resources. */
+    default HostLifecycleRegistry lifecycle() {
+        throw new UnsupportedOperationException("Host does not support pre-publication extension lifecycle");
+    }
 }

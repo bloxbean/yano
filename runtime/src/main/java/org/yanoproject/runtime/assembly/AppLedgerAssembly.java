@@ -3,6 +3,7 @@ package org.yanoproject.runtime.assembly;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.host.HostApi;
 import org.yanoproject.runtime.host.DefaultHostApi;
+import org.yanoproject.runtime.host.DefaultHostLifecycleRegistry;
 import org.yanoproject.runtime.host.DefaultN2NExtensionRegistry;
 import org.yanoproject.api.DevnetControl;
 import org.yanoproject.api.LedgerQuery;
@@ -85,10 +86,13 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
             DefaultN2NExtensionRegistry n2n = new DefaultN2NExtensionRegistry(false);
             PluginManager manager = options.plugins().enabled()
                     ? plugins.createNodePluginManager(events, schedulers.scheduled(), operations) : null;
+            if (manager != null) owned.add(manager);
+            DefaultHostLifecycleRegistry hostLifecycle = new DefaultHostLifecycleRegistry();
+            owned.add(hostLifecycle);
             if (manager != null) {
-                owned.add(manager);
-                manager.registerHostService(HostApi.SERVICE_KEY, new DefaultHostApi(n2n, plugins.providers()));
-                manager.discoverAndInit();
+                manager.registerHostService(HostApi.SERVICE_KEY,
+                        new DefaultHostApi(n2n, plugins.providers(), hostLifecycle));
+                manager.discoverAndInit(hostLifecycle::close);
             }
             List<AppChainSubsystem> subsystems = new ArrayList<>();
             for (AppChainConfig chain : chainConfigs) {
@@ -123,7 +127,9 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
                 public void start() { manager.startAll(); }
                 public void stop() { manager.stopAll(); }
             });
-            stages.add(chains);
+            hostLifecycle.registerBeforePublication(chains);
+            hostLifecycle.seal();
+            stages.addAll(hostLifecycle.subsystems());
             stages.add(new Subsystem() {
                 public String name() { return "local-read-models"; }
                 public void start() { contributions.resume(); }
