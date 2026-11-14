@@ -16,7 +16,9 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 GATES = {
     "host": [":host-api:test", ":runtime:test", "--tests", "*DefaultN2NExtensionRegistryTest",
-             "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest", "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest"],
+             "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest",
+             "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
+             ":runtime:checkAppLedgerBinaryCompatibility"],
     "standalone": [":core-api:test", "--tests", "*AppLedgerOperatingProfileTest",
                    ":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
     "adapter": [":app:test", "--tests", "*CardanoAvailabilityFilterTest", "--tests", "*YanoProducerTest"],
@@ -111,17 +113,29 @@ def main():
         destination = output / name
         destination.mkdir()
         command = [str(ROOT / "gradlew"), "--console=plain", "--no-parallel", "--rerun-tasks",
-                   *args.gradle_arg, *GATES[name]]
+                   *args.gradle_arg, ":runtime:writeAppLedgerArtifactInputs", *GATES[name]]
         print(f"Running {name}; log: {destination / 'gradle.log'}", flush=True)
         started = time.time()
         code = run(command, destination / "gradle.log", args.timeout)
         counts, suites = collect_reports(destination / "junit", started)
+        required_reports = ["artifact-inputs.json"]
+        if name == "host":
+            required_reports += ["api-compatibility.xml", "api-baseline.json"]
+        missing_reports = []
+        for filename in required_reports:
+            source = ROOT / "runtime/build/reports/app-ledger" / filename
+            if not source.is_file() or source.stat().st_mtime < started:
+                missing_reports.append(filename)
+            else:
+                shutil.copy2(source, destination / filename)
         # A successful Gradle invocation with zero executed tests is not a passing regression gate.
         missing = sorted(REQUIRED[name] - suites)
-        passed = not missing and code == 0 and counts["tests"] > counts["skipped"] and not counts["failures"] and not counts["errors"]
+        passed = (not missing_reports and not missing and code == 0
+                  and counts["tests"] > counts["skipped"]
+                  and not counts["failures"] and not counts["errors"])
         report["gates"].append({"name": name, "passed": passed, "exitCode": code,
                                  "elapsedSeconds": round(time.time() - started, 2),
-                                 "missingSuites": missing, "executedSuites": sorted(suites), **counts})
+                                 "missingVerificationReports": missing_reports, "missingSuites": missing, "executedSuites": sorted(suites), **counts})
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
         print(f"{name}: {'PASS' if passed else 'FAIL'} ({counts})", flush=True)
     report["sourceUnchanged"] = source_fingerprint() == report["sourceSha256"]
@@ -132,6 +146,13 @@ def main():
              "| Gate | Result | Tests | Skipped | Seconds |", "| --- | --- | ---: | ---: | ---: |"]
     for gate in report["gates"]:
         lines.append(f"| {gate['name']} | {'PASS' if gate['passed'] else 'FAIL'} | {gate['tests']} | {gate['skipped']} | {gate['elapsedSeconds']} |")
+    for gate in report["gates"]:
+        if not gate["passed"]:
+            lines.extend(["", f"{gate['name']}: exit {gate['exitCode']}; "
+                          f"missing suites: {gate['missingSuites']}; "
+                          f"missing verification reports: {gate['missingVerificationReports']}."])
+    if not report["sourceUnchanged"]:
+        lines.extend(["", "Source changed during the run; results do not describe one source revision."])
     lines.extend(["", "This is focused development validation, not the final coordinated release qualification.", ""])
     (output / "report.md").write_text("\n".join(lines))
     print(f"Report: {output / 'report.md'}", flush=True)

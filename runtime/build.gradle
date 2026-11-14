@@ -233,3 +233,5 @@ tasks.register('verifyWalletHistory', JavaExec) {
     args providers.gradleProperty('walletVerifyDatabase').getOrElse(''),
             providers.gradleProperty('walletVerifyOutput').getOrElse('')
 }
+
+apply from: rootProject.file('qa/app-ledger/artifact-verification.gradle')

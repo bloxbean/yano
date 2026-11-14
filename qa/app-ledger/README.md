@@ -1,84 +1,89 @@
 # Application-ledger regression harness (#245)
 
-Run `python3 qa/app-ledger/run.py` for the implemented Phase 1 development gates,
-`--gate standalone|configuration|hybrid|plugins|adapter|consensus` for a focused gate. Each run
-requires a fresh output directory (`--out DIR` is optional). Java 25 and the
-normal Gradle prerequisites are required.
+Run `python3 qa/app-ledger/run.py` for all incremental development gates, or use
+`--gate host|standalone|configuration|hybrid|plugins|adapter|consensus` for a focused
+gate. Java 25 and the normal Gradle prerequisites are required. Each run uses a
+fresh output directory (`--out DIR`, or an ignored directory under `qa/results`).
 
 The runner executes existing JUnit suites with real sockets and temporary stores,
-uses a bounded process group per gate, and saves the Gradle log and JUnit XML
-before the next gate can overwrite them. It writes machine-readable `results.json`
-and a Markdown report. Compilation failures, timeouts, test failures and zero
-executed tests all fail the gate and the runner. Gates run sequentially to avoid
-sharing RocksDB/transport resources across concurrent test invocations.
+bounds each process group, and archives logs, JUnit XML and verification reports
+before the next gate overwrites them. Compilation errors, timeouts, failed tests,
+zero executed tests, missing named suites/reports and source changes during a run
+fail the gate. Gates run sequentially to avoid sharing transport/storage resources.
+`results.json` and `report.md` retain the outcome; artifact reports record the exact
+resolved production coordinates and SHA-256 of every JAR.
 
-The standalone gate exercises application submission through a follower,
-protocol-100 gossip, independent consensus, and a late join through protocol 103.
-It asserts no Cardano runtime stages or chainstate directory. Configuration tests
-cover old flat/indexed parsing and new explicit profile validation. Hybrid and
-plugin gates reuse the established shared-transport, Cardano observer/anchor,
-lifecycle and catalog tests.
+| Gate | Breaking changes it targets |
+| --- | --- |
+| `host` | Public ABI, fixed older plugin bytecode, class/resource ownership, N2N registration, retention leases, plugin lifecycle. |
+| `standalone` | Three-node gossip/finality, late protocol-103 catch-up, restart, canonical commitment agreement, fresh-store/profile boundaries and absence of L1 state. |
+| `configuration` | Existing flat/indexed property parsing, API/codec contracts and semantic validation. |
+| `consensus` | Existing complete runtime app-chain unit/integration suite, including storage, snapshots, observations and effects. |
+| `hybrid` | Existing shared transport, Cardano observer/anchor and subsystem lifecycle tests. |
+| `plugins` | Existing catalog, provider, lifecycle and plugin operations tests. |
+| `adapter` | Application startup configuration and unavailable Cardano HTTP operations. |
 
-During development this branch requires the app-only Yaci API from
-[bloxbean/yaci#245](https://github.com/bloxbean/yaci/pull/245). Consume an exact
-staged/published artifact, never overwrite a released Maven coordinate. Additional
-Gradle repository/version arguments can be passed with repeated `--gradle-arg`:
+The `host` gate uses [japicmp](https://siom79.github.io/japicmp/CliTool.html) 0.26.5
+to compare the old core API JAR against the combined extracted API artifacts.
+Binary and source incompatibilities fail the build; missing classes are not ignored. The
+baseline is `org.yanoproject:yano-core-api:0.1.0-pre19`, SHA-256
+`e8cc29db9c9e36dd743c9ae81bd42e806a4035e87d090d392af017c5f12554e9`.
+An explicit `-PappLedgerApiBaseline=/path/to/the/same.jar` avoids repository
+resolution, but must match that hash. This baseline came from the local Maven
+artifact; remote publication provenance has not been established. Do not silently
+refresh it with each release. Baseline/comparator/current-API hashes accompany
+the XML compatibility report.
+
+The committed pre19 plugin fixture is **not recompiled** by tests. Source and
+compiler/artifact hashes live in `fixtures/pre19/`; its JAR is under
+`runtime/src/test/resources/app-ledger/compat/`. It exercises old config and
+service calls through two actual host lifecycle cycles. Duplicate API definitions
+or moved wire resources also fail the host gate.
+
+## Exact coordinated inputs
+
+The draft requires the app-only Yaci API from
+[bloxbean/yaci#245](https://github.com/bloxbean/yaci/pull/245) and the extracted
+framework from [Yano-X #102](https://github.com/bloxbean/yano-x/pull/102). Consume
+exact staged/published artifacts. No sibling checkout or build invocation is
+required. Never overwrite a released coordinate.
 
 ```sh
 python3 qa/app-ledger/run.py --gate standalone \
   --gradle-arg=-I --gradle-arg=qa/app-ledger/artifact-inputs.gradle \
-  --gradle-arg=-PappLedgerYaciRepository=file:///absolute/staged/maven-repository \
-  --gradle-arg=-PappLedgerYaciVersion=EXACT_VERSION
+  --gradle-arg=-PappLedgerYaciRepository=file:///absolute/yaci-maven-repository \
+  --gradle-arg=-PappLedgerYaciVersion=EXACT_YACI_VERSION \
+  --gradle-arg=-PappLedgerFrameworkRepository=file:///absolute/framework-maven-repository \
+  --gradle-arg=-PappLedgerFrameworkVersion=EXACT_FRAMEWORK_VERSION
 ```
 
-No sibling checkout is required by the harness. The development repository is not a release input. Pin the final Yaci artifact before
-marking the coordinated PR ready.
+Replace local draft candidate pins with final published pins before release
+qualification. X's own `frameworkCheck` and `qa/framework/README.md` test its
+API/config/core with external host artifacts. Its resolved dependency guard
+rejects Yano implementation and settlement SDK dependencies, including transitive
+ones. Deliberate transitive-runtime and removed-plugin-API probes have verified
+that these guards reject violations.
 
-Phase 2 must add independent X-core dependency checks, a prior compiled plugin
-fixture, packaged standalone/integrated runs and the oldest frozen Host API/host
-matrix. Those are **not covered or claimed passing** by the current gates. The
-final release gate remains `qa/release-qa.sh` plus the packaged X compatibility
-matrix after both phases are integrated; do not run two full qualification cycles.
+## Packaged standalone check
 
-The packaged three-process check builds on the existing release-QA shell helpers:
+Build with the same exact artifact inputs, then run the three-process gate:
 
 ```sh
-./gradlew :app:quarkusBuild
+./gradlew :app:quarkusBuild # include the same -I/-P artifact inputs
 bash qa/app-ledger/packaged-cluster.sh \
   "$PWD/app/build/yano.jar" /absolute/new/cluster-output
 ```
 
-Use the actual runner filename emitted by Gradle. Pass the same pinned artifact
-inputs used for unit tests to the build. This check uses ports 17771–17773 and
-23441–23443 (overridable via `HTTP_A/B/C` and `N2N_A/B/C`), refuses occupied ports,
-and stops only its own tracked processes. It verifies follower submission,
-three-node committed-block identity/root agreement, protocol-103 late joining,
+Use the actual runner filename emitted by Gradle. This check uses ports
+17771–17773 and 23441–23443 (overridable via `HTTP_A/B/C` and `N2N_A/B/C`), refuses
+occupied ports, and stops only its own tracked processes. It verifies follower
+submission, three-node block identity/root agreement, protocol-103 late joining,
 graceful restart/catch-up, HTTP 503 for unavailable Cardano operations, and no L1
 chainstate. Logs, proofs, block responses and the tested JAR digest are retained.
-The JUnit evidence test additionally verifies certificate signatures and proofs;
-the HTTP test does not substitute a signature count for cryptographic validation.
+JUnit additionally verifies certificate signatures/evidence; the HTTP check does
+not substitute a signature count for cryptographic validation.
 
-Named JUnit suites must actually execute for their gate to pass. Reports include
-a digest of tracked and untracked source inputs, so local implementation files
-are covered before the milestone commit. Outputs belong outside the source tree
-(or in the ignored default `qa/results` directory).
-
-The `host` gate now also loads a committed pre19 plugin JAR without recompiling
-it and checks that moved API classes/wire resources each have exactly one owner.
-Fixture source and artifact/compiler hashes are in `fixtures/pre19/`; test input
-bytes live in `runtime/src/test/resources/app-ledger/compat/`. Only deliberately
-refresh this baseline when support for that API is intentionally dropped.
-
-During extraction, add these artifact inputs to every Yano build/gate:
-
-```sh
---gradle-arg=-PappLedgerFrameworkRepository=file:///absolute/framework-maven-repository \
---gradle-arg=-PappLedgerFrameworkVersion=EXACT_FRAMEWORK_VERSION
-```
-
-X owns `frameworkCheck` and `qa/framework/README.md`, which validate its API,
-configuration and core without a Yano source checkout. Both repositories retain
-consumer-side compatibility tests. The core dependency report and fixed plugin
-fixture cover part of Phase 2; the independently packaged host matrix is still
-outstanding. Default draft artifact versions must be replaced by final published
-pins before this coordinated release can be qualified.
+The independently packaged X oldest/current-host matrix remains outstanding.
+These focused gates are not a complete release qualification. Run one final
+`qa/release-qa.sh` qualification plus that compatibility matrix after both phases
+are integrated, covering both standalone and Cardano-integrated deployments.

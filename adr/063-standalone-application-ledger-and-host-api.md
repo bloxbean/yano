@@ -441,3 +441,22 @@ standalone three-node test and old plugin bytecode test also pass with the
 extracted core artifact. The initial unpublished Host API remains a candidate;
 freezing its immutable compatibility baseline and running the packaged
 oldest/current-host matrix are still required before completion of Phase 2.
+
+The next mechanical step moves the four existing dedicated/shared Yaci transport
+wiring classes to the same X artifact; protocols themselves remain in Yaci.
+`AppChainGateway` gains a default, read-only finalized-commitment export method,
+backed by the versioned X proof contract. Existing implementations remain binary
+compatible; unavailable legacy identity/history returns empty rather than inventing
+an identity. Three-node tests compare exported commitments after catch-up.
+
+The host regression gate additionally runs japicmp against the pinned pre19 API
+and compares the combined owning API artifacts. It rejects binary/source
+incompatibilities, validates the baseline checksum, and records comparator/API
+hashes. A temporary JAR with `NodePlugin` removed was rejected. X's boundary gate
+also rejected a deliberately injected transitive node-runtime dependency. These
+negative probes establish that the guards can fail, rather than merely reporting
+successful builds. The initial complete post-extraction run passed 570 app-chain
+cases (two skipped), 419 configuration/API cases, 61 hybrid cases and 245 plugin
+cases (one skipped); a missing named retention test correctly failed the host gate
+and is addressed by the new lease/locking test. Retain that failed report as
+harness evidence, not as a passing aggregate run.
