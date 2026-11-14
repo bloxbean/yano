@@ -62,3 +62,23 @@ Named JUnit suites must actually execute for their gate to pass. Reports include
 a digest of tracked and untracked source inputs, so local implementation files
 are covered before the milestone commit. Outputs belong outside the source tree
 (or in the ignored default `qa/results` directory).
+
+The `host` gate now also loads a committed pre19 plugin JAR without recompiling
+it and checks that moved API classes/wire resources each have exactly one owner.
+Fixture source and artifact/compiler hashes are in `fixtures/pre19/`; test input
+bytes live in `runtime/src/test/resources/app-ledger/compat/`. Only deliberately
+refresh this baseline when support for that API is intentionally dropped.
+
+During extraction, add these artifact inputs to every Yano build/gate:
+
+```sh
+--gradle-arg=-PappLedgerFrameworkRepository=file:///absolute/framework-maven-repository \
+--gradle-arg=-PappLedgerFrameworkVersion=EXACT_FRAMEWORK_VERSION
+```
+
+X owns `frameworkCheck` and `qa/framework/README.md`, which validate its API,
+configuration and core without a Yano source checkout. Both repositories retain
+consumer-side compatibility tests. The core dependency report and fixed plugin
+fixture cover part of Phase 2; the independently packaged host matrix is still
+outstanding. Default draft artifact versions must be replaced by final published
+pins before this coordinated release can be qualified.
