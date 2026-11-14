@@ -72,6 +72,9 @@ Build with the same exact artifact inputs, then run the three-process gate:
 ./gradlew :app:quarkusBuild # include the same -I/-P artifact inputs
 bash qa/app-ledger/packaged-cluster.sh \
   "$PWD/app/build/yano.jar" /absolute/new/cluster-output
+# The same gate accepts a packaged native executable; JVM remains the default.
+bash qa/app-ledger/packaged-cluster.sh \
+  /absolute/native-distribution/yano /absolute/new/native-cluster-output native
 ```
 
 Use the actual runner filename emitted by Gradle. This check uses ports
@@ -79,7 +82,7 @@ Use the actual runner filename emitted by Gradle. This check uses ports
 occupied ports, and stops only its own tracked processes. It verifies follower
 submission, three-node block identity/root agreement, protocol-103 late joining,
 graceful restart/catch-up, HTTP 503 for unavailable Cardano operations, and no L1
-chainstate. Logs, proofs, block responses and the tested JAR digest are retained.
+chainstate. Logs, proofs, block responses, execution mode and the tested artifact digest are retained.
 JUnit additionally verifies certificate signatures/evidence; the HTTP check does
 not substitute a signature count for cryptographic validation.
 
