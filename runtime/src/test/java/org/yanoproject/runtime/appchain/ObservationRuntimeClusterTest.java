@@ -226,7 +226,7 @@ class ObservationRuntimeClusterTest {
                 if (omitCertificate) {
                     // Fault injection is test-only. The runtime still acquires, validates and
                     // retains certificates; only this proposer's selection deliberately omits them.
-                    Field engineField = AppChainSubsystem.class.getDeclaredField("engine");
+                    Field engineField = AppLedgerRuntime.class.getDeclaredField("engine");
                     engineField.setAccessible(true);
                     ((AppChainEngine) engineField.get(proposer))
                             .setObservationResultInputProvider((height, limit) -> List.of());

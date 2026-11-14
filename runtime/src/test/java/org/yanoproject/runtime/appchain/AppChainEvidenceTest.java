@@ -262,7 +262,7 @@ class AppChainEvidenceTest {
 
     private static AppLedgerStore ledgerOf(AppChainSubsystem subsystem)
             throws ReflectiveOperationException {
-        Field field = AppChainSubsystem.class.getDeclaredField("ledger");
+        Field field = AppLedgerRuntime.class.getDeclaredField("ledger");
         field.setAccessible(true);
         return (AppLedgerStore) field.get(subsystem);
     }

@@ -32,6 +32,7 @@ import org.yanoproject.catalog.ContributionKind;
 import org.yanoproject.catalog.IndexedBundle;
 import org.yanoproject.catalog.IndexedLegacyProvider;
 import org.yanoproject.catalog.PluginIndex;
+import org.yanoproject.catalog.PluginArtifactScanner;
 import org.yanoproject.catalog.SemVersion;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
@@ -40,6 +41,10 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Modifier;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
@@ -52,6 +57,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.Iterator;
@@ -99,24 +105,42 @@ final class PluginCatalogBuilder {
                       ClassLoader loader,
                       List<CatalogInput> inputs,
                       boolean allowUnindexedLegacyProviders) {
+        return build(options, loader, inputs, allowUnindexedLegacyProviders, Set.of());
+    }
+
+    BuildResult build(PluginsOptions options,
+                      ClassLoader loader,
+                      List<CatalogInput> inputs,
+                      boolean allowUnindexedLegacyProviders,
+                      Set<String> requiredEmbeddedBundles) {
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(loader, "loader");
         Objects.requireNonNull(inputs, "inputs");
+        Set<String> required = requiredEmbeddedClosure(inputs, Set.copyOf(requiredEmbeddedBundles));
+        List<CatalogInput> selectedInputs = options.enabled() ? inputs : inputs.stream()
+                .filter(input -> input.source() != PluginSourceCategory.DIRECTORY)
+                .map(input -> new CatalogInput(new PluginIndex(input.index().schemaVersion(),
+                        input.index().bundles().stream()
+                                .filter(bundle -> required.contains(bundle.manifest().id())).toList(),
+                        List.of()), input.source(), input.artifact()))
+                .toList();
         return PluginThreadContext.call(loader, () -> buildInPluginContext(
-                options, loader, inputs, allowUnindexedLegacyProviders));
+                options, loader, selectedInputs, allowUnindexedLegacyProviders, required));
     }
 
     private BuildResult buildInPluginContext(PluginsOptions options,
                                              ClassLoader loader,
                                              List<CatalogInput> inputs,
-                                             boolean allowUnindexedLegacyProviders) {
-        if (!options.enabled()) {
+                                             boolean allowUnindexedLegacyProviders,
+                                             Set<String> requiredEmbeddedBundles) {
+        if (!options.enabled() && requiredEmbeddedBundles.isEmpty()) {
             return emptyResult(loader);
         }
 
         validateProviderBudget(inputs, MAX_DISCOVERED_PROVIDERS);
         validateManifestCompatibility(inputs);
-        Map<ProviderKey, ServiceLoader.Provider<?>> handles = discoverProviderHandles(loader);
+        Map<ProviderKey, ServiceLoader.Provider<?>> handles = options.enabled()
+                ? discoverProviderHandles(loader) : requiredProviderHandles(loader, inputs);
         // Manifest declaration uniqueness is a catalog property, independent
         // of whether policy makes the provider executable on the terminal
         // loader. Keep it distinct from claimed, which tracks executable
@@ -208,6 +232,11 @@ final class PluginCatalogBuilder {
                 if (claimed.contains(discovered.getKey())) {
                     continue;
                 }
+                if (!options.enabled()) {
+                    // No metadata callbacks or constructors from optional legacy
+                    // providers when only host-required infrastructure is active.
+                    continue;
+                }
                 if (discovered.getKey().kind().manifestRequired()) {
                     throw new IllegalStateException("ServiceLoader provider '"
                             + discovered.getKey().providerClass() + "' for contribution kind '"
@@ -245,7 +274,7 @@ final class PluginCatalogBuilder {
             }
 
             Map<String, Candidate> discovered = uniqueCandidates(candidates);
-            Set<String> missingAllowed = new TreeSet<>(options.allowList());
+            Set<String> missingAllowed = new TreeSet<>(options.enabled() ? options.allowList() : Set.of());
             missingAllowed.removeAll(options.denyList());
             missingAllowed.removeAll(discovered.keySet());
             if (!missingAllowed.isEmpty()) {
@@ -255,7 +284,8 @@ final class PluginCatalogBuilder {
 
             Map<String, Candidate> selected = new TreeMap<>();
             for (Candidate candidate : discovered.values()) {
-                PluginSelectionStatus status = selectionStatus(options, candidate.id());
+                PluginSelectionStatus status = requiredEmbeddedBundles.contains(candidate.id())
+                        ? PluginSelectionStatus.SELECTED : selectionStatus(options, candidate.id());
                 candidate.selectionStatus(status);
                 if (status == PluginSelectionStatus.SELECTED) {
                     selected.put(candidate.id(), candidate);
@@ -316,6 +346,34 @@ final class PluginCatalogBuilder {
                 registry, List.of(), Set.of(), Map.of());
     }
 
+    /** Requiredness comes from the host, never from a directory artifact or manifest flag. */
+    private static Set<String> requiredEmbeddedClosure(List<CatalogInput> inputs, Set<String> roots) {
+        if (roots.isEmpty()) return Set.of();
+        Map<String, BundleManifest> embedded = new TreeMap<>();
+        for (CatalogInput input : inputs) {
+            if (input.source() == PluginSourceCategory.DIRECTORY) continue;
+            for (IndexedBundle bundle : input.index().bundles()) {
+                BundleManifest manifest = bundle.manifest();
+                if (embedded.putIfAbsent(manifest.id(), manifest) != null) {
+                    throw new IllegalStateException("Duplicate embedded plugin bundle id '" + manifest.id() + "'");
+                }
+            }
+        }
+        Set<String> required = new LinkedHashSet<>();
+        Deque<String> pending = new ArrayDeque<>(new TreeSet<>(roots));
+        while (!pending.isEmpty()) {
+            String id = pending.removeFirst();
+            if (!required.add(id)) continue;
+            BundleManifest manifest = embedded.get(id);
+            if (manifest == null) {
+                throw new IllegalStateException("Host-required embedded plugin bundle '" + id
+                        + "' was not discovered in the embedded catalog");
+            }
+            manifest.dependencies().forEach(dependency -> pending.addLast(dependency.id()));
+        }
+        return Set.copyOf(required);
+    }
+
     private static PluginSelectionStatus selectionStatus(
             PluginsOptions options,
             String bundleId
@@ -345,6 +403,87 @@ final class PluginCatalogBuilder {
             ClassLoader loader) {
         return discoverProviderHandles(loader, PluginCatalogBuilder::providerIterator,
                 MAX_DISCOVERED_PROVIDERS);
+    }
+
+    /**
+     * ServiceLoader resolves every descriptor entry before its stream can be
+     * filtered. Required-only activation must not resolve malformed or missing
+     * optional classes. Correlate the selected manifest identities with the
+     * existing SPI descriptors, then create lazy handles on the same loader.
+     */
+    private static Map<ProviderKey, ServiceLoader.Provider<?>> requiredProviderHandles(
+            ClassLoader loader, List<CatalogInput> inputs) {
+        Map<ContributionKind, Set<String>> required = new EnumMap<>(ContributionKind.class);
+        for (CatalogInput input : inputs) {
+            for (IndexedBundle bundle : input.index().bundles()) {
+                for (BundleContribution contribution : bundle.manifest().contributions()) {
+                    required.computeIfAbsent(contribution.kind(), ignored -> new TreeSet<>())
+                            .add(contribution.provider());
+                }
+            }
+        }
+        Map<ProviderKey, ServiceLoader.Provider<?>> handles = new LinkedHashMap<>();
+        int descriptors = 0;
+        for (var kind : required.entrySet()) {
+            Set<String> registered = new HashSet<>();
+            try {
+                var resources = loader.getResources("META-INF/services/" + kind.getKey().serviceType().getName());
+                while (resources.hasMoreElements()) {
+                    if (++descriptors > MAX_DISCOVERED_PROVIDERS) {
+                        throw new ServiceConfigurationError("Required provider descriptor limit exceeded");
+                    }
+                    try (InputStream input = resources.nextElement().openStream()) {
+                        byte[] bytes = input.readNBytes(PluginArtifactScanner.MAX_SERVICE_FILE_BYTES + 1);
+                        if (bytes.length > PluginArtifactScanner.MAX_SERVICE_FILE_BYTES) {
+                            throw new ServiceConfigurationError("Required provider descriptor exceeds byte limit");
+                        }
+                        for (String line : new String(bytes, StandardCharsets.UTF_8).lines().toList()) {
+                            int comment = line.indexOf('#');
+                            String provider = (comment < 0 ? line : line.substring(0, comment)).trim();
+                            if (kind.getValue().contains(provider)) registered.add(provider);
+                        }
+                    }
+                }
+            } catch (IOException failure) {
+                throw new ServiceConfigurationError("Cannot read required provider descriptors", failure);
+            }
+            for (String provider : kind.getValue()) {
+                if (!registered.contains(provider)) {
+                    throw new IllegalStateException("Manifested provider '" + provider
+                            + "' has no matching ServiceLoader entry");
+                }
+                handles.put(new ProviderKey(kind.getKey(), provider),
+                        requiredProvider(kind.getKey().serviceType(), provider, loader));
+            }
+        }
+        return handles;
+    }
+
+    private static <P> ServiceLoader.Provider<P> requiredProvider(
+            Class<P> serviceType, String name, ClassLoader loader) {
+        try {
+            Class<? extends P> type = Class.forName(name, false, loader).asSubclass(serviceType);
+            if (!Modifier.isPublic(type.getModifiers())) {
+                throw new ServiceConfigurationError("Required provider is not public: " + name);
+            }
+            Constructor<? extends P> constructor = type.getConstructor();
+            return new ServiceLoader.Provider<>() {
+                @Override public Class<? extends P> type() { return type; }
+                @Override public P get() {
+                    try {
+                        return constructor.newInstance();
+                    } catch (InvocationTargetException failure) {
+                        throw new ServiceConfigurationError("Required provider could not be constructed: " + name,
+                                failure.getCause());
+                    } catch (ReflectiveOperationException failure) {
+                        throw new ServiceConfigurationError("Required provider could not be constructed: " + name,
+                                failure);
+                    }
+                }
+            };
+        } catch (ClassNotFoundException | ClassCastException | NoSuchMethodException failure) {
+            throw new ServiceConfigurationError("Invalid required provider: " + name, failure);
+        }
     }
 
     /** Package-private seam proving the provider-evidence bound spans catalog inputs. */

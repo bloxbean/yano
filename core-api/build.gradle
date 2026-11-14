@@ -3,8 +3,8 @@ dependencies {
     api project(':node-api')
     api project(':host-api')
     api project(':cardano-api')
-    api "org.yanoproject.x:yano-x-appchain-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.4')}"
-    api "org.yanoproject.x:yano-x-appchain-cardano-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.4')}"
+    api "org.yanoproject.x:yano-x-appchain-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.6')}"
+    api "org.yanoproject.x:yano-x-appchain-cardano-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.6')}"
     // Consumer-side compatibility tests still exercise the original aggregate.
     testImplementation libs.cardano.client.core
     testImplementation libs.cardano.client.address

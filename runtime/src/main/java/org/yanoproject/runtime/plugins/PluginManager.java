@@ -292,6 +292,11 @@ public final class PluginManager implements AutoCloseable {
         services.registerHost(key, service);
     }
 
+    /** Read an init- or start-scoped service from the existing shared registry. */
+    public <T> Optional<T> getService(String key, Class<T> type) {
+        return services.get(key, type);
+    }
+
     /** Discover, validate and initialize the selected plugin set exactly once. */
     public void discoverAndInit() {
         discoverAndInit(() -> { });

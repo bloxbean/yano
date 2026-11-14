@@ -54,13 +54,16 @@ def declaredPluginManifestVersion = project.version.toString()
 // Native Yano embeds only its core catalog; JVM directory bundles are supplied
 // by Yano X and are never augmented into the native image.
 
-// Every build-time bundle must have an explicit Gradle project root. Mappings
+// Every build-time bundle has an explicit project or published Maven root. Mappings
 // with includeProvided also add non-annotation compileOnly dependencies because
 // those are supplied by the host at execution time rather than by the bundle JAR.
 def buildTimePluginBundles = [
         'org.yanoproject.plugins.logging':
                 [projectPath: ':runtime', includeProvided: false,
-                 expectedManifestVersion: '1.0.0']
+                 expectedManifestVersion: '1.0.0'],
+        'org.yanoproject.x.app-ledger':
+                [group: 'org.yanoproject.x', module: 'yano-x-appchain-cardano',
+                 expectedManifestVersion: providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.6')]
 ]
 
 def requireIndexedManifestVersions = { index, Map<String, String> expectedVersions ->
@@ -350,7 +353,9 @@ tasks.register('generatePluginCatalogIndex', JavaExec) {
 
         def arguments = ['--output', output.absolutePath, '--strict-bundle-closures']
         buildTimePluginBundles.toSorted().each { bundleId, specification ->
-            def roots = [projectComponent(specification.projectPath)]
+            def roots = [specification.projectPath
+                    ? projectComponent(specification.projectPath)
+                    : moduleComponent(specification.group, specification.module)]
             if (specification.includeProvided) {
                 project(specification.projectPath).configurations.compileOnly.dependencies
                         .findAll { dependency -> dependency.name != 'lombok' }

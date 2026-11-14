@@ -11,10 +11,8 @@ import org.yanoproject.api.NodeLifecycle;
 import org.yanoproject.api.ProducerControl;
 import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.TxGateway;
-import org.yanoproject.api.appchain.AppChainConfig;
 import org.yanoproject.api.appchain.AppChainGateway;
 import org.yanoproject.api.appchain.AppChainGateways;
-import org.yanoproject.api.appchain.AppLedgerOperatingProfile;
 import org.yanoproject.api.config.NodeConfig;
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
@@ -23,9 +21,9 @@ import org.yanoproject.api.model.NodeStatus;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.api.plugin.domain.DomainApiGateway;
 import org.yanoproject.api.plugin.operations.PluginOperationsView;
-import org.yanoproject.appchain.config.AppChainConfigParser;
-import org.yanoproject.runtime.appchain.AppChainManager;
-import org.yanoproject.runtime.appchain.AppChainSubsystem;
+import org.yanoproject.runtime.appchain.AppLedgerManager;
+import org.yanoproject.x.framework.host.AppLedgerHostPlugin;
+import org.yanoproject.api.config.PluginConfigValues;
 import org.yanoproject.runtime.events.PropagatingEventBus;
 import org.yanoproject.runtime.kernel.KernelState;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
@@ -52,6 +50,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /** App-only composition of the existing kernel, catalog, transport and app-chain manager. */
 final class AppLedgerAssembly implements Yano, NodeLifecycle {
@@ -59,7 +58,7 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
     private final RuntimeMaintenanceGate maintenance = new RuntimeMaintenanceGate();
     private final YanoConfig config;
     private final NodeKernel kernel;
-    private final AppChainManager chains;
+    private final AppLedgerManager chains;
     private final ServeSubsystem server;
     private final PluginRuntimeEnvironment plugins;
     private final PluginOperationsRegistry operations;
@@ -69,8 +68,6 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         config = source.toBuilder().build();
         Map<String, Object> globals = options.globals();
         validateHost(config, globals);
-        List<AppChainConfig> chainConfigs = AppChainConfigParser.parseChains(globals, true);
-        chainConfigs.forEach(chain -> AppLedgerOperatingProfile.STANDALONE.validate(chain));
         long magic = Long.parseLong(String.valueOf(globals.get("yano.app-chain.network-magic")));
         Schedulers schedulers = new Schedulers();
         PropagatingEventBus events = new PropagatingEventBus();
@@ -79,32 +76,26 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         owned.add(events);
         try {
             plugins = PluginRuntimeEnvironment.open(options.plugins(), loader != null ? loader
-                    : PluginLoaderHandle.classpath(Thread.currentThread().getContextClassLoader()));
+                    : PluginLoaderHandle.classpath(Thread.currentThread().getContextClassLoader()),
+                    Set.of(AppLedgerHostPlugin.BUNDLE_ID));
             owned.add(plugins);
             operations = new PluginOperationsRegistry(plugins, log);
             owned.add(operations);
             DefaultN2NExtensionRegistry n2n = new DefaultN2NExtensionRegistry(false);
-            PluginManager manager = options.plugins().enabled()
-                    ? plugins.createNodePluginManager(events, schedulers.scheduled(), operations) : null;
-            if (manager != null) owned.add(manager);
+            PluginManager manager = plugins.createNodePluginManager(events, schedulers.scheduled(), operations);
+            owned.add(manager);
             DefaultHostLifecycleRegistry hostLifecycle = new DefaultHostLifecycleRegistry();
             owned.add(hostLifecycle);
-            if (manager != null) {
-                manager.registerHostService(HostApi.SERVICE_KEY,
-                        new DefaultHostApi(n2n, plugins.providers(), hostLifecycle));
-                manager.discoverAndInit(hostLifecycle::close);
-            }
-            List<AppChainSubsystem> subsystems = new ArrayList<>();
-            for (AppChainConfig chain : chainConfigs) {
-                AppChainSubsystem subsystem = new AppChainSubsystem(chain, magic, events, null,
-                        config.getAppChainStoragePath(), plugins.classLoader(), plugins.providers(), log);
-                owned.add(subsystem);
-                subsystems.add(subsystem);
-            }
-            chains = new AppChainManager(subsystems, log);
+            manager.registerHostService(HostApi.SERVICE_KEY,
+                    new DefaultHostApi(n2n, plugins.providers(), hostLifecycle));
+            manager.registerHostService(AppLedgerHostPlugin.NODE_CONFIG_SERVICE, config.toBuilder().build());
+            manager.registerHostService(AppLedgerHostPlugin.RUNTIME_OPTIONS_SERVICE,
+                    new RuntimeOptions(options.events(), options.plugins(), PluginConfigValues.immutableCopy(globals)));
+            manager.discoverAndInit(hostLifecycle::close);
+            chains = manager.getService(AppLedgerHostPlugin.MANAGER_SERVICE, AppLedgerManager.class)
+                    .orElseThrow(() -> new IllegalStateException("Required application-ledger framework did not initialize"));
             server = ServeSubsystem.appOnly(config.getServerPort(), magic, log);
             owned.add(server);
-            chains.registerProtocols(n2n);
             n2n.seal();
             server.enableAppLayer(n2n.inboundFactories());
             LocalReadModelRegistry readModels = new LocalReadModelRegistry();
@@ -122,12 +113,11 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
                 public void stop() { plugins.sealContributionCallbacks(); }
                 public void close() { closeAll(resources, null); }
             });
-            if (manager != null) stages.add(new Subsystem() {
+            stages.add(new Subsystem() {
                 public String name() { return "plugins"; }
                 public void start() { manager.startAll(); }
                 public void stop() { manager.stopAll(); }
             });
-            hostLifecycle.registerBeforePublication(chains);
             hostLifecycle.seal();
             stages.addAll(hostLifecycle.subsystems());
             stages.add(new Subsystem() {
