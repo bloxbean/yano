@@ -27,6 +27,7 @@ on:
       - '.github/workflows/amaru-wasm.yml'
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -236,6 +237,10 @@ jobs:
           [[ "$actual" == "$commit" ]] \
             || { echo "::error::tag $tag is at $actual, AMARU_VERSION pins $commit"; exit 1; }
 
+      - name: Prepare pinned framework inputs
+        uses: ./.github/actions/prepare-framework-inputs
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Conformance harness (Amaru reference, 276 scenarios, blueprint vectors, mutation matrix, strict coverage)
         # conformance.strict is the default since the ADR-056 Phase 5 gate; it is passed explicitly so that
         # this job never runs without it: every in-scope constructor needs a @Covers test, and the Java engine
@@ -276,6 +281,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     permissions:
+      actions: read
       contents: write
     steps:
       - name: Checkout

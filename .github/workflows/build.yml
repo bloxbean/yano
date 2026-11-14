@@ -19,6 +19,7 @@ on:
 
 # PR builds run the pull request's own code: give it a read-only token.
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -36,6 +37,14 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: 'gradle'
+      - name: Test coordinated input scripts
+        run: |
+          bash .github/scripts/tests/prepare-framework-inputs-test.sh
+          bash .github/scripts/tests/stage-consumer-inputs-test.sh
+      - name: Prepare pinned framework inputs
+        uses: ./.github/actions/prepare-framework-inputs
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build with Gradle

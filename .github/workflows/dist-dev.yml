@@ -57,6 +57,7 @@ on:
         value: ${{ jobs.plan.outputs.platforms }}
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -99,6 +100,10 @@ jobs:
         with:
           java-version: '25'
           distribution: 'temurin'
+      - name: Prepare pinned framework inputs
+        uses: ./.github/actions/prepare-framework-inputs
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build uber-jar distribution
@@ -143,6 +148,10 @@ jobs:
             throw "Expected Oracle GraalVM 25.3, got: $nativeImageVersion"
           }
           Write-Output $nativeImageVersion
+      - name: Prepare pinned framework inputs
+        uses: ./.github/actions/prepare-framework-inputs
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Grant execute permission for gradlew
         if: runner.os != 'Windows'
         run: chmod +x gradlew

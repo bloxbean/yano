@@ -23,9 +23,19 @@ def cryptoTestLock = gradle.sharedServices.registerIfAbsent(
     maxParallelUsages = 1
 }
 
+// Opt in explicitly for coordinated local host development; never let locally
+// republished third-party artifacts mask missing or incompatible remote inputs.
+def useMavenLocalValue = providers.gradleProperty('useMavenLocal').getOrElse('false')
+if (!(useMavenLocalValue in ['true', 'false'])) {
+    throw new GradleException('useMavenLocal must be true or false')
+}
+def useLocalRepository = Boolean.parseBoolean(useMavenLocalValue)
+
 repositories {
     mavenCentral()
-    mavenLocal()
+    if (useLocalRepository) {
+        mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+    }
     maven {
         url "https://central.sonatype.com/repository/maven-snapshots/"
     }
@@ -501,7 +511,9 @@ subprojects {
     }
 
     repositories {
-        mavenLocal()
+        if (useLocalRepository) {
+            mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+        }
         mavenCentral()
         maven {
             url "https://central.sonatype.com/repository/maven-snapshots/"

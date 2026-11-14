@@ -32,6 +32,7 @@ on:
         type: boolean
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -56,6 +57,10 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Prepare pinned framework inputs
+        uses: ./.github/actions/prepare-framework-inputs
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew compat-tests/ccl/gradlew compat-tests/run-suite.sh compat-tests/bin/with-devnet.sh
 
