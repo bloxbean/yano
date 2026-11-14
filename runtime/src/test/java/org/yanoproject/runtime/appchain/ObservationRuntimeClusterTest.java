@@ -183,9 +183,8 @@ class ObservationRuntimeClusterTest {
                 settings.put("threshold", external ? 4 : 2);
                 settings.put("sequencer.proposer", signers.getFirst().publicKeyHex());
                 settings.put("block.interval-ms", 300);
-                if (omitCertificate) {
-                    settings.put("consensus.round-timeout-ms", "2000");
-                }
+                // Keep the production round timeout: network setup and report collection
+                // must not rotate away from the designated faulty proposer before omission.
                 settings.put("peers", ports.stream().filter(candidate -> candidate != port)
                         .map(candidate -> "localhost:" + candidate).collect(Collectors.joining(",")));
                 settings.putAll(TestStateCommitments.MPF.settings());
