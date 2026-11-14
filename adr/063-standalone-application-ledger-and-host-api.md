@@ -539,3 +539,127 @@ This remains incremental evidence: optional Cardano attachment extraction,
 manifested framework activation, independent standalone X packaging and the
 frozen oldest/current host matrix are still incomplete. Do not mark Phase 2 or
 final release qualification complete based on these results.
+
+## Phase 2 runtime extraction refinement
+
+The public signature audit supports a smaller shape than a new attachment SPI
+plus compatibility façade: move the existing `AppChainSubsystem` to the optional
+Cardano module as a specialization of one extracted `AppLedgerRuntime`. Keep all
+four public constructors, `AppChainSubsystem.AnchorFeeParams` (including both
+constructors), and existing Cardano wiring descriptors on that exact class.
+Inherited gateway/lifecycle methods keep normal JVM linkage. Move the manager
+implementation once into `AppLedgerManager`; preserve the old `AppChainManager`
+constructor on its Cardano specialization. Existing gateway return types already
+use `AppChainGateway`, so they need no redesign. This supersedes the earlier
+suggestion of a separate attachment interface/object; no new public integration
+SPI is needed.
+
+Use finite protected hooks only at existing Cardano call sites. Preserve observer
+identity validation before journal writes, observers before governance, anchors
+after governance, delivery after sink/effect construction, and teardown barriers
+before ledger closure. Keep the existing generation fences, workers, engine and
+store owners in the shared runtime. Stable reference, reference verification,
+anchor gates and gateway defaults retain existing no-L1 behavior. The standalone
+runtime must reject configured L1 features rather than invent observations or
+clocks. Constructor-time rotating-sequencer selection must use a supplied resolver
+that does not read uninitialized subclass fields. The legacy effect factory and
+Cardano effect context move with the optional specialization; generic effects,
+webhooks and bridge diffusion remain common.
+
+Activation continues through the existing manifested NodePlugin and shared
+plugin service registry. A host-owned required embedded bundle selection must
+activate the framework even when optional plugins are disabled, without scanning
+plugin directories or constructing unrelated legacy providers. Requiredness is
+assembly policy, not a new manifest field. Yano generates its existing native
+catalog metadata from published framework artifacts; X remains JVM-only.
+
+Independent X distributions must compose framework-free host artifacts with
+their selected framework version. An older integrated uber-JAR cannot have its
+embedded classes replaced by a parent-first plugin-directory overlay. The matrix
+must exercise actual oldest/current host artifacts and packaged startup, not
+only dependency resolution. Keep the integrated deployment unchanged and do not
+add sibling checkout/build dependencies or a second runtime/plugin loader.
+
+Validation extends the existing ABI and precompiled-plugin harness, including
+legacy constructor/nested-record linkage when inheritance changes. Run focused
+L1 delivery/observer/anchor/lifecycle tests per extraction slice, then physically
+exclude Cardano artifacts for standalone startup/consensus/100/103/restart tests.
+One final comprehensive Yano qualification still follows completion of both phases.
+
+
+## Runtime ownership and manifested activation milestone
+
+The subsystem/manager extraction now supersedes the earlier core-only milestone.
+`framework/core` owns `AppLedgerRuntime`, `AppLedgerManager`, the existing engine,
+store, query workers, observation/effect execution and validator resolver.
+`framework/cardano` owns the exact legacy `AppChainSubsystem` and
+`AppChainManager` names, their public constructors and nested fee record, plus
+Cardano delivery, observer and anchor implementations. The old Yano on-chain
+coordinate reexports `yano-x-appchain-anchor-onchain`; checked validator bytes,
+Java/Aiken authoring sources and conformance tests are owned by
+`framework/cardano-onchain`. No validator regeneration or persisted format change
+is involved. Host-only epoch and transaction-builder implementations stay in
+Yano. Remove unused host production MPF/JMT/julc dependencies so Maven nearest-wins
+resolution cannot constrain a later framework release through obsolete host pins.
+
+Activation reuses schema-v1 `NodePlugin`, `PluginContext` services and the existing
+Host API. `framework/host-adapter` is a descriptor-free shared implementation;
+`framework/standalone` and `framework/cardano` are mutually exclusive manifested
+roots for `org.yanoproject.x.app-ledger`. They publish ordinary Maven libraries,
+without the existing product bundle task that strips classes against a particular
+Yano ZIP. This small standalone root keeps provider class, SPI declaration and
+manifest together for the existing artifact scanner; there is no second loader.
+
+The host supplies copied `YanoConfig` and immutable `RuntimeOptions` snapshots.
+One optional, concrete `CardanoRuntimeServices` record groups only callbacks
+already used by the existing assembly: submission, UTXOs, canonical chain reads,
+body-retention registration, evaluation and the two existing parameter suppliers.
+This is an adapter-owned data carrier, not a new generic L1 interface. Preserve its
+constructor as part of the embedding compatibility surface. The two parameter
+suppliers stay distinct because linear fees and script pricing have different
+fallback behavior. Epoch-state wiring retains its existing later assembly point.
+The plugin constructs one existing manager, registers N2N agents/decorators and
+publishes its manager services and transfers lifecycle ownership exactly once before initialization returns. No plugin
+start/stop callback creates another runtime. Failed construction or rejected
+ownership closes the same chain resources in reverse order.
+
+Required embedded roots are host assembly policy, not a manifest schema change.
+They activate even when optional plugins are disabled, including restrictive
+allow/deny lists. Disabled mode never scans directory artifacts or constructs or
+resolves unrelated optional providers. Required SPI entries and artifact origins
+are still checked. Library mode without an aggregate index uses qualified
+manifests and the existing artifact scanner; packaged/native mode keeps its
+exactly-one-index requirement. Integrated standalone deployments retain the
+optional Cardano specialization without L1 wiring so legacy context-aware effect
+factories continue to work. The standalone root uses the SDK-independent core.
+
+Runtime extraction validation includes a frozen pre19 client JAR compiled only
+against checksum-verified original artifacts. Its unchanged bytecode exercises
+old constructors, nested fee records, Cardano wiring, inherited gateway/protocol
+methods, finality and reopen. Both public API comparisons and this runtime fixture
+pass against candidate framework `0.1.0-245.5`. The lean X test executes real
+startup, consensus, query-worker access, restart and database reopen with Cardano
+runtime/SDK classes absent. Cleanup-hook failure tests cover concurrent and repeat
+close, self-close rejection and reopening after failed teardown. Candidate `.6`
+adds manifested activation; integrated packaging and the oldest-host matrix must
+pass before declaring Phase 2 complete.
+
+The first supported Host API baseline must be an immutable artifact with these
+capabilities; pre19 is only a compatibility fixture and cannot be represented as
+a Host API host. A QA-only thin packaged host fixture will exercise the ordinary
+library embedding path against baseline/current host artifacts and one selected
+X artifact set. It must exclude embedded old framework code, retain original
+fixture bytecode, verify class/resource ownership and record resolved hashes.
+The integrated Quarkus deployment remains the existing default. Do not overlay
+new framework classes onto its parent-first uber-JAR. One comprehensive Yano
+release-qualification cycle follows integration and these incremental gates;
+there is no intermediate Yano release or public candidate publication.
+
+
+Open-PR review refreshed during activation integration: #244 changes the ledger
+CBOR reader and header validation; #237/#235 change nonce paths; #233 changes body
+fetch/application; #206 changes producer header versions. Those implementation
+areas are untouched by this extraction. #241 (Amaru removal) overlaps build and
+application configuration and must apply its `YanoPropertyKeys` edits to the new
+`node-api` owner. #240 and the #243 tracking plan remain independent. No unrelated
+PR is a prerequisite and none was awaited.
