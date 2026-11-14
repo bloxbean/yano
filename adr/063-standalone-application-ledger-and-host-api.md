@@ -764,6 +764,14 @@ publish or list `yano-core-api`; consumers requesting that coordinate must updat
 their dependencies. The supported Host API version and frozen oldest-host fixture
 are unchanged. Older immutable hosts may still contain their historical aggregate;
 that is allowed in the older-host matrix, not in the new host's runtime closure.
+A BOM does not relocate or evict an explicitly pinned historical `core-api` JAR.
+Consumers upgrading from pre19 must remove that dependency, including transitive
+requests from older plugins, and declare the actual owners listed above. Keeping
+`yano-core-api:0.1.0-pre19` beside a new host creates duplicate API classes and is
+unsupported. A dependency without an explicit version also stops resolving
+through the new BOM. This is the agreed preview Maven migration, not a claim of
+coordinate-level backward compatibility; the bytecode checks cover Java APIs.
+
 
 Validation retains both frozen pre19 public-API comparisons and compiled-client
 fixtures to catch accidental signature changes. The existing artifact gate also
@@ -778,3 +786,31 @@ this cleanup introduces no intermediate release.
 The [cleanup validation record](../qa/app-ledger/CORE_API_REMOVAL_VALIDATION.md)
 retains the concrete artifacts, passing gates, fixture corrections, transient
 connection failure evidence and separate subsequent Yaci wire-shape checks.
+
+### Restart readiness and coordinated build inputs
+
+A successful stop can leave framework callbacks draining asynchronously. The host
+checks the existing framework cleanup completion with a bounded wait before
+restarting plugins or subsystems. The internal kernel serializes this preflight
+with stop/start; if cleanup is still pending, it restores `STOPPED` and retains
+ownership for another attempt. Initial startup failure remains terminal. The
+small additive `AppLedgerManager.awaitStopped(Duration)` method exposes existing
+completion state; it creates no runtime component and changes no Host API
+interface or supported API level. Direct framework runtime start/stop behavior
+remains unchanged. The coordinated new host requires the updated framework;
+independent newer X builds still compile and run against older compatible hosts.
+
+The standalone host also validates effective per-chain transport before opening
+the plugin environment. It reuses the existing configuration parser and applies
+the same blank/global fallback and case-insensitive comparison as the adapter.
+The framework independently checks network-magic range; known Cardano identities
+remain a host guard, while exclusive V101 negotiation provides wire isolation.
+
+Yaci now has a public commit-qualified snapshot containing the merged transport
+changes. Until the extracted Yano/X artifacts are publicly available, clean CI
+bootstraps foundation APIs, then framework artifacts, then the complete host
+through pinned, checksummed Actions artifacts. This is build-time qualification,
+not a public release or a dependency on sibling checkouts. Public publishing
+workflows do not consume those temporary pins. See the
+[re-review evidence](../qa/app-ledger/REVIEWER1_REREVIEW.md) and
+[CI artifact handoff](../.github/COORDINATED_INPUTS.md).

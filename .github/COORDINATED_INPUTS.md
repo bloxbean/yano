@@ -49,7 +49,8 @@ while IFS='=' read -r name value; do export "$name=$value"; done < "$GITHUB_ENV"
 The environment file contains generated paths and versions. Read it as data;
 do not print or commit `GH_TOKEN`.
 
-Local script checks (mocked artifact transport, no Gradle build/publication):
+Local script checks (mocked artifact transport and tiny Gradle property probes;
+no repository build or publication):
 
 ```bash
 bash .github/scripts/tests/prepare-framework-inputs-test.sh

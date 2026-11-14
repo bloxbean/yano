@@ -36,6 +36,14 @@ else
   while [[ "$1" != --dir ]]; do shift; done
   directory="$2"
   cp -R "$TEST_FIXTURE/." "$directory/"
+  if [[ -n "${TEST_INVALID_VERSION_FIELD:-}" ]]; then
+    jq --arg field "$TEST_INVALID_VERSION_FIELD" '.[$field]="1 -Dunexpected=value"' \
+      "$directory/framework-inputs.json" > "$directory/manifest.tmp"
+    mv "$directory/manifest.tmp" "$directory/framework-inputs.json"
+    grep -v '  framework-inputs.json$' "$directory/SHA256SUMS" > "$directory/sums.tmp"
+    (cd "$directory" && sha256sum framework-inputs.json) >> "$directory/sums.tmp"
+    mv "$directory/sums.tmp" "$directory/SHA256SUMS"
+  fi
   if [[ "${TEST_TAMPER:-0}" == 1 ]]; then printf tampered >> "$directory/framework-inputs.json"; fi
   if [[ "${TEST_UNSAFE:-0}" == 1 ]]; then printf '%064d  ../outside\n' 0 >> "$directory/SHA256SUMS"; fi
   if [[ -n "${TEST_DROP:-}" ]]; then
@@ -74,6 +82,11 @@ run_case 'space path' pass
 run_case committed-pin pass YANO_X_INPUTS_RUN_ID='' YANO_X_INPUTS_COMMIT=''
 run_case ordinary-default pass YANO_X_INPUTS_RUN_ID='' YANO_X_INPUTS_COMMIT=''
 [[ ! -e "$root/ordinary-default/env" ]]
+for field in version nodeApiVersion hostApiVersion; do
+  run_case "invalid-$field" fail TEST_INVALID_VERSION_FIELD="$field"
+  grep -F 'Invalid immutable version' "$root/invalid-$field/output.log" >/dev/null
+  [[ ! -e "$root/invalid-$field/env" ]]
+done
 run_case missing-pin fail YANO_X_INPUTS_COMMIT=''
 run_case wrong-commit fail TEST_COMMIT=2222222222222222222222222222222222222222
 run_case wrong-repository fail TEST_REPOSITORY=someone/else
@@ -91,3 +104,49 @@ grep -Fx "ORG_GRADLE_PROJECT_appLedgerFrameworkVersion=$version" "$root/valid/en
 grep -Fx "ORG_GRADLE_PROJECT_hostApiVersion=$host_version" "$root/valid/env" >/dev/null
 grep -F '%20' "$root/space path/env" >/dev/null
 echo "Framework input fixtures retained at $root"
+
+# Exercise real Gradle precedence without configuring this repository or resolving dependencies.
+precedence="$root/gradle-precedence"
+mkdir -p "$precedence"
+printf "rootProject.name = 'input-precedence'\n" > "$precedence/settings.gradle"
+keys=(appLedgerFrameworkVersion hostApiVersion)
+for key in "${keys[@]}"; do printf '%s=checked-in-default\n' "$key"; done > "$precedence/gradle.properties"
+cat > "$precedence/build.gradle" <<'GRADLE'
+tasks.register('verifyInputs') {
+    doLast {
+        ['appLedgerFrameworkVersion', 'hostApiVersion'].each { key ->
+            assert providers.gradleProperty(key).get() == providers.gradleProperty("expected_${key}").get()
+        }
+    }
+}
+GRADLE
+(
+  # GITHUB_ENV is data, not shell code (paths may contain spaces).
+  while IFS='=' read -r key value; do export "$key=$value"; done < "$root/valid/env"
+  prepared_env="$root/valid/env"
+  unset GRADLE_OPTS
+  for mode in defaults prepared command-line; do
+    arguments=()
+    for key in "${keys[@]}"; do
+      variable="ORG_GRADLE_PROJECT_$key"
+      expected="$(sed -n "s/^$variable=//p" "$prepared_env")"
+      if [[ "$mode" == defaults ]]; then
+        expected=checked-in-default
+        unset "$variable"
+      else
+        export "$variable=$expected"
+      fi
+      if [[ "$mode" == command-line ]]; then
+        expected=explicit-override
+        arguments+=("-P$key=$expected")
+      fi
+      arguments+=("-Pexpected_$key=$expected")
+    done
+    if ! "$scripts_dir/../../gradlew" -p "$precedence" --offline --no-daemon --no-watch-fs --no-parallel \
+        --console=plain verifyInputs "${arguments[@]}" > "$precedence/$mode.log" 2>&1; then
+      echo "FAIL: Gradle $mode precedence (see $precedence/$mode.log)" >&2
+      exit 1
+    fi
+    echo "PASS: Gradle $mode precedence"
+  done
+)

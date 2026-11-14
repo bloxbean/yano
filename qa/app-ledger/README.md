@@ -59,20 +59,23 @@ standalone gate retains the real host assembly, consensus and restart checks.
 
 ## Exact coordinated inputs
 
-The draft requires the app-only Yaci API from
-[bloxbean/yaci#245](https://github.com/bloxbean/yaci/pull/245) and the extracted
+The catalogs pin published Yaci `0.5.0-pre16-f57fc88-SNAPSHOT`, containing
+the merged [Yaci #245](https://github.com/bloxbean/yaci/pull/245). The draft also requires the extracted
 framework from [Yano-X #102](https://github.com/bloxbean/yano-x/pull/102). Consume
 exact staged/published artifacts. No sibling checkout or build invocation is
 required. Never overwrite a released coordinate.
 
 ```sh
 python3 qa/app-ledger/run.py --gate standalone \
-  --gradle-arg=-I --gradle-arg=qa/app-ledger/artifact-inputs.gradle \
-  --gradle-arg=-PappLedgerYaciRepository=file:///absolute/yaci-maven-repository \
-  --gradle-arg=-PappLedgerYaciVersion=EXACT_YACI_VERSION \
   --gradle-arg=-PappLedgerFrameworkRepository=file:///absolute/framework-maven-repository \
   --gradle-arg=-PappLedgerFrameworkVersion=EXACT_FRAMEWORK_VERSION
 ```
+
+Yaci resolves from the configured public BloxBean snapshot repository. The
+optional `artifact-inputs.gradle` override remains available for deliberate
+upstream-candidate testing; it is not needed for the pinned snapshot. Maven Local
+is disabled by default and, when enabled with `-PuseMavenLocal=true`, is limited
+to Yano project artifacts.
 
 Replace local draft candidate pins with final published pins before release
 qualification. X's own `frameworkCheck` and `qa/framework/README.md` test its

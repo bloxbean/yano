@@ -4,19 +4,16 @@ Build each repository independently and exchange Maven artifacts. None of the
 Gradle builds invokes another checkout. This recipe covers the implemented
 framework extraction; it does not replace final release qualification.
 
-Use Java 25, the three linked PR branches and **new empty staging directories**.
-Choose exact candidate versions for Yaci, node API, Host API and X; do not reuse a
+Use Java 25, the Yano and Yano-X PR branches and **new empty staging directories**.
+Choose exact candidate versions for node API, Host API and X; do not reuse a
 released coordinate or overwrite a previous candidate's bytes. The placeholders
 below are explicit inputs, not environment-dependent automatic discovery.
 
-1. In the Yaci PR #245 checkout (base `next`, where protocols 100/103 already
-   exist), stage its core artifact:
-
-   ```sh
-   ./gradlew :core:publishAllPublicationsToStagingRepository \
-     -Pversion=YACI_VERSION -PskipSigning=true \
-     -PstagingRepository=/absolute/yaci-stage --no-parallel
-   ```
+1. Yaci PR #245 is merged. Both catalogs select the publicly available
+   `0.5.0-pre16-f57fc88-SNAPSHOT` from
+   `https://repo.bloxbean.org/maven/snapshots`. No Yaci checkout, Maven Local
+   publication or QA version override is required. The publishing run is
+   [43602913332](https://github.com/bloxbean/yaci/actions/runs/43602913332).
 
 2. In the Yano PR #246 checkout (base `main`), stage only the foundational APIs.
    These tasks do not need X artifacts:
@@ -26,10 +23,7 @@ below are explicit inputs, not environment-dependent automatic discovery.
      :node-api:publishAllPublicationsToStagingRepository \
      :cardano-api:publishAllPublicationsToStagingRepository \
      -Pversion=NODE_API_VERSION -PhostApiVersion=HOST_API_VERSION \
-     -PskipSigning=true -PstagingRepository=/absolute/host-stage \
-     -I qa/app-ledger/artifact-inputs.gradle \
-     -PappLedgerYaciRepository=file:///absolute/yaci-stage \
-     -PappLedgerYaciVersion=YACI_VERSION --no-parallel
+     -PskipSigning=true -PstagingRepository=/absolute/host-stage --no-parallel
    ```
 
 3. In the X PR #102 checkout (base `main`), test and stage the framework against
@@ -49,15 +43,12 @@ below are explicit inputs, not environment-dependent automatic discovery.
      -Pversion=FRAMEWORK_VERSION -PnodeApiVersion=NODE_API_VERSION \
      -PhostApiVersion=HOST_API_VERSION \
      -PyanoRepository=file:///absolute/host-stage \
-     -PinternalRepository=/absolute/framework-stage -PskipSigning=true \
-     -I qa/framework/artifact-inputs.gradle \
-     -PappLedgerYaciRepository=file:///absolute/yaci-stage \
-     -PappLedgerYaciVersion=YACI_VERSION --no-parallel
+     -PinternalRepository=/absolute/framework-stage -PskipSigning=true --no-parallel
    ```
 
 4. Back in Yano, use the [harness command](README.md#exact-coordinated-inputs)
-   with these exact Yaci/framework repositories and versions. Build
-   `:app:quarkusBuild` with the same `-I`/`-P` arguments and run the packaged
+   with the exact framework repository and version. Build
+   `:app:quarkusBuild` with the same `-P` arguments and run the packaged
    three-process gate. Retain the source revision, Maven inventories/hashes,
    JUnit/ABI reports and packaged JAR digest together.
 
@@ -99,3 +90,14 @@ candidate. Use the existing release-QA preflight and sequential orchestration;
 retain its L1 JVM/native, app-chain, endpoint, SDK compatibility and Docker
 reports alongside the standalone package and oldest/current host matrix reports.
 No release is made between implementation phases.
+
+## Clean CI artifact handoff
+
+The [CI handoff](../../.github/COORDINATED_INPUTS.md) automates the same
+foundation → framework → host sequence as three pinned manual workflow runs.
+It verifies run/commit provenance, publication ownership and SHA-256 inventories.
+The existing X input gate consumes the split API owners and the independent Host
+API version. Successful qualification-run pins can then feed ordinary PR jobs
+and clean developer checkouts; no Maven Local or sibling sources are required.
+These retained inputs are temporary and must be replaced by public dependency
+pins for the coordinated release. Public publication workflows do not load them.
