@@ -2,6 +2,7 @@ package org.yanoproject.runtime.assembly;
 
 import org.yanoproject.api.bootstrap.BootstrapDataProvider;
 import org.yanoproject.api.config.RuntimeOptions;
+import org.yanoproject.api.config.RuntimeMode;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.runtime.internal.RuntimeNode;
@@ -202,6 +203,13 @@ public final class YanoAssembly {
         }
 
         public Yano build() {
+            if (config.getMode() == RuntimeMode.APP_LEDGER) {
+                if (inMemoryGenesis != null || adhocRollbackConfigured || bootstrapDataProvider != null
+                        || transactionBootstrapOptions.enabled()) {
+                    throw new IllegalArgumentException("Cardano assembly options are unavailable in yano.mode=app-ledger");
+                }
+                return new AppLedgerAssembly(config, runtimeOptions, pluginLoader);
+            }
             validateRole();
             Schedulers schedulers = new Schedulers();
             PluginRuntimeEnvironment pluginEnvironment = null;

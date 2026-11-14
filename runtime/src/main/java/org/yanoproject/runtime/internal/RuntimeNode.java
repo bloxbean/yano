@@ -914,35 +914,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             return null;
         }
 
-        // Each chain: (suffix getter, prefix collector for plugin sub-maps like sinks.*)
-        List<java.util.function.Function<String, Object>> chainLookups = new java.util.ArrayList<>();
-        List<java.util.function.Function<String, Map<String, String>>> chainCollectors =
-                new java.util.ArrayList<>();
-        Object chainList = globals.get(YanoPropertyKeys.AppChain.CHAINS);
-        if (chainList instanceof List<?> entries && !entries.isEmpty()) {
-            for (Object entry : entries) {
-                if (entry instanceof Map<?, ?> chainMap) {
-                    chainLookups.add(suffix -> chainMap.get(suffix));
-                    chainCollectors.add(prefix -> collectPrefixed(chainMap, "", prefix));
-                }
-            }
-        } else {
-            // Flat single-chain config: full keys are "yano.app-chain." + suffix
-            chainLookups.add(suffix -> globals.get("yano.app-chain." + suffix));
-            chainCollectors.add(prefix -> collectPrefixed(globals, "yano.app-chain.", prefix));
-        }
-
         String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
         Path appChainStoragePath = AppChainStoragePaths.resolve(
                 rocksPath, config.getAppChainStoragePath());
         log.info("App-chain storage root: {}", appChainStoragePath);
-        boolean strictValidation = resolveBoolean(
-                globals, YanoPropertyKeys.AppChain.VALIDATION_STRICT, false);
         List<org.yanoproject.runtime.appchain.AppChainSubsystem> subsystems =
                 new java.util.ArrayList<>();
-        for (int i = 0; i < chainLookups.size(); i++) {
-            var appChainConfig = buildAppChainConfig(
-                    chainLookups.get(i), chainCollectors.get(i), strictValidation);
+        for (var appChainConfig : AppChainConfigParser.parseChains(globals, false)) {
             log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
                     appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
                     appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
@@ -987,26 +965,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
-    private org.yanoproject.api.appchain.AppChainConfig buildAppChainConfig(
-            java.util.function.Function<String, Object> get,
-            java.util.function.Function<String, Map<String, String>> collectPrefixed,
-            boolean strictValidation) {
-        Map<String, Object> settings = new java.util.LinkedHashMap<>();
-        for (String suffix : AppChainConfigParser.frameworkSuffixes()) {
-            Object value = get.apply(suffix);
-            if (value != null) {
-                settings.put(suffix, value);
-            }
-        }
-        for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
-            settings.putAll(collectPrefixed.apply(prefix));
-        }
-        if (strictValidation) {
-            AppChainConfigParser.validateStrict(settings);
-        }
-        return AppChainConfigParser.parse(settings);
-    }
-
     /**
      * Current linear-fee protocol params for anchor tx pricing (ADR 008.1
      * I1.5); null when unavailable (the anchor falls back to its configured

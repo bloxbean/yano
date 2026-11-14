@@ -93,6 +93,48 @@ public final class AppChainConfigParser {
         }
     }
 
+    /** Shared flat/indexed configuration projection for both runtime compositions. */
+    public static List<AppChainConfig> parseChains(Map<String, Object> globals, boolean standalone) {
+        List<Map<String, Object>> chains = new ArrayList<>();
+        Object indexed = globals.get("yano.app-chain.chains");
+        if (indexed instanceof List<?> entries && !entries.isEmpty()) {
+            for (Object entry : entries) {
+                if (entry instanceof Map<?, ?> values) {
+                    Map<String, Object> chain = new LinkedHashMap<>();
+                    values.forEach((key, value) -> chain.put(String.valueOf(key), value));
+                    chains.add(chain);
+                }
+            }
+        } else {
+            Map<String, Object> chain = new LinkedHashMap<>();
+            globals.forEach((key, value) -> {
+                if (key.startsWith("yano.app-chain.")) chain.put(key.substring(15), value);
+            });
+            chains.add(chain);
+        }
+        List<AppChainConfig> result = new ArrayList<>();
+        for (Map<String, Object> values : chains) {
+            Map<String, Object> selected = new LinkedHashMap<>();
+            values.forEach((key, value) -> {
+                if (FRAMEWORK_SUFFIXES.contains(key)
+                        || DYNAMIC_PREFIXES.stream().anyMatch(key::startsWith)) {
+                    selected.put(key, value);
+                }
+            });
+            String profileKey = "consensus.operating-profile";
+            if (standalone) {
+                Object configured = selected.putIfAbsent(profileKey, "standalone-v1");
+                if (configured != null && !"standalone-v1".equals(String.valueOf(configured))) {
+                    throw new IllegalArgumentException("yano.mode=app-ledger requires consensus.operating-profile=standalone-v1");
+                }
+            } else if (selected.containsKey(profileKey) && !"cardano".equals(selected.get(profileKey))) {
+                throw new IllegalArgumentException("Standalone consensus.operating-profile requires yano.mode=app-ledger");
+            }
+            result.add(parse(selected));
+        }
+        return List.copyOf(result);
+    }
+
     /** Parse one flat or indexed chain after its canonical prefix has been removed. */
     public static AppChainConfig parse(Map<String, ?> settings) {
         if (settings == null) {

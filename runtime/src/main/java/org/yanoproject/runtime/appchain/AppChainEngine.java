@@ -219,12 +219,12 @@ final class AppChainEngine implements AutoCloseable {
                 .toList();
         ConsensusQuorum quorum = new ConsensusQuorum(epoch.members().size(),
                 epoch.threshold(), MemberGroup.maxByzantineMembers(config));
-        return new ConsensusContext(3, config.chainId(),
+        return AppLedgerOperatingProfile.from(config.pluginSettings()).bindContext(new ConsensusContext(3, config.chainId(),
                 stateBackend.identity().genesisId(), height, quorum, members,
                 AppChainConsensusProfileCommitment.digest(
                         consensusProfileGuard.profile()),
                 observerProfileDigest,
-                systemInputKernel.observationProfileDigest()).digest();
+                systemInputKernel.observationProfileDigest()).digest());
     }
 
     void setVotingHealth(BooleanSupplier votingHealth) {
@@ -2353,6 +2353,7 @@ final class AppChainEngine implements AutoCloseable {
      * view stops the batch — the next catch-up tick retries after L1 advances.
      */
     private boolean verifyCatchUpL1Ref(AppBlock block, AppBlock parent) {
+        if (!AppLedgerOperatingProfile.from(config.pluginSettings()).accepts(block)) return false;
         if (config.l1StabilityDepth() <= 0 || block.l1Slot() <= 0) {
             return true; // refs unused, or a block from a pre-l1-ref era
         }
@@ -2542,6 +2543,7 @@ final class AppChainEngine implements AutoCloseable {
      * @return true to continue proposal processing; false = rejected or deferred
      */
     private boolean verifyProposalL1Ref(AppMessage envelope, AppBlock block, AppBlock parent) {
+        if (!AppLedgerOperatingProfile.from(config.pluginSettings()).accepts(block)) return false;
         if (config.l1StabilityDepth() <= 0) {
             return true; // chain runs without L1 refs
         }

@@ -61,6 +61,8 @@ import org.yanoproject.api.appchain.topics.TopicState;
 import org.yanoproject.api.appchain.topics.TopicWire;
 import org.yanoproject.api.appchain.topics.TopicWireCodec;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -542,6 +544,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 : null;
         try {
             this.config = Objects.requireNonNull(config, "config");
+            AppLedgerOperatingProfile.from(config.pluginSettings()).validate(config);
             Set<String> normalizedMembers = AppChainConfigSemantics.validate(config);
             this.effectsSettings = EffectsSettings.from(config);
             this.consensusProfile = effectsSettings.consensusProfile(config);
@@ -728,7 +731,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 log.info("App chain '{}' peer {} uses the SHARED L1 transport", config.chainId(), peer);
             } else {
                 peerClients.add(new AppPeerClient(peer, protocolMagic, transportConfig(),
-                        catchUpHandler, log));
+                        catchUpHandler, log, AppLedgerOperatingProfile.from(config.pluginSettings())
+                                == AppLedgerOperatingProfile.STANDALONE));
             }
         }
     }
@@ -4765,6 +4769,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         return failure;
     }
 
+    private void verifyOperatingProfile(AppLedgerStore store, boolean existingStore) {
+        AppLedgerOperatingProfile expected = AppLedgerOperatingProfile.from(config.pluginSettings());
+        String key = "app-ledger-operating-profile-v1";
+        String retained = store.metaString(key);
+        if (retained == null) {
+            if (expected == AppLedgerOperatingProfile.STANDALONE && existingStore) {
+                throw new IllegalStateException("Existing app history has no standalone profile; use a fresh genesis");
+            }
+            if (expected == AppLedgerOperatingProfile.STANDALONE) {
+                store.metaPutBytesSync(key, expected.id().getBytes(StandardCharsets.US_ASCII));
+            }
+        } else if (!retained.equals(expected.id())) {
+            throw new IllegalStateException("App-ledger operating profile differs from retained chain identity");
+        }
+    }
+
     private void startOwnedResources(long generationToken) {
         // stop() retires peer-link instances. Rebuild them for a supported
         // stop/start cycle (and after a failed start rollback).
@@ -4785,9 +4805,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             com.fasterxml.jackson.databind.JsonNode restoredManifest =
                     SnapshotManifest.verifyPreOpen(java.nio.file.Path.of(ledgerPath),
                             group.members(), log);
+            boolean existingStore = Files.exists(Path.of(ledgerPath, "CURRENT"));
             AppLedgerStore ledgerStore = new AppLedgerStore(
                     ledgerPath, log, stateCommitmentIdentity);
             this.ledger = ledgerStore;
+            verifyOperatingProfile(ledgerStore, existingStore);
             // Integrity check catches a corrupt/partial restore (E5.3) at startup.
             if (!ledgerStore.stateBackend().verifyIntegrity().valid()) {
                 throw new IllegalStateException("App-chain ledger integrity check failed for '"

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -15,6 +16,31 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AppChainConfigParserTest {
     private static final String MEMBER = "a".repeat(64);
     private static final String SIGNING_KEY = "b".repeat(64);
+
+    @Test
+    void flatAndIndexedHostProjectionPreserveExistingConfiguration() {
+        Map<String, Object> values = base();
+        values.put("effects.enabled", "true");
+        values.put("observers.deposits.type", "deposit");
+        Map<String, Object> flat = new LinkedHashMap<>();
+        values.forEach((key, value) -> flat.put("yano.app-chain." + key, value));
+        assertThat(AppChainConfigParser.parseChains(flat, false)).containsExactly(AppChainConfigParser.parse(values));
+        assertThat(AppChainConfigParser.parseChains(Map.of("yano.app-chain.chains", List.of(values)), false))
+                .containsExactly(AppChainConfigParser.parse(values));
+    }
+
+    @Test
+    void standaloneProfileIsAdditiveAndCannotBeSilentlyOverridden() {
+        Map<String, Object> values = base();
+        var parsed = AppChainConfigParser.parseChains(Map.of("yano.app-chain.chains", List.of(values)), true);
+        assertThat(parsed.getFirst().pluginSettings()).containsEntry("consensus.operating-profile", "standalone-v1");
+        values.put("consensus.operating-profile", "cardano");
+        assertThatThrownBy(() -> AppChainConfigParser.parseChains(
+                Map.of("yano.app-chain.chains", List.of(values)), true)).hasMessageContaining("operating-profile");
+        values.put("consensus.operating-profile", "standalone-v1");
+        assertThatThrownBy(() -> AppChainConfigParser.parseChains(
+                Map.of("yano.app-chain.chains", List.of(values)), false)).hasMessageContaining("yano.mode=app-ledger");
+    }
 
     @Test
     void parsesTheRuntimeShapeAndForwardsOnlyDeclaredExtensionNamespaces() {

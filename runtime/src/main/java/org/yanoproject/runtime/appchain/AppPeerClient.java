@@ -68,6 +68,7 @@ final class AppPeerClient implements AppPeerLink {
 
     private final AppChainConfig.AppPeer peer;
     private final long protocolMagic;
+    private final boolean appOnly;
     private final AppMsgSubmissionConfig appMsgConfig;
     private final CatchUpHandler catchUpHandler;
     private final Logger log;
@@ -139,6 +140,15 @@ final class AppPeerClient implements AppPeerLink {
                   Runnable beforeTransportStart,
                   Runnable beforeDelegateStart,
                   LongSupplier nanoTime) {
+        this(peer, protocolMagic, appMsgConfig, catchUpHandler, log, transportFactory,
+                beforeTransportStart, beforeDelegateStart, nanoTime, false);
+    }
+
+    private AppPeerClient(AppChainConfig.AppPeer peer, long protocolMagic,
+                          AppMsgSubmissionConfig appMsgConfig, CatchUpHandler catchUpHandler,
+                          Logger log, PeerTransportFactory transportFactory, Runnable beforeTransportStart,
+                          Runnable beforeDelegateStart, LongSupplier nanoTime, boolean appOnly) {
+        this.appOnly = appOnly;
         this.peer = Objects.requireNonNull(peer, "peer");
         this.protocolMagic = protocolMagic;
         this.appMsgConfig = Objects.requireNonNull(appMsgConfig, "appMsgConfig");
@@ -148,6 +158,13 @@ final class AppPeerClient implements AppPeerLink {
         this.beforeTransportStart = Objects.requireNonNull(beforeTransportStart, "beforeTransportStart");
         this.beforeDelegateStart = Objects.requireNonNull(beforeDelegateStart, "beforeDelegateStart");
         this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
+    }
+
+    AppPeerClient(AppChainConfig.AppPeer peer, long protocolMagic,
+                  AppMsgSubmissionConfig appMsgConfig, CatchUpHandler catchUpHandler,
+                  Logger log, boolean appOnly) {
+        this(peer, protocolMagic, appMsgConfig, catchUpHandler, log, AppPeerClient::createTcpTransport,
+                NOOP, NOOP, System::nanoTime, appOnly);
     }
 
     /**
@@ -340,7 +357,8 @@ final class AppPeerClient implements AppPeerLink {
         }
 
         HandshakeAgent handshakeAgent = new HandshakeAgent(
-                N2NVersionTableConstant.v11AndAboveWithAppLayer(protocolMagic, false, 0, false), true);
+                appOnly ? N2NVersionTableConstant.appOnly(protocolMagic, true)
+                        : N2NVersionTableConstant.v11AndAboveWithAppLayer(protocolMagic, false, 0, false), true);
         handshakeAgent.addListener(new HandshakeAgentListener() {
             @Override
             public void handshakeOk() {
@@ -356,7 +374,8 @@ final class AppPeerClient implements AppPeerLink {
 
             @Override
             public void handshakeError(Reason reason) {
-                log.warn("App-peer handshake failed for {}: {}", peer, reason);
+                log.warn("App-peer handshake failed for {}: {}. Check operating mode and network magic (app-only={}).",
+                        peer, reason, appOnly);
             }
         });
 

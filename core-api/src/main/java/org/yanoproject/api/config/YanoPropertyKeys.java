@@ -8,6 +8,7 @@ package org.yanoproject.api.config;
  * these keys instead of repeating string literals.</p>
  */
 public final class YanoPropertyKeys {
+    public static final String MODE = "yano.mode";
     public static final String NETWORK = "yano.network";
     public static final String AUTO_SYNC_START = "yano.auto-sync-start";
     public static final String API_PREFIX = "yano.api-prefix";
