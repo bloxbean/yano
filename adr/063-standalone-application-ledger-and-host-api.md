@@ -484,8 +484,9 @@ nested records and avoids a second lifecycle interface.
 A new, narrow lifecycle registration point is justified by existing ordering:
 NodePlugin.start runs before Cardano storage/bootstrap, while application ledgers
 must start after sync assembly and before read-model/domain publication. Register
-existing Subsystem instances during NodePlugin.init; seal registration before
-runtime startup; adapt them into the current pre-publication kernel stages.
+existing Subsystem instances during host initialization (the framework assembles
+after all NodePlugin.init callbacks); seal registration before runtime startup
+and adapt them into the current pre-publication kernel stages.
 Registration transfers close ownership only on success. Rejected registration
 leaves ownership with the caller. The registry retains accepted services even
 when later initialization fails, never runs callbacks under its monitor, and
@@ -618,10 +619,19 @@ This is an adapter-owned data carrier, not a new generic L1 interface. Preserve 
 constructor as part of the embedding compatibility surface. The two parameter
 suppliers stay distinct because linear fees and script pricing have different
 fallback behavior. Epoch-state wiring retains its existing later assembly point.
-The plugin constructs one existing manager, registers N2N agents/decorators and
-publishes its manager services and transfers lifecycle ownership exactly once before initialization returns. No plugin
-start/stop callback creates another runtime. Failed construction or rejected
-ownership closes the same chain resources in reverse order.
+The plugin registers its concrete assembly entry point through the existing
+`PluginContext` service registry during `init()`. After every plugin has initialized
+successfully, the host invokes `assemble()` before sealing the N2N and lifecycle
+registries. This preserves the original ordering: user state-machine, signer and
+sequencer factories may rely on their own plugin's completed initialization.
+The assembly method constructs one existing manager, registers N2N agents and
+decorators, transfers lifecycle ownership exactly once, and returns that manager
+for the existing public gateway facade. No new interface, service-registry phase,
+or plugin start/stop runtime is introduced. Provider callbacks execute outside
+the assembly monitor. Failed construction or rejected ownership closes the same
+chain resources in reverse order. A failure in any plugin's initialization prevents
+factory construction entirely. The preliminary unpublished host `.4` embedding
+candidate is superseded by host `.5`; the Host API `.4` interface stays unchanged.
 
 Required embedded roots are host assembly policy, not a manifest schema change.
 They activate even when optional plugins are disabled, including restrictive

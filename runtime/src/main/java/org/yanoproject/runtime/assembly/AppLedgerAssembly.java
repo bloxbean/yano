@@ -92,8 +92,9 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
             manager.registerHostService(AppLedgerHostPlugin.RUNTIME_OPTIONS_SERVICE,
                     new RuntimeOptions(options.events(), options.plugins(), PluginConfigValues.immutableCopy(globals)));
             manager.discoverAndInit(hostLifecycle::close);
-            chains = manager.getService(AppLedgerHostPlugin.MANAGER_SERVICE, AppLedgerManager.class)
-                    .orElseThrow(() -> new IllegalStateException("Required application-ledger framework did not initialize"));
+            chains = manager.getService(AppLedgerHostPlugin.ASSEMBLY_SERVICE, AppLedgerHostPlugin.class)
+                    .orElseThrow(() -> new IllegalStateException("Required application-ledger framework did not initialize"))
+                    .assemble();
             server = ServeSubsystem.appOnly(config.getServerPort(), magic, log);
             owned.add(server);
             n2n.seal();

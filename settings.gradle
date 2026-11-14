@@ -7,8 +7,8 @@ pluginManagement {
 
 rootProject.name = 'yano'
 
-// Yano owns the Cardano data node, the app-chain host framework, OrderedLog,
-// and the retained plugin/test contracts. JVM extensions are built in yano-x.
+// Yano owns the Cardano data node, stable host contracts and integrated distribution.
+// Application-ledger framework artifacts and JVM extensions are built in yano-x.
 def yanoModules = [
         'node-api'                    : 'node-api',
         'cardano-api'                 : 'cardano-api',

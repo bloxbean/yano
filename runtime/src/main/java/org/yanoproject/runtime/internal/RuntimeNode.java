@@ -505,11 +505,20 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 constructionCleanup.addLast(hostLifecycle::close);
             }
 
-            this.appChainManager = appChainEnabled
-                    ? pluginManager.getService(AppLedgerHostPlugin.MANAGER_SERVICE, AppChainManager.class)
-                            .orElseThrow(() -> new IllegalStateException(
-                                    "Required application-ledger plugin did not publish its Cardano manager"))
-                    : null;
+            if (appChainEnabled) {
+                var assembled = pluginManager.getService(
+                                AppLedgerHostPlugin.ASSEMBLY_SERVICE, AppLedgerHostPlugin.class)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Required application-ledger plugin did not initialize"))
+                        .assemble();
+                if (!(assembled instanceof AppChainManager cardanoManager)) {
+                    throw new IllegalStateException(
+                            "Integrated application-ledger assembly requires the Cardano manager");
+                }
+                this.appChainManager = cardanoManager;
+            } else {
+                this.appChainManager = null;
+            }
             this.localReadModels =
                     new org.yanoproject.runtime.plugins.LocalReadModelRegistry();
             constructionCleanup.addLast(localReadModels::close);

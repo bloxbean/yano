@@ -6,8 +6,8 @@ import org.yanoproject.p2p.peer.PeerClientFactory;
 import java.util.function.UnaryOperator;
 
 /**
- * Session extension registration during NodePlugin.init, before any listener or dial starts.
- * The host seals registration after initialization. Factories create fresh agents per session;
+ * Session extension registration during plugin initialization and host assembly, before
+ * any listener or dial starts. The host then seals registration. Factories create fresh agents per session;
  * implementations of mini-protocols remain in Yaci. Registration persists across stop/start.
  */
 public interface N2NExtensionRegistry {

@@ -31,7 +31,7 @@ public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry
         if (name.isBlank()) throw new IllegalArgumentException("Host service name must not be blank");
         synchronized (this) {
             if (sealed || closing || close.started()) {
-                throw new IllegalStateException("Register host services during plugin initialization");
+                throw new IllegalStateException("Register host services during plugin initialization or host assembly before sealing");
             }
             if (entries.containsKey(name)) throw new IllegalArgumentException("Duplicate host service " + name);
             entries.put(name, new Entry(name, service));

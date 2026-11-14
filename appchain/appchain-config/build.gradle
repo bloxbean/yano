@@ -1,4 +1,4 @@
 // Preserve the former configuration coordinate for existing tooling and embedders.
 dependencies {
-    api "org.yanoproject.x:yano-x-appchain-config:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.6')}"
+    api "org.yanoproject.x:yano-x-appchain-config:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.9')}"
 }

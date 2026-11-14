@@ -63,7 +63,7 @@ def buildTimePluginBundles = [
                  expectedManifestVersion: '1.0.0'],
         'org.yanoproject.x.app-ledger':
                 [group: 'org.yanoproject.x', module: 'yano-x-appchain-cardano',
-                 expectedManifestVersion: providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.6')]
+                 expectedManifestVersion: providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.9')]
 ]
 
 def requireIndexedManifestVersions = { index, Map<String, String> expectedVersions ->
