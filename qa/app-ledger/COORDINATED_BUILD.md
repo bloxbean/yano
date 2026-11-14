@@ -68,7 +68,8 @@ of the ABI check.
 
 Exact development candidate versions and artifact hashes are recorded in the
 [Phase 2 validation record](PHASE2_VALIDATION.md) and
-[review follow-up record](REVIEW_FOLLOWUP.md). They are unpublished candidates in
+[review follow-up record](REVIEW_FOLLOWUP.md), and
+[concrete API ownership validation](CORE_API_REMOVAL_VALIDATION.md). They are unpublished candidates in
 isolated local repositories, not remotely resolvable releases.
 The final coordinated release must pin available upstream artifacts and freeze
 its supported host baseline. No release tag or public publication is needed to

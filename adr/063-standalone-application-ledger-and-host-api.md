@@ -774,3 +774,7 @@ existing integrated distribution checks, and the unchanged oldest-host fixture
 cover missing transitive dependencies and packaging mistakes. One comprehensive
 Yano release-qualification cycle remains planned after final coordinated pins;
 this cleanup introduces no intermediate release.
+
+The [cleanup validation record](../qa/app-ledger/CORE_API_REMOVAL_VALIDATION.md)
+retains the concrete artifacts, passing gates, fixture corrections, transient
+connection failure evidence and separate subsequent Yaci wire-shape checks.
