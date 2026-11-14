@@ -27,6 +27,12 @@ class ExtractedApiOwnershipTest {
                 "org/yanoproject/api/events/AppBlockFinalizedEvent.class",
                 "org/yanoproject/appchain/config/AppChainConfigParser.class",
                 "org/yanoproject/runtime/appchain/AppChainEngine.class",
+                "org/yanoproject/runtime/appchain/AppLedgerRuntime.class",
+                "org/yanoproject/runtime/appchain/AppChainSubsystem.class",
+                "org/yanoproject/runtime/appchain/AppLedgerManager.class",
+                "org/yanoproject/runtime/appchain/AppChainManager.class",
+                "META-INF/plutus/AnchorThreadPolicy.plutus.json",
+                "META-INF/plutus/AnchorValidator.plutus.json",
                 "META-INF/yano/topics/v1/topics.cddl",
                 "META-INF/yano/contracts/l1-observation/v1/golden-vectors.properties")) {
             assertThat(Collections.list(loader.getResources(resource)))

@@ -43,6 +43,10 @@ below are explicit inputs, not environment-dependent automatic discovery.
      :framework:cardano-api:publishAllPublicationsToInternalRepository \
      :framework:config:publishAllPublicationsToInternalRepository \
      :framework:core:publishAllPublicationsToInternalRepository \
+     :framework:cardano:publishAllPublicationsToInternalRepository \
+     :framework:cardano-onchain:publishAllPublicationsToInternalRepository \
+     :framework:host-adapter:publishAllPublicationsToInternalRepository \
+     :framework:standalone:publishAllPublicationsToInternalRepository \
      -Pversion=FRAMEWORK_VERSION -PnodeApiVersion=NODE_API_VERSION \
      -PhostApiVersion=HOST_API_VERSION \
      -PyanoRepository=file:///absolute/host-stage \
@@ -64,7 +68,7 @@ baseline-file option. Do not substitute a freshly compiled API as the old side
 of the ABI check.
 
 The current development evidence used Yaci `0.5.0-pre15-app-only-245`, node API
-`0.1.0-245.3`, Host API `1.0.0-245.3`, and framework `0.1.0-245.4` in isolated local
+`0.1.0-245.4`, Host API `1.0.0-245.4`, and framework `0.1.0-245.6` in isolated local
 repositories. They are unpublished candidates, not remotely resolvable releases.
 The final coordinated release must pin available upstream artifacts and freeze
 its supported host baseline. No release tag or public publication is needed to

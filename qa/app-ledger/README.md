@@ -99,3 +99,11 @@ Use `-PappLedgerRuntimeBaseline=/absolute/yano-runtime-0.1.0-pre19.jar` when
 supplying that baseline directly. The harness archives both runtime ABI XML and
 artifact provenance JSON and fails if either is absent. Lifecycle failure tests
 and ownership checks include the newly separated Cardano API and kernel contracts.
+
+
+The host gate also executes the unchanged pre19 runtime-client fixture. Its source
+and exact compile inputs are in `fixtures/pre19/runtime-client-provenance.json`;
+its JAR is never recompiled by ordinary tests. The ownership guard checks both
+runtime/manager pairs and the two checked validator resources. Required embedded
+activation tests cover disabled optional plugins, restrictive policy, library
+fallback, malformed optional providers and packaged/native index requirements.

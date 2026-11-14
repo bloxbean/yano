@@ -94,8 +94,10 @@ tasks.register('checkAppLedgerRuntimeCompatibility', JavaExec) {
         }
         def allJars = (configurations.runtimeClasspath.files + tasks.named('jar').get().archiveFile.get().asFile)
                 .toList().sort { it.name }
-        def newJars = allJars.findAll { it.name.startsWith('yano-runtime-') || it.name.startsWith('yano-x-appchain-core-') }
-        if (newJars.size() != 2) throw new GradleException("Expected two runtime ownership artifacts: ${newJars}")
+        def runtimeNames = ['yano-runtime-', 'yano-x-appchain-core-', 'yano-x-appchain-cardano-']
+        def newJars = allJars.findAll { file -> runtimeNames.any { file.name.startsWith(it) }
+                && !file.name.startsWith('yano-x-appchain-cardano-api-') }
+        if (newJars.size() != 3) throw new GradleException("Expected three runtime ownership artifacts: ${newJars}")
         report.get().asFile.parentFile.mkdirs()
         new File(report.get().asFile.parentFile, 'runtime-baseline.json').text =
                 JsonOutput.prettyPrint(JsonOutput.toJson([

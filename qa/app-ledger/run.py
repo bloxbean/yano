@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GATES = {
     "host": [":host-api:test", ":runtime:test", "--tests", "*DefaultN2NExtensionRegistryTest",
              "--tests", "*DefaultHostLifecycleRegistryTest", "--tests", "*RuntimeKernelStagesTest",
-             "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest",
-             "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
+             "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest", "--tests", "*PriorCompiledRuntimeCompatibilityTest",
+             "--tests", "*RequiredEmbeddedPluginCatalogTest", "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
              ":runtime:checkAppLedgerBinaryCompatibility", ":runtime:checkAppLedgerRuntimeCompatibility"],
     "standalone": [":core-api:test", "--tests", "*AppLedgerOperatingProfileTest",
                    ":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
@@ -35,7 +35,7 @@ GATES = {
 
 # Each named suite must execute: unrelated passing tests cannot mask a missing gate.
 REQUIRED = {
-    "host": {"DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
+    "host": {"DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "PriorCompiledRuntimeCompatibilityTest", "RequiredEmbeddedPluginCatalogTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
     "standalone": {"AppLedgerOperatingProfileTest", "AppLedgerAssemblyTest"},
     "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest"},
     "consensus": {"AppChainEngineIdentityValidationTest", "AppChainEngineLifecycleTest"},
