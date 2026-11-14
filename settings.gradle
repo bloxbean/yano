@@ -10,6 +10,7 @@ rootProject.name = 'yano'
 // Yano owns the Cardano data node, the app-chain host framework, OrderedLog,
 // and the retained plugin/test contracts. JVM extensions are built in yano-x.
 def yanoModules = [
+        'host-api'                    : 'host-api',
         'core-api'                    : 'core-api',
         'plugin-catalog'              : 'plugin-catalog',
         'consensus'                   : 'consensus',

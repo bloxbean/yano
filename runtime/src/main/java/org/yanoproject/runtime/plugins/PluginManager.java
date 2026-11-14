@@ -285,6 +285,12 @@ public final class PluginManager implements AutoCloseable {
         }
     }
 
+    /** Publish an existing host capability before any plugin initialization callback can run. */
+    public synchronized void registerHostService(String key, Object service) {
+        requireState(State.NEW, "register host services");
+        services.registerHost(key, service);
+    }
+
     /** Discover, validate and initialize the selected plugin set exactly once. */
     public void discoverAndInit() {
         requireNotInCatalogCallback("discover and initialize plugins");

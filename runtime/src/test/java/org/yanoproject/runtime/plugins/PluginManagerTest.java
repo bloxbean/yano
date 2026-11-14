@@ -63,6 +63,25 @@ class PluginManagerTest {
     }
 
     @Test
+    void hostServicesAreAvailableAtInitAndCannotBeReplacedAfterDiscovery() {
+        RecordingPlugin plugin = plugin("reader", new ArrayList<>());
+        plugin.onInit = context -> assertThat(context.getService("test.host", String.class)).contains("stable");
+        PluginManager manager = manager(options(), List.of(plugin));
+        manager.registerHostService("test.host", "stable");
+        assertThatThrownBy(() -> manager.registerHostService("test.host", "replacement"))
+                .isInstanceOf(IllegalStateException.class);
+        manager.discoverAndInit();
+        assertThatThrownBy(() -> manager.registerHostService("late", "service"))
+                .isInstanceOf(IllegalStateException.class);
+        manager.startAll();
+        manager.stopAll();
+        manager.startAll();
+        assertThat(plugin.context.getService("test.host", String.class)).contains("stable");
+        manager.close();
+        assertThat(plugin.context.getService("test.host", String.class)).isEmpty();
+    }
+
+    @Test
     void dependencyOrder_sharedServices_reverseLifecycle_andRestartAreDeterministic() {
         List<String> events = new ArrayList<>();
         RecordingPlugin a = plugin("a", events);

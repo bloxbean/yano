@@ -11,6 +11,7 @@ description = 'Version alignment platform for supported Yano host artifacts'
 
 dependencies {
     constraints {
+        api project(':host-api')
         api project(':core-api')
         api project(':plugin-catalog')
         api project(':consensus')

@@ -1,6 +1,7 @@
 package org.yanoproject.runtime.chain;
 
 import org.yanoproject.api.BlockBodyRetentionBoundary;
+import org.yanoproject.api.host.BlockBodyRetentionLease;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,7 +47,7 @@ public final class BlockBodyRetentionRegistry implements BlockBodyRetentionBound
     }
 
     /** One consumer's requirement. Updates take the registry lock, so they wait for an in-flight prune batch. */
-    public final class Registration implements BlockBodyRetentionBoundary, AutoCloseable {
+    public final class Registration implements BlockBodyRetentionLease {
         private OptionalLong value;
 
         private Registration(OptionalLong value) {

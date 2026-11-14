@@ -1,6 +1,9 @@
 package org.yanoproject.runtime.assembly;
 
 import org.yanoproject.api.ChainQuery;
+import org.yanoproject.api.host.HostApi;
+import org.yanoproject.runtime.host.DefaultHostApi;
+import org.yanoproject.runtime.host.DefaultN2NExtensionRegistry;
 import org.yanoproject.api.DevnetControl;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.NodeLifecycle;
@@ -79,10 +82,12 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
             owned.add(plugins);
             operations = new PluginOperationsRegistry(plugins, log);
             owned.add(operations);
+            DefaultN2NExtensionRegistry n2n = new DefaultN2NExtensionRegistry(false);
             PluginManager manager = options.plugins().enabled()
                     ? plugins.createNodePluginManager(events, schedulers.scheduled(), operations) : null;
             if (manager != null) {
                 owned.add(manager);
+                manager.registerHostService(HostApi.SERVICE_KEY, new DefaultHostApi(n2n, plugins.providers()));
                 manager.discoverAndInit();
             }
             List<AppChainSubsystem> subsystems = new ArrayList<>();
@@ -95,7 +100,9 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
             chains = new AppChainManager(subsystems, log);
             server = ServeSubsystem.appOnly(config.getServerPort(), magic, log);
             owned.add(server);
-            server.enableAppLayer(chains.serverAgentFactories());
+            chains.registerProtocols(n2n);
+            n2n.seal();
+            server.enableAppLayer(n2n.inboundFactories());
             LocalReadModelRegistry readModels = new LocalReadModelRegistry();
             owned.add(readModels);
             LocalReadModelContributionRegistry contributions = new LocalReadModelContributionRegistry(

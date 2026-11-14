@@ -332,3 +332,61 @@ never retained devnet/preprod cluster directories or owner keys.
   its version string. The baseline compatibility test is a release gate.
 - **Scope creep:** console restyling, unrelated build optimization, additional L1s,
   public network sync improvements and hot reload are explicitly excluded.
+
+## Development evidence and concrete Host API seam
+
+Coordinated drafts: [Yano #246](https://github.com/bloxbean/yano/pull/246),
+[Yaci #245](https://github.com/bloxbean/yaci/pull/245), and
+[Yano-X #102](https://github.com/bloxbean/yano-x/pull/102).
+Yaci's application protocols are on `next`, not `main`; its transport prerequisite
+therefore targets `next`. Both Yano and Yano-X feature branches start from `main`.
+
+Phase 1 focused evidence (development artifacts, no release):
+
+- App-only Yaci sessions register exactly keepalive/100/103 and reject wrong
+  magic, hybrid/Cardano negotiation, duplicate agents and failing factories.
+- Three runtime nodes finalize follower submissions, fetch certified history over
+  103, verify evidence, stop/start and reopen retained state without Cardano storage.
+  Signed L1-linked proposals and certified catch-up blocks are rejected.
+- The focused configuration gate passes 419 tests; selected hybrid regressions
+  pass 61 tests; plugin regressions report 242 tests with one skip and no failures.
+- The wider app-chain gate reports **570 tests, two skipped, no failures**.
+  The adapter checks pass 24 tests. These counts describe their respective runs,
+  not unique tests to add together.
+- A packaged three-JVM cluster passes follower submission, late joining, committed
+  block/root agreement, graceful restart/catch-up, HTTP 503 on unavailable L1
+  operations and absence of L1 chainstate. This caught and fixed missing maintenance
+  gate wiring that the in-process runtime tests could not expose.
+- `qa/app-ledger/run.py` retains JUnit XML/logs, fails on missing suites, timeouts,
+  compiler/test failures or source changes during a run, and emits JSON/Markdown.
+  The packaged harness reuses existing QA helpers and records artifact SHA-256.
+
+The first Host API module retains binary names for the existing provider registry,
+peer-client factory/endpoint, digest mode and block-body boundary. The shared
+lifecycle failure-ordering utility moves with those contracts so the extracted
+core need not depend on `yano-runtime` for cleanup. A legacy `runtime.*` Java name
+here denotes an API-owned contract/utility, not a node implementation dependency.
+`yano-core-api` re-exports the host artifact; manually assembled non-Maven
+classpaths must include the new JAR. No class is embedded twice.
+
+`HostApi` is obtained through `PluginContext.getService`, published before plugin
+initialization, and exposes an independent major/API-level check, the existing
+provider registry, and `N2NExtensionRegistry`. The latter accepts inbound Yaci
+factories with explicit IDs and decorators of the existing `PeerClientFactory`.
+It seals before listeners or dials are composed and rejects duplicate, late,
+null or mismatched registrations. Shared outbound sessions are explicitly absent
+in standalone mode; its existing dedicated Yaci app-peer clients remain unchanged.
+`BlockBodyRetentionLease` promotes only the already-used update/read/close methods.
+These additions supply missing capabilities; they do not introduce a second plugin
+loader, scheduler, consensus engine or connection runtime.
+
+Host API extraction checks pass one version-contract test and 59 selected runtime
+registration, plugin-lifecycle, shared-transport and standalone tests. The Maven
+artifact has its own `hostApiVersion`; API major 1 / level 1 is the initial contract.
+This is not yet a claim of a frozen or previously published baseline. Core/API
+moves, optional Cardano isolation, prior compiled plugin and oldest-host matrix,
+packaging/tooling compatibility, and final coordinated qualification remain open.
+
+The portable finalized-commitment envelope is implemented in X's existing
+`yano-x-proof-contracts` module, with canonical-byte/digest golden vectors and
+separate network/adapter/configuration receipt keys. It adds no L1 publisher.

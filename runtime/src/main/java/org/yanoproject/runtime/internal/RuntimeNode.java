@@ -20,6 +20,9 @@ import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import org.rocksdb.RocksDB;
 import org.yanoproject.api.ChainQuery;
+import org.yanoproject.api.host.HostApi;
+import org.yanoproject.runtime.host.DefaultHostApi;
+import org.yanoproject.runtime.host.DefaultN2NExtensionRegistry;
 import org.yanoproject.api.BlockBodyRetentionBoundary;
 import org.yanoproject.api.EpochParamProvider;
 import org.yanoproject.api.LedgerQuery;
@@ -463,6 +466,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         constructionCleanup.addLast(txSubsystem::close);
         constructionCleanup.addLast(serveSubsystem::close);
         try {
+            DefaultN2NExtensionRegistry n2n = new DefaultN2NExtensionRegistry();
             this.pluginOperationsRegistry = new PluginOperationsRegistry(
                     this.pluginEnvironment, log);
             constructionCleanup.addLast(pluginOperationsRegistry::close);
@@ -472,13 +476,15 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 pluginManager = this.pluginEnvironment.createNodePluginManager(
                         eventBus, scheduler, pluginOperationsRegistry);
                 constructionCleanup.addLast(pluginManager::close);
+                pluginManager.registerHostService(HostApi.SERVICE_KEY,
+                        new DefaultHostApi(n2n, pluginEnvironment.providers()));
                 pluginManager.discoverAndInit();
             }
 
             this.appChainManager = buildAppChainManager();
             if (appChainManager != null) {
                 constructionCleanup.addLast(appChainManager::stop);
-                serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
+                appChainManager.registerProtocols(n2n);
             }
             this.localReadModels =
                     new org.yanoproject.runtime.plugins.LocalReadModelRegistry();
@@ -557,9 +563,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 // session instead of a second dedicated connection.
                 String appTransportMode = stringOf(this.runtimeOptions.globals()
                         .get(YanoPropertyKeys.AppChain.TRANSPORT_MODE), "shared");
-                peerClientFactory = appChainManager.wrapPeerClientFactory(
-                        peerClientFactory, appTransportMode, remoteCardanoHost, remoteCardanoPort);
+                n2n.decorateOutbound(delegate -> appChainManager.wrapPeerClientFactory(
+                        delegate, appTransportMode, remoteCardanoHost, remoteCardanoPort));
             }
+            n2n.seal();
+            serveSubsystem.enableAppLayer(n2n.inboundFactories());
+            peerClientFactory = n2n.outboundFactory(peerClientFactory);
             this.syncSubsystem = new SyncSubsystem(
                     config,
                     chainState,

@@ -15,6 +15,8 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 GATES = {
+    "host": [":host-api:test", ":runtime:test", "--tests", "*DefaultN2NExtensionRegistryTest",
+             "--tests", "*PluginManagerTest", "--tests", "*BlockBodyRetentionRegistryTest"],
     "standalone": [":core-api:test", "--tests", "*AppLedgerOperatingProfileTest",
                    ":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
     "adapter": [":app:test", "--tests", "*CardanoAvailabilityFilterTest", "--tests", "*YanoProducerTest"],
@@ -30,6 +32,7 @@ GATES = {
 
 # Each named suite must execute: unrelated passing tests cannot mask a missing gate.
 REQUIRED = {
+    "host": {"HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "BlockBodyRetentionRegistryTest"},
     "standalone": {"AppLedgerOperatingProfileTest", "AppLedgerAssemblyTest"},
     "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest"},
     "consensus": {"AppChainEngineIdentityValidationTest", "AppChainEngineLifecycleTest"},
@@ -71,7 +74,7 @@ def run(command, log, timeout):
 def collect_reports(destination, since):
     totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
     suites = set()
-    for module in ("core-api", "appchain/appchain-config", "runtime", "app"):
+    for module in ("host-api", "core-api", "appchain/appchain-config", "runtime", "app"):
         source = ROOT / module / "build/test-results"
         for xml in source.glob("*/TEST-*.xml"):
             if xml.stat().st_mtime < since:

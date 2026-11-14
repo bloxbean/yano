@@ -1,4 +1,5 @@
 dependencies {
+    api project(':host-api')
     api libs.yaci.core
     api libs.yaci.helper
     api libs.yaci.events.core

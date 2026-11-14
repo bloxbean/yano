@@ -1,0 +1,18 @@
+// Host contracts have their own version train; node/X releases need not match it.
+version = providers.gradleProperty('hostApiVersion').getOrElse('1.0.0-SNAPSHOT')
+
+dependencies {
+    api libs.yaci.core
+    api libs.yaci.helper
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Host API'
+                description = 'Versioned infrastructure contracts for independently released Yano extensions'
+            }
+        }
+    }
+}

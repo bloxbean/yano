@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgValidator;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.messages.MsgReplyMessages;
 import org.yanoproject.api.appchain.AppChainGateway;
 import org.yanoproject.api.appchain.AppChainGateways;
+import org.yanoproject.api.host.N2NExtensionRegistry;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.util.LifecycleFailures;
@@ -87,6 +88,14 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
 
     /** Server agent factories serving ALL hosted chains; install into ServeSubsystem. */
     public List<AgentFactory> serverAgentFactories() {
+        return List.copyOf(serverAgentRegistrations().values());
+    }
+
+    public void registerProtocols(N2NExtensionRegistry registry) {
+        serverAgentRegistrations().forEach(registry::registerInbound);
+    }
+
+    private Map<Integer, AgentFactory> serverAgentRegistrations() {
         AgentFactory gossipFactory = () -> {
             AppMsgSubmissionServerAgent serverAgent =
                     new AppMsgSubmissionServerAgent(unionTransportConfig());
@@ -102,7 +111,7 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         boolean anySequencing = chains.values().stream()
                 .anyMatch(s -> s.chainConfig().sequencingEnabled());
         if (!anySequencing) {
-            return List.of(gossipFactory);
+            return Map.of(100, gossipFactory);
         }
         AgentFactory catchUpFactory = () -> new AppChainSyncServerAgent(
                 (chainId, fromHeight, toHeight) -> {
@@ -112,7 +121,10 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
                     }
                     return subsystem.catchUpRange(chainId, fromHeight, toHeight);
                 });
-        return List.of(gossipFactory, catchUpFactory);
+        Map<Integer, AgentFactory> registrations = new LinkedHashMap<>();
+        registrations.put(100, gossipFactory);
+        registrations.put(103, catchUpFactory);
+        return registrations;
     }
 
     /**
