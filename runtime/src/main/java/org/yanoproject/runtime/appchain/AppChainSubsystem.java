@@ -820,6 +820,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 return sorted;
             }
             @Override public long currentL1Slot() {
+                if (AppLedgerOperatingProfile.from(config.pluginSettings()) == AppLedgerOperatingProfile.STANDALONE) {
+                    throw new UnsupportedOperationException("Sequencer L1 slot clock requires Cardano L1; "
+                            + "it is unavailable in standalone-v1");
+                }
                 AppChainEngine.L1Ref tip = l1TipPoint();
                 return tip != null ? tip.slot() : 0L;
             }
@@ -6043,39 +6047,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private byte[] l1NetworkGenesisId() {
-        boolean observersConfigured = config.pluginSettings().keySet().stream()
-                .anyMatch(key -> key.startsWith("observers."));
-        String configured = config.pluginSettings().get(
-                "observation.l1-network-genesis-id");
-        if (configured == null || configured.isBlank()) {
-            if (observersConfigured) {
-                throw new IllegalArgumentException(
-                        "L1 observers require observation.l1-network-genesis-id");
-            }
-            try {
-                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                bytes.write("yano-l1-network-no-observers-v1\0"
-                        .getBytes(StandardCharsets.US_ASCII));
-                try (DataOutputStream out = new DataOutputStream(bytes)) {
-                    out.writeLong(protocolMagic);
-                }
-                return Blake2bUtil.blake2bHash256(bytes.toByteArray());
-            } catch (IOException impossible) {
-                throw new UncheckedIOException(impossible);
-            }
-        }
-        byte[] identity;
-        try {
-            identity = HexUtil.decodeHexString(configured.trim());
-        } catch (RuntimeException malformed) {
-            throw new IllegalArgumentException(
-                    "observation.l1-network-genesis-id must be 32-byte hex", malformed);
-        }
-        if (identity.length != 32) {
-            throw new IllegalArgumentException(
-                    "observation.l1-network-genesis-id must be 32-byte hex");
-        }
-        return identity;
+        return ObserverConsensusProfile.networkGenesisId(config.pluginSettings(), protocolMagic);
     }
 
     private final List<FinalizedBlockListener> finalizedListeners =

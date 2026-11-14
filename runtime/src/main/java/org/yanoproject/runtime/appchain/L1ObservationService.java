@@ -1,6 +1,5 @@
 package org.yanoproject.runtime.appchain;
 
-import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import org.yanoproject.api.appchain.AppBlock;
 import org.yanoproject.api.appchain.AppChainConfig;
@@ -16,14 +15,9 @@ import org.yanoproject.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
 import org.rocksdb.WriteBatch;
 
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -119,45 +113,9 @@ final class L1ObservationService {
     static byte[] consensusProfileDigest(Map<String, String> pluginSettings,
                                          PluginProviderRegistry providers,
                                          byte[] l1NetworkGenesisId) {
-        Map<String, Map<String, String>> byId = observerSettings(pluginSettings);
-        byte[] networkIdentity = Objects.requireNonNull(
-                l1NetworkGenesisId, "l1NetworkGenesisId").clone();
-        if (networkIdentity.length != 32) {
-            throw new IllegalArgumentException("L1 network genesis identity must be 32 bytes");
-        }
-        try {
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            bytes.write("yano-observer-profile-v2\0".getBytes(StandardCharsets.US_ASCII));
-            try (DataOutputStream out = new DataOutputStream(bytes)) {
-                out.write(networkIdentity);
-                for (Map.Entry<String, Map<String, String>> entry : byId.entrySet().stream()
-                        .sorted(Map.Entry.comparingByKey()).toList()) {
-                    String observerId = entry.getKey();
-                    Map<String, String> settings = entry.getValue();
-                    String type = settings.getOrDefault("type", "").trim();
-                    L1ObserverConsensusIdentity identity = consensusIdentity(
-                            observerId, type, settings, providers);
-                    writeProfileString(out, observerId);
-                    writeProfileString(out, type);
-                    out.writeInt(identity.abiVersion());
-                    writeProfileString(out, identity.claimSchema());
-                    out.writeInt(identity.orderingVersion());
-                    byte[] canonical = identity.canonicalIdentityBytes();
-                    out.writeInt(canonical.length);
-                    out.write(canonical);
-                }
-            }
-            return Blake2bUtil.blake2bHash256(bytes.toByteArray());
-        } catch (IOException impossible) {
-            throw new UncheckedIOException(impossible);
-        }
-    }
-
-    private static void writeProfileString(DataOutputStream out, String value)
-            throws IOException {
-        byte[] utf8 = value.getBytes(StandardCharsets.UTF_8);
-        out.writeInt(utf8.length);
-        out.write(utf8);
+        return ObserverConsensusProfile.digest(pluginSettings,
+                (id, settings) -> consensusIdentity(id, settings.getOrDefault("type", "").trim(),
+                        settings, providers), l1NetworkGenesisId);
     }
 
     private static L1ObserverConsensusIdentity consensusIdentity(
@@ -195,30 +153,12 @@ final class L1ObservationService {
                 (settingName + "=" + value.trim()).getBytes(StandardCharsets.UTF_8));
     }
 
-    private static Map<String, Map<String, String>> observerSettings(
-            Map<String, String> pluginSettings) {
-        Map<String, Map<String, String>> byId = new LinkedHashMap<>();
-        for (Map.Entry<String, String> entry : pluginSettings.entrySet()) {
-            String key = entry.getKey();
-            if (!key.startsWith("observers.")) {
-                continue;
-            }
-            String rest = key.substring("observers.".length());
-            int dot = rest.indexOf('.');
-            if (dot > 0) {
-                byId.computeIfAbsent(rest.substring(0, dot), ignored -> new HashMap<>())
-                        .put(rest.substring(dot + 1), entry.getValue());
-            }
-        }
-        return byId;
-    }
-
     static L1ObservationService fromRegistry(Map<String, String> pluginSettings,
                                              int windowBlocks,
                                              PluginProviderRegistry providers,
                                              L1ObservationJournal journal,
                                              Logger log) {
-        Map<String, Map<String, String>> byId = observerSettings(pluginSettings);
+        Map<String, Map<String, String>> byId = ObserverConsensusProfile.observerSettings(pluginSettings);
         if (byId.isEmpty())
             return null;
 

@@ -91,3 +91,11 @@ are integrated, covering both standalone and Cardano-integrated deployments.
 For a fresh environment, follow [the coordinated artifact-staging recipe](COORDINATED_BUILD.md)
 before running the draft gates. It breaks the bootstrap into independent builds
 and records which unpublished candidate versions were actually exercised.
+
+The host gate also compares public `runtime.appchain` signatures against frozen
+`yano-runtime:0.1.0-pre19` (SHA-256
+`d99de754c54816a01b263bf02a4555befeb6623dc3cc633ac19b4299480293ed`).
+Use `-PappLedgerRuntimeBaseline=/absolute/yano-runtime-0.1.0-pre19.jar` when
+supplying that baseline directly. The harness archives both runtime ABI XML and
+artifact provenance JSON and fails if either is absent. Lifecycle failure tests
+and ownership checks include the newly separated Cardano API and kernel contracts.

@@ -25,6 +25,7 @@ below are explicit inputs, not environment-dependent automatic discovery.
    ```sh
    ./gradlew :host-api:publishAllPublicationsToStagingRepository \
      :node-api:publishAllPublicationsToStagingRepository \
+     :cardano-api:publishAllPublicationsToStagingRepository \
      -Pversion=NODE_API_VERSION -PhostApiVersion=HOST_API_VERSION \
      -PskipSigning=true -PstagingRepository=/absolute/host-stage \
      -I qa/app-ledger/artifact-inputs.gradle \
@@ -39,6 +40,7 @@ below are explicit inputs, not environment-dependent automatic discovery.
    ./gradlew frameworkCheck :sdk:proof-contracts:test \
      :sdk:proof-contracts:publishAllPublicationsToInternalRepository \
      :framework:api:publishAllPublicationsToInternalRepository \
+     :framework:cardano-api:publishAllPublicationsToInternalRepository \
      :framework:config:publishAllPublicationsToInternalRepository \
      :framework:core:publishAllPublicationsToInternalRepository \
      -Pversion=FRAMEWORK_VERSION -PnodeApiVersion=NODE_API_VERSION \
@@ -62,7 +64,7 @@ baseline-file option. Do not substitute a freshly compiled API as the old side
 of the ABI check.
 
 The current development evidence used Yaci `0.5.0-pre15-app-only-245`, node API
-`0.1.0-245.1`, Host API `1.0.0-245.1`, and framework `0.1.0-245.3` in isolated local
+`0.1.0-245.3`, Host API `1.0.0-245.3`, and framework `0.1.0-245.4` in isolated local
 repositories. They are unpublished candidates, not remotely resolvable releases.
 The final coordinated release must pin available upstream artifacts and freeze
 its supported host baseline. No release tag or public publication is needed to

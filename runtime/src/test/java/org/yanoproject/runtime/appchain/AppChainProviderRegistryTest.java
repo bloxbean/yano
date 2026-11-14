@@ -485,6 +485,28 @@ class AppChainProviderRegistryTest {
     }
 
     @Test
+    void customSequencerCannotReadAnInventedL1ClockInStandaloneMode() {
+        TestRegistry registry = new TestRegistry().add(SequencerModeProvider.class,
+                "l1-clock", new SequencerModeProvider() {
+                    @Override public String id() { return "l1-clock"; }
+                    @Override public SequencerMode create(SequencerContext context) {
+                        context.currentL1Slot();
+                        throw new AssertionError("Standalone must reject the unavailable L1 clock");
+                    }
+                });
+        AppChainConfig config = baseConfig("standalone-clock")
+                .l1StabilityDepth(0).epochStabilityDepth(0)
+                .pluginSettings(Map.of("sequencer.mode", "l1-clock",
+                        "consensus.operating-profile", "standalone-v1"))
+                .build();
+        assertThatThrownBy(() -> subsystem(config, tempDir.resolve("standalone-clock"), registry))
+                .isInstanceOf(PluginActivationException.class)
+                .hasRootCauseInstanceOf(UnsupportedOperationException.class)
+                .hasRootCauseMessage("Sequencer L1 slot clock requires Cardano L1; "
+                        + "it is unavailable in standalone-v1");
+    }
+
+    @Test
     void configuredSequencerProductInitFailureIsStartupFatal() {
         TestRegistry registry = new TestRegistry().add(SequencerModeProvider.class,
                 "broken-mode", new SequencerModeProvider() {

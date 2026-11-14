@@ -2,8 +2,7 @@
 version = providers.gradleProperty('hostApiVersion').getOrElse('1.0.0-SNAPSHOT')
 
 dependencies {
-    api libs.yaci.core
-    api libs.yaci.helper
+    api project(':node-api')
 }
 
 publishing {

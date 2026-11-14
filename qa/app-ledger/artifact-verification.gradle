@@ -49,10 +49,11 @@ tasks.register('checkAppLedgerBinaryCompatibility', JavaExec) {
             throw new GradleException('API baseline checksum differs from the frozen pre19 fixture provenance')
         }
         def allJars = configurations.runtimeClasspath.files.toList().sort { it.name }
-        def apiNames = ['yano-core-api-', 'yano-node-api-', 'yano-host-api-', 'yano-x-appchain-api-']
+        def apiNames = ['yano-core-api-', 'yano-node-api-', 'yano-host-api-', 'yano-cardano-api-',
+                        'yano-x-appchain-api-', 'yano-x-appchain-cardano-api-']
         def newJars = allJars.findAll { file -> apiNames.any { file.name.startsWith(it) } }
         if (newJars.size() != apiNames.size()) {
-            throw new GradleException("Expected exactly four API ownership artifacts, found ${newJars}")
+            throw new GradleException("Expected exactly six API ownership artifacts, found ${newJars}")
         }
         report.get().asFile.parentFile.mkdirs()
         new File(report.get().asFile.parentFile, 'api-baseline.json').text =
@@ -65,6 +66,48 @@ tasks.register('checkAppLedgerBinaryCompatibility', JavaExec) {
                 '--new', newJars.collect { it.absolutePath }.join(';'),
                 '--old-classpath', (allJars - newJars).collect { it.absolutePath }.join(File.pathSeparator),
                 '--new-classpath', allJars.collect { it.absolutePath }.join(File.pathSeparator),
+                '--only-modified', '--error-on-binary-incompatibility', '--error-on-source-incompatibility',
+                '--xml-file', report.get().asFile.absolutePath]
+    }
+}
+
+// Public runtime classes are used by embedders too: preserve their names, nested
+// records and parameter types while their owning artifact changes.
+def runtimeBaseline = configurations.create('appLedgerRuntimeBaseline') { transitive = false }
+dependencies { appLedgerRuntimeBaseline 'org.yanoproject:yano-runtime:0.1.0-pre19' }
+def runtimeBaselineFile = providers.gradleProperty('appLedgerRuntimeBaseline')
+tasks.register('checkAppLedgerRuntimeCompatibility', JavaExec) {
+    group = 'verification'
+    description = 'Compare pre19 public app-chain runtime signatures across extraction'
+    dependsOn tasks.named('jar'), configurations.runtimeClasspath
+    classpath = comparator
+    mainClass = 'japicmp.JApiCmp'
+    inputs.files(configurations.runtimeClasspath, tasks.named('jar'))
+    inputs.files(provider { runtimeBaselineFile.isPresent() ? file(runtimeBaselineFile.get()) : runtimeBaseline.singleFile })
+    def report = layout.buildDirectory.file('reports/app-ledger/runtime-compatibility.xml')
+    outputs.file(report)
+    outputs.file(layout.buildDirectory.file('reports/app-ledger/runtime-baseline.json'))
+    doFirst {
+        File oldJar = runtimeBaselineFile.isPresent() ? file(runtimeBaselineFile.get()) : runtimeBaseline.singleFile
+        if (sha256(oldJar) != 'd99de754c54816a01b263bf02a4555befeb6623dc3cc633ac19b4299480293ed') {
+            throw new GradleException('Runtime baseline checksum differs from the frozen pre19 artifact')
+        }
+        def allJars = (configurations.runtimeClasspath.files + tasks.named('jar').get().archiveFile.get().asFile)
+                .toList().sort { it.name }
+        def newJars = allJars.findAll { it.name.startsWith('yano-runtime-') || it.name.startsWith('yano-x-appchain-core-') }
+        if (newJars.size() != 2) throw new GradleException("Expected two runtime ownership artifacts: ${newJars}")
+        report.get().asFile.parentFile.mkdirs()
+        new File(report.get().asFile.parentFile, 'runtime-baseline.json').text =
+                JsonOutput.prettyPrint(JsonOutput.toJson([
+                        schemaVersion: 1, baseline: oldJar.name, baselineSha256: sha256(oldJar),
+                        comparator: comparator.singleFile.name, comparatorSha256: sha256(comparator.singleFile),
+                        newRuntimeArtifacts: newJars.collect { [name: it.name, sha256: sha256(it)] }
+                ])) + '\n'
+        args = ['--old', oldJar.absolutePath,
+                '--new', newJars.collect { it.absolutePath }.join(';'),
+                '--old-classpath', (allJars - newJars).collect { it.absolutePath }.join(File.pathSeparator),
+                '--new-classpath', allJars.collect { it.absolutePath }.join(File.pathSeparator),
+                '--include', 'org.yanoproject.runtime.appchain.*',
                 '--only-modified', '--error-on-binary-incompatibility', '--error-on-source-incompatibility',
                 '--xml-file', report.get().asFile.absolutePath]
     }

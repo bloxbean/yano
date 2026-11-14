@@ -9,7 +9,7 @@ import java.util.Objects;
 import java.util.OptionalLong;
 
 /**
- * The block-body retention boundary seen by {@link BlockPruner}: the minimum of every registered consumer's
+ * The block-body retention boundary seen by {@code BlockPruner}: the minimum of every registered consumer's
  * requirement (app-layer ADR-038, D7). Registration, updates, removal and each prune batch synchronize on this
  * registry. So once a registration or an update returns, no later batch deletes a body at or above its value (I15).
  */

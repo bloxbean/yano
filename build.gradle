@@ -44,6 +44,7 @@ allprojects {
     configurations.configureEach {
         resolutionStrategy.dependencySubstitution {
             substitute module('org.yanoproject:yano-node-api') using project(':node-api')
+            substitute module('org.yanoproject:yano-cardano-api') using project(':cardano-api')
             substitute module('org.yanoproject:yano-host-api') using project(':host-api')
         }
     }

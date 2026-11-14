@@ -11,6 +11,7 @@ rootProject.name = 'yano'
 // and the retained plugin/test contracts. JVM extensions are built in yano-x.
 def yanoModules = [
         'node-api'                    : 'node-api',
+        'cardano-api'                 : 'cardano-api',
         'host-api'                    : 'host-api',
         'core-api'                    : 'core-api',
         'plugin-catalog'              : 'plugin-catalog',

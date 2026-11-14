@@ -460,3 +460,82 @@ cases (two skipped), 419 configuration/API cases, 61 hybrid cases and 245 plugin
 cases (one skipped); a missing named retention test correctly failed the host gate
 and is addressed by the new lease/locking test. Retain that failed report as
 harness evidence, not as a passing aggregate run.
+
+## Review refinements before freezing the host contract
+
+Independent review found that the first extraction's API aggregate still pulled
+Plutus into the core and that X's published strict Host API version prevented
+newer compatible hosts from resolving. Correct both before calling the boundary
+stable: narrow `node-api` to existing generic plugin/config/crypto/peer contracts;
+keep Cardano node DTO/query APIs in `cardano-api`; make `host-api` depend on that
+generic foundation, not the reverse. Move the unchanged legacy effect factory
+and its Cardano context together with the anchor datum and protocol-parameter
+codec into X `framework/cardano-api`. Integrated compatibility aggregates reexport
+both APIs. Core depends only on the generic foundation. Publish an ordinary
+Host API dependency; exact oldest-version selection belongs in the test matrix.
+
+Preserve public runtime ABI as well as the core API. Move only the existing
+`Subsystem`, `SubsystemHealth`, `SubsystemContext`, `Schedulers` and
+`ServiceRegistry` compatibility contracts into the generic foundation, retaining
+all Java names. `NodeKernel`, its state machine and node storage implementations
+remain runtime-owned. This avoids renaming the large subsystem or its public
+nested records and avoids a second lifecycle interface.
+
+A new, narrow lifecycle registration point is justified by existing ordering:
+NodePlugin.start runs before Cardano storage/bootstrap, while application ledgers
+must start after sync assembly and before read-model/domain publication. Register
+existing Subsystem instances during NodePlugin.init; seal registration before
+runtime startup; adapt them into the current pre-publication kernel stages.
+Registration transfers close ownership only on success. Rejected registration
+leaves ownership with the caller. The registry retains accepted services even
+when later initialization fails, never runs callbacks under its monitor, and
+waits for concurrent close completion. Failed starts clean the failing service
+as well as prior services. Normal stop/close drains services before plugin
+providers/loaders. No new kernel, loader, scheduler or early database opening is
+introduced. Keep plugins.enabled=false app-chain behavior through required
+platform activation without enabling optional user plugins.
+
+The existing `BlockBodyRetentionRegistry` also moves unchanged to the generic
+foundation. It coordinates generic consumer boundaries and has no storage
+implementation dependency. This preserves the public nested `Registration` type,
+`wireL1Chain` descriptor and the exact lock used by the runtime-owned pruner.
+A second frozen pre19 bytecode comparison covers public runtime app-chain classes,
+including nested records, in addition to the six-artifact core API comparison.
+
+Only the kernel owns lifecycle transitions after assembly. Registry cleanup runs
+inside its final resource stage, never concurrently with kernel start/stop/close.
+The compatibility two-argument Host API constructor rejects lifecycle registration
+because it has no assembly owner. Plugin initialization and transactional start
+failures drain registered services before plugin teardown through a narrow
+existing-manager overload using `Runnable`; no new lifecycle SPI is introduced.
+
+The resolved dependency check identified unused SDK paths through Yaci core/helper
+and the MPF library. Exclude CCL core from the generic Yaci dependency edges and
+Plutus from MPF/MPF-RocksDB edges; retain their exact upstream implementations,
+crypto/common/CBOR dependencies and native proof-wire methods. The optional MPF
+Plutus conversion is not used by the framework. Integrated Cardano APIs restore
+SDK dependencies explicitly. A real loopback test with SDK classes absent covers
+handshake 101, signed protocol-100 messages, protocol-103 persisted block bytes,
+and keepalive; existing state/snapshot tests run on that same lean classpath.
+
+Move observer profile/network identity encoding once into `ObserverConsensusProfile`.
+It accepts existing observer identities through a JDK function and retains the
+existing domains, ordering and byte encodings, including the no-observer digest.
+Cardano provider resolution remains in the existing observation service. This
+avoids loading a settlement adapter simply to calculate standalone chain identity.
+Standalone custom sequencers now receive an explicit unsupported-L1 diagnostic
+from `currentL1Slot`; the existing Cardano unsynced-slot behavior remains zero.
+
+Refinement validation uses framework `0.1.0-245.4` against independently staged
+foundation `0.1.0-245.3` and Host API `1.0.0-245.3`. X passes 202 generic API,
+15 optional Cardano API, 31 configuration, 60 core/transport and six commitment
+contract tests, plus its resolved dependency and artifact-inventory checks.
+Yano's bounded gates pass: consensus 571 (two skips), host 66, standalone seven,
+hybrid 61, configuration 419, plugins 247 (one skip), and application adapter 24.
+These overlapping gates are not an additive test total. Each report records an
+unchanged source fingerprint; the host gate includes both frozen pre19 ABI
+comparisons and the unchanged precompiled plugin. The packaged JVM build passes.
+This remains incremental evidence: optional Cardano attachment extraction,
+manifested framework activation, independent standalone X packaging and the
+frozen oldest/current host matrix are still incomplete. Do not mark Phase 2 or
+final release qualification complete based on these results.

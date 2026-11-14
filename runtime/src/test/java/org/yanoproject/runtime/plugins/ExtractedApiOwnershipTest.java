@@ -13,6 +13,13 @@ class ExtractedApiOwnershipTest {
         var loader = getClass().getClassLoader();
         for (String resource : List.of(
                 "org/yanoproject/api/plugin/NodePlugin.class",
+                "org/yanoproject/api/appchain/anchor/AnchorDatumV1.class",
+                "org/yanoproject/api/appchain/effects/AppEffectExecutorFactory.class",
+                "org/yanoproject/api/appchain/l1view/ProtocolParamsCanonicalCodec.class",
+                "org/yanoproject/api/utxo/UtxoState.class",
+                "org/yanoproject/runtime/kernel/Subsystem.class",
+                "org/yanoproject/runtime/chain/BlockBodyRetentionRegistry$Registration.class",
+                "cost-model-opnames/PlutusV3.txt",
                 "org/yanoproject/api/plugin/PluginDigestMode.class",
                 "org/yanoproject/api/host/HostApi.class",
                 "org/yanoproject/api/appchain/AppBlock.class",
