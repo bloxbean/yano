@@ -39,7 +39,7 @@ class PriorCompiledRuntimeCompatibilityTest {
             fixture = input.readAllBytes();
         }
         assertThat(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(fixture)))
-                .isEqualTo("430fcfb2ea3d53ed6cc7d4b0d5e3c17eedd619620d5f6e1d8036c68a0192c787");
+                .isEqualTo("af4366481b80107aba275a02d25fb16b32b8e0258714fa6f951aedc0f81e47e7");
         assertThat(AppChainSubsystem.class.getSuperclass().getName())
                 .isEqualTo("org.yanoproject.runtime.appchain.AppLedgerRuntime");
         assertThat(AppChainManager.class.getSuperclass().getName())

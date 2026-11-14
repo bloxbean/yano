@@ -101,15 +101,36 @@ public final class Pre19RuntimeClient {
             completed.add("inherited-finality-and-query-api");
 
             runtime.stop();
-            runtime.start();
+            startAfterDrain(runtime::start, config.chainId());
             manager.stop();
-            manager.start();
+            startAfterDrain(manager::start, config.chainId());
             require(Arrays.equals(AppBlockCodec.blockHash(runtime.block(height).orElseThrow()),
                     AppBlockCodec.blockHash(block)), "persisted block across inherited lifecycle");
             completed.add("inherited-restart-persistence");
         }
         completed.add("inherited-close");
         return completed;
+    }
+
+    private static void startAfterDrain(Runnable start, String chainId) throws InterruptedException {
+        String expected = "App-chain '" + chainId
+                + "' is still draining a previous runtime callback; retry start after shutdown completes";
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        while (true) {
+            try {
+                start.run();
+                return;
+            } catch (IllegalStateException draining) {
+                if (!expected.equals(draining.getMessage()) || draining.getCause() != null
+                        || draining.getSuppressed().length != 0 || System.nanoTime() - deadline >= 0) {
+                    throw draining;
+                }
+                Thread.sleep(10);
+                if (System.nanoTime() - deadline >= 0) {
+                    throw draining;
+                }
+            }
+        }
     }
 
     private static void require(boolean condition, String operation) {

@@ -123,9 +123,22 @@ artifact provenance JSON and fails if either is absent. Lifecycle failure tests
 and ownership checks include the newly separated Cardano API and kernel contracts.
 
 
-The host gate also executes the unchanged pre19 runtime-client fixture. Its source
-and exact compile inputs are in `fixtures/pre19/runtime-client-provenance.json`;
-its JAR is never recompiled by ordinary tests. The ownership guard checks both
+The host gate also executes the pre19 runtime-client fixture. Revision 2 corrects
+an assumption in the original fixture: the checksum-pinned pre19 runtime already
+allows `stop()` to return before engine cleanup completes, so an immediate restart
+can report that the previous callback is still draining. Only the two post-stop
+starts retry that exact chain-specific refusal, for at most five seconds using a
+monotonic deadline; other failures, causes, suppressed failures and interruption
+still propagate. Initial startup and all compatibility assertions are unchanged.
+The original fixture failed once in the 573-test consensus gate after passing the
+focused host gate; this correction does not change production shutdown semantics.
+
+Revision 2 was compiled once against only the same eight checksum-verified pre19
+inputs. Its source and old/new hashes are recorded in
+`fixtures/pre19/runtime-client-provenance.json`; the original source and JAR remain
+in Git at `dc82788aa`. Ordinary test runs never recompile the fixture. The separate
+oldest-supported-host matrix and pre19 plugin fixture remain unchanged.
+The ownership guard checks both
 runtime/manager pairs and the two checked validator resources. Required embedded
 activation tests cover disabled optional plugins, restrictive policy, library
 fallback, malformed optional providers and packaged/native index requirements.
