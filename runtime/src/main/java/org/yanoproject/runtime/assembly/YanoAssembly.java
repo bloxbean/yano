@@ -208,7 +208,8 @@ public final class YanoAssembly {
             if (config.getMode() == RuntimeMode.APP_LEDGER) {
                 if (inMemoryGenesis != null || adhocRollbackConfigured || bootstrapDataProvider != null
                         || transactionBootstrapOptions.enabled()) {
-                    throw new IllegalArgumentException("Cardano assembly options are unavailable in yano.mode=app-ledger");
+                    throw new IllegalArgumentException(
+                            "Cardano assembly options are unavailable in yano.mode=app-ledger");
                 }
                 return new AppLedgerAssembly(config, runtimeOptions, pluginLoader);
             }

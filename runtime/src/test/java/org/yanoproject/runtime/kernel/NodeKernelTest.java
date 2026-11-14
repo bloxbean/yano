@@ -6,7 +6,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -18,6 +21,82 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NodeKernelTest {
+    @Test
+    void restartPreflightRejectionPreservesStoppedOwnershipAndRetriesBeforeCallbacks() {
+        List<String> calls = new ArrayList<>();
+        NodeKernel kernel = new NodeKernel(List.of(new RecordingSubsystem("plugin", calls)), context());
+        try {
+            kernel.start(() -> { throw new AssertionError("Initial startup needs no restart preflight"); });
+            kernel.stop();
+            List<String> stopped = List.copyOf(calls);
+            IllegalStateException pending = new IllegalStateException("cleanup pending");
+            assertSame(pending, assertThrows(IllegalStateException.class,
+                    () -> kernel.start(() -> { throw pending; })));
+            assertEquals(KernelState.STOPPED, kernel.state());
+            assertEquals(stopped, calls);
+            kernel.start(() -> calls.add("preflight"));
+            assertEquals(List.of("plugin:init", "plugin:start", "plugin:stop", "preflight", "plugin:start"), calls);
+            assertEquals(KernelState.RUNNING, kernel.state());
+        } finally {
+            kernel.close();
+        }
+    }
+
+    @Test
+    void restartPreflightRunsAfterConcurrentStopAndOutsideTheLifecycleLock() throws Exception {
+        CountDownLatch stopEntered = new CountDownLatch(1);
+        CountDownLatch finishStop = new CountDownLatch(1);
+        CountDownLatch preflightEntered = new CountDownLatch(1);
+        CountDownLatch finishPreflight = new CountDownLatch(1);
+        AtomicBoolean stopCompleted = new AtomicBoolean();
+        NodeKernel kernel = new NodeKernel(List.of(new Subsystem() {
+            public String name() { return "blocking-stop"; }
+            public void start() { }
+            public void stop() {
+                stopEntered.countDown();
+                try {
+                    assertTrue(finishStop.await(5, TimeUnit.SECONDS));
+                    stopCompleted.set(true);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }
+        }), context());
+        try (var workers = Executors.newFixedThreadPool(3)) {
+            kernel.start();
+            var stop = workers.submit(kernel::stop);
+            assertTrue(stopEntered.await(5, TimeUnit.SECONDS));
+            var restart = workers.submit(() -> kernel.start(() -> {
+                assertTrue(stopCompleted.get());
+                preflightEntered.countDown();
+                try {
+                    assertTrue(finishPreflight.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+                throw new IllegalStateException("still pending");
+            }));
+            assertEquals(1, preflightEntered.getCount());
+            finishStop.countDown();
+            stop.get(5, TimeUnit.SECONDS);
+            assertTrue(preflightEntered.await(5, TimeUnit.SECONDS));
+            assertEquals(KernelState.STOPPED, workers.submit(kernel::state).get(5, TimeUnit.SECONDS));
+            finishPreflight.countDown();
+            ExecutionException rejection = assertThrows(ExecutionException.class,
+                    () -> restart.get(5, TimeUnit.SECONDS));
+            assertTrue(rejection.getCause() instanceof IllegalStateException);
+            assertEquals("still pending", rejection.getCause().getMessage());
+            assertEquals(KernelState.STOPPED, kernel.state());
+            kernel.start();
+        } finally {
+            finishStop.countDown();
+            finishPreflight.countDown();
+            kernel.close();
+        }
+    }
+
     @Test
     void startsStopsAndClosesSubsystemsInDeclaredOrder() {
         List<String> calls = new ArrayList<>();

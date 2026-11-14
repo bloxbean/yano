@@ -14,6 +14,8 @@ import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.TxGateway;
 import org.yanoproject.api.appchain.AppChainGateway;
 import org.yanoproject.api.appchain.AppChainGateways;
+import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.appchain.config.AppChainConfigParser;
 import org.yanoproject.api.config.NodeConfig;
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
@@ -47,6 +49,7 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -58,10 +61,10 @@ import java.util.stream.Stream;
 /** App-only composition of the existing kernel, catalog, transport and app-chain manager. */
 final class AppLedgerAssembly implements Yano, NodeLifecycle {
     private static final Logger log = LoggerFactory.getLogger(AppLedgerAssembly.class);
-    // Reuse the transport's public-network inventory and the host's existing devnet default.
+    // Public Cardano networks plus the existing Yano devnet magic (YanoConfig.devnetDefault).
     private static final Set<Long> CARDANO_NETWORK_MAGICS = Stream.concat(
             Stream.of(NetworkType.values()).map(NetworkType::getProtocolMagic),
-            Stream.of(YanoConfig.devnetDefault(0).getProtocolMagic())).collect(Collectors.toUnmodifiableSet());
+            Stream.of(42L)).collect(Collectors.toUnmodifiableSet());
     private final ChainQuery unavailableChain = unavailable(ChainQuery.class);
     private final LedgerQuery unavailableLedger = unavailable(LedgerQuery.class);
     private final TxGateway unavailableTransactions = unavailable(TxGateway.class);
@@ -78,8 +81,7 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
     AppLedgerAssembly(YanoConfig source, RuntimeOptions options, PluginLoaderHandle loader) {
         config = source.toBuilder().build();
         Map<String, Object> globals = options.globals();
-        validateHost(config, globals);
-        long magic = Long.parseLong(String.valueOf(globals.get("yano.app-chain.network-magic")));
+        long magic = validateHost(config, globals);
         Schedulers schedulers = new Schedulers();
         PropagatingEventBus events = new PropagatingEventBus();
         List<AutoCloseable> owned = new ArrayList<>();
@@ -152,14 +154,14 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         }
     }
 
-    private static void validateHost(YanoConfig config, Map<String, Object> globals) {
+    private static long validateHost(YanoConfig config, Map<String, Object> globals) {
         if (!Boolean.parseBoolean(String.valueOf(globals.get("yano.app-chain.enabled")))) {
             throw new IllegalArgumentException("yano.mode=app-ledger requires yano.app-chain.enabled=true");
         }
         Object magicValue = globals.get("yano.app-chain.network-magic");
         long magic;
         try {
-            magic = Long.parseLong(String.valueOf(magicValue));
+            magic = Long.parseLong(String.valueOf(magicValue).trim());
         } catch (NumberFormatException invalid) {
             throw new IllegalArgumentException("Standalone requires yano.app-chain.network-magic (unsigned 32-bit)");
         }
@@ -180,6 +182,22 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         if (appPath.equals(l1Path)) {
             throw new IllegalArgumentException("App storage must differ from yano.storage.path");
         }
+        // Parse through the framework's existing configuration boundary, but reject
+        // unavailable host transport before discovering or initializing any plugin.
+        for (AppChainConfig chain : AppChainConfigParser.parseChains(globals, true)) {
+            Object configuredTransport = chain.pluginSettings().get("transport.mode");
+            String transport = configuredTransport == null ? "" : String.valueOf(configuredTransport).trim();
+            if (transport.isEmpty()) {
+                Object global = globals.get("yano.app-chain.transport.mode");
+                transport = global == null ? "" : String.valueOf(global).trim();
+            }
+            if (!"dedicated".equalsIgnoreCase(transport)) {
+                throw new IllegalArgumentException("Standalone app chain '" + chain.chainId()
+                        + "' requires transport.mode=dedicated (effective: "
+                        + (transport.isEmpty() ? "shared" : transport) + ")");
+            }
+        }
+        return magic;
     }
 
     private static void closeAll(List<AutoCloseable> resources, Throwable failure) {
@@ -227,7 +245,14 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
     public DomainApiGateway domainApis() { return domainApis; }
     public Optional<PluginCatalogView> pluginCatalog() { return Optional.of(plugins.catalog()); }
     public Optional<PluginOperationsView> pluginOperations() { return Optional.of(operations); }
-    public void start() { kernel.start(); }
+    public void start() {
+        kernel.start(() -> {
+            if (!chains.awaitStopped(Duration.ofSeconds(3))) {
+                throw new IllegalStateException(
+                        "Application ledgers are still draining; retry start after shutdown completes");
+            }
+        });
+    }
     public void stop() { kernel.stop(); }
     public void close() { kernel.close(); }
     public boolean isRunning() { return kernel.state() == KernelState.RUNNING; }

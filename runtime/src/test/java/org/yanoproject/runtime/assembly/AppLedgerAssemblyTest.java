@@ -158,6 +158,13 @@ class AppLedgerAssemblyTest {
                 .runtimeOptions(new RuntimeOptions(null, null, globals)).build()) {
             assertThat(node.appChains().all()).hasSize(2);
         }
+        first.put("transport.mode", "  ");
+        second.put("transport.mode", " DeDiCaTeD ");
+        globals.put("yano.app-chain.transport.mode", " DEDICATED ");
+        try (Yano node = YanoAssembly.fromConfig(config)
+                .runtimeOptions(new RuntimeOptions(null, null, globals)).build()) {
+            assertThat(node.appChains().all()).hasSize(2);
+        }
         globals.put("yano.app-chain.transport.mode", "dedicated");
         second.put("transport.mode", "shared");
         assertThatThrownBy(() -> YanoAssembly.fromConfig(config)

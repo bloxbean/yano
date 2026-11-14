@@ -24,15 +24,30 @@ public final class CardanoAvailabilityFilter implements ContainerRequestFilter {
     @Inject
     @ConfigProperty(name = YanoPropertyKeys.MODE, defaultValue = "cardano")
     jakarta.inject.Provider<String> mode;
+    private volatile RuntimeMode resolvedMode;
 
     @Override
     public void filter(ContainerRequestContext request) {
-        if (RuntimeMode.parse(mode.get()) == RuntimeMode.APP_LEDGER) {
+        if (runtimeMode() == RuntimeMode.APP_LEDGER) {
             request.abortWith(Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .type(MediaType.APPLICATION_JSON)
                     .entity(Map.of("error", "cardano_unavailable", "message",
                             "This operation requires Cardano L1; yano.mode=app-ledger"))
                     .build());
         }
+    }
+
+    private RuntimeMode runtimeMode() {
+        RuntimeMode current = resolvedMode;
+        if (current == null) {
+            synchronized (this) {
+                current = resolvedMode;
+                if (current == null) {
+                    current = RuntimeMode.parse(mode.get());
+                    resolvedMode = current;
+                }
+            }
+        }
+        return current;
     }
 }

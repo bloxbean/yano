@@ -35,6 +35,16 @@ public final class NodeKernel implements AutoCloseable {
     }
 
     public void start() {
+        start(() -> { });
+    }
+
+    /**
+     * Check restart readiness after the preceding stop transition, before any
+     * subsystem is started. A rejected preflight leaves the stopped assembly
+     * owned and retryable. The callback runs outside the lifecycle lock.
+     */
+    public void start(Runnable restartPreflight) {
+        Objects.requireNonNull(restartPreflight, "restartPreflight");
         boolean initialize;
         List<Subsystem> initializedForStart;
         List<Subsystem> startedThisCycle = new ArrayList<>();
@@ -55,11 +65,25 @@ public final class NodeKernel implements AutoCloseable {
             initialize = state == KernelState.CREATED;
             initializedForStart = initialize ? new ArrayList<>() : new ArrayList<>(initialized);
             beginTransition(LifecycleTransition.STARTING);
-            if (!initialize) {
-                state = KernelState.STARTING;
-            }
         } finally {
             lifecycleLock.unlock();
+        }
+
+        if (!initialize) {
+            try {
+                restartPreflight.run();
+            } catch (Throwable notReady) {
+                lifecycleLock.lock();
+                try {
+                    state = KernelState.STOPPED;
+                    finishTransition();
+                } finally {
+                    lifecycleLock.unlock();
+                }
+                rethrow(notReady);
+                return;
+            }
+            updateTransitionState(KernelState.STARTING);
         }
 
         Throwable failure = null;

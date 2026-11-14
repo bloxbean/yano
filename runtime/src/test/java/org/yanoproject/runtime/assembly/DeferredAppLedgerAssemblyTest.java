@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.yanoproject.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.api.appchain.AppQueryContext;
 import org.yanoproject.api.appchain.AppStateMachine;
 import org.yanoproject.api.appchain.AppStateMachineProvider;
 import org.yanoproject.api.appchain.AppStateWriter;
@@ -44,10 +45,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
@@ -63,8 +69,72 @@ class DeferredAppLedgerAssemblyTest {
     private static PluginContext lateContext;
     private static boolean failInitialization;
     private static boolean failStart;
+    private static CountDownLatch queryEntered;
+    private static CountDownLatch releaseQuery;
 
     @TempDir Path directory;
+
+    @Test
+    void pendingStandaloneCallbackRejectsRestartWithoutClosingPluginsAndCanRetry() throws Exception {
+        reset(false);
+        queryEntered = new CountDownLatch(1);
+        releaseQuery = new CountDownLatch(1);
+        try (URLClassLoader loader = catalogLoader(RuntimeMode.APP_LEDGER);
+             var caller = Executors.newSingleThreadExecutor()) {
+            Yano node = build(RuntimeMode.APP_LEDGER, loader, true, globals -> {
+                globals.put("yano.app-chain.sequencer.proposer",
+                        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+                globals.put("yano.app-chain.block.interval-ms", 25);
+            });
+            try {
+                node.start();
+                var chain = node.appChain().orElseThrow();
+                byte[] message = HexFormat.of().parseHex(chain.submit("restart", new byte[]{1}));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (chain.messageHeight(message).isEmpty() && System.nanoTime() - deadline < 0) {
+                    Thread.sleep(10);
+                }
+                assertThat(chain.messageHeight(message)).isPresent();
+                caller.submit(() -> node.appChain().orElseThrow().query("block", new byte[0]));
+                assertThat(queryEntered.await(5, TimeUnit.SECONDS)).isTrue();
+                node.stop();
+                List<String> stoppedCalls = List.copyOf(calls);
+                long started = System.nanoTime();
+                assertThatThrownBy(node::start).hasMessageContaining("still draining");
+                assertThat(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started)).isLessThan(5);
+                assertThat(node.kernel().orElseThrow().state()).isEqualTo(KernelState.STOPPED);
+                assertThat(calls).containsExactlyElementsOf(stoppedCalls).doesNotContain("late.close");
+                releaseQuery.countDown();
+                node.start();
+                assertThat(node.lifecycle().isRunning()).isTrue();
+                assertThat(calls.stream().filter("late.start"::equals).count()).isEqualTo(2);
+            } finally {
+                releaseQuery.countDown();
+                node.close();
+            }
+        }
+    }
+
+    @Test
+    void invalidStandaloneTransportFailsBeforeAnyPluginInitialization() throws Exception {
+        reset(false);
+        try (URLClassLoader loader = catalogLoader(RuntimeMode.APP_LEDGER)) {
+            assertThatThrownBy(() -> build(RuntimeMode.APP_LEDGER, loader, true,
+                    globals -> globals.put("yano.app-chain.transport.mode", "shared")))
+                    .hasMessageContaining("transport.mode=dedicated");
+            assertThat(calls).isEmpty();
+
+            assertThatThrownBy(() -> build(RuntimeMode.APP_LEDGER, loader, true, globals -> {
+                Map<String, Object> chain = new LinkedHashMap<>();
+                globals.forEach((key, value) -> chain.put(key.substring("yano.app-chain.".length()), value));
+                chain.put("chain-id", "unsupported-child");
+                chain.put("transport.mode", "shared");
+                globals.put("yano.app-chain.chains", List.of(chain));
+            })).hasMessageContaining("transport.mode=dedicated").hasMessageContaining("unsupported-child");
+            assertThat(calls).isEmpty();
+            assertThat(directory.resolve(RuntimeMode.APP_LEDGER.name()).resolve("app-ledger")).doesNotExist();
+        }
+    }
 
     @Test
     void factoriesRunOnlyAfterEveryNodePluginHasInitializedInBothModes() throws Exception {
@@ -160,6 +230,8 @@ class DeferredAppLedgerAssemblyTest {
         lateContext = null;
         failInitialization = fail;
         failStart = false;
+        queryEntered = null;
+        releaseQuery = null;
     }
 
     private Yano build(RuntimeMode mode, ClassLoader loader) throws IOException {
@@ -167,6 +239,11 @@ class DeferredAppLedgerAssemblyTest {
     }
 
     private Yano build(RuntimeMode mode, ClassLoader loader, boolean optionalPluginsEnabled) throws IOException {
+        return build(mode, loader, optionalPluginsEnabled, globals -> { });
+    }
+
+    private Yano build(RuntimeMode mode, ClassLoader loader, boolean optionalPluginsEnabled,
+            Consumer<Map<String, Object>> configure) throws IOException {
         Path root = Files.createDirectories(directory.resolve(mode.name()));
         YanoConfig config = YanoConfig.builder().mode(mode).enableClient(false).enableServer(false)
                 .useRocksDB(true).rocksDBPath(root.resolve("l1").toString())
@@ -190,6 +267,7 @@ class DeferredAppLedgerAssemblyTest {
                 "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
         StateCommitmentIdentity.explicit(StateCommitmentProfiles.MPF, new byte[32]).settings()
                 .forEach((key, value) -> globals.put("yano.app-chain." + key, value));
+        configure.accept(globals);
         PluginsOptions plugins = new PluginsOptions(optionalPluginsEnabled, false,
                 Set.of("org.yanoproject.x.app-ledger", LATE_BUNDLE), Set.of(), Map.of());
         return YanoAssembly.fromConfig(config).runtimeOptions(new RuntimeOptions(null, plugins, globals))
@@ -267,6 +345,22 @@ class DeferredAppLedgerAssemblyTest {
             return new AppStateMachine() {
                 public String id() { return MACHINE; }
                 public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
+                public byte[] query(String path, byte[] parameters, AppQueryContext context) {
+                    if (queryEntered != null) {
+                        queryEntered.countDown();
+                        boolean interrupted = false;
+                        while (true) {
+                            try {
+                                releaseQuery.await();
+                                break;
+                            } catch (InterruptedException ignored) {
+                                interrupted = true;
+                            }
+                        }
+                        if (interrupted) Thread.currentThread().interrupt();
+                    }
+                    return new byte[0];
+                }
             };
         }
     }
