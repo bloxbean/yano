@@ -1700,12 +1700,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         requirePluginTeardownAllowed("start the runtime");
         requireSafeRestart(unsafeLedgerApplyShutdown);
         try {
-            kernel.start(() -> {
-                if (appChainManager != null && !appChainManager.awaitStopped(Duration.ofSeconds(3))) {
-                    throw new IllegalStateException(
-                            "Application ledgers are still draining; retry start after shutdown completes");
-                }
-            });
+            kernel.start(() -> appChainManager == null || appChainManager.awaitStopped(Duration.ofSeconds(3)));
         } catch (KernelLifecycleException e) {
             throw unwrapKernelStartupFailure(e);
         }

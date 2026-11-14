@@ -246,12 +246,7 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
     public Optional<PluginCatalogView> pluginCatalog() { return Optional.of(plugins.catalog()); }
     public Optional<PluginOperationsView> pluginOperations() { return Optional.of(operations); }
     public void start() {
-        kernel.start(() -> {
-            if (!chains.awaitStopped(Duration.ofSeconds(3))) {
-                throw new IllegalStateException(
-                        "Application ledgers are still draining; retry start after shutdown completes");
-            }
-        });
+        kernel.start(() -> chains.awaitStopped(Duration.ofSeconds(3)));
     }
     public void stop() { kernel.stop(); }
     public void close() { kernel.close(); }

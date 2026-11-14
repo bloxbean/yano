@@ -8,6 +8,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 
 /**
  * Small lifecycle owner for an ordered subsystem assembly.
@@ -35,15 +36,17 @@ public final class NodeKernel implements AutoCloseable {
     }
 
     public void start() {
-        start(() -> { });
+        start(() -> true);
     }
 
     /**
      * Check restart readiness after the preceding stop transition, before any
-     * subsystem is started. A rejected preflight leaves the stopped assembly
-     * owned and retryable. The callback runs outside the lifecycle lock.
+     * subsystem is started. A false result leaves the stopped assembly owned
+     * and retryable; cleanup failures are terminal, with ownership retained for
+     * explicit close, as with a failed stop. Interrupted waits remain retryable.
+     * The callback runs outside the lifecycle lock.
      */
-    public void start(Runnable restartPreflight) {
+    public void start(BooleanSupplier restartPreflight) {
         Objects.requireNonNull(restartPreflight, "restartPreflight");
         boolean initialize;
         List<Subsystem> initializedForStart;
@@ -70,9 +73,27 @@ public final class NodeKernel implements AutoCloseable {
         }
 
         if (!initialize) {
+            boolean ready;
             try {
-                restartPreflight.run();
-            } catch (Throwable notReady) {
+                ready = restartPreflight.getAsBoolean();
+            } catch (Throwable failure) {
+                lifecycleLock.lock();
+                try {
+                    // The bounded cleanup wait restores the flag and wraps InterruptedException.
+                    // An unrelated cleanup failure must not become retryable just because this
+                    // thread also happens to be interrupted.
+                    boolean interruptedWait = failure instanceof IllegalStateException
+                            && failure.getCause() instanceof InterruptedException
+                            && Thread.currentThread().isInterrupted();
+                    state = interruptedWait ? KernelState.STOPPED : KernelState.FAILED;
+                    finishTransition();
+                } finally {
+                    lifecycleLock.unlock();
+                }
+                rethrow(failure);
+                return;
+            }
+            if (!ready) {
                 lifecycleLock.lock();
                 try {
                     state = KernelState.STOPPED;
@@ -80,8 +101,8 @@ public final class NodeKernel implements AutoCloseable {
                 } finally {
                     lifecycleLock.unlock();
                 }
-                rethrow(notReady);
-                return;
+                throw new IllegalStateException(
+                        "Runtime services are still draining; retry start after shutdown completes");
             }
             updateTransitionState(KernelState.STARTING);
         }

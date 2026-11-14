@@ -104,6 +104,16 @@ class DeferredAppLedgerAssemblyTest {
                 assertThat(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started)).isLessThan(5);
                 assertThat(node.kernel().orElseThrow().state()).isEqualTo(KernelState.STOPPED);
                 assertThat(calls).containsExactlyElementsOf(stoppedCalls).doesNotContain("late.close");
+                Thread.currentThread().interrupt();
+                try {
+                    assertThatThrownBy(node::start).isInstanceOf(IllegalStateException.class)
+                            .hasCauseInstanceOf(InterruptedException.class);
+                    assertThat(Thread.currentThread().isInterrupted()).isTrue();
+                    assertThat(node.kernel().orElseThrow().state()).isEqualTo(KernelState.STOPPED);
+                    assertThat(calls).containsExactlyElementsOf(stoppedCalls).doesNotContain("late.close");
+                } finally {
+                    Thread.interrupted();
+                }
                 releaseQuery.countDown();
                 node.start();
                 assertThat(node.lifecycle().isRunning()).isTrue();

@@ -29,9 +29,9 @@ class NodeKernelTest {
             kernel.start(() -> { throw new AssertionError("Initial startup needs no restart preflight"); });
             kernel.stop();
             List<String> stopped = List.copyOf(calls);
-            IllegalStateException pending = new IllegalStateException("cleanup pending");
-            assertSame(pending, assertThrows(IllegalStateException.class,
-                    () -> kernel.start(() -> { throw pending; })));
+            IllegalStateException pending = assertThrows(IllegalStateException.class,
+                    () -> kernel.start(() -> false));
+            assertTrue(pending.getMessage().contains("still draining"));
             assertEquals(KernelState.STOPPED, kernel.state());
             assertEquals(stopped, calls);
             kernel.start(() -> calls.add("preflight"));
@@ -76,7 +76,7 @@ class NodeKernelTest {
                     Thread.currentThread().interrupt();
                     throw new AssertionError(e);
                 }
-                throw new IllegalStateException("still pending");
+                return false;
             }));
             assertEquals(1, preflightEntered.getCount());
             finishStop.countDown();
@@ -87,12 +87,88 @@ class NodeKernelTest {
             ExecutionException rejection = assertThrows(ExecutionException.class,
                     () -> restart.get(5, TimeUnit.SECONDS));
             assertTrue(rejection.getCause() instanceof IllegalStateException);
-            assertEquals("still pending", rejection.getCause().getMessage());
+            assertTrue(rejection.getCause().getMessage().contains("still draining"));
             assertEquals(KernelState.STOPPED, kernel.state());
             kernel.start();
         } finally {
             finishStop.countDown();
             finishPreflight.countDown();
+            kernel.close();
+        }
+    }
+
+    @Test
+    void failedRestartCleanupIsTerminalAndRetainsOwnershipUntilExplicitClose() {
+        for (Throwable cleanupFailure : List.of(
+                new IllegalStateException("cleanup failed"),
+                new IllegalStateException("cleanup failed", new InterruptedException("cleanup interrupted")),
+                new AssertionError("fatal cleanup"))) {
+            List<String> calls = new ArrayList<>();
+            NodeKernel kernel = new NodeKernel(List.of(
+                    new RecordingSubsystem("first", calls), new RecordingSubsystem("second", calls)), context());
+            try {
+                kernel.start();
+                kernel.stop();
+                List<String> stopped = List.copyOf(calls);
+                assertSame(cleanupFailure, assertThrows(Throwable.class, () -> kernel.start(() -> {
+                    throwUnchecked(cleanupFailure);
+                    return true;
+                })));
+                assertEquals(KernelState.FAILED, kernel.state());
+                assertEquals(stopped, calls);
+                assertThrows(IllegalStateException.class, () -> kernel.start(() -> {
+                    throw new AssertionError("A terminal cleanup failure must not re-enter preflight");
+                }));
+                assertEquals(stopped, calls);
+                kernel.close();
+                assertEquals(List.of("second:close", "first:close"), calls.subList(stopped.size(), calls.size()));
+                kernel.close();
+                assertEquals(stopped.size() + 2, calls.size());
+            } finally {
+                kernel.close();
+            }
+        }
+    }
+
+    @Test
+    void interruptedRestartWaitPreservesStoppedOwnershipAndInterruptFlag() {
+        List<String> calls = new ArrayList<>();
+        NodeKernel kernel = new NodeKernel(List.of(new RecordingSubsystem("plugin", calls)), context());
+        try {
+            kernel.start();
+            kernel.stop();
+            List<String> stopped = List.copyOf(calls);
+            IllegalStateException interruption = new IllegalStateException(
+                    "Interrupted while awaiting cleanup", new InterruptedException());
+            Thread.currentThread().interrupt();
+            assertSame(interruption, assertThrows(IllegalStateException.class, () -> kernel.start(() -> {
+                throw interruption;
+            })));
+            assertTrue(Thread.currentThread().isInterrupted());
+            assertEquals(KernelState.STOPPED, kernel.state());
+            assertEquals(stopped, calls);
+            Thread.interrupted();
+            kernel.start();
+            assertEquals(KernelState.RUNNING, kernel.state());
+        } finally {
+            Thread.interrupted();
+            kernel.close();
+        }
+    }
+
+    @Test
+    void interruptionFlagDoesNotMakeUnrelatedCleanupFailureRetryable() {
+        NodeKernel kernel = new NodeKernel(List.of(), context());
+        try {
+            kernel.start();
+            kernel.stop();
+            Thread.currentThread().interrupt();
+            AssertionError failure = new AssertionError("fatal cleanup");
+            assertSame(failure, assertThrows(AssertionError.class, () -> kernel.start(() -> { throw failure; })));
+            assertTrue(Thread.currentThread().isInterrupted());
+            assertEquals(KernelState.FAILED, kernel.state());
+        } finally {
+            Thread.interrupted();
             kernel.close();
         }
     }
