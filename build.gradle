@@ -38,6 +38,21 @@ repositories {
 
 def aggregateSbomJson = layout.buildDirectory.file(
         "reports/cyclonedx/yano-${project.version}.cdx.json")
+allprojects {
+    // External framework artifacts refer to these published coordinates. Select
+    // this build's API projects once, avoiding duplicate host classes at runtime.
+    configurations.configureEach {
+        resolutionStrategy.dependencySubstitution {
+            substitute module('org.yanoproject:yano-node-api') using project(':node-api')
+            substitute module('org.yanoproject:yano-host-api') using project(':host-api')
+        }
+    }
+    def frameworkRepository = providers.gradleProperty('appLedgerFrameworkRepository')
+    if (frameworkRepository.isPresent()) {
+        repositories { maven { url = uri(frameworkRepository.get()) } }
+    }
+}
+
 allprojects { candidate ->
     candidate.tasks.named('cyclonedxDirectBom') {
         includeConfigs = ['runtimeClasspath']

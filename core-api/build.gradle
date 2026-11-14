@@ -1,28 +1,13 @@
+// Compatibility coordinate: class definitions live in exactly one owning artifact.
 dependencies {
-    api project(':host-api')
-    api libs.yaci.core
-    api libs.yaci.helper
-    api libs.yaci.events.core
-
-    implementation libs.cardano.client.core
-    implementation libs.cardano.client.address
-    implementation libs.cardano.client.common
-    implementation libs.cardano.client.crypto
-    implementation libs.cardano.client.governance
-
-    // Typed message codec (ADR 006 E1.3) — the JacksonCborCodec default; apps
-    // that supply their own MessageCodec (protobuf, etc.) don't need these.
-    implementation libs.jackson.databind
-    implementation libs.jackson.dataformat.cbor
-}
-
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            pom {
-                name = 'Yano Core API'
-                description = 'Core API interfaces and contracts for Yano (A Cardano Node implementation in Java)'
-            }
-        }
-    }
+    api project(':node-api')
+    api "org.yanoproject.x:yano-x-appchain-api:${providers.gradleProperty('appLedgerFrameworkVersion').getOrElse('0.1.0-245.2')}"
+    // Consumer-side compatibility tests still exercise the original aggregate.
+    testImplementation libs.cardano.client.core
+    testImplementation libs.cardano.client.address
+    testImplementation libs.cardano.client.common
+    testImplementation libs.cardano.client.crypto
+    testImplementation libs.cardano.client.governance
+    testImplementation libs.jackson.databind
+    testImplementation libs.jackson.dataformat.cbor
 }

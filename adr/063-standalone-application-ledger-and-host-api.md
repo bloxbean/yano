@@ -390,3 +390,54 @@ packaging/tooling compatibility, and final coordinated qualification remain open
 The portable finalized-commitment envelope is implemented in X's existing
 `yano-x-proof-contracts` module, with canonical-byte/digest golden vectors and
 separate network/adapter/configuration receipt keys. It adds no L1 publisher.
+
+## Extraction milestone: API ownership and engine/storage boundary
+
+The first mechanical extraction uses these concrete artifacts:
+
+| Artifact | Source owner and responsibility |
+| --- | --- |
+| `yano-host-api` | Yano; separately versioned host registration/provider/peer contracts. |
+| `yano-node-api` | Yano; existing node/plugin DTOs and interfaces, preserving binary names. |
+| `yano-core-api` | Yano; compatibility aggregate of node API and X application API. No duplicate definitions. |
+| `yano-x-appchain-api` | X `framework/api`; existing app-chain contracts, domain SPI, events and wire resources. |
+| `yano-x-appchain-config` | X `framework/config`; existing parser/registry/semantic validation. |
+| `yano-appchain-config` | Yano; compatibility aggregate retaining the original Maven coordinate. |
+| `yano-x-appchain-core` | X `framework/core`; existing consensus engine, ledger storage, authenticated state, observation/effect kernels, snapshots and OrderedLog. |
+
+The node/API split is necessary to avoid an artifact cycle: application API
+signatures already expose node interfaces such as `UtxoState`,
+`TxEvaluationGateway`, protocol parameter snapshots and existing plugin types.
+Removing those signatures would break extensions. The new foundational artifact
+contains those unchanged contracts, not node assembly, chain sync or ledger-state
+implementations. Existing Cardano model/codec/crypto dependencies are retained;
+this is not a claim that the legacy observer API is Cardano-type-free.
+
+Fifty-three existing engine/storage/helper source files move to X without package
+renaming. The one reverse helper call (effect executor ownership fingerprint)
+moves into `EffectRuntime`; the old subsystem helper delegates to the identical
+algorithm. No storage schema, consensus encoding or hash domain changes accompany
+this move. Cardano integration, transport assembly and the large subsystem remain
+in Yano at this milestone. Their extraction and plugin activation are **not yet
+complete**; an independent X standalone distribution is not yet delivered.
+
+Yano consumes exact Maven artifacts, with an optional explicit staging repository
+for this coordinated draft. Within a Yano build, published node/host API
+coordinates substitute the corresponding local API projects so the runtime has
+one class definition. This is an intra-repository substitution, not a sibling
+source/composite build. X builds against externally staged/published node/host
+artifacts and never invokes a Yano checkout.
+
+Boundary checks resolve X's complete production core closure and reject Yano
+implementation artifacts, QuickTx and julc. Reports retain artifact hashes.
+Yano's compatibility tests verify unique class/resource ownership and load a
+fixed plugin JAR compiled against the local `0.1.0-pre19` core API artifact.
+The fixture's source, compiler, baseline hash and bytecode hash are committed;
+it exercises old config/service calls and two lifecycle cycles. It is not rebuilt
+by the test, and is not claimed as a remotely verified published baseline.
+
+The extracted X API/config/core suites currently pass 214/31/12 tests. Yano's
+standalone three-node test and old plugin bytecode test also pass with the
+extracted core artifact. The initial unpublished Host API remains a candidate;
+freezing its immutable compatibility baseline and running the packaged
+oldest/current-host matrix are still required before completion of Phase 2.

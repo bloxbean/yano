@@ -6604,29 +6604,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * even when the configured identity is at its documented maximum.
      */
     static String effectRuntimeOwner(String executorIdentity, Set<String> types) {
-        java.util.Objects.requireNonNull(executorIdentity, "executorIdentity");
-        java.util.Objects.requireNonNull(types, "types");
-        try {
-            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
-            try (java.io.DataOutputStream data = new java.io.DataOutputStream(bytes)) {
-                byte[] identityBytes = executorIdentity.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                data.writeInt(identityBytes.length);
-                data.write(identityBytes);
-                java.util.SortedSet<String> sortedTypes = new java.util.TreeSet<>(types);
-                data.writeInt(sortedTypes.size());
-                for (String type : sortedTypes) {
-                    byte[] typeBytes = java.util.Objects.requireNonNull(type, "effect type")
-                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                    data.writeInt(typeBytes.length);
-                    data.write(typeBytes);
-                }
-            }
-            return "fp1:" + com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(
-                    com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash256(
-                            bytes.toByteArray()));
-        } catch (java.io.IOException impossible) {
-            throw new java.io.UncheckedIOException(impossible);
-        }
+        return EffectRuntime.effectRuntimeOwner(executorIdentity, types);
     }
 
     @Override

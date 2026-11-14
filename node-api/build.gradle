@@ -1,0 +1,28 @@
+dependencies {
+    api project(':host-api')
+    api libs.yaci.core
+    api libs.yaci.helper
+    api libs.yaci.events.core
+
+    implementation libs.cardano.client.core
+    implementation libs.cardano.client.address
+    implementation libs.cardano.client.common
+    implementation libs.cardano.client.crypto
+    implementation libs.cardano.client.governance
+
+    // Typed message codec (ADR 006 E1.3) — the JacksonCborCodec default; apps
+    // that supply their own MessageCodec (protobuf, etc.) don't need these.
+    implementation libs.jackson.databind
+    implementation libs.jackson.dataformat.cbor
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Node API'
+                description = 'Foundational node and plugin contracts without application-ledger implementation dependencies'
+            }
+        }
+    }
+}
