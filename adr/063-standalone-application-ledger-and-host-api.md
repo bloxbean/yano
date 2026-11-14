@@ -793,7 +793,12 @@ A successful stop can leave framework callbacks draining asynchronously. The hos
 checks the existing framework cleanup completion with a bounded wait before
 restarting plugins or subsystems. The internal kernel serializes this preflight
 with stop/start; if cleanup is still pending, it restores `STOPPED` and retains
-ownership for another attempt. Initial startup failure remains terminal. The
+ownership for another attempt. The PR's internal overload uses the JDK
+`BooleanSupplier` to retain the manager's pending/complete distinction without a
+new Host API interface: `false` is retryable, a cleanup exception marks the kernel
+`FAILED` while retaining resources for explicit close. An interrupted pending
+wait retains `STOPPED` and the interrupt flag. Initial startup failure remains
+terminal. The
 small additive `AppLedgerManager.awaitStopped(Duration)` method exposes existing
 completion state; it creates no runtime component and changes no Host API
 interface or supported API level. Direct framework runtime start/stop behavior
@@ -812,5 +817,20 @@ bootstraps foundation APIs, then framework artifacts, then the complete host
 through pinned, checksummed Actions artifacts. This is build-time qualification,
 not a public release or a dependency on sibling checkouts. Public publishing
 workflows do not consume those temporary pins. See the
-[re-review evidence](../qa/app-ledger/REVIEWER1_REREVIEW.md) and
+[qualification evidence](../qa/app-ledger/PHASE2_VALIDATION.md#published-yaci-snapshot-qualification) and
 [CI artifact handoff](../.github/COORDINATED_INPUTS.md).
+
+
+The host and independently embeddable framework intentionally validate transport
+at their own trust boundaries. Both reuse the established parser and pin the same
+blank/global fallback and case rules in tests. Introducing a new shared parser
+method solely to deduplicate this small guard would raise the host's framework
+minimum and prevent early rejection with previously compatible adapters; it is
+not needed for this extraction.
+
+Temporary Actions inputs are qualification-only. Before merging into a branch
+that publishes snapshots or releases, pin publicly available foundation/framework
+coordinates so ordinary Maven resolution and publishing workflows work without
+Actions downloads. Final release POMs must select a released Yaci version, rather
+than the mutable qualification snapshot. This does not require an intermediate
+Yano release.

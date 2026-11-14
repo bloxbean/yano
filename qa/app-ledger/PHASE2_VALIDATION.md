@@ -71,3 +71,60 @@ Run **one** final `qa/release-qa.sh --build` cycle after both phases are integra
 - `/private/tmp/yano-245-thin-host-matrix-final-2` and `/private/tmp/yano-245-host5-framework8-probe`: full packaged compatibility reports.
 
 Earlier failed runs are retained separately. In particular, the initial Cardano matrix fixture incorrectly checked the concrete class of a lifecycle wrapper; the corrected fixture checks the stable subsystem name plus actual Cardano gateway and artifact ownership. The runtime was unchanged by that fixture correction.
+
+## Published Yaci snapshot qualification
+
+Both repositories select public `0.5.0-pre16-f57fc88-SNAPSHOT` from the BloxBean
+snapshot repository, published by [Yaci run 43602913332](https://github.com/bloxbean/yaci/actions/runs/43602913332).
+[Snapshot provenance](yaci-snapshot-provenance.json) records the timestamped
+artifact and SHA-256. Its entire core JAR is byte-identical to the previously
+validated local Yaci `.4`; older `.3` package tests retain their original inputs.
+X core declares the required Yaci API version directly, preserving the lean
+Cardano transaction-library exclusion. Both builds disable Maven Local by
+default; no local Yaci override is needed.
+
+Incremental runtime qualification used immutable local Yano/foundation `.9`,
+X `.12`, unchanged minimum Host API `.4`, and the public snapshot:
+
+| Check | Result |
+| --- | --- |
+| Host gate, before direct-constructor additions | 102 passed; pre19 ABI and compiled-client checks passed |
+| Standalone / hybrid gates | 12 / 61 passed |
+| Final adapter gate at `7823bfe21` | 35 passed; required catalog suite included |
+| Direct-constructor suites at `ad281a8de` | 47 passed across nine suites |
+| Final host gate at `ad281a8de` | 111 passed; source unchanged; pre19 checks passed |
+| JVM package, local host `.9` | Three-node protocol 100/103, finality/roots, late join/restart, unavailable Cardano APIs and no L1 state passed |
+| Oldest/current matrix, host `.5` / `.9`, X `.12` | All four profiles passed with unchanged compiled fixture and Host API |
+| X distribution / packaged smoke, host `.9`, X `.12` | 199 tasks and all 16 smoke steps passed; no smoke skips |
+
+Counts overlap. X smoke includes live Cardano anchoring/observations, cross-node
+roots and restart/persistence. [Retained X qualification](https://github.com/bloxbean/yano-x/tree/feat/245-app-ledger-framework/qa/framework/host-matrix/fixtures/supported-host)
+contains exact artifact hashes and input identities. These runs do not relabel
+earlier native/Haskell qualification or constitute the final release cycle.
+
+Clean CI bootstrap passed [foundation staging](https://github.com/bloxbean/yano/actions/runs/43605316740),
+[framework staging](https://github.com/bloxbean/yano-x/actions/runs/43607120836),
+and [full host staging at `7823bfe21`](https://github.com/bloxbean/yano/actions/runs/43608923020).
+The last includes actual packaged catalog smoke and exact Host API byte/metadata
+retention. The [integration workflow at that commit](https://github.com/bloxbean/yano/actions/runs/43609043044)
+passed integration, distribution and native-core. Its separate normal build
+exposed the direct-constructor nullable-argument bug; `ad281a8de` corrects that
+reference and the focused/permanent gates above verify it. The staged `7823bfe21`
+host predates that correction and must be superseded by a newly verified host input
+pin. See [the coordinated input sequence](../../.github/COORDINATED_INPUTS.md)
+for current pins and reproducible checkout/build preparation.
+
+Publicly available foundation/framework coordinates must replace temporary
+Actions inputs before merging into a branch expected to publish snapshots or
+releases. Actions inputs expire after 90 days. The mutable Yaci snapshot is for
+qualification; final release POMs require a released Yaci version. No intermediate
+Yano release is required. One comprehensive coordinated release cycle remains
+mandatory after both phases and final dependency pins are integrated.
+
+The subsequent pending-versus-failed cleanup distinction passes 42 focused tests
+across kernel, both assemblies and direct construction, with no failures/skips.
+Ordinary and fatal cleanup failures retain close ownership and reject restart;
+a real interrupted pending query remains retryable. Committed input/default
+consistency guards pass 27 checks in Yano and 39 in X, including actual Gradle
+precedence probes. Current X documentation illustration checks pass all nine
+cases with source anchors and ownership zones matching the extracted modules.

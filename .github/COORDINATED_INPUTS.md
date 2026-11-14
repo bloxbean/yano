@@ -56,3 +56,12 @@ no repository build or publication):
 bash .github/scripts/tests/prepare-framework-inputs-test.sh
 bash .github/scripts/tests/stage-consumer-inputs-test.sh
 ```
+
+
+When ordinary CI selects the committed framework run pin, its verified manifest
+version must equal `appLedgerFrameworkVersion` in `gradle.properties`; drift is
+rejected before exporting build inputs. Explicit manual run/commit overrides
+remain available for qualification. Temporary Actions coordinates must be
+replaced by publicly available foundation/framework versions before merging
+into a branch that publishes snapshots or releases. Final release dependencies
+must use a released Yaci version; the current snapshot is for qualification.

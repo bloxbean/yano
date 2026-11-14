@@ -63,8 +63,12 @@ run_case() {
   shift 2
   local workspace="$root/$name"
   mkdir -p "$workspace"
-  if [[ "$name" == committed-pin ]]; then
+  if [[ "$name" == committed-* || "$name" == explicit-default-override ]]; then
     mkdir -p "$workspace/.github"
+    printf 'appLedgerFrameworkVersion = %s\n' "$version" > "$workspace/gradle.properties"
+    if [[ "$name" == committed-drift || "$name" == explicit-default-override ]]; then
+      printf 'appLedgerFrameworkVersion = 0.1.0-different\n' > "$workspace/gradle.properties"
+    fi
     jq -n --arg commit "$commit" '{framework:{runId:"123",commit:$commit}}' > "$workspace/.github/ci-input-pins.json"
   fi
   if env PATH="$root/bin:$PATH" TEST_FIXTURE="$fixture" GITHUB_WORKSPACE="$workspace" \
@@ -80,6 +84,10 @@ run_case() {
 run_case valid pass
 run_case 'space path' pass
 run_case committed-pin pass YANO_X_INPUTS_RUN_ID='' YANO_X_INPUTS_COMMIT=''
+run_case committed-drift fail YANO_X_INPUTS_RUN_ID='' YANO_X_INPUTS_COMMIT=''
+grep -F 'Committed framework pin differs' "$root/committed-drift/output.log" >/dev/null
+[[ ! -e "$root/committed-drift/env" ]]
+run_case explicit-default-override pass
 run_case ordinary-default pass YANO_X_INPUTS_RUN_ID='' YANO_X_INPUTS_COMMIT=''
 [[ ! -e "$root/ordinary-default/env" ]]
 for field in version nodeApiVersion hostApiVersion; do

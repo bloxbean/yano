@@ -4,7 +4,9 @@ set -euo pipefail
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 pins="$GITHUB_WORKSPACE/.github/ci-input-pins.json"
+using_committed_pin=false
 if [[ -z "${YANO_X_INPUTS_RUN_ID:-}${YANO_X_INPUTS_COMMIT:-}" && -f "$pins" ]]; then
+  using_committed_pin=true
   YANO_X_INPUTS_RUN_ID="$(jq -r '.framework.runId // empty' "$pins")"
   YANO_X_INPUTS_COMMIT="$(jq -r '.framework.commit // empty' "$pins")"
 fi
@@ -37,6 +39,12 @@ for value in "$version" "$node_api_version" "$host_api_version"; do
   [[ "$value" =~ ^[0-9A-Za-z.-]+$ && "$value" != null && "$value" != *-SNAPSHOT ]] || fail 'Invalid immutable version'
 done
 [[ "$version" == *-"${YANO_X_INPUTS_COMMIT:0:9}" ]] || fail 'Framework version does not match its commit'
+if [[ "$using_committed_pin" == true ]]; then
+  declared_version="$(sed -n 's/^appLedgerFrameworkVersion[[:space:]]*=[[:space:]]*//p' \
+    "$GITHUB_WORKSPACE/gradle.properties" | sed 's/[[:space:]]*$//')"
+  [[ "$declared_version" == "$version" ]] \
+    || fail 'Committed framework pin differs from appLedgerFrameworkVersion in gradle.properties'
+fi
 for pair in "appLedgerFrameworkVersion:$version" "hostApiVersion:$host_api_version"; do
   name="ORG_GRADLE_PROJECT_${pair%%:*}"; expected="${pair#*:}"
   [[ -z "${!name:-}" || "${!name}" == "$expected" ]] || fail "Conflicting $name override"

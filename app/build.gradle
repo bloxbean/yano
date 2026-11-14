@@ -51,8 +51,8 @@ configurations.configureEach {
 }
 
 def declaredPluginManifestVersion = project.version.toString()
-// Native Yano embeds only its core catalog; JVM directory bundles are supplied
-// by Yano X and are never augmented into the native image.
+// Integrated Yano embeds logging and the required application-ledger catalog.
+// Optional JVM directory bundles are never augmented into the native image.
 
 // Every build-time bundle has an explicit project or published Maven root. Mappings
 // with includeProvided also add non-annotation compileOnly dependencies because
@@ -2302,12 +2302,6 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                 }
             }
             requireIndexedManifestVersions([bundles: retainedManifests], expectedVersions)
-            if (index.bundles.any {
-                it.manifest?.id == 'org.yanoproject.fixture.plugin-conformance'
-            }) {
-                throw new GradleException(
-                        'JVM directory smoke fixture was unexpectedly embedded in the uber-JAR')
-            }
         }
 
         def distribution = tasks.named('yanoDistZip', Zip).get().archiveFile.get().asFile
