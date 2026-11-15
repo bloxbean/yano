@@ -31,9 +31,6 @@ public final class ApiGroup {
     /** Chain/ledger queries and transaction submission for application developers. */
     public static final String CORE = PREFIX + "core";
 
-    /** App-chain surface: chain-scoped messages, state proofs, effects, plugin domain routes. */
-    public static final String APP_CHAIN = PREFIX + "app-chain";
-
     /** Devnet-only controls: rollback, snapshots, faucet, time travel. */
     public static final String DEVNET = PREFIX + "devnet";
 

@@ -1,4 +1,4 @@
-package org.yanoproject.app.api;
+package org.yanoproject.app.spi;
 
 import jakarta.ws.rs.NameBinding;
 import java.lang.annotation.Retention;

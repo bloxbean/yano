@@ -10,7 +10,7 @@ import org.yanoproject.api.model.FundResult;
 import org.yanoproject.api.model.SnapshotInfo;
 import org.yanoproject.api.model.TimeAdvanceResult;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.devnet.dto.*;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;

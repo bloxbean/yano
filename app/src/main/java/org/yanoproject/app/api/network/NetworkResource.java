@@ -8,7 +8,7 @@ import org.yanoproject.api.account.AccountStateReadStore;
 import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.model.GenesisParameters;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.EpochUtil;
 import org.yanoproject.app.api.network.dto.NetworkDto;
 import jakarta.inject.Inject;

@@ -3,7 +3,7 @@ package org.yanoproject.app.api.genesis;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.model.GenesisParameters;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.genesis.dto.GenesisDto;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;

@@ -18,7 +18,6 @@ import org.yanoproject.api.plugin.operations.PluginOperationsTotals;
 import org.yanoproject.api.plugin.operations.PluginOperationsView;
 import org.yanoproject.api.plugin.operations.PluginTimerValue;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.appchain.AppChainAccess;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
@@ -44,7 +43,7 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-/** Host-owned, cache-only ADR-011.4 plugin operations surface. */
+/** Host-owned, cache-only ADR-011.4 plugin operations surface, guarded by {@link PluginOperationsAuthFilter}. */
 @Extension(name = ApiGroup.ADMIN, value = "")
 @Path("plugin-operations")
 @Produces(MediaType.APPLICATION_JSON)
@@ -72,7 +71,6 @@ public class PluginOperationsResource {
     ObjectMapper objectMapper;
 
     @GET
-    @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
     public Response summary() {
         try {
             PluginOperationsSnapshot snapshot = operations.snapshot();
@@ -94,7 +92,6 @@ public class PluginOperationsResource {
 
     @GET
     @Path("bundles")
-    @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
     public Response bundles(@QueryParam("after") String after,
                             @QueryParam("limit") @DefaultValue(DEFAULT_PAGE_SIZE) String limitText) {
         Integer limit = parseLimit(limitText);
@@ -136,7 +133,6 @@ public class PluginOperationsResource {
 
     @GET
     @Path("bundles/{bundleId}")
-    @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
     public Response bundle(@Encoded @PathParam("bundleId") String bundleId) {
         if (!validBundleId(bundleId)) {
             return notFound();

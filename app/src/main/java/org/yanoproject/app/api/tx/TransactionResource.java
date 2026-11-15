@@ -13,7 +13,7 @@ import org.yanoproject.api.utxo.model.AssetAmount;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.tx.dto.TxAmountDto;
 import org.yanoproject.app.api.tx.dto.TxDto;
 import org.yanoproject.app.api.tx.dto.TxInputsOutputsDto;

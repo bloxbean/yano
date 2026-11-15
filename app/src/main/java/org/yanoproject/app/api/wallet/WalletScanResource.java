@@ -16,7 +16,7 @@ import org.yanoproject.api.wallet.WalletScanEvent;
 import org.yanoproject.api.wallet.WalletScanRequest;
 import org.yanoproject.api.wallet.WalletScanRollbackException;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.smallrye.common.annotation.Blocking;

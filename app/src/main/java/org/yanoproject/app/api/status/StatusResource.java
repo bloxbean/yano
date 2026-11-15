@@ -6,7 +6,7 @@ import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.runtime.utxo.UtxoStatusProvider;
 import org.yanoproject.app.archive.HistoryArchiveService;
 import org.yanoproject.app.archive.ProjectionHistoryService;

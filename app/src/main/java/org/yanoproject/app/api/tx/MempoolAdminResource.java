@@ -4,7 +4,7 @@ import org.yanoproject.api.MempoolAdminGateway;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.HeaderParam;

@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.model.TxEvaluationResult;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;

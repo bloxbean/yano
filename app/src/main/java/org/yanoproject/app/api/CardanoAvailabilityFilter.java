@@ -11,6 +11,7 @@ import jakarta.ws.rs.ext.Provider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.yanoproject.api.config.RuntimeMode;
 import org.yanoproject.api.config.YanoPropertyKeys;
+import org.yanoproject.app.spi.RequiresCardano;
 
 import java.util.Map;
 

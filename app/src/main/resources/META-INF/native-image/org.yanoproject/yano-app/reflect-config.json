@@ -217,42 +217,6 @@
     "allDeclaredConstructors": true
   },
   {
-    "name": "org.yanoproject.app.api.appchain.AppChainResource$ChainScopedResource",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.app.api.appchain.AppChainResource$ChainScopedResource$SubmitRequest",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.app.api.appchain.AppChainResource$ChainScopedResource$SnapshotRequest",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.app.api.appchain.AppChainResource$ChainScopedResource$MemberRequest",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.app.api.appchain.AppChainResource$ChainScopedResource$ThresholdRequest",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.x.framework.api.appchain.MessageRef",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
     "name": "com.bloxbean.cardano.yaci.core.storage.ChainTip",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
@@ -824,22 +788,6 @@
     "name": "org.yanoproject.ledgerstate.AccountStateEventHandler",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.x.stdlib.StdlibStateMachineProviders$KvRegistryProvider",
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.x.stdlib.StdlibStateMachineProviders$ApprovalsProvider",
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.x.stdlib.StdlibStateMachineProviders$BalancesProvider",
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "org.yanoproject.x.stdlib.StdlibStateMachineProviders$DocTrailProvider",
     "allDeclaredConstructors": true
   },
   {

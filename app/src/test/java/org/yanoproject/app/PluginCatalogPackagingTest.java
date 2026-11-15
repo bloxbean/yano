@@ -45,10 +45,9 @@ class PluginCatalogPackagingTest {
             Set<String> bundleIds = environment.catalog().bundles().stream()
                     .map(bundle -> bundle.id())
                     .collect(Collectors.toSet());
-            Set<String> expectedBundleIds = Set.of(
-                    "org.yanoproject.plugins.logging", "org.yanoproject.x.app-ledger");
+            Set<String> expectedBundleIds = Set.of("org.yanoproject.plugins.logging");
             assertEquals(expectedBundleIds.size(), environment.catalog().bundles().size(),
-                    "Yano must package exactly the logging and required application-ledger bundles");
+                    "Yano must package exactly the logging bundle");
             assertEquals(expectedBundleIds, bundleIds);
             assertTrue(environment.catalog().bundles().stream()
                     .allMatch(bundle -> bundle.selected()

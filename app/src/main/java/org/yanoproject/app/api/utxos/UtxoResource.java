@@ -9,7 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.yanoproject.api.utxo.model.Outpoint;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.utxos.dto.UtxoDto;
 import org.yanoproject.app.api.utxos.dto.UtxoDtoMapper;
 import jakarta.inject.Inject;

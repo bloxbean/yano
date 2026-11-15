@@ -3,7 +3,7 @@ package org.yanoproject.app.api.tx;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.yanoproject.api.TxGateway;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.runtime.blockproducer.TransactionValidationException;
 import org.yanoproject.runtime.chain.MempoolAdmissionException;
 import jakarta.inject.Inject;

@@ -1,13 +1,13 @@
 package org.yanoproject.app;
 
 import org.yanoproject.api.config.UpstreamPreset;
-import org.yanoproject.x.framework.config.AppChainConfigParser;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.db.IncompatibleChainStateException;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.app.archive.HistoryArchiveService;
 import org.yanoproject.app.archive.ProjectionHistoryService;
+import org.yanoproject.app.spi.RuntimeGlobalsContributor;
 import org.yanoproject.runtime.assembly.Yano;
 import org.yanoproject.runtime.config.RollbackRetentionGenesisValues;
 import org.yanoproject.runtime.config.RollbackRetentionPlanner;
@@ -317,78 +317,25 @@ class YanoProducerTest {
     }
 
     @Test
-    void certifiedObservationAndConsensusSettingsReachTheRuntimeParserForBothConfigShapes() {
-        Map<String, String> settings = Map.of(
-                "observations.profile-cbor-hex", "a100",
-                "observations.providers.shipment.endpoint", "https://example.invalid/proof",
-                "observations.reporters.ada-usd", "01".repeat(32),
-                "observations.policy.ada-usd", "a100",
-                "consensus.max-byzantine-members", "1",
-                "consensus.round-timeout-ms", "5000");
-        Map<String, String> properties = new LinkedHashMap<>();
-        settings.forEach((key, value) -> {
-            properties.put("yano.app-chain." + key, value);
-            properties.put("yano.app-chain.chains[0]." + key, value);
-        });
-        properties.put("yano.app-chain.chains[0].chain-id", "observations");
-        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(properties);
+    void contributedGlobalsAreMergedAndCollisionsFailStartup() {
+        RuntimeGlobalsContributor first = () -> Map.of("yano.fixture.a", "1");
+        RuntimeGlobalsContributor second = () -> Map.of("yano.fixture.b", 2);
+        Map<String, Object> globals = new HashMap<>(Map.of(YanoPropertyKeys.Utxo.ENABLED, true));
 
-        Map<String, Object> globals = new LinkedHashMap<>();
-        producer.forwardAppChainDynamicKeys(globals);
-        Map<String, Object> flat = new LinkedHashMap<>();
-        flat.put("chain-id", "observations");
-        globals.forEach((key, value) -> flat.put(key.substring("yano.app-chain.".length()), value));
-        var flatConfig = AppChainConfigParser.parse(flat);
-        var indexedConfig = AppChainConfigParser.parse(producer.parseAppChainChains().getFirst());
-        settings.forEach((key, value) -> {
-            assertEquals(value, flatConfig.pluginSettings().get(key), "flat: " + key);
-            assertEquals(value, indexedConfig.pluginSettings().get(key), "indexed: " + key);
-        });
-    }
+        YanoProducer.putContributedGlobals(globals, List.of(first, second));
+        assertEquals(Map.of(YanoPropertyKeys.Utxo.ENABLED, true,
+                "yano.fixture.a", "1", "yano.fixture.b", 2), globals);
 
-    @Test
-    void dynamicSettingsAreForwardedForFlatAndIndexedAppChains() {
-        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(Map.ofEntries(
-                Map.entry("yano.app-chain.effects.enabled", "true"),
-                Map.entry("yano.app-chain.observation.l1-network-genesis-id", "01".repeat(32)),
-                Map.entry("yano.app-chain.effects.metrics.types", "cardano.payment,webhook"),
-                Map.entry("yano.app-chain.state.commitment-profile", "mpf-blake2b256-v1"),
-                Map.entry("yano.app-chain.state.l1-proof-consumption-required", "true"),
-                Map.entry("yano.app-chain.capabilities.authenticated-snapshots.enabled", "true"),
-                Map.entry("yano.app-chain.chains[0].chain-id", "payments"),
-                Map.entry("yano.app-chain.chains[0].effects.enabled", "true"),
-                Map.entry("yano.app-chain.chains[0].observation.l1-network-genesis-id", "02".repeat(32)),
-                Map.entry("yano.app-chain.chains[0].effects.executor.enabled", "true"),
-                Map.entry("yano.app-chain.chains[0].state.genesis-id", "ab".repeat(32)),
-                Map.entry("yano.app-chain.chains[0].capabilities.authenticated-snapshots.enabled",
-                        "true"),
-                Map.entry("yano.app-chain.chains[0].unrelated.value", "ignored")));
+        Map<String, Object> duplicate = new HashMap<>();
+        assertThrows(IllegalStateException.class,
+                () -> YanoProducer.putContributedGlobals(duplicate, List.of(first, first)));
+        assertTrue(duplicate.isEmpty());
 
-        Map<String, Object> globals = new java.util.LinkedHashMap<>();
-        producer.forwardAppChainDynamicKeys(globals);
-        assertEquals("true", globals.get("yano.app-chain.effects.enabled"));
-        assertEquals("01".repeat(32),
-                globals.get("yano.app-chain.observation.l1-network-genesis-id"));
-        assertEquals("cardano.payment,webhook",
-                globals.get("yano.app-chain.effects.metrics.types"));
-        assertEquals("mpf-blake2b256-v1",
-                globals.get("yano.app-chain.state.commitment-profile"));
-        assertEquals("true",
-                globals.get("yano.app-chain.state.l1-proof-consumption-required"));
-        assertEquals("true", globals.get(
-                "yano.app-chain.capabilities.authenticated-snapshots.enabled"));
-
-        var chain = producer.parseAppChainChains().getFirst();
-        assertEquals("payments", chain.get("chain-id"));
-        assertEquals("true", chain.get("effects.enabled"));
-        assertEquals("02".repeat(32), chain.get("observation.l1-network-genesis-id"));
-        assertEquals("true", chain.get("effects.executor.enabled"));
-        assertEquals("ab".repeat(32), chain.get("state.genesis-id"));
-        assertEquals("true", chain.get(
-                "capabilities.authenticated-snapshots.enabled"));
-        assertFalse(chain.containsKey("unrelated.value"));
+        Map<String, Object> hostKey = new HashMap<>(Map.of(YanoPropertyKeys.Utxo.ENABLED, true));
+        RuntimeGlobalsContributor overriding = () -> Map.of(YanoPropertyKeys.Utxo.ENABLED, false);
+        assertThrows(IllegalStateException.class,
+                () -> YanoProducer.putContributedGlobals(hostKey, List.of(overriding)));
+        assertEquals(Map.of(YanoPropertyKeys.Utxo.ENABLED, true), hostKey);
     }
 
     @Test
@@ -530,7 +477,7 @@ class YanoProducerTest {
         }
 
         @Override
-        Yano ensureYano() {
+        public Yano ensureYano() {
             ensureCalls++;
             if (startupFailure instanceof RuntimeException runtimeFailure) {
                 throw runtimeFailure;

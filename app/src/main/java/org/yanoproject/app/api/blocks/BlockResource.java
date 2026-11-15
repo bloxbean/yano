@@ -10,7 +10,7 @@ import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.NodeLifecycle;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.EpochUtil;
 import org.yanoproject.app.api.blocks.dto.BlockDto;
 import jakarta.inject.Inject;

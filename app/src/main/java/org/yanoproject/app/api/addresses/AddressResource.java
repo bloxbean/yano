@@ -14,7 +14,7 @@ import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.utxo.model.Utxo;
 import org.yanoproject.api.wallet.WalletIndexUnavailableException;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.addresses.dto.AddressSummaryDto;
 import org.yanoproject.app.api.addresses.dto.AddressTxDto;
 import org.yanoproject.app.api.utxos.dto.AmountDto;

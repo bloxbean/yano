@@ -2,7 +2,7 @@ package org.yanoproject.app.api.nonce;
 
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;

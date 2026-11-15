@@ -2,7 +2,7 @@ package org.yanoproject.app;
 
 import org.yanoproject.runtime.chain.MempoolAdmissionException;
 import org.yanoproject.api.ChainQuery;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.NodeLifecycle;
 import org.yanoproject.api.TxGateway;

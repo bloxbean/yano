@@ -9,7 +9,7 @@ import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.util.CardanoBech32Ids;
 import org.yanoproject.app.api.ApiGroup;
-import org.yanoproject.app.api.RequiresCardano;
+import org.yanoproject.app.spi.RequiresCardano;
 import org.yanoproject.app.api.EpochUtil;
 import org.yanoproject.app.api.accounts.dto.AccountStateDtos.*;
 import org.yanoproject.app.archive.HistoryArchiveService;

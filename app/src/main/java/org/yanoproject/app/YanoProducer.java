@@ -1,16 +1,5 @@
 package org.yanoproject.app;
 
-import org.yanoproject.x.framework.api.appchain.AppAnchorCommitment;
-import org.yanoproject.x.framework.api.appchain.AppBlock;
-import org.yanoproject.x.framework.api.appchain.AppChainGateway;
-import org.yanoproject.x.framework.api.appchain.AppChainGateways;
-import org.yanoproject.x.framework.api.appchain.MessageRef;
-import org.yanoproject.x.framework.api.appchain.ReceivedAppMessage;
-import org.yanoproject.x.framework.api.appchain.evidence.EvidenceBundle;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
-
-
-import org.yanoproject.x.framework.config.AppChainConfigParser;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import org.yanoproject.api.ChainQuery;
@@ -45,6 +34,7 @@ import org.yanoproject.app.bootstrap.BootstrapConfigParser;
 import org.yanoproject.app.api.validation.ValidationEnginesSource;
 import org.yanoproject.app.archive.HistoryArchiveService;
 import org.yanoproject.app.archive.ProjectionHistoryService;
+import org.yanoproject.app.spi.RuntimeGlobalsContributor;
 import org.yanoproject.bootstrap.providers.DefaultBootstrapDataProviderFactory;
 import org.yanoproject.devnet.YanoDevnetAssembly;
 import org.yanoproject.runtime.assembly.YanoAssembly;
@@ -73,6 +63,7 @@ import org.yanoproject.api.model.DevnetRollbackTarget;
 import org.yanoproject.api.model.FundResult;
 import org.yanoproject.api.model.SnapshotInfo;
 import org.yanoproject.api.model.TimeAdvanceResult;
+import io.quarkus.arc.All;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.Priority;
@@ -124,6 +115,10 @@ public class YanoProducer {
 
     @Inject
     ProjectionHistoryService projectionHistory;
+
+    @Inject
+    @All
+    List<RuntimeGlobalsContributor> globalsContributors = List.of();
 
     @ConfigProperty(name = YanoPropertyKeys.NETWORK, defaultValue = "mainnet")
     String network;
@@ -185,11 +180,6 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.Storage.PATH, defaultValue = "./chainstate")
     String storagePath;
-
-    @ConfigProperty(
-            name = YanoPropertyKeys.AppChain.STORAGE_PATH,
-            defaultValue = YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
-    String appChainStoragePath;
 
     @ConfigProperty(name = YanoPropertyKeys.AUTO_SYNC_START, defaultValue = "false")
     boolean autoSyncStart;
@@ -256,102 +246,6 @@ public class YanoProducer {
 
     @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_ENABLED, defaultValue = "true")
     boolean txDiffusionEnabled = true;
-
-    // Optional so we can tell an EXPLICIT enabled=false from the default:
-    // multi-chain config (chains[i]) enables the app chain unless the operator
-    // explicitly set enabled=false.
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ENABLED)
-    java.util.Optional<Boolean> appChainEnabledOpt;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.CHAIN_ID)
-    java.util.Optional<String> appChainId;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.SIGNING_KEY)
-    java.util.Optional<String> appChainSigningKey;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.MEMBERS)
-    java.util.Optional<String> appChainMembers;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.PEERS)
-    java.util.Optional<String> appChainPeers;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES, defaultValue = "65536")
-    int appChainMaxMessageBytes;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER)
-    java.util.Optional<String> appChainProposer;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.THRESHOLD, defaultValue = "1")
-    int appChainThreshold;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, defaultValue = "2000")
-    long appChainBlockIntervalMs;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, defaultValue = "5000")
-    int appChainBlockMaxMessages;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.BLOCK_MAX_BYTES, defaultValue = "4194304")
-    long appChainBlockMaxBytes;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.STATE_MACHINE, defaultValue = "ordered-log")
-    String appChainStateMachine;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_ENABLED, defaultValue = "false")
-    boolean appChainAnchorEnabled;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY)
-    java.util.Optional<String> appChainAnchorSigningKey;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS, defaultValue = "10")
-    long appChainAnchorEveryBlocks;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, defaultValue = "60")
-    long appChainAnchorMaxIntervalMinutes;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, defaultValue = "7014")
-    long appChainAnchorMetadataLabel;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_VALIDITY_SLOTS, defaultValue = "7200")
-    long appChainAnchorValiditySlots;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, defaultValue = "300000")
-    long appChainAnchorFallbackFeeLovelace;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_MODE, defaultValue = "metadata")
-    String appChainAnchorMode;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_VALIDATOR)
-    java.util.Optional<String> appChainAnchorScriptValidator;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_THREAD_POLICY)
-    java.util.Optional<String> appChainAnchorScriptThreadPolicy;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, defaultValue = "0")
-    int appChainL1StabilityDepth;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.WEBHOOKS)
-    java.util.Optional<String> appChainWebhooks;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.RETENTION_ENABLED, defaultValue = "false")
-    boolean appChainRetentionEnabled;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, defaultValue = "0")
-    int appChainRetentionKeepBlocks;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, defaultValue = "10000")
-    int appChainPoolMaxMessages;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, defaultValue = "false")
-    boolean appChainEnforceSenderSeq;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, defaultValue = "3600")
-    long appChainMaxTtlSeconds;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS, defaultValue = "600")
-    long appChainDefaultTtlSeconds;
-
-    @ConfigProperty(name = YanoPropertyKeys.AppChain.VALIDATION_STRICT, defaultValue = "false")
-    boolean appChainValidationStrict;
 
     @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MODE)
     java.util.Optional<String> txDiffusionMode = java.util.Optional.empty();
@@ -552,7 +446,8 @@ public class YanoProducer {
         this(PluginLoaderHandle.classpath(pluginClassLoader));
     }
 
-    Yano ensureYano() {
+    /** Assembles the application's single {@link Yano} on first use and returns it afterwards. */
+    public Yano ensureYano() {
         if (apiPrefixContract != null) {
             apiPrefixContract.verify();
         }
@@ -587,7 +482,6 @@ public class YanoProducer {
                 .protocolMagic(protocolMagic)
                 .useRocksDB(useRocksDB)
                 .rocksDBPath(storagePath)
-                .appChainStoragePath(appChainStoragePath)
                 .fullSyncThreshold(yaciConfig.getFullSyncThreshold())
                 .enablePipelinedSync(yaciConfig.isEnablePipelinedSync())
                 .headerPipelineDepth(yaciConfig.getHeaderPipelineDepth())
@@ -711,7 +605,6 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
                 txDiffusionMaxInFlightBytesPerPeer);
         globals.put(YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, txDiffusionPeerCooldownMs);
-        putAppChainGlobals(globals);
         globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
         globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,
                 relayAdvertisedHost.map(String::trim).filter(host -> !host.isBlank()).orElse("auto"));
@@ -757,6 +650,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.UtxoFilter.ADDRESSES, utxoFilterAddresses.orElse(java.util.List.of()));
         globals.put(YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS,
                 utxoFilterPaymentCredentials.orElse(java.util.List.of()));
+        putContributedGlobals(globals, globalsContributors);
 
         RuntimeOptions runtimeOptions = YanoAssembly.applyBootstrapPartialStatePolicy(
                 yaciConfig,
@@ -789,67 +683,13 @@ public class YanoProducer {
         return yano;
     }
 
-    private void putAppChainGlobals(Map<String, Object> globals) {
-        java.util.List<java.util.Map<String, Object>> appChainList = parseAppChainChains();
-        // Effective enablement: explicit flag wins; otherwise presence of a
-        // multi-chain list enables. An explicit enabled=false always disables.
-        boolean appChainEnabled = appChainEnabledOpt.orElse(!appChainList.isEmpty());
-        globals.put(YanoPropertyKeys.AppChain.ENABLED, appChainEnabled);
-        appChainId.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.CHAIN_ID, v));
-        appChainSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SIGNING_KEY, v));
-        appChainMembers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.MEMBERS, v));
-        appChainPeers.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.PEERS, v));
-        globals.put(YanoPropertyKeys.AppChain.MAX_MESSAGE_BYTES, appChainMaxMessageBytes);
-        globals.put(YanoPropertyKeys.AppChain.MAX_TTL_SECONDS, appChainMaxTtlSeconds);
-        globals.put(YanoPropertyKeys.AppChain.DEFAULT_TTL_SECONDS, appChainDefaultTtlSeconds);
-        appChainProposer.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.SEQUENCER_PROPOSER, v));
-        globals.put(YanoPropertyKeys.AppChain.THRESHOLD, appChainThreshold);
-        globals.put(YanoPropertyKeys.AppChain.BLOCK_INTERVAL_MS, appChainBlockIntervalMs);
-        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_MESSAGES, appChainBlockMaxMessages);
-        globals.put(YanoPropertyKeys.AppChain.BLOCK_MAX_BYTES, appChainBlockMaxBytes);
-        globals.put(YanoPropertyKeys.AppChain.STATE_MACHINE, appChainStateMachine);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, appChainAnchorEnabled);
-        appChainAnchorSigningKey.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SIGNING_KEY, v));
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_EVERY_BLOCKS, appChainAnchorEveryBlocks);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MAX_INTERVAL_MINUTES, appChainAnchorMaxIntervalMinutes);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_METADATA_LABEL, appChainAnchorMetadataLabel);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_VALIDITY_SLOTS, appChainAnchorValiditySlots);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_FALLBACK_FEE_LOVELACE, appChainAnchorFallbackFeeLovelace);
-        globals.put(YanoPropertyKeys.AppChain.ANCHOR_MODE, appChainAnchorMode);
-        appChainAnchorScriptValidator.ifPresent(
-                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_VALIDATOR, v));
-        appChainAnchorScriptThreadPolicy.ifPresent(
-                v -> globals.put(YanoPropertyKeys.AppChain.ANCHOR_SCRIPT_THREAD_POLICY, v));
-        globals.put(YanoPropertyKeys.AppChain.L1_STABILITY_DEPTH, appChainL1StabilityDepth);
-        appChainWebhooks.ifPresent(v -> globals.put(YanoPropertyKeys.AppChain.WEBHOOKS, v));
-        globals.put(YanoPropertyKeys.AppChain.RETENTION_ENABLED, appChainRetentionEnabled);
-        globals.put(YanoPropertyKeys.AppChain.RETENTION_KEEP_BLOCKS, appChainRetentionKeepBlocks);
-        globals.put(YanoPropertyKeys.AppChain.POOL_MAX_MESSAGES, appChainPoolMaxMessages);
-        globals.put(YanoPropertyKeys.AppChain.MESSAGE_ENFORCE_SENDER_SEQ, appChainEnforceSenderSeq);
-        globals.put(YanoPropertyKeys.AppChain.VALIDATION_STRICT, appChainValidationStrict);
-        // Dynamic plugin config is copied verbatim so extension settings can
-        // be enabled from node-app config, not only through direct runtime
-        // construction in tests. Keep this list shared with indexed-chain
-        // parsing below: omitting effects.* here silently disables ADR-010 in
-        // a packaged node even though the configuration is present.
-        forwardAppChainDynamicKeys(globals);
-        if (!appChainList.isEmpty() && appChainEnabled) {
-            globals.put(YanoPropertyKeys.AppChain.CHAINS, appChainList);
-            log.info("App-chain multi-chain config: {} chain(s)", appChainList.size());
-        } else if (!appChainList.isEmpty()) {
-            log.info("App-chain multi-chain config present but yano.app-chain.enabled=false — not started");
-        }
-        appConfig.getOptionalValue("yano.app-chain.network-magic", String.class)
-                .ifPresent(value -> globals.put("yano.app-chain.network-magic", value));
-    }
-
     private Yano createStandaloneAppLedger() {
         Map<String, Object> globals = new HashMap<>();
-        putAppChainGlobals(globals);
+        putContributedGlobals(globals, globalsContributors);
         YanoConfig standalone = YanoConfig.builder().mode(RuntimeMode.APP_LEDGER)
                 .enableServer(serverEnabled).serverPort(serverPort)
                 .enableBlockProducer(blockProducerEnabled).enableBootstrap(bootstrapEnabled).devMode(devMode)
-                .rocksDBPath(storagePath).appChainStoragePath(appChainStoragePath).build();
+                .rocksDBPath(storagePath).build();
         return YanoAssembly.fromConfig(standalone)
                 .runtimeOptions(new RuntimeOptions(new EventsOptions(
                         eventsEnabled, 8192, SubscriptionOptions.Overflow.BLOCK), pluginOptions(), globals))
@@ -941,24 +781,6 @@ public class YanoProducer {
 
     @Produces
     @ApplicationScoped
-    public AppChainGateway createAppChainGateway() {
-        return ensureYano().appChain().orElse(UnavailableAppChainGateway.INSTANCE);
-    }
-
-    @Produces
-    @ApplicationScoped
-    public AppChainGateways createAppChainGateways() {
-        return ensureYano().appChains();
-    }
-
-    @Produces
-    @ApplicationScoped
-    public DomainApiGateway createDomainApiGateway() {
-        return ensureYano().domainApis();
-    }
-
-    @Produces
-    @ApplicationScoped
     public PluginCatalogView createPluginCatalogView() {
         return ensureYano().pluginCatalog()
                 .orElseThrow(() -> unavailableRole("PluginCatalogView"));
@@ -969,63 +791,6 @@ public class YanoProducer {
     public PluginOperationsView createPluginOperationsView() {
         return ensureYano().pluginOperations()
                 .orElseThrow(() -> unavailableRole("PluginOperationsView"));
-    }
-
-    /**
-     * Multi-chain config (ADR app-layer/006 E5.2): reads indexed properties
-     * yano.app-chain.chains[i].&lt;suffix&gt; into suffix-keyed maps for the runtime.
-     */
-    java.util.List<java.util.Map<String, Object>> parseAppChainChains() {
-        var config = appConfig;
-        java.util.List<java.util.Map<String, Object>> chains = new java.util.ArrayList<>();
-        String[] suffixes = {
-                "chain-id", "signing-key", "members", "peers",
-                "sequencer.proposer", "threshold",
-                "block.interval-ms", "block.max-messages", "block.max-bytes",
-                "state-machine",
-                "max-message-bytes", "max-ttl-seconds", "default-ttl-seconds",
-                "anchor.enabled", "anchor.signing-key", "anchor.every-blocks",
-                "anchor.max-interval-minutes", "anchor.metadata-label",
-                "anchor.validity-slots", "anchor.fallback-fee-lovelace",
-                "anchor.mode", "anchor.script.validator", "anchor.script.thread-policy",
-                "l1.stability-depth", "webhooks",
-                "retention.enabled", "retention.keep-blocks",
-                "pool.max-messages", "message.enforce-sender-seq"
-        };
-        for (int i = 0; i < 50; i++) {
-            String prefix = "yano.app-chain.chains[" + i + "].";
-            java.util.Optional<String> chainId = config.getOptionalValue(prefix + "chain-id", String.class);
-            if (chainId.isEmpty()) {
-                break;
-            }
-            java.util.Map<String, Object> chain = new java.util.LinkedHashMap<>();
-            for (String suffix : suffixes) {
-                config.getOptionalValue(prefix + suffix, String.class)
-                        .ifPresent(value -> chain.put(suffix, value));
-            }
-            // Dynamic plugin keys: chains[i].<extension>.* -> suffix.
-            for (String property : config.getPropertyNames()) {
-                if (isAppChainDynamicKey(property, prefix)) {
-                    config.getOptionalValue(property, String.class)
-                            .ifPresent(value -> chain.put(property.substring(prefix.length()), value));
-                }
-            }
-            chains.add(chain);
-        }
-        return chains;
-    }
-
-    private static final List<String> APP_CHAIN_DYNAMIC_PREFIXES = AppChainConfigParser.dynamicPrefixes();
-
-    private static boolean isAppChainDynamicKey(String property, String base) {
-        return APP_CHAIN_DYNAMIC_PREFIXES.stream()
-                .anyMatch(prefix -> property.startsWith(base + prefix));
-    }
-
-    void forwardAppChainDynamicKeys(java.util.Map<String, Object> globals) {
-        for (String prefix : APP_CHAIN_DYNAMIC_PREFIXES) {
-            forwardDynamicKeys("yano.app-chain." + prefix, globals);
-        }
     }
 
     /** Removed with the shadow-sync thread pool (shadow sync runs on virtual threads); ignored with a warning. */
@@ -1087,6 +852,30 @@ public class YanoProducer {
 
     void forwardUtxoContributorKeys(Map<String, Object> globals) {
         forwardDynamicKeys(YanoPropertyKeys.Utxo.INDEX_CONTRIBUTORS + "[", globals);
+    }
+
+    /**
+     * Adds every contributor's globals. A key the host already set, or one that two contributors set,
+     * fails startup rather than letting either value win silently.
+     */
+    static void putContributedGlobals(Map<String, Object> globals,
+                                      List<RuntimeGlobalsContributor> contributors) {
+        Map<String, Object> contributed = new HashMap<>();
+        for (RuntimeGlobalsContributor contributor : contributors) {
+            for (Map.Entry<String, Object> global : contributor.globals().entrySet()) {
+                String key = global.getKey();
+                if (globals.containsKey(key)) {
+                    throw new IllegalStateException(
+                            "Runtime global " + key + " is set by the host and cannot be contributed");
+                }
+                if (contributed.containsKey(key)) {
+                    throw new IllegalStateException(
+                            "Runtime global " + key + " is contributed more than once");
+                }
+                contributed.put(key, global.getValue());
+            }
+        }
+        globals.putAll(contributed);
     }
 
     /** Copy every config property starting with {@code prefix} into globals verbatim. */
@@ -1643,157 +1432,6 @@ public class YanoProducer {
      * Placeholder for CDI injection sites when producer control is not available
      * for the assembled node role.
      */
-    /**
-     * Placeholder for CDI injection sites when the app chain is disabled.
-     */
-    private enum UnavailableAppChainGateway implements AppChainGateway {
-        INSTANCE;
-
-        @Override
-        public String chainId() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public String submit(String topic, byte[] body) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.List<ReceivedAppMessage> recentMessages(int limit) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Map<String, Object> status() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public long tipHeight() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Optional<AppBlock> block(long height) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public byte[] stateRoot() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Optional<byte[]> stateValue(byte[] key) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Optional<byte[]> stateProof(byte[] key) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Optional<AppAnchorCommitment>
-                latestAnchorCommitment() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Optional<Long> messageHeight(byte[] messageId) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public AutoCloseable subscribeFinalized(FinalizedBlockListener listener) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Optional<EvidenceBundle>
-                evidence(byte[] messageId) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public long snapshot(String snapshotPath) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.List<MessageRef> messagesByTopic(
-                String topic, long fromHeight, int limit) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.List<MessageRef> messagesBySender(
-                byte[] sender, long fromHeight, int limit) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public void pauseSubmissions() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public void resumeSubmissions() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public boolean submissionsPaused() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public int drainPool() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public boolean forceAnchor() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public boolean rebaselineL1Delivery() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Set<String> members() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public int effectiveThreshold() {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public void addMember(String publicKeyHex) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public void removeMember(String publicKeyHex) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public void setThreshold(int threshold) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public void resetMembers() {
-            throw unavailableRole("AppChainGateway");
-        }
-    }
-
     private enum UnavailableProducerControl implements ProducerControl {
         INSTANCE;
 
