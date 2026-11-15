@@ -288,6 +288,16 @@ class DevnetBlockBuilderTest {
             var body = builder.computeBlockBody(txs);
 
             assertThat(body.hash()).as(name).isEqualTo(original.bodyHash());
+            if (name.equals("conway4.block")) {
+                // A generated pallas block: its proposal sets n_opt (key 8, uint .size 2 in Conway's CDDL, Word16 in
+                // the ledger) to 2^64-1. Haskell does not decode that transaction, nor does CCL since 0.8.0-pre8, so
+                // the builder, which reads each transaction's execution units, refuses it.
+                assertThatThrownBy(() -> builder.buildBlock(1, 100, new byte[32], txs)).as(name)
+                        .isInstanceOf(IllegalArgumentException.class)
+                        .hasRootCauseMessage("Expected an unsigned integer that fits an int, found 18446744073709551615"
+                                + " at offset 234");
+                continue;
+            }
             var result = builder.buildBlock(1, 100, new byte[32], txs);
             BlockTestUtil.assertCarriesTransactionsAsSubmitted(result.blockCbor(), txs);
         }

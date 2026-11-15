@@ -91,7 +91,7 @@ class InMemoryLedgerViewTest {
     @Test
     void committeeCandidatesComeFromUpdateCommitteeProposals() {
         UpdateCommittee update = new UpdateCommittee(null, Set.of(),
-                Map.of(Credential.fromKey(HexUtil.decodeHexString(hash28(7))), 200),
+                Map.of(Credential.fromKey(HexUtil.decodeHexString(hash28(7))), 200L),
                 new UnitInterval(BigInteger.ONE, BigInteger.TWO));
         GovActionId id = new GovActionId(hash32(3), 0);
         InMemoryLedgerView view = InMemoryLedgerView.builder()

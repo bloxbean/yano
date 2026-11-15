@@ -377,7 +377,7 @@ class TxEffectsDeriverTest {
     void proposalsGetIndexedIdsAndLifetimeExpiry() {
         var prev = new com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId(hash32(0x99), 2);
         ParameterChangeAction change = new ParameterChangeAction(prev, null, null);
-        UpdateCommittee update = new UpdateCommittee(null, Set.of(), Map.of(cred(0x33), 150),
+        UpdateCommittee update = new UpdateCommittee(null, Set.of(), Map.of(cred(0x33), 150L),
                 new UnitInterval(BigInteger.ONE, BigInteger.TWO));
         Transaction tx = tx(body().proposalProcedures(List.of(
                 new ProposalProcedure(GOV_ACTION_DEPOSIT, Fixtures.rewardAddressHex(1), change, null),
@@ -630,7 +630,7 @@ class TxEffectsDeriverTest {
         var dVoter = new com.bloxbean.cardano.client.transaction.spec.governance.Voter(VoterType.DREP_KEY_HASH,
                 cred(0x41));
         var ownProposal = new com.bloxbean.cardano.client.transaction.spec.governance.actions.GovActionId(TX_ID, 1);
-        UpdateCommittee update = new UpdateCommittee(null, Set.of(), Map.of(cred(0x62), 400),
+        UpdateCommittee update = new UpdateCommittee(null, Set.of(), Map.of(cred(0x62), 400L),
                 new UnitInterval(BigInteger.ONE, BigInteger.TWO));
         Transaction tx = tx(body()
                 .withdrawals(List.of(new Withdrawal(Fixtures.rewardAddressHex(1), BigInteger.valueOf(70))))

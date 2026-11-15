@@ -5,6 +5,7 @@ import com.bloxbean.cardano.client.exception.CborDeserializationException;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScript;
 import com.bloxbean.cardano.client.transaction.spec.script.NativeScriptEvaluator;
+import com.bloxbean.cardano.client.transaction.util.RawModels;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import java.math.BigInteger;
@@ -61,7 +62,7 @@ public final class RawScript {
         }
         requireDefiniteByteStrings(span);
         try {
-            return new RawScript(view, span.bytes(), (NativeScript) view.toScript());
+            return new RawScript(view, span.bytes(), (NativeScript) RawModels.toScript(view));
         } catch (CborDeserializationException | CborRuntimeException e) {
             throw new TxDecodingException("native script: " + e.getMessage(), e);
         }
