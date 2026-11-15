@@ -81,14 +81,23 @@ Earlier failed runs are retained separately. In particular, the initial Cardano 
 
 ## Published Yaci snapshot qualification
 
-Both repositories select public `0.5.0-pre16-f57fc88-SNAPSHOT` from the BloxBean
-snapshot repository, published by [Yaci run 43602913332](https://github.com/bloxbean/yaci/actions/runs/43602913332).
-[Snapshot provenance](yaci-snapshot-provenance.json) records the timestamped
-artifact and SHA-256. Its entire core JAR is byte-identical to the previously
+Both repositories selected public `0.5.0-pre16-f57fc88-SNAPSHOT` from the BloxBean
+snapshot repository, published by [Yaci run 43602913332](https://github.com/bloxbean/yaci/actions/runs/43602913332)
+from Yaci commit `f57fc883852d81089340741abaf1e5dd99da6f26`. The qualified artifact
+was `0.5.0-pre16-f57fc88-20261114.141754-1`, core JAR SHA-256
+`46474bf493e6efefa812cb06ce8d4ceb9a6449270fb535eebe2ed661e523d767` (794 classes).
+That entire core JAR is byte-identical to the previously
 validated local Yaci `.4`; older `.3` package tests retain their original inputs.
 X core declares the required Yaci API version directly, preserving the lean
 Cardano transaction-library exclusion. Both builds disable Maven Local by
 default; no local Yaci override is needed.
+
+Yano now pins the released Yaci `0.5.0-pre16` from Maven Central. Its tag differs
+from `f57fc88` only in the version and the CCL `0.8.0-pre8` dependency, and its
+`yaci-core`, `yaci-helper`, `yaci-events-core` and `yaci-events-processor` JARs
+have the same SHA-256 as the qualified snapshot's, so this qualification covers
+the release JARs. It ran with CCL `0.8.0-pre7`; CCL `0.8.0-pre8` is covered by
+Yano's ordinary build, not by these runs.
 
 Incremental runtime qualification used immutable local Yano/foundation `.9`,
 X `.12`, unchanged minimum Host API `.4`, and the public snapshot:
@@ -123,8 +132,8 @@ for current pins and reproducible checkout/build preparation.
 
 Publicly available foundation/framework coordinates must replace temporary
 Actions inputs before merging into a branch expected to publish snapshots or
-releases. Actions inputs expire after 90 days. The mutable Yaci snapshot is for
-qualification; final release POMs require a released Yaci version. No intermediate
+releases. Actions inputs expire after 90 days. Yaci is pinned to the released
+`0.5.0-pre16`, as final release POMs require. No intermediate
 Yano release is required. One comprehensive coordinated release cycle remains
 mandatory after both phases and final dependency pins are integrated.
 

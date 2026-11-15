@@ -64,4 +64,4 @@ rejected before exporting build inputs. Explicit manual run/commit overrides
 remain available for qualification. Temporary Actions coordinates must be
 replaced by publicly available foundation/framework versions before merging
 into a branch that publishes snapshots or releases. Final release dependencies
-must use a released Yaci version; the current snapshot is for qualification.
+must use a released Yaci version; Yano pins the released `0.5.0-pre16`.

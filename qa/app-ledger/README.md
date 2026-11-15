@@ -64,7 +64,7 @@ standalone gate retains the real host assembly, consensus and restart checks.
 
 ## Exact coordinated inputs
 
-The catalogs pin published Yaci `0.5.0-pre16-f57fc88-SNAPSHOT`, containing
+Yano's catalog pins the released Yaci `0.5.0-pre16` from Maven Central, containing
 the merged [Yaci #245](https://github.com/bloxbean/yaci/pull/245). The draft also requires the extracted
 framework from [Yano-X #102](https://github.com/bloxbean/yano-x/pull/102). Consume
 exact staged/published artifacts. No sibling checkout or build invocation is
@@ -76,9 +76,9 @@ python3 qa/app-ledger/run.py --gate standalone \
   --gradle-arg=-PappLedgerFrameworkVersion=EXACT_FRAMEWORK_VERSION
 ```
 
-Yaci resolves from the configured public BloxBean snapshot repository. The
+Yaci resolves from Maven Central. The
 optional `artifact-inputs.gradle` override remains available for deliberate
-upstream-candidate testing; it is not needed for the pinned snapshot. Maven Local
+upstream-candidate testing; it is not needed for the pinned release. Maven Local
 is disabled by default and, when enabled with `-PuseMavenLocal=true`, is limited
 to Yano project artifacts.
 

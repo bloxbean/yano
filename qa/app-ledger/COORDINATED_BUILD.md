@@ -9,11 +9,9 @@ Choose exact candidate versions for node API, Host API and X; do not reuse a
 released coordinate or overwrite a previous candidate's bytes. The placeholders
 below are explicit inputs, not environment-dependent automatic discovery.
 
-1. Yaci PR #245 is merged. Both catalogs select the publicly available
-   `0.5.0-pre16-f57fc88-SNAPSHOT` from
-   `https://repo.bloxbean.org/maven/snapshots`. No Yaci checkout, Maven Local
-   publication or QA version override is required. The publishing run is
-   [43602913332](https://github.com/bloxbean/yaci/actions/runs/43602913332).
+1. Yaci PR #245 is merged and released. Yano's catalog selects Yaci
+   `0.5.0-pre16` from Maven Central. No Yaci checkout, Maven Local
+   publication or QA version override is required.
 
 2. In the Yano PR #246 checkout (base `main`), stage only the foundational APIs.
    These tasks do not need X artifacts:
