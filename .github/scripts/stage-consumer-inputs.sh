@@ -29,24 +29,12 @@ if [[ "$scope" == foundation ]]; then
     :cardano-api:publishAllPublicationsToStagingRepository :host-api:publishAllPublicationsToStagingRepository)
 else
   tasks=(publishAllPublicationsToStagingRepository :app:yanoDistZip :app:packagedJvmPluginCatalogSmoke)
-  if [[ -n "${YANO_X_VERIFIED_INPUTS:-}" ]]; then
-    cp -R "$YANO_X_VERIFIED_INPUTS/maven/." "$staged_directory/maven/"
-    # Preserve the exact independently versioned foundation publication, including
-    # its dependency metadata. Rebuilding the host must not rewrite that POM.
-    tasks+=(-x :host-api:publishMavenJavaPublicationToStagingRepository :host-api:jar)
-  fi
 fi
 ./gradlew "${tasks[@]}" \
   "-PstagingRepository=$staged_directory/maven" "-Pversion=$staged_version" \
   "-PhostApiVersion=$host_api_version" -PskipSigning=true --no-parallel
 if [[ "$scope" == host ]]; then
   cp "app/build/distributions/yano-$staged_version.zip" "$staged_directory/"
-  if [[ -n "${YANO_X_VERIFIED_INPUTS:-}" ]]; then
-    host_api_path="maven/org/yanoproject/yano-host-api/$host_api_version/yano-host-api-$host_api_version.jar"
-    cmp "$YANO_X_VERIFIED_INPUTS/$host_api_path" "host-api/build/libs/yano-host-api-$host_api_version.jar" || {
-      echo 'Host API bytes changed: stage a new foundation version before rebuilding the framework' >&2; exit 1;
-    }
-  fi
 fi
 jq -n --arg commit "$commit" --arg version "$staged_version" \
   --arg hostApiVersion "$host_api_version" --arg scope "$scope" \
