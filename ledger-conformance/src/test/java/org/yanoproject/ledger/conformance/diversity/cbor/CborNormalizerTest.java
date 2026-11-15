@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** The 20 vectors of cardano-cbor-dataset's {@code dataset/normalization/README.md}, the table being the authority. */
 class CborNormalizerTest {
 
-    /** name, input, normalized; the last row, beyond the table, is a rational being reduced. */
+    /** name, input, normalized; the last two rows, beyond the table, are rationals being reduced. */
     private static final String[] VECTORS = {
             "indefinite-array, 9f0102ff, 820102",
             "indefinite-map, bf0102ff, a10102",
@@ -33,7 +33,8 @@ class CborNormalizerTest {
             "negative-bignum-fits, c3435e0f31, 3a005e0f31",
             "bignum-leading-zeros, c2420000, 00",
             "bignum-too-large, c249010000000000000000, c249010000000000000000",
-            "reduced-rational, d81e820204, d81e820102"
+            "reduced-rational, d81e820204, d81e820102",
+            "signed-rational, d81e822021, d81e820102"
     };
 
     @TestFactory
