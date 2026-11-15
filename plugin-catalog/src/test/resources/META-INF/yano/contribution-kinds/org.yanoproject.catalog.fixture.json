@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "apiPackages": ["org.yanoproject.catalog.fixture"],
+  "kinds": [
+    {
+      "key": "fixture-sink",
+      "serviceInterface": "org.yanoproject.catalog.fixture.FixtureSinkProvider",
+      "manifestRequired": false,
+      "trustTier": "CONSENSUS",
+      "forbiddenNameChars": ".:",
+      "reservedSystemNames": ["system"]
+    },
+    {
+      "key": "fixture-domain",
+      "serviceInterface": "org.yanoproject.catalog.fixture.FixtureDomainProvider",
+      "manifestRequired": true,
+      "trustTier": "PRIVILEGED_LOCAL",
+      "maxPerBundle": 1,
+      "nameIsBundleId": true,
+      "operationsTracked": true
+    }
+  ]
+}

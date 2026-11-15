@@ -66,8 +66,18 @@ Policy options must precede artifact paths:
 --api-level <positive-int>
 --allow <bundle-id>
 --deny <bundle-id>
+--host-artifact <artifact>
 --
 ```
+
+Only the four built-in contribution kinds (`node-plugin`,
+`utxo-index-contributor`, `health`, `metrics`) are known without host
+artifacts. A framework that adds kinds ships a descriptor
+`META-INF/yano/contribution-kinds/<owner>.json` in its host-class-path JAR;
+pass that JAR with `--host-artifact` (repeatable) to validate bundles that use
+its kinds. Descriptors are trusted only from host artifacts: a scanned plugin
+artifact that carries one is rejected, and a manifest that names an unknown
+kind fails with `contribution kind is not supported`.
 
 The API options default to this Yano build's
 `PluginApiVersion.CURRENT_MAJOR` and `CURRENT_LEVEL` (`1` and `2` after the
