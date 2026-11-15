@@ -1,6 +1,5 @@
 dependencies {
     api project(':cardano-api')
-    api "org.yanoproject.x:yano-x-appchain-api:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
     api libs.yaci.core
 
     implementation libs.rocksdb
