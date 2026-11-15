@@ -94,7 +94,7 @@ tasks.register('verifyStaticConsoleContract') {
 
         def appChainDirectory = new File(root, 'app-chain')
         if (appChainDirectory.exists()) {
-            throw new GradleException('Embedded console must not package app-chain/: Yano-X owns that path')
+            throw new GradleException('Embedded console must not package the app-chain/ path')
         }
 
         def landing = new File(root, 'index.html').getText('UTF-8')

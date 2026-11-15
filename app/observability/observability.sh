@@ -24,8 +24,8 @@ Usage: ./yano.sh observability <command> [options]
   stop
   clean --yes
 
-Defaults: discover a maintained local app-chain cluster, otherwise scrape
-http://127.0.0.1:7070; retain 15d / 2GB; expose Prometheus on 127.0.0.1:9090.
+Defaults: scrape http://127.0.0.1:7070; retain 15d / 2GB; expose Prometheus on
+127.0.0.1:9090.
 EOF
 }
 
@@ -94,27 +94,6 @@ for raw in sys.argv[1:]:
 PY
 }
 
-discover_targets() {
-  local cluster env
-  cluster="${YANO_CLUSTER_DIR:-/tmp/yano-appchain-cluster}"
-  env="$cluster/cluster.env"
-  local base=7070 found=0 file index pid
-  if [ -f "$env" ] && [ ! -L "$env" ]; then
-    base="$(sed -n 's/^HTTP_BASE=\([0-9][0-9]*\)$/\1/p' "$env" | head -1)"
-    [[ "$base" =~ ^[0-9]+$ ]] || base=7070
-    for file in "$cluster"/node*.pid; do
-      [ -f "$file" ] && [ ! -L "$file" ] || continue
-      index="${file##*/node}"; index="${index%.pid}"
-      [[ "$index" =~ ^[0-9]+$ ]] || continue
-      pid="$(cat "$file" 2>/dev/null || true)"
-      [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || continue
-      printf 'http://127.0.0.1:%s\n' "$((base + index))"
-      found=1
-    done
-  fi
-  [ "$found" -eq 1 ] || printf 'http://127.0.0.1:7070\n'
-}
-
 validate_retention() {
   local value="$1" kind="$2" amount unit normalized
   if [ "$kind" = time ]; then
@@ -151,10 +130,7 @@ start_bundle() {
   [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "invalid YANO_OBSERVABILITY_PORT"
   require_docker
   validate_state_path
-  if [ "$explicit" -eq 0 ]; then
-    discovered="$(discover_targets)" || die "unable to discover observability targets"
-    while IFS= read -r line; do [ -n "$line" ] && raw_targets+=("$line"); done <<< "$discovered"
-  fi
+  [ "$explicit" -eq 1 ] || raw_targets+=("http://127.0.0.1:7070")
   [ "${#raw_targets[@]}" -gt 0 ] || die "at least one scrape target is required"
   normalized_output="$(normalize_targets "${raw_targets[@]}")" \
     || die "targets must be normalized HTTP(S) origins without credentials, paths, queries, or fragments"
