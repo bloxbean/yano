@@ -159,3 +159,8 @@ tasks.named('processResources', ProcessResources) {
         exclude bakedApiPrefixDashboardPath, bakedApiPrefixConsolePath
     }
 }
+
+// The Jandex plugin writes into the main resources output, which javadoc reads.
+tasks.named('javadoc') {
+    dependsOn tasks.named('jandex')
+}

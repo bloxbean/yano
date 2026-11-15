@@ -746,6 +746,36 @@ def conformanceFixtureJar = tasks.register('conformanceFixtureJar', Jar) {
     from 'src/conformanceFixture/resources'
 }
 
+// ADR-064 D8/M1 downstream-consumer check: app/consumer-check is a separate
+// Quarkus build that composes yano-app-core from the staged publications with a
+// fixture REST resource, globals contributor and directory plugin. It is the
+// gate for org.yanoproject.app.spi and runs only when its inputs change:
+//   ./gradlew :app:appCoreConsumerCheck -PstagingRepository=file:///abs/staging
+def stagingRepositoryForConsumerCheck = providers.gradleProperty('stagingRepository')
+tasks.register('appCoreConsumerCheck', Exec) {
+    group = 'verification'
+    description = 'Boots a downstream Quarkus application built on the staged yano-app-core'
+    dependsOn rootProject.allprojects.collect { candidate ->
+        candidate.tasks.matching { it.name == 'publishAllPublicationsToStagingRepository' }
+    }
+    inputs.files(fileTree('consumer-check') { exclude 'build/**', '.gradle/**' })
+    inputs.files(appCore.tasks.named('jar'), project(':runtime').tasks.named('jar'), conformanceFixtureJar)
+    outputs.dir('consumer-check/build/test-results')
+    workingDir 'consumer-check'
+    doFirst {
+        if (!stagingRepositoryForConsumerCheck.isPresent()) {
+            throw new GradleException('appCoreConsumerCheck requires -PstagingRepository=<file repository URI>')
+        }
+        commandLine rootProject.file(isWindowsHost() ? 'gradlew.bat' : 'gradlew').absolutePath,
+                '--no-daemon', 'test',
+                "-PyanoVersion=${project.version}",
+                "-PyanoStagingRepository=${stagingRepositoryForConsumerCheck.get()}",
+                "-PquarkusPluginVersion=${quarkusPluginVersion}",
+                "-PquarkusPlatformVersion=${quarkusPlatformVersion}",
+                "-PfixturePluginJar=${conformanceFixtureJar.get().archiveFile.get().asFile.absolutePath}"
+    }
+}
+
 def pluginConformanceBundleId =
         'org.yanoproject.fixture.plugin-conformance'
 def pluginOperationsSmokeApiKey = 'plugin-operations-smoke-full-key'

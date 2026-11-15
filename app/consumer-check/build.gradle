@@ -1,0 +1,98 @@
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+
+plugins {
+    id 'java'
+    id 'io.quarkus' version "${quarkusPluginVersion}"
+}
+
+// Run through :app:appCoreConsumerCheck, which stages the Yano publications and
+// passes these properties.
+def yanoVersion = providers.gradleProperty('yanoVersion').get()
+def yanoStagingRepository = providers.gradleProperty('yanoStagingRepository').get()
+def fixturePluginJar = providers.gradleProperty('fixturePluginJar').get()
+
+repositories {
+    maven {
+        url = uri(yanoStagingRepository)
+        content { includeGroup 'org.yanoproject' }
+    }
+    mavenCentral()
+    maven { url = 'https://central.sonatype.com/repository/maven-snapshots/' }
+    maven {
+        url = 'https://repo.bloxbean.org/maven/snapshots'
+        mavenContent { snapshotsOnly() }
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+// Quarkus owns the logging provider, as in Yano's own application.
+configurations.configureEach {
+    exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+    exclude group: 'ch.qos.reload4j', module: 'reload4j'
+}
+
+configurations.create('pluginIndexGenerator')
+
+dependencies {
+    implementation enforcedPlatform("io.quarkus.platform:quarkus-bom:${quarkusPlatformVersion}")
+    implementation "org.yanoproject:yano-app-core:${yanoVersion}"
+
+    testImplementation 'io.quarkus:quarkus-junit'
+    testImplementation 'io.rest-assured:rest-assured'
+
+    pluginIndexGenerator "org.yanoproject:yano-plugin-catalog:${yanoVersion}"
+}
+
+// A packaged application carries exactly one plugin index. The runtime's logging
+// bundle is its only build-time bundle; its closure is the runtime component graph.
+def generatedPluginIndexDir = layout.buildDirectory.dir('generated/plugin-index')
+sourceSets.main.resources.srcDir(generatedPluginIndexDir)
+
+def generatePluginIndex = tasks.register('generatePluginIndex', JavaExec) {
+    inputs.files(configurations.runtimeClasspath)
+    outputs.dir(generatedPluginIndexDir)
+    classpath = configurations.pluginIndexGenerator
+    mainClass = 'org.yanoproject.catalog.PluginIndexGenerator'
+    doFirst {
+        def runtimeConfiguration = configurations.runtimeClasspath
+        def artifactResults = runtimeConfiguration.incoming.artifactView { }.artifacts.artifacts
+        def artifactsByComponent = artifactResults.groupBy { it.id.componentIdentifier }
+        def runtime = runtimeConfiguration.incoming.resolutionResult.allComponents.find {
+            it.id instanceof ModuleComponentIdentifier
+                    && it.id.group == 'org.yanoproject' && it.id.module == 'yano-runtime'
+        }
+        def pending = new ArrayDeque([runtime])
+        def visited = [] as Set
+        while (!pending.isEmpty()) {
+            def component = pending.removeFirst()
+            if (visited.add(component.id)) {
+                component.dependencies.findAll { it instanceof ResolvedDependencyResult }
+                        .each { pending.addLast(it.selected) }
+            }
+        }
+        def output = generatedPluginIndexDir.get().file('META-INF/yano-plugin-index-v1.json').asFile
+        output.parentFile.mkdirs()
+        def arguments = ['--output', output.absolutePath, '--strict-bundle-closures']
+        visited.collectMany { artifactsByComponent[it] ?: [] }.each {
+            arguments.addAll(['--bundle-closure', 'org.yanoproject.plugins.logging', it.file.absolutePath])
+        }
+        arguments.add('--')
+        arguments.addAll(artifactResults.collect { it.file.absolutePath })
+        def argumentsFile = new File(temporaryDir, 'plugin-index-args.txt')
+        argumentsFile.setText(arguments.join('\n') + '\n', 'UTF-8')
+        args = ['--args-file', argumentsFile.absolutePath]
+    }
+}
+
+tasks.named('processResources') {
+    dependsOn generatePluginIndex
+}
+
+test {
+    systemProperty 'yano.consumer-check.fixture-plugin', fixturePluginJar
+}
