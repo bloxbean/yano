@@ -28,6 +28,7 @@ def yanoModules = [
         'tx-services'                 : 'tx-services',
         'bootstrap-providers'         : 'bootstrap-providers',
         'app'                         : 'app',
+        'app-core'                    : 'app-core',
         'app-e2e-testkit'             : 'app-e2e-testkit',
         'ledger-rules'                : 'ledger-rules',
         'ledger-state'                : 'ledger-state',
