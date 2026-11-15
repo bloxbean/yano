@@ -479,7 +479,8 @@ public final class RawTransaction {
             tx.auxData().ifPresent(auxData -> {
                 RawAuxData.validate(auxData);
                 // the scripts, read once with CCL's view and decoded as Haskell does
-                tx.auxScripts().forEach(script -> auxScripts.add(RawScript.of(script.type(), script.span())));
+                tx.auxScripts().forEach(script -> auxScripts.add(
+                        RawScript.of(script.type(), script.span()).requireConwayTypes()));
             });
         }
 
@@ -771,7 +772,7 @@ public final class RawTransaction {
             // V1-V3 with no two scripts of the same hash (decodeMapLikeEnforceNoDuplicates).
             Map<Integer, Set<String>> plutusHashes = new HashMap<>();
             for (var view : tx.scripts()) {
-                RawScript script = RawScript.of(view.type(), view.span());
+                RawScript script = RawScript.of(view.type(), view.span()).requireConwayTypes();
                 if (script.isPlutus() && !plutusHashes.computeIfAbsent(script.language(), l -> new HashSet<>())
                         .add(script.hashHex())) {
                     throw new TxDecodingException("duplicate PlutusV" + script.language() + " script "
