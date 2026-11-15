@@ -1,12 +1,12 @@
 package org.yanoproject.app.api.appchain;
 
-import org.yanoproject.api.plugin.domain.DomainApiAccess;
-import org.yanoproject.api.plugin.domain.DomainApiException;
-import org.yanoproject.api.plugin.domain.DomainApiGateway;
-import org.yanoproject.api.plugin.domain.DomainApiMediaType;
-import org.yanoproject.api.plugin.domain.DomainApiResponse;
-import org.yanoproject.api.plugin.domain.DomainApiRouteInfo;
-import org.yanoproject.api.plugin.domain.DomainHttpMethod;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiAccess;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiException;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiMediaType;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiResponse;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiRouteInfo;
+import org.yanoproject.x.framework.api.plugin.domain.DomainHttpMethod;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.core.MultivaluedHashMap;
 import jakarta.ws.rs.core.Response;

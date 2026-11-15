@@ -4,7 +4,7 @@ import org.yanoproject.api.plugin.PluginBundleInfo;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.api.plugin.PluginContributionInfo;
 import org.yanoproject.api.plugin.PluginTrustTier;
-import org.yanoproject.api.plugin.domain.DomainHttpMethod;
+import org.yanoproject.x.framework.api.plugin.domain.DomainHttpMethod;
 import org.yanoproject.api.plugin.operations.PluginBundleRuntimeAggregation;
 import org.yanoproject.api.plugin.operations.PluginBundleRuntimeInfo;
 import org.yanoproject.api.plugin.operations.PluginContributionRuntimeInfo;

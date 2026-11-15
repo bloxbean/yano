@@ -182,7 +182,7 @@ host facade.
 Create this exact resource:
 
 ```text
-META-INF/services/org.yanoproject.api.plugin.domain.DomainApiProvider
+META-INF/services/org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider
 ```
 
 Its content is the provider's binary class name:

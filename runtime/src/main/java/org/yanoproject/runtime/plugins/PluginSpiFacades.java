@@ -1,78 +1,84 @@
 package org.yanoproject.runtime.plugins;
 
+import org.yanoproject.x.framework.api.appchain.AppCapabilityManifest;
+import org.yanoproject.x.framework.api.appchain.proof.ProofSubjectDescriptorV1;
+import org.yanoproject.x.framework.api.appchain.proof.ProofSubjectProvider;
+import org.yanoproject.x.framework.cardano.api.effects.AppChainEffectContext;
+
+
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppChainInfo;
-import org.yanoproject.api.appchain.AppQueryContext;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateMachineContext;
-import org.yanoproject.api.appchain.AppStateMachineProvider;
-import org.yanoproject.api.appchain.AppStateReader;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.codec.MessageCodec;
-import org.yanoproject.api.appchain.transition.CommandDescriptor;
-import org.yanoproject.api.appchain.transition.ConfigurationDescriptor;
-import org.yanoproject.api.appchain.transition.EventDescriptor;
-import org.yanoproject.api.appchain.transition.RuleFact;
-import org.yanoproject.api.appchain.transition.RuleValueView;
-import org.yanoproject.api.appchain.transition.TransitionContext;
-import org.yanoproject.api.appchain.transition.TransitionDecision;
-import org.yanoproject.api.appchain.transition.TransitionKernel;
-import org.yanoproject.api.appchain.transition.TransitionWorkBudget;
-import org.yanoproject.api.appchain.transition.TransitionWorkReference;
-import org.yanoproject.api.appchain.transition.TransitionWorkRequest;
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidator;
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.api.appchain.authmap.ValidatorInitContext;
-import org.yanoproject.api.appchain.authmap.ValidatorVerdict;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
-import org.yanoproject.api.appchain.effects.EffectExecution;
-import org.yanoproject.api.appchain.effects.EffectExecutionContext;
-import org.yanoproject.api.appchain.effects.EffectExecutorOperationalSnapshot;
-import org.yanoproject.api.appchain.effects.EffectResult;
-import org.yanoproject.api.appchain.observation.AppObservationEmitter;
-import org.yanoproject.api.appchain.observation.ObservationResult;
-import org.yanoproject.api.appchain.effects.PendingEffect;
-import org.yanoproject.api.appchain.l1view.EpochObservationManifest;
-import org.yanoproject.api.appchain.l1view.L1EpochBoundary;
-import org.yanoproject.api.appchain.l1view.L1EpochObservationSink;
-import org.yanoproject.api.appchain.l1view.L1EpochObserver;
-import org.yanoproject.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.api.appchain.l1view.L1EpochState;
-import org.yanoproject.api.appchain.l1view.L1Observation;
-import org.yanoproject.api.appchain.l1view.L1Observer;
-import org.yanoproject.api.appchain.l1view.L1ObserverConsensusIdentity;
-import org.yanoproject.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.api.appchain.observation.ObservationCandidate;
-import org.yanoproject.api.appchain.observation.ObservationProvider;
-import org.yanoproject.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.api.appchain.observation.ObservationRequest;
-import org.yanoproject.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.api.appchain.sequencer.SequencerMode.ProposalEligibility;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.api.appchain.signer.SignerProvider;
-import org.yanoproject.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
-import org.yanoproject.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
-import org.yanoproject.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
-import org.yanoproject.api.appchain.snapshot.SnapshotDescriptorDraftV1;
-import org.yanoproject.api.appchain.snapshot.SnapshotEntry;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppChainInfo;
+import org.yanoproject.x.framework.api.appchain.AppQueryContext;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineContext;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
+import org.yanoproject.x.framework.api.appchain.AppStateReader;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.codec.MessageCodec;
+import org.yanoproject.x.framework.api.appchain.transition.CommandDescriptor;
+import org.yanoproject.x.framework.api.appchain.transition.ConfigurationDescriptor;
+import org.yanoproject.x.framework.api.appchain.transition.EventDescriptor;
+import org.yanoproject.x.framework.api.appchain.transition.RuleFact;
+import org.yanoproject.x.framework.api.appchain.transition.RuleValueView;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionContext;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionDecision;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionKernel;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkBudget;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkReference;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkRequest;
+import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidator;
+import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
+import org.yanoproject.x.framework.api.appchain.authmap.ValidatorInitContext;
+import org.yanoproject.x.framework.api.appchain.authmap.ValidatorVerdict;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
+import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecution;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecutionContext;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecutorOperationalSnapshot;
+import org.yanoproject.x.framework.api.appchain.effects.EffectResult;
+import org.yanoproject.x.framework.api.appchain.observation.AppObservationEmitter;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationResult;
+import org.yanoproject.x.framework.api.appchain.effects.PendingEffect;
+import org.yanoproject.x.framework.api.appchain.l1view.EpochObservationManifest;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochBoundary;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObservationSink;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserver;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserverProvider;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochState;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observation;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverConsensusIdentity;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationCandidate;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProvider;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationRequest;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode.ProposalEligibility;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
+import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
+import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotDescriptorDraftV1;
+import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotEntry;
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginActivationException;
-import org.yanoproject.api.plugin.domain.DomainApi;
-import org.yanoproject.api.plugin.domain.DomainApiContext;
-import org.yanoproject.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.api.plugin.domain.DomainApiRequest;
-import org.yanoproject.api.plugin.domain.DomainApiResponse;
-import org.yanoproject.api.plugin.domain.DomainApiRoute;
-import org.yanoproject.api.plugin.domain.LocalReadModelContext;
-import org.yanoproject.api.plugin.domain.LocalReadModelProvider;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApi;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiContext;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiRequest;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiResponse;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiRoute;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelContext;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
 import org.yanoproject.api.chain.ChainPoint;
 import org.yanoproject.api.genesis.GenesisUtxo;
 import org.yanoproject.api.utxo.index.IndexRequirements;
@@ -1671,27 +1677,27 @@ final class PluginSpiFacades {
         }
 
         @Override
-        public org.yanoproject.api.appchain.AppCapabilityManifest capabilityManifest() {
+        public AppCapabilityManifest capabilityManifest() {
             return pluginCall(callbacks, loader, delegate::capabilityManifest);
         }
 
         @Override
-        public List<org.yanoproject.api.appchain.proof.ProofSubjectProvider>
+        public List<ProofSubjectProvider>
         proofSubjectProviders() {
             var values = Objects.requireNonNull(pluginCall(callbacks, loader,
                             delegate::proofSubjectProviders),
                     "AppStateMachine.proofSubjectProviders() must not return null");
             var snapshot = snapshotList(values, loader, callbacks,
-                    org.yanoproject.api.appchain.proof.ProofSubjectDescriptorV1
+                    ProofSubjectDescriptorV1
                             .MAX_DESCRIPTORS,
                     "AppStateMachine must declare at most 64 proof subject providers");
             return snapshot.stream().map(provider -> {
                 var source = Objects.requireNonNull(provider, "proof subject provider");
-                return (org.yanoproject.api.appchain.proof.ProofSubjectProvider)
-                        new org.yanoproject.api.appchain.proof.ProofSubjectProvider() {
+                return (ProofSubjectProvider)
+                        new ProofSubjectProvider() {
                     @Override
-                    public List<org.yanoproject.api.appchain.proof.ProofSubjectDescriptorV1>
-                    descriptors(org.yanoproject.api.appchain.AppCapabilityManifest profile) {
+                    public List<ProofSubjectDescriptorV1>
+                    descriptors(AppCapabilityManifest profile) {
                         return List.copyOf(pluginCall(callbacks, loader,
                                 () -> source.descriptors(profile)));
                     }
@@ -2361,8 +2367,7 @@ final class PluginSpiFacades {
         @Override
         public List<AppEffectExecutor> create(
                 String chainId, Map<String, String> config,
-                org.yanoproject.api.appchain.effects
-                        .AppChainEffectContext context) {
+                AppChainEffectContext context) {
             // Context-aware creation (ADR-UTXO-009 SP-M6) must reach the
             // DELEGATE's override — routing through the 2-arg form would
             // silently trigger the interface default and lose the context.

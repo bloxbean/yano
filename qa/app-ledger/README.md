@@ -15,11 +15,11 @@ resolved production coordinates and SHA-256 of every JAR.
 
 | Gate | Breaking changes it targets |
 | --- | --- |
-| `host` | Public ABI, fixed older plugin bytecode, class/resource ownership, N2N registration, retention leases, plugin lifecycle. |
+| `host` | Unchanged Yano-owned ABI, fixed older host-plugin bytecode, class/resource ownership, N2N registration, retention leases, plugin lifecycle. |
 | `standalone` | Three-node gossip/finality, late protocol-103 catch-up, restart, canonical commitment agreement, fresh-store/profile boundaries and absence of L1 state. |
 | `configuration` | Existing flat/indexed property parsing, node/plugin contracts, Cardano API utilities and semantic validation. |
-| `consensus` | Existing complete runtime app-chain unit/integration suite, including storage, snapshots, observations and effects. |
-| `hybrid` | Existing shared transport, Cardano observer/anchor and subsystem lifecycle tests. |
+| `consensus` | Yano host integration suites; pure framework/storage/codec unit suites run in X frameworkCheck. |
+| `hybrid` | Host shared transport, Cardano subscription and subsystem lifecycle tests; Cardano framework unit suites run in X. |
 | `plugins` | Existing catalog, provider, lifecycle and plugin operations tests. |
 | `adapter` | Application startup configuration and unavailable Cardano HTTP operations. |
 
@@ -29,8 +29,13 @@ The five current owners are `yano-node-api`, `yano-host-api`, `yano-cardano-api`
 `yano-x-appchain-api` and `yano-x-appchain-cardano-api`. The retired
 `yano-core-api` aggregate is not published by the current build. Its historical
 JAR remains the frozen compatibility baseline; removing its current Maven
-coordinate does not retire the existing public Java signatures or plugin fixtures.
-Binary and source incompatibilities fail the build; missing classes are not ignored. The
+coordinate alone did not retire Java signatures. The subsequent preview namespace
+migration intentionally renames framework-owned app-chain/domain/event APIs under
+`org.yanoproject.x.framework`. Those explicit packages/classes are excluded from
+the old-name comparison; unchanged Yano-owned APIs still fail on binary or source
+incompatibilities, and missing classes in that scope are not ignored. Framework
+plugins and embedding clients must recompile against the new names. Host-only
+`NodePlugin` binaries remain covered without recompilation. The
 baseline is `org.yanoproject:yano-core-api:0.1.0-pre19`, SHA-256
 `e8cc29db9c9e36dd743c9ae81bd42e806a4035e87d090d392af017c5f12554e9`.
 An explicit `-PappLedgerApiBaseline=/path/to/the/same.jar` avoids repository
@@ -117,30 +122,27 @@ For a fresh environment, follow [the coordinated artifact-staging recipe](COORDI
 before running the draft gates. It breaks the bootstrap into independent builds
 and records which unpublished candidate versions were actually exercised.
 
-The host gate also compares public `runtime.appchain` signatures against frozen
-`yano-runtime:0.1.0-pre19` (SHA-256
-`d99de754c54816a01b263bf02a4555befeb6623dc3cc633ac19b4299480293ed`).
-Use `-PappLedgerRuntimeBaseline=/absolute/yano-runtime-0.1.0-pre19.jar` when
-supplying that baseline directly. The harness archives both runtime ABI XML and
-artifact provenance JSON and fails if either is absent. Lifecycle failure tests
-and ownership checks include the newly separated Cardano API and kernel contracts.
+The framework namespace migration intentionally retires the old-name runtime ABI
+comparison and active pre19 framework-client execution. The checksum-pinned
+`yano-runtime:0.1.0-pre19` baseline and pre19 client source/JAR/provenance remain
+unchanged as historical evidence; ordinary runs never recompile these fixtures.
+They are not evidence that renamed framework classes link against old runtimes.
+The active host gate instead verifies every resolved framework class belongs to
+`org.yanoproject.x.framework`, rejects duplicate/retired framework definitions,
+and archives `framework-namespace.json`. The generic pre19 host-plugin fixture
+continues to execute, and the independent Host API contract is unchanged. X's
+active oldest-host matrix must use a namespace-compatible runtime with the same
+supported independent Host API baseline.
 
+Pure framework unit tests and benchmark mains moved to X's owning `core` and
+`cardano` modules; equivalent suites already present there are not duplicated.
+Cross-module storage/signing setup uses core's test-fixtures classifier, keeping
+package-private production internals private. The Cardano delivery-loop suite
+uses X cardano's existing `integrationTest` source set against the selected Yano
+runtime and runs through `cardano:check`; foundation-only `frameworkCheck` does
+not resolve that host implementation. Yano retains its actual assembly, network,
+Cardano subscription, restart and plugin integration suites.
 
-The host gate also executes the pre19 runtime-client fixture. Revision 2 corrects
-an assumption in the original fixture: the checksum-pinned pre19 runtime already
-allows `stop()` to return before engine cleanup completes, so an immediate restart
-can report that the previous callback is still draining. Only the two post-stop
-starts retry that exact chain-specific refusal, for at most five seconds using a
-monotonic deadline; other failures, causes, suppressed failures and interruption
-still propagate. Initial startup and all compatibility assertions are unchanged.
-The original fixture failed once in the 573-test consensus gate after passing the
-focused host gate; this correction does not change production shutdown semantics.
-
-Revision 2 was compiled once against only the same eight checksum-verified pre19
-inputs. Its source and old/new hashes are recorded in
-`fixtures/pre19/runtime-client-provenance.json`; the original source and JAR remain
-in Git at `dc82788aa`. Ordinary test runs never recompile the fixture. The separate
-oldest-supported-host matrix and pre19 plugin fixture remain unchanged.
 The ownership guard checks both
 runtime/manager pairs and the two checked validator resources. Required embedded
 activation tests cover disabled optional plugins, restrictive policy, library

@@ -1,6 +1,16 @@
 package org.yanoproject.appchain.config;
+import org.yanoproject.x.framework.config.AppChainPropertyRegistry;
+import org.yanoproject.x.framework.config.AppChainResolvedValidator;
+import org.yanoproject.x.framework.config.AppChainSemanticValidator;
+import org.yanoproject.x.framework.config.AppChainValidationContext;
+import org.yanoproject.x.framework.config.ConfigSourceKind;
+import org.yanoproject.x.framework.config.EffectiveConfigValue;
+import org.yanoproject.x.framework.config.ResolvedValidationResult;
+import org.yanoproject.x.framework.config.ValidationDiagnostic;
+import org.yanoproject.x.framework.config.ValidationSeverity;
 
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
 
 import java.util.HexFormat;

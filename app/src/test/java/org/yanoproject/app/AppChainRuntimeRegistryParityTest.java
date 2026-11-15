@@ -1,7 +1,7 @@
 package org.yanoproject.app;
 
-import org.yanoproject.appchain.config.AppChainConfigParser;
-import org.yanoproject.appchain.config.AppChainPropertyRegistry;
+import org.yanoproject.x.framework.config.AppChainConfigParser;
+import org.yanoproject.x.framework.config.AppChainPropertyRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;

@@ -1,12 +1,15 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.pruneRuntimeBodies;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.evidence.EvidenceBundle;
-import org.yanoproject.api.appchain.evidence.EvidenceVerifier;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.evidence.EvidenceBundle;
+import org.yanoproject.x.framework.api.appchain.evidence.EvidenceVerifier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -76,7 +79,7 @@ class AppChainRetentionTest {
         long firstHeight = node.messageHeight(HexUtil.decodeHexString(firstId)).orElseThrow();
 
         // Prune bodies below the tip (simulating an L1_FINAL anchor at the tip)
-        int pruned = node.pruneBodiesBelowForTesting(tip - 1);
+        int pruned = pruneRuntimeBodies(node, tip - 1);
         assertThat(pruned).isGreaterThan(0);
 
         // Body of the first block is gone...
@@ -102,7 +105,7 @@ class AppChainRetentionTest {
         assertThat(retained.messageContentVerified()).isFalse();
 
         // Idempotent: re-pruning the same range is a no-op
-        assertThat(node.pruneBodiesBelowForTesting(tip - 1)).isEqualTo(0);
+        assertThat(pruneRuntimeBodies(node, tip - 1)).isEqualTo(0);
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

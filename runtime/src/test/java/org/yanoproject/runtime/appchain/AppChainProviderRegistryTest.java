@@ -1,30 +1,37 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.openStore;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.signer;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.sinkCursorKey;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerStore;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.resolveSigner;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateMachineProvider;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
-import org.yanoproject.api.appchain.effects.EffectExecution;
-import org.yanoproject.api.appchain.effects.EffectExecutionContext;
-import org.yanoproject.api.appchain.effects.PendingEffect;
-import org.yanoproject.api.appchain.l1view.L1Observation;
-import org.yanoproject.api.appchain.l1view.L1Observer;
-import org.yanoproject.api.appchain.l1view.L1ObserverConsensusIdentity;
-import org.yanoproject.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
+import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecution;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecutionContext;
+import org.yanoproject.x.framework.api.appchain.effects.PendingEffect;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observation;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverConsensusIdentity;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
@@ -329,9 +336,9 @@ class AppChainProviderRegistryTest {
         TestRegistry registry = new TestRegistry().add(SignerProviderFactory.class,
                 "broken-signer", new SignerProviderFactory() {
                     @Override public String scheme() { return "broken-signer"; }
-                    @Override public org.yanoproject.api.appchain.signer.SignerProvider create(
+                    @Override public org.yanoproject.x.framework.api.appchain.signer.SignerProvider create(
                             String keyReference) {
-                        return new org.yanoproject.api.appchain.signer.SignerProvider() {
+                        return new org.yanoproject.x.framework.api.appchain.signer.SignerProvider() {
                             @Override public byte[] sign(byte[] message) { return new byte[64]; }
                             @Override public byte[] publicKey() {
                                 throw new IllegalStateException("signer product boom");
@@ -356,9 +363,9 @@ class AppChainProviderRegistryTest {
         TestRegistry registry = new TestRegistry().add(SignerProviderFactory.class,
                 "stateful-signer", new SignerProviderFactory() {
                     @Override public String scheme() { return "stateful-signer"; }
-                    @Override public org.yanoproject.api.appchain.signer.SignerProvider create(
+                    @Override public org.yanoproject.x.framework.api.appchain.signer.SignerProvider create(
                             String keyReference) {
-                        return new org.yanoproject.api.appchain.signer.SignerProvider() {
+                        return new org.yanoproject.x.framework.api.appchain.signer.SignerProvider() {
                             @Override public byte[] sign(byte[] message) { return new byte[64]; }
                             @Override public byte[] publicKey() {
                                 if (publicKeyCalls.incrementAndGet() == 1) {
@@ -371,7 +378,7 @@ class AppChainProviderRegistryTest {
                     }
                 });
 
-        var signer = SignerProviders.resolveFromRegistry(
+        var signer = resolveSigner(
                 "stateful-signer:key", registry, LOG);
         byte[] first = signer.publicKey();
         first[0] ^= 0x7f;
@@ -460,28 +467,6 @@ class AppChainProviderRegistryTest {
                 .hasRootCauseMessage(
                         "SequencerModeProvider 'selected-mode' returned product id 'different-mode'");
 
-        TestRegistry observerRegistry = new TestRegistry().add(L1ObserverProvider.class,
-                "selected-observer", new L1ObserverProvider() {
-                    @Override public String type() { return "selected-observer"; }
-                    @Override public L1Observer create(
-                            String observerId, Map<String, String> settings) {
-                        return new L1Observer() {
-                            @Override public String observerId() { return "different-observer"; }
-                            @Override public List<L1Observation> observe(
-                                    long slot, byte[] blockHash,
-                                    com.bloxbean.cardano.yaci.core.model.Block block) {
-                                return List.of();
-                            }
-                        };
-                    }
-                });
-        assertThatThrownBy(() -> L1ObservationService.fromRegistry(
-                Map.of("observers.audit.type", "selected-observer"),
-                64, observerRegistry, LOG))
-                .isInstanceOf(PluginActivationException.class)
-                .hasMessageContaining("L1 observer 'selected-observer'")
-                .hasRootCauseMessage("L1ObserverProvider 'selected-observer' returned product id "
-                        + "'different-observer' for configured observer 'audit'");
     }
 
     @Test
@@ -544,8 +529,8 @@ class AppChainProviderRegistryTest {
                         return new AppStateMachine() {
                             @Override public String id() { return "broken-machine"; }
                             @Override public void init(
-                                    org.yanoproject.api.appchain.AppStateReader state,
-                                    org.yanoproject.api.appchain.AppChainInfo info) {
+                                    org.yanoproject.x.framework.api.appchain.AppStateReader state,
+                                    org.yanoproject.x.framework.api.appchain.AppChainInfo info) {
                                 throw new IllegalStateException("state init boom");
                             }
                             @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
@@ -879,11 +864,11 @@ class AppChainProviderRegistryTest {
         assertThat(closes).hasValue(2);
         subsystem.stop();
 
-        try (AppLedgerStore reopened = new AppLedgerStore(
+        try (AppLedgerStore reopened = openStore(
                 base.resolve(chainId).toString(), LOG)) {
-            assertThat(reopened.metaLong(SinkRunner.cursorKeyFor(firstId), -1L))
+            assertThat(reopened.metaLong(sinkCursorKey(firstId), -1L))
                     .isEqualTo(-1L);
-            assertThat(reopened.metaLong(SinkRunner.cursorKeyFor(failingId), -1L))
+            assertThat(reopened.metaLong(sinkCursorKey(failingId), -1L))
                     .isEqualTo(-1L);
         }
         assertThat(closes).hasValue(2);
@@ -1346,10 +1331,10 @@ class AppChainProviderRegistryTest {
         private SignerProviderFactory signerFactory() {
             return new SignerProviderFactory() {
                 @Override public String scheme() { return "registry.signer"; }
-                @Override public org.yanoproject.api.appchain.signer.SignerProvider create(
+                @Override public org.yanoproject.x.framework.api.appchain.signer.SignerProvider create(
                         String keyReference) {
                     signers.incrementAndGet();
-                    return new AppMessageSigner(KEY_HEX);
+                    return signer(KEY_HEX);
                 }
             };
         }

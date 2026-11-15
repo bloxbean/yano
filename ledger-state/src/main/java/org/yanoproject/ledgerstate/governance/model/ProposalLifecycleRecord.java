@@ -1,8 +1,8 @@
 package org.yanoproject.ledgerstate.governance.model;
 
-import org.yanoproject.api.appchain.l1view.GovernanceActionType;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
 
 import java.util.Objects;
 

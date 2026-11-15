@@ -51,10 +51,16 @@ dependencies {
 }
 def baselineFile = providers.gradleProperty('appLedgerApiBaseline')
 def expectedBaseline = 'e8cc29db9c9e36dd743c9ae81bd42e806a4035e87d090d392af017c5f12554e9'
+def relocatedFrameworkApis = [
+        'org.yanoproject.api.appchain.*', 'org.yanoproject.api.plugin.domain.*',
+        'org.yanoproject.api.events.AppBlockFinalizedEvent',
+        'org.yanoproject.api.events.AppChainStalledEvent',
+        'org.yanoproject.api.events.AppMessageReceivedEvent',
+        'org.yanoproject.api.events.AppChainAnchoredEvent']
 
 tasks.register('checkAppLedgerBinaryCompatibility', JavaExec) {
     group = 'verification'
-    description = 'Compare pre19 public API bytecode against the extracted compatibility artifacts'
+    description = 'Compare unchanged Yano-owned public APIs against the frozen pre19 baseline'
     dependsOn configurations.runtimeClasspath
     classpath = comparator
     mainClass = 'japicmp.JApiCmp'
@@ -79,6 +85,8 @@ tasks.register('checkAppLedgerBinaryCompatibility', JavaExec) {
         new File(report.get().asFile.parentFile, 'api-baseline.json').text =
                 JsonOutput.prettyPrint(JsonOutput.toJson([
                         schemaVersion: 1, baseline: oldJar.name, baselineSha256: sha256(oldJar),
+                        scope: 'Yano-owned APIs; renamed framework APIs intentionally excluded',
+                        excludedFrameworkApis: relocatedFrameworkApis,
                         comparator: comparator.singleFile.name, comparatorSha256: sha256(comparator.singleFile),
                         newApiArtifacts: newJars.collect { [name: it.name, sha256: sha256(it)] }
                 ])) + '\n'
@@ -86,51 +94,42 @@ tasks.register('checkAppLedgerBinaryCompatibility', JavaExec) {
                 '--new', newJars.collect { it.absolutePath }.join(';'),
                 '--old-classpath', (allJars - newJars).collect { it.absolutePath }.join(File.pathSeparator),
                 '--new-classpath', allJars.collect { it.absolutePath }.join(File.pathSeparator),
+                '--exclude', relocatedFrameworkApis.join(';'),
                 '--only-modified', '--error-on-binary-incompatibility', '--error-on-source-incompatibility',
                 '--xml-file', report.get().asFile.absolutePath]
     }
 }
 
-// Public runtime classes are used by embedders too: preserve their names, nested
-// records and parameter types while their owning artifact changes.
-def runtimeBaseline = configurations.create('appLedgerRuntimeBaseline') { transitive = false }
-dependencies { appLedgerRuntimeBaseline 'org.yanoproject:yano-runtime:0.1.0-pre19' }
-def runtimeBaselineFile = providers.gradleProperty('appLedgerRuntimeBaseline')
-tasks.register('checkAppLedgerRuntimeCompatibility', JavaExec) {
+// Framework Java packages intentionally moved to the X-owned namespace. The
+// original pre19 fixture remains historical evidence, not a supported ABI target.
+tasks.register('checkFrameworkNamespace') {
     group = 'verification'
-    description = 'Compare pre19 public app-chain runtime signatures across extraction'
-    dependsOn tasks.named('jar'), configurations.runtimeClasspath
-    classpath = comparator
-    mainClass = 'japicmp.JApiCmp'
-    inputs.files(configurations.runtimeClasspath, tasks.named('jar'))
-    inputs.files(provider { runtimeBaselineFile.isPresent() ? file(runtimeBaselineFile.get()) : runtimeBaseline.singleFile })
-    def report = layout.buildDirectory.file('reports/app-ledger/runtime-compatibility.xml')
+    description = 'Verify the resolved framework artifacts use only X-owned Java packages'
+    dependsOn configurations.runtimeClasspath
+    inputs.files(configurations.runtimeClasspath)
+    def report = layout.buildDirectory.file('reports/app-ledger/framework-namespace.json')
     outputs.file(report)
-    outputs.file(layout.buildDirectory.file('reports/app-ledger/runtime-baseline.json'))
-    doFirst {
-        File oldJar = runtimeBaselineFile.isPresent() ? file(runtimeBaselineFile.get()) : runtimeBaseline.singleFile
-        if (sha256(oldJar) != 'd99de754c54816a01b263bf02a4555befeb6623dc3cc633ac19b4299480293ed') {
-            throw new GradleException('Runtime baseline checksum differs from the frozen pre19 artifact')
+    doLast {
+        def jars = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts
+                .findAll { it.moduleVersion.id.group == 'org.yanoproject.x'
+                        && it.name.startsWith('yano-x-appchain-') }
+        if (jars.empty) throw new GradleException('No framework artifacts resolved')
+        def checked = jars.collect { artifact ->
+            def violations = []
+            int classes = 0
+            new java.util.zip.ZipFile(artifact.file).withCloseable { zip ->
+                zip.entries().each { entry ->
+                    if (entry.name.endsWith('.class') && entry.name != 'module-info.class') {
+                        classes++
+                        if (!entry.name.startsWith('org/yanoproject/x/framework/')) violations.add(entry.name)
+                    }
+                }
+            }
+            if (!violations.empty) throw new GradleException("Framework namespace violations in ${artifact.name}: ${violations}")
+            [name: artifact.name, sha256: sha256(artifact.file), classes: classes]
         }
-        def allJars = (configurations.runtimeClasspath.files + tasks.named('jar').get().archiveFile.get().asFile)
-                .toList().sort { it.name }
-        def runtimeNames = ['yano-runtime-', 'yano-x-appchain-core-', 'yano-x-appchain-cardano-']
-        def newJars = allJars.findAll { file -> runtimeNames.any { file.name.startsWith(it) }
-                && !file.name.startsWith('yano-x-appchain-cardano-api-') }
-        if (newJars.size() != 3) throw new GradleException("Expected three runtime ownership artifacts: ${newJars}")
         report.get().asFile.parentFile.mkdirs()
-        new File(report.get().asFile.parentFile, 'runtime-baseline.json').text =
-                JsonOutput.prettyPrint(JsonOutput.toJson([
-                        schemaVersion: 1, baseline: oldJar.name, baselineSha256: sha256(oldJar),
-                        comparator: comparator.singleFile.name, comparatorSha256: sha256(comparator.singleFile),
-                        newRuntimeArtifacts: newJars.collect { [name: it.name, sha256: sha256(it)] }
-                ])) + '\n'
-        args = ['--old', oldJar.absolutePath,
-                '--new', newJars.collect { it.absolutePath }.join(';'),
-                '--old-classpath', (allJars - newJars).collect { it.absolutePath }.join(File.pathSeparator),
-                '--new-classpath', allJars.collect { it.absolutePath }.join(File.pathSeparator),
-                '--include', 'org.yanoproject.runtime.appchain.*',
-                '--only-modified', '--error-on-binary-incompatibility', '--error-on-source-incompatibility',
-                '--xml-file', report.get().asFile.absolutePath]
+        report.get().asFile.text = JsonOutput.prettyPrint(JsonOutput.toJson(
+                [schemaVersion: 1, passed: true, artifacts: checked])) + '\n'
     }
 }

@@ -1,8 +1,8 @@
 package org.yanoproject.appchain.testkit;
 
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
-import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 
 import java.nio.charset.StandardCharsets;
 

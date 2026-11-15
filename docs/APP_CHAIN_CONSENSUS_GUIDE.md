@@ -8,12 +8,12 @@ and the core ADRs under `adr/app-layer/`. Extension tutorials and product ADRs
 live in [Yano X](https://github.com/bloxbean/yano-x).
 
 Code pointers refer to the owning [Yano-X framework](https://github.com/bloxbean/yano-x/tree/main/framework):
-[`AppChainEngine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/runtime/appchain/AppChainEngine.java)
+[`AppChainEngine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/x/framework/runtime/appchain/AppChainEngine.java)
 for consensus, [`framework/api`](https://github.com/bloxbean/yano-x/tree/main/framework/api/src/main/java/org/yanoproject/api/appchain)
 for SPI and codecs, and
-[`OrderedLogStateMachine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/runtime/appchain/OrderedLogStateMachine.java)
+[`OrderedLogStateMachine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/x/framework/runtime/appchain/OrderedLogStateMachine.java)
 for the built-in machine. Its transition logic is
-[`OrderedLogKernel`](https://github.com/bloxbean/yano-x/blob/main/framework/api/src/main/java/org/yanoproject/api/appchain/transition/OrderedLogKernel.java).
+[`OrderedLogKernel`](https://github.com/bloxbean/yano-x/blob/main/framework/api/src/main/java/org/yanoproject/x/framework/api/appchain/transition/OrderedLogKernel.java).
 
 ---
 
@@ -440,7 +440,7 @@ catch up the delta (user guide §14.3).
 
 ## 9. State machines — the SPI
 
-`org.yanoproject.api.appchain.AppStateMachine`:
+`org.yanoproject.x.framework.api.appchain.AppStateMachine`:
 
 | Method | When | Contract |
 |---|---|---|
@@ -501,7 +501,7 @@ plugins so Yano's core documentation does not imply that they are built in.
    settings (`context.settings()` is the `yano.app-chain.*` map with the
    stem stripped, e.g. `machines.my-machine.foo`).
 3. **Plugin mode** (default distribution, no rebuild): register the provider
-   in `META-INF/services/org.yanoproject.api.appchain.AppStateMachineProvider`,
+   in `META-INF/services/org.yanoproject.x.framework.api.appchain.AppStateMachineProvider`,
    and add `META-INF/yano/plugins/<bundle-id>.json`. The manifest declares an
    `app-state-machine` contribution whose `name` equals the provider `id()`
    and whose `provider` is the same fully-qualified class as the ServiceLoader

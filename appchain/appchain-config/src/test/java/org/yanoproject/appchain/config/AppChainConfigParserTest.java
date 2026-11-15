@@ -1,9 +1,13 @@
 package org.yanoproject.appchain.config;
+import org.yanoproject.x.framework.config.AppChainConfigParser;
+import org.yanoproject.x.framework.config.AppChainConfigSemantics;
+import org.yanoproject.x.framework.config.AppChainEffectsConfig;
 
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.effects.FinalityGate;
-import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.effects.FinalityGate;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;

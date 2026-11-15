@@ -3,8 +3,8 @@ package org.yanoproject.appchain.proof;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
-import org.yanoproject.api.appchain.state.StateCommitmentValues;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentValues;
 
 /**
  * Product-neutral, release-matched verification of native app-chain proofs.

@@ -1,5 +1,11 @@
 package org.yanoproject.runtime.internal;
 
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
+
+
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.common.TxBodyType;
@@ -34,8 +40,8 @@ import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.MempoolQueryGateway;
 import org.yanoproject.api.MempoolAdminGateway;
 import org.yanoproject.api.TxGateway;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.appchain.config.AppChainConfigParser;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.config.AppChainConfigParser;
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.PluginConfigValues;
 import org.yanoproject.api.config.UpstreamPeerConfig;
@@ -93,10 +99,10 @@ import org.yanoproject.runtime.producer.SlotLeaderKeyMaterial;
 import org.yanoproject.runtime.producer.SlotLeaderProducerFactory;
 import org.yanoproject.runtime.producer.SlotLeaderSigningComponents;
 import org.yanoproject.runtime.producer.StakeDataProviderFactory;
-import org.yanoproject.runtime.appchain.AppChainManager;
+import org.yanoproject.x.framework.cardano.AppChainManager;
 import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 import org.yanoproject.runtime.plugins.PluginManager;
-import org.yanoproject.x.framework.cardano.CardanoRuntimeServices;
+import org.yanoproject.x.framework.cardano.api.CardanoRuntimeServices;
 import org.yanoproject.x.framework.host.AppLedgerHostPlugin;
 import org.yanoproject.runtime.plugins.DomainApiRegistry;
 import org.yanoproject.runtime.plugins.PluginRuntimeEnvironment;
@@ -1016,23 +1022,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     /** Single app-chain gateway (back-compat), or null when disabled or multiple chains. */
-    public org.yanoproject.api.appchain.AppChainGateway appChainGateway() {
+    public AppChainGateway appChainGateway() {
         return appChainManager != null ? appChainManager.single().orElse(null) : null;
     }
 
     /** All hosted app chains; empty registry when disabled. */
-    public org.yanoproject.api.appchain.AppChainGateways appChainGateways() {
+    public AppChainGateways appChainGateways() {
         return appChainManager != null
                 ? appChainManager
-                : org.yanoproject.api.appchain.AppChainGateways.empty();
+                : AppChainGateways.empty();
     }
 
     /** Constrained ADR-011.3 domain API dispatcher. */
-    public org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
+    public DomainApiGateway domainApis() {
         return domainApiRegistry;
     }
 
-    public org.yanoproject.api.plugin.domain.LocalReadModelHost
+    public LocalReadModelHost
             localReadModels() {
         return localReadModels;
     }

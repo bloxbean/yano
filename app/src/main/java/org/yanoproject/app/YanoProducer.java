@@ -1,6 +1,16 @@
 package org.yanoproject.app;
 
-import org.yanoproject.appchain.config.AppChainConfigParser;
+import org.yanoproject.x.framework.api.appchain.AppAnchorCommitment;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.appchain.MessageRef;
+import org.yanoproject.x.framework.api.appchain.ReceivedAppMessage;
+import org.yanoproject.x.framework.api.appchain.evidence.EvidenceBundle;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
+
+
+import org.yanoproject.x.framework.config.AppChainConfigParser;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import org.yanoproject.api.ChainQuery;
@@ -931,19 +941,19 @@ public class YanoProducer {
 
     @Produces
     @ApplicationScoped
-    public org.yanoproject.api.appchain.AppChainGateway createAppChainGateway() {
+    public AppChainGateway createAppChainGateway() {
         return ensureYano().appChain().orElse(UnavailableAppChainGateway.INSTANCE);
     }
 
     @Produces
     @ApplicationScoped
-    public org.yanoproject.api.appchain.AppChainGateways createAppChainGateways() {
+    public AppChainGateways createAppChainGateways() {
         return ensureYano().appChains();
     }
 
     @Produces
     @ApplicationScoped
-    public org.yanoproject.api.plugin.domain.DomainApiGateway createDomainApiGateway() {
+    public DomainApiGateway createDomainApiGateway() {
         return ensureYano().domainApis();
     }
 
@@ -1636,7 +1646,7 @@ public class YanoProducer {
     /**
      * Placeholder for CDI injection sites when the app chain is disabled.
      */
-    private enum UnavailableAppChainGateway implements org.yanoproject.api.appchain.AppChainGateway {
+    private enum UnavailableAppChainGateway implements AppChainGateway {
         INSTANCE;
 
         @Override
@@ -1650,7 +1660,7 @@ public class YanoProducer {
         }
 
         @Override
-        public java.util.List<org.yanoproject.api.appchain.ReceivedAppMessage> recentMessages(int limit) {
+        public java.util.List<ReceivedAppMessage> recentMessages(int limit) {
             throw unavailableRole("AppChainGateway");
         }
 
@@ -1665,7 +1675,7 @@ public class YanoProducer {
         }
 
         @Override
-        public java.util.Optional<org.yanoproject.api.appchain.AppBlock> block(long height) {
+        public java.util.Optional<AppBlock> block(long height) {
             throw unavailableRole("AppChainGateway");
         }
 
@@ -1685,7 +1695,7 @@ public class YanoProducer {
         }
 
         @Override
-        public java.util.Optional<org.yanoproject.api.appchain.AppAnchorCommitment>
+        public java.util.Optional<AppAnchorCommitment>
                 latestAnchorCommitment() {
             throw unavailableRole("AppChainGateway");
         }
@@ -1701,7 +1711,7 @@ public class YanoProducer {
         }
 
         @Override
-        public java.util.Optional<org.yanoproject.api.appchain.evidence.EvidenceBundle>
+        public java.util.Optional<EvidenceBundle>
                 evidence(byte[] messageId) {
             throw unavailableRole("AppChainGateway");
         }
@@ -1712,13 +1722,13 @@ public class YanoProducer {
         }
 
         @Override
-        public java.util.List<org.yanoproject.api.appchain.MessageRef> messagesByTopic(
+        public java.util.List<MessageRef> messagesByTopic(
                 String topic, long fromHeight, int limit) {
             throw unavailableRole("AppChainGateway");
         }
 
         @Override
-        public java.util.List<org.yanoproject.api.appchain.MessageRef> messagesBySender(
+        public java.util.List<MessageRef> messagesBySender(
                 byte[] sender, long fromHeight, int limit) {
             throw unavailableRole("AppChainGateway");
         }

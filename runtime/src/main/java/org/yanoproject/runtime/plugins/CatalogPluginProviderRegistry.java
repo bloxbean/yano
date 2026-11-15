@@ -1,22 +1,25 @@
 package org.yanoproject.runtime.plugins;
 
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
+
+
 import org.yanoproject.api.utxo.index.UtxoIndexContributorProvider;
 
-import org.yanoproject.api.appchain.AppStateMachineProvider;
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
-import org.yanoproject.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
+import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
+import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserverProvider;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.api.plugin.PluginCapability;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginContext;
-import org.yanoproject.api.plugin.domain.DomainApiProvider;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
 import org.yanoproject.api.plugin.operations.PluginHealthProvider;
 import org.yanoproject.api.plugin.operations.PluginMetricsProvider;
 import org.yanoproject.catalog.BundleManifest;
@@ -868,7 +871,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                         ((DomainApiProvider) provider)::id);
                 case LOCAL_READ_MODEL -> pluginCallback(
                         callbackTracker, pluginClassLoader,
-                        ((org.yanoproject.api.plugin.domain.LocalReadModelProvider)
+                        ((LocalReadModelProvider)
                                 provider)::id);
                 case HEALTH -> pluginCallback(
                         callbackTracker, pluginClassLoader,

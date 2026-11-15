@@ -1,6 +1,12 @@
 package org.yanoproject.appchain.config;
+import org.yanoproject.x.framework.config.AppChainTemplateValidator;
+import org.yanoproject.x.framework.config.TemplateContract;
+import org.yanoproject.x.framework.config.TemplateContractRequirement;
+import org.yanoproject.x.framework.config.TemplateValidationResult;
+import org.yanoproject.x.framework.config.ValidationDiagnostic;
 
-import org.yanoproject.api.appchain.AppChainConfig;
+
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;

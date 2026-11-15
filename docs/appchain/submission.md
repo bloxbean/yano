@@ -100,7 +100,7 @@ of every HTTP 400/503 response (for example, stopped/paused checks and snapshot
 capture failures are outside these counters). REST mapping and repeated scrapes
 do not count a decision again.
 
-The logger category `org.yanoproject.runtime.appchain.AppChainSubsystem.admission`
+The logger category `org.yanoproject.x.framework.cardano.AppChainSubsystem.admission`
 records unexpected callback failures at **WARN**, including candidate height,
 exception/cause class names, and bounded stack locations. It does not attach the
 Throwable or include exception messages, source bodies, authentication proofs,

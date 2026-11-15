@@ -51,7 +51,10 @@ public final class PluginArtifactScanner {
     public static final long MAX_ARTIFACT_BYTES = 1024L * 1024L * 1024L;
 
     private static final String SERVICE_DIRECTORY = "META-INF/services/";
-    private static final String API_CLASS_PREFIX = "org/yanoproject/api/";
+    private static final List<String> API_CLASS_PREFIXES = List.of(
+            "org/yanoproject/api/",
+            "org/yanoproject/x/framework/api/",
+            "org/yanoproject/x/framework/cardano/api/");
     private static final String MULTI_RELEASE_PREFIX = "META-INF/versions/";
 
     private final BundleManifestParser manifestParser;
@@ -559,6 +562,11 @@ public final class PluginArtifactScanner {
             return null;
         }
         String serviceName = path.substring(SERVICE_DIRECTORY.length());
+        if (serviceName.startsWith("org.yanoproject.api.appchain.")
+                || serviceName.startsWith("org.yanoproject.api.plugin.domain.")) {
+            throw invalid("retired framework ServiceLoader contract '" + safeEntry(serviceName)
+                    + "'; rebuild the plugin against org.yanoproject.x.framework APIs");
+        }
         for (ContributionKind kind : ContributionKind.values()) {
             if (kind.serviceType().getName().equals(serviceName)) {
                 return kind;
@@ -599,7 +607,7 @@ public final class PluginArtifactScanner {
         if (!path.endsWith(".class")) {
             return false;
         }
-        if (path.startsWith(API_CLASS_PREFIX)) {
+        if (API_CLASS_PREFIXES.stream().anyMatch(path::startsWith)) {
             return true;
         }
         if (!path.startsWith(MULTI_RELEASE_PREFIX)) {
@@ -613,7 +621,8 @@ public final class PluginArtifactScanner {
         if (version.isEmpty() || !version.chars().allMatch(Character::isDigit)) {
             return false;
         }
-        return path.substring(versionEnd + 1).startsWith(API_CLASS_PREFIX);
+        String classPath = path.substring(versionEnd + 1);
+        return API_CLASS_PREFIXES.stream().anyMatch(classPath::startsWith);
     }
 
     private static boolean isMultiReleaseOverride(String entry, String baseClassPath) {

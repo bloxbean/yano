@@ -1,5 +1,11 @@
 package org.yanoproject.runtime.assembly;
 
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
+
+
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.DevnetControl;
 import org.yanoproject.api.LedgerQuery;
@@ -48,22 +54,22 @@ public interface Yano extends AutoCloseable {
      * App-chain gateway (adr/app-layer/005); empty when the app chain is
      * disabled or when multiple chains are hosted (use {@link #appChains()}).
      */
-    default Optional<org.yanoproject.api.appchain.AppChainGateway> appChain() {
+    default Optional<AppChainGateway> appChain() {
         return Optional.empty();
     }
 
     /** All hosted app chains (adr/app-layer/006 E5.2); empty registry when disabled. */
-    default org.yanoproject.api.appchain.AppChainGateways appChains() {
-        return org.yanoproject.api.appchain.AppChainGateways.empty();
+    default AppChainGateways appChains() {
+        return AppChainGateways.empty();
     }
 
     /** Host-owned ADR-011.3 domain API dispatcher; empty when none are selected. */
-    default org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
-        return org.yanoproject.api.plugin.domain.DomainApiGateway.empty();
+    default DomainApiGateway domainApis() {
+        return DomainApiGateway.empty();
     }
 
     /** Host registration seam for bounded node-local derived read models. */
-    default Optional<org.yanoproject.api.plugin.domain.LocalReadModelHost>
+    default Optional<LocalReadModelHost>
             localReadModels() {
         return Optional.empty();
     }

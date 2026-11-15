@@ -1,4 +1,10 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.metaDeleteSync;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.pruneBodiesBelow;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.openStore;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerStore;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
@@ -17,15 +23,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.l1view.L1Observation;
-import org.yanoproject.api.appchain.l1view.L1Observer;
-import org.yanoproject.api.appchain.l1view.L1ObserverConsensusIdentity;
-import org.yanoproject.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.api.events.AppChainAnchoredEvent;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observation;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverConsensusIdentity;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
+import org.yanoproject.x.framework.cardano.api.events.AppChainAnchoredEvent;
 import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.api.events.RollbackEvent;
 import org.yanoproject.api.utxo.UtxoState;
@@ -404,7 +410,7 @@ class AppChainL1DeliveryTest {
 
             harness.subsystem.stop();
             dropDeliveryRecordAfterDrain(harness, "upgrade-pruned",
-                    ledger -> assertThat(ledger.pruneBodiesBelow(tip)).isPositive());
+                    ledger -> assertThat(pruneBodiesBelow(ledger, tip)).isPositive());
             startAfterDrain(harness.subsystem);
 
             awaitReconciled(harness);
@@ -652,9 +658,9 @@ class AppChainL1DeliveryTest {
         var identity = harness.subsystem.stateCommitmentIdentity().orElseThrow();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (true) {
-            try (AppLedgerStore ledger = new AppLedgerStore(path, mock(Logger.class), identity)) {
-                assertThat(ledger.metaBytes(L1DeliveryRecord.META_KEY)).isNotNull();
-                ledger.metaDeleteSync(L1DeliveryRecord.META_KEY);
+            try (AppLedgerStore ledger = openStore(path, mock(Logger.class), identity)) {
+                assertThat(ledger.metaBytes("l1_delivery_record_v1")).isNotNull();
+                metaDeleteSync(ledger, "l1_delivery_record_v1");
                 alsoWhileStopped.accept(ledger);
                 return;
             } catch (RuntimeException stillOpenByTheDrainingGeneration) {

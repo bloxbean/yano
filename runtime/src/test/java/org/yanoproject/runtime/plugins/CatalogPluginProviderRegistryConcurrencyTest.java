@@ -1,9 +1,9 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateMachineProvider;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.catalog.ContributionKind;
 import org.junit.jupiter.api.Test;

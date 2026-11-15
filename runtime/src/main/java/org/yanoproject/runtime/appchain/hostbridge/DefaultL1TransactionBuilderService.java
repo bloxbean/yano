@@ -10,9 +10,9 @@ import com.bloxbean.cardano.client.quicktx.QuickTxBuilder;
 import com.bloxbean.cardano.client.quicktx.Tx;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
-import org.yanoproject.api.plugin.domain.L1TransactionBuilderService;
+import org.yanoproject.x.framework.api.plugin.domain.L1TransactionBuilderService;
 import org.yanoproject.api.utxo.UtxoState;
-import org.yanoproject.runtime.appchain.NodeUtxoSupplier;
+import org.yanoproject.x.framework.cardano.NodeUtxoSupplier;
 
 import java.math.BigInteger;
 import java.util.List;

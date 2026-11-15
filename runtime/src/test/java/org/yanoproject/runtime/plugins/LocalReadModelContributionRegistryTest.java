@@ -1,9 +1,9 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.appchain.AppChainGateways;
-import org.yanoproject.api.plugin.domain.LocalReadModelContext;
-import org.yanoproject.api.plugin.domain.LocalReadModelHost;
-import org.yanoproject.api.plugin.domain.LocalReadModelProvider;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelContext;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

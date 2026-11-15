@@ -1,8 +1,8 @@
 package org.yanoproject.appchain.conformance;
 
-import org.yanoproject.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
 
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;

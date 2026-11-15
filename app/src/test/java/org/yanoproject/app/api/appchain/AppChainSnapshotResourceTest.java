@@ -1,13 +1,13 @@
 package org.yanoproject.app.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainGateway;
-import org.yanoproject.api.appchain.snapshot.AuthenticatedSnapshotSummary;
-import org.yanoproject.api.appchain.snapshot.AuthenticatedSnapshotPage;
-import org.yanoproject.api.appchain.snapshot.SnapshotCanonicalCodec;
-import org.yanoproject.api.appchain.snapshot.SnapshotDescriptorV1;
-import org.yanoproject.api.appchain.snapshot.SnapshotSourceBoundary;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSummary;
+import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotPage;
+import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotCanonicalCodec;
+import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotDescriptorV1;
+import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotSourceBoundary;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 
@@ -122,8 +122,7 @@ class AppChainSnapshotResourceTest {
                 StateCommitmentProfiles.MPF.proofEncodingId(), repeated(3), repeated(4),
                 "blake2b256", "source-v1", "balances-v1", 1,
                 0, 1, 0, 1, new byte[32], new SnapshotSourceBoundary.AppHeight(1),
-                org.yanoproject.api.appchain.snapshot
-                        .AuthenticatedSnapshotSeriesDescriptorV1.RecoveryCoverage.DATASET, true);
+                org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1.RecoveryCoverage.DATASET, true);
     }
 
     private static Object defaultValue(Class<?> type) {

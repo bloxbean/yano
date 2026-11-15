@@ -1,18 +1,24 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.effectRuntimeOwner;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.signer;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.verifySnapshotPostOpen;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppMessageSigner;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.effects.EffectIntent;
-import org.yanoproject.api.appchain.effects.ResultPolicy;
-import org.yanoproject.api.appchain.codec.AppBlockCodec;
-import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.effects.EffectIntent;
+import org.yanoproject.x.framework.api.appchain.effects.ResultPolicy;
+import org.yanoproject.x.framework.api.appchain.codec.AppBlockCodec;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -58,14 +64,14 @@ class AppChainSnapshotTest {
     @Test
     void effectRuntimeOwnerFingerprint_isBoundedCanonicalAndUnambiguous() {
         String longIdentity = "x".repeat(512);
-        String first = AppChainSubsystem.effectRuntimeOwner(
+        String first = effectRuntimeOwner(
                 longIdentity, Set.of("cardano.payment", "webhook"));
-        String reordered = AppChainSubsystem.effectRuntimeOwner(
+        String reordered = effectRuntimeOwner(
                 longIdentity, new java.util.LinkedHashSet<>(List.of("webhook", "cardano.payment")));
 
         assertThat(first).isEqualTo(reordered).hasSize(68);
-        assertThat(AppChainSubsystem.effectRuntimeOwner("a:types=b", Set.of("c")))
-                .isNotEqualTo(AppChainSubsystem.effectRuntimeOwner("a", Set.of("b:types=c")));
+        assertThat(effectRuntimeOwner("a:types=b", Set.of("c")))
+                .isNotEqualTo(effectRuntimeOwner("a", Set.of("b:types=c")));
     }
 
     @Test
@@ -98,14 +104,14 @@ class AppChainSnapshotTest {
         assertThat(snapHeight).isEqualTo(sourceTip);
         var manifest = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
                 java.nio.file.Files.readAllBytes(snapshotDir.resolve(
-                        SnapshotManifest.MANIFEST_FILE)));
+                        "snapshot-manifest.json")));
         assertThat(manifest.path("version").asInt()).isEqualTo(2);
         assertThat(manifest.path("stateCommitmentProfile").asText())
                 .isEqualTo(StateCommitmentProfiles.MPF_BLAKE2B256_V1);
         assertThat(manifest.has("legacyStateCommitment")).isFalse();
         StateCommitmentIdentity wrongIdentity = StateCommitmentIdentity.explicit(
                 StateCommitmentProfiles.MPF, seed(99));
-        assertThatThrownBy(() -> SnapshotManifest.verifyPostOpen(
+        assertThatThrownBy(() -> verifySnapshotPostOpen(
                 manifest,
                 sourceTip,
                 AppBlockCodec.blockHash(source.block(sourceTip).orElseThrow()),
@@ -140,7 +146,7 @@ class AppChainSnapshotTest {
                     .isEqualTo(source.block(sourceTip).orElseThrow().stateRoot());
 
             // Manifest was verified pre-open and marked (008.1 I1.7)
-            assertThat(restoreBase.resolve("snap-chain").resolve(SnapshotManifest.VERIFIED_MARKER))
+            assertThat(restoreBase.resolve("snap-chain").resolve(".manifest-verified"))
                     .exists();
         } finally {
             restored.close();
@@ -321,15 +327,15 @@ class AppChainSnapshotTest {
 
         // Re-sign the manifest with a key that is NOT in the member set
         byte[] rogueSeed = seed(152);
-        AppMessageSigner rogue = new AppMessageSigner(HexUtil.encodeHexString(rogueSeed));
+        AppMessageSigner rogue = signer(HexUtil.encodeHexString(rogueSeed));
         byte[] manifestBytes = java.nio.file.Files.readAllBytes(
-                ledgerDir.resolve(SnapshotManifest.MANIFEST_FILE));
+                ledgerDir.resolve("snapshot-manifest.json"));
         String rogueManifest = new String(manifestBytes, StandardCharsets.UTF_8)
                 .replaceAll("\"signerKey\" : \"[0-9a-f]+\"",
                         "\"signerKey\" : \"" + rogue.publicKeyHex() + "\"");
         byte[] rogueBytes = rogueManifest.getBytes(StandardCharsets.UTF_8);
-        java.nio.file.Files.write(ledgerDir.resolve(SnapshotManifest.MANIFEST_FILE), rogueBytes);
-        java.nio.file.Files.writeString(ledgerDir.resolve(SnapshotManifest.SIG_FILE),
+        java.nio.file.Files.write(ledgerDir.resolve("snapshot-manifest.json"), rogueBytes);
+        java.nio.file.Files.writeString(ledgerDir.resolve("snapshot-manifest.sig"),
                 HexUtil.encodeHexString(rogue.sign(rogueBytes)));
 
         AppChainSubsystem restored = new AppChainSubsystem(config, 42, null, null,

@@ -1,45 +1,43 @@
 package org.yanoproject.runtime.appchain;
 
-import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerRuntime;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
+
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
 import org.yanoproject.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.appchain.config.AppChainConfigParser;
-import org.yanoproject.api.appchain.AppChainConsensusProfile;
-import org.yanoproject.api.appchain.AppChainConsensusProfileCommitment;
-import org.yanoproject.api.appchain.AppChainMembershipEpoch;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.AppQueryContext;
-import org.yanoproject.api.appchain.FinalityCert;
-import org.yanoproject.api.appchain.codec.AppBlockCodec;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.observation.AppObservationEmitter;
-import org.yanoproject.api.appchain.observation.CompleteSourceMedianPolicy;
-import org.yanoproject.api.appchain.observation.ObservationFixedPoint;
-import org.yanoproject.api.appchain.observation.ObservationReport;
-import org.yanoproject.api.appchain.observation.ObservationRound;
-import org.yanoproject.api.appchain.observation.ObservationAnchorType;
-import org.yanoproject.api.appchain.observation.ObservationAttestation;
-import org.yanoproject.api.appchain.observation.ObservationCandidate;
-import org.yanoproject.api.appchain.observation.ObservationCertificate;
-import org.yanoproject.api.appchain.observation.ObservationDefinition;
-import org.yanoproject.api.appchain.observation.ObservationHashes;
-import org.yanoproject.api.appchain.observation.ObservationIntent;
-import org.yanoproject.api.appchain.observation.ObservationProfileV1;
-import org.yanoproject.api.appchain.observation.ObservationProvider;
-import org.yanoproject.api.appchain.observation.ObservationProviderFactory;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.config.AppChainConfigParser;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.AppQueryContext;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.observation.AppObservationEmitter;
+import org.yanoproject.x.framework.api.appchain.observation.CompleteSourceMedianPolicy;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationFixedPoint;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationReport;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationRound;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationAnchorType;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationAttestation;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationCandidate;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationCertificate;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationDefinition;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationHashes;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationIntent;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProfileV1;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProvider;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
-import org.yanoproject.api.appchain.observation.ObservationReporterMode;
-import org.yanoproject.api.appchain.observation.ObservationRequest;
-import org.yanoproject.api.appchain.observation.ObservationResult;
-import org.yanoproject.api.appchain.observation.ObservationSourceConfiguration;
-import org.yanoproject.api.appchain.observation.ObservationTopics;
-import org.yanoproject.api.appchain.observation.ObservationSubscription;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationReporterMode;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationRequest;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationResult;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationSourceConfiguration;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationTopics;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationSubscription;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.io.TempDir;
@@ -49,6 +47,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
 import java.math.BigInteger;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -59,7 +61,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.Optional;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -72,17 +73,6 @@ class ObservationRuntimeClusterTest {
             + "ed5de419da68b524bdad2a3848c3156c419d0476/gradle/wrapper/gradle-wrapper.properties";
     private static final List<String> SEEDS = List.of(
             "61".repeat(32), "62".repeat(32), "63".repeat(32));
-
-    @Test
-    void partitionHealAndProposerRotationConvergeOnOneResult(@TempDir Path directory)
-            throws Exception {
-        runCluster(directory, false);
-    }
-
-    @Test
-    void signedAttestationConvergesAcrossThreeNodes(@TempDir Path directory) throws Exception {
-        runCluster(directory, true);
-    }
 
     @Test
     void signedAttestationFinalizesThroughThreeNetworkedSubsystems(@TempDir Path directory)
@@ -120,13 +110,13 @@ class ObservationRuntimeClusterTest {
                                        boolean omitCertificate) throws Exception {
         List<String> seeds = external ? List.of("61".repeat(32), "62".repeat(32), "63".repeat(32),
                 "64".repeat(32), "65".repeat(32)) : SEEDS;
-        List<AppMessageSigner> signers = seeds.stream().map(AppMessageSigner::new).toList();
-        List<AppMessageSigner> reporters = IntStream.range(71, 76)
-                .mapToObj(seed -> new AppMessageSigner(Integer.toHexString(seed).repeat(32))).toList();
+        List<SignerProvider> signers = seeds.stream().map(ObservationRuntimeClusterTest::signer).toList();
+        List<SignerProvider> reporters = IntStream.range(71, 76)
+                .mapToObj(seed -> signer(Integer.toHexString(seed).repeat(32))).toList();
         CompleteSourceMedianPolicy.Parameters parameters = aggregateParameters();
-        AppMessageSigner attestor = new AppMessageSigner("64".repeat(32));
+        SignerProvider attestor = signer("64".repeat(32));
         Set<String> members = Set.copyOf(signers.stream()
-                .map(AppMessageSigner::publicKeyHex).toList());
+                .map(SignerProvider::publicKeyHex).toList());
         ObservationDefinition definition = external ? externalDefinition(reporters, parameters)
                 : definition(signers, attested, attestor, true);
         ObservationProfileV1 profile = external
@@ -154,18 +144,17 @@ class ObservationRuntimeClusterTest {
         }
         List<AppChainSubsystem> subsystems = new ArrayList<>();
         List<NodeServer> servers = new ArrayList<>();
-        List<AppChainConfig> configs = new ArrayList<>();
         try {
             for (int index = 0; index < seeds.size(); index++) {
                 int port = ports.get(index);
                 Map<String, String> providerSettings = new LinkedHashMap<>();
-                providerSettings.put(ObservationSettings.PROFILE_HEX,
+                providerSettings.put("observations.profile-cbor-hex",
                         HexUtil.encodeHexString(profile.encode()));
                 providerSettings.put("observations.providers.delivery.type",
-                        attested ? factory.type() : ObservationProviders.HTTPS_EXACT);
+                        attested ? factory.type() : "https-exact-v1");
                 if (external) {
                     providerSettings.put("observations.reporters.delivery", reporters.stream()
-                            .map(AppMessageSigner::publicKeyHex).collect(Collectors.joining(",")));
+                            .map(SignerProvider::publicKeyHex).collect(Collectors.joining(",")));
                     providerSettings.put("observations.policy.delivery", HexUtil.encodeHexString(parameters.encode()));
                     providerSettings.put("consensus.max-byzantine-members", "1");
                 } else if (attested) {
@@ -189,7 +178,6 @@ class ObservationRuntimeClusterTest {
                         .map(candidate -> "localhost:" + candidate).collect(Collectors.joining(",")));
                 settings.putAll(TestStateCommitments.MPF.settings());
                 AppChainConfig config = AppChainConfigParser.parse(settings);
-                configs.add(config);
                 AppChainSubsystem node = new AppChainSubsystem(config, 42, null, machine(),
                         directory.resolve("network-" + index).toString(), null, registry,
                         LoggerFactory.getLogger(ObservationRuntimeClusterTest.class));
@@ -220,20 +208,17 @@ class ObservationRuntimeClusterTest {
                         1, 0, definition.digest(), new byte[0]);
                 ObservationRound round = ObservationRound.decode(proposer.query("yano/observations/round",
                         ByteBuffer.allocate(40).put(subscriptionId).putLong(0).array()).payload());
-                byte[] consensusDigest = AppChainConsensusProfileCommitment.digest(
-                        EffectsSettings.from(configs.getFirst()).consensusProfile(configs.getFirst()));
+                byte[] consensusDigest = HexUtil.decodeHexString((String)
+                        ((Map<?, ?>) proposer.status().get("consensusProfile")).get("digest"));
                 if (omitCertificate) {
                     // Fault injection is test-only. The runtime still acquires, validates and
                     // retains certificates; only this proposer's selection deliberately omits them.
-                    Field engineField = AppLedgerRuntime.class.getDeclaredField("engine");
-                    engineField.setAccessible(true);
-                    ((AppChainEngine) engineField.get(proposer))
-                            .setObservationResultInputProvider((height, limit) -> List.of());
+                    omitObservationResults(proposer);
                 }
                 // Three independent source quorums enter through non-proposer gateways.
                 for (int source = 0; source < 3; source++) {
                     for (int reporter = 0; reporter < 4; reporter++) {
-                        AppMessageSigner key = reporters.get(reporter);
+                        SignerProvider key = reporters.get(reporter);
                         ObservationReport unsigned = externalReport(round, profile, consensusDigest, genesisId, key, source,
                                 new byte[64]);
                         subsystems.get(1 + reporter).submitObservationReport(externalReport(round, profile,
@@ -316,116 +301,25 @@ class ObservationRuntimeClusterTest {
                 .mapToObj(i -> new CompleteSourceMedianPolicy.Source(filled(i), filled(i))).toList());
     }
 
-    private static ObservationDefinition externalDefinition(List<AppMessageSigner> reporters,
+    private static ObservationDefinition externalDefinition(List<SignerProvider> reporters,
                                                             CompleteSourceMedianPolicy.Parameters parameters) {
         return new ObservationDefinition(1, "delivery", 1, filled(1), filled(2), filled(3), filled(4),
                 ObservationReporterMode.EXTERNAL_REPORTERS,
-                ObservationHashes.reporterSetDigest(reporters.stream().map(AppMessageSigner::publicKey).toList()),
-                1, 4, 3, true, ObservationProviders.EXTERNAL_REPORTERS, parameters.sourceSetDigest(),
-                "fixed-point-i128-v1", ObservationSettings.EXTERNAL_EVIDENCE, CompleteSourceMedianPolicy.ID,
+                ObservationHashes.reporterSetDigest(reporters.stream().map(SignerProvider::publicKey).toList()),
+                1, 4, 3, true, "external-reporters-v1", parameters.sourceSetDigest(),
+                "fixed-point-i128-v1", "external-reporter-claim-v1", CompleteSourceMedianPolicy.ID,
                 parameters.digest(), filled(7), "pinned-groups-v1", "round-window-v1", "digest-v1",
                 1, 1024, 18, 0, 15, 3);
     }
 
     private static ObservationReport externalReport(ObservationRound round, ObservationProfileV1 profile,
-                                                     byte[] consensusDigest, byte[] genesisId, AppMessageSigner reporter,
+                                                     byte[] consensusDigest, byte[] genesisId, SignerProvider reporter,
                                                      int source, byte[] signature) {
         return new ObservationReport(1, genesisId, CHAIN_ID, consensusDigest,
                 profile.digest(), round.definitionDigest(), round.subscriptionId(), round.roundNumber(),
                 round.membershipDigest(), round.reporterSetDigest(), reporter.publicKey(), filled(source),
                 new ObservationFixedPoint(BigInteger.valueOf(500000 + source * 1000L), 6).encode(),
                 new byte[0], new byte[]{1}, round.anchorType().code(), round.dueAnchor(), signature);
-    }
-
-    private static void runCluster(Path directory, boolean attested) throws Exception {
-        List<AppMessageSigner> signers = SEEDS.stream().map(AppMessageSigner::new).toList();
-        AppMessageSigner attestor = new AppMessageSigner("64".repeat(32));
-        Set<String> memberKeys = Set.copyOf(signers.stream()
-                .map(AppMessageSigner::publicKeyHex).toList());
-        MemberGroup members = new MemberGroup(memberKeys, 2);
-        ObservationDefinition definition = definition(signers, attested, attestor);
-        ObservationProfileV1 profile = profile(definition);
-        List<Node> nodes = new ArrayList<>();
-
-        try {
-            for (int index = 0; index < signers.size(); index++) {
-                AppMessageSigner signer = signers.get(index);
-                AppChainConfig config = config(memberKeys, profile, attested, attestor);
-                EffectsSettings effects = EffectsSettings.from(config);
-                AppChainConsensusProfile consensusProfile = effects.consensusProfile(config);
-                ObservationSettings settings = ObservationSettings.from(config, members);
-                AppLedgerStore ledger = new AppLedgerStore(
-                        directory.resolve("node-" + index).toString(),
-                        LoggerFactory.getLogger(ObservationRuntimeClusterTest.class),
-                        TestStateCommitments.MPF);
-                SystemInputKernel kernel = kernel(settings, effects, consensusProfile, memberKeys);
-                apply(ledger, kernel, machine(), 1, List.of());
-                apply(ledger, kernel, machine(), 2, List.of());
-                List<Diffusion> outbound = new CopyOnWriteArrayList<>();
-                ObservationRuntime runtime = new ObservationRuntime(settings,
-                        ObservationProviders.of(Map.of("delivery", request ->
-                                candidate(request, definition, attested, attestor))),
-                        ledger, signer, members, CHAIN_ID, TestStateCommitments.MPF.genesisId(),
-                        AppChainConsensusProfileCommitment.digest(consensusProfile),
-                        (topic, body) -> outbound.add(new Diffusion(topic, body)), 1,
-                        10_000, 4 * 1024 * 1024,
-                        LoggerFactory.getLogger(ObservationRuntimeClusterTest.class));
-                nodes.add(new Node(ledger, kernel, runtime, outbound));
-            }
-
-            // While partitioned, every node has only its own report and none
-            // can meet the two-of-three observation threshold.
-            nodes.forEach(node -> node.runtime.tick());
-            for (Node node : nodes) {
-                await(() -> node.outbound.stream().anyMatch(diffusion ->
-                        ObservationTopics.REPORT.equals(diffusion.topic)), Duration.ofSeconds(5));
-                assertThat(node.runtime.readyCertificates(10)).isEmpty();
-            }
-
-            // Heal report diffusion in different orders. Any node, including
-            // a newly selected proposer, can assemble and carry the result.
-            for (int receiver = 0; receiver < nodes.size(); receiver++) {
-                Node recipient = nodes.get(receiver);
-                for (int offset = 0; offset < nodes.size(); offset++) {
-                    Node sender = nodes.get((receiver + offset) % nodes.size());
-                    sender.outbound.stream()
-                            .filter(diffusion -> ObservationTopics.REPORT.equals(diffusion.topic))
-                            .forEach(diffusion -> recipient.runtime.onReport(diffusion.body));
-                }
-            }
-            for (Node node : nodes) {
-                await(() -> !node.runtime.readyCertificates(10).isEmpty(), Duration.ofSeconds(5));
-            }
-            List<ObservationCertificate> certificates = nodes.stream()
-                    .map(node -> node.runtime.readyCertificates(1).getFirst()).toList();
-            assertThat(certificates).extracting(certificate ->
-                    HexUtil.encodeHexString(certificate.resultId())).containsOnly(
-                    HexUtil.encodeHexString(certificates.getFirst().resultId()));
-
-            ObservationCertificate rotatedProposerCertificate = certificates.get(2);
-            AppMessage result = message(rotatedProposerCertificate.encode());
-            for (Node node : nodes) {
-                apply(node.ledger, node.kernel, machine(), 3, List.of(result));
-            }
-            assertThat(nodes).extracting(node -> HexUtil.encodeHexString(node.ledger.stateRoot()))
-                    .containsOnly(HexUtil.encodeHexString(nodes.getFirst().ledger.stateRoot()));
-        } finally {
-            for (Node node : nodes) node.close();
-        }
-    }
-
-    private static SystemInputKernel kernel(ObservationSettings settings,
-                                            EffectsSettings effects,
-                                            AppChainConsensusProfile consensusProfile,
-                                            Set<String> memberKeys) {
-        List<String> ordered = memberKeys.stream().sorted().toList();
-        ObservationKernel observations = new ObservationKernel(settings.profile(),
-                TestStateCommitments.MPF.genesisId(), CHAIN_ID,
-                AppChainConsensusProfileCommitment.digest(consensusProfile), 0,
-                height -> new AppChainMembershipEpoch(0, ordered, 2),
-                settings.verifierRegistry());
-        return new SystemInputKernel(effects, new ConsensusProfileGuard(consensusProfile),
-                new ObservationProfileGuard(settings.profile()), observations);
     }
 
     private static AppStateMachine machine() {
@@ -455,58 +349,14 @@ class ObservationRuntimeClusterTest {
         };
     }
 
-    private static void apply(AppLedgerStore ledger, SystemInputKernel kernel,
-                              AppStateMachine machine, long height, List<AppMessage> messages) {
-        AppBlock block = new AppBlock(AppBlock.BLOCK_VERSION, CHAIN_ID, height,
-                ledger.tipHash(), 0, new byte[0], height, AppBlockCodec.messagesRoot(messages),
-                new byte[32], messages, new byte[32], FinalityCert.empty());
-        FxBlockApplier.applyAndCommit(ledger, kernel, machine, block);
-    }
-
-    private static AppMessage message(byte[] body) {
-        byte[] sender = new byte[32];
-        long expiry = 4_000_000_000L;
-        return AppMessage.builder().messageId(AppMessage.computeMessageId(
-                        CHAIN_ID, ObservationTopics.RESULT, sender, 1, expiry, body))
-                .chainId(CHAIN_ID).topic(ObservationTopics.RESULT).sender(sender).senderSeq(1)
-                .expiresAt(expiry).body(body).authScheme(0).authProof(new byte[64]).build();
-    }
-
-    private static AppChainConfig config(Set<String> members, ObservationProfileV1 profile,
-                                         boolean attested, AppMessageSigner attestor) {
-        Map<String, String> settings = new LinkedHashMap<>();
-        settings.put(ObservationSettings.PROFILE_HEX, HexUtil.encodeHexString(profile.encode()));
-        settings.put("observations.providers.delivery.type", attested
-                ? ObservationProviders.HTTPS_ATTESTED : ObservationProviders.HTTPS_EXACT);
-        settings.put("observations.providers.delivery.url", attested
-                ? "https://example.com/attestation" : "https://example.com/value");
-        if (attested) {
-            settings.put("observations.attestors.delivery", attestor.publicKeyHex());
-            settings.put("observations.providers.delivery.source-id", "source");
-        } else {
-            settings.put("observations.providers.delivery.source-id", "source");
-        }
-        return AppChainConfig.builder(CHAIN_ID).signingKeyHex(SEEDS.getFirst())
-                .memberKeysHex(members)
-                .proposerKeyHex(new AppMessageSigner(SEEDS.getFirst()).publicKeyHex()).threshold(2)
-                .pluginSettings(settings)
-                .stateCommitmentIdentity(TestStateCommitments.MPF).build();
-    }
-
-    private static ObservationDefinition definition(List<AppMessageSigner> signers,
+    private static ObservationDefinition definition(List<SignerProvider> signers,
                                                     boolean attested,
-                                                    AppMessageSigner attestor) {
-        return definition(signers, attested, attestor, false);
-    }
-
-    private static ObservationDefinition definition(List<AppMessageSigner> signers,
-                                                    boolean attested,
-                                                    AppMessageSigner attestor,
+                                                    SignerProvider attestor,
                                                     boolean networkFixture) {
-        List<byte[]> reporters = signers.stream().map(AppMessageSigner::publicKey)
+        List<byte[]> reporters = signers.stream().map(SignerProvider::publicKey)
                 .sorted(Arrays::compareUnsigned).toList();
         String adapter = attested
-                ? ObservationProviders.HTTPS_ATTESTED : ObservationProviders.HTTPS_EXACT;
+                ? "https-attested-v1" : "https-exact-v1";
         byte[] sourceConfiguration = attested
                 ? ObservationSourceConfiguration.attestedHttpsSourceDigest(
                 "https://example.com/attestation", "GET", "source", List.of(attestor.publicKey()))
@@ -524,9 +374,9 @@ class ObservationRuntimeClusterTest {
                 filled(4), ObservationReporterMode.ACTIVE_MEMBERS,
                 ObservationHashes.reporterSetDigest(reporters), 0, 2, 1, false,
                 adapter, sourceConfiguration, "identity-v1",
-                attested ? ObservationSettings.ATTESTATION_EVIDENCE
-                        : ObservationSettings.RAW_EXACT_EVIDENCE,
-                ObservationSettings.EXACT_POLICY,
+                attested ? "ed25519-attestation-v1"
+                        : "raw-exact-v1",
+                "exact-value-quorum-v1",
                 filled(6), filled(7), "one-source-v1", "source-version-v1", "digest-v1",
                 1, 1024, 1024, 4096, 3, 1);
     }
@@ -534,7 +384,7 @@ class ObservationRuntimeClusterTest {
     private static ObservationCandidate candidate(ObservationRequest request,
                                                   ObservationDefinition definition,
                                                   boolean attested,
-                                                  AppMessageSigner attestor) {
+                                                  SignerProvider attestor) {
         byte[] source = "source".getBytes(StandardCharsets.US_ASCII);
         byte[] value = "delivered".getBytes(StandardCharsets.US_ASCII);
         byte[] version = new byte[]{1};
@@ -561,6 +411,40 @@ class ObservationRuntimeClusterTest {
                 8192, 4096, 16_384, 10, 32_768, 1, 20, 3);
     }
 
+    // This fixture implements the public signing contract, without exposing the
+    // framework's seed-backed implementation constructor solely to host tests.
+    private static SignerProvider signer(String seedHex) {
+        byte[] seed = HexUtil.decodeHexString(seedHex);
+        byte[] publicKey = KeyGenUtil.getPublicKeyFromPrivateKey(seed);
+        return new SignerProvider() {
+            @Override public byte[] publicKey() { return publicKey.clone(); }
+            @Override public byte[] sign(byte[] message) {
+                return CryptoConfiguration.INSTANCE.getSigningProvider().sign(message, seed);
+            }
+        };
+    }
+
+    private static void omitObservationResults(AppChainSubsystem proposer) throws Exception {
+        // Deliberately retain the existing test-only fault injection. The callback
+        // remains an internal core type; ordinary host integration uses public APIs.
+        Field engineField = AppLedgerRuntime.class.getDeclaredField("engine");
+        engineField.setAccessible(true);
+        Object engine = engineField.get(proposer);
+        Method setter = Arrays.stream(engine.getClass().getDeclaredMethods())
+                .filter(method -> method.getName().equals("setObservationResultInputProvider"))
+                .findFirst().orElseThrow();
+        Class<?> callback = setter.getParameterTypes()[0];
+        Object omission = Proxy.newProxyInstance(callback.getClassLoader(), new Class<?>[]{callback},
+                (proxy, method, arguments) -> {
+                    if (!method.getName().equals("inputs")) {
+                        throw new AssertionError("Unexpected observation callback: " + method);
+                    }
+                    return List.of();
+                });
+        setter.setAccessible(true);
+        setter.invoke(engine, omission);
+    }
+
     private static void await(BooleanSupplier condition, Duration timeout) throws Exception {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (!condition.getAsBoolean()) {
@@ -575,16 +459,4 @@ class ObservationRuntimeClusterTest {
         return bytes;
     }
 
-    private record Diffusion(String topic, byte[] body) {
-        private Diffusion { body = body.clone(); }
-        @Override public byte[] body() { return body.clone(); }
-    }
-
-    private record Node(AppLedgerStore ledger, SystemInputKernel kernel,
-                        ObservationRuntime runtime, List<Diffusion> outbound) implements AutoCloseable {
-        @Override public void close() {
-            runtime.close();
-            ledger.close();
-        }
-    }
 }

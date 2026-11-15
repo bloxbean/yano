@@ -15,42 +15,39 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 GATES = {
-    "host": [":host-api:test", ":runtime:test", "--tests", "*DefaultN2NExtensionRegistryTest",
+    "host": [":host-api:test", ":plugin-catalog:test", "--tests", "*PluginArtifactScannerTest", ":runtime:test", "--tests", "*DefaultN2NExtensionRegistryTest",
              "--tests", "*DefaultHostLifecycleRegistryTest", "--tests", "*RuntimeKernelStagesTest",
              "--tests", "*NodeKernelTest",
              "--tests", "*YanoTransactionAdmissionTest", "--tests", "*PipelineIntegrationTest",
-             "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest", "--tests", "*PriorCompiledRuntimeCompatibilityTest",
+             "--tests", "*PluginManagerTest", "--tests", "*PriorCompiledPluginCompatibilityTest",
              "--tests", "*DeferredAppLedgerAssemblyTest", "--tests", "*RequiredEmbeddedPluginCatalogTest", "--tests", "*ExtractedApiOwnershipTest", "--tests", "*BlockBodyRetentionRegistryTest",
-             ":runtime:checkAppLedgerBinaryCompatibility", ":runtime:checkAppLedgerRuntimeCompatibility"],
+             ":runtime:checkAppLedgerBinaryCompatibility", ":runtime:checkFrameworkNamespace"],
     "standalone": [":runtime:test", "--tests", "*AppLedgerAssemblyTest"],
     "adapter": [":app:test", "--tests", "*CardanoAvailabilityFilterTest", "--tests", "*YanoProducerTest",
                 "--tests", "*PluginCatalogPackagingTest"],
     "consensus": [":runtime:test", "--tests", "org.yanoproject.runtime.appchain.*"],
     "configuration": [":node-api:test", ":cardano-api:test", ":appchain-config:test"],
     "hybrid": [":runtime:test", "--tests", "*AppChainManagerSharedTransportTest",
-               "--tests", "*SharedAppTransportTest", "--tests", "*AppChainL1SubscriptionLifecycleTest",
-               "--tests", "*ScriptAnchorServiceTest", "--tests", "*L1EpochObservationCoordinatorTest",
-               "--tests", "*AppChainSubsystemGenerationLifecycleTest", "--tests", "*AppPeerClientLifecycleTest"],
+               "--tests", "*AppChainL1DeliveryTest",
+               "--tests", "*AppChainSubsystemGenerationLifecycleTest"],
     "plugins": [":runtime:test", "--tests", "org.yanoproject.runtime.plugins.*",
                 ":runtime:pluginCatalogSemanticsTest"],
 }
 
 # Each named suite must execute: unrelated passing tests cannot mask a missing gate.
 REQUIRED = {
-    "host": {"NodeKernelTest", "YanoTransactionAdmissionTest", "PipelineIntegrationTest", "DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "PriorCompiledRuntimeCompatibilityTest", "DeferredAppLedgerAssemblyTest", "RequiredEmbeddedPluginCatalogTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
+    "host": {"PluginArtifactScannerTest", "NodeKernelTest", "YanoTransactionAdmissionTest", "PipelineIntegrationTest", "DefaultHostLifecycleRegistryTest", "RuntimeKernelStagesTest", "HostApiVersionTest", "DefaultN2NExtensionRegistryTest", "PluginManagerTest", "PriorCompiledPluginCompatibilityTest", "DeferredAppLedgerAssemblyTest", "RequiredEmbeddedPluginCatalogTest", "ExtractedApiOwnershipTest", "BlockBodyRetentionRegistryTest"},
     "standalone": {"AppLedgerAssemblyTest"},
     "adapter": {"CardanoAvailabilityFilterTest", "YanoProducerTest", "PluginCatalogPackagingTest"},
-    "consensus": {"AppChainEngineIdentityValidationTest", "AppChainEngineLifecycleTest"},
+    "consensus": {"AppChainTwoNodeSmokeTest", "ObservationRuntimeClusterTest"},
     "configuration": {"PluginsOptionsTest", "YanoConfigTest", "PluginApiVersionTest",
                       "StrictEd25519Test", "PluginHealthContractTest", "PluginMetricsContractTest",
                       "PluginOperationsContractTest", "NodeRoleInterfacesTest", "GenesisUtxosTest",
                       "NodeStatusTest", "StakeCredentialExtractorTest", "CardanoBech32IdsTest",
                       "CardanoHexTest", "CostModelUtilTest", "EpochSlotCalcTest", "StoredBlockUtilTest",
                       "AppChainConfigParserTest"},
-    "hybrid": {"AppChainManagerSharedTransportTest", "SharedAppTransportTest",
-               "AppChainL1SubscriptionLifecycleTest", "ScriptAnchorServiceTest",
-               "L1EpochObservationCoordinatorTest", "AppChainSubsystemGenerationLifecycleTest",
-               "AppPeerClientLifecycleTest"},
+    "hybrid": {"AppChainManagerSharedTransportTest",
+               "AppChainL1DeliveryTest", "AppChainSubsystemGenerationLifecycleTest"},
     "plugins": {"PluginManagerTest"},
 }
 
@@ -84,7 +81,7 @@ def run(command, log, timeout):
 def collect_reports(destination, since):
     totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
     suites = set()
-    for module in ("host-api", "node-api", "cardano-api", "appchain/appchain-config", "runtime", "app"):
+    for module in ("host-api", "plugin-catalog", "node-api", "cardano-api", "appchain/appchain-config", "runtime", "app"):
         source = ROOT / module / "build/test-results"
         for xml in source.glob("*/TEST-*.xml"):
             if xml.stat().st_mtime < since:
@@ -128,7 +125,7 @@ def main():
         counts, suites = collect_reports(destination / "junit", started)
         required_reports = ["artifact-inputs.json"]
         if name == "host":
-            required_reports += ["api-compatibility.xml", "api-baseline.json", "runtime-compatibility.xml", "runtime-baseline.json"]
+            required_reports += ["api-compatibility.xml", "api-baseline.json", "framework-namespace.json"]
         missing_reports = []
         for filename in required_reports:
             source = ROOT / "runtime/build/reports/app-ledger" / filename

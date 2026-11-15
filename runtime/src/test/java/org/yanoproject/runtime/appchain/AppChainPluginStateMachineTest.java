@@ -1,9 +1,11 @@
 package org.yanoproject.runtime.appchain;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppStateMachineProvider;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -24,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * M5: a custom state machine is resolved by id through the
- * {@link org.yanoproject.api.appchain.AppStateMachineProvider}
+ * {@link org.yanoproject.x.framework.api.appchain.AppStateMachineProvider}
  * catalog provider registry and drives the sequenced ledger.
  */
 @Timeout(60)

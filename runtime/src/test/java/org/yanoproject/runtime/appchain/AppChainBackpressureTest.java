@@ -1,11 +1,14 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.deliverInbound;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.PoolFullException;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.PoolFullException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -78,7 +81,7 @@ class AppChainBackpressureTest {
 
         // Inbound gossip on a full pool is dropped and counted (best-effort path)
         long recordedBefore = node.recentMessages(100).size();
-        node.onInboundMessages(List.of(inboundMessage("peer-msg")));
+        deliverInbound(node, List.of(inboundMessage("peer-msg")));
         assertThat(node.recentMessages(100)).hasSize((int) recordedBefore);
 
         Map<String, Object> status = node.status();

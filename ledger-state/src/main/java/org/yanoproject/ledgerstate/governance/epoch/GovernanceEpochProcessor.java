@@ -1,11 +1,14 @@
 package org.yanoproject.ledgerstate.governance.epoch;
 
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
+
+
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction;
 import org.yanoproject.api.EpochParamProvider;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
 import org.yanoproject.api.era.EraProvider;
 import org.yanoproject.ledgerstate.AdaPotTracker;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
@@ -952,23 +955,23 @@ public class GovernanceEpochProcessor {
                 proposal.proposedInEpoch(), proposal.expiresAfterEpoch());
     }
 
-    private static org.yanoproject.api.appchain.l1view.GovernanceActionType actionType(
+    private static GovernanceActionType actionType(
             GovActionType type) {
         return switch (type) {
             case PARAMETER_CHANGE_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.PARAMETER_CHANGE;
+                    GovernanceActionType.PARAMETER_CHANGE;
             case HARD_FORK_INITIATION_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.HARD_FORK_INITIATION;
+                    GovernanceActionType.HARD_FORK_INITIATION;
             case TREASURY_WITHDRAWALS_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.TREASURY_WITHDRAWALS;
+                    GovernanceActionType.TREASURY_WITHDRAWALS;
             case NO_CONFIDENCE ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.NO_CONFIDENCE;
+                    GovernanceActionType.NO_CONFIDENCE;
             case UPDATE_COMMITTEE ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.UPDATE_COMMITTEE;
+                    GovernanceActionType.UPDATE_COMMITTEE;
             case NEW_CONSTITUTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.NEW_CONSTITUTION;
+                    GovernanceActionType.NEW_CONSTITUTION;
             case INFO_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.INFO_ACTION;
+                    GovernanceActionType.INFO_ACTION;
         };
     }
 

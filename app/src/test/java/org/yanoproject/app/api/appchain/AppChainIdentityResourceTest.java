@@ -1,6 +1,6 @@
 package org.yanoproject.app.api.appchain;
 
-import org.yanoproject.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 

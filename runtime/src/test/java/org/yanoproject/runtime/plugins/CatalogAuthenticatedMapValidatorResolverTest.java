@@ -1,9 +1,11 @@
 package org.yanoproject.runtime.plugins;
+import org.yanoproject.x.framework.runtime.plugins.CatalogAuthenticatedMapValidatorResolver;
 
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidator;
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.api.appchain.authmap.ValidatorInitContext;
-import org.yanoproject.api.appchain.authmap.ValidatorVerdict;
+
+import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidator;
+import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
+import org.yanoproject.x.framework.api.appchain.authmap.ValidatorInitContext;
+import org.yanoproject.x.framework.api.appchain.authmap.ValidatorVerdict;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.junit.jupiter.api.Test;
 

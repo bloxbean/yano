@@ -1,9 +1,9 @@
 package org.yanoproject.ledgerstate.governance;
 
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
-import org.yanoproject.api.appchain.l1view.GovernanceActionType;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
 import org.yanoproject.ledgerstate.governance.model.ProposalLifecycleRecord;
 import org.yanoproject.ledgerstate.test.TestRocksDBHelper;

@@ -1,8 +1,8 @@
 package org.yanoproject.appchain.conformance;
 
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 
 import java.util.List;
 import java.util.Map;

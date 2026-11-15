@@ -80,9 +80,12 @@ generated publication POMs.
 
 Run X's `qa/framework/host-matrix/run.py` using its documented `prepare` and
 `run` steps, with both `standalone` and `cardano-construction` profiles. Freeze
-only the first supported host's fixture; later framework releases use `run`
-without recompilation. The frozen pre19 client and the first Host API host are
-different baselines with different purposes.
+only the first namespace-compatible host runtime's fixture; later framework
+releases use `run` without recompilation. The independent Host API baseline remains
+unchanged, but an old runtime compiled against former framework package names is
+not a compatible host for the renamed framework. Preserve the pre19 client and
+pre-namespace matrix fixtures/provenance as historical evidence; never relabel
+or recompile them to claim compatibility with the new namespace.
 
 After both PRs are integrated and public dependency versions are pinned, perform
 one final `bash qa/release-qa.sh --build` cycle on that coordinated Yano release

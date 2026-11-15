@@ -1,6 +1,6 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSelectionStatus;
@@ -151,8 +151,8 @@ class PluginCatalogCollisionPolicyTest {
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package %s;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
                 import java.util.List;
                 import java.util.Map;
                 public final class %s implements FinalizedStreamSinkFactory {

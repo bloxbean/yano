@@ -1,5 +1,12 @@
 # Phase 2 development validation
 
+> Historical qualification: the existing phase-two records below predate the
+> framework package migration to `org.yanoproject.x.framework`. They do not
+> establish compatibility or release qualification for the renamed artifacts.
+> The namespace-migration section at the end records the new development checks;
+> frozen older fixtures remain historical.
+
+
 This records incremental verification of both implementation phases, not the final release qualification.
 
 Yano source: `74ae523cd62f2c44b7bb258d3a052afb13743c36`; source SHA-256: `42f9055cd4baca6509af0b4f50a924eea6de4cdddfc17406a33e5a5c5a9b188f`. The harness verified unchanged source throughout all seven gates. The integrated JAR/ZIP were built from that same commit in an isolated worktree.
@@ -128,3 +135,47 @@ a real interrupted pending query remains retryable. Committed input/default
 consistency guards pass 27 checks in Yano and 39 in X, including actual Gradle
 precedence probes. Current X documentation illustration checks pass all nine
 cases with source anchors and ownership zones matching the extracted modules.
+
+## Namespace migration development checks — 2026-11-15
+
+These checks cover the intentional move of framework Java packages under
+`org.yanoproject.x.framework`. They do not establish old framework binary
+compatibility, a public release, or the final coordinated release qualification.
+The independent Host API and Yano foundation production sources remain unchanged.
+
+| Check | Result and exact scope |
+| --- | --- |
+| All standard Yano Java test sources | PASS, 101 tasks / 44 s against local framework `0.1.0-245.18`: unit, integration and test-fixtures compilation across the normal build. Optional Amaru sources require their separate opt-in build. |
+| Current assembly and application checks | PASS, 82 tests / 0 skipped / 75.18 s against framework 18. Includes standalone consensus/catch-up/restart, deferred initialization, draining callback lifecycle, shared transport, HTTP availability, producer configuration and packaged catalog assertions. |
+| Namespace/API guard checks | PASS: 26 scanner tests, including plain/multi-release API shadowing and explicit rebuild diagnostics for retired framework service descriptors. The unchanged Yano-owned pre19 API scope and resolved framework package guard passed on development candidates 14/17. |
+| Host/plugin regressions | The candidate-17 run passed 76 of 77 runtime tests. The observer-only assertion was moved to its Cardano owner to retain its original factory-validation boundary; the Yano provider suite then passed all 29 tests, and the moved Cardano assertion passed in the framework-18 run. Generic frozen pre19 NodePlugin and class/resource ownership checks remain active. |
+| Full local host staging and JVM package | PASS, 267 tasks / 122.25 s: all Yano Maven publications, JVM distribution and packaged plugin-catalog smoke. The unchanged Host API coordinate was copied from verified foundation inputs, never republished. |
+
+The assembly/application run and host staging captured the same unchanged source
+fingerprint:
+`cd252d2f23d547dfe7a77a99a6cd3e6227b3926d401a259e2abb200356c05947`.
+The checks used an uncommitted development tree; later documentation/pin changes
+and remote CI qualification must be identified separately.
+
+Local host/framework coordinates are `0.1.0-245.18`; the independent Host API is
+`1.0.0-272157da2`. Host API JAR SHA-256 remained exactly
+`a4687f809d91b01146ea04e0342c80438e75d05c72a9ba7534d4e8d88f0fd323`.
+The staged JVM ZIP SHA-256 is
+`53dbd9b02d5cbb193b82aa22206160a5b601d6eab74cf89fe614e1c2a49eaa64`.
+
+Retained local evidence:
+
+- `/private/tmp/yano-245-namespace-all-test-compile18b.log`
+- `/private/tmp/yano-245-namespace-focused18/results.json` and its archived JUnit reports
+- `/private/tmp/yano-245-namespace-provider-tests17b.log`
+- `/private/tmp/yano-245-namespace-scanner-abi.log` and `/private/tmp/yano-245-namespace-abi2.log`
+- `/private/tmp/yano-245-namespace-host18-stage-results.json` and matching stage log
+- `/private/tmp/yano-245-namespace-host18-artifacts/yano-0.1.0-245.18.zip`
+
+The earlier compile failures identified package-private test access and were
+resolved with owner-correct test moves and narrowly scoped test-fixtures forwards;
+production visibility was not widened for tests. An incorrect comparator separator
+was corrected before the passing ABI run. Historical pre19 framework fixtures were
+not rewritten, relabeled or counted as passing against the renamed framework.
+Full coordinated release qualification remains required after both PRs and their
+public dependency pins are integrated.

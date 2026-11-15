@@ -1,4 +1,9 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.closeRestartCriticalResourceAfter;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.openStore;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerStore;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -9,19 +14,19 @@ import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.AppChainInfo;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateReader;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.AppChainInfo;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateReader;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -270,7 +275,7 @@ class AppChainSubsystemGenerationLifecycleTest {
         IllegalStateException engineFailure = new IllegalStateException("engine cleanup");
         AssertionError closeFailure = new AssertionError("ledger close");
 
-        CompletableFuture<Void> completion = subsystem.closeRestartCriticalResourceAfter(
+        CompletableFuture<Void> completion = closeRestartCriticalResourceAfter(subsystem,
                 quiescence, "test ledger", () -> {
                     closeCalled.set(true);
                     throw closeFailure;
@@ -294,7 +299,7 @@ class AppChainSubsystemGenerationLifecycleTest {
         AssertionError quiescenceFailure = new AssertionError("engine assertion");
         TestVirtualMachineError fatalClose = new TestVirtualMachineError();
 
-        CompletableFuture<Void> completion = subsystem.closeRestartCriticalResourceAfter(
+        CompletableFuture<Void> completion = closeRestartCriticalResourceAfter(subsystem,
                 quiescence, "test ledger", () -> {
                     throw fatalClose;
                 }, null);
@@ -315,7 +320,7 @@ class AppChainSubsystemGenerationLifecycleTest {
         TestVirtualMachineError fatalPrimary = new TestVirtualMachineError();
         IllegalStateException closeFailure = new IllegalStateException("ledger close");
 
-        CompletableFuture<Void> completion = subsystem.closeRestartCriticalResourceAfter(
+        CompletableFuture<Void> completion = closeRestartCriticalResourceAfter(subsystem,
                 CompletableFuture.completedFuture(null),
                 "test ledger",
                 () -> { throw closeFailure; },
@@ -336,7 +341,7 @@ class AppChainSubsystemGenerationLifecycleTest {
         AtomicBoolean closeCalled = new AtomicBoolean();
         HostileCompletionFailure hostile = new HostileCompletionFailure();
 
-        CompletableFuture<Void> completion = subsystem.closeRestartCriticalResourceAfter(
+        CompletableFuture<Void> completion = closeRestartCriticalResourceAfter(subsystem,
                 CompletableFuture.failedFuture(hostile),
                 "test ledger",
                 () -> closeCalled.set(true),
@@ -354,7 +359,7 @@ class AppChainSubsystemGenerationLifecycleTest {
                 new TrackingRegistry(new BlockingSequencerMode()));
         AtomicBoolean closeCalled = new AtomicBoolean();
 
-        CompletableFuture<Void> completion = subsystem.closeRestartCriticalResourceAfter(
+        CompletableFuture<Void> completion = closeRestartCriticalResourceAfter(subsystem,
                 CompletableFuture.failedFuture(new FreshCompletionFailure()),
                 "test ledger",
                 () -> closeCalled.set(true),
@@ -443,7 +448,7 @@ class AppChainSubsystemGenerationLifecycleTest {
     }
 
     private static void openAndCloseLedger(Path ledgerPath) {
-        try (AppLedgerStore ignored = new AppLedgerStore(ledgerPath.toString(),
+        try (AppLedgerStore ignored = openStore(ledgerPath.toString(),
                 LoggerFactory.getLogger("generation-ledger-probe"))) {
             // Acquiring and releasing the RocksDB lock is the assertion.
         }

@@ -230,7 +230,7 @@ class BundleManifestParserTest {
                 "com.example.passport.PassportDomainApiProvider"));
         assertThat(ContributionKind.DOMAIN_API.manifestRequired()).isTrue();
         assertThat(ContributionKind.DOMAIN_API.serviceType().getName())
-                .isEqualTo("org.yanoproject.api.plugin.domain.DomainApiProvider");
+                .isEqualTo("org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider");
 
         assertInvalid(valid.replace(
                         "\"name\": \"com.example.product-passport\"",

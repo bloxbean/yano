@@ -1,27 +1,27 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateMachineContext;
-import org.yanoproject.api.appchain.AppStateMachineProvider;
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidator;
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.api.appchain.authmap.ValidatorInitContext;
-import org.yanoproject.api.appchain.authmap.ValidatorVerdict;
-import org.yanoproject.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
-import org.yanoproject.api.appchain.l1view.L1Observer;
-import org.yanoproject.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.api.appchain.l1view.L1EpochObserver;
-import org.yanoproject.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.api.appchain.observation.ObservationProvider;
-import org.yanoproject.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.api.appchain.signer.SignerProvider;
-import org.yanoproject.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineContext;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
+import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidator;
+import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
+import org.yanoproject.x.framework.api.appchain.authmap.ValidatorInitContext;
+import org.yanoproject.x.framework.api.appchain.authmap.ValidatorVerdict;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
+import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserver;
+import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserverProvider;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProvider;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
+import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
@@ -42,11 +42,11 @@ import org.yanoproject.api.plugin.PluginContext;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSelectionStatus;
 import org.yanoproject.api.plugin.PluginSourceCategory;
-import org.yanoproject.api.plugin.domain.DomainApi;
-import org.yanoproject.api.plugin.domain.DomainApiContext;
-import org.yanoproject.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.api.plugin.domain.LocalReadModelContext;
-import org.yanoproject.api.plugin.domain.LocalReadModelProvider;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApi;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiContext;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelContext;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
 import org.yanoproject.api.chain.ChainPoint;
 import org.yanoproject.api.utxo.index.IndexWriter;
 import org.yanoproject.api.utxo.index.UtxoChanges;
@@ -3617,10 +3617,10 @@ class PluginCatalogRuntimeTest {
         Files.createDirectories(providerSource.getParent());
         Files.writeString(providerSource, """
                 package %s;
-                import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
                 import java.io.InputStream;
                 import java.nio.charset.StandardCharsets;
                 import java.nio.file.Files;
@@ -3750,8 +3750,8 @@ import org.yanoproject.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package com.example.dynamic;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
                 import java.util.List;
                 import java.util.Map;
                 public final class DynamicSink implements FinalizedStreamSinkFactory {
@@ -3778,8 +3778,8 @@ import org.yanoproject.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package %s;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
                 import java.util.List;
                 import java.util.Map;
                 public final class %s implements FinalizedStreamSinkFactory {
@@ -3810,8 +3810,8 @@ import org.yanoproject.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package %s;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
                 import java.io.IOException;
                 import java.nio.file.Files;
                 import java.nio.file.Path;
@@ -3858,8 +3858,8 @@ import org.yanoproject.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(providerSource.getParent());
         Files.writeString(providerSource, """
                 package com.example.snapshot;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
                 import java.io.InputStream;
                 import java.nio.charset.StandardCharsets;
                 import java.util.List;
@@ -5227,7 +5227,7 @@ import org.yanoproject.api.appchain.AppBlockExecutionContext;
         }
 
         @Override
-        public boolean deliver(org.yanoproject.api.appchain.AppBlock block) {
+        public boolean deliver(org.yanoproject.x.framework.api.appchain.AppBlock block) {
             return true;
         }
 

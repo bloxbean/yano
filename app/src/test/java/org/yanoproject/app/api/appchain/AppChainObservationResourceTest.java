@@ -1,8 +1,8 @@
 package org.yanoproject.app.api.appchain;
 
-import org.yanoproject.api.appchain.AppChainGateway;
-import org.yanoproject.api.appchain.PoolFullException;
-import org.yanoproject.api.appchain.observation.ObservationReport;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.PoolFullException;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationReport;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 

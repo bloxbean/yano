@@ -1,5 +1,11 @@
 package org.yanoproject.runtime.assembly;
 
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
+
+
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.DevnetControl;
 import org.yanoproject.api.LedgerQuery;
@@ -284,7 +290,7 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
-    public Optional<org.yanoproject.api.appchain.AppChainGateway> appChain() {
+    public Optional<AppChainGateway> appChain() {
         if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
             return Optional.ofNullable(runtimeNode.appChainGateway());
         }
@@ -292,23 +298,23 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
-    public org.yanoproject.api.appchain.AppChainGateways appChains() {
+    public AppChainGateways appChains() {
         if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
             return runtimeNode.appChainGateways();
         }
-        return org.yanoproject.api.appchain.AppChainGateways.empty();
+        return AppChainGateways.empty();
     }
 
     @Override
-    public org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
+    public DomainApiGateway domainApis() {
         if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
             return runtimeNode.domainApis();
         }
-        return org.yanoproject.api.plugin.domain.DomainApiGateway.empty();
+        return DomainApiGateway.empty();
     }
 
     @Override
-    public Optional<org.yanoproject.api.plugin.domain.LocalReadModelHost>
+    public Optional<LocalReadModelHost>
             localReadModels() {
         return nodeLifecycle instanceof RuntimeNode runtimeNode
                 ? Optional.of(runtimeNode.localReadModels())
