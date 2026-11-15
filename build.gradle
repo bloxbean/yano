@@ -48,22 +48,6 @@ repositories {
 
 def aggregateSbomJson = layout.buildDirectory.file(
         "reports/cyclonedx/yano-${project.version}.cdx.json")
-allprojects {
-    // External framework artifacts refer to these published coordinates. Select
-    // this build's API projects once, avoiding duplicate host classes at runtime.
-    configurations.configureEach {
-        resolutionStrategy.dependencySubstitution {
-            substitute module('org.yanoproject:yano-node-api') using project(':node-api')
-            substitute module('org.yanoproject:yano-cardano-api') using project(':cardano-api')
-            substitute module('org.yanoproject:yano-host-api') using project(':host-api')
-        }
-    }
-    def frameworkRepository = providers.gradleProperty('appLedgerFrameworkRepository')
-    if (frameworkRepository.isPresent()) {
-        repositories { maven { url = uri(frameworkRepository.get()) } }
-    }
-}
-
 allprojects { candidate ->
     candidate.tasks.named('cyclonedxDirectBom') {
         includeConfigs = ['runtimeClasspath']
@@ -236,49 +220,6 @@ tasks.register('verifyAdr013Slf4jAlignment') {
 
 tasks.named('check') {
     dependsOn tasks.named('verifyAdr013Slf4jAlignment')
-}
-
-def firstPartyPluginManifestTemplates = fileTree(rootProject.projectDir) {
-    include 'appchain/**/src/main/resources/META-INF/yano/plugins/*.json'
-}
-def firstPartyPluginManifestTemplateFiles = firstPartyPluginManifestTemplates.files
-
-tasks.register('verifyFirstPartyPluginManifestTemplates') {
-    group = 'verification'
-    description = 'Validates generated-version placeholders in first-party plugin manifests.'
-    inputs.files(firstPartyPluginManifestTemplateFiles)
-
-    doLast {
-        def failures = []
-        firstPartyPluginManifestTemplateFiles.sort { left, right ->
-            left.path <=> right.path
-        }.each { manifestFile ->
-            def manifestTemplate = manifestFile.getText('UTF-8')
-            def pluginManifest = new groovy.json.JsonSlurper().parseText(manifestTemplate)
-            if (pluginManifest.version != '${pluginVersion}') {
-                failures.add("first-party plugin version must be generated: "
-                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath()))
-            }
-            def templateKeys = (manifestTemplate =~ /\$\{([^}]+)\}/).collect {
-                it[1]
-            }.toSet()
-            if (templateKeys != ['pluginVersion'] as Set) {
-                failures.add("first-party plugin template keys must be [pluginVersion]: "
-                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath())
-                        + " has ${templateKeys.sort()}")
-            }
-        }
-        if (!failures.isEmpty()) {
-            throw new GradleException('First-party plugin manifest template verification failed:\n - '
-                    + failures.join('\n - '))
-        }
-        logger.lifecycle('First-party plugin manifest templates verified: {} files',
-                firstPartyPluginManifestTemplateFiles.size())
-    }
-}
-
-tasks.named('check') {
-    dependsOn tasks.named('verifyFirstPartyPluginManifestTemplates')
 }
 
 tasks.register('verifyLegacyAccountHistoryRemoved') {
@@ -677,19 +618,6 @@ subprojects {
         }
 
     }
-
-    // First-party app-chain manifests are source templates. Their bundle and
-    // dependency versions must follow the owning Gradle publication rather
-    // than being copied into every JSON file at release time.
-    tasks.matching { it.name == 'processResources' }.configureEach {
-        def pluginManifestVersion = project.version.toString()
-        inputs.property('pluginManifestVersion', pluginManifestVersion)
-        filesMatching('META-INF/yano/plugins/*.json') {
-            filter { line ->
-                line.replace('${pluginVersion}', pluginManifestVersion)
-            }
-        }
-    }
 }
 
 // Phase/release rehearsals publish the same Maven publications to an isolated
@@ -711,9 +639,7 @@ allprojects { candidate ->
 // The Maven Central deployment scope. Derived from the projects that own a
 // publication rather than restated by hand, so it cannot drift from what the
 // build actually publishes: `nonLibraryModules` holds the application and
-// aggregator projects, `:yano-bom` publishes through its own build script, and
-// the conformance fixture deliberately removes its publication (see
-// appchain/fixtures/appchain-plugin-conformance/build.gradle).
+// aggregator projects, and `:yano-bom` publishes through its own build script.
 //
 // The root is included: it publishes org.yanoproject:yano, the POM-only starter
 // aggregate that gives a downstream application the node stack in one
@@ -725,7 +651,7 @@ allprojects { candidate ->
 // not a project is harmless. `ledger-conformance` (ADR-056 §8) is a test-only
 // harness that removes its publication the same way.
 def centralDeploymentExclusions = nonLibraryModules +
-        ['appchain-plugin-conformance', 'amaru-validator', 'ledger-conformance'] as Set
+        ['amaru-validator', 'ledger-conformance'] as Set
 def centralDeploymentProjects = ([rootProject] + subprojects.toList()).findAll { candidate ->
     !(candidate.name in centralDeploymentExclusions)
 } + project(':yano-bom')

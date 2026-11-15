@@ -31,10 +31,6 @@ dependencies {
         api project(':archive-modules:archive-api')
         api project(':archive-modules:archive-core')
         api project(':archive-modules:archive-store-ducklake')
-        api project(':appchain-config')
-        api project(':appchain-testkit')
-        api project(':appchain-proof-verifier')
-        api project(':appchain-anchor-onchain')
     }
 }
 
@@ -45,7 +41,7 @@ publishing {
             from components.javaPlatform
             pom {
                 name = 'Yano BOM'
-                description = 'Version alignment for Yano host APIs, runtime, testkits, and on-chain artifacts'
+                description = 'Version alignment for Yano host APIs, runtime and testkits'
                 url = 'https://github.com/bloxbean/yano'
                 licenses {
                     license {
