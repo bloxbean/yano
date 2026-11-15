@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "https://getyano.dev",
   "version": "0.1.0-pre20-SNAPSHOT",
-  "sourceRevision": "dc1a2ac4eaaf010766f78e80eb0ddbef0f17c1e4",
+  "sourceRevision": "ebd3eeea45f8688a3854cc6436bcefa0728484b2",
   "sourceRepository": "https://github.com/bloxbean/yano",
   "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
   "pages": [
@@ -18,7 +18,7 @@
       "description": "Member consensus, execution, commitments, and anchoring.",
       "url": "https://getyano.dev/app-chains/consensus/",
       "markdown": "https://getyano.dev/ai/pages/app-chains/consensus.md",
-      "sha256": "f4e12b8b4c258e77d05036689b5ffef17f7b7c5f4c179edf065c518da89f68b1"
+      "sha256": "0836720a88e44865420631bdd91d3fb0b43da9536dcc72c78454a9c24994423d"
     },
     {
       "title": "State machines & extensions",
@@ -81,7 +81,7 @@
       "description": "Build, test, and improve Yano through its public modules and contracts.",
       "url": "https://getyano.dev/contribute/guide/",
       "markdown": "https://getyano.dev/ai/pages/contribute/guide.md",
-      "sha256": "0010bea568331db6e138e58cc067918b3e3f876b019569abc1bb93b559ac66ef"
+      "sha256": "eda5cecf8c8ba5d8cc9be16d69fdb8f48cc7c50440a6bf1137941f40f3b66550"
     },
     {
       "title": "App ledger testkit",
@@ -242,7 +242,7 @@
       "description": "Active packaged configuration values and declared property keys, generated from source.",
       "url": "https://getyano.dev/reference/configuration-catalog/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
-      "sha256": "683864319164f71659cd857857f6429bad207bb99758263bda60a4628512e1a5"
+      "sha256": "87866eaca825235d177626bc7b97ee7292db1f4596fd03fdfbaa48e834d971d2"
     },
     {
       "title": "Configuration guide",
@@ -270,7 +270,7 @@
       "description": "Implement committed queries and bounded domain APIs.",
       "url": "https://getyano.dev/reference/plugin-contract/",
       "markdown": "https://getyano.dev/ai/pages/reference/plugin-contract.md",
-      "sha256": "a847b587b612f877e09b0858ac3f6a586ca6ea3417be5b0e713fcef87f3fa853"
+      "sha256": "600ba0ad1e666cd7c61eaef7629d76db2acc3a04d4ac16111425468cac496b46"
     },
     {
       "title": "Release change details",
@@ -329,7 +329,7 @@
     },
     {
       "url": "https://getyano.dev/llms-full.txt",
-      "sha256": "81d3cbacf78a274f0b767f9c805247cfca204b2026e98d9775d5465213ee803c"
+      "sha256": "628b253fdfe0384c8ddc9f61581cd0881420242e6615a05a782f5239fda20735"
     },
     {
       "url": "https://getyano.dev/ai/agent-instructions.md",
@@ -337,11 +337,11 @@
     },
     {
       "url": "https://getyano.dev/ai/configuration.json",
-      "sha256": "ac610f8f19a331e11e16ac9099be3348462e197ac500994011f5c5f768152072"
+      "sha256": "4e9cab24fe067601dd08e90bc8bdfe36e51245072bf5a986595724498205b6c2"
     },
     {
       "url": "https://getyano.dev/ai/routes.json",
-      "sha256": "2c40a8b4138c77a70a543797e5bc945493c292a10bd3c1129f87746b2ffb4dcf"
+      "sha256": "99d9e17276f487457c6cf22e6811881e52c5331c98b69001bb50cdd7931e3eaa"
     }
   ]
 }

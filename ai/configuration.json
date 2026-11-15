@@ -1,5 +1,5 @@
 {
-  "sourceRevision": "dc1a2ac4eaaf010766f78e80eb0ddbef0f17c1e4",
+  "sourceRevision": "ebd3eeea45f8688a3854cc6436bcefa0728484b2",
   "version": "0.1.0-pre20-SNAPSHOT",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
@@ -2327,6 +2327,7 @@
     "yano.mempool.admin.enabled",
     "yano.metrics.enabled",
     "yano.metrics.sample.rocksdb.seconds",
+    "yano.mode",
     "yano.network",
     "yano.pipeline.epochBoundaryFallbackWaitMs",
     "yano.pipeline.headerContinuityValidationBlocks",
