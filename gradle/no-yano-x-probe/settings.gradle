@@ -1,0 +1,4 @@
+// Negative probe for gradle/no-yano-x.gradle (ADR-064 D11 rule 5). verifyNoYanoXDependency copies
+// this build and the guard to a temporary directory and requires both tasks below to fail.
+rootProject.name = 'guard-probe'
+apply from: 'gradle/no-yano-x.gradle'

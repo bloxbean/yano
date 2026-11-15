@@ -1,0 +1,236 @@
+// ADR-064 D11: Yano never depends on Yano-X (group org.yanoproject.x, artifacts yano-x-*);
+// Yano-X depends on Yano. Applied from settings.gradle, the only point early enough to guard
+// plugin requests and the root buildscript as well as every project configuration.
+//
+//   1. resolution rules fail any Yano-X plugin or module request, and the task below reports
+//      declared dependencies and constraints, so an unresolved declaration cannot hide;
+//   2. generated POMs, Gradle module metadata and the BOM are scanned;
+//   3. tracked files are scanned for the tokens (exclusions below);
+//   4. built outputs are inspected when they exist: yano.jar, distribution ZIPs, Docker build
+//      contexts, the generated plugin index and native-image configuration;
+//   5. a negative probe builds gradle/no-yano-x-probe with a copy of this script and requires
+//      rules 1 and 3 to fail it.
+//
+// Run: ./gradlew verifyNoYanoXDependency (also part of check).
+
+import java.util.regex.Pattern
+import java.util.zip.ZipInputStream
+
+def yanoXGroup = 'org.yanoproject.x'
+def isYanoXModule = { String group, String name ->
+    (group != null && (group == yanoXGroup || group.startsWith(yanoXGroup + '.')))
+            || (name != null && name.startsWith('yano-x-'))
+}
+// Package, resource and binary names (dot or slash form) and artifact names. The guard's own
+// file name is the one allowed occurrence, so build files can apply it.
+def yanoXToken = Pattern.compile('org[./]yanoproject[./]x(?![a-z0-9_])|yano-x(?![a-z0-9_])',
+        Pattern.CASE_INSENSITIVE)
+def ownName = Pattern.compile(Pattern.quote('no-yano-x.gradle'), Pattern.CASE_INSENSITIVE)
+def hasToken = { String text -> yanoXToken.matcher(ownName.matcher(text).replaceAll('')).find() }
+
+// Rule 3 exclusions: history and cross-product links, the guard and its probe fixture, and the
+// AGENTS.md section that states this rule.
+def tokenScanExcluded = { String path ->
+    path.startsWith('adr/') || path.startsWith('docs/') || path.startsWith('www/') || path == 'README.md'
+            || path == 'gradle/no-yano-x.gradle' || path.startsWith('gradle/no-yano-x-probe/')
+}
+def agentsOwnershipSection = '# Package namespace'
+
+def probeFixture = 'gradle/no-yano-x-probe'
+// Rule 4 outputs, and the tasks that write them, so the inspection runs after them.
+def builtOutputs = ['app/build/yano.jar', 'app/build/distributions/*.zip', 'app/build/docker/*/context/**',
+                    '*/build/**/META-INF/yano-plugin-index-v1.json', '*/build/**/META-INF/native-image/**']
+def builtOutputProducers = ['quarkusBuild', 'yanoDistZip', 'generatePluginCatalogIndex',
+                            'prepareYanoDockerJvmContext', 'prepareYanoDockerNativeContext'] as Set
+
+settings.pluginManagement.resolutionStrategy.eachPlugin { details ->
+    def module = details.requested.module
+    if (isYanoXModule(details.requested.id.id, null)
+            || (module != null && isYanoXModule(module.group, module.name))) {
+        throw new GradleException("ADR-064: Yano must not apply the Yano-X plugin ${details.requested.id}")
+    }
+}
+
+gradle.allprojects { candidate ->
+    [candidate.configurations, candidate.buildscript.configurations].each { container ->
+        container.configureEach { configuration ->
+            if (configuration.canBeResolved && configuration.state == Configuration.State.UNRESOLVED) {
+                configuration.resolutionStrategy.eachDependency { details ->
+                    def requested = details.requested
+                    if (isYanoXModule(requested.group, requested.name)) {
+                        throw new GradleException("ADR-064: project ${candidate.path} configuration "
+                                + "'${configuration.name}' requests Yano-X module "
+                                + "${requested.group}:${requested.name}:${requested.version}")
+                    }
+                }
+            }
+        }
+    }
+}
+
+gradle.rootProject { root ->
+    def verify = root.tasks.register('verifyNoYanoXDependency') {
+        group = 'verification'
+        description = 'Fails when Yano depends on, names or ships Yano-X (ADR-064 D11).'
+        // POMs (the BOM's included) are cheap to generate; module metadata needs the jars, so it is
+        // scanned when a publishing or assembling build wrote it.
+        dependsOn { root.allprojects.collectMany { it.tasks.withType(GenerateMavenPom).toList() } }
+        mustRunAfter { root.allprojects.collectMany { it.tasks.withType(GenerateModuleMetadata).toList() } }
+        mustRunAfter { root.allprojects.collect { it.tasks.named { it in builtOutputProducers } } }
+        def report = root.layout.buildDirectory.file('reports/no-yano-x/violations.txt')
+        def probeDirectory = root.layout.buildDirectory.dir('tmp/verifyNoYanoXDependency/probe')
+
+        doLast {
+            def rootDirectory = root.projectDir
+            def relative = { File file -> rootDirectory.toPath().relativize(file.toPath()).toString() }
+            def violations = []
+
+            // Rule 1: declared dependencies and constraints of every configuration.
+            root.allprojects.each { candidate ->
+                [candidate.configurations, candidate.buildscript.configurations].each { container ->
+                    container.each { configuration ->
+                        def declared = (configuration.dependencies.withType(ExternalDependency).toList()
+                                + configuration.dependencyConstraints.toList())
+                        declared.findAll { isYanoXModule(it.group, it.name) }.each {
+                            violations << ("project ${candidate.path} configuration '${configuration.name}' "
+                                    + "declares ${it.group}:${it.name}:${it.version}")
+                        }
+                    }
+                }
+            }
+
+            def scanText = { String name, String text ->
+                text.readLines().eachWithIndex { line, index ->
+                    if (hasToken(line)) {
+                        violations << "${name}:${index + 1}: ${line.trim().take(160)}"
+                    }
+                }
+            }
+            def scanArchive
+            scanArchive = { String name, InputStream input ->
+                def entries = new ZipInputStream(input)
+                for (def entry = entries.nextEntry; entry != null; entry = entries.nextEntry) {
+                    def entryName = "${name}!/${entry.name}"
+                    if (entry.directory) {
+                        if (hasToken(entry.name)) {
+                            violations << entryName
+                        }
+                    } else if (entry.name ==~ /(?i).*\.(jar|zip)/) {
+                        scanArchive(entryName, new FilterInputStream(entries) {
+                            @Override
+                            void close() {
+                            }
+                        })
+                    } else if (hasToken(entry.name) || hasToken(new String(entries.readAllBytes(), 'ISO-8859-1'))) {
+                        violations << entryName
+                    }
+                }
+            }
+
+            // Rule 2: generated publication metadata, the BOM included.
+            root.allprojects.each { candidate ->
+                candidate.tasks.withType(GenerateMavenPom).each { task ->
+                    scanText(relative(task.destination), task.destination.text)
+                }
+                candidate.tasks.withType(GenerateModuleMetadata).each { task ->
+                    def file = task.outputFile.get().asFile
+                    if (file.isFile()) {
+                        scanText(relative(file), file.text)
+                    }
+                }
+            }
+
+            // Rule 3: tracked files.
+            def tracked = root.providers.exec {
+                workingDir = rootDirectory
+                commandLine 'git', 'ls-files', '-z'
+            }.standardOutput.asText.get().split('\u0000').findAll { it }
+            tracked.findAll { !tokenScanExcluded(it) }.each { path ->
+                def file = new File(rootDirectory, path)
+                if (!file.isFile()) {
+                    return
+                }
+                def text = new String(file.bytes, 'ISO-8859-1')
+                if (path == 'AGENTS.md') {
+                    def inSection = false
+                    text = text.readLines().collect { line ->
+                        if (line.startsWith('# ')) {
+                            inSection = line.trim() == agentsOwnershipSection
+                        }
+                        inSection ? '' : line
+                    }.join('\n')
+                }
+                scanText(path, text)
+            }
+
+            // Rule 4: built outputs that exist in this checkout.
+            root.fileTree(rootDirectory) {
+                include builtOutputs
+                exclude '**/node_modules/**'
+            }.files.sort().each { file ->
+                def name = relative(file)
+                if (name ==~ /(?i).*\.(jar|zip)/) {
+                    file.withInputStream { scanArchive(name, it) }
+                } else {
+                    scanText(name, new String(file.bytes, 'ISO-8859-1'))
+                }
+            }
+
+            // Rule 5: the probe build must fail on its injected coordinate and token.
+            def probeFailures = []
+            def fixture = new File(rootDirectory, probeFixture)
+            if (fixture.isDirectory()) {
+                def probe = probeDirectory.get().asFile
+                root.delete(probe)
+                root.copy {
+                    from fixture
+                    into probe
+                }
+                root.copy {
+                    from new File(rootDirectory, 'gradle/no-yano-x.gradle')
+                    into new File(probe, 'gradle')
+                }
+                [['git', 'init', '-q'], ['git', 'add', '.']].each { command ->
+                    root.providers.exec {
+                        workingDir = probe
+                        commandLine command
+                    }.result.get().assertNormalExitValue()
+                }
+                def execution = root.providers.exec {
+                    workingDir = probe
+                    commandLine new File(rootDirectory, 'gradlew').path, '--no-daemon', '--continue', '-q',
+                            'resolveProbe', 'verifyNoYanoXDependency'
+                    ignoreExitValue = true
+                }
+                def log = execution.standardOutput.asText.get() + execution.standardError.asText.get()
+                def result = execution.result.get()
+                def expected = ["configuration 'probe' requests Yano-X module org.yanoproject.x:yano-x-probe:1.0",
+                                "configuration 'probe' declares org.yanoproject.x:yano-x-probe:1.0",
+                                'probe-token.txt:1:']
+                if (result.exitValue == 0) {
+                    probeFailures << 'the probe build passed'
+                }
+                expected.findAll { !log.contains(it) }.each { probeFailures << "the probe output lacks: ${it}" }
+                if (!probeFailures.isEmpty()) {
+                    logger.error(log)
+                }
+            }
+
+            def failures = violations + probeFailures.collect { "negative probe: ${it}" }
+            def output = report.get().asFile
+            output.parentFile.mkdirs()
+            output.setText(failures.join('\n') + '\n', 'UTF-8')
+            if (!failures.isEmpty()) {
+                def shown = failures.take(200)
+                throw new GradleException('ADR-064 forbids Yano-X in Yano:\n - ' + shown.join('\n - ')
+                        + (failures.size() > shown.size() ? "\n ... ${failures.size() - shown.size()} more" : '')
+                        + "\nFull list: ${output}")
+            }
+            logger.lifecycle('ADR-064: no Yano-X dependency, token or shipped file; negative probe {}',
+                    fixture.isDirectory() ? 'failed as required' : 'not present')
+        }
+    }
+    root.pluginManager.withPlugin('lifecycle-base') {
+        root.tasks.named('check') { dependsOn verify }
+    }
+}

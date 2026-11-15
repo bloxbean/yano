@@ -7,6 +7,10 @@ pluginManagement {
 
 rootProject.name = 'yano'
 
+// ADR-064 D11: the dependency-direction guardrail (task verifyNoYanoXDependency, part of check).
+// Applied here so that it also covers plugin requests and the root buildscript.
+apply from: 'gradle/no-yano-x.gradle'
+
 // Yano owns the Cardano data node, the stable host contracts and its distributions.
 // Application-ledger products are built downstream and are never a dependency (ADR-064).
 def yanoModules = [

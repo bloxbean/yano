@@ -35,3 +35,12 @@ Do not introduce `org.yanoproject.yano.*` or a `com.bloxbean.cardano.yano.*`
 package. The `com.bloxbean.cardano` group still owns some of Yano's
 *dependencies* (yaci, cardano-client-lib); julc and zeroj publish under their
 own `org.julclang` and `org.zeroj` groups. All are separate projects.
+
+**Dependency direction (ADR-064).** Yano never depends on Yano-X; Yano-X depends
+on Yano. No Yano source, resource, Gradle configuration (including buildscript and
+plugins), publication, distribution, Docker image, CI workflow or QA script may
+request or name an `org.yanoproject.x` coordinate, a `yano-x-*` artifact, or an X
+package or bundle id. Application-ledger code, its tests, QA and docs belong in
+`bloxbean/yano-x`. `./gradlew verifyNoYanoXDependency`, part of `check`, enforces
+this; outside `adr/`, `docs/`, `www/`, the top-level `README.md` and this section,
+the token scan rejects both strings.
