@@ -1,6 +1,6 @@
 # ADR-064: Yano-X depends on Yano, never the reverse
 
-- Status: Proposed (r2)
+- Status: Proposed (r3)
 - Date: 2026-11-16
 - Tracking: [Yano #249](https://github.com/bloxbean/yano/issues/249) (requirement: [#247](https://github.com/bloxbean/yano/issues/247))
 - Baselines inspected: Yano `ebd3eeea4` (merge of #246), Yano-X `1ce50558` (merge of X #102)
@@ -119,7 +119,10 @@ Each replacement in detail:
 - **`nodeConfig()` / `runtimeOptions()`.** Both are default methods.
   - `nodeConfig()` returns a fresh copy of `YanoConfig` on every call, so one plugin cannot mutate
     another's view.
-  - `runtimeOptions()` returns the existing immutable `RuntimeOptions`.
+  - `runtimeOptions()` returns a new `RuntimeOptions` on every call. Its globals are the same bounded
+    deep snapshot that `RuntimeNode:502-504` builds today with `PluginConfigValues`, never the host's
+    own record. A test mutates the original map and the nested chain configuration after construction
+    (X16).
   - Exposure is unchanged: X receives the same values today through its keys (A12).
 - **`registerAssembly`.** It may only be called during `NodePlugin.init`.
   - The host runs the callbacks once, in registration order, at today's exact `assemble()` position
@@ -130,7 +133,13 @@ Each replacement in detail:
   - Its exception aborts startup with the owner id as provenance and with the existing reverse cleanup.
   - Re-entrant registration, and registration after `init`, are rejected (A7).
 - **`registerRestartReadiness`.** The kernel's existing restart preflight consults every registered
-  supplier, with the same `false` = retryable semantics as today (A7).
+  supplier, with the same semantics as today's `awaitStopped` preflight (A7):
+  - `false` is retryable, and the kernel stays `STOPPED`;
+  - an exception marks the kernel `FAILED` and keeps resources for an explicit close;
+  - an interrupt keeps `STOPPED` and the interrupt flag.
+
+  `registerRestartReadiness` and `registerPluginProducts` (D3) may be called only during `init` or an
+  assembly callback.
 - **Owner ids.** These are trusted host-class-path plugin ids. A directory bundle may call these
   methods, but it cannot impersonate an embedded owner, because the host checks the id against the
   calling plugin's context (A7).
@@ -142,6 +151,10 @@ Each replacement in detail:
   - X's adapter reads it, and X's `CardanoRuntimeServices` record is deleted.
 - **`HostApi.networkName()`.** It replaces the label that the read-model registry obtains today through
   the runtime-internal `GenesisFileResolver` (A10).
+  - In Cardano mode it returns today's value.
+  - In app-ledger mode it returns today's `"app-" + magic` once a plugin has called
+    `requireAppOnlyNetwork` (D7). Before that it throws `IllegalStateException`. X builds its read-model
+    registry after that call, as `AppLedgerAssembly:112-120` does today.
 
 `HostApiVersion.CURRENT` becomes `(1, 2)`. All additions are new types or default methods.
 `PluginApiVersion.CURRENT_LEVEL` rises because public plugin API symbols are added (D3).
@@ -174,10 +187,16 @@ A `ContributionKindRegistry` is built once per catalog build or inspection from 
 2. descriptor resources `META-INF/yano/contribution-kinds/<owner>.json` from **trusted origins only**
    (A5, X8).
 
-The trusted origins are the host class path at runtime, and the host or API artifacts passed to the
-index generator and CLI. That is the application runtime class path in the `app` and X builds, and an
-explicit `--host-artifact <jar>` option in the `yano-plugins` CLI. A descriptor inside a directory or
-plugin artifact is rejected.
+Trust is decided by **origin**, not by artifact content (A5 P3). The uber-jar and `framework/cardano`
+legitimately mix host code with a bundle manifest. The trusted origins are:
+
+- at runtime, resources loaded by the host (parent) class loader;
+- at index or CLI time, the artifacts passed as the host class path. That is the application runtime
+  class path in the `app` and X builds, and an explicit `--host-artifact <jar>` option in the
+  `yano-plugins` CLI.
+
+A descriptor that is visible only through a directory-plugin loader, or only inside a scanned plugin
+artifact that is not on the host class path, is rejected.
 
 The registry rejects:
 
@@ -198,8 +217,8 @@ Manifest and index formats are unchanged, and an unknown kind still fails closed
 - Every descriptor kind must have exactly one binding with the same key, and with an interface equal to
   `serviceType().getName()`. A built-in kind keeps its Yano binding. Any mismatch fails catalog
   construction.
-- Bindings receive `PluginOperationsRecorder` at bind time. Only trusted host code can therefore record
-  operations, and no recorder is exposed on `HostApi` (A9).
+- Bindings do not receive an operations recorder. The recorder is handed to the moved registry
+  through `registerPluginProducts` (see "Registry phases" below) (A9, X15).
 
 **`PluginCallbackScope` (A6).** This is the public face of the existing `CallbackTracker`,
 `ActivationContext` and `ProductReservations`. Admission and reservations stay shared across all
@@ -227,15 +246,44 @@ product close and failure propagation. They are not copied.
 - `PluginOperationsRegistry` loses its `DomainHttpMethod` overload. The public `PluginOperation` enum
   keeps `DOMAIN_GET/POST`, because those names appear in metrics and inventory.
 
-**Registry phases (A3).** Today, domain and read-model products resume in `RuntimePluginSubsystem`
-before `activateTelemetry()`. They are sealed after the sync drain, including on the unsafe-ledger-drain
-path (`RuntimeNode:1571-1607,3852-3854`). These are the points where the host already drives
-`PluginProviderRegistry.resume/sealContributionCallbacks`.
+**Registry phases (A3, X11).** The two registries keep their distinct positions as they are today.
 
-The moved registries attach to exactly those points with one listener registration,
-`PluginProviderRegistry.onContributionPhase(String ownerBundleId, ContributionPhaseListener)`, which
-receives `resume`, `seal` and `close`. They are **not** moved to `registerBeforePublication`. I5 pins
-this order.
+*Read models.* Today they start in a pre-publication subsystem placed directly after the host lifecycle
+subsystems: `RuntimeNode:900-928`, and the `local-read-models` stage in `AppLedgerAssembly:139-143`.
+X registers that same subsystem with the existing `registerBeforePublication`, right after its
+manager, which yields the same position in both hosts.
+
+*Domain products.* These have their own host position, which is neither provider admission nor
+pre-publication:
+
+- **Resume.** In Cardano mode, after `pluginManager.startAll()` and before the UTxO filter chain,
+  index contributors and `activateTelemetry()` (`RuntimeNode:1562-1576`). Provider admission is
+  reopened earlier, at `:1562`. In app-ledger mode, at the start of the `app-operations` stage, before
+  `activateTelemetry()` (`AppLedgerAssembly:144-146`).
+- **Seal.** In both stop paths: `stopDomainAndNodePlugins` (startup rollback) and
+  `stopPluginsAfterRuntimeDrain`. In the drain path the seal happens **before** the unsafe-drain early
+  return (`RuntimeNode:3852-3859`), and provider admission is sealed later, at `:3868`. In app-ledger
+  mode, in the `app-operations` stop, after operations telemetry.
+
+These positions are exposed through one hook,
+`PluginOperationsRecorder HostLifecycleRegistry.registerPluginProducts(String ownerBundleId, PluginProducts)`,
+where `PluginProducts` has `void resume()` and `void sealAndAwait()`.
+
+- The host calls `resume()` in registration order and `sealAndAwait()` in reverse order, at exactly
+  the positions above, on every path including rollback and unsafe drain. X's `sealAndAwait()` seals
+  domain products and then read models, which is today's order in `stopDomainAndNodePlugins`. Both
+  seals are idempotent.
+- Only embedded owners may register. The call returns a `PluginOperationsRecorder` bound to this host
+  instance; there is no static state, so several embedded Yano instances stay independent.
+- The recorder accepts events only for bundles that own an `operationsTracked` contribution. Its
+  methods are today's package-private domain hooks with the kind made explicit:
+  `activating`, `active`, `activationFailed`, `stopped(succeeded)`, `admitted`, `started`,
+  `queueFinished`, `callbackFinished` and `outcome(bundleId, PluginOperation, PluginOperationOutcome)`.
+- The moved `DomainApiRegistry` keeps its `OperationsObserver` seam (`:251-303`) and adapts it to the
+  recorder. Admission, queue cancellation and timeout events (`:764-765,1156-1165`) are therefore
+  recorded exactly as today, and moved tests cover them.
+
+I5 pins both positions for Cardano and app-ledger hosts, including the rollback and unsafe-drain paths.
 
 **Native (A11).** Descriptor kinds are JVM-only, because X is JVM-only (MD2). The native image keeps the
 built-in kinds and their static service patterns. The native and packaged smokes use only built-in kinds,
@@ -255,19 +303,26 @@ it still returns an empty map. The moved regression test uses a secret-bearing b
 
 **Governance enums.**
 
-- `ledger-state` reuses yaci `GovActionType` for the action type. It has the same seven constants in
-  the same order, and it is already persisted by ordinal in `GovActionRecord` (C10).
+- `ledger-state` reuses yaci `GovActionType` for the action type (C10). It has the same seven
+  constants with the same ordinals as X's `GovernanceActionType`, and it is already persisted by ordinal
+  in `GovActionRecord`. Its names differ for three constants (`*_ACTION` suffixes).
 - Two new Yano-owned enums in `cardano-api` (`org.yanoproject.api.governance`) replace the X ones:
-  `GovernanceProposalStatus` and `GovernanceProposalStatusReason`. They keep the **identical
+  `GovernanceProposalStatus` and `GovernanceProposalStatusReason`. They keep the **identical names and
   constant order**.
 - The codec, prefix `0x71`, field layout and stored bytes do not change.
-- Both enums are **append-only**, and this is documented in their javadoc (C3).
+- Both new enums are **append-only**, and this is documented in their javadoc (C3).
 
-X keeps its own `l1view` enums, because X's generic API depends only on `node-api`. The X bridge maps by
-`name()`, as `EpochGovernanceObserver` already does. An exhaustive test covers every constant. A Yano
-constant that X cannot map makes the bridge fail closed for that epoch's governance view, with an
-explicit diagnostic; it is never silently dropped. This is a boundary mapping between independently
-versioned contracts, not duplicated logic.
+X keeps its own `l1view` enums, because X's generic API depends only on `node-api`. The mapping happens
+at the Yano-to-X boundary in X's epoch bridge (C12, X12):
+
+- **Action type.** The exhaustive `switch` that exists today at `GovernanceEpochProcessor:958-975`
+  (yaci `GovActionType` to X `GovernanceActionType`) moves into the bridge unchanged. It does not map by
+  name.
+- **Status and reason.** These map by `name()`, because the names are identical.
+
+An exhaustive test covers every constant of all three enums. A Yano constant that X cannot map makes the
+bridge fail closed for that epoch's governance view, with an explicit diagnostic; it is never silently
+dropped. This is one mapping moved to the trust boundary, not duplicated logic.
 
 **Epoch snapshots (C2, X2, A10).**
 
@@ -298,12 +353,17 @@ built from `CardanoHostServices`, using `ChainBlockReader.getLocalTip().getSlot(
 `Yano` loses `appChain()`, `appChains()`, `domainApis()` and `localReadModels()`. `RuntimeYano`,
 `YanoDevnetAssembly` and `AppLedgerAssembly` lose their implementations.
 
-Yano adds `<T> Optional<T> service(String key, Class<T> type)`. It reads services registered through
-`PluginContext.registerService` by the **currently initialized** plugin generation. The result is
-re-resolved on every call, and returns empty before init and after close (B5).
+`host-api` gains `PluginServiceLookup` with `<T> Optional<T> service(String key, Class<T> type)`, and
+`Yano` extends it.
 
-X publishes its holder (D2) and provides `org.yanoproject.x.framework.host.AppLedgers.of(Yano)` for
-embedders. X's REST producers resolve through `Yano.service` on every request; they never capture once.
+- It reads services registered through `PluginContext.registerService` by the **currently
+  initialized** plugin generation.
+- The result is re-resolved on every call, and it returns empty before init and after close (B5).
+
+X publishes its holder (D2). For embedders it provides
+`org.yanoproject.x.framework.host.AppLedgers.of(PluginServiceLookup)` in `framework/host-adapter`, which
+keeps its API-only compile dependency on `host-api` (B12, X13). The no-Quarkus library test (D12)
+exercises this helper. X's REST producers resolve through `Yano.service` on every request; they never capture once.
 This is a documented preview break with a one-line migration, and there is no shim. The X host-matrix
 fixture changes to use the helper.
 
@@ -366,8 +426,10 @@ and REST.
 - `app-core` gets a public CDI producer for the single `Yano` instance, which replaces today's
   package-private `ensureYano()`.
 - The small surface X compiles against lives in `org.yanoproject.app.spi`: the `Yano` producer,
-  `RuntimeGlobalsContributor`, the shared `ApiKeys` helper, and `RequiresCardano`. It is covered by
-  Yano's API-compatibility gate (B1).
+  `RuntimeGlobalsContributor`, the shared `ApiKeys` helper, and `RequiresCardano`. Yano has no japicmp
+  or revapi gate today (B13), so the gate for this surface is the M1 downstream-consumer check. It
+  compiles and boots a fixture against exactly these symbols from staged publications on every Yano
+  build, and changing or removing one fails Yano's own build (B1).
 
 **Yano-X.**
 
@@ -375,7 +437,12 @@ and REST.
   - `AppChainResource`, `PluginDomainResource`, `AppChainApiKeyFilter`, `AppChainAccess`,
     `AppChainHealthGroupCheck` and `AppChainMetrics`;
   - the app-chain producers, `UnavailableAppChainGateway` and the configuration projection (D7);
-  - `appchain-proof-verifier`.
+  - a startup check that fails when `yano.app-chain.enabled` is true but the X root is missing from
+    `yano.plugins.required`, for example because an operator overrode it (A8 P3).
+
+  `appchain-proof-verifier` becomes its own plain X library, `framework/proof-verifier`
+  (`yano-x-appchain-proof-verifier`), with no Quarkus. `framework/rest`, `sdk/client` and
+  `tooling/devtools` consume it. Its dependency closure is part of the no-Quarkus checks (B11, X14).
 
   Java packages move under `org.yanoproject.x.*`. Paths, JSON, status codes and the OpenAPI group stay
   identical.
@@ -392,8 +459,10 @@ and REST.
 
 X takes over these bounded duplicates, listed explicitly (B8):
 
-- about 150 lines of closure and index Gradle logic, which `host-matrix/run.py` already partly
-  duplicates and which is consolidated there;
+- about 150 lines of closure and index Gradle logic. X keeps one implementation, a shared Gradle
+  script used by both `distribution/jvm` and `host-matrix`, replacing the partial copy in
+  `host-matrix/run.py`. The Yano JVM ZIP stays an input for scripts, configuration and docs; only its
+  `yano.jar` is replaced;
 - the packaged smokes that use X fixtures;
 - the app-chain parts of `qa/harness/common.sh`.
 
@@ -402,8 +471,15 @@ rejection order cannot change. That order is: canonical path, body bound, dynami
 as 404, privileged 404 or 503, then the key check.
 
 X's filter stops matching `PluginOperationsResource`. Yano keeps a small `PluginOperationsAuthFilter`
-for that resource, with exactly today's outcome: canonical path, body bound, PRIVILEGED full key from the
-existing `yano.app-chain.api.keys`, and 503 `AUTH_UNAVAILABLE` when no full key is configured.
+for that resource. It runs exactly the code path that the current filter runs for that resource, and
+gives the same outcomes (B14):
+
+- a non-canonical path is rejected;
+- 503 `AUTH_UNAVAILABLE` when no full key is configured in the existing `yano.app-chain.api.keys`;
+- 401 for a missing or invalid key;
+- 403 for a topic-scoped key.
+
+That resource has no request body, so no body-bound outcome applies.
 
 The key parsing and the canonical-path and entity-bound helpers are shared through
 `org.yanoproject.app.spi.ApiKeys`, so they are not copied. `AppChainAccess` stays X's annotation.
@@ -416,7 +492,7 @@ Yano's resource needs no annotation, because its filter matches by class.
 | Yano item | Disposition |
 | --- | --- |
 | `appchain-config`, `appchain-anchor-onchain` | Delete. Consumers use `yano-x-appchain-config` and `yano-x-appchain-anchor-onchain`. Their tests and `appchain/test-vectors` move to X. |
-| `appchain-proof-verifier` | Moves to X `framework/rest` (`yano-x-appchain-proof-verifier`). |
+| `appchain-proof-verifier` | Moves to X as the plain library `framework/proof-verifier` (`yano-x-appchain-proof-verifier`). |
 | `appchain-testkit` | Moves to X (test-scope `yano-runtime`). |
 | `appchain-plugin-conformance` and smokes | The X fixtures move to X. Yano adds an X-independent fixture with built-in kinds, an inbound N2N agent factory and a JVM-only test descriptor kind. The packaged and catalog smokes then still cover N2N registration and app-ledger mode generically (B9). |
 | Runtime and app app-chain tests, catalog tests on X fixtures | App-chain behaviour tests move to X with their code. Generic catalog, TCCL and barrier tests switch to the fixture kinds. |
@@ -439,7 +515,8 @@ disappear.
 `gradle/no-yano-x.gradle`, applied from the root, adds `verifyNoYanoXDependency` to `check` and CI. It
 contains five rules:
 
-1. A `resolutionStrategy` rule on every configuration of every project, including buildscript. It fails
+1. A `resolutionStrategy` rule on every configuration of every project, including buildscript and the
+   `settings.gradle` `pluginManagement` classpath. It fails
    any request for group `org.yanoproject.x` or module `yano-x-*`. It also checks declared
    dependencies, so an unresolved declaration cannot hide.
 2. A scan of generated POMs, Gradle module metadata and the BOM.
@@ -448,10 +525,10 @@ contains five rules:
    index, and the native resource and reflect configs.
 5. A negative probe: a temporary build injects one X coordinate and one X token, and the task must fail.
 
-The token scan excludes only:
+The token scan is case-insensitive and excludes only (C13):
 
-- `adr/`, `docs/` and `www/`, which are history and cross-product links;
-- `README.md`;
+- the top-level `adr/**`, `docs/**` and `www/**` trees, which are history and cross-product links;
+- the top-level `README.md`;
 - the `AGENTS.md` ownership section;
 - the guard script and its probe fixture.
 
@@ -480,27 +557,34 @@ integration test with no Quarkus on the class path.
   D11 mechanism. `verifyNoYanoXDependency` passes, and it fails its negative probe.
 - **I2** (D5).
   - Golden bytes captured from `ebd3eeea4` for every status/reason/action-type triple encode
-    byte-identically and decode to the same values.
-  - The existing `GovernanceHistoryRollbackTest` and `HistoricalEpochStateViewTest` pass with
-    import-only changes.
-  - A ledger-state store written by the baseline build opens and reads identically under the new build.
-  - Tests pin the constant order.
+    byte-identically and decode to the same values. That is 245 vectors, already captured in M0.
+  - The existing `GovernanceHistoryRollbackTest` and `HistoricalEpochStateViewTest` pass. Their only
+    change is the type substitution (X enums replaced by yaci `GovActionType` and the Yano enums).
+  - A baseline-written ledger-state fixture containing `0x71` lifecycle rows and `GovActionRecord` rows
+    opens and reads identically under the new build.
+  - Tests pin the constant order of both new enums and the yaci `GovActionType` ordinal correspondence
+    (C12, X12).
 - **I3** (D3, revised per A2, C5, X9).
-  - The old and new catalog code, run on identical frozen fixture artifacts, produce byte-identical index
-    files. They also produce byte-identical fingerprints, except for the intentional
-    `PluginApiVersion` level component, which is asserted separately.
-  - Baseline and migrated integrated distributions have equal semantic inventories: bundle ids,
-    versions, kind keys, names, trust tiers and provider classes mapped through the documented package
-    moves.
-  - New artifact digests are validated independently.
+  - **Old versus new catalog code.** M0 captures the old catalog's index files and fingerprints for
+    frozen fixture artifacts, using the baseline jar. M1 then needs no X-dependent executable. In M2,
+    where X's descriptors exist, the new catalog runs on the same frozen artifacts.
+    - Index files must be byte-identical.
+    - Fingerprints are compared on their canonical input. The new input must equal the old one except
+      for the intentional `PluginApiVersion` level, which is asserted separately.
+    - Each hash is recomputed independently from its input.
+  - **Baseline versus migrated distribution.** The semantic inventories must match on the preserved
+    fields: bundle ids, kind keys, contribution names, trust tiers, and provider classes mapped through
+    the documented package moves. Bundle versions and artifact digests change intentionally, and the
+    new values are validated independently.
   - Provenance hashing is not weakened.
 - **I4** (D3). The moved X facade tests (`PluginTcclBoundaryTest` and `PluginContributionCleanupBarrierTest`
   cases) pass unchanged in X. The generic cases pass in Yano on the fixture kinds. The X3
   secret-config regression passes in X.
 - **I5** (D2, D3).
   - A Yano fixture test records the order: init, then assembly callbacks (owner TCCL), then seal, then
-    kernel pre-publication, then publication. It also records contribution-phase listener events in the
-    same positions as today's direct calls, including the unsafe-drain path.
+    kernel pre-publication, then publication. It records `PluginProducts.resume/sealAndAwait` at the D3
+    positions for Cardano and app-ledger hosts, including startup rollback and the unsafe-drain path. It
+    also covers recorder queue, cancellation and timeout events.
   - It rejects late, re-entrant, duplicate or impersonated registration.
   - It covers restart readiness returning `false`.
   - X's moved adapter tests pass.
@@ -520,8 +604,10 @@ integration test with no Quarkus on the class path.
   - Two different X builds are composed against those exact bytes, and both pass the standalone and
     integrated smokes. The two builds are X_a (PR head) and X_b (X_a plus a real behavioural change in a
     fixture state machine, with its own version).
-  - An X build that requires Host API level 1.3 is rejected by that host at startup, before it opens any
-    database. This is the case that can fail.
+  - An X build that requires Host API level 1.3 is rejected by that host at startup. Rejection happens
+    in the assembly callback, before any X-owned database is opened and before any listener starts.
+    Host chain storage is already open by then (`RuntimeNode:416`); it is closed by the existing
+    reverse cleanup (X17). This is the case that can fail.
   - The X host-matrix runs X_a against the frozen 1.2 baseline and the current host.
 
 ## Milestones (revised per C1, X6)
@@ -537,9 +623,17 @@ cut Yano over first, then make X own the product.
     - the OpenAPI and route inventory;
     - the integrated catalog's semantic inventory;
     - integrated `yano.jar` and ZIP hashes;
-    - the baseline release-qa report (done: 14 passed, plus 2 known).
+    - the baseline release-qa report (done: 14 passed, plus 2 known);
+    - the old catalog's index files and fingerprints on frozen fixture artifacts (I3);
+    - an auth outcome matrix over routes, key states and malformed or oversized requests (I6);
+    - app-chain status and chain projections for flat and indexed configurations, as the effective
+      globals baseline (I7);
+    - a baseline-written ledger-state fixture with `0x71` and `GovActionRecord` rows, produced with the
+      baseline classes (I2).
 
-    Small vectors are committed as test resources. Large artifacts go to the QA evidence directory.
+    Small vectors are committed as test resources. Large artifacts go to the QA evidence directory. The
+    baseline jar and ZIP, and the capture script, are retained with their SHA-256 values, so any further
+    baseline evidence can be regenerated after the Actions artifacts expire (C8).
 - **M1 — Yano cutover (one Yano PR).**
   - Entry: this ADR approved.
   - Scope: D2–D9 Yano side and D11. Host API 1.2, `CardanoHostServices`, `EpochSnapshotReader`, the
@@ -572,6 +666,10 @@ cut Yano over first, then make X own the product.
 X branch CI uses the staged Yano artifacts. After both are approved, Yano merges first, its snapshot is
 published, and the X PR's Yano pin moves from staged to published before X merges. There is no release
 or tag.
+
+Between the two merges, Yano `main` contains no integrated app-chain product. Users of the integrated
+product keep the last released X distribution. The window is kept short by merging X right after the
+snapshot publishes (C13).
 
 ## Verification
 
@@ -665,3 +763,21 @@ exception).
   - C11 → numbers corrected.
   - X3 → `domainApiConfig` boundary kept in X.
   - Also added: `--no-fonts` and the size estimate for `yano-app-core`.
+- r3 (2026-11-16), responding to the round-2 reviews of `1cb37a698`:
+  - A3/X11 → read models through `registerBeforePublication`; domain products through
+    `registerPluginProducts` at their exact positions, including rollback and unsafe drain.
+  - A9/X15 → per-host recorder returned by `registerPluginProducts` to the moved registry; methods
+    listed; `OperationsObserver` seam kept.
+  - C12/X12 → the action-type switch moves to X's bridge; name mapping only for status and reason;
+    I2 pins the yaci ordinals.
+  - X9 → I3 compares canonical inputs, uses M0 old-catalog outputs, and separates preserved fields
+    from intentional changes.
+  - C8 → M0 list completed.
+  - B12/X13 → `PluginServiceLookup` in `host-api`; `AppLedgers.of(PluginServiceLookup)`.
+  - B11/X14 → `framework/proof-verifier` as a plain library.
+  - B13 → the downstream-consumer check is the `app.spi` gate.
+  - X16 → `runtimeOptions()` deep snapshot.
+  - X17 → the I8 rejection point stated precisely.
+  - P3s → A5 trust by origin; A7 readiness exceptions and call phases; A8 X-side required check; A10
+    `networkName()` in app-ledger mode; B8 single closure script and ZIP input; B14 plugin-operations
+    outcomes; C13 guardrail scope and merge window.
