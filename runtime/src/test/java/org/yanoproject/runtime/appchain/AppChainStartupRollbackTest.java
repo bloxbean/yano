@@ -1,12 +1,16 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.openStore;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerStore;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
+import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.Test;
@@ -177,7 +181,7 @@ class AppChainStartupRollbackTest {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         RuntimeException lastFailure = null;
         while (System.nanoTime() < deadline) {
-            try (AppLedgerStore ignored = new AppLedgerStore(
+            try (AppLedgerStore ignored = openStore(
                     ledgerPath.toString(),
                     LoggerFactory.getLogger("fatal-rollback-ledger-probe"))) {
                 return;

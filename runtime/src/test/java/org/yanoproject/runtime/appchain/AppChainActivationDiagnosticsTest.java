@@ -1,8 +1,10 @@
 package org.yanoproject.runtime.appchain;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.slf4j.Logger;

@@ -8,6 +8,7 @@ import org.yanoproject.api.account.AccountStateReadStore;
 import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.util.CardanoBech32Ids;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.EpochUtil;
 import org.yanoproject.app.api.epochs.dto.AdaPotDto;
 import org.yanoproject.app.api.epochs.dto.EpochDto;
@@ -35,6 +36,7 @@ import java.util.Map;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("epochs")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class EpochResource {
 
     private static final Logger log = LoggerFactory.getLogger(EpochResource.class);

@@ -1,8 +1,8 @@
 package org.yanoproject.app.api.appchain;
 
-import org.yanoproject.api.appchain.AppChainGateway;
-import org.yanoproject.api.appchain.AppQueryException;
-import org.yanoproject.api.appchain.AppQueryResult;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppQueryException;
+import org.yanoproject.x.framework.api.appchain.AppQueryResult;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.core.Response;

@@ -9,6 +9,7 @@ import org.yanoproject.api.account.LedgerStateProvider;
 import org.yanoproject.api.utxo.UtxoState;
 import org.yanoproject.api.util.CardanoBech32Ids;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.app.api.EpochUtil;
 import org.yanoproject.app.api.accounts.dto.AccountStateDtos.*;
 import org.yanoproject.app.archive.HistoryArchiveService;
@@ -30,6 +31,7 @@ import java.util.Optional;
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("accounts")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class AccountStateResource {
 
     private static final Logger log = LoggerFactory.getLogger(AccountStateResource.class);

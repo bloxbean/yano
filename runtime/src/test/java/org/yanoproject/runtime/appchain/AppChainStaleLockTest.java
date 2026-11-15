@@ -1,12 +1,20 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.putVoteLockEnvelope;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.voteLockEnvelope;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.decodeConsensusEnvelope;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.encodeConsensusEnvelope;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.openStore;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerStore;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableConstant;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.FinalityCert;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.FinalityCert;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -145,11 +153,11 @@ class AppChainStaleLockTest {
     /** Rewrite the persisted locked-proposal envelope with an expired copy. */
     private void expireStoredLock(Path ledgerDir, long height) {
         // The subsystem opens its ledger at <base>/<chainId>
-        AppLedgerStore store = new AppLedgerStore(ledgerDir.resolve("sl-chain").toString(), log);
+        AppLedgerStore store = openStore(ledgerDir.resolve("sl-chain").toString(), log);
         try {
-            byte[] stored = store.voteLockEnvelope(height).orElseThrow(
+            byte[] stored = voteLockEnvelope(store, height).orElseThrow(
                     () -> new AssertionError("No locked proposal stored at height " + height));
-            AppMessage original = ConsensusCodec.decodeEnvelope(stored);
+            AppMessage original = decodeConsensusEnvelope(stored);
             AppMessage expired = AppMessage.builder()
                     .messageId(original.getMessageId())
                     .chainId(original.getChainId())
@@ -161,7 +169,7 @@ class AppChainStaleLockTest {
                     .authScheme(original.getAuthScheme())
                     .authProof(original.getAuthProof())
                     .build();
-            store.putVoteLockEnvelope(height, ConsensusCodec.encodeEnvelope(expired));
+            putVoteLockEnvelope(store, height, encodeConsensusEnvelope(expired));
         } finally {
             store.close();
         }

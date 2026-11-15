@@ -142,10 +142,10 @@ class PluginArtifactScannerTest {
                 .hasMessageContaining("packages Yano API class")
                 .hasMessageContaining("NodePlugin.class");
 
-        Path coreApi = emptyArtifact("core-api");
-        writeBytes(coreApi, "org/yanoproject/api/plugin/NodePlugin.class", new byte[]{1});
-        writeService(coreApi, KIND, "# no provider entry");
-        assertThat(scanner.scan(coreApi)).isEqualTo(PluginIndex.empty());
+        Path nodeApi = emptyArtifact("node-api");
+        writeBytes(nodeApi, "org/yanoproject/api/plugin/NodePlugin.class", new byte[]{1});
+        writeService(nodeApi, KIND, "# no provider entry");
+        assertThat(scanner.scan(nodeApi)).isEqualTo(PluginIndex.empty());
     }
 
     @Test
@@ -160,6 +160,48 @@ class PluginArtifactScannerTest {
         assertThatThrownBy(() -> scanner.scan(jar))
                 .isInstanceOf(PluginCatalogException.class)
                 .hasMessageContaining("packages Yano API class");
+    }
+
+    @Test
+    void rejectsFrameworkApiCopiesInPlainAndMultiReleasePlugins() throws Exception {
+        for (String apiClass : List.of(
+                "org/yanoproject/x/framework/api/appchain/AppBlock.class",
+                "org/yanoproject/x/framework/cardano/api/effects/AppEffectExecutorFactory.class")) {
+            for (String prefix : List.of("", "META-INF/versions/25/")) {
+                String name = "framework-api-" + Math.abs((apiClass + prefix).hashCode());
+                Path plugin = manifestedDirectory(name, "com.example." + name, "sink", "com.example.Provider");
+                writeBytes(plugin, prefix + apiClass, new byte[]{1});
+                Path jar = createJar(plugin, temporary.resolve(name + ".jar"));
+                assertThatThrownBy(() -> scanner.scan(jar))
+                        .isInstanceOf(PluginCatalogException.class)
+                        .hasMessageContaining("packages Yano API class")
+                        .hasMessageContaining(apiClass);
+            }
+        }
+    }
+
+    @Test
+    void rejectsRetiredFrameworkDescriptorsWithARebuildDiagnostic() throws Exception {
+        for (String oldContract : List.of(
+                "org.yanoproject.api.appchain.AppStateMachineProvider",
+                "org.yanoproject.api.plugin.domain.DomainApiProvider")) {
+            for (boolean manifested : List.of(false, true)) {
+                String name = "retired-" + Math.abs(oldContract.hashCode()) + "-" + manifested;
+                Path artifact = manifested
+                        ? manifestedDirectory(name, "com.example." + name, "sink", "com.example.Provider")
+                        : emptyArtifact(name);
+                writeBytes(artifact, "META-INF/services/" + oldContract,
+                        "com.example.OldProvider\n".getBytes(StandardCharsets.UTF_8));
+                Path jar = createJar(artifact, temporary.resolve(name + ".jar"));
+                for (Path input : List.of(artifact, jar)) {
+                    assertThatThrownBy(() -> scanner.scan(input))
+                            .isInstanceOf(PluginCatalogException.class)
+                            .hasMessageContaining("retired framework ServiceLoader contract")
+                            .hasMessageContaining(oldContract)
+                            .hasMessageContaining("rebuild the plugin against org.yanoproject.x.framework APIs");
+                }
+            }
+        }
     }
 
     @Test

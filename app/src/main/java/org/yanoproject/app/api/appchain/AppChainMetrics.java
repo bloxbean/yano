@@ -1,8 +1,8 @@
 package org.yanoproject.app.api.appchain;
 
-import org.yanoproject.api.appchain.AppChainGateway;
-import org.yanoproject.api.appchain.AppChainGateways;
-import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.FunctionCounter;

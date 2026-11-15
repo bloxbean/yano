@@ -1,9 +1,9 @@
 package org.yanoproject.app.api.appchain;
 
 import org.yanoproject.api.config.YanoPropertyKeys;
-import org.yanoproject.api.plugin.domain.DomainApiAccess;
-import org.yanoproject.api.plugin.domain.DomainApiGateway;
-import org.yanoproject.api.plugin.domain.DomainHttpMethod;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiAccess;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
+import org.yanoproject.x.framework.api.plugin.domain.DomainHttpMethod;
 import org.yanoproject.app.ApiPrefixContract;
 import org.yanoproject.app.api.plugin.PluginOperationsResource;
 import com.fasterxml.jackson.databind.JsonNode;

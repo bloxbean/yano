@@ -1,12 +1,18 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.appchain.AppChainGateway;
-import org.yanoproject.api.appchain.AppChainGateways;
-import org.yanoproject.api.appchain.AppQueryPath;
-import org.yanoproject.api.plugin.domain.FinalizedChainView;
-import org.yanoproject.api.plugin.domain.LocalReadModelContext;
-import org.yanoproject.api.plugin.domain.LocalReadModelHost;
-import org.yanoproject.api.plugin.domain.LocalReadModelProvider;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppQueryResult;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.plugin.domain.DomainQueryService;
+
+
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.appchain.AppQueryPath;
+import org.yanoproject.x.framework.api.plugin.domain.FinalizedChainView;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelContext;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -146,25 +152,23 @@ public final class LocalReadModelContributionRegistry implements AutoCloseable {
             }
             return height;
         }
-        @Override public java.util.Optional<org.yanoproject.api.appchain.AppBlock>
+        @Override public java.util.Optional<AppBlock>
         block(long height) {
             if (height < 0) {
                 throw new IllegalArgumentException("height must not be negative");
             }
             return delegate.block(height);
         }
-        @Override public org.yanoproject.api.appchain.AppQueryResult query(
+        @Override public AppQueryResult query(
                 String path, byte[] request) {
             AppQueryPath.validate(path);
             Objects.requireNonNull(request, "request");
-            if (request.length > org.yanoproject.api.plugin.domain
-                    .DomainQueryService.MAX_REQUEST_BYTES) {
+            if (request.length > DomainQueryService.MAX_REQUEST_BYTES) {
                 throw new IllegalArgumentException("request exceeds the 65536 byte limit");
             }
             return delegate.query(path, request.clone());
         }
-        @Override public java.util.Optional<org.yanoproject.api.appchain.state
-                .StateCommitmentIdentity> stateCommitmentIdentity() {
+        @Override public java.util.Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
             return delegate.stateCommitmentIdentity();
         }
         @Override public AutoCloseable subscribe(FinalizedBlockListener listener) {

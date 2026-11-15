@@ -4,6 +4,7 @@ import org.yanoproject.api.MempoolAdminGateway;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.HeaderParam;
@@ -29,6 +30,7 @@ import java.util.regex.Pattern;
 @Extension(name = ApiGroup.ADMIN, value = "")
 @Path("admin/mempool/transactions")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class MempoolAdminResource {
     private static final Logger LOG = LoggerFactory.getLogger(MempoolAdminResource.class);
     private static final Pattern HASH = Pattern.compile("[0-9a-fA-F]{64}");

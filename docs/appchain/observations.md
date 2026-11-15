@@ -258,7 +258,10 @@ counts local hint calls, including coalesced hints, and is not a consensus count
 ## Qualification commands
 
 ```text
-./gradlew :core-api:test :runtime:test --tests '*Observation*'
+# In the Yano-X checkout: observation contracts and codecs
+./gradlew :framework:api:test --tests '*Observation*'
+# In the Yano checkout: integrated observation runtime
+./gradlew :runtime:test --tests '*Observation*'
 YANO_OBSERVATION_SCALE=1 ./gradlew :runtime:test --tests '*ObservationKernelTest'
 YANO_OBSERVATION_HTTPS_LIVE=1 ./gradlew :runtime:test --tests '*ObservationRuntimeClusterTest'
 ./gradlew test

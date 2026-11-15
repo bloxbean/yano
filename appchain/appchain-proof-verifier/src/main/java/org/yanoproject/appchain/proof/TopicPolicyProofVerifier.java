@@ -1,14 +1,14 @@
 package org.yanoproject.appchain.proof;
 
-import org.yanoproject.api.appchain.AppChainConsensusProfileCommitment;
-import org.yanoproject.api.appchain.topics.TopicKeys;
-import org.yanoproject.api.appchain.topics.TopicNames;
-import org.yanoproject.api.appchain.topics.TopicPolicyProof;
-import org.yanoproject.api.appchain.topics.TopicPolicyResolver;
-import org.yanoproject.api.appchain.topics.TopicWire.Config;
-import org.yanoproject.api.appchain.topics.TopicWire.EffectiveOutcome;
-import org.yanoproject.api.appchain.topics.TopicWire.EntryRecord;
-import org.yanoproject.api.appchain.topics.TopicWireCodec;
+import org.yanoproject.x.framework.api.appchain.AppChainConsensusProfileCommitment;
+import org.yanoproject.x.framework.api.appchain.topics.TopicKeys;
+import org.yanoproject.x.framework.api.appchain.topics.TopicNames;
+import org.yanoproject.x.framework.api.appchain.topics.TopicPolicyProof;
+import org.yanoproject.x.framework.api.appchain.topics.TopicPolicyResolver;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWire.Config;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWire.EffectiveOutcome;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWire.EntryRecord;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWireCodec;
 
 import java.util.Arrays;
 import java.util.HashMap;

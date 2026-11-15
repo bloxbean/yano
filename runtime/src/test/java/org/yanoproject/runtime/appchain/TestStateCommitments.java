@@ -1,9 +1,9 @@
 package org.yanoproject.runtime.appchain;
 
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 
 import java.util.Optional;
 

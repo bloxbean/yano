@@ -1,7 +1,7 @@
 package org.yanoproject.app;
 
 import org.yanoproject.api.config.UpstreamPreset;
-import org.yanoproject.appchain.config.AppChainConfigParser;
+import org.yanoproject.x.framework.config.AppChainConfigParser;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.db.IncompatibleChainStateException;

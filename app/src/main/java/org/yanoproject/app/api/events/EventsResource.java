@@ -2,6 +2,7 @@ package org.yanoproject.app.api.events;
 
 import org.yanoproject.api.events.stream.NodeEventStream;
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.DefaultValue;
@@ -32,6 +33,7 @@ import java.util.stream.Collectors;
  */
 @Extension(name = ApiGroup.CORE, value = "")
 @Path("events")
+@RequiresCardano
 public class EventsResource {
     private static final Logger log = LoggerFactory.getLogger(EventsResource.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();

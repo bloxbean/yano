@@ -1,15 +1,20 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.metaPutBytes;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerRuntime;
+import org.yanoproject.x.framework.runtime.appchain.AppLedgerStore;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.codec.AppBlockCodec;
-import org.yanoproject.api.appchain.evidence.EvidenceBundle;
-import org.yanoproject.api.appchain.evidence.EvidenceBundleCodec;
-import org.yanoproject.api.appchain.evidence.EvidenceVerifier;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.codec.AppBlockCodec;
+import org.yanoproject.x.framework.api.appchain.evidence.EvidenceBundle;
+import org.yanoproject.x.framework.api.appchain.evidence.EvidenceBundleCodec;
+import org.yanoproject.x.framework.api.appchain.evidence.EvidenceVerifier;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -46,20 +51,6 @@ class AppChainEvidenceTest {
     Path tempDir;
 
     private AppChainSubsystem node;
-
-    @Test
-    void evidenceChainLimitCountsInclusiveEndpoints() {
-        assertThat(AppChainSubsystem.evidenceChainFits(10, 4_105)).isTrue();
-        assertThat(AppChainSubsystem.evidenceChainFits(10, 4_106)).isFalse();
-        assertThat(AppChainSubsystem.evidenceChainFits(0, 1)).isFalse();
-        assertThat(AppChainSubsystem.evidenceChainFits(10, 9)).isFalse();
-        assertThat(AppChainSubsystem.evidenceBytesFit(0, 100, 100)).isTrue();
-        assertThat(AppChainSubsystem.evidenceBytesFit(99, 1, 100)).isTrue();
-        assertThat(AppChainSubsystem.evidenceBytesFit(100, 1, 100)).isFalse();
-        assertThat(AppChainSubsystem.evidenceBytesFit(
-                Long.MAX_VALUE, 1, Long.MAX_VALUE)).isFalse();
-        assertThat(AppChainSubsystem.evidenceBytesFit(-1, 1, 100)).isFalse();
-    }
 
     @AfterEach
     void tearDown() {
@@ -256,13 +247,13 @@ class AppChainEvidenceTest {
         assertThat(commitment.transactionHash()).isEqualTo("de".repeat(32));
         assertThat(commitment.l1Slot()).isEqualTo(12_345L);
 
-        ledger.metaPutBytes("anchor_last_block_hash", new byte[32]);
+        metaPutBytes(ledger, "anchor_last_block_hash", new byte[32]);
         assertThat(node.latestAnchorCommitment()).isEmpty();
     }
 
     private static AppLedgerStore ledgerOf(AppChainSubsystem subsystem)
             throws ReflectiveOperationException {
-        Field field = AppChainSubsystem.class.getDeclaredField("ledger");
+        Field field = AppLedgerRuntime.class.getDeclaredField("ledger");
         field.setAccessible(true);
         return (AppLedgerStore) field.get(subsystem);
     }

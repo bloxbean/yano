@@ -174,6 +174,10 @@ final class PluginContextImpl implements PluginContext {
     static final class SharedServiceRegistry {
         private final Map<String, RegisteredService> services = new ConcurrentHashMap<>();
 
+        void registerHost(String key, Object service) {
+            register("<host>", key, service, RegistrationScope.INITIALIZATION);
+        }
+
         void register(String owner, String key, Object service, RegistrationScope scope) {
             Objects.requireNonNull(service, "service");
             if (key == null || key.isBlank()) {

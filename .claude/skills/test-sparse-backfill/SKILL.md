@@ -136,7 +136,7 @@ asserts a 4xx/5xx response whose body names the forecast window and the limit.
 Verified against the implementation (`runtime/.../blockproducer/BackfillPolicy.java`,
 `DevnetBlockProducer.java`, `producer/DevnetProducerFactory.java`,
 `producer/ProducerStartupCoordinator.java`, `devnet/DevnetCatchUpService.java`,
-`devnet/DevnetGenesisShiftService.java`, `core-api/.../YanoConfig.java`). Everything in the
+`devnet/DevnetGenesisShiftService.java`, `node-api/.../YanoConfig.java`). Everything in the
 matrix matches; these details differ from a naive reading and are handled by the runner:
 
 1. **Genesis is authoritative for slot duration.** Epoch shift and producer timing

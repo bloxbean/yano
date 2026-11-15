@@ -1,22 +1,36 @@
 package org.yanoproject.app.api.appchain;
 
+import org.yanoproject.x.framework.api.appchain.AppAnchorCommitment;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppQueryException;
+import org.yanoproject.x.framework.api.appchain.FinalityCert;
+import org.yanoproject.x.framework.api.appchain.effects.EffectProofLookup;
+import org.yanoproject.x.framework.api.appchain.effects.FxKeys;
+import org.yanoproject.x.framework.api.appchain.evidence.EvidenceBundleCodec;
+import org.yanoproject.x.framework.api.appchain.proof.ProofSubjectProvider;
+import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotDisputedException;
+import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotProofBundleCodec;
+import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotCanonicalCodec;
+import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotDescriptorV1;
+
+
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppCapabilityManifest;
-import org.yanoproject.api.appchain.AppBlockHeader;
-import org.yanoproject.api.appchain.AppChainGateway;
-import org.yanoproject.api.appchain.AppChainGateways;
-import org.yanoproject.api.appchain.AppQueryPath;
-import org.yanoproject.api.appchain.AppSubmissionRejectedException;
-import org.yanoproject.api.appchain.MembershipChangeRejectedException;
-import org.yanoproject.api.appchain.ReceivedAppMessage;
-import org.yanoproject.api.appchain.PoolFullException;
-import org.yanoproject.api.appchain.observation.ObservationReport;
-import org.yanoproject.api.appchain.codec.AppBlockCodec;
-import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
-import org.yanoproject.api.appchain.state.StateCommitmentImplementations;
-import org.yanoproject.api.appchain.state.StateIntegrityReport;
-import org.yanoproject.api.appchain.state.StateProof;
-import org.yanoproject.api.appchain.state.StateProofEnvelope;
+import org.yanoproject.x.framework.api.appchain.AppCapabilityManifest;
+import org.yanoproject.x.framework.api.appchain.AppBlockHeader;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.api.appchain.AppChainGateways;
+import org.yanoproject.x.framework.api.appchain.AppQueryPath;
+import org.yanoproject.x.framework.api.appchain.AppSubmissionRejectedException;
+import org.yanoproject.x.framework.api.appchain.MembershipChangeRejectedException;
+import org.yanoproject.x.framework.api.appchain.ReceivedAppMessage;
+import org.yanoproject.x.framework.api.appchain.PoolFullException;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationReport;
+import org.yanoproject.x.framework.api.appchain.codec.AppBlockCodec;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentImplementations;
+import org.yanoproject.x.framework.api.appchain.state.StateIntegrityReport;
+import org.yanoproject.x.framework.api.appchain.state.StateProof;
+import org.yanoproject.x.framework.api.appchain.state.StateProofEnvelope;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.app.api.ApiGroup;
@@ -40,11 +54,11 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
-import org.yanoproject.api.appchain.topics.TopicState;
-import org.yanoproject.api.appchain.topics.TopicWire;
-import org.yanoproject.api.appchain.topics.TopicWireCodec;
-import org.yanoproject.api.appchain.topics.TopicNames;
-import org.yanoproject.api.appchain.topics.TopicPolicyProof;
+import org.yanoproject.x.framework.api.appchain.topics.TopicState;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWire;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWireCodec;
+import org.yanoproject.x.framework.api.appchain.topics.TopicNames;
+import org.yanoproject.x.framework.api.appchain.topics.TopicPolicyProof;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
 import java.io.InputStream;
@@ -634,7 +648,7 @@ public class AppChainResource {
                 rejection.put("code", e.code());
                 if (!e.details().isEmpty()) rejection.put("details", e.details());
                 return Response.status(Response.Status.BAD_REQUEST).entity(rejection).build();
-            } catch (org.yanoproject.api.appchain.PoolFullException e) {
+            } catch (PoolFullException e) {
                 // Backpressure (ADR 008.1 I1.1): the message was NOT retained/relayed
                 return Response.status(429)
                         .entity(Map.of("error", e.getMessage())).build();
@@ -676,8 +690,8 @@ public class AppChainResource {
                     params = new byte[0];
                 } else {
                     if (encoded.length() > 2 * 64 * 1024) {
-                        throw new org.yanoproject.api.appchain.AppQueryException(
-                                org.yanoproject.api.appchain.AppQueryException.Code.REQUEST_TOO_LARGE,
+                        throw new AppQueryException(
+                                AppQueryException.Code.REQUEST_TOO_LARGE,
                                 "App-chain query request exceeds the size limit");
                     }
                     if ((encoded.length() & 1) != 0
@@ -686,7 +700,7 @@ public class AppChainResource {
                     }
                     params = HexUtil.decodeHexString(encoded);
                 }
-            } catch (org.yanoproject.api.appchain.AppQueryException tooLarge) {
+            } catch (AppQueryException tooLarge) {
                 return Response.status(413)
                         .entity(Map.of("code", tooLarge.code().name(),
                                 "error", tooLarge.getMessage()))
@@ -704,7 +718,7 @@ public class AppChainResource {
                 response.put("stateRoot", HexUtil.encodeHexString(result.stateRoot()));
                 response.put("payloadHex", HexUtil.encodeHexString(result.payload()));
                 return Response.ok(response).build();
-            } catch (org.yanoproject.api.appchain.AppQueryException failure) {
+            } catch (AppQueryException failure) {
                 int status = switch (failure.code()) {
                     case INVALID_REQUEST -> 400;
                     case REQUEST_TOO_LARGE -> 413;
@@ -716,7 +730,7 @@ public class AppChainResource {
                     case FAILED -> 500;
                 };
                 String message = failure.code()
-                        == org.yanoproject.api.appchain.AppQueryException.Code.FAILED
+                        == AppQueryException.Code.FAILED
                         ? "Query execution failed" : failure.getMessage();
                 return Response.status(status)
                         .entity(Map.of("code", failure.code().name(), "error", message))
@@ -1033,7 +1047,7 @@ public class AppChainResource {
         @Path("effects/{height}/{ordinal}/proof")
         public Response effectProof(@PathParam("height") long height,
                                     @PathParam("ordinal") int ordinal) {
-            org.yanoproject.api.appchain.effects.EffectProofLookup lookup;
+            EffectProofLookup lookup;
             try {
                 lookup = gateway.effectProof(height, ordinal);
             } catch (IllegalStateException e) {
@@ -1042,13 +1056,13 @@ public class AppChainResource {
                                 "error", e.getMessage())).build();
             }
             if (lookup.status()
-                    == org.yanoproject.api.appchain.effects.EffectProofLookup.Status.NOT_FOUND) {
+                    == EffectProofLookup.Status.NOT_FOUND) {
                 return Response.status(Response.Status.NOT_FOUND)
                         .entity(Map.of("code", "EFFECT_NOT_FOUND",
                                 "error", "No effect at " + height + "/" + ordinal)).build();
             }
             if (lookup.status()
-                    == org.yanoproject.api.appchain.effects.EffectProofLookup.Status.PRUNED) {
+                    == EffectProofLookup.Status.PRUNED) {
                 return Response.status(Response.Status.GONE)
                         .entity(Map.of("code", "EFFECT_PROOF_PRUNED",
                                 "height", height, "ordinal", ordinal,
@@ -1075,7 +1089,7 @@ public class AppChainResource {
             result.put("merklePath", path);
             result.put("effectsRootHex", HexUtil.encodeHexString(proof.effectsRoot()));
             result.put("stateKeyHex", HexUtil.encodeHexString(
-                    org.yanoproject.api.appchain.effects.FxKeys.effectsRootKey(record.height())));
+                    FxKeys.effectsRootKey(record.height())));
             result.put("stateRootHex", HexUtil.encodeHexString(proof.stateRoot()));
             result.put("stateProofWireHex", HexUtil.encodeHexString(proof.stateProofWire()));
             return Response.ok(result).build();
@@ -1390,7 +1404,7 @@ public class AppChainResource {
             }
             return gateway.evidence(messageId)
                     .map(bundle -> Response.ok(
-                            org.yanoproject.api.appchain.evidence.EvidenceBundleCodec.toJson(bundle))
+                            EvidenceBundleCodec.toJson(bundle))
                             .build())
                     .orElse(Response.status(Response.Status.NOT_FOUND)
                             .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
@@ -1457,18 +1471,15 @@ public class AppChainResource {
             }
             try {
                 var kind = switch (request.view() == null ? "latest" : request.view()) {
-                    case "latest" -> org.yanoproject.api.appchain.proof
-                            .ProofSubjectProvider.ProofView.Kind.LATEST;
-                    case "height" -> org.yanoproject.api.appchain.proof
-                            .ProofSubjectProvider.ProofView.Kind.HEIGHT;
-                    case "latest-confirmed-anchor" -> org.yanoproject.api.appchain.proof
-                            .ProofSubjectProvider.ProofView.Kind.LATEST_CONFIRMED_ANCHOR;
+                    case "latest" -> ProofSubjectProvider.ProofView.Kind.LATEST;
+                    case "height" -> ProofSubjectProvider.ProofView.Kind.HEIGHT;
+                    case "latest-confirmed-anchor" -> ProofSubjectProvider.ProofView.Kind.LATEST_CONFIRMED_ANCHOR;
                     default -> throw new IllegalArgumentException("unsupported typed proof view");
                 };
-                var view = new org.yanoproject.api.appchain.proof.ProofSubjectProvider
+                var view = new ProofSubjectProvider
                         .ProofView(kind, request.height(), null, null);
                 var claim = request.claim() == null ? null
-                        : new org.yanoproject.api.appchain.proof.ProofSubjectProvider
+                        : new ProofSubjectProvider
                         .ClaimRequest(request.claim().claimId(), request.claim().operands());
                 var result = gateway.proofSubjectProof(
                         subjectId, request.coordinates(), view, claim);
@@ -1520,25 +1531,22 @@ public class AppChainResource {
                     && request.coordinates().size() <= 16;
         }
 
-        private static org.yanoproject.api.appchain.proof.ProofSubjectProvider.ProofView
+        private static ProofSubjectProvider.ProofView
         typedView(TypedProofRequest request) {
             var kind = switch (request.view() == null ? "latest" : request.view()) {
-                case "latest" -> org.yanoproject.api.appchain.proof
-                        .ProofSubjectProvider.ProofView.Kind.LATEST;
-                case "height" -> org.yanoproject.api.appchain.proof
-                        .ProofSubjectProvider.ProofView.Kind.HEIGHT;
-                case "latest-confirmed-anchor" -> org.yanoproject.api.appchain.proof
-                        .ProofSubjectProvider.ProofView.Kind.LATEST_CONFIRMED_ANCHOR;
+                case "latest" -> ProofSubjectProvider.ProofView.Kind.LATEST;
+                case "height" -> ProofSubjectProvider.ProofView.Kind.HEIGHT;
+                case "latest-confirmed-anchor" -> ProofSubjectProvider.ProofView.Kind.LATEST_CONFIRMED_ANCHOR;
                 default -> throw new IllegalArgumentException("unsupported typed proof view");
             };
-            return new org.yanoproject.api.appchain.proof.ProofSubjectProvider
+            return new ProofSubjectProvider
                     .ProofView(kind, request.height(), null, null);
         }
 
-        private static org.yanoproject.api.appchain.proof.ProofSubjectProvider.ClaimRequest
+        private static ProofSubjectProvider.ClaimRequest
         typedClaim(TypedProofRequest request) {
             return request.claim() == null ? null
-                    : new org.yanoproject.api.appchain.proof.ProofSubjectProvider
+                    : new ProofSubjectProvider
                     .ClaimRequest(request.claim().claimId(), request.claim().operands());
         }
 
@@ -1732,7 +1740,7 @@ public class AppChainResource {
             return gateway.authenticatedSnapshot(series, sequence).map(descriptor -> {
                 Map<String, Object> result = snapshotDescriptorView(descriptor);
                 result.put("descriptorCborHex", HexUtil.encodeHexString(
-                        org.yanoproject.api.appchain.snapshot.SnapshotCanonicalCodec
+                        SnapshotCanonicalCodec
                                 .encodeDescriptor(descriptor)));
                 result.put("descriptorCommitmentHex", HexUtil.encodeHexString(descriptor.commitment()));
                 return Response.ok(result).build();
@@ -1775,7 +1783,7 @@ public class AppChainResource {
                     Map<String, Object> result = new LinkedHashMap<>();
                     result.put("schemaVersion", bundle.schemaVersion());
                     result.put("descriptor", snapshotDescriptorView(
-                            org.yanoproject.api.appchain.snapshot.SnapshotCanonicalCodec
+                            SnapshotCanonicalCodec
                                     .decodeDescriptor(bundle.descriptorBytes())));
                     result.put("descriptorCborHex", HexUtil.encodeHexString(bundle.descriptorBytes()));
                     result.put("primaryProof", stateProofView(bundle.descriptorProof()));
@@ -1795,8 +1803,7 @@ public class AppChainResource {
                 return Response.status(429).header("Retry-After", "1").entity(Map.of(
                         "code", "SATURATED",
                         "error", "Authenticated snapshot proof service is saturated")).build();
-            } catch (org.yanoproject.api.appchain.snapshot
-                     .AuthenticatedSnapshotDisputedException disputed) {
+            } catch (AuthenticatedSnapshotDisputedException disputed) {
                 return Response.status(Response.Status.CONFLICT).entity(Map.of(
                         "code", "DISPUTED", "error", disputed.getMessage())).build();
             }
@@ -1820,15 +1827,14 @@ public class AppChainResource {
         private Response verifySnapshotProofAdmitted(SnapshotProofVerificationRequest request) {
             try {
                 byte[] canonicalBundle = canonicalHexBytes(request.bundleCborHex(), "bundleCborHex");
-                var bundle = org.yanoproject.api.appchain.snapshot
-                        .AuthenticatedSnapshotProofBundleCodec.decode(canonicalBundle);
-                var descriptor = org.yanoproject.api.appchain.snapshot.SnapshotCanonicalCodec
+                var bundle = AuthenticatedSnapshotProofBundleCodec.decode(canonicalBundle);
+                var descriptor = SnapshotCanonicalCodec
                         .decodeDescriptor(bundle.descriptorBytes());
                 var primary = bundle.descriptorProof().proof();
                 var secondary = bundle.snapshotProof();
                 String trustMode = request.trustMode() == null || request.trustMode().isBlank()
                         ? "local-anchor" : request.trustMode();
-                org.yanoproject.api.appchain.AppAnchorCommitment confirmedAnchor = null;
+                AppAnchorCommitment confirmedAnchor = null;
                 boolean localDisputed = Boolean.TRUE.equals(
                         gateway.authenticatedSnapshotStatus().get("disputed"));
                 boolean disputed;
@@ -1925,8 +1931,8 @@ public class AppChainResource {
         }
 
         private static boolean sameAnchor(
-                org.yanoproject.api.appchain.AppAnchorCommitment left,
-                org.yanoproject.api.appchain.AppAnchorCommitment right) {
+                AppAnchorCommitment left,
+                AppAnchorCommitment right) {
             return left.chainId().equals(right.chainId())
                     && left.mode().equals(right.mode())
                     && left.anchoredHeight() == right.anchoredHeight()
@@ -1971,8 +1977,7 @@ public class AppChainResource {
             } catch (java.util.concurrent.RejectedExecutionException saturated) {
                 return Response.status(429).header("Retry-After", "1").entity(Map.of(
                         "code", "SATURATED", "error", "Snapshot administration queue is full")).build();
-            } catch (org.yanoproject.api.appchain.snapshot
-                     .AuthenticatedSnapshotDisputedException disputed) {
+            } catch (AuthenticatedSnapshotDisputedException disputed) {
                 return Response.status(Response.Status.CONFLICT).entity(Map.of(
                         "code", "DISPUTED", "error", disputed.getMessage())).build();
             } catch (IllegalStateException rejected) {
@@ -2330,7 +2335,7 @@ public class AppChainResource {
         }
 
         private static Map<String, Object> snapshotDescriptorView(
-                org.yanoproject.api.appchain.snapshot.SnapshotDescriptorV1 descriptor) {
+                SnapshotDescriptorV1 descriptor) {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("seriesId", descriptor.seriesId());
             result.put("sequence", descriptor.sequence());
@@ -2376,7 +2381,7 @@ public class AppChainResource {
         }
 
         private static Map<String, Object> anchorView(
-                org.yanoproject.api.appchain.AppAnchorCommitment anchor) {
+                AppAnchorCommitment anchor) {
             return Map.of("chainId", anchor.chainId(), "mode", anchor.mode(),
                     "anchoredHeight", anchor.anchoredHeight(),
                     "stateRootHex", HexUtil.encodeHexString(anchor.stateRoot()),
@@ -2407,7 +2412,7 @@ public class AppChainResource {
         }
 
         private static Map<String, Object> certifiedBlockView(
-                org.yanoproject.api.appchain.AppBlock block,
+                AppBlock block,
                 byte[] blockHash
         ) {
             Map<String, Object> result = new LinkedHashMap<>();
@@ -2429,7 +2434,7 @@ public class AppChainResource {
         }
 
         private static Map<String, Object> finalityCertificateView(
-                org.yanoproject.api.appchain.FinalityCert certificate
+                FinalityCert certificate
         ) {
             List<Map<String, String>> signatures = new ArrayList<>(
                     certificate.signatures().size());
@@ -2476,7 +2481,7 @@ public class AppChainResource {
                            @jakarta.ws.rs.core.Context jakarta.ws.rs.sse.SseEventSink sink) {
             final AppChainGateway chainGateway = this.gateway;
             Thread.ofVirtual().name("app-chain-sse").start(() -> {
-                java.util.concurrent.BlockingQueue<org.yanoproject.api.appchain.AppBlock> liveBlocks =
+                java.util.concurrent.BlockingQueue<AppBlock> liveBlocks =
                         new java.util.concurrent.LinkedBlockingQueue<>(1024);
                 AutoCloseable subscription = null;
                 try (sink) {
@@ -2537,7 +2542,7 @@ public class AppChainResource {
         private static final ObjectMapper SSE_MAPPER = new ObjectMapper();
 
         private void emitBlock(jakarta.ws.rs.sse.Sse sse, jakarta.ws.rs.sse.SseEventSink sink,
-                               org.yanoproject.api.appchain.AppBlock block, String topicFilter) {
+                               AppBlock block, String topicFilter) {
             int index = 0;
             for (var message : block.messages()) {
                 int messageIndex = index++;

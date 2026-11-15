@@ -1,23 +1,26 @@
 package org.yanoproject.appchain.conformance;
 
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateMachineProvider;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.AppQueryContext;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.AppStateReader;
-import org.yanoproject.api.appchain.codec.MessageCodec;
-import org.yanoproject.api.appchain.transition.CommandDescriptor;
-import org.yanoproject.api.appchain.transition.ConfigurationDescriptor;
-import org.yanoproject.api.appchain.transition.EventDescriptor;
-import org.yanoproject.api.appchain.transition.OrderedLogKernel;
-import org.yanoproject.api.appchain.transition.RuleFact;
-import org.yanoproject.api.appchain.transition.RuleValueView;
-import org.yanoproject.api.appchain.transition.TransitionContext;
-import org.yanoproject.api.appchain.transition.TransitionDecision;
-import org.yanoproject.api.appchain.transition.TransitionKernel;
+import org.yanoproject.x.framework.api.appchain.AppChainInfo;
+
+
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.AppQueryContext;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.AppStateReader;
+import org.yanoproject.x.framework.api.appchain.codec.MessageCodec;
+import org.yanoproject.x.framework.api.appchain.transition.CommandDescriptor;
+import org.yanoproject.x.framework.api.appchain.transition.ConfigurationDescriptor;
+import org.yanoproject.x.framework.api.appchain.transition.EventDescriptor;
+import org.yanoproject.x.framework.api.appchain.transition.OrderedLogKernel;
+import org.yanoproject.x.framework.api.appchain.transition.RuleFact;
+import org.yanoproject.x.framework.api.appchain.transition.RuleValueView;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionContext;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionDecision;
+import org.yanoproject.x.framework.api.appchain.transition.TransitionKernel;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
@@ -58,7 +61,7 @@ public final class ConformanceStateMachineProvider implements AppStateMachinePro
 
             @Override
             public void init(AppStateReader state,
-                             org.yanoproject.api.appchain.AppChainInfo info) {
+                             AppChainInfo info) {
                 ConformanceTcclProbe.productCallback(firstCallback,
                         "state-machine initialization");
             }

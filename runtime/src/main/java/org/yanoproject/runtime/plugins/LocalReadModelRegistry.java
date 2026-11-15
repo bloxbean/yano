@@ -1,7 +1,7 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.plugin.domain.LocalReadModelHost;
-import org.yanoproject.api.plugin.domain.LocalReadModelResult;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelResult;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

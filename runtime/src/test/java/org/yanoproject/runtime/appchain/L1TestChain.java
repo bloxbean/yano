@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.appchain;
 
+
 import co.nstant.in.cbor.model.Array;
 import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.Map;
@@ -148,10 +149,6 @@ final class L1TestChain {
 
     CanonicalBlockReference block(long number) {
         return blocks.get((int) number);
-    }
-
-    L1Point point(long number) {
-        return L1Point.of(block(number));
     }
 
     long tipNumber() {

@@ -1,8 +1,11 @@
 package org.yanoproject.runtime.appchain;
+import org.yanoproject.x.framework.cardano.AppChainManager;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
 import org.yanoproject.p2p.peer.PeerClientFactory;
 import org.yanoproject.p2p.peer.PeerEndpoint;
 import org.yanoproject.runtime.appchain.SharedTransportTestFakes.FakePeerClient;

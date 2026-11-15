@@ -1,13 +1,15 @@
 package org.yanoproject.runtime.appchain;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.client.crypto.api.SigningProvider;
 import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
 import org.yanoproject.api.plugin.PluginActivationException;
-import org.yanoproject.api.appchain.signer.SignerProvider;
-import org.yanoproject.api.appchain.signer.SignerProviderFactory;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;

@@ -2,9 +2,22 @@ name: Stage Consumer Inputs
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Stage foundation APIs first, or the complete host after framework staging
+        type: choice
+        default: host
+        options: [foundation, host]
+      framework_run_id:
+        description: Successful pinned Yano-X framework staging run (host scope only)
+        type: string
+      framework_commit:
+        description: Full Yano-X commit pin (host scope only)
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   stage-consumer-inputs:
@@ -20,8 +33,17 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: 'gradle'
-      - name: Stage exact publications and ordinary JVM ZIP
+      - name: Prepare pinned framework inputs
+        if: inputs.scope != 'foundation'
+        uses: ./.github/actions/prepare-framework-inputs
+        with:
+          run-id: ${{ inputs.framework_run_id }}
+          commit: ${{ inputs.framework_commit }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Stage exact foundation or host publications
         id: stage
+        env:
+          YANO_INPUTS_SCOPE: ${{ inputs.scope }}
         run: bash .github/scripts/stage-consumer-inputs.sh
       - name: Retain qualification inputs (not a public release)
         uses: actions/upload-artifact@v4
@@ -29,4 +51,4 @@ jobs:
           name: yano-inputs-${{ github.sha }}
           path: ${{ steps.stage.outputs.directory }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90

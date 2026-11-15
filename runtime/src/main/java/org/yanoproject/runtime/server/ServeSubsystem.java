@@ -32,6 +32,7 @@ import java.util.function.Supplier;
  * Owns the N2N server lifecycle and transaction-submission handler.
  */
 public final class ServeSubsystem implements Subsystem {
+    private final boolean appOnly;
     private final int serverPort;
     private final long protocolMagic;
     private final ChainState chainState;
@@ -102,10 +103,28 @@ public final class ServeSubsystem implements Subsystem {
                           Supplier<List<PeerStoreEntry>> peerStoreSupplier,
                           RelayConnectionManager relayConnectionManager,
                           Logger log) {
+        this(serverPort, protocolMagic, chainState, transactionAdmission, blockProducerMode,
+                txDiffusionSupplier, relayAutoDiscovery, advertisedHost, advertisedPort,
+                allowPrivateRelayAddresses, peerStoreSupplier, relayConnectionManager, log, false);
+    }
+
+    public static ServeSubsystem appOnly(int serverPort, long networkMagic, Logger log) {
+        return new ServeSubsystem(serverPort, networkMagic, null, null, false, null,
+                false, null, 0, false, null, null, log, true);
+    }
+
+    private ServeSubsystem(int serverPort, long protocolMagic, ChainState chainState,
+                           TransactionAdmission transactionAdmission, boolean blockProducerMode,
+                           Supplier<TxDiffusion> txDiffusionSupplier, boolean relayAutoDiscovery,
+                           String advertisedHost, int advertisedPort, boolean allowPrivateRelayAddresses,
+                           Supplier<List<PeerStoreEntry>> peerStoreSupplier,
+                           RelayConnectionManager relayConnectionManager, Logger log, boolean appOnly) {
+        this.appOnly = appOnly;
         this.serverPort = serverPort;
         this.protocolMagic = protocolMagic;
-        this.chainState = Objects.requireNonNull(chainState, "chainState");
-        this.transactionAdmission = Objects.requireNonNull(transactionAdmission, "transactionAdmission");
+        this.chainState = appOnly ? null : Objects.requireNonNull(chainState, "chainState");
+        this.transactionAdmission = appOnly ? null
+                : Objects.requireNonNull(transactionAdmission, "transactionAdmission");
         this.blockProducerMode = blockProducerMode;
         this.txDiffusionSupplier = txDiffusionSupplier;
         this.relayAutoDiscovery = relayAutoDiscovery;
@@ -128,23 +147,18 @@ public final class ServeSubsystem implements Subsystem {
      * peers can negotiate it; plain Cardano peers are unaffected. Must be called
      * before {@link #start()}.
      */
-    public void enableAppLayer(List<AgentFactory> agentFactories) {
+    public synchronized void enableAppLayer(List<AgentFactory> agentFactories) {
+        if (running.get()) throw new IllegalStateException("Register protocols before server startup");
         this.appLayerAgentFactories = agentFactories != null ? List.copyOf(agentFactories) : List.of();
     }
 
-    @Override
-    public synchronized void start() {
-        if (running.get()) {
-            return;
+    private NodeServer createServer() {
+        if (appOnly) {
+            if (appLayerAgentFactories.isEmpty()) {
+                throw new IllegalStateException("App-only server requires app protocol registrations");
+            }
+            return NodeServer.appOnly(serverPort, protocolMagic, appLayerAgentFactories);
         }
-        Thread existingThread = serverThread;
-        if (existingThread != null && existingThread.isAlive()) {
-            throw new IllegalStateException("NodeServer is still stopping");
-        }
-
-        try {
-            log.info("Starting NodeServer on port {}...", serverPort);
-            log.info("Protocol magic: {}", protocolMagic);
             logStartTip();
 
             TxDiffusion txDiffusion = txDiffusionSupplier != null ? txDiffusionSupplier.get() : null;
@@ -178,12 +192,28 @@ public final class ServeSubsystem implements Subsystem {
             if (!appFactories.isEmpty()) {
                 log.info("App-layer server agents enabled ({} factory/factories)", appFactories.size());
             }
-            NodeServer server = new NodeServer(serverPort,
+            return new NodeServer(serverPort,
                     versionTable,
                     chainState,
                     txSubmissionHandler,
                     txSubmissionConfig,
                     agentFactories);
+    }
+
+    @Override
+    public synchronized void start() {
+        if (running.get()) {
+            return;
+        }
+        Thread existingThread = serverThread;
+        if (existingThread != null && existingThread.isAlive()) {
+            throw new IllegalStateException("NodeServer is still stopping");
+        }
+
+        try {
+            log.info("Starting NodeServer on port {}...", serverPort);
+            log.info("Protocol magic: {}", protocolMagic);
+            NodeServer server = createServer();
             if (relayConnectionManager != null) {
                 server.setConnectionListener(relayConnectionManager.yaciServerConnectionListener());
             }
@@ -222,7 +252,8 @@ public final class ServeSubsystem implements Subsystem {
             }
 
             log.info("NodeServer started successfully on port {}", serverPort);
-            log.info("Server is ready to accept connections from Cardano nodes");
+            log.info("Server is ready to accept {} connections",
+                    appOnly ? "standalone application-ledger" : "Cardano node");
             if (relayAutoDiscovery) {
                 log.info("Relay peer-sharing enabled (advertised endpoint: {}:{})",
                         advertisedHost != null && !advertisedHost.isBlank() ? advertisedHost : "<none>",

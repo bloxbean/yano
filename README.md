@@ -47,7 +47,7 @@ Yano's initial goal is to fill three roles:
 - **Past-time-travel mode** — start a fresh devnet "in the past", produce blocks deterministically
   from slot 0, then catch up to wall-clock; useful for replaying long histories quickly.
 - **Native image** — supports a GraalVM native build for fast startup and small footprint.
-- **Modular** — publishable libraries (`yano-core-api`, `yano-runtime`, `yano-ledger-state`, …)
+- **Modular** — publishable libraries (`yano-node-api`, `yano-cardano-api`, `yano-runtime`, `yano-ledger-state`, …)
   let downstream projects depend on just the slice they need.
 
 ---
@@ -141,7 +141,8 @@ ext {
 dependencies {
     implementation "org.yanoproject:yano-runtime:$yanoVersion"
     // or pull a slim slice:
-    implementation "org.yanoproject:yano-core-api:$yanoVersion"
+    implementation "org.yanoproject:yano-node-api:$yanoVersion"
+    implementation "org.yanoproject:yano-cardano-api:$yanoVersion"
     implementation "org.yanoproject:yano-ledger-state:$yanoVersion"
 }
 ```
@@ -150,7 +151,9 @@ dependencies {
 
 | Coordinate | What it is |
 |---|---|
-| `org.yanoproject:yano-core-api` | Public node interfaces and plugin SPI |
+| `org.yanoproject:yano-node-api` | Shared node/configuration contracts and plugin SPI |
+| `org.yanoproject:yano-cardano-api` | Cardano chain, ledger, and query contracts |
+| `org.yanoproject:yano-host-api` | Independently versioned framework hosting capabilities |
 | `org.yanoproject:yano-runtime` | Node implementation with RocksDB persistence |
 | `org.yanoproject:yano-ledger-state` | Account / delegation / governance state stores |
 | `org.yanoproject:yano-ledger-rules` | Transaction validation API and Conway ledger rules |
@@ -181,7 +184,9 @@ A distributable zip (`yano-native-<version>-<platform>.zip`) is produced under
 
 ```
 yano/
-├── core-api/            # Public node interfaces + plugin SPI
+├── node-api/            # Shared node/configuration contracts + plugin SPI
+├── cardano-api/         # Cardano chain, ledger, and query contracts
+├── host-api/            # Versioned framework hosting capabilities
 ├── plugin-catalog/      # Manifest validation + JVM-only yano-plugins CLI
 ├── runtime/             # Main node implementation (RocksDB-backed)
 ├── ledger-state/        # Account / delegation / governance state stores

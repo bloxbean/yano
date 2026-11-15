@@ -1,6 +1,7 @@
 package org.yanoproject.runtime.internal;
 
 import org.yanoproject.runtime.kernel.KernelLifecycleException;
+import org.yanoproject.runtime.host.DefaultHostLifecycleRegistry;
 import org.yanoproject.runtime.kernel.NodeKernel;
 import org.yanoproject.runtime.kernel.ServiceRegistry;
 import org.yanoproject.runtime.kernel.Subsystem;
@@ -26,8 +27,11 @@ class RuntimeKernelStagesTest {
             @Override public void start() { actions.events.add("app-chain-start"); }
             @Override public void stop() { actions.events.add("app-chain-stop"); }
         };
+        var registered = new DefaultHostLifecycleRegistry();
+        registered.registerBeforePublication(appChain);
+        registered.seal();
         NodeKernel kernel = new NodeKernel(
-                RuntimeKernelStages.create(actions, List.of(appChain)),
+                RuntimeKernelStages.create(actions, registered.subsystems()),
                 new SubsystemContext(
                         new NoopEventBus(),
                         new org.yanoproject.runtime.kernel.Schedulers(),
@@ -47,6 +51,7 @@ class RuntimeKernelStagesTest {
                 "app-chain-stop",
                 "sync-stop");
         kernel.close();
+        registered.close();
     }
 
     @Test

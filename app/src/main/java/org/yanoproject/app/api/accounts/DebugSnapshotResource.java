@@ -1,6 +1,7 @@
 package org.yanoproject.app.api.accounts;
 
 import org.yanoproject.app.api.ApiGroup;
+import org.yanoproject.app.api.RequiresCardano;
 import org.yanoproject.ledgerstate.AccountStateCborCodec;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
 import org.yanoproject.ledgerstate.EpochRewardCalculator;
@@ -21,6 +22,7 @@ import java.util.*;
 @Extension(name = ApiGroup.ADMIN, value = "")
 @Path("/api/debug")
 @Produces(MediaType.APPLICATION_JSON)
+@RequiresCardano
 public class DebugSnapshotResource {
 
     @Inject

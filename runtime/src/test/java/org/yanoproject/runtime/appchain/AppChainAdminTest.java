@@ -1,14 +1,16 @@
 package org.yanoproject.runtime.appchain;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppCapabilityManifest;
-import org.yanoproject.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppCapabilityManifest;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;

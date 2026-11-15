@@ -1,4 +1,9 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.deliverInbound;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.signer;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppMessageSigner;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.model.Block;
@@ -15,11 +20,11 @@ import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import org.yanoproject.api.CanonicalBlockReference;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.l1view.L1Observation;
-import org.yanoproject.api.appchain.l1view.L1Observer;
-import org.yanoproject.api.appchain.l1view.L1ObserverConsensusIdentity;
-import org.yanoproject.api.appchain.l1view.L1ObserverProvider;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observation;
+import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverConsensusIdentity;
+import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
 import org.yanoproject.api.events.BlockAppliedEvent;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -93,7 +98,7 @@ class AppChainSenderSeqTest {
         long finalizedSeq = node.recentMessages(1).get(0).senderSeq();
 
         // Same sender, same (already finalized) seq, different body → replay
-        node.onInboundMessages(List.of(
+        deliverInbound(node, List.of(
                 signedMessage(KEY_A, "t", finalizedSeq, "replayed-different-body")));
 
         Map<String, Object> status = node.status();
@@ -248,7 +253,7 @@ class AppChainSenderSeqTest {
     /** Two crafted valid member messages with the SAME sender-seq. */
     private void injectDuplicateSeqPair(AppChainSubsystem nodeA) {
         long seq = 1_000_000;
-        nodeA.onInboundMessages(List.of(
+        deliverInbound(nodeA, List.of(
                 signedMessage(KEY_A, "t", seq, "payload-x"),
                 signedMessage(KEY_A, "t", seq, "payload-y")));
     }
@@ -409,7 +414,7 @@ class AppChainSenderSeqTest {
 
     /** A properly signed member envelope with a chosen sender-seq. */
     private static AppMessage signedMessage(byte[] seedKey, String topic, long seq, String body) {
-        AppMessageSigner signer = new AppMessageSigner(HexUtil.encodeHexString(seedKey));
+        AppMessageSigner signer = signer(HexUtil.encodeHexString(seedKey));
         byte[] payload = body.getBytes(StandardCharsets.UTF_8);
         long expiresAt = System.currentTimeMillis() / 1000 + 600;
         byte[] signedBody = AppMessage.signedBodyBytes(CHAIN_ID, topic,

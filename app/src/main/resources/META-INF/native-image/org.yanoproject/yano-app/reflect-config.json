@@ -247,7 +247,7 @@
     "allDeclaredConstructors": true
   },
   {
-    "name": "org.yanoproject.api.appchain.MessageRef",
+    "name": "org.yanoproject.x.framework.api.appchain.MessageRef",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
     "allDeclaredConstructors": true

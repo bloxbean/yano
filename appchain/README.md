@@ -1,32 +1,34 @@
-# Yano app-chain core modules
+# Yano app-chain host modules
 
-Yano owns the generic, GraalVM-compatible app-chain host framework and ships
-`ordered-log` as its one out-of-box state machine. All other stock state
-machines, capabilities, connectors, products, examples, and JVM-only tools are
-built in [Yano X](https://github.com/bloxbean/yano-x).
+Yano hosts the application-ledger framework through its stable Host API and
+preserves the integrated Cardano deployment. The framework, `ordered-log`,
+optional Cardano integration, and stock extensions are owned by
+[Yano X](https://github.com/bloxbean/yano-x/tree/main/framework).
 
-The Java namespace remains stable across both repositories:
-`org.yanoproject.appchain.*`.
+Existing public Java packages remain unchanged across the repository split,
+including `org.yanoproject.api.appchain`, `org.yanoproject.runtime.appchain`,
+and `org.yanoproject.appchain`.
 
 ## Retained modules
 
 | Gradle project | Path | Purpose |
 |---|---|---|
-| `appchain-config` | `appchain-config/` | Framework-neutral app-chain configuration contracts. |
+| `appchain-config` | `appchain-config/` | Compatibility coordinate for the configuration contracts owned by Yano-X. |
 | `appchain-testkit` | `appchain-testkit/` | Embedded multi-node JUnit test support and shared conformance contracts. |
 | `appchain-proof-verifier` | `appchain-proof-verifier/` | Release-matched portable proof verification. |
-| `appchain-anchor-onchain` | `onchain/appchain-anchor-onchain/` | Default Plutus V3 script-anchor validators and checked-in artifacts. |
+| `appchain-anchor-onchain` | `onchain/appchain-anchor-onchain/` | Compatibility coordinate for the checked-in validators and artifacts owned by Yano-X. |
 | `appchain-plugin-conformance` | `fixtures/appchain-plugin-conformance/` | Host/plugin compatibility fixtures used across the repository boundary. |
 
-The runtime implementation, app-chain SPIs, `ordered-log`, REST host, and
-GraalVM integration live in the top-level `runtime`, `core-api`, and `app`
-modules.
+The framework runtime, application-ledger SPIs, and `ordered-log` live in
+Yano-X `framework/core` and `framework/api`; Cardano integration lives in its
+optional `framework/cardano` and `framework/cardano-api` modules. Yano retains
+the Host API in `host-api`, node assembly in `runtime`, and REST/native assembly
+in `app`.
 
 ## Build
 
 ```bash
-./gradlew :appchain-config:test :appchain-testkit:test
-./gradlew :appchain-proof-verifier:test :appchain-anchor-onchain:test
+./gradlew :appchain-testkit:test :appchain-proof-verifier:test
 ./gradlew :app:quarkusBuild
 ```
 

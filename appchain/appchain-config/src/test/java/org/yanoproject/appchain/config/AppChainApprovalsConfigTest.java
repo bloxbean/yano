@@ -1,6 +1,9 @@
 package org.yanoproject.appchain.config;
+import org.yanoproject.x.framework.config.AppChainApprovalsConfig;
+import org.yanoproject.x.framework.config.AppChainEffectsConfig;
 
-import org.yanoproject.api.appchain.effects.FinalityGate;
+
+import org.yanoproject.x.framework.api.appchain.effects.FinalityGate;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;

@@ -177,7 +177,7 @@ host facade.
 Create this exact resource:
 
 ```text
-META-INF/services/org.yanoproject.api.plugin.domain.DomainApiProvider
+META-INF/services/org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider
 ```
 
 Its content is the provider's binary class name:
@@ -229,9 +229,11 @@ fails catalog validation before product activation.
 ## 4. Build, deploy, and secure
 
 Package one self-contained reproducible plugin JAR. Compile against
-`yano-core-api` as `compileOnly` and never bundle
-`org/yanoproject/api/**`. Shade third-party runtime dependencies into
-the same JAR; adjacent thin dependency JARs are not one catalog bundle.
+`org.yanoproject:yano-node-api` for the node/plugin SPI and
+`org.yanoproject.x:yano-x-appchain-api` for application-ledger and domain APIs,
+using `compileOnly`. Add `org.yanoproject:yano-cardano-api` only when using
+Cardano-specific contracts. Never bundle `org/yanoproject/api/**`. Shade
+third-party runtime dependencies into the same JAR; adjacent thin dependency JARs are not one catalog bundle.
 
 Copy the JAR into `yano.plugins.directory`. If an allow-list is configured,
 allow the bundle id. Select the state-machine contribution by its short

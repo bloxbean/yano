@@ -1,8 +1,10 @@
 package org.yanoproject.runtime.appchain;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -32,9 +34,9 @@ class AppChainMpfPruningSchedulerTest {
                 .blockIntervalMs(100)
                 .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .pluginSettings(Map.of(
-                        StateProofPruningSettings.ENABLED, "true",
-                        StateProofPruningSettings.RETAIN_HEIGHTS, "2",
-                        StateProofPruningSettings.INTERVAL_SECONDS, "1"))
+                        "state.proof-pruning.enabled", "true",
+                        "state.proof-pruning.retain-heights", "2",
+                        "state.proof-pruning.interval-seconds", "1"))
                 .build();
 
         try (AppChainSubsystem node = new AppChainSubsystem(config, 42, null, null,

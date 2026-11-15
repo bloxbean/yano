@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.appchain;
 
+
 import com.bloxbean.cardano.yaci.core.protocol.appchainsync.AppChainSyncClientAgent;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.AppMsgSubmissionAgent;
@@ -123,105 +124,4 @@ final class SharedTransportTestFakes {
         }
     }
 
-    /** Scriptable SharedAppTransport for link tests. */
-    static final class FakeTransport extends SharedAppTransport {
-        boolean up;
-        boolean acceptEnqueue = true;
-        boolean acceptCatchUp = true;
-        final List<AppMessage> enqueued = new ArrayList<>();
-        final List<String> catchUpChains = new ArrayList<>();
-
-        FakeTransport() {
-            super(AppMsgSubmissionConfig.builder().chainIds(Set.of("c1")).build(),
-                    Set.of("apphost:13337"), org.slf4j.LoggerFactory.getLogger("fake"));
-        }
-
-        @Override
-        boolean isUp(String endpointKey) {
-            return up;
-        }
-
-        @Override
-        boolean enqueue(String endpointKey, AppMessage message) {
-            if (up && acceptEnqueue) {
-                enqueued.add(message);
-                return true;
-            }
-            return false;
-        }
-
-        @Override
-        boolean requestCatchUp(String endpointKey, String chainId, long fromHeight, long toHeight,
-                               AppPeerClient.CatchUpHandler handler) {
-            if (up && acceptCatchUp) {
-                catchUpChains.add(chainId);
-                return true;
-            }
-            return false;
-        }
-    }
-
-    /** Recording AppPeerLink used as the shared link's fallback. */
-    static final class FakeFallbackLink implements AppPeerLink {
-        final List<AppMessage> enqueued = new ArrayList<>();
-        final List<String> catchUpChains = new ArrayList<>();
-        final AtomicInteger connectTicks = new AtomicInteger();
-        final AtomicInteger keepAliveTicks = new AtomicInteger();
-        boolean shutdownCalled;
-        boolean connected = true;
-
-        @Override
-        public String peerId() {
-            return "fallback";
-        }
-
-        @Override
-        public boolean isConnected() {
-            return connected;
-        }
-
-        @Override
-        public void enqueue(AppMessage message) {
-            enqueued.add(message);
-        }
-
-        @Override
-        public boolean requestCatchUp(String chainId, long fromHeight, long toHeight) {
-            catchUpChains.add(chainId);
-            return true;
-        }
-
-        @Override
-        public void ensureConnectedAsync() {
-            connectTicks.incrementAndGet();
-        }
-
-        @Override
-        public void keepAliveTick() {
-            keepAliveTicks.incrementAndGet();
-        }
-
-        @Override
-        public void shutdown() {
-            shutdownCalled = true;
-        }
-
-        @Override
-        public String transport() {
-            return "dedicated";
-        }
-    }
-
-    /** Minimal live AppMessage (unexpired, no signature — transport-only tests). */
-    static AppMessage message(String body) {
-        return AppMessage.builder()
-                .messageId(new byte[32])
-                .chainId("c1")
-                .topic("t")
-                .sender(new byte[32])
-                .senderSeq(1)
-                .expiresAt(System.currentTimeMillis() / 1000 + 600)
-                .body(body.getBytes(java.nio.charset.StandardCharsets.UTF_8))
-                .build();
-    }
 }

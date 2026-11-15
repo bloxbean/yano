@@ -1,11 +1,11 @@
 package org.yanoproject.appchain.conformance;
 
-import org.yanoproject.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
-import org.yanoproject.api.appchain.effects.EffectExecution;
-import org.yanoproject.api.appchain.effects.EffectExecutionContext;
-import org.yanoproject.api.appchain.effects.EffectExecutorOperationalSnapshot;
-import org.yanoproject.api.appchain.effects.PendingEffect;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
+import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecution;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecutionContext;
+import org.yanoproject.x.framework.api.appchain.effects.EffectExecutorOperationalSnapshot;
+import org.yanoproject.x.framework.api.appchain.effects.PendingEffect;
 
 import java.util.List;
 import java.util.Map;

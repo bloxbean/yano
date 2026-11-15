@@ -1,9 +1,9 @@
 package org.yanoproject.ledgerstate;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.l1view.GovernanceActionType;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
+import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
 import org.yanoproject.ledgerstate.governance.GovernanceCborCodec;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ReadOptions;

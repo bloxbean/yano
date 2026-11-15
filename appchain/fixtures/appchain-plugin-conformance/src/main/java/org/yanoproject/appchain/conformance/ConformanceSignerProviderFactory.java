@@ -1,7 +1,7 @@
 package org.yanoproject.appchain.conformance;
 
-import org.yanoproject.api.appchain.signer.SignerProvider;
-import org.yanoproject.api.appchain.signer.SignerProviderFactory;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
+import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 

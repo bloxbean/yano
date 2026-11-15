@@ -19,6 +19,7 @@ on:
       - 'ledger-conformance/src/test/java/org/yanoproject/ledger/conformance/diversity/**'
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -40,6 +41,10 @@ jobs:
       - name: Fetch the pinned corpora
         run: ledger-conformance/node-diversity/fetch-corpora.sh "$RUNNER_TEMP/corpora"
 
+      - name: Prepare pinned framework inputs
+        uses: ./.github/actions/prepare-framework-inputs
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate the reports
         run: |
           chmod +x gradlew

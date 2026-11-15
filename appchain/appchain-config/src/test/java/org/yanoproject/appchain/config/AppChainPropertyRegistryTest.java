@@ -1,6 +1,17 @@
 package org.yanoproject.appchain.config;
+import org.yanoproject.x.framework.config.AppChainConfigParser;
+import org.yanoproject.x.framework.config.AppChainMetadataSource;
+import org.yanoproject.x.framework.config.AppChainPropertyDefinition;
+import org.yanoproject.x.framework.config.AppChainPropertyRegistry;
+import org.yanoproject.x.framework.config.ChangePolicy;
+import org.yanoproject.x.framework.config.ConstraintProvenance;
+import org.yanoproject.x.framework.config.DynamicNamespaceDefinition;
+import org.yanoproject.x.framework.config.PropertyScope;
+import org.yanoproject.x.framework.config.PropertyType;
+import org.yanoproject.x.framework.config.ValidationCoverage;
 
-import org.yanoproject.api.appchain.AppChainConfig;
+
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.junit.jupiter.api.Test;

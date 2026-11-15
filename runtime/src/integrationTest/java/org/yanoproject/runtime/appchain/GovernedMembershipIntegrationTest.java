@@ -1,4 +1,11 @@
 package org.yanoproject.runtime.appchain;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppMessageSigner;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.governanceCommand;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.submitGovernance;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.signer;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.deliverInbound;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.network.server.NodeServer;
@@ -9,17 +16,17 @@ import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableCon
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppSubmissionRejectedException;
-import org.yanoproject.api.appchain.MembershipChangeRejectedException;
-import org.yanoproject.api.appchain.schema.CborSchema;
-import org.yanoproject.api.appchain.topics.TopicCommandRules;
-import org.yanoproject.api.appchain.topics.TopicKeys;
-import org.yanoproject.api.appchain.topics.TopicPolicyProof;
-import org.yanoproject.api.appchain.topics.TopicWire;
-import org.yanoproject.api.appchain.topics.TopicWire.Policy;
-import org.yanoproject.api.appchain.topics.TopicWire.Writers;
-import org.yanoproject.api.appchain.topics.TopicWireCodec;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppSubmissionRejectedException;
+import org.yanoproject.x.framework.api.appchain.MembershipChangeRejectedException;
+import org.yanoproject.x.framework.api.appchain.schema.CborSchema;
+import org.yanoproject.x.framework.api.appchain.topics.TopicCommandRules;
+import org.yanoproject.x.framework.api.appchain.topics.TopicKeys;
+import org.yanoproject.x.framework.api.appchain.topics.TopicPolicyProof;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWire;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWire.Policy;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWire.Writers;
+import org.yanoproject.x.framework.api.appchain.topics.TopicWireCodec;
 import org.yanoproject.api.util.StrictEd25519;
 import org.yanoproject.appchain.proof.TopicPolicyProofVerifier;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -52,6 +59,11 @@ class GovernedMembershipIntegrationTest {
     private static final Logger log = LoggerFactory.getLogger(GovernedMembershipIntegrationTest.class);
     private static final long MAGIC = 42;
     private static final String CHAIN_ID = "gov-chain";
+    // Pin the public governance wire contract independently of runtime internals.
+    private static final String GOVERNANCE_TOPIC = "~governance/membership";
+    private static final int OP_ADD = 0;
+    private static final int OP_SET_THRESHOLD = 2;
+    private static final long ACTIVATION_LAG = 10;
 
     private static final byte[] KEY_A = seed(71); // fixed proposer
     private static final byte[] KEY_B = seed(72);
@@ -148,10 +160,10 @@ class GovernedMembershipIntegrationTest {
         // threshold 5 > member count: the admin path refuses it up front ...
         assertQuorumRejected(() -> nodeA.setThreshold(5));
         // ... and a command that still reaches the chain activates VOID on every node
-        byte[] command = GovernedMembership.encodeCommand(GovernedMembership.OP_SET_THRESHOLD,
-                null, 5, GovernedMembership.DEFAULT_ACTIVATION_LAG);
-        nodeA.submitGovernance(GovernedMembership.TOPIC, command);
-        nodeB.submitGovernance(GovernedMembership.TOPIC, command);
+        byte[] command = governanceCommand(OP_SET_THRESHOLD,
+                null, 5, ACTIVATION_LAG);
+        submitGovernance(nodeA, GOVERNANCE_TOPIC, command);
+        submitGovernance(nodeB, GOVERNANCE_TOPIC, command);
         awaitTrue("both commands finalized", () -> nodeA.tipHeight() >= 1 && nodeB.tipHeight() >= 1);
 
         String id = nodeA.submit("t", "still-alive".getBytes(StandardCharsets.UTF_8));
@@ -182,13 +194,13 @@ class GovernedMembershipIntegrationTest {
         AppChainSubsystem nodeC = cluster.get(2);
 
         assertQuorumRejected(() -> nodeA.addMember(pubD));
-        byte[] add = GovernedMembership.encodeCommand(GovernedMembership.OP_ADD,
-                HexUtil.decodeHexString(pubD), 0, GovernedMembership.DEFAULT_ACTIVATION_LAG);
-        nodeA.submitGovernance(GovernedMembership.TOPIC, add);
-        nodeB.submitGovernance(GovernedMembership.TOPIC, add);
+        byte[] add = governanceCommand(OP_ADD,
+                HexUtil.decodeHexString(pubD), 0, ACTIVATION_LAG);
+        submitGovernance(nodeA, GOVERNANCE_TOPIC, add);
+        submitGovernance(nodeB, GOVERNANCE_TOPIC, add);
         long approvalHeight = awaitFinalizedTraffic(nodeA, cluster, "after-add");
         // Past every height where a 2-of-4 epoch could have started
-        long target = approvalHeight + GovernedMembership.DEFAULT_ACTIVATION_LAG + 2;
+        long target = approvalHeight + ACTIVATION_LAG + 2;
         for (int i = 0; nodeC.tipHeight() < target; i++) {
             awaitFinalizedTraffic(nodeA, cluster, "past-activation-" + i);
         }
@@ -275,8 +287,8 @@ class GovernedMembershipIntegrationTest {
 
         // C's early message reaches both members' pools, as gossip from C would
         AppMessage early = signedBy(KEY_C, "t", "early-from-c".getBytes(StandardCharsets.UTF_8), 1);
-        nodeA.onInboundMessages(List.of(early));
-        nodeB.onInboundMessages(List.of(early));
+        deliverInbound(nodeA, List.of(early));
+        deliverInbound(nodeB, List.of(early));
 
         // The chain keeps finalizing existing members' traffic below the activation height
         for (int i = 0; i < 3; i++) {
@@ -356,7 +368,7 @@ class GovernedMembershipIntegrationTest {
 
     /** An ordinary app message signed by {@code seed}, as that member's node would gossip it. */
     private static AppMessage signedBy(byte[] seed, String topic, byte[] body, long senderSeq) {
-        AppMessageSigner signer = new AppMessageSigner(HexUtil.encodeHexString(seed));
+        AppMessageSigner signer = signer(HexUtil.encodeHexString(seed));
         long expiresAt = System.currentTimeMillis() / 1000 + 600;
         byte[] signedBody = AppMessage.signedBodyBytes(CHAIN_ID, topic, signer.publicKey(),
                 senderSeq, expiresAt, body);
@@ -642,7 +654,7 @@ class GovernedMembershipIntegrationTest {
                 pubHex(issuer), new byte[64]);
         byte[] signed = TopicWireCodec.delegationSignedBytes(CHAIN_ID, generation, unsigned);
         return new TopicWire.Delegation(unsigned.delegate(), scope, notBefore, notAfter, unsigned.issuer(),
-                new AppMessageSigner(HexUtil.encodeHexString(issuer)).sign(signed));
+                signer(HexUtil.encodeHexString(issuer)).sign(signed));
     }
 
     /** A write signed by the session key under {@code delegation}. */
@@ -654,7 +666,7 @@ class GovernedMembershipIntegrationTest {
                 TopicWireCodec.delegationHash(CHAIN_ID, generation, delegation)));
         return TopicWireCodec.encodeFrame(new TopicWire.Frame(payload, new TopicWire.WriterProof(nonce(nonce),
                 notAfter, List.of(new TopicWire.Signature(pubHex(sessionKey),
-                new AppMessageSigner(HexUtil.encodeHexString(sessionKey)).sign(statement))), delegation)));
+                signer(HexUtil.encodeHexString(sessionKey)).sign(statement))), delegation)));
     }
 
     private static boolean active(AppChainSubsystem node, String name) {
@@ -673,7 +685,7 @@ class GovernedMembershipIntegrationTest {
     private static byte[] signed(TopicWire.CommandStatement statement, byte[] key) {
         byte[] bytes = TopicWireCodec.encodeCommandStatement(statement);
         return TopicWireCodec.encodeRegistryCommand(new TopicWire.RegistryCommand(statement, List.of(
-                new TopicWire.Signature(pubHex(key), new AppMessageSigner(HexUtil.encodeHexString(key)).sign(bytes)))));
+                new TopicWire.Signature(pubHex(key), signer(HexUtil.encodeHexString(key)).sign(bytes)))));
     }
 
     private static byte[] frame(String generation, String topic, byte[] payload, byte[] key) {
@@ -682,7 +694,7 @@ class GovernedMembershipIntegrationTest {
                 topic, TopicWireCodec.blake2b256Hex(payload), "02".repeat(16), notAfter, null));
         return TopicWireCodec.encodeFrame(new TopicWire.Frame(payload, new TopicWire.WriterProof("02".repeat(16),
                 notAfter, List.of(new TopicWire.Signature(pubHex(key),
-                new AppMessageSigner(HexUtil.encodeHexString(key)).sign(statement))), null)));
+                signer(HexUtil.encodeHexString(key)).sign(statement))), null)));
     }
 
     private static void assertQuorumRejected(ThrowingCallable change) {

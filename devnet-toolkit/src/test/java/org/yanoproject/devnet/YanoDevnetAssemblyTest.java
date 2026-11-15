@@ -3,7 +3,7 @@ package org.yanoproject.devnet;
 import org.yanoproject.api.MempoolQueryGateway;
 import org.yanoproject.api.MempoolAdminGateway;
 import org.yanoproject.api.config.YanoConfig;
-import org.yanoproject.api.plugin.domain.DomainApiGateway;
+import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
 import org.yanoproject.runtime.assembly.YanoAssembly;
 import org.yanoproject.runtime.assembly.Yano;
 import org.junit.jupiter.api.Test;

@@ -1,7 +1,7 @@
 package org.yanoproject.runtime.appchain;
 
-import org.yanoproject.api.appchain.state.StateCommitmentIdentity;
-import org.yanoproject.api.appchain.state.StateCommitmentProfiles;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentIdentity;
+import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 
 final class AppChainIntegrationFixtures {
     static final StateCommitmentIdentity MPF = StateCommitmentIdentity.explicit(

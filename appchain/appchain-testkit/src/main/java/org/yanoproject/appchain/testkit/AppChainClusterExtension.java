@@ -7,9 +7,9 @@ import com.bloxbean.cardano.yaci.core.protocol.handshake.util.N2NVersionTableCon
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppChainGateway;
-import org.yanoproject.runtime.appchain.AppChainSubsystem;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppChainGateway;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
 import org.junit.jupiter.api.extension.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -72,7 +72,7 @@ for (const source of configFiles) {
     if (values.length) configuration.push({ source, profile, values });
   }
 }
-const keysSource = 'core-api/src/main/java/org/yanoproject/api/config/YanoPropertyKeys.java';
+const keysSource = 'node-api/src/main/java/org/yanoproject/api/config/YanoPropertyKeys.java';
 const keyText = await readFile(resolve(repo, keysSource), 'utf8');
 // Resolve constants composed from literals and other constants (for example
 // `PREFIX + "dir"`). Nested classes are sequential, so a declaration belongs to

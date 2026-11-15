@@ -1,0 +1,53 @@
+{
+  "baselineProvenance": "Local Maven artifacts; no claim of remote release verification",
+  "compiler": "javac 25.0.2",
+  "release": 25,
+  "compilation": "Explicit frozen baseline classpath only; empty sourcepath; annotation processing disabled; no current project classes or sources",
+  "compileInputs": [
+    {
+      "coordinate": "org.yanoproject:yano-runtime:0.1.0-pre19",
+      "sha256": "d99de754c54816a01b263bf02a4555befeb6623dc3cc633ac19b4299480293ed"
+    },
+    {
+      "coordinate": "org.yanoproject:yano-core-api:0.1.0-pre19",
+      "sha256": "e8cc29db9c9e36dd743c9ae81bd42e806a4035e87d090d392af017c5f12554e9"
+    },
+    {
+      "coordinate": "org.yanoproject:yano-p2p:0.1.0-pre19",
+      "sha256": "5a57d987ed3b36ca08870b26061b030b178c34162f6147d08df6e9c1a0818aee"
+    },
+    {
+      "coordinate": "com.bloxbean.cardano:yaci-core:0.5.0-pre15",
+      "sha256": "5450af2cf81d1aa046d3c92eaf7513c646939eebf2f3728f165c8ee88bac9896"
+    },
+    {
+      "coordinate": "com.bloxbean.cardano:yaci-helper:0.5.0-pre15",
+      "sha256": "b9d4a715cc9ecb1a6b082cbea8bf76aec23e2f72250a9f833473cc1b133222f0"
+    },
+    {
+      "coordinate": "com.bloxbean.cardano:yaci-events-core:0.5.0-pre15",
+      "sha256": "a3e4575413fdd9218fa3d1468b617bc4ca2cf08f2477d3577795a6d4037657bf"
+    },
+    {
+      "coordinate": "com.bloxbean.cardano:cardano-client-core-api:0.8.0-pre7",
+      "sha256": "dcdca0e62b6cf3dc80f4c0a0f87010565afd5117af2f3babb5f0eba1a62f2114"
+    },
+    {
+      "coordinate": "org.slf4j:slf4j-api:2.0.18",
+      "sha256": "44508fd1576500688c790b190acdd16fec4f8c79a3e0b900afd70503cf055f55"
+    }
+  ],
+  "sourceSha256": "523356f9929753849e0aeba2123b0440d986cf31dd480a95554eb8d30591f727",
+  "fixtureSha256": "af4366481b80107aba275a02d25fb16b32b8e0258714fa6f951aedc0f81e47e7",
+  "fixtureRevision": 2,
+  "revisionReason": "The original client assumed synchronous stop/start. The checksum-pinned pre19 runtime already returns from engine shutdown before termination and rejects restart while deferredRuntimeShutdown is incomplete. Retry only that exact refusal after each explicit stop; preserve all other checks and failures.",
+  "supersedes": {
+    "revision": 1,
+    "gitCommit": "dc82788aa",
+    "sourceSha256": "9e613692631d0b1bfac9754ea13018a1c4afadfb2f2f491a6f249dfe584c1667",
+    "fixtureSha256": "430fcfb2ea3d53ed6cc7d4b0d5e3c17eedd619620d5f6e1d8036c68a0192c787",
+    "observedFailure": "PriorCompiledRuntimeCompatibilityTest failed at Pre19RuntimeClient.java:104 in the 573-test consensus gate; the same original fixture passed the preceding focused host gate.",
+    "baselineEvidence": "javap -p -c on the checksum-pinned pre19 runtime: AppChainSubsystem.startTransition checks deferredRuntimeShutdown.isDone before opening a generation; AppChainEngine.close calls requestExecutorShutdown, which calls shutdownNow without waiting for termination."
+  },
+  "jarEntryTimestamp": "2026-11-14T00:00:00Z"
+}

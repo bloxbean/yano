@@ -1,21 +1,26 @@
 package org.yanoproject.runtime.appchain;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.deliverInbound;
+import static org.yanoproject.x.framework.runtime.appchain.AppLedgerTestFixtures.signer;
+import org.yanoproject.x.framework.cardano.AppChainSubsystem;
+import org.yanoproject.x.framework.runtime.appchain.AppMessageSigner;
+
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.api.appchain.AppBlock;
-import org.yanoproject.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateWriter;
-import org.yanoproject.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.api.appchain.effects.EffectId;
-import org.yanoproject.api.appchain.effects.EffectIntent;
-import org.yanoproject.api.appchain.effects.EffectOutcome;
-import org.yanoproject.api.appchain.effects.FxKeys;
-import org.yanoproject.api.appchain.effects.FxResultBody;
-import org.yanoproject.api.appchain.effects.ResultPolicy;
+import org.yanoproject.x.framework.api.appchain.AppBlock;
+import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
+import org.yanoproject.x.framework.api.appchain.AppChainConfig;
+import org.yanoproject.x.framework.api.appchain.AppStateMachine;
+import org.yanoproject.x.framework.api.appchain.AppStateWriter;
+import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
+import org.yanoproject.x.framework.api.appchain.effects.EffectId;
+import org.yanoproject.x.framework.api.appchain.effects.EffectIntent;
+import org.yanoproject.x.framework.api.appchain.effects.EffectOutcome;
+import org.yanoproject.x.framework.api.appchain.effects.FxKeys;
+import org.yanoproject.x.framework.api.appchain.effects.FxResultBody;
+import org.yanoproject.x.framework.api.appchain.effects.ResultPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -78,7 +83,7 @@ class FxResultSignerAdmissionTest {
         byte[] result = new FxResultBody(FxResultBody.BODY_VERSION, effectHeight, 0,
                 EffectOutcome.CONFIRMED, "tx-1".getBytes(StandardCharsets.UTF_8), null).encode();
         AppMessage unauthorized = signedResult(EXECUTOR_KEY, 4_000_000_000_000L, result);
-        node.onInboundMessages(List.of(unauthorized));
+        deliverInbound(node, List.of(unauthorized));
         awaitTrue("unauthorized result removed from pool",
                 () -> ((Number) node.status().get("poolSize")).intValue() == 0);
 
@@ -86,7 +91,7 @@ class FxResultSignerAdmissionTest {
         assertThat(node.stateValue(FxKeys.doneKey(effectId))).isEmpty();
 
         AppMessage authorized = signedResult(PROPOSER_KEY, 4_000_000_000_001L, result);
-        node.onInboundMessages(List.of(authorized));
+        deliverInbound(node, List.of(authorized));
         awaitTrue("authorized result finalized",
                 () -> node.messageHeight(authorized.getMessageId()).isPresent());
         assertThat(node.stateValue(FxKeys.doneKey(effectId))).isPresent();
@@ -110,7 +115,7 @@ class FxResultSignerAdmissionTest {
     }
 
     private static AppMessage signedResult(byte[] seed, long sequence, byte[] body) {
-        AppMessageSigner signer = new AppMessageSigner(HexUtil.encodeHexString(seed));
+        AppMessageSigner signer = signer(HexUtil.encodeHexString(seed));
         long expiresAt = System.currentTimeMillis() / 1000 + 600;
         byte[] signedBody = AppMessage.signedBodyBytes(CHAIN_ID, FxResultBody.TOPIC,
                 signer.publicKey(), sequence, expiresAt, body);

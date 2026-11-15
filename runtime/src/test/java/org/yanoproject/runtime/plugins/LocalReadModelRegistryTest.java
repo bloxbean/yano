@@ -1,6 +1,6 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.plugin.domain.LocalReadModelResult;
+import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelResult;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

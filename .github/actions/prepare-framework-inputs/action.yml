@@ -1,0 +1,21 @@
+name: Prepare pinned framework inputs
+description: Verify and download staged framework artifacts, without a sibling source checkout
+inputs:
+  run-id:
+    description: Optional successful framework staging run; otherwise use committed CI pins
+    required: false
+  commit:
+    description: Exact framework commit for the staging run
+    required: false
+  token:
+    description: Read-only GitHub Actions token
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        YANO_X_INPUTS_RUN_ID: ${{ inputs.run-id }}
+        YANO_X_INPUTS_COMMIT: ${{ inputs.commit }}
+      run: bash .github/scripts/prepare-framework-inputs.sh

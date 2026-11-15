@@ -1,9 +1,9 @@
 package org.yanoproject.appchain.conformance;
 
-import org.yanoproject.api.appchain.observation.ObservationCandidate;
-import org.yanoproject.api.appchain.observation.ObservationProvider;
-import org.yanoproject.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.api.appchain.observation.ObservationRequest;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationCandidate;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProvider;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
+import org.yanoproject.x.framework.api.appchain.observation.ObservationRequest;
 
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
