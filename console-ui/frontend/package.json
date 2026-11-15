@@ -27,7 +27,6 @@
     "cookie": "0.7.2"
   },
   "dependencies": {
-    "@cardano-foundation/cardano-connect-with-wallet-core": "^0.2.12",
     "@fontsource/dm-sans": "5.3.0",
     "@fontsource/space-grotesk": "5.3.0"
   }
