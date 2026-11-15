@@ -2,7 +2,7 @@
 # Start/stop an isolated Yano devnet node for one sparse-backfill case.
 #
 # Everything the node writes is inside the case directory: chainstate, history
-# archive, app-chain store, and the genesis copy whose systemStart the runtime
+# archive, and the genesis copy whose systemStart the runtime
 # rewrites. The tracked fixtures under app/config/network/devnet/pv10/ are only
 # ever read (prepare_genesis.py copies them out first).
 
@@ -14,7 +14,6 @@ yano_java_args() { # <case-dir> <genesis-dir> <http-port> <n2n-port> <interval> 
     -Dyano.server.port="$n2n_port"
     -Dyano.storage.path="$case_dir/chainstate"
     -Dyano.history.dir="$case_dir/history"
-    -Dyano.app-chain.storage.path="$case_dir/appchain-chainstate"
     -Dyano.genesis.shelley-genesis-file="$genesis/shelley-genesis.json"
     -Dyano.genesis.byron-genesis-file="$genesis/byron-genesis.json"
     -Dyano.genesis.alonzo-genesis-file="$genesis/alonzo-genesis.json"

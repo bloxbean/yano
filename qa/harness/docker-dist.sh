@@ -29,16 +29,15 @@ check "yano.sh start:devnet" $?
 wait_http_ready $HA 120; check "ready within 120 s" $?
 wait_blocks $HA 20; check "producing blocks" $?
 check "data folders created under data-devnet/" \
-  $([ -f "$A/data-devnet/chainstate/CURRENT" ] && [ -d "$A/data-devnet/runtime-data" ] \
-    && [ -d "$A/data-devnet/appchain-chainstate" ] && [ -d "$A/data-devnet/appchain-indexers" ]; echo $?)
-TOP=$(cd "$A" && ls -d chainstate-* runtime-data-* appchain-* 2>/dev/null)
+  $([ -f "$A/data-devnet/chainstate/CURRENT" ] && [ -d "$A/data-devnet/runtime-data" ]; echo $?)
+TOP=$(cd "$A" && ls -d chainstate-* runtime-data-* 2>/dev/null)
 check "no data folders beside compose/${TOP:+ (found: $TOP)}" $([ -z "$TOP" ]; echo $?)
 
 echo "== API sweep"
 BAD=""
 for p in status network genesis node/status node/tip node/config blocks/latest blocks/1 epochs/latest \
     epochs/latest/parameters epochs/0/parameters epochs/latest/adapot epochs/adapots governance/dreps \
-    governance/proposals accounts/pools devnet/snapshots history/coverage app-chain/chains node/epoch-calc-status; do
+    governance/proposals accounts/pools devnet/snapshots history/coverage node/epoch-calc-status; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$HA/api/v1/$p")
   [ "$code" = 200 ] || BAD="$BAD $p=$code"
 done
@@ -46,7 +45,7 @@ for p in ui/ q/metrics; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$HA/$p"); [ "$code" = 200 ] || BAD="$BAD $p=$code"
 done
 [ -z "$BAD" ] || echo "  non-200:$BAD"
-check "22 endpoints return 200" $([ -z "$BAD" ]; echo $?)
+check "21 endpoints return 200" $([ -z "$BAD" ]; echo $?)
 
 echo "== mounts"
 MOUNTS=$(docker inspect yano-qa-docker-a --format '{{range .Mounts}}{{.Type}} {{.Destination}} {{.RW}}{{"\n"}}{{end}}')
