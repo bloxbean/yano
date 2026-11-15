@@ -1,6 +1,6 @@
 # ADR-064: Yano-X depends on Yano, never the reverse
 
-- Status: Proposed (r3)
+- Status: Proposed (r4)
 - Date: 2026-11-16
 - Tracking: [Yano #249](https://github.com/bloxbean/yano/issues/249) (requirement: [#247](https://github.com/bloxbean/yano/issues/247))
 - Baselines inspected: Yano `ebd3eeea4` (merge of #246), Yano-X `1ce50558` (merge of X #102)
@@ -283,6 +283,22 @@ where `PluginProducts` has `void resume()` and `void sealAndAwait()`.
   recorder. Admission, queue cancellation and timeout events (`:764-765,1156-1165`) are therefore
   recorded exactly as today, and moved tests cover them.
 
+**Permanent close (X18, A14).** `registerPluginProducts` does not transfer close ownership. The X root
+owns the registries it creates (`DomainApiRegistry`, `LocalReadModelContributionRegistry`,
+`LocalReadModelRegistry`) and closes them in reverse creation order from its existing
+`NodePlugin.close()`. The host already invokes that through `closePluginManager()`, at the point where
+`RuntimeNode:3956-3961` closes them today.
+
+- If assembly fails part-way, the callback closes whatever it created, in reverse, before rethrowing.
+- Close-before-start and repeated close are no-ops after the first close.
+- A rejected registration leaves ownership with the caller.
+- Close keeps aggregating failures, and the moved tests prove executor termination
+  (`DomainApiRegistry:572-601`).
+- With app chains disabled, the X root still owns and closes the registries it builds for domain APIs.
+
+Registries registered through `registerBeforePublication` keep that method's existing ownership-transfer
+rule (`HostLifecycleRegistry:12-18`).
+
 I5 pins both positions for Cardano and app-ledger hosts, including the rollback and unsafe-drain paths.
 
 **Native (A11).** Descriptor kinds are JVM-only, because X is JVM-only (MD2). The native image keeps the
@@ -391,7 +407,8 @@ and REST.
   storage defaults.
 - That bean implements a new Yano interface, `org.yanoproject.app.spi.RuntimeGlobalsContributor`, with
   `Map<String,Object> globals()`. Before it builds `RuntimeOptions`, `YanoProducer` merges every
-  contributor. Duplicate keys across contributors fail startup.
+  contributor. Startup fails if two contributors set the same key, or if a contributor sets a key the
+  host itself sets (B14).
 - Quarkus typed configuration therefore keeps its environment-variable mapping for dashed keys, such as
   `YANO_APP_CHAIN_*`.
 - The projection keeps the same keys and values, so what is exposed to plugins is unchanged.
@@ -427,9 +444,15 @@ and REST.
   package-private `ensureYano()`.
 - The small surface X compiles against lives in `org.yanoproject.app.spi`: the `Yano` producer,
   `RuntimeGlobalsContributor`, the shared `ApiKeys` helper, and `RequiresCardano`. Yano has no japicmp
-  or revapi gate today (B13), so the gate for this surface is the M1 downstream-consumer check. It
-  compiles and boots a fixture against exactly these symbols from staged publications on every Yano
-  build, and changing or removing one fails Yano's own build (B1).
+  or revapi gate today (B13), so the gate for this surface is the M1 downstream-consumer check. That
+  check is a source-compilation and boot check, not full binary-compatibility coverage. It compiles and
+  boots a fixture against exactly these symbols from staged publications. It runs in CI, and locally
+  only when its inputs change (C14).
+- `app.spi` changes are additive only. Removing or changing a symbol needs an ADR, and must not be done
+  by editing the fixture in the same PR (B13 P3).
+- Embedder migration notes include the removal of `YanoConfig.appChainStoragePath` (B14).
+- Yano's console has no link to X's console. The X console is reached directly at `/ui/app-chain/` and
+  links back to `/ui/` (B14).
 
 **Yano-X.**
 
@@ -640,7 +663,8 @@ cut Yano over first, then make X own the product.
     enum move, the open kind registry with bindings, scope, `FacadeSupport` and the fixture, `Yano.service`,
     the `app-core`/`app` split, the plugin-operations filter, and deleting every X edge.
   - Exit:
-    - I1, I2, I5 and I3 (old-versus-new catalog part);
+    - I1, I2 and I5, plus generic-fixture catalog tests (the descriptor-dependent I3 checks run in
+      M2) (X9);
     - full Yano unit and integration tests;
     - an X-free downstream-consumer check: a tiny Quarkus fixture application in Yano composes
       `app-core` from staged publications with a fixture plugin. It verifies one `Yano` instance,
@@ -652,7 +676,7 @@ cut Yano over first, then make X own the product.
   - Scope: X side of D2–D10 and D12.
   - Exit:
     - X `./gradlew check` and `distributionCheck` against the staged Yano;
-    - I3 (inventory part), I4, I6 and I7;
+    - I3 (both the old-versus-new catalog comparison and the inventory comparison), I4, I6 and I7;
     - the library-mode test;
     - the moved app-chain QA on the downstream distribution: cluster with L1 rollbacks, extensions,
       rotation and governance, script anchor.
@@ -781,3 +805,12 @@ exception).
   - P3s → A5 trust by origin; A7 readiness exceptions and call phases; A8 X-side required check; A10
     `networkName()` in app-ledger mode; B8 single closure script and ZIP input; B14 plugin-operations
     outcomes; C13 guardrail scope and merge window.
+- r4 (2026-11-16), responding to the round-3 reviews of `f881fcd85` (A, B and C approved; X requested
+  changes):
+  - X18/A14 → permanent-close ownership: the X root closes its registries from `NodePlugin.close()`,
+    including partial assembly, close-before-start and rejected registration.
+  - X9 → M1 exit keeps only the generic catalog tests; both I3 comparisons move to M2.
+  - B13/C14/X → `app.spi` gate described as a source-compilation and boot check, run in CI or when its
+    inputs change; additive-only rule.
+  - B14 → contributor keys that collide with host keys fail; `appChainStoragePath` migration note;
+    console reachability.
