@@ -11,7 +11,7 @@ Download the [latest Yano release](https://github.com/bloxbean/yano/releases/lat
 
 | Distribution | Download | Requirements |
 | --- | --- | --- |
-| **JVM — recommended for app ledgers** | `yano-<version>.zip` | Java 25 |
+| **JVM** | `yano-<version>.zip` | Java 25 |
 | Linux x64 | `yano-native-<version>-linux-x64.zip` | Linux on x64 |
 | Linux arm64 | `yano-native-<version>-linux-arm64.zip` | Linux on arm64 |
 | macOS arm64 | `yano-native-<version>-macos-arm64.zip` | Apple silicon Mac |
@@ -25,7 +25,7 @@ the launcher and configuration and pulls a versioned image; Java is included in
 the JVM image. Some older releases omit this ZIP; use another listed distribution
 or [build the Compose ZIP from source](/contribute/build-from-source/#docker-compose-zip-distribution).
 
-For app ledger onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
+Choose the JVM distribution for JVM extensions. Native images cannot dynamically load plugin JARs.
 
 ## Start on macOS or Linux
 
@@ -60,12 +60,10 @@ JVM distribution, with Java 25 installed:
 java -Dquarkus.profile=devnet -jar yano.jar
 ```
 
-For JVM app ledgers, use `java "-Dquarkus.profile=devnet,appchain" -jar yano.jar`.
-
 ## Releases and documentation versions
 
 This site's advanced reference follows the current source line, which may be newer than the preview you downloaded. Use your release's bundled configuration and `/q/swagger-ui` as the reference for its available profiles, properties, and endpoints.
 
-Use release-matched SDKs, plugins, and verifiers. Start preview releases with fresh node storage unless that release explicitly documents compatibility.
+Use release-matched SDKs and plugins. Start preview releases with fresh node storage unless that release explicitly documents compatibility.
 
 To modify Yano itself or use unreleased changes, see [build from source](/contribute/build-from-source/); building is not required for the download workflow.

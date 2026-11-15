@@ -11,9 +11,6 @@
   "operate/plugins": [
     "docs/PLUGIN_OPERATIONS.md"
   ],
-  "reference/plugin-contract": [
-    "docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md"
-  ],
   "reference/account-state": [
     "docs/ACCOUNT_STATE_AND_ROLLBACK.md"
   ],
@@ -31,14 +28,6 @@
   ],
   "operate/mempool": [
     "docs/mempool-administration.md"
-  ],
-  "app-chains/ordered-log": [
-    "docs/appchain/state-machines/ordered-log.md",
-    "docs/appchain/submission.md"
-  ],
-  "app-chains/consensus": [
-    "docs/APP_CHAIN_CONSENSUS_GUIDE.md",
-    "docs/appchain/submission.md"
   ],
   "operate/console": [
     "docs/console-ui.md"
@@ -67,33 +56,10 @@
     "testkit/README.md",
     "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java"
   ],
-  "develop/app-chain-testkit": [
-    "appchain/appchain-testkit/README.md"
-  ],
   "develop/transactions": [
     "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
     "app/bin/yano.sh",
     "app/src/main/java/org/yanoproject/app/YanoProducer.java"
-  ],
-  "app-chains/overview": [
-    "appchain/README.md",
-    "docs/appchain/state-machines/ordered-log.md"
-  ],
-  "app-chains/extensions": [
-    "appchain/README.md",
-    "docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md"
-  ],
-  "app-chains/proofs": [
-    "docs/appchain/state-machines/ordered-log.md",
-    "docs/APP_CHAIN_CONSENSUS_GUIDE.md",
-    "docs/console-ui.md"
-  ],
-  "app-chains/quickstart": [
-    "app/config/application-appchain.yml",
-    "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java"
-  ],
-  "app-chains/observations": [
-    "docs/appchain/observations.md"
   ],
   "start/overview": [
     "README.md",
@@ -179,8 +145,7 @@
   "start/capabilities": [
     "app/src/main/resources/application.yml",
     "app/config/application-wallet.yml",
-    "app/config/application-projection.yml",
-    "appchain/README.md"
+    "app/config/application-projection.yml"
   ],
   "contribute/build-from-source": [
     "docs/BUILD_DISTRIBUTIONS.md"
