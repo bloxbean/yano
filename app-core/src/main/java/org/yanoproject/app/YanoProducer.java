@@ -863,10 +863,6 @@ public class YanoProducer {
         forwardDynamicKeys(YanoPropertyKeys.Utxo.INDEX_CONTRIBUTORS + "[", globals);
     }
 
-    /**
-     * Adds every contributor's globals. A key the host already set, or one that two contributors set,
-     * fails startup rather than letting either value win silently.
-     */
     /** ADR-064 D2: the host-required embedded bundles reach the runtime through its globals. */
     void putRequiredPlugins(Map<String, Object> globals) {
         Set<String> required = PluginHostConfiguration.from(appConfig).required();
