@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Enumeration;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 
@@ -28,6 +29,8 @@ import java.util.jar.JarOutputStream;
 final class FailingAssemblyFixture {
     static final String ID = "org.yanoproject.app.fixture.failing-assembly";
     static final String SECRET = "ASSEMBLY-SECRET-5c1e7a";
+    /** Initialisations of the fixture plugin, one per Yano assembly attempt. */
+    static final AtomicInteger INITS = new AtomicInteger();
 
     private FailingAssemblyFixture() {
     }
@@ -76,6 +79,7 @@ final class FailingAssemblyFixture {
         @Override public String id() { return ID; }
         @Override public String version() { return "1.0.0"; }
         @Override public void init(PluginContext context) {
+            INITS.incrementAndGet();
             context.getService(HostApi.SERVICE_KEY, HostApi.class).orElseThrow().lifecycle()
                     .registerAssembly(ID, () -> {
                         throw new IllegalStateException("assembly credentials rejected: " + SECRET);

@@ -168,21 +168,87 @@ class YanoProducerTest {
     /** I8-N2: a failed assembly step of a required embedded bundle is a terminal plugin startup failure. */
     @Test
     void requiredBundleAssemblyFailureIsASanitisedTerminalPluginStartupFailure() {
-        var producer = new YanoProducer(FailingAssemblyFixture.loader(
-                Thread.currentThread().getContextClassLoader()));
-        producer.appConfig = new PresentConfig(Map.of(
-                YanoPropertyKeys.MODE, "app-ledger",
-                YanoPropertyKeys.Plugins.ENABLED, "false",
-                YanoPropertyKeys.Plugins.REQUIRED, FailingAssemblyFixture.ID));
+        var producer = failingAssemblyProducer();
 
         PluginStartupException thrown = assertThrows(PluginStartupException.class, () -> producer.onStart(null));
 
         assertEquals(PluginActivationException.class.getName(), thrown.sourceFailureType());
         assertNull(thrown.getCause());
         assertFalse(renderStackTrace(thrown).contains(FailingAssemblyFixture.SECRET));
-        IllegalStateException retry = assertThrows(IllegalStateException.class, producer::ensureYano);
-        assertTrue(retry.getMessage().contains("startup failed on a plugin activation error"));
+        PluginStartupException retry = assertThrows(PluginStartupException.class, producer::ensureYano);
+        assertEquals(PluginActivationException.class.getName(), retry.sourceFailureType());
         assertNull(retry.getCause());
+    }
+
+    /** XX-1: an earlier caller that met the failure first cannot turn the startup observer's view recoverable. */
+    @Test
+    void pluginFailureMetBeforeStartupStillStopsStartup() {
+        var producer = failingAssemblyProducer();
+        int inits = FailingAssemblyFixture.INITS.get();
+        assertTrue(YanoProducer.isPluginStartupFailure(assertThrows(RuntimeException.class, producer::ensureYano)));
+
+        PluginStartupException thrown = assertThrows(PluginStartupException.class, () -> producer.onStart(null));
+
+        assertEquals(PluginActivationException.class.getName(), thrown.sourceFailureType());
+        assertNull(thrown.getCause());
+        assertFalse(renderStackTrace(thrown).contains(FailingAssemblyFixture.SECRET));
+        assertEquals(inits + 1, FailingAssemblyFixture.INITS.get(), "Yano is assembled once");
+    }
+
+    @Test
+    void concurrentFirstCallersAssembleOnceAndBothSeeAPluginStartupFailure() throws Exception {
+        var producer = failingAssemblyProducer();
+        int inits = FailingAssemblyFixture.INITS.get();
+        var ready = new java.util.concurrent.CyclicBarrier(2);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            List<java.util.concurrent.Future<Throwable>> results = new java.util.ArrayList<>();
+            for (int caller = 0; caller < 2; caller++) {
+                results.add(workers.submit(() -> {
+                    ready.await();
+                    try {
+                        producer.ensureYano();
+                        return null;
+                    } catch (Throwable failure) {
+                        return failure;
+                    }
+                }));
+            }
+            for (var result : results) {
+                assertTrue(YanoProducer.isPluginStartupFailure(result.get(30, java.util.concurrent.TimeUnit.SECONDS)));
+            }
+        }
+        assertEquals(inits + 1, FailingAssemblyFixture.INITS.get(), "Yano is assembled once");
+    }
+
+    /** An ordinary initialisation failure is not cached: the real ensureYano assembles again on the next call. */
+    @Test
+    void ordinaryRuntimeInitializationFailureStaysRetryableThroughTheRealCache() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.MODE, "app-ledger",
+                YanoPropertyKeys.Plugins.ENABLED, "false"));
+        String noNetwork = "app-ledger mode requires a plugin that provides an app-only network";
+
+        RuntimeException first = assertThrows(RuntimeException.class, producer::ensureYano);
+        assertFalse(YanoProducer.isPluginStartupFailure(first));
+        assertTrue(renderStackTrace(first).contains(noNetwork));
+        // The next caller assembles again rather than meeting a remembered failure.
+        RuntimeException second = assertThrows(RuntimeException.class, producer::ensureYano);
+        assertFalse(second instanceof PluginStartupException);
+        assertFalse(YanoProducer.isPluginStartupFailure(second));
+        assertTrue(renderStackTrace(second).contains("YanoAssembly$Builder.build"));
+        producer.bootstrapEnabled = false;
+        producer.onStart(null);
+    }
+
+    private static YanoProducer failingAssemblyProducer() {
+        var producer = new YanoProducer(FailingAssemblyFixture.loader(
+                Thread.currentThread().getContextClassLoader()));
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.MODE, "app-ledger",
+                YanoPropertyKeys.Plugins.ENABLED, "false",
+                YanoPropertyKeys.Plugins.REQUIRED, FailingAssemblyFixture.ID));
+        return producer;
     }
 
     @Test

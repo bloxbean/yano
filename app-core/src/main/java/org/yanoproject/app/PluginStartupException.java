@@ -38,6 +38,11 @@ public final class PluginStartupException extends IllegalStateException {
         return new PluginStartupException(DIRECTORY_CAPTURE_FAILURE, null);
     }
 
+    /** A fresh instance with the same sanitised fields, for rethrowing a remembered failure. */
+    PluginStartupException copy() {
+        return new PluginStartupException(sourceFailureType, failurePhase, bundleId, contributionKind);
+    }
+
     /** Platform exception type used to classify the original failure. */
     public String sourceFailureType() {
         return sourceFailureType;

@@ -436,7 +436,7 @@ public class YanoProducer {
 
     private final PluginLoaderHandle pluginLoader;
     private Yano yano;
-    private boolean pluginStartupFailed;
+    private PluginStartupException pluginStartupFailure;
     @jakarta.inject.Inject
     public YanoProducer(@Named("pluginClassLoader") PluginLoaderHandle pluginLoader) {
         this.pluginLoader = pluginLoader;
@@ -456,8 +456,9 @@ public class YanoProducer {
 
     /**
      * Assembles the application's single {@link Yano} on first use and returns it afterwards. A plugin
-     * startup failure is terminal: later callers, such as a metrics cache refreshing in the background,
-     * fail fast instead of assembling Yano again.
+     * startup failure is terminal: later callers, such as a metrics cache refreshing in the background or
+     * the startup observer after an earlier probe, get its sanitised {@link PluginStartupException} instead
+     * of assembling Yano again. Any other failure stays retryable.
      */
     synchronized Yano ensureYano() {
         if (apiPrefixContract != null) {
@@ -466,15 +467,15 @@ public class YanoProducer {
         if (yano != null) {
             return yano;
         }
-        if (pluginStartupFailed) {
-            throw new IllegalStateException(
-                    "Yano startup failed on a plugin activation error; fix it and restart the process");
+        if (pluginStartupFailure != null) {
+            throw pluginStartupFailure.copy();
         }
         try {
             return assembleYano();
         } catch (Throwable failure) {
-            if (isPluginStartupFailure(failure)) {
-                pluginStartupFailed = true;
+            Throwable pluginFailure = pluginStartupFailure(failure);
+            if (pluginFailure != null) {
+                pluginStartupFailure = sanitizedPluginStartupFailure(pluginFailure);
             }
             throw failure;
         }
@@ -1095,7 +1096,8 @@ public class YanoProducer {
             // so an earlier plugin sibling cannot hide a later fatal signal.
             LifecycleFailures.rethrowIfProcessFatal(current);
             if (current instanceof PluginActivationException
-                    || current instanceof PluginManager.PluginManagerException) {
+                    || current instanceof PluginManager.PluginManagerException
+                    || current instanceof PluginStartupException) {
                 if (firstPluginFailure == null) {
                     firstPluginFailure = current;
                 }
@@ -1135,6 +1137,9 @@ public class YanoProducer {
     }
 
     static PluginStartupException sanitizedPluginStartupFailure(Throwable failure) {
+        if (failure instanceof PluginStartupException sanitized) {
+            return sanitized.copy();
+        }
         if (failure instanceof PluginCatalogActivationException) {
             return new PluginStartupException(
                     PluginCatalogActivationException.class.getName(), null);
