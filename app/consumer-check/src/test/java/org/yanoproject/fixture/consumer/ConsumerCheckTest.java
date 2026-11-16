@@ -60,7 +60,8 @@ class ConsumerCheckTest {
                         "yano.account-state.enabled", "false",
                         "yano.plugins.enabled", "true",
                         "yano.plugins.directory", plugins.toString(),
-                        "yano.app-chain.api.keys", KEY);
+                        "yano.app-chain.api.keys", KEY + ",scoped=orders",
+                        "yano.fixture.consumer-check.admin-keys", "admin-a, admin-b");
             } catch (java.io.IOException e) {
                 throw new IllegalStateException(e);
             }
@@ -103,10 +104,24 @@ class ConsumerCheckTest {
     void downstreamRouteIsServedUnderTheBakedPrefixBehindTheSharedKeyHelper() {
         given().when().get("/api/v1/consumer-check").then().statusCode(401);
         given().header("X-API-Key", "wrong").when().get("/api/v1/consumer-check").then().statusCode(401);
+        given().header("X-API-Key", "scoped").when().get("/api/v1/consumer-check").then().statusCode(401);
+        given().header("X-API-Key", "admin-b").when().get("/api/v1/consumer-check").then().statusCode(200);
         given().header("X-API-Key", KEY)
                 .when().get("/api/v1/consumer-check")
                 .then().statusCode(200)
                 .body("protocolMagic", equalTo(1));
+    }
+
+    @Test
+    void downstreamFilterBoundsRequestBodiesWithTheSharedHelper() {
+        given().header("X-API-Key", KEY).contentType("text/plain").body("sixteen-bytes-ok")
+                .when().post("/api/v1/consumer-check")
+                .then().statusCode(200)
+                .body("length", equalTo(16));
+        given().header("X-API-Key", KEY).contentType("text/plain").body("seventeen-bytes-x")
+                .when().post("/api/v1/consumer-check")
+                .then().statusCode(413)
+                .body("code", equalTo("REQUEST_TOO_LARGE"));
     }
 
     @Test
