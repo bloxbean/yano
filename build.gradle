@@ -90,7 +90,7 @@ tasks.withType(Test) {
 
 // Keep the Quarkus host's Jackson security override observable at build time:
 // a direct catalog upgrade is not enough because Quarkus imports its platform
-// as an enforced BOM. Yano X verifies its own extension runtime closures.
+// as an enforced BOM. Downstream applications verify their own runtime closures.
 def adr013ReleaseScopes = [
         app: ':app'
 ]

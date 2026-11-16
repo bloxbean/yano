@@ -63,8 +63,8 @@ runtime arguments.
 
 The shared Compose file still mounts `plugins/` for the JVM flavor. A native
 image cannot load JARs from that mount; any JARs there are reported as ignored.
-Native Yano embeds only retained core providers. Run the Yano X JVM distribution
-when optional state machines, connectors, or product plugins are required.
+Native Yano embeds only retained core providers. Use the JVM flavor when
+directory plugins are required.
 
 To inspect the resolved compose file for a network:
 
