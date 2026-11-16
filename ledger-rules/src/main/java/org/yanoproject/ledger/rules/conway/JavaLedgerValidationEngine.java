@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.api.model.ProtocolParams;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
+import com.bloxbean.cardano.client.transaction.raw.LedgerDecodingException;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 
@@ -154,8 +155,10 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
         RawTx accepted;
         try {
             accepted = HaskellPolicy.forEra(Era.Conway).transaction(txCbor);
+        } catch (LedgerDecodingException e) {
+            return engine(DECODING_FAILURE, "strict read rejects (" + e.reason() + "): " + e.getMessage());
         } catch (CborRuntimeException e) {
-            return engine(DECODING_FAILURE, e.getMessage());
+            return engine(DECODING_FAILURE, "strict read rejects: " + e.getMessage());
         }
         Transaction tx;
         try {

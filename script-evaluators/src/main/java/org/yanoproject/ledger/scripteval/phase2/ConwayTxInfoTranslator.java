@@ -817,7 +817,7 @@ final class ConwayTxInfoTranslator {
                     throw new IllegalStateException("unexpected tag " + value.tag() + " in a parameter update");
                 }
                 List<CborSpan> ratio = cborArray(value.untag());
-                BigInteger[] reduced = DataTerms.reduce(cborInteger(ratio.get(0)), cborInteger(ratio.get(1)));
+                BigInteger[] reduced = DataTerms.reduce(rationalPart(ratio.get(0)), rationalPart(ratio.get(1)));
                 return list(List.of(integer(reduced[0]), integer(reduced[1])));
             }
             default -> throw new IllegalStateException("unexpected CBOR major type " + major + " in a parameter update");
@@ -853,6 +853,18 @@ final class ConwayTxInfoTranslator {
             throw new TxDecodingException("expected an integer at " + item.offset());
         }
         return item.asBigInteger();
+    }
+
+    /**
+     * A rational's part, as CCL's policy accepts it below decoder version 12 ({@code decodeInteger}): an integer, or a
+     * bignum with the one-byte tag head {@code c2}/{@code c3} on a definite byte string.
+     */
+    private static BigInteger rationalPart(CborSpan item) {
+        int initial = item.buffer()[item.offset()] & 0xff;
+        if ((initial == 0xc2 || initial == 0xc3) && !item.untag().isIndefinite()) {
+            return item.asBigInteger();
+        }
+        return cborInteger(item);
     }
 
     private static void expectMajor(CborSpan item, int major, String what) {
