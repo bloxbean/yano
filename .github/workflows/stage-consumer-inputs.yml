@@ -2,12 +2,6 @@ name: Stage Consumer Inputs
 
 on:
   workflow_dispatch:
-    inputs:
-      scope:
-        description: Stage only the foundation APIs, or every host publication and the JVM ZIP
-        type: choice
-        default: host
-        options: [foundation, host]
 
 permissions:
   contents: read
@@ -26,10 +20,8 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: 'gradle'
-      - name: Stage exact foundation or host publications
+      - name: Stage every Yano publication and the JVM ZIP
         id: stage
-        env:
-          YANO_INPUTS_SCOPE: ${{ inputs.scope }}
         run: bash .github/scripts/stage-consumer-inputs.sh
       - name: Retain qualification inputs (not a public release)
         uses: actions/upload-artifact@v4

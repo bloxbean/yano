@@ -6,19 +6,18 @@ artifacts. When a downstream branch needs unreleased Yano changes, its CI can
 consume a staged copy instead of a snapshot. Staging is not a release, and
 Maven Local stays disabled.
 
-Dispatch `stage-consumer-inputs.yml` on a pushed Yano commit:
-
-- `scope=foundation` publishes only the node, Cardano and Host API contracts
-  (`yano-node-api`, `yano-cardano-api`, `yano-host-api`).
-- `scope=host` (the default) publishes every Yano publication, builds the JVM
-  ZIP and runs the packaged plugin-catalog smoke.
+Dispatch `stage-consumer-inputs.yml` on a pushed Yano commit. It publishes
+every Yano publication (the contracts, `yano-plugin-catalog`, `yano-runtime`,
+`yano-app-core` and the rest), builds the JVM ZIP and runs the packaged
+plugin-catalog smoke.
 
 The run uploads `yano-inputs-<commit>` as an Actions artifact retained for 90
-days. It contains a file Maven repository (`maven/`), the ZIP for the host
-scope, `yano-inputs.json` (commit, version, Host API version, scope) and a
+days. It contains a file Maven repository (`maven/`), the JVM ZIP,
+`yano-inputs.json` (commit, version, Host API version, distribution) and a
 `SHA256SUMS` inventory. Versions are `<base>-<commit prefix>`, so staged
 artifacts never collide with snapshots or releases. The Host API keeps its own
-version (`hostApiVersion`, default `1.0.0-<commit prefix>`).
+version (`hostApiVersion`), by default `<major>.<level>.0-<commit prefix>` from
+`HostApiVersion.CURRENT`, for example `1.2.0-<commit prefix>`.
 
 A consumer records the run ID and full commit, verifies the manifest and the
 checksum inventory, and points an ordinary Maven repository at `maven/`.
