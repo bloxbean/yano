@@ -9,9 +9,9 @@ keep their existing SPIs in [`node-api`](../node-api/README.md).
 
 `org.yanoproject:yano-host-api`
 
-The module has its own version train: the artifact version comes from the Gradle property
-`hostApiVersion` (default `1.0.0-SNAPSHOT`), not from the Yano release version. The contract version
-itself is `HostApiVersion.CURRENT` (currently 1.2).
+Published at the Yano project version, like every Yano module. Compatibility is the contract version
+`HostApiVersion.CURRENT` (currently 1.2), which plugins check with `requireCompatible`, not the artifact
+version.
 
 ## Key contents
 

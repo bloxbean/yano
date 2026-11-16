@@ -212,6 +212,12 @@ proposal work. API registration must not depend on L1 sync being live.
 
 ### D6. Release independence is a tested contract
 
+> **Amended 2026-11-16 (maintainer decision, ADR-064 MD4):** the host artifact is no longer versioned
+> separately. Every Yano module, `yano-host-api` included, is published at the one Yano project
+> version. Compatibility is the code-level contract `HostApiVersion.CURRENT` (major/level), which
+> extensions check with `requireCompatible`. The separate `hostApiVersion` train described below is
+> withdrawn: snapshot and release publishing require one version per repository.
+
 Version the host artifact separately from Yano distributions and declare its
 minimum supported API level. The first frozen host contract is the oldest
 supported version for this feature; pre-feature Yano hosts are not claimed to
