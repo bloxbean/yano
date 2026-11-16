@@ -69,11 +69,12 @@ public interface PluginOperationsRecorder {
     void callbackFinished(String bundleId);
 
     /**
-     * Counts one operation outcome.
+     * Counts one product request outcome.
      *
      * @param bundleId owning bundle id
-     * @param operation operation
+     * @param operation {@link PluginOperation#DOMAIN_GET} or {@link PluginOperation#DOMAIN_POST}
      * @param outcome outcome
+     * @throws IllegalArgumentException for any other operation, which the host records itself
      */
     void outcome(String bundleId, PluginOperation operation, PluginOperationOutcome outcome);
 }

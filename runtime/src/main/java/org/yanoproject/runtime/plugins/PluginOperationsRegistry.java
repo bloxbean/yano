@@ -62,6 +62,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.LongSupplier;
 
 /**
@@ -394,21 +395,28 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
         return recorder;
     }
 
+    /** Whether {@code bundleId} owns an operations-tracked contribution of {@code kind}. */
     private boolean tracked(String bundleId, String kind) {
-        if (kind != null && !operationsTrackedKinds.contains(kind)) {
-            return false;
-        }
+        return kind != null && operationsTrackedKinds.contains(kind)
+                && ownsTrackedContribution(bundleId, kind::equals);
+    }
+
+    /** Whether {@code bundleId} owns any operations-tracked contribution. */
+    private boolean tracksProducts(String bundleId) {
+        return ownsTrackedContribution(bundleId, kind -> true);
+    }
+
+    private boolean ownsTrackedContribution(String bundleId, Predicate<String> kind) {
         synchronized (stateMonitor) {
             BundleState bundle = bundles.get(bundleId);
             return bundle != null && bundle.contributions.values().stream()
-                    .anyMatch(contribution -> contribution.operationsTracked
-                            && (kind == null || contribution.kind.equals(kind)));
+                    .anyMatch(contribution -> contribution.operationsTracked && kind.test(contribution.kind));
         }
     }
 
     private void trackedQueue(String bundleId, Consumer<BundleState> update) {
         synchronized (stateMonitor) {
-            if (closed || !tracked(bundleId, null)) {
+            if (closed || !tracksProducts(bundleId)) {
                 return;
             }
             update.accept(bundles.get(bundleId));
@@ -484,6 +492,10 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
         public void outcome(String bundleId, PluginOperation operation, PluginOperationOutcome outcome) {
             Objects.requireNonNull(operation, "operation");
             Objects.requireNonNull(outcome, "outcome");
+            if (operation != PluginOperation.DOMAIN_GET && operation != PluginOperation.DOMAIN_POST) {
+                throw new IllegalArgumentException("Plugin product outcomes are DOMAIN_GET or DOMAIN_POST, not "
+                        + operation);
+            }
             trackedQueue(bundleId, bundle -> incrementLocked(bundle, operation, outcome));
         }
     }

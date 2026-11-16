@@ -83,6 +83,13 @@ class PluginOperationsRegistryTest {
             recorder.queueFinished(tracked);
             recorder.outcome(tracked, PluginOperation.DOMAIN_GET, PluginOperationOutcome.SUCCEEDED);
             recorder.outcome(tracked, PluginOperation.DOMAIN_POST, PluginOperationOutcome.TIMED_OUT);
+            for (PluginOperation hostOperation : List.of(PluginOperation.ACTIVATION, PluginOperation.LIFECYCLE,
+                    PluginOperation.HEALTH_SAMPLE, PluginOperation.METRICS_SAMPLE)) {
+                assertThatThrownBy(() -> recorder.outcome(tracked, hostOperation, PluginOperationOutcome.FAILED))
+                        .isInstanceOf(IllegalArgumentException.class)
+                        .hasMessageContaining("DOMAIN_GET or DOMAIN_POST, not " + hostOperation);
+            }
+            recorder.activating(null, tracked);
             await(() -> bundle(registry.snapshot(), tracked).activeCallbacks() == 1
                     && bundle(registry.snapshot(), tracked).queuedCallbacks() == 0
                     && operationTotal(registry.snapshot(), tracked, PluginOperation.DOMAIN_POST,
